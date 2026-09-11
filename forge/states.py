@@ -52,7 +52,14 @@ MAX_RETRIES = 4
 EXPORT_SIZES = (256, 128)
 
 
-def load_img2img(offline: bool = False):
+def load_img2img(offline: bool = False, lightning: bool = False):
+    """Default is PLAIN SDXL, not Lightning.
+
+    Measured on the base busts: Lightning dropped most of the description --
+    'red hair' 0/4, 'big glasses' 1/4 -- while plain SDXL landed 3/4 and 4/4 on
+    the same prompts and seeds. The states have to hold the same face, so
+    adherence matters here more than anywhere.
+    """
     import torch
     from diffusers import StableDiffusionXLImg2ImgPipeline, EulerDiscreteScheduler
 
@@ -66,11 +73,12 @@ def load_img2img(offline: bool = False):
         use_safetensors=True,
         local_files_only=offline,
     )
-    pipe.load_lora_weights(LIGHTNING_REPO, weight_name=LIGHTNING_LORA)
-    pipe.fuse_lora()
-    pipe.scheduler = EulerDiscreteScheduler.from_config(
-        pipe.scheduler.config, timestep_spacing="trailing"
-    )
+    if lightning:
+        pipe.load_lora_weights(LIGHTNING_REPO, weight_name=LIGHTNING_LORA)
+        pipe.fuse_lora()
+        pipe.scheduler = EulerDiscreteScheduler.from_config(
+            pipe.scheduler.config, timestep_spacing="trailing"
+        )
     pipe.enable_model_cpu_offload()
     # See generate.py: diffusers 0.40 moved this onto the VAE.
     if hasattr(pipe.vae, "enable_slicing"):
@@ -139,6 +147,9 @@ def main() -> int:
     ap.add_argument("--denoise", type=float, default=DEFAULT_DENOISE)
     ap.add_argument("--threshold", type=float, default=IDENTITY_THRESHOLD)
     ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--lightning", action="store_true", help="few-step LoRA (worse adherence)")
+    ap.add_argument("--guidance", type=float, default=6.0)
+    ap.add_argument("--steps", type=int, default=30)
     args = ap.parse_args()
 
     import torch
@@ -151,7 +162,7 @@ def main() -> int:
     )
     base_image = Image.open(args.base).convert("RGB")
 
-    pipe = load_img2img(offline=args.offline)
+    pipe = load_img2img(offline=args.offline, lightning=args.lightning)
     gate = IdentityGate(offline=args.offline)
 
     out_dir = Path(args.out) / args.agent / "states"
@@ -172,8 +183,10 @@ def main() -> int:
                 negative_prompt_2=negative_prompt(),
                 image=base_image,
                 strength=args.denoise,
-                num_inference_steps=max(8, int(8 / max(args.denoise, 0.1))),
-                guidance_scale=LIGHTNING_GUIDANCE,
+                # img2img runs steps * strength, so ask for enough that the
+                # effective count is not a handful.
+                num_inference_steps=args.steps,
+                guidance_scale=args.guidance,
                 generator=torch.Generator(device="cpu").manual_seed(seed + attempt * 77),
             ).images[0]
 
