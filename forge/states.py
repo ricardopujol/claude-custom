@@ -104,6 +104,20 @@ class IdentityGate:
         inputs = self.processor(images=image, return_tensors="pt")
         with self.torch.no_grad():
             feats = self.model.get_image_features(**inputs)
+
+        # transformers 5.x returns BaseModelOutputWithPooling here where 4.x
+        # returned the tensor directly. Handle both rather than pinning: the
+        # 4.x form raised AttributeError immediately, which is the good case --
+        # silently embedding the wrong thing would give a gate that returns
+        # plausible numbers and discriminates nothing.
+        if not hasattr(feats, "norm"):
+            for attr in ("image_embeds", "pooler_output"):
+                if hasattr(feats, attr):
+                    feats = getattr(feats, attr)
+                    break
+            else:
+                raise TypeError(f"cannot get an embedding tensor from {type(feats).__name__}")
+
         return feats / feats.norm(dim=-1, keepdim=True)
 
     def similarity(self, a, b) -> float:
