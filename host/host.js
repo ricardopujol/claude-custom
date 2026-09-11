@@ -31,6 +31,8 @@ const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { parsePermissionMode, MODES } = require('./mode');
+const { buildProviderEnv, describeProvider } = require('./providers');
+const { createCooldowns } = require('./cooldowns');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -99,6 +101,21 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
+const cooldowns = createCooldowns({ store });
+
+// Provider is fixed at spawn: the pty environment cannot change under a running
+// process, so switching backend means a new session rather than a hot swap.
+const providerConfig = store.read('provider', { provider: 'claude-max' });
+const provider = describeProvider(providerConfig);
+let providerEnv = {};
+try {
+  providerEnv = buildProviderEnv(providerConfig);
+} catch (err) {
+  // Refuse to half-apply: running against Anthropic while the UI claims
+  // OpenRouter would put spend somewhere unexpected.
+  console.log('[host] provider config invalid, using default:', err.message);
+}
+console.log('[host] provider      :', provider.label, provider.metered ? '(metered)' : '(subscription)');
 const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent, state, { portraitsDir: PORTRAITS_DIR }) });
 
 // Generated once per project folder and reused by every context window on it.
@@ -122,6 +139,10 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+    }
+    if (ev.event === 'SubagentStop') {
+      const finished = mood.stack()[mood.stack().length - 1];
+      if (finished) cooldowns.finished(finished);
     }
     mood.handle(ev);
     processes.handle(ev);
@@ -175,6 +196,7 @@ const term = pty.spawn(CLAUDE_BIN, ARGS, {
     COLORTERM: 'truecolor',
     // Marks this session as harness-hosted; the hook bridge keys off it later.
     CLAUDE_CUSTOM_SESSION: '1',
+    ...providerEnv,
   },
 });
 
@@ -230,6 +252,8 @@ const moodTimer = setInterval(() => {
   if (processes.list().length) {
     broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
   }
+  const cooling = cooldowns.list();
+  if (cooling.length) broadcastControl({ type: 'cooldowns', cooldowns: cooling });
 }, 1000);
 moodTimer.unref();
 
@@ -275,6 +299,8 @@ wss.on('connection', (ws) => {
     party: mood.stack(),
     mode: permissionMode,
     modes: MODES,
+    provider,
+    cooldowns: cooldowns.list(),
   });
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
