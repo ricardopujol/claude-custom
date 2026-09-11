@@ -344,6 +344,18 @@ def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
     return ", ".join([subject, cue, palette, style["core"]])
 
 
+def build_state_prompt(identity: dict, state: str) -> str:
+    """Prompt for an img2img STATE pass -- expression only.
+
+    Deliberately omits the appearance. The base image already carries the face;
+    restating it puts ~50 tokens of neutral description in competition with one
+    expression clause, and the expression loses. Measured: at denoise 0.45 and
+    again at 0.62, all four states came back with the same neutral face.
+    """
+    cue = _STATE_CUES.get(state, _STATE_CUES["working"])
+    return f"{cue}, same character, same framing"
+
+
 def build_style_prompt(style: dict | None = None, palette: str | None = None) -> str:
     """The shared art direction, plus the agent's palette.
 

@@ -23,6 +23,7 @@ from prompts import (
     STATES,
     appearance_for,
     build_prompt,
+    build_state_prompt,
     derive_identity,
     load_appearances,
     build_style_prompt,
@@ -164,6 +165,10 @@ def main() -> int:
     ap.add_argument("--lightning", action="store_true", help="few-step LoRA (worse adherence)")
     ap.add_argument("--guidance", type=float, default=6.0)
     ap.add_argument("--steps", type=int, default=30)
+    ap.add_argument("--describe-appearance", action="store_true",
+                    help="restate the full appearance in the state prompt (measured WORSE: "
+                         "the description drowns the expression cue and every state comes "
+                         "out neutral)")
     args = ap.parse_args()
 
     import torch
@@ -185,7 +190,9 @@ def main() -> int:
 
     report = {}
     for state in STATES:
-        prompt = build_prompt(identity, state, style=style)
+        prompt = (build_prompt(identity, state, style=style)
+                  if args.describe_appearance
+                  else build_state_prompt(identity, state))
         style_prompt = build_style_prompt(style, resolve_palette(identity))
         seed = agent_seed(identity["agent"]) + STATES.index(state) * 1000
 

@@ -384,3 +384,35 @@ def test_subject_prompt_stays_short_despite_the_core(tmp_path):
                            load_appearances(f))
     for state in STATES:
         assert len(build_prompt(ident, state, style=style)) <= 340
+
+
+def test_state_prompt_is_dominated_by_the_expression(tmp_path):
+    # In img2img the BASE IMAGE supplies the identity -- that is the entire
+    # point of conditioning on it. Re-describing the person makes ~50 tokens of
+    # neutral-face description compete with one expression clause, which is why
+    # all four states came out neutral and why raising denoise did not help:
+    # more denoise means MORE of the neutral description, not less.
+    from prompts import build_state_prompt
+
+    f = tmp_path / "appearances.yaml"
+    f.write_text(APPEARANCE_YAML, encoding="utf-8")
+    ident = appearance_for(
+        derive_identity(parse_agent_file(write(tmp_path, "code-reviewer", MIGUEL))),
+        load_appearances(f),
+    )
+    p = build_state_prompt(ident, "happy")
+    assert "smile" in p.lower()
+    # The appearance must NOT be restated; it is already in the image.
+    assert "wire glasses" not in p
+    assert "salt-and-pepper" not in p
+
+
+def test_state_prompts_differ_sharply_between_states(tmp_path):
+    from prompts import build_state_prompt
+
+    ident = {"agent": "x", "role": "x", "color": "blue"}
+    prompts = {s: build_state_prompt(ident, s) for s in STATES}
+    assert len(set(prompts.values())) == len(STATES)
+    # Each should be short: a long one reintroduces the competition problem.
+    for s, p in prompts.items():
+        assert len(p) <= 160, f"{s} prompt is {len(p)} chars"
