@@ -103,10 +103,13 @@ def test_prompt_contains_state_specific_cue(state, tmp_path):
     assert prompts[state]
 
 
-def test_prompt_asks_for_an_illustrated_bust(tmp_path):
+def test_default_art_direction_is_an_illustrated_bust():
     # Decision 8: stylized illustrated bust, not pixel art and not flat vector.
-    p = build_prompt(derive_identity(parse_agent_file(write(tmp_path, "code-reviewer", MIGUEL))), "working")
-    lowered = p.lower()
+    # This now lives in the shared style prompt, which is where it belongs --
+    # it is a property of the roster, not of any one agent.
+    from prompts import build_style_prompt
+
+    lowered = build_style_prompt().lower()
     assert "bust" in lowered
     assert "illustrat" in lowered
 
@@ -227,3 +230,107 @@ def test_no_doubled_article_when_appearance_starts_with_one(tmp_path):
     assert "a a " not in p, p
     assert "an an " not in p
     assert "composed man with wire glasses" in p
+
+
+# --- shared art direction -----------------------------------------------------
+
+from prompts import DEFAULT_STYLE, build_style_prompt, load_style, style_conflicts
+
+
+STYLE_YAML = """\
+_style:
+  art: "flat vector illustration, bold clean shapes"
+  shot: "tight head and shoulders, three-quarter view"
+  lighting: "even studio lighting"
+  background: "plain slate background"
+
+code-reviewer:
+  appearance: "a composed man with wire glasses"
+logic-reviewer:
+  appearance: "a gaunt young man with a severe undercut"
+"""
+
+
+def test_style_defaults_exist_without_configuration():
+    for key in ("art", "shot", "lighting", "background"):
+        assert DEFAULT_STYLE[key]
+
+
+def test_style_block_is_read_from_the_same_file(tmp_path):
+    f = tmp_path / "appearances.yaml"
+    f.write_text(STYLE_YAML, encoding="utf-8")
+    style = load_style(f)
+    assert style["art"] == "flat vector illustration, bold clean shapes"
+    assert style["background"] == "plain slate background"
+
+
+def test_partial_style_falls_back_per_key(tmp_path):
+    f = tmp_path / "appearances.yaml"
+    f.write_text('_style:\n  art: "woodcut print"\n', encoding="utf-8")
+    style = load_style(f)
+    assert style["art"] == "woodcut print"
+    assert style["shot"] == DEFAULT_STYLE["shot"]
+
+
+def test_the_style_key_is_not_treated_as_an_agent(tmp_path):
+    # `_style` sits alongside agent entries; leaking it into the roster would
+    # try to generate a portrait of an agent called "_style".
+    f = tmp_path / "appearances.yaml"
+    f.write_text(STYLE_YAML, encoding="utf-8")
+    assert "_style" not in load_appearances(f)
+
+
+def test_style_prompt_is_identical_regardless_of_agent(tmp_path):
+    # The whole point: 161 different subjects, ONE art direction. The style is a
+    # pure function of the style block, so no agent can perturb it.
+    f = tmp_path / "appearances.yaml"
+    f.write_text(STYLE_YAML, encoding="utf-8")
+    style = load_style(f)
+    assert build_style_prompt(style) == build_style_prompt(style)
+    assert "flat vector illustration" in build_style_prompt(style)
+    assert "three-quarter view" in build_style_prompt(style)
+
+
+def test_subject_prompt_carries_no_art_direction(tmp_path):
+    # Style goes to the SECOND text encoder. Leaving it in the subject prompt is
+    # what pushed the combined text to 99 tokens against a 77 limit, silently
+    # truncating the art direction by a different amount for every agent.
+    f = tmp_path / "appearances.yaml"
+    f.write_text(STYLE_YAML, encoding="utf-8")
+    style = load_style(f)
+    ident = appearance_for({"agent": "code-reviewer", "role": "reviewer", "color": "blue"},
+                           load_appearances(f))
+    p = build_prompt(ident, "working", style=style)
+    assert "flat vector illustration" not in p
+    assert "three-quarter view" not in p
+
+
+def test_both_prompts_stay_within_the_clip_window(tmp_path):
+    # Hard limit is 77 tokens per encoder. Chars/4 is the usual approximation,
+    # so this is a proxy -- check.py measures the real thing with the tokenizer.
+    f = tmp_path / "appearances.yaml"
+    f.write_text(STYLE_YAML, encoding="utf-8")
+    style = load_style(f)
+    looks = load_appearances(f)
+    ident = appearance_for({"agent": "code-reviewer", "role": "reviewer", "color": "blue"}, looks)
+    for state in STATES:
+        assert len(build_prompt(ident, state, style=style)) <= 300
+    assert len(build_style_prompt(style)) <= 300
+
+
+def test_lint_flags_framing_words_in_an_appearance():
+    # Framing and art style are global. An appearance saying "full body" or
+    # "watercolor" silently fights the shared block, and the result reads as
+    # "the model is inconsistent" rather than "this one entry overrode it".
+    assert style_conflicts("a tall woman, full body, watercolor painting")
+    assert "full body" in " ".join(style_conflicts("a tall woman, full body")).lower()
+
+
+def test_lint_passes_a_clean_appearance():
+    assert style_conflicts("a composed man in his fifties, round wire glasses, charcoal cardigan") == []
+
+
+def test_lint_flags_an_expression_because_states_own_that():
+    # The forge appends the expression per state; baking one in here makes all
+    # four states show the same face.
+    assert style_conflicts("a cheerful smiling man with a beard")

@@ -24,6 +24,8 @@ from prompts import (
     build_prompt,
     derive_identity,
     load_appearances,
+    build_style_prompt,
+    load_style,
     negative_prompt,
     parse_agent_file,
 )
@@ -84,15 +86,17 @@ def agent_seed(agent: str) -> int:
     return h
 
 
-def generate_candidates(pipe, identity: dict, count: int, out_dir: Path, steps: int) -> list[Path]:
+def generate_candidates(pipe, identity: dict, count: int, out_dir: Path, steps: int, style: dict | None = None) -> list[Path]:
     import torch
 
-    prompt = build_prompt(identity, "working")
+    prompt = build_prompt(identity, "working", style=style)
+    style_prompt = build_style_prompt(style)
     negative = negative_prompt()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     (out_dir / "prompt.json").write_text(
-        json.dumps({"identity": identity, "prompt": prompt, "negative": negative}, indent=2),
+        json.dumps({"identity": identity, "prompt": prompt, "prompt_2": style_prompt,
+                    "negative": negative}, indent=2),
         encoding="utf-8",
     )
 
@@ -102,7 +106,11 @@ def generate_candidates(pipe, identity: dict, count: int, out_dir: Path, steps: 
         seed = base + i
         image = pipe(
             prompt=prompt,
+            # Second text encoder carries the shared art direction, so a long
+            # appearance can never truncate it.
+            prompt_2=style_prompt,
             negative_prompt=negative,
+            negative_prompt_2=negative,
             num_inference_steps=steps,
             guidance_scale=LIGHTNING_GUIDANCE,
             width=1024,
@@ -128,7 +136,9 @@ def main() -> int:
     args = ap.parse_args()
 
     appearances = load_appearances(APPEARANCES_FILE)
+    style = load_style(APPEARANCES_FILE)
     print(f"hand-written appearances: {len(appearances)}", flush=True)
+    print(f"art direction: {style['art']}", flush=True)
 
     identities = []
     for name in args.agents:
@@ -145,9 +155,9 @@ def main() -> int:
     for identity in identities:
         source = "hand-written" if identity.get("appearance") else "derived from role"
         print(f"\n{identity['agent']} ({identity['person'] or 'unnamed'}) [{source}]", flush=True)
-        print(f"  {build_prompt(identity, 'working')[:120]}...", flush=True)
+        print(f"  {build_prompt(identity, 'working', style=style)[:120]}...", flush=True)
         generate_candidates(
-            pipe, identity, args.candidates, out_root / identity["agent"] / "candidates", args.steps
+            pipe, identity, args.candidates, out_root / identity["agent"] / "candidates", args.steps, style
         )
 
     print(f"\ncandidates written under {out_root.resolve()}")

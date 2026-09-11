@@ -153,6 +153,66 @@ def derive_identity(agent: dict) -> dict:
     }
 
 
+# ONE art direction for all 161 agents. Per-agent entries describe the SUBJECT;
+# everything about how it is drawn, framed and lit lives here so it cannot drift
+# between agents. Tunable once, in the `_style:` block of appearances.yaml.
+DEFAULT_STYLE = {
+    "art": "painterly digital illustration, visible brush texture, stylised features",
+    "shot": "head and shoulders bust, centered, facing viewer, eye level",
+    "lighting": "soft rim lighting from the upper left",
+    "background": "plain dark charcoal background, no scenery",
+}
+
+STYLE_KEY = "_style"
+
+# Words that belong to the SHARED art direction, not to one agent. An entry
+# containing them silently fights the global block, and the result reads as
+# "the model is inconsistent" rather than "this one entry overrode it".
+_CONFLICT_TERMS = {
+    "framing": ("full body", "full-body", "close-up", "closeup", "wide shot",
+                "from behind", "profile view", "background", "landscape"),
+    "art style": ("watercolor", "watercolour", "oil painting", "pixel art",
+                  "3d render", "photorealistic", "photograph", "anime", "sketch",
+                  "vector", "line art"),
+    "expression": ("smiling", "smile", "grinning", "frowning", "angry", "sad",
+                   "laughing", "crying", "cheerful", "worried", "asleep",
+                   "eyes closed"),
+}
+
+
+def load_style(path: str | Path) -> dict:
+    """Read the shared `_style:` block, filling any missing key from defaults."""
+    style = dict(DEFAULT_STYLE)
+    path = Path(path)
+    if not path.exists():
+        return style
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
+    except yaml.YAMLError:
+        return style
+    if isinstance(loaded, dict) and isinstance(loaded.get(STYLE_KEY), dict):
+        for key, value in loaded[STYLE_KEY].items():
+            if key in style and str(value).strip():
+                style[key] = str(value).strip()
+    return style
+
+
+def style_conflicts(appearance: str) -> list[str]:
+    """Terms in a per-agent look that belong to the global art direction.
+
+    A lint, not an error: the text still generates. It exists because these
+    conflicts are invisible in the output -- you see an inconsistent roster, not
+    the one entry that caused it.
+    """
+    lowered = f" {str(appearance or '').lower()} "
+    found = []
+    for category, terms in _CONFLICT_TERMS.items():
+        for term in terms:
+            if term in lowered:
+                found.append(f"{category}: '{term}'")
+    return found
+
+
 def load_appearances(path: str | Path) -> dict:
     """Load hand-written looks. Optional, and never fatal.
 
@@ -172,6 +232,10 @@ def load_appearances(path: str | Path) -> dict:
 
     out = {}
     for agent, value in loaded.items():
+        # `_style` shares the file with agent entries; leaking it into the
+        # roster would try to generate a portrait of an agent called "_style".
+        if str(agent) == STYLE_KEY:
+            continue
         if isinstance(value, str):
             out[str(agent)] = {"appearance": value}
         elif isinstance(value, dict):
@@ -200,7 +264,8 @@ def appearance_for(identity: dict, appearances: dict) -> dict:
     return merged
 
 
-def build_prompt(identity: dict, state: str) -> str:
+def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
+    style = {**DEFAULT_STYLE, **(style or {})}
     cue = _STATE_CUES.get(state, _STATE_CUES["working"])
     # A hand-written palette wins over the frontmatter colour: it was chosen for
     # how the portrait should look, not for how the agent is tagged.
@@ -226,16 +291,30 @@ def build_prompt(identity: dict, state: str) -> str:
     if not re.match(r"(?i)^(a|an|the)\s", subject):
         subject = f"a {subject}"
 
+    # SUBJECT ONLY. The shared art direction goes to SDXL's second text encoder
+    # via build_style_prompt().
+    #
+    # Measured with the real CLIP tokenizer: subject + state + palette + style
+    # in one string came to 99 tokens against a hard limit of 77. Because the
+    # style sat last, truncation ate THE ART DIRECTION -- by a different amount
+    # for each agent, which is precisely how a roster stops looking like a set.
+    # Tightening cannot rescue it: the style block alone is ~44 tokens, leaving
+    # ~15 for a description. SDXL has two text encoders, each with its own 77
+    # budget, so the two concerns get one each and neither can truncate the
+    # other.
+    return ", ".join([subject, cue, palette])
+
+
+def build_style_prompt(style: dict | None = None) -> str:
+    """The shared art direction, byte-identical for every agent.
+
+    Fed to SDXL's second text encoder (`prompt_2`) so a long appearance can
+    never push it out of the context window.
+    """
+    style = {**DEFAULT_STYLE, **(style or {})}
     return ", ".join(
-        [
-            "stylized illustrated character bust portrait",
-            subject,
-            cue,
-            palette,
-            "painterly digital illustration, expressive stylised features",
-            "head and shoulders only, centered, facing viewer",
-            "plain dark background, soft rim lighting, consistent character design",
-        ]
+        [style["art"], style["shot"], style["lighting"], style["background"],
+         "consistent character design"]
     )
 
 

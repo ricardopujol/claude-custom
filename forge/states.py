@@ -19,9 +19,21 @@ import argparse
 import json
 from pathlib import Path
 
-from prompts import STATES, build_prompt, derive_identity, negative_prompt, parse_agent_file
+from prompts import (
+    STATES,
+    appearance_for,
+    build_prompt,
+    derive_identity,
+    load_appearances,
+    build_style_prompt,
+    load_style,
+    negative_prompt,
+    parse_agent_file,
+)
 from generate import (
     AGENTS_DIR,
+    APPEARANCES_FILE,
+    PORTRAITS_ROOT,
     BASE_MODEL,
     LIGHTNING_GUIDANCE,
     LIGHTNING_LORA,
@@ -118,7 +130,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True)
     ap.add_argument("--base", required=True, help="chosen candidate PNG")
-    ap.add_argument("--out", default="outputs")
+    ap.add_argument("--out", default=str(PORTRAITS_ROOT))
     ap.add_argument("--denoise", type=float, default=DEFAULT_DENOISE)
     ap.add_argument("--threshold", type=float, default=IDENTITY_THRESHOLD)
     ap.add_argument("--offline", action="store_true")
@@ -127,7 +139,11 @@ def main() -> int:
     import torch
     from PIL import Image
 
-    identity = derive_identity(parse_agent_file(AGENTS_DIR / f"{args.agent}.md"))
+    appearances = load_appearances(APPEARANCES_FILE)
+    style = load_style(APPEARANCES_FILE)
+    identity = appearance_for(
+        derive_identity(parse_agent_file(AGENTS_DIR / f"{args.agent}.md")), appearances
+    )
     base_image = Image.open(args.base).convert("RGB")
 
     pipe = load_img2img(offline=args.offline)
@@ -139,13 +155,16 @@ def main() -> int:
 
     report = {}
     for state in STATES:
-        prompt = build_prompt(identity, state)
+        prompt = build_prompt(identity, state, style=style)
+        style_prompt = build_style_prompt(style)
         seed = agent_seed(identity["agent"]) + STATES.index(state) * 1000
 
         for attempt in range(MAX_RETRIES):
             image = pipe(
                 prompt=prompt,
+                prompt_2=style_prompt,
                 negative_prompt=negative_prompt(),
+                negative_prompt_2=negative_prompt(),
                 image=base_image,
                 strength=args.denoise,
                 num_inference_steps=max(8, int(8 / max(args.denoise, 0.1))),
