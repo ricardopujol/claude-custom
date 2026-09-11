@@ -22,6 +22,10 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs } = require('./settings-writer');
 const { createHookBridge } = require('./hook-bridge');
+const { createTerminalState } = require('./terminal-state');
+const { createMoodMachine } = require('./mood-machine');
+const { resolveTheme } = require('./themes');
+const { portraitFor } = require('./portraits');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -77,13 +81,19 @@ if (!helperExists) {
 // The bridge must be listening BEFORE claude starts, otherwise every matched
 // tool call pays the helper's full connect timeout waiting for a listener that
 // never appears -- strictly worse than not hooking at all.
+const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, '..', 'registry');
+const PORTRAITS_DIR = process.env.CLAUDE_CUSTOM_PORTRAITS || path.join(__dirname, '..', 'portraits');
+const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
+console.log('[host] theme          :', theme.name);
+
+const mood = createMoodMachine();
+const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent, state, { portraitsDir: PORTRAITS_DIR }) });
+
 let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
   hookBridge.on('event', (ev) => {
-    // Step 3 feeds these to the mood state machine; for now they are observable
-    // so the wiring can be verified end to end.
-    console.log(`[hook] ${ev.event}`, JSON.stringify(ev.payload).slice(0, 120));
+    mood.handle(ev);
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
   hookBridge.on('error', e => console.log('[hook!] bridge error:', e.message));
@@ -142,11 +152,31 @@ console.log('[host] pty pid       :', term.pid);
 const wss = new WebSocketServer({ host: '127.0.0.1', port: PORT });
 const clients = new Set();
 
+// Authoritative screen, so a GUI attaching later gets the CURRENT state rather
+// than nothing until the TUI happens to repaint.
+const termState = createTerminalState({ cols: 120, rows: 30 });
+
+// Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
+// Distinguishing by content would be wrong -- terminal output can contain
+// anything, including a leading '{'.
+const sendControl = (ws, msg) => {
+  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+};
+const broadcastControl = msg => { for (const ws of clients) sendControl(ws, msg); };
+
 term.onData((data) => {
+  termState.write(data);
+  const frame = Buffer.from(data, 'utf8');
   for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) ws.send(data);
+    if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
   }
 });
+
+// The machine is deliberately passive: it schedules nothing itself, so the host
+// owns the clock and the transitions stay reproducible in tests.
+mood.on('change', ({ agent, state }) => broadcastControl({ type: 'mood', ...describe(agent, state) }));
+const moodTimer = setInterval(() => mood.tick(), 1000);
+moodTimer.unref();
 
 term.onExit(({ exitCode, signal }) => {
   console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
@@ -164,6 +194,19 @@ wss.on('connection', (ws) => {
   clients.add(ws);
   console.log(`[host] client attached (${clients.size} total)`);
 
+  // Attach handshake: everything the view needs to draw itself, then the
+  // current screen. The view holds no session state of its own, so this is the
+  // only place it learns the theme, the roster or what is on the terminal.
+  sendControl(ws, {
+    type: 'hello',
+    cwd: CWD,
+    theme,
+    hooks: helperExists,
+    roster: mood.roster().map(r => describe(r.agent, r.state)),
+  });
+  const replay = termState.serialize();
+  if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
+
   ws.on('message', (raw, isBinary) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
@@ -173,6 +216,7 @@ wss.on('connection', (ws) => {
           const msg = JSON.parse(text);
           if (msg.type === 'resize') {
             term.resize(msg.cols, msg.rows);
+            termState.resize(msg.cols, msg.rows);
             return;
           }
           if (msg.type === 'input') {

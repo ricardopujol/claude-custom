@@ -1,6 +1,7 @@
 # claude-custom — Design Document
 
-**Status:** Step 0 walking skeleton executed — terminal fidelity verified, risk #1 retired
+**Status:** Steps 0–3 built and verified. Risks #1, #2 and #4 retired.
+Remaining: forge (steps 4 & 6) and Remote Control confirmation.
 **Date:** 2026-09-11
 **Location:** `C:\Users\ricar\VibeCode\claude-custom`
 
@@ -261,13 +262,31 @@ Keyed on agent filename. **Zero edits to agent `.md` files** — which matters b
 
 ## Build order — riskiest first
 
-0. **Walking skeleton** — pty + xterm.js + real `claude` in a bare window. Nothing else. Prove or kill fidelity. *(1–2 days)*
-1. Host + detach/reattach
-2. Hook bridge + native helper + mood machine
-3. Theming
-4. Forge spike, 2 agents
-5. Chrome + portraits
-6. Forge batch
+0. ~~**Walking skeleton**~~ — **DONE.** Fidelity proven; see *Verification items*.
+1. ~~Host + detach/reattach~~ — **DONE.** `terminal-state.js` keeps the authoritative screen via `@xterm/headless` + serialize addon, so a late attach is handed the current screen rather than nothing. Verified in `verify/probe-protocol.js`.
+2. ~~Hook bridge + native helper + mood machine~~ — **DONE.** Native AOT helper, named-pipe bridge, deterministic mood machine. Latency measured.
+3. ~~Theming~~ — **DONE.** Central registry in `registry/`, keyed by project path, applied to both terminal palette and GUI chrome.
+4. Forge spike, 2 agents — **NOT STARTED.** Needs CUDA, ComfyUI and multi-GB model downloads, plus the one mandatory human step (hand-picking a base bust per agent). Genuinely a separate track.
+5. ~~Chrome + portraits~~ — **PARTLY DONE.** Reactive agent roster with theme-aware state styling and stable per-agent placeholders. Real portraits await step 4.
+6. Forge batch — **NOT STARTED.**
+
+### What exists now
+
+| Module | Role |
+|---|---|
+| `host/host.js` | pty + WebSocket + wiring |
+| `host/settings-writer.js` | generates the `--settings` file; argv construction |
+| `host/hook-bridge.js` | named-pipe listener, newline-framed, survives junk |
+| `host/mood-machine.js` | deterministic state machine, injected clock |
+| `host/terminal-state.js` | authoritative screen for detach/reattach replay |
+| `host/themes.js` | project→theme resolution with defaults and font-stack enforcement |
+| `host/portraits.js` | convention-based lookup + stable placeholders |
+| `helper/hook-helper.cs` | Native AOT hook helper |
+
+**Attach protocol.** BINARY frames are raw pty bytes; TEXT frames are control
+JSON (`hello`, `mood`, `exit`). Deliberately *not* content-sniffed — terminal
+output can contain anything, including a leading `{`, which is what the spike's
+`startsWith('{')` check would have mis-parsed.
 
 **Honest effort:** several weeks of evenings, not a weekend.
 

@@ -84,6 +84,58 @@
     #log .k { color: var(--accent); }
     #log .b { color: var(--text); }
     #log .n { color: var(--dim); }
+
+    /* --- agent roster ------------------------------------------------------
+       Reactive, not a gallery: an agent appears when it first runs and its
+       portrait reflects the mood machine's state. */
+    #roster {
+      width: 180px; flex: 0 0 180px;
+      background: var(--chrome);
+      border-left: 1px solid var(--border);
+      display: flex; flex-direction: column;
+    }
+    #roster h2 {
+      margin: 0; padding: 10px 12px;
+      font-size: 11px; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--dim);
+      border-bottom: 1px solid var(--border);
+    }
+    #agents { flex: 1; overflow-y: auto; padding: 8px; }
+    #agents .empty { color: var(--dim); font-size: 11px; padding: 8px; line-height: 1.5; }
+
+    .agent {
+      display: flex; align-items: center; gap: 9px;
+      padding: 6px; border-radius: 6px; margin-bottom: 4px;
+      transition: background .25s, opacity .35s;
+    }
+    .agent .face {
+      width: 34px; height: 34px; flex: 0 0 34px;
+      border-radius: 7px; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; letter-spacing: .04em;
+      color: #0e1017;
+      border: 1px solid rgba(255,255,255,.10);
+    }
+    .agent .face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .agent .meta { min-width: 0; }
+    .agent .name {
+      font-size: 11.5px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .agent .state { font-size: 10px; color: var(--dim); text-transform: capitalize; }
+
+    /* State is carried by opacity and a ring, so it still reads when the
+       portrait itself is a placeholder. */
+    .agent[data-state="sleeping"] { opacity: .42; }
+    .agent[data-state="working"]  { background: rgba(255,255,255,.05); }
+    .agent[data-state="working"] .face { box-shadow: 0 0 0 2px var(--accent); }
+    .agent[data-state="happy"]    { background: rgba(95,176,122,.14); }
+    .agent[data-state="happy"] .face { box-shadow: 0 0 0 2px var(--ok); }
+    .agent[data-state="stressed"] { background: rgba(204,95,95,.14); }
+    .agent[data-state="stressed"] .face { box-shadow: 0 0 0 2px var(--bad); }
+    .agent[data-state="working"] .state { color: var(--accent); }
+    .agent[data-state="happy"] .state { color: var(--ok); }
+    .agent[data-state="stressed"] .state { color: var(--bad); }
   </style>
 </head>
 <body>
@@ -97,6 +149,10 @@
     </header>
     <div id="body">
       <div id="termwrap"><div id="term"></div></div>
+      <aside id="roster">
+        <h2>Agents</h2>
+        <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
+      </aside>
       <aside id="diag">
         <h2>Key diagnostics</h2>
         <div id="checks"></div>

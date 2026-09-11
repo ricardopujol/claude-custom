@@ -110,6 +110,90 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// --- theme ------------------------------------------------------------------
+// The host owns theme resolution; the view just applies what it is handed, so
+// the registry stays the single source of truth.
+function applyTheme(theme) {
+  if (!theme) return;
+  term.options.theme = theme.terminal;
+  if (theme.font) {
+    if (theme.font.family) term.options.fontFamily = theme.font.family;
+    if (theme.font.size) term.options.fontSize = theme.font.size;
+    if (theme.font.lineHeight) term.options.lineHeight = theme.font.lineHeight;
+  }
+  const c = theme.chrome || {};
+  const root = document.documentElement.style;
+  for (const [key, cssVar] of Object.entries({
+    bg: '--bg', panel: '--chrome', border: '--border', text: '--text',
+    dim: '--dim', accent: '--accent', ok: '--ok', bad: '--bad',
+  })) {
+    if (c[key]) root.setProperty(cssVar, c[key]);
+  }
+  // A font change alters cell size, so the pty must be told the new geometry or
+  // Ink's layout corrupts.
+  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+}
+
+// --- agent roster -----------------------------------------------------------
+const agentsEl = document.getElementById('agents');
+const roster = new Map();
+
+function faceHtml(portrait) {
+  if (portrait && portrait.kind === 'file') {
+    return `<img src="file:///${portrait.path.replace(/\\/g, '/')}" alt="" />`;
+  }
+  const p = portrait || { initials: '??', hue: 210 };
+  // Placeholder: stable per-agent hue so an agent stays recognisable until a
+  // generated portrait exists for it.
+  return `<span style="width:100%;height:100%;display:flex;align-items:center;` +
+         `justify-content:center;background:hsl(${p.hue} 42% 62%)">${p.initials}</span>`;
+}
+
+function renderRoster() {
+  if (roster.size === 0) {
+    agentsEl.innerHTML = '<div class="empty">No agents yet — portraits light up when one runs.</div>';
+    return;
+  }
+  // Active agents first, then alphabetical, so the thing you care about is at
+  // the top without the list reshuffling on every tick.
+  const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };
+  const rows = [...roster.values()].sort((a, b) =>
+    (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
+
+  agentsEl.innerHTML = rows.map(r =>
+    `<div class="agent" data-state="${r.state}">` +
+      `<div class="face">${faceHtml(r.portrait)}</div>` +
+      `<div class="meta"><div class="name" title="${r.agent}">${r.agent}</div>` +
+      `<div class="state">${r.state}</div></div>` +
+    `</div>`
+  ).join('');
+}
+
+function handleControl(msg) {
+  if (msg.type === 'hello') {
+    // The host sends `hello` immediately before replaying the current screen.
+    // Without this reset, reattaching after a detach appends the replay to what
+    // is already on screen and the session appears twice.
+    term.reset();
+    document.getElementById('cwd').textContent = msg.cwd || '';
+    applyTheme(msg.theme);
+    roster.clear();
+    for (const r of msg.roster || []) roster.set(r.agent, r);
+    renderRoster();
+    if (!msg.hooks) console.warn('[renderer] host reports no hook helper — moods will not update');
+    return;
+  }
+  if (msg.type === 'mood') {
+    roster.set(msg.agent, msg);
+    renderRoster();
+    return;
+  }
+  if (msg.type === 'exit') {
+    term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    return;
+  }
+}
+
 // --- transport --------------------------------------------------------------
 const dot = document.getElementById('dot');
 let ws = null;
@@ -124,12 +208,19 @@ function connect() {
     sendResize();
   };
 
+  // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
+  // Sniffing content would be wrong -- terminal output can contain anything,
+  // including a leading '{'.
+  ws.binaryType = 'arraybuffer';
+
   ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string' && ev.data.startsWith('{"type":"exit"')) {
-      term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    if (typeof ev.data !== 'string') {
+      term.write(new Uint8Array(ev.data));
       return;
     }
-    term.write(ev.data);
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    handleControl(msg);
   };
 
   ws.onclose = () => {
