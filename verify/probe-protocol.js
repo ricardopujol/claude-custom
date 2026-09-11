@@ -66,6 +66,17 @@ const check = (label, ok, detail) => {
   check('hello reports hook availability', !!hello && typeof hello.hooks === 'boolean',
     hello && `hooks=${hello.hooks}`);
 
+  check('hello carries per-project background art', !!(hello && hello.background),
+    hello && require('path').basename(hello.background));
+  check('background file exists on disk',
+    !!(hello && hello.background && require('fs').existsSync(hello.background)));
+  check('background is dimmed so text stays readable',
+    !!(hello && /opacity="0\.9"/.test(require('fs').readFileSync(hello.background, 'utf8'))));
+  check('hello carries token usage', !!(hello && hello.usage && hello.usage.project),
+    hello && hello.usage && `project ${hello.usage.project.total} over ${hello.usage.project.sessions} session(s)`);
+  check('project usage exceeds this session, i.e. spans the folder',
+    !!(hello && hello.usage.project.total >= hello.usage.session.total));
+
   const first = screen(a.term);
   check('TUI rendered through the binary channel', first.some(l => l.includes('❯')),
     `${first.length} rows`);

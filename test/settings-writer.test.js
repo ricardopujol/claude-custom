@@ -55,12 +55,21 @@ test('SubagentStop is hooked so agents can return to sleeping', () => {
   assert.ok(Array.isArray(s.hooks.SubagentStop) && s.hooks.SubagentStop.length > 0);
 });
 
-test('hooks only the three events the mood machine consumes', () => {
+test('hooks only the events the harness actually consumes', () => {
   const s = buildHarnessSettings(opts);
   assert.deepStrictEqual(
     Object.keys(s.hooks).sort(),
-    ['PostToolUse', 'PreToolUse', 'SubagentStop']
+    ['PostToolUse', 'PreToolUse', 'SessionStart', 'SubagentStop']
   );
+});
+
+test('SessionStart is hooked so the host learns the session id', () => {
+  // Token spend is read from the session's own transcript file, which is named
+  // by session id. Without this the host can only report the project total.
+  // It fires once per session, so it costs nothing in the tool-call path.
+  const s = buildHarnessSettings(opts);
+  assert.ok(Array.isArray(s.hooks.SessionStart) && s.hooks.SessionStart.length > 0);
+  assert.strictEqual(s.hooks.SessionStart[0].matcher, '');
 });
 
 test('every hook invokes the native helper with the pipe name', () => {

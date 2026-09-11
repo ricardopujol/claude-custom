@@ -26,6 +26,8 @@ const { createTerminalState } = require('./terminal-state');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
+const { readUsage } = require('./usage');
+const { backgroundFor } = require('./background');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -89,10 +91,28 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine();
 const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent, state, { portraitsDir: PORTRAITS_DIR }) });
 
+// Generated once per project folder and reused by every context window on it.
+const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
+const background = backgroundFor(CWD, { dir: BACKGROUNDS_DIR });
+console.log('[host] background     :', path.basename(background.path), background.created ? '(new)' : '(existing)');
+
+// The session id arrives on the SessionStart hook. Until it does, only the
+// project total is knowable -- readUsage handles that rather than blocking.
+let sessionId = null;
+let lastUsage = null;
+function currentUsage() {
+  lastUsage = readUsage({ cwd: CWD, sessionId });
+  return lastUsage;
+}
+
 let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
   hookBridge.on('event', (ev) => {
+    if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
+      sessionId = ev.payload.session_id;
+      console.log('[host] session id     :', sessionId);
+    }
     mood.handle(ev);
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
@@ -178,6 +198,17 @@ mood.on('change', ({ agent, state }) => broadcastControl({ type: 'mood', ...desc
 const moodTimer = setInterval(() => mood.tick(), 1000);
 moodTimer.unref();
 
+// Usage is re-read from the transcripts on a timer rather than tracked here:
+// the transcripts are authoritative, and they already account for spend this
+// harness never saw. Polled rather than watched because the file is appended to
+// constantly and only the total is displayed.
+const usageTimer = setInterval(() => {
+  const before = lastUsage && lastUsage.session.total;
+  const usage = currentUsage();
+  if (usage.session.total !== before) broadcastControl({ type: 'usage', usage });
+}, 5000);
+usageTimer.unref();
+
 term.onExit(({ exitCode, signal }) => {
   console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
   for (const ws of clients) {
@@ -202,6 +233,8 @@ wss.on('connection', (ws) => {
     cwd: CWD,
     theme,
     hooks: helperExists,
+    background: background.path,
+    usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
   });
   const replay = termState.serialize();

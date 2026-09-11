@@ -22,7 +22,37 @@
       font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
       overflow: hidden;
     }
-    #app { display: flex; flex-direction: column; height: 100%; }
+    #app { display: flex; flex-direction: column; height: 100%; position: relative; }
+
+    /* Per-project background art. Fixed and behind everything; the artwork is
+       already dimmed to 10% in the SVG itself, so nothing here needs to darken
+       it further and the palette stays the theme's. */
+    #bg {
+      position: fixed; inset: 0; z-index: 0;
+      background-size: cover; background-position: center;
+      pointer-events: none;
+    }
+    #app > * { position: relative; z-index: 1; }
+
+    /* The terminal and panels must NOT paint an opaque background or the art
+       behind them is invisible. Transparency here is what makes it a
+       background rather than a border decoration. */
+    body.has-bg #termwrap { background: transparent; }
+    body.has-bg header,
+    body.has-bg #roster,
+    body.has-bg #diag { background: color-mix(in srgb, var(--chrome) 72%, transparent); }
+    body.has-bg .xterm-viewport { background: transparent !important; }
+
+    /* --- token spend ------------------------------------------------------- */
+    #usage {
+      display: flex; align-items: center; gap: 14px;
+      font-size: 11px; color: var(--dim);
+      -webkit-app-region: no-drag;
+    }
+    #usage .grp { display: flex; align-items: baseline; gap: 5px; }
+    #usage .lbl { text-transform: uppercase; letter-spacing: .07em; font-size: 9.5px; opacity: .75; }
+    #usage .val { color: var(--text); font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
+    #usage .sub { opacity: .8; font-variant-numeric: tabular-nums; }
 
     header {
       display: flex; align-items: center; gap: 12px;
@@ -158,12 +188,14 @@
   </style>
 </head>
 <body>
+  <div id="bg"></div>
   <div id="app">
     <header>
       <span class="dot" id="dot"></span>
       <span class="title">claude-custom</span>
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
+      <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
     <div id="body">

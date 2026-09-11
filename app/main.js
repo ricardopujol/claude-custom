@@ -134,13 +134,23 @@ app.whenReady().then(async () => {
 
     setTimeout(async () => {
       try {
+        const fsMod = require('fs');
         const image = await win.webContents.capturePage();
-        require('fs').writeFileSync(outFile, image.toPNG());
-        console.log('[main] screenshot written:', outFile);
+        const png = image.toPNG();
+        if (!png || png.length === 0) throw new Error('capturePage returned an empty image');
+        fsMod.writeFileSync(outFile, png);
+        // Verify before exiting. app.exit() is a hard exit that has been
+        // observed truncating the file to zero bytes even after a synchronous
+        // write, and a 0-byte PNG reads as "the GUI rendered nothing" rather
+        // than as the write race it actually is.
+        const onDisk = fsMod.statSync(outFile).size;
+        if (onDisk !== png.length) throw new Error(`wrote ${png.length}B but file is ${onDisk}B`);
+        console.log(`[main] screenshot written: ${outFile} (${onDisk} bytes)`);
       } catch (err) {
         console.error('[main] screenshot failed:', err.message);
       }
-      app.exit(0);
+      // Let the filesystem settle before the hard exit.
+      setTimeout(() => app.exit(0), 400);
     }, waitMs);
   }
 

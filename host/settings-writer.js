@@ -47,6 +47,10 @@ function buildHarnessSettings({ helperPath, pipeName } = {}) {
       PreToolUse: [entry(PRE_TOOL_MATCHER, 'PreToolUse')],
       PostToolUse: [entry(POST_TOOL_MATCHER, 'PostToolUse')],
       SubagentStop: [entry('', 'SubagentStop')],
+      // Fires once per session, not per tool call, so it adds nothing to the
+      // critical path. It carries the session id, which is how the host finds
+      // this session's transcript to read token spend from.
+      SessionStart: [entry('', 'SessionStart')],
     },
   };
 }

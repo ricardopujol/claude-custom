@@ -48,10 +48,11 @@ term.open(document.getElementById('term'));
 
 // WebGL is a big perf win on heavy output but can fail on some drivers; the
 // canvas fallback is fine, so never let it take the app down.
+let webglAddon = null;
 try {
-  const webgl = new WebglAddon.WebglAddon();
-  webgl.onContextLoss(() => webgl.dispose());
-  term.loadAddon(webgl);
+  webglAddon = new WebglAddon.WebglAddon();
+  webglAddon.onContextLoss(() => webglAddon.dispose());
+  term.loadAddon(webglAddon);
 } catch (e) {
   console.warn('[renderer] WebGL addon unavailable, using fallback:', e.message);
 }
@@ -113,9 +114,31 @@ document.addEventListener('keydown', (e) => {
 // --- theme ------------------------------------------------------------------
 // The host owns theme resolution; the view just applies what it is handed, so
 // the registry stays the single source of truth.
+// When project art is showing, the terminal must let it through. xterm paints
+// an opaque background by default, which would reduce the art to a border.
+let backgroundUrl = null;
+
+// Fully transparent, NOT merely translucent. The SVG already bakes in the 90%
+// black dim that makes light text readable; having the terminal darken it a
+// second time stacks to ~4% visibility and the art disappears. One dimming
+// pass, applied where it is specified, in the image itself.
+const TERM_ALPHA = 0;
+
+function hexToRgba(hex, alpha) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 function applyTheme(theme) {
   if (!theme) return;
-  term.options.theme = theme.terminal;
+  const terminal = { ...theme.terminal };
+  if (backgroundUrl) {
+    terminal.background = hexToRgba(terminal.background, TERM_ALPHA);
+    term.options.allowTransparency = true;
+  }
+  term.options.theme = terminal;
   if (theme.font) {
     if (theme.font.family) term.options.fontFamily = theme.font.family;
     if (theme.font.size) term.options.fontSize = theme.font.size;
@@ -169,6 +192,62 @@ function renderRoster() {
   ).join('');
 }
 
+// --- token spend ------------------------------------------------------------
+const usageEl = document.getElementById('usage');
+
+// Compact, because this sits in a header: 1.2M / 984k / 512.
+function compact(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(n);
+}
+
+function renderUsage(usage) {
+  if (!usage) return;
+  const { session, project } = usage;
+
+  // Cache reads dominate the raw total -- they were ~99% of it when this was
+  // built -- so "fresh" (input + output) is shown alongside it. A single
+  // headline number here would read as runaway spend when almost all of it is
+  // cheap cache traffic.
+  const fresh = s => s.input + s.output;
+  const detail = s =>
+    `in ${s.input.toLocaleString()} · out ${s.output.toLocaleString()} · ` +
+    `cache write ${s.cacheWrite.toLocaleString()} · cache read ${s.cacheRead.toLocaleString()}`;
+
+  usageEl.innerHTML =
+    `<span class="grp" title="This session — ${detail(session)}">` +
+      `<span class="lbl">session</span>` +
+      `<span class="val">${compact(session.total)}</span>` +
+      `<span class="sub">(${compact(fresh(session))} fresh)</span>` +
+    `</span>` +
+    `<span class="grp" title="Every session on this folder — ${detail(project)}">` +
+      `<span class="lbl">project</span>` +
+      `<span class="val">${compact(project.total)}</span>` +
+      `<span class="sub">${project.sessions} session${project.sessions === 1 ? '' : 's'}</span>` +
+    `</span>`;
+}
+
+function applyBackground(filePath) {
+  if (!filePath) return;
+  backgroundUrl = 'file:///' + String(filePath).replace(/\\/g, '/');
+  document.getElementById('bg').style.backgroundImage = `url("${backgroundUrl}")`;
+  document.body.classList.add('has-bg');
+
+  // The WebGL renderer does not composite a transparent background correctly:
+  // cells carrying an explicit ANSI background render as opaque boxes, which
+  // turned the status line into a row of grey slabs. The canvas fallback
+  // handles transparency properly, and this terminal's output volume never
+  // needed WebGL anyway.
+  if (webglAddon) {
+    try { webglAddon.dispose(); } catch {}
+    webglAddon = null;
+    console.info('[renderer] WebGL disabled: incompatible with a transparent background');
+  }
+}
+
 function handleControl(msg) {
   if (msg.type === 'hello') {
     // The host sends `hello` immediately before replaying the current screen.
@@ -176,7 +255,11 @@ function handleControl(msg) {
     // is already on screen and the session appears twice.
     term.reset();
     document.getElementById('cwd').textContent = msg.cwd || '';
+    // Background first: applyTheme needs to know whether to make the terminal
+    // translucent, and getting that order wrong leaves the art fully hidden.
+    applyBackground(msg.background);
     applyTheme(msg.theme);
+    renderUsage(msg.usage);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
     renderRoster();
@@ -186,6 +269,10 @@ function handleControl(msg) {
   if (msg.type === 'mood') {
     roster.set(msg.agent, msg);
     renderRoster();
+    return;
+  }
+  if (msg.type === 'usage') {
+    renderUsage(msg.usage);
     return;
   }
   if (msg.type === 'exit') {
