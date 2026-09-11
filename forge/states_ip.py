@@ -93,7 +93,17 @@ def load_pipeline(offline: bool = False):
         use_safetensors=True,
         local_files_only=offline,
     )
-    pipe.load_ip_adapter(IP_REPO, subfolder=IP_SUBFOLDER, weight_name=IP_WEIGHTS)
+    # image_encoder_folder is REQUIRED for the _vit-h weights. Without it
+    # diffusers loads the bigG encoder sitting next to them in sdxl_models/ and
+    # fails deep inside the forward pass with
+    #   mat1 and mat2 shapes cannot be multiplied (514x1664 and 1280x1280)
+    # -- 1664 is ViT-H, 1280 is bigG. The path is relative to `subfolder`.
+    pipe.load_ip_adapter(
+        IP_REPO,
+        subfolder=IP_SUBFOLDER,
+        weight_name=IP_WEIGHTS,
+        image_encoder_folder="../models/image_encoder",
+    )
 
     pipe.enable_model_cpu_offload()
     if hasattr(pipe.vae, "enable_slicing"):
