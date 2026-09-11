@@ -309,6 +309,26 @@ def appearance_for(identity: dict, appearances: dict) -> dict:
     return merged
 
 
+# Palette is a property of the STATE, not the agent.
+#
+# Ricardo's call, and it is the right one: eight generation approaches all
+# produced four near-identical faces, because at 34px a facial expression is a
+# few pixels of mouth. Colour separates the states instantly and at any size,
+# which is the job the expression was failing to do. Same reasoning as the
+# roster's ring colour already carrying the mood.
+_STATE_PALETTES = {
+    "sleeping": "desaturated greyscale, cool grey tones, muted and colourless",
+    "working": "cool blue tones, steel blue and indigo, blue rim light",
+    "happy": "warm green tones, emerald and sage, green light",
+    "stressed": "hot red tones, crimson and scarlet, red light",
+}
+
+
+def state_palette(state: str) -> str:
+    """Colour for a state. Overrides the agent palette -- state legibility wins."""
+    return _STATE_PALETTES.get(state, "")
+
+
 def resolve_palette(identity: dict) -> str:
     """The agent's palette, hand-written if given, else from frontmatter colour.
 
@@ -329,7 +349,10 @@ def resolve_palette(identity: dict) -> str:
 def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
     style = {**DEFAULT_STYLE, **(style or {})}
     cue = _STATE_CUES.get(state, _STATE_CUES["working"])
-    palette = resolve_palette(identity)
+    # State palette wins over the agent's: separating the four states matters
+    # more than an agent's signature colour, and it is what actually reads at
+    # roster size.
+    palette = state_palette(state) or resolve_palette(identity)
 
     # A hand-written appearance is the whole point of the file: it beats text
     # scraped out of a description written for an agent router, not an artist.
@@ -368,7 +391,7 @@ def build_state_prompt(identity: dict, state: str) -> str:
     """
     cue = _STATE_CUES.get(state, _STATE_CUES["working"])
     return (f"{cue}, wildly exaggerated caricatured expression, "
-            f"same character, same framing")
+            f"{state_palette(state)}, same character, same framing")
 
 
 def build_style_prompt(style: dict | None = None, palette: str | None = None) -> str:

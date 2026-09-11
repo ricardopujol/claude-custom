@@ -167,6 +167,23 @@
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
 
+    /* --- running processes -------------------------------------------------
+       Long work must be visible. A four-minute GPU job that shows nothing is
+       indistinguishable from a hung session. */
+    #procs { border-top: 1px solid var(--border); padding: 8px; flex: 0 0 auto; max-height: 190px; overflow-y: auto; }
+    #procs h3 { margin: 0 0 6px; font-size: 10px; text-transform: uppercase;
+                letter-spacing: .08em; color: var(--dim); font-weight: 600; }
+    #procs .none { color: var(--dim); font-size: 10.5px; opacity: .7; }
+    .proc { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; font-size: 11px; }
+    .proc .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+                 flex: 0 0 5px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+    .proc .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; font-family: ui-monospace, monospace; font-size: 10.5px; }
+    .proc .el { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+    /* Anything past a minute is worth noticing rather than assuming hung. */
+    .proc.slow .el { color: var(--accent); }
+
     /* Scrollbars follow the theme. The default chrome scrollbar is a bright
        grey slab that ignores the palette entirely and is the one element that
        gives away that this is a web view rather than a terminal. */
@@ -203,6 +220,10 @@
       <aside id="roster">
         <h2>Agents</h2>
         <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
+        <div id="procs">
+          <h3>Running</h3>
+          <div id="proclist"><div class="none">nothing running</div></div>
+        </div>
       </aside>
       <aside id="diag">
         <h2>Key diagnostics</h2>

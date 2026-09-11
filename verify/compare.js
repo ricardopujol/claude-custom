@@ -14,7 +14,9 @@ const ROWS = [
   ['3. img2img, expression-only prompt', `${P}/_states3/${AGENT}/states`],
   ['4. txt2img, same seed', `${P}/_txt2img/${AGENT}/states`],
   ['5. txt2img + facial-geometry cues', `${P}/_geom/${AGENT}/states`],
-  ['6. IP-Adapter + ControlNet depth', `${P}/_ipadapter/${AGENT}/states`],
+  ['6. IP-Adapter + ControlNet depth (old cues)', `${P}/_ipadapter/${AGENT}/states`],
+  ['7. EXAGGERATED cues, denoise 0.70 / guidance 9', `${P}/_exag/${AGENT}/states`],
+  ['8. EXAGGERATED cues, denoise 0.85 / guidance 11', `${P}/_exag2/${AGENT}/states`],
 ];
 
 const url = p => 'file:///' + p.replace(/\\/g, '/');

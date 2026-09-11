@@ -248,6 +248,29 @@ function applyBackground(filePath) {
   }
 }
 
+// --- running processes ------------------------------------------------------
+const procListEl = document.getElementById('proclist');
+
+function humanElapsed(ms) {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return sec + 's';
+  const min = Math.floor(sec / 60);
+  return min + 'm ' + String(sec % 60).padStart(2, '0') + 's';
+}
+
+function renderProcesses(running) {
+  if (!running || running.length === 0) {
+    procListEl.innerHTML = '<div class="none">nothing running</div>';
+    return;
+  }
+  procListEl.innerHTML = running.map(p => {
+    const slow = p.elapsedMs >= 60000 ? ' slow' : '';
+    return '<div class="proc' + slow + '"><span class="dot"></span>' +
+           '<span class="lbl" title="' + p.tool + ': ' + p.label + '">' + p.label + '</span>' +
+           '<span class="el">' + humanElapsed(p.elapsedMs) + '</span></div>';
+  }).join('');
+}
+
 function handleControl(msg) {
   if (msg.type === 'hello') {
     // The host sends `hello` immediately before replaying the current screen.
@@ -260,6 +283,7 @@ function handleControl(msg) {
     applyBackground(msg.background);
     applyTheme(msg.theme);
     renderUsage(msg.usage);
+    renderProcesses(msg.running);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
     renderRoster();
@@ -271,8 +295,13 @@ function handleControl(msg) {
     renderRoster();
     return;
   }
+  if (msg.type === 'processes') {
+    renderProcesses(msg.running);
+    return;
+  }
   if (msg.type === 'usage') {
     renderUsage(msg.usage);
+    renderProcesses(msg.running);
     return;
   }
   if (msg.type === 'exit') {

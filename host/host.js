@@ -28,6 +28,7 @@ const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage } = require('./usage');
 const { backgroundFor } = require('./background');
+const { createProcessTracker } = require('./processes');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -94,6 +95,7 @@ const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
 const mood = createMoodMachine();
+const processes = createProcessTracker();
 const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent, state, { portraitsDir: PORTRAITS_DIR }) });
 
 // Generated once per project folder and reused by every context window on it.
@@ -119,6 +121,8 @@ if (helperExists) {
       console.log('[host] session id     :', sessionId);
     }
     mood.handle(ev);
+    processes.handle(ev);
+    broadcastControl({ type: 'processes', running: processes.list() });
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
   hookBridge.on('error', e => console.log('[hook!] bridge error:', e.message));
@@ -200,7 +204,13 @@ term.onData((data) => {
 // The machine is deliberately passive: it schedules nothing itself, so the host
 // owns the clock and the transitions stay reproducible in tests.
 mood.on('change', ({ agent, state }) => broadcastControl({ type: 'mood', ...describe(agent, state) }));
-const moodTimer = setInterval(() => mood.tick(), 1000);
+const moodTimer = setInterval(() => {
+  mood.tick();
+  processes.sweep();
+  // Re-broadcast so elapsed times tick up in the GUI without the view having to
+  // own a clock of its own.
+  if (processes.list().length) broadcastControl({ type: 'processes', running: processes.list() });
+}, 1000);
 moodTimer.unref();
 
 // Usage is re-read from the transcripts on a timer rather than tracked here:
@@ -241,6 +251,7 @@ wss.on('connection', (ws) => {
     background: background.path,
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
+    running: processes.list(),
   });
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });

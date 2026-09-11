@@ -126,6 +126,15 @@ class IdentityGate:
 
 
 def post_process(image, out_dir: Path, state: str) -> list[Path]:
+    """NOTE: writes the final asset FLAT as <agent>/<state>.png.
+
+    The harness looks it up at portraits/<agent>/<state>.png, per the design's
+    convention-over-configuration rule. An earlier version wrote
+    <agent>/states/<state>.png, so every generated portrait was invisible to the
+    GUI and every agent silently fell back to a placeholder -- while the unit
+    tests passed, because their fixtures built the layout the reader expected
+    rather than the one the writer produced.
+    """
     """Square crop, background removed to alpha, exported at display sizes.
 
     Alpha matters: portraits sit on the project's theme colour, so a baked-in
@@ -147,8 +156,11 @@ def post_process(image, out_dir: Path, state: str) -> list[Path]:
         square = square.convert("RGBA")
 
     written = []
+    # Final assets go one level up, beside the agent folder, not inside states/.
+    asset_dir = out_dir.parent if out_dir.name == "states" else out_dir
+    asset_dir.mkdir(parents=True, exist_ok=True)
     for size in EXPORT_SIZES:
-        path = out_dir / (f"{state}.png" if size == EXPORT_SIZES[0] else f"{state}@{size}.png")
+        path = asset_dir / (f"{state}.png" if size == EXPORT_SIZES[0] else f"{state}@{size}.png")
         square.resize((size, size), Image.LANCZOS).save(path)
         written.append(path)
     return written
@@ -219,10 +231,15 @@ def main() -> int:
                 generator=torch.Generator(device="cpu").manual_seed(seed + attempt * 77),
             )
             if args.mode == "txt2img":
-                # SAME seed for every state, so the four share a starting noise
-                # field -- the only lever txt2img has for keeping one character.
+                # PER-STATE seed. An earlier run shared one seed across all four
+                # states, reasoning that a common noise field would hold the
+                # character together. It did -- so completely that all four came
+                # out as the same image (identity 0.982-0.996) and no expression
+                # could get through. Identity comes from the written appearance,
+                # which reproduces reliably on its own; the seed only needs to
+                # stop the four being identical.
                 shared["generator"] = torch.Generator(device="cpu").manual_seed(
-                    agent_seed(identity["agent"]) + attempt * 77)
+                    seed + attempt * 77)
                 shared["width"] = 1024
                 shared["height"] = 1024
             else:

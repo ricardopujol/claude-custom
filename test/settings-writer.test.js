@@ -30,13 +30,23 @@ test('does NOT union the user hooks', () => {
   assert.ok(!commands.includes('sync-agent.ps1'), 'user hook command must not be copied in');
 });
 
-test('PreToolUse is scoped to Task only, never a wildcard', () => {
-  // Hooks run synchronously in the critical path of tool execution. A '*'
-  // matcher taxes every Read, Grep and edit -- the mood engine's appetite for
-  // signal is paid for directly in agent speed.
+test('PreToolUse covers Task and Bash, and nothing else', () => {
+  // Hooks run synchronously in the critical path of tool execution, measured at
+  // ~23ms each. A '*' matcher taxes every Read, Grep and edit.
+  //
+  // Bash was added deliberately: the process panel has to see a command START,
+  // not only finish -- a four-minute GPU job that reports only on completion is
+  // invisible for the whole time it matters. Bash already paid a PostToolUse
+  // hook, so this is one more call on Bash, not a widening to every file op.
   const s = buildHarnessSettings(opts);
   const matchers = s.hooks.PreToolUse.map(e => e.matcher);
-  assert.deepStrictEqual(matchers, ['Task']);
+  assert.strictEqual(matchers.length, 1);
+  const m = matchers[0];
+  assert.ok(/Task/.test(m) && /Bash/.test(m), m);
+  assert.ok(!m.includes('*'), 'wildcard matcher would tax every tool call');
+  for (const tool of ['Read', 'Grep', 'Edit', 'Write', 'Glob']) {
+    assert.ok(!new RegExp(`\b${tool}\b`).test(m), `${tool} must not be matched`);
+  }
 });
 
 test('PostToolUse is scoped to Task and Bash only', () => {

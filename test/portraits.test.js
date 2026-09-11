@@ -80,3 +80,37 @@ test('an agent name that could escape the portraits directory is rejected', () =
   const p = portraitFor('../../secrets', 'working', { portraitsDir: dir });
   assert.strictEqual(p.kind, 'placeholder');
 });
+
+test('finds a portrait at the path the FORGE actually writes', () => {
+  // Regression guard on a real bug: the forge wrote
+  // portraits/<agent>/states/<state>.png while the harness looked for
+  // portraits/<agent>/<state>.png, so every generated portrait was invisible
+  // and every agent silently fell back to a placeholder.
+  //
+  // The existing tests all passed because their fixtures built the layout the
+  // READER expected. A fixture that encodes the reader's assumption cannot
+  // catch a disagreement with the writer -- so this one is built to mirror the
+  // forge's output, including the sibling folders it leaves behind.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-forge-'));
+  const agentDir = path.join(dir, 'code-reviewer');
+  fs.mkdirSync(path.join(agentDir, 'candidates'), { recursive: true });
+  fs.mkdirSync(path.join(agentDir, 'states'), { recursive: true });
+  fs.writeFileSync(path.join(agentDir, 'candidates', 'cand-00-seed1.png'), 'x');
+  fs.writeFileSync(path.join(agentDir, 'states', 'report.json'), '{}');
+  for (const s of ['sleeping', 'working', 'happy', 'stressed']) {
+    fs.writeFileSync(path.join(agentDir, `${s}.png`), 'x');
+    fs.writeFileSync(path.join(agentDir, `${s}@128.png`), 'x');
+  }
+
+  for (const s of ['sleeping', 'working', 'happy', 'stressed']) {
+    const p = portraitFor('code-reviewer', s, { portraitsDir: dir });
+    assert.strictEqual(p.kind, 'file', `${s} fell back to a placeholder`);
+  }
+});
+
+test('the @128 variant is not mistaken for a state', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-forge-'));
+  fs.mkdirSync(path.join(dir, 'a'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'a', 'happy@128.png'), 'x');
+  assert.strictEqual(portraitFor('a', 'happy', { portraitsDir: dir }).kind, 'placeholder');
+});

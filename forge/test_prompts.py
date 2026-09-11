@@ -128,8 +128,9 @@ def test_art_direction_avoids_photographic_and_sculptural_words():
 
 
 def test_prompt_uses_the_agent_colour_as_a_palette_cue(tmp_path):
-    p = build_prompt(derive_identity(parse_agent_file(write(tmp_path, "code-reviewer", MIGUEL))), "working")
-    assert "yellow" in p.lower()
+    from prompts import resolve_palette
+    ident = derive_identity(parse_agent_file(write(tmp_path, "code-reviewer", MIGUEL)))
+    assert "yellow" in resolve_palette(ident).lower()
 
 
 def test_negative_prompt_rejects_photorealism_and_text(tmp_path):
@@ -195,13 +196,37 @@ def test_appearance_becomes_the_subject_of_the_prompt(tmp_path):
     assert "salt-and-pepper" in p
 
 
+def test_state_palettes_separate_the_four_states():
+    # Eight generation approaches produced four near-identical faces. Colour is
+    # what actually distinguishes a state at 34px.
+    from prompts import state_palette
+
+    assert "grey" in state_palette("sleeping")
+    assert "blue" in state_palette("working")
+    assert "green" in state_palette("happy")
+    assert "red" in state_palette("stressed")
+    assert len({state_palette(s) for s in STATES}) == len(STATES)
+
+
+def test_state_palette_beats_the_agent_palette(tmp_path):
+    f = tmp_path / "appearances.yaml"
+    f.write_text(APPEARANCE_YAML, encoding="utf-8")
+    ident = appearance_for(
+        derive_identity(parse_agent_file(write(tmp_path, "code-reviewer", MIGUEL))),
+        load_appearances(f),
+    )
+    assert "green" in build_prompt(ident, "happy").lower()
+
+
 def test_appearance_palette_overrides_the_frontmatter_colour(tmp_path):
     f = tmp_path / "appearances.yaml"
     f.write_text(APPEARANCE_YAML, encoding="utf-8")
     ident = derive_identity(parse_agent_file(write(tmp_path, "code-reviewer", MIGUEL)))
     ident = appearance_for(ident, load_appearances(f))
-    p = build_prompt(ident, "working").lower()
-    assert "brass" in p
+    # With state palettes in play the agent palette only shows when no state
+    # palette applies; resolve_palette is what carries it.
+    from prompts import resolve_palette
+    assert "brass" in resolve_palette(ident).lower()
 
 
 def test_agent_without_an_appearance_still_works(tmp_path):
@@ -415,4 +440,4 @@ def test_state_prompts_differ_sharply_between_states(tmp_path):
     assert len(set(prompts.values())) == len(STATES)
     # Each should be short: a long one reintroduces the competition problem.
     for s, p in prompts.items():
-        assert len(p) <= 220, f"{s} prompt is {len(p)} chars"
+        assert len(p) <= 300, f"{s} prompt is {len(p)} chars"
