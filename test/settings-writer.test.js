@@ -1,0 +1,139 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const { buildHarnessSettings, writeHarnessSettings } = require('../host/settings-writer');
+
+const HELPER = 'C:/tools/claude-custom-hook.exe';
+const PIPE = '\\\\.\\pipe\\claude-custom-abc123';
+const opts = { helperPath: HELPER, pipeName: PIPE };
+
+test('supplies exactly one top-level key: hooks', () => {
+  // Load-bearing. --settings replaces single-valued keys WHOLESALE, so any
+  // extra key here would silently destroy the user's version of it. Measured:
+  // a partial statusLine object wiped the user's statusLine.command.
+  const s = buildHarnessSettings(opts);
+  assert.deepStrictEqual(Object.keys(s), ['hooks']);
+});
+
+test('does NOT union the user hooks', () => {
+  // Hooks ACCUMULATE across layers (verify/probe-hook-layers.js), so including
+  // the user's hooks would run every one of them twice.
+  const userHooks = {
+    PostToolUse: [{ matcher: 'Write|Edit', hooks: [{ type: 'command', command: 'sync-agent.ps1' }] }],
+  };
+  const s = buildHarnessSettings({ ...opts, userHooks });
+  const commands = JSON.stringify(s.hooks);
+  assert.ok(!commands.includes('sync-agent.ps1'), 'user hook command must not be copied in');
+});
+
+test('PreToolUse is scoped to Task only, never a wildcard', () => {
+  // Hooks run synchronously in the critical path of tool execution. A '*'
+  // matcher taxes every Read, Grep and edit -- the mood engine's appetite for
+  // signal is paid for directly in agent speed.
+  const s = buildHarnessSettings(opts);
+  const matchers = s.hooks.PreToolUse.map(e => e.matcher);
+  assert.deepStrictEqual(matchers, ['Task']);
+});
+
+test('PostToolUse is scoped to Task and Bash only', () => {
+  const s = buildHarnessSettings(opts);
+  const matchers = s.hooks.PostToolUse.map(e => e.matcher);
+  assert.strictEqual(matchers.length, 1);
+  const m = matchers[0];
+  assert.ok(/\bTask\b/.test(m) && /\bBash\b/.test(m), `expected Task and Bash, got ${m}`);
+  for (const tool of ['Read', 'Grep', 'Edit', 'Write', 'Glob']) {
+    assert.ok(!new RegExp(`\\b${tool}\\b`).test(m), `${tool} must not be matched`);
+  }
+});
+
+test('SubagentStop is hooked so agents can return to sleeping', () => {
+  const s = buildHarnessSettings(opts);
+  assert.ok(Array.isArray(s.hooks.SubagentStop) && s.hooks.SubagentStop.length > 0);
+});
+
+test('hooks only the three events the mood machine consumes', () => {
+  const s = buildHarnessSettings(opts);
+  assert.deepStrictEqual(
+    Object.keys(s.hooks).sort(),
+    ['PostToolUse', 'PreToolUse', 'SubagentStop']
+  );
+});
+
+test('every hook invokes the native helper with the pipe name', () => {
+  // A Node hook costs 60-100ms of startup per invocation; PowerShell ~200ms.
+  const s = buildHarnessSettings(opts);
+  const entries = Object.values(s.hooks).flat().flatMap(e => e.hooks);
+  assert.ok(entries.length >= 3);
+  for (const h of entries) {
+    assert.strictEqual(h.type, 'command');
+    assert.ok(h.command.includes(HELPER), `helper missing in: ${h.command}`);
+    assert.ok(h.command.includes(PIPE), `pipe name missing in: ${h.command}`);
+  }
+});
+
+test('a helper path containing spaces is quoted', () => {
+  const s = buildHarnessSettings({ ...opts, helperPath: 'C:/Program Files/cc/hook.exe' });
+  const cmd = s.hooks.PreToolUse[0].hooks[0].command;
+  assert.ok(/"C:\/Program Files\/cc\/hook\.exe"/.test(cmd), `not quoted: ${cmd}`);
+});
+
+test('every hook carries a timeout so a wedged helper cannot hang a tool call', () => {
+  const s = buildHarnessSettings(opts);
+  for (const h of Object.values(s.hooks).flat().flatMap(e => e.hooks)) {
+    assert.ok(typeof h.timeout === 'number' && h.timeout > 0, 'missing timeout');
+  }
+});
+
+test('writeHarnessSettings writes parseable JSON and returns its path', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-writer-'));
+  const p = writeHarnessSettings(dir, opts);
+  assert.ok(fs.existsSync(p), 'file not written');
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.deepStrictEqual(parsed, buildHarnessSettings(opts));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('writeHarnessSettings creates the directory if absent', () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-writer-')), 'nested', 'deep');
+  const p = writeHarnessSettings(dir, opts);
+  assert.ok(fs.existsSync(p));
+  fs.rmSync(path.dirname(path.dirname(dir)), { recursive: true, force: true });
+});
+
+test('rejects a missing helper path rather than emitting a broken hook', () => {
+  assert.throws(() => buildHarnessSettings({ pipeName: PIPE }), /helperPath/);
+});
+
+test('rejects a missing pipe name', () => {
+  assert.throws(() => buildHarnessSettings({ helperPath: HELPER }), /pipeName/);
+});
+
+// --- claude argv construction -------------------------------------------
+
+const { buildClaudeArgs } = require('../host/settings-writer');
+
+test('omits --settings entirely when the native helper is absent', () => {
+  // The helper arrives in step 2. Until it exists, pointing hooks at a missing
+  // binary would make every matched Task and Bash call invoke nothing --
+  // degrading the live session to buy a mood engine that cannot work yet.
+  const args = buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: false });
+  assert.ok(!args.includes('--settings'), `unexpected --settings in ${JSON.stringify(args)}`);
+});
+
+test('passes --settings with the file once the helper exists', () => {
+  const args = buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: true });
+  const i = args.indexOf('--settings');
+  assert.ok(i >= 0, 'expected --settings');
+  assert.strictEqual(args[i + 1], 'C:/h/s.json');
+});
+
+test('always keeps permissions bypassed, helper or not', () => {
+  for (const helperExists of [true, false]) {
+    const args = buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists });
+    assert.ok(args.includes('--dangerously-skip-permissions'), `missing for ${helperExists}`);
+  }
+});

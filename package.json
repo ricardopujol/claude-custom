@@ -6,7 +6,8 @@
   "main": "app/main.js",
   "scripts": {
     "start": "electron .",
-    "host": "node host/host.js"
+    "host": "node host/host.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

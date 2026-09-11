@@ -95,13 +95,16 @@ host
 
 The generated settings file is built by reading the real user settings and merging harness hooks in. Writing it from scratch risks shadowing config that Remote Control or MCP depend on.
 
-> **Measured 2026-09-11 — the hazard is narrower and worse than written above.**
-> `--settings` *does* merge with the user layer, but **only at the top level**;
-> any key the file supplies replaces its counterpart **wholesale**, with no deep
-> merge. A partial `statusLine: {padding: 1}` destroyed the sibling `command`.
-> Therefore writing a `hooks` key at all — the file's whole purpose — drops every
-> user hook event. The host must read the user's `hooks` and write the **union**.
-> See *Verification items* for the controlled runs.
+> **Measured 2026-09-11 — and the conclusion is the opposite of the obvious one.**
+> `--settings` merges with the user layer at the **top level only**; any
+> single-valued key it supplies replaces its counterpart **wholesale** (a partial
+> `statusLine: {padding: 1}` destroyed the sibling `command`). **But `hooks`
+> accumulates across layers rather than replacing** — so the host must supply
+> only its own matchers and must **NOT** union the user's, which would run every
+> user hook twice. The generated file therefore contains exactly one key:
+> `hooks`. Harness variables travel via the pty environment, never via settings,
+> precisely because an `env` key *would* clobber the user's. See *Verification
+> items* for the controlled runs and the residual uncertainty.
 
 ---
 
@@ -284,12 +287,53 @@ proving the file was actually read:
 
 So the merge is **top-level only; there is no deep merge within a key.**
 
-**The consequence for this project is specific and severe:** the moment the host
-writes a `hooks` key — which is the entire point of the generated settings file —
-it replaces the user's `hooks` object *wholesale*, silently dropping all 12
-configured hook events. The host must **read the user's `hooks`, deep-merge its
-own matchers into it, and write the union.** Supplying only the harness's own
-matchers would look correct and quietly disable the user's whole hook setup.
+**This holds for single-valued keys. It does NOT hold for `hooks`.**
+
+> **CORRECTION, same day.** An earlier revision of this section concluded that
+> the host "must write the union" of the user's hooks and its own. That was an
+> **inference from `statusLine`, not a measurement of `hooks`**, and three
+> subsequent probes contradict it. Generalising one key's precedence to another
+> key was the mistake; `hooks` is a collection, `statusLine` is a single value,
+> and they do not behave alike.
+
+Measured for `hooks` specifically:
+
+| Observation | Probe | Implication |
+|---|---|---|
+| A `--settings` file omitting `statusLine` left the **user's** `statusLine` applied | `probe-settings.js` Run A | `--settings` is an **additional layer**, not a substitute for the user file |
+| CLI hooks **and** project-layer hooks both fired | `probe-hook-layers.js` | For `hooks`, the CLI layer **accumulates** rather than replaces |
+| `/hooks` reports `SessionStart (4)` while user settings defines exactly **1** | `probe-hooks-command.js` | Hooks already accumulate across sources in the live config |
+
+**Conclusion: the host must supply only its own hook matchers, and must NOT
+union the user's.** Unioning would run every user hook **twice** — including
+`hook-sync-agent.ps1` and `sync-docs-trigger.ps1`, which do real work.
+
+**Residual uncertainty, stated honestly.** No probe directly observed a *user*
+layer hook executing alongside a `--settings` hook. Four instruments were tried;
+all failed for reasons now recorded in `verify/` so they aren't retried:
+
+- **Alternate home** — relocating the config dir stops hooks running entirely,
+  including the `--settings` ones. Cannot tell shadowing from a disabled layer.
+- **`/hooks` menu** — byte-identical with and without `--settings`. It is blind
+  to the CLI layer, so surviving user events prove nothing. The probe now carries
+  an instrument check; without it, it reported a confident **false** "confirmed".
+- **`--debug`** — does not name hook commands in interactive output.
+
+The conclusion rests on three consistent indirect measurements rather than one
+direct one. Worth one more attempt if a better instrument appears — but the
+asymmetry favours it: under this reading a wrong call costs *nothing*, whereas
+unioning on a wrong call silently double-fires every hook the user owns.
+
+### The shallow-merge hazard still applies — just not to `hooks`
+
+The wholesale-replacement finding remains load-bearing for **every other key**.
+Concretely: if the host ever writes an `env` key to pass the pipe name, it would
+destroy the user's `env` — which carries `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.
+
+The host therefore passes harness variables through the **pty environment**, not
+through settings, and the generated file contains **exactly one key: `hooks`**.
+Every other setting falls through the normal layers untouched. That is the whole
+design, and it is smaller than the original note assumed.
 
 ### Incidental finding — inherited session env leaked into the hosted session
 

@@ -20,6 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
+const { writeHarnessSettings, buildClaudeArgs } = require('./settings-writer');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -48,9 +49,29 @@ function resolveClaude() {
 const CLAUDE_BIN = resolveClaude();
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 
-// Spike runs with permissions bypassed, per the design goal. In the real build
-// this moves into the merged settings file the host generates.
-const ARGS = ['--dangerously-skip-permissions'];
+// The generated settings file contributes ONLY the harness's own hook matchers.
+// It does not union the user's hooks: those accumulate across settings layers
+// on their own, so copying them in would run every one of them twice. See
+// verify/probe-hook-layers.js and the design doc's verification section.
+const SESSION_ID = process.env.CLAUDE_CUSTOM_SESSION_ID || String(process.pid);
+const PIPE_NAME = `\\\\.\\pipe\\claude-custom-${SESSION_ID}`;
+const HARNESS_DIR = path.join(__dirname, '..', '.harness');
+const HELPER_PATH =
+  process.env.CLAUDE_CUSTOM_HELPER || path.join(HARNESS_DIR, 'hook-helper.exe');
+
+const settingsFile = writeHarnessSettings(HARNESS_DIR, {
+  helperPath: HELPER_PATH,
+  pipeName: PIPE_NAME,
+});
+
+// Attached only once the native helper exists (step 2). Wiring hooks to a
+// missing binary would fire on every Task and Bash call and invoke nothing.
+const helperExists = fs.existsSync(HELPER_PATH);
+const ARGS = buildClaudeArgs({ settingsFile, helperExists });
+
+if (!helperExists) {
+  console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
+}
 
 console.log('[host] claude binary :', CLAUDE_BIN);
 console.log('[host] cwd           :', CWD);
