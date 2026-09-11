@@ -136,6 +136,25 @@
     .agent[data-state="working"] .state { color: var(--accent); }
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
+
+    /* Scrollbars follow the theme. The default chrome scrollbar is a bright
+       grey slab that ignores the palette entirely and is the one element that
+       gives away that this is a web view rather than a terminal. */
+    .xterm-viewport::-webkit-scrollbar,
+    #agents::-webkit-scrollbar,
+    #log::-webkit-scrollbar { width: 9px; }
+    .xterm-viewport::-webkit-scrollbar-track,
+    #agents::-webkit-scrollbar-track,
+    #log::-webkit-scrollbar-track { background: transparent; }
+    .xterm-viewport::-webkit-scrollbar-thumb,
+    #agents::-webkit-scrollbar-thumb,
+    #log::-webkit-scrollbar-thumb {
+      background: var(--border); border-radius: 5px;
+      border: 2px solid transparent; background-clip: content-box;
+    }
+    .xterm-viewport::-webkit-scrollbar-thumb:hover,
+    #agents::-webkit-scrollbar-thumb:hover,
+    #log::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: content-box; }
   </style>
 </head>
 <body>

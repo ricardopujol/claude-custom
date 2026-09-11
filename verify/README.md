@@ -18,6 +18,32 @@ detach/reattach — so the probes exercise the real component, not a mock.
 | `probe-hook-layers.js` | Do `--settings` hooks replace the project layer's? | No — they **accumulate** |
 | `probe-hook-e2e.js` | Does a helper invocation reach the running host? | Yes, `subagent_type` round-trips |
 | `measure-hook-latency.js` | What does a hook actually cost? | 23.3ms mean; only 2.2ms is the pipe |
+| `probe-protocol.js` | Full attach protocol: hello, theme, replay, mood | All pass |
+| `probe-gui.js` | Does the real Electron GUI render correctly? | Writes a PNG to `.harness/` |
+
+## Seeing the GUI
+
+The GUI is the one surface these headless probes cannot reach, so `app/main.js`
+carries two env-gated verification paths rather than leaving it to eyeballing:
+
+```sh
+node verify/probe-gui.js        # populated agent roster in every mood state -> .harness/gui-roster.png
+
+CLAUDE_CUSTOM_SCREENSHOT=out.png \
+CLAUDE_CUSTOM_INPUT_TEST=1 \
+CLAUDE_CUSTOM_SCREENSHOT_DELAY=13000 npx electron .
+```
+
+`CLAUDE_CUSTOM_INPUT_TEST` types `LINE-ONE`, presses **Shift+Enter**, then types
+`LINE-TWO`. This is the only check that covers the renderer's custom key
+handler: Shift+Enter is hardcoded browser-side, so no wire-level probe reaches
+it, and a regression would *submit* rather than insert a newline — which the
+screenshot shows unmistakably.
+
+Note that `npx electron .` spawns a **detached** host that outlives the window
+by design. It exits with its pty, but if you kill Electron oddly, check for
+leftovers by port rather than by process age — this machine runs several
+unrelated claude sessions, and matching on "recently started" would kill one.
 
 Instruments that could **not** answer the user-layer hook question, kept so they
 are not retried: `probe-user-layer.js` (relocating the config dir disables hooks

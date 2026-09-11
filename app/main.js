@@ -93,7 +93,56 @@ app.whenReady().then(async () => {
     console.log('[main] host already listening on', PORT, '— reattaching');
   }
 
-  createWindow();
+  const win = createWindow();
+
+  // Headless verification path. CLAUDE_CUSTOM_SCREENSHOT=<file> renders the
+  // real window, waits for the TUI to draw, writes a PNG and exits. The GUI is
+  // the one surface the headless probes cannot reach, so this is how it gets
+  // checked at all rather than assumed to look right.
+  if (process.env.CLAUDE_CUSTOM_SCREENSHOT) {
+    const outFile = process.env.CLAUDE_CUSTOM_SCREENSHOT;
+    const waitMs = Number(process.env.CLAUDE_CUSTOM_SCREENSHOT_DELAY) || 12000;
+
+    win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      const tag = ['verbose', 'info', 'warn', 'error'][level] || level;
+      console.log(`[renderer:${tag}] ${message} (${String(sourceId).split('/').pop()}:${line})`);
+    });
+    win.webContents.on('render-process-gone', (_e, d) => console.error('[main] renderer gone:', d.reason));
+    win.webContents.on('did-fail-load', (_e, code, desc) => console.error('[main] load failed:', code, desc));
+
+    // Optional keystroke drive. The renderer's custom key handler -- above all
+    // the hardcoded Shift+Enter -- is the one piece of the input path that the
+    // headless probes cannot reach, because it lives in xterm's browser-side
+    // event handling rather than on the wire.
+    if (process.env.CLAUDE_CUSTOM_INPUT_TEST) {
+      const type = text => {
+        for (const ch of text) win.webContents.sendInputEvent({ type: 'char', keyCode: ch });
+      };
+      const key = (keyCode, modifiers = []) => {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+      };
+      setTimeout(() => {
+        win.focus();
+        type('LINE-ONE');
+        // If Shift+Enter is mishandled this SUBMITS instead of inserting a
+        // newline, which the screenshot shows unmistakably.
+        key('Enter', ['shift']);
+        type('LINE-TWO');
+      }, Math.max(1000, waitMs - 3000));
+    }
+
+    setTimeout(async () => {
+      try {
+        const image = await win.webContents.capturePage();
+        require('fs').writeFileSync(outFile, image.toPNG());
+        console.log('[main] screenshot written:', outFile);
+      } catch (err) {
+        console.error('[main] screenshot failed:', err.message);
+      }
+      app.exit(0);
+    }, waitMs);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
