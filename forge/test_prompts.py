@@ -227,7 +227,7 @@ def test_state_cue_survives_a_long_appearance(tmp_path):
     ident = appearance_for(ident, load_appearances(f))
     prompts = {s: build_prompt(ident, s) for s in STATES}
     assert len(set(prompts.values())) == len(STATES), "long appearance collapsed the states"
-    assert "eyes closed" in prompts["sleeping"]
+    assert "eyelids down" in prompts["sleeping"]
 
 
 def test_no_doubled_article_when_appearance_starts_with_one(tmp_path):

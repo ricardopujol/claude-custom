@@ -60,11 +60,25 @@ _PERSON_RE = re.compile(
     r"mentions\s+((?:[A-Z][\w'À-ſ-]*)(?:\s+[A-Z][\w'À-ſ-]*)?)"
 )
 
+# DESCRIBE THE FACE, NOT THE FEELING.
+#
+# The first version of these named emotions -- "pleased and satisfied",
+# "concentrating intently". None of that is drawable, and it showed: across
+# img2img at two denoise levels AND txt2img, all four states rendered the same
+# neutral face while identity scored 0.947-0.996. The cue was being ignored
+# because it described an internal state rather than a configuration of muscles.
+#
+# Same lesson as the art direction, one level down: say it in the register that
+# renders. Mouths, brows, eyelids, cheeks -- things an illustrator would draw.
 _STATE_CUES = {
-    "sleeping": "eyes closed, calm and at rest, softly lit, peaceful expression",
-    "working": "focused and alert, concentrating intently, eyes forward, determined",
-    "happy": "warm genuine smile, pleased and satisfied, bright confident eyes",
-    "stressed": "furrowed brow, tense and worried, strained concentration",
+    "sleeping": "eyes fully closed, eyelids down, head tilted slightly down, "
+                "mouth relaxed and slightly open, face slack and soft",
+    "working": "brows drawn together, eyes narrowed and fixed straight ahead, "
+               "lips pressed into a thin line, jaw set",
+    "happy": "broad open smile, teeth visible, corners of the mouth pulled up, "
+             "cheeks raised, eyes crinkled at the outer corners",
+    "stressed": "deep vertical frown line between the brows, brows pulled low, "
+                "mouth turned down at the corners, jaw clenched, neck tendons taut",
 }
 
 # Frontmatter colours map to a palette cue the model can actually act on.

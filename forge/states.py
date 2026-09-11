@@ -165,6 +165,11 @@ def main() -> int:
     ap.add_argument("--lightning", action="store_true", help="few-step LoRA (worse adherence)")
     ap.add_argument("--guidance", type=float, default=6.0)
     ap.add_argument("--steps", type=int, default=30)
+    ap.add_argument("--mode", choices=["img2img", "txt2img"], default="img2img",
+                    help="img2img edits the base (holds identity, but also holds the MOUTH: "
+                         "measured neutral at denoise 0.45 and 0.62). txt2img regenerates each "
+                         "state from the same seed + description, so expression is unconstrained "
+                         "and identity rests on seed and wording instead.")
     ap.add_argument("--describe-appearance", action="store_true",
                     help="restate the full appearance in the state prompt (measured WORSE: "
                          "the description drowns the expression cue and every state comes "
@@ -181,7 +186,11 @@ def main() -> int:
     )
     base_image = Image.open(args.base).convert("RGB")
 
-    pipe = load_img2img(offline=args.offline, lightning=args.lightning)
+    if args.mode == "txt2img":
+        from generate import load_pipeline
+        pipe = load_pipeline(offline=args.offline, lightning=args.lightning)
+    else:
+        pipe = load_img2img(offline=args.offline, lightning=args.lightning)
     gate = IdentityGate(offline=args.offline)
 
     out_dir = Path(args.out) / args.agent / "states"
@@ -190,27 +199,37 @@ def main() -> int:
 
     report = {}
     for state in STATES:
+        # txt2img has no base image to carry identity, so the full appearance
+        # is required there; img2img already has the face and only needs the
+        # expression.
         prompt = (build_prompt(identity, state, style=style)
-                  if args.describe_appearance
+                  if (args.describe_appearance or args.mode == "txt2img")
                   else build_state_prompt(identity, state))
         style_prompt = build_style_prompt(style, resolve_palette(identity))
         seed = agent_seed(identity["agent"]) + STATES.index(state) * 1000
 
         for attempt in range(MAX_RETRIES):
-            image = pipe(
+            shared = dict(
                 prompt=prompt,
                 prompt_2=style_prompt,
                 negative_prompt=negative_prompt(),
                 negative_prompt_2=negative_prompt(),
-                image=base_image,
-                strength=args.denoise,
-                # img2img runs steps * strength, so ask for enough that the
-                # effective count is not a handful.
                 num_inference_steps=args.steps,
                 guidance_scale=args.guidance,
                 generator=torch.Generator(device="cpu").manual_seed(seed + attempt * 77),
-            ).images[0]
+            )
+            if args.mode == "txt2img":
+                # SAME seed for every state, so the four share a starting noise
+                # field -- the only lever txt2img has for keeping one character.
+                shared["generator"] = torch.Generator(device="cpu").manual_seed(
+                    agent_seed(identity["agent"]) + attempt * 77)
+                shared["width"] = 1024
+                shared["height"] = 1024
+            else:
+                shared["image"] = base_image
+                shared["strength"] = args.denoise
 
+            image = pipe(**shared).images[0]
             score = gate.similarity(base_image, image)
             if score >= args.threshold:
                 written = post_process(image, out_dir, state)
