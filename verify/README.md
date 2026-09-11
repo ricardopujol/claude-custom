@@ -15,6 +15,16 @@ detach/reattach — so the probes exercise the real component, not a mock.
 | `probe-keys.js` | Shift+Tab modes, Shift+Enter newline, rule alignment | All pass; rules exactly `cols` wide |
 | `probe-detach.js` | Does the session survive with no viewer? Full mode cycle | Survives; state intact on reattach |
 | `probe-settings.js` | Does `--settings` merge or shadow? | Top-level merge, **wholesale replace within a key** |
+| `probe-hook-layers.js` | Do `--settings` hooks replace the project layer's? | No — they **accumulate** |
+| `probe-hook-e2e.js` | Does a helper invocation reach the running host? | Yes, `subagent_type` round-trips |
+| `measure-hook-latency.js` | What does a hook actually cost? | 23.3ms mean; only 2.2ms is the pipe |
+
+Instruments that could **not** answer the user-layer hook question, kept so they
+are not retried: `probe-user-layer.js` (relocating the config dir disables hooks
+entirely), `probe-hooks-command.js` (the `/hooks` menu is blind to the CLI
+layer), `probe-hook-debug.js` (`--debug` doesn't name hook commands).
+`diagnose-pipe-loss.js`, `diagnose-pipe-variants.js` and `diagnose-client.js`
+are the trail that found the benchmark bug described below.
 
 ```sh
 node verify/probe-render.js     # SETTLE_MS=12000 to wait longer
@@ -47,3 +57,26 @@ prompt glyph and a box-drawing character together.
 
 Worth remembering when adding checks here: *presence of bytes is not evidence of
 rendering.* Assert on the thing you actually care about.
+
+## Two ways these probes have already lied
+
+Both were caught by a check *about the instrument*, not about the subject. Add
+that check whenever a probe's reassuring answer would be indistinguishable from
+the instrument not working.
+
+**A benchmark that measured itself.** The first latency run reported 4/35
+delivery and ~158ms native timings. Neither was real: the bridge ran inline with
+the `spawnSync` loop, so the event loop was blocked and the server could not
+accept. The four that succeeded were libuv's pre-created pipe instances, and the
+"latency" was mostly the helper's own connect timeout. Three diagnostics
+narrowed it — an in-process client scored 12/12 where both *spawned* clients
+scored 4/12, which pointed at the harness rather than the helper or the server.
+The bridge now runs in its own process, matching production, and delivery is
+35/35. **A performance number that is also a correctness signal is worth more
+than either alone: the delivery count is what exposed the bad measurement.**
+
+**A menu that answered confidently about something it cannot see.** The `/hooks`
+probe reported `H1 CONFIRMED` because the user's hook events were still listed
+with `--settings` applied. They are listed either way — the menu never reflects
+the CLI layer at all. The probe now first checks whether its own marker hook
+changes the menu, and reports INCONCLUSIVE when it doesn't.

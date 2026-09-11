@@ -91,6 +91,48 @@ host
 
 **Native helper required:** a ~50-line Go or Rust binary that writes one line to the pipe and exits (~5ms). A Node script costs 60–100ms of startup; PowerShell ~200ms.
 
+> **MEASURED 2026-09-11 (`npm run bench:hooks`).** Built in C# instead — no Go or
+> Rust toolchain on this machine, but the .NET 10 SDK is present and Native AOT
+> produces a genuine native binary with no runtime startup. n=30 timed, 5 warmup
+> discarded, full process lifetime, delivery confirmed on the bridge (35/35).
+>
+> | helper | mean | p50 | p95 | estimate | verdict |
+> |---|---|---|---|---|---|
+> | **native AOT `.exe`** | **23.3ms** | 22.0ms | 34.0ms | ~5ms | **4.7× optimistic** |
+> | node script | 152.9ms | 156.6ms | 206.7ms | 60–100ms | **worse than feared** |
+> | powershell | 171.2ms | 166.2ms | 224.1ms | ~200ms | accurate |
+>
+> **The decomposition matters more than the totals.** Running the same binary
+> with no `--pipe` argument, so it parses args and returns immediately:
+>
+> - **Windows process creation + runtime startup: 21.1ms**
+> - **attributable to the pipe round-trip: 2.2ms**
+>
+> So the helper's own work *does* hit the design's target — it's ~2ms. The ~5ms
+> estimate simply omitted **the cost of starting a process on Windows at all**,
+> which is ~21ms and is paid by *every* hook implementation in any language.
+>
+> **Two consequences.**
+>
+> 1. **Scoped matchers are doing far more work than the language choice.** The
+>    design already scopes `PreToolUse` to `Task`; that decision now looks
+>    load-bearing rather than merely tidy. A `*` matcher would add ~21ms to
+>    every Read, Grep and edit *even with a perfect helper* — the floor cannot
+>    be optimised away in the helper, only by hooking less often.
+> 2. Language still matters a lot: native is **6.6× faster than Node**. The
+>    Node figure being ~1.5× worse than estimated reinforces the original call.
+>
+> Intermediate datum, since it cost a build to learn: the same C# compiled to
+> **.NET Framework** via the bundled `csc.exe` measured **35.9ms** mean / 53.3ms
+> p95. AOT is worth the extra toolchain step, but the plain-CLR build is a
+> serviceable fallback and needs nothing installed.
+
+**Build gotcha:** Native AOT fails with `MSB3073 ... link.exe ... exited with
+code 123` when `vswhere.exe` is not on `PATH`. The error names `link.exe`, so it
+reads as a missing linker when the linker is present and fine — the ILCompiler
+targets simply emit a malformed command. `helper/build.ps1` prepends the
+installer directory and exists for exactly this reason.
+
 ### Settings must be MERGED, not replaced
 
 The generated settings file is built by reading the real user settings and merging harness hooks in. Writing it from scratch risks shadowing config that Remote Control or MCP depend on.
@@ -212,7 +254,7 @@ Keyed on agent filename. **Zero edits to agent `.md` files** — which matters b
 | 1 | ~~Terminal fidelity fails~~ | ~~**Binary — kills project**~~ | **RETIRED 2026-09-11** — measured; render, alignment, Shift+Tab and Shift+Enter all correct |
 | 2 | ~~Detach correctness unknown~~ | ~~Load-bearing for phone use~~ | **RETIRED 2026-09-11** — pty survives detach, state intact on reattach |
 | 3 | Forge reject rate unknown | Weekend vs. month | `spike/` branch, 2 agents |
-| 4 | Hook latency | Degrades daily use | Native helper; measure, don't trust estimates |
+| 4 | ~~Hook latency~~ | Degrades daily use | **MEASURED 2026-09-11** — 23.3ms mean / 34.0ms p95 on scoped matchers, of which 21.1ms is irreducible Windows process creation. Acceptable on `Task`/`Bash` only; would not be on `*` |
 | 5 | Upstream drift | Low, ongoing | Nothing reimplements CLI behavior — drift costs adjustments, not rewrites |
 
 ---
@@ -247,8 +289,13 @@ below is measured output, not reasoning. Claude Code v2.1.268, Node v24.14.0.
       Yes. Host and pty survive client disconnect; on reattach the session is
       intact — a marker typed before detach was still in the input buffer and
       accepted further keystrokes. (`verify/probe-detach.js`)
-- [ ] Real round-trip latency of the native hook helper on a live session —
-      **still open**, the helper doesn't exist yet (step 2).
+- [x] **Real round-trip latency of the native hook helper.** Measured:
+      **23.3ms mean / 34.0ms p95** per invocation, 35/35 delivered, of which
+      only **2.2ms** is the pipe round-trip — the other **21.1ms is Windows
+      process creation**, paid by any hook in any language. The `~5ms` estimate
+      omitted process-creation cost. See the *Hook matchers* section for the
+      full table and what it implies for matcher scoping.
+      Re-run any time with `npm run bench:hooks`.
 - [x] **Does Shift+Tab cycle permission modes through xterm.js?** Yes. `\x1b[Z`
       (CSI Z) cycles **five** modes, not the assumed three:
       `bypass permissions → auto → manual → accept edits → plan`.

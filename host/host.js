@@ -21,6 +21,7 @@ const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs } = require('./settings-writer');
+const { createHookBridge } = require('./hook-bridge');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -71,6 +72,24 @@ const ARGS = buildClaudeArgs({ settingsFile, helperExists });
 
 if (!helperExists) {
   console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
+}
+
+// The bridge must be listening BEFORE claude starts, otherwise every matched
+// tool call pays the helper's full connect timeout waiting for a listener that
+// never appears -- strictly worse than not hooking at all.
+let hookBridge = null;
+if (helperExists) {
+  hookBridge = createHookBridge({ pipeName: PIPE_NAME });
+  hookBridge.on('event', (ev) => {
+    // Step 3 feeds these to the mood state machine; for now they are observable
+    // so the wiring can be verified end to end.
+    console.log(`[hook] ${ev.event}`, JSON.stringify(ev.payload).slice(0, 120));
+  });
+  hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
+  hookBridge.on('error', e => console.log('[hook!] bridge error:', e.message));
+  hookBridge.listening
+    .then(() => console.log('[host] hook bridge listening on', PIPE_NAME))
+    .catch(e => console.log('[host] hook bridge FAILED to bind:', e.message));
 }
 
 console.log('[host] claude binary :', CLAUDE_BIN);
@@ -182,5 +201,6 @@ console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
 
 process.on('SIGINT', () => {
   try { term.kill(); } catch {}
+  if (hookBridge) { hookBridge.close().catch(() => {}); }
   process.exit(0);
 });

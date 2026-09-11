@@ -11,3 +11,7 @@ forge/outputs/
 # Generated at runtime
 .harness/
 *.log
+
+# .NET build artefacts for the hook helper
+helper/bin/
+helper/obj/
