@@ -217,6 +217,27 @@ Ink positions box-drawing by computed character width. xterm.js defaults to a Un
 
 **Hardware:** NVIDIA RTX 4070 Laptop, 8188 MiB, driver 610.62
 
+> **VERIFIED 2026-09-11.** `nvidia-smi` confirms the GPU, VRAM and driver
+> exactly as written. Python **3.12 is installed** via the `py` launcher (3.14
+> is what's on `PATH`), so the CUDA-side split holds without new installs.
+>
+> **What was NOT true: "IP-Adapter, ControlNet and inpainting nodes are already
+> wired."** There is no ComfyUI anywhere on C, D or G. A full-drive scan found
+> ~11 GB of model weights, but the stack is **audio**, not image:
+>
+> | weights on disk | size | modality |
+> |---|---|---|
+> | `ace-step/acestep-v15-turbo` + LMs | 9.1 GB | music generation |
+> | `laion/clap-*` ×2 | 1.3 GB | audio-text |
+> | `Qwen3-Embedding-0.6B` | 1.1 GB | text |
+> | `all-MiniLM-L6-v2`, `beat_this` | 0.2 GB | text / beat |
+>
+> Two near-misses worth naming, because both look relevant and are not:
+> `ace-step/vae/diffusion_pytorch_model.safetensors` is an **audio** VAE, and
+> **CLAP is not CLIP** — it is the audio-text analogue, useless for the image
+> identity gate. The forge therefore needs its own ~10–12 GB: torch ~2.5 GB,
+> SDXL base ~6.9 GB, Lightning LoRA ~0.4 GB, CLIP ~0.6 GB.
+
 8 GB rules out comfortable Flux (needs Q4 quantization, 40–90s/image on this GPU).
 
 **Target:** SDXL fp16 with model CPU offload, using a distilled checkpoint (Lightning or DMD2, 4–8 steps) — 3-second iterations materially change how much exploration happens.
@@ -266,7 +287,7 @@ Keyed on agent filename. **Zero edits to agent `.md` files** — which matters b
 1. ~~Host + detach/reattach~~ — **DONE.** `terminal-state.js` keeps the authoritative screen via `@xterm/headless` + serialize addon, so a late attach is handed the current screen rather than nothing. Verified in `verify/probe-protocol.js`.
 2. ~~Hook bridge + native helper + mood machine~~ — **DONE.** Native AOT helper, named-pipe bridge, deterministic mood machine. Latency measured.
 3. ~~Theming~~ — **DONE.** Central registry in `registry/`, keyed by project path, applied to both terminal palette and GUI chrome.
-4. Forge spike, 2 agents — **NOT STARTED.** Needs CUDA, ComfyUI and multi-GB model downloads, plus the one mandatory human step (hand-picking a base bust per agent). Genuinely a separate track.
+4. Forge spike, 2 agents — **IN PROGRESS.** Environment built (Python 3.12 + CUDA torch); prompt derivation done and tested against all 161 agent files; `generate.py` and `states.py` written but not yet executed against the GPU. Driven straight from `diffusers`, **not** ComfyUI — the design assumed an existing ComfyUI install with IP-Adapter and ControlNet wired, and there is none on this machine, so a scripted pipeline is fewer moving parts than installing one to drive it by API.
 5. ~~Chrome + portraits~~ — **PARTLY DONE.** Reactive agent roster with theme-aware state styling and stable per-agent placeholders. Real portraits await step 4.
 6. Forge batch — **NOT STARTED.**
 
