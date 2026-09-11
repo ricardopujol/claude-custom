@@ -18,3 +18,9 @@ helper/obj/
 
 # Per-project background art (regenerable, deterministic from path)
 backgrounds/
+
+forge/.venv/
+
+__pycache__/
+*.pyc
+.pytest_cache/

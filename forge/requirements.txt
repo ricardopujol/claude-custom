@@ -1,0 +1,21 @@
+# The forge runs on Python 3.12 (CUDA work), NOT 3.14.
+#
+#   py -3.12 -m venv .venv
+#   .venv/Scripts/python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   .venv/Scripts/python -m pip install -r requirements.txt
+#
+# torch is installed separately and first, because it must come from the CUDA
+# index; installing it from PyPI silently yields a CPU-only build, and the
+# failure then shows up much later as "cuda is not available" rather than as a
+# bad install.
+
+diffusers>=0.31
+transformers>=4.44
+accelerate>=0.34
+peft>=0.13            # LoRA loading for the Lightning weights
+safetensors>=0.4
+sentencepiece>=0.2
+pillow>=10.4
+pyyaml>=6.0
+rembg>=2.0.57         # alpha cutout, so portraits sit on the project theme colour
+pytest>=8.3
