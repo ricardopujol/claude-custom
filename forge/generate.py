@@ -45,7 +45,16 @@ LIGHTNING_STEPS = 8
 LIGHTNING_GUIDANCE = 1.5
 
 
-def load_pipeline(offline: bool = False):
+def load_pipeline(offline: bool = False, lightning: bool = True):
+    """Load SDXL, optionally with the Lightning few-step LoRA.
+
+    `lightning=False` is the escape hatch. Lightning is distilled for guidance
+    near 1.0, and low guidance is exactly what makes it ignore secondary
+    attributes -- hair colour, glasses, palette. Plain SDXL at ordinary guidance
+    honours the prompt far better; it just costs ~30s an image instead of ~3s.
+    Speed is worth a lot during exploration and nothing at all if the portrait
+    does not match the description it was written from.
+    """
     import torch
     from diffusers import StableDiffusionXLPipeline, EulerDiscreteScheduler
 
@@ -60,14 +69,15 @@ def load_pipeline(offline: bool = False):
         local_files_only=offline,
     )
 
-    pipe.load_lora_weights(LIGHTNING_REPO, weight_name=LIGHTNING_LORA)
-    pipe.fuse_lora()
+    if lightning:
+        pipe.load_lora_weights(LIGHTNING_REPO, weight_name=LIGHTNING_LORA)
+        pipe.fuse_lora()
 
-    # Lightning requires the trailing-timestep spacing; without it the few-step
-    # schedule is wrong and output is mush.
-    pipe.scheduler = EulerDiscreteScheduler.from_config(
-        pipe.scheduler.config, timestep_spacing="trailing"
-    )
+        # Lightning requires the trailing-timestep spacing; without it the
+        # few-step schedule is wrong and output is mush.
+        pipe.scheduler = EulerDiscreteScheduler.from_config(
+            pipe.scheduler.config, timestep_spacing="trailing"
+        )
 
     # 8 GB will not hold the whole pipeline resident alongside activations.
     # Offload moves each submodule to the GPU only while it runs.

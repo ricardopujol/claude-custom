@@ -42,6 +42,8 @@ def main() -> int:
     ap.add_argument("--guidance", type=float, nargs="+", default=[LIGHTNING_GUIDANCE])
     ap.add_argument("--steps", type=int, nargs="+", default=[LIGHTNING_STEPS])
     ap.add_argument("--out", default=str(PORTRAITS_ROOT / "_tuning"))
+    ap.add_argument("--no-lightning", action="store_true",
+                    help="plain SDXL instead of the few-step LoRA (slower, far better adherence)")
     args = ap.parse_args()
 
     import torch
@@ -60,7 +62,7 @@ def main() -> int:
     out = Path(args.out) / args.agent
     out.mkdir(parents=True, exist_ok=True)
 
-    pipe = load_pipeline()
+    pipe = load_pipeline(lightning=not args.no_lightning)
     # ONE seed across the whole sweep: any difference is then the knob, not the
     # noise. Varying both at once proves nothing.
     seed = agent_seed(identity["agent"])
@@ -79,7 +81,8 @@ def main() -> int:
                 generator=torch.Generator(device="cpu").manual_seed(seed),
             ).images[0]
 
-            path = out / f"g{guidance:g}-s{steps}.png"
+            tag = "base" if args.no_lightning else "lightning"
+            path = out / f"{tag}-g{guidance:g}-s{steps}.png"
             image.save(path)
             print(f"  {path.name}", flush=True)
 
