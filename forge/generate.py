@@ -19,9 +19,22 @@ import json
 import sys
 from pathlib import Path
 
-from prompts import build_prompt, derive_identity, negative_prompt, parse_agent_file
+from prompts import (
+    appearance_for,
+    build_prompt,
+    derive_identity,
+    load_appearances,
+    negative_prompt,
+    parse_agent_file,
+)
 
 AGENTS_DIR = Path(r"C:\Users\ricar\.claude\agents")
+
+# Portraits and their hand-written appearances live WITH the agents, in the
+# agent-creator repo -- not in claude-custom. They are a property of the agent
+# roster, which more than one project consumes.
+PORTRAITS_ROOT = Path(r"C:\Users\ricar\VibeCode\agent-creator\portraits")
+APPEARANCES_FILE = PORTRAITS_ROOT / "appearances.yaml"
 BASE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
 LIGHTNING_REPO = "ByteDance/SDXL-Lightning"
 LIGHTNING_LORA = "sdxl_lightning_8step_lora.safetensors"
@@ -110,9 +123,12 @@ def main() -> int:
     ap.add_argument("--agents", nargs="+", required=True)
     ap.add_argument("--candidates", type=int, default=8)
     ap.add_argument("--steps", type=int, default=LIGHTNING_STEPS)
-    ap.add_argument("--out", default="outputs")
+    ap.add_argument("--out", default=str(PORTRAITS_ROOT))
     ap.add_argument("--offline", action="store_true", help="fail rather than download")
     args = ap.parse_args()
+
+    appearances = load_appearances(APPEARANCES_FILE)
+    print(f"hand-written appearances: {len(appearances)}", flush=True)
 
     identities = []
     for name in args.agents:
@@ -120,14 +136,15 @@ def main() -> int:
         if not path.exists():
             print(f"no such agent: {path}", file=sys.stderr)
             return 2
-        identities.append(derive_identity(parse_agent_file(path)))
+        identities.append(appearance_for(derive_identity(parse_agent_file(path)), appearances))
 
     print("loading pipeline (first run downloads ~7 GB)...", flush=True)
     pipe = load_pipeline(offline=args.offline)
 
     out_root = Path(args.out)
     for identity in identities:
-        print(f"\n{identity['agent']} ({identity['person'] or 'unnamed'})", flush=True)
+        source = "hand-written" if identity.get("appearance") else "derived from role"
+        print(f"\n{identity['agent']} ({identity['person'] or 'unnamed'}) [{source}]", flush=True)
         print(f"  {build_prompt(identity, 'working')[:120]}...", flush=True)
         generate_candidates(
             pipe, identity, args.candidates, out_root / identity["agent"] / "candidates", args.steps

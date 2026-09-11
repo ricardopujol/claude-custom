@@ -24,6 +24,12 @@ STATES = ["sleeping", "working", "happy", "stressed"]
 # generating four images instead of one.
 MAX_ROLE_CHARS = 140
 
+# Same reasoning as MAX_ROLE_CHARS: a long hand-written look would push the
+# state cue past CLIP's 77-token limit and collapse all four states into one
+# image. Slightly more generous, since this text is deliberate rather than
+# scraped.
+MAX_APPEARANCE_CHARS = 200
+
 # Everything from these markers onward is routing/trigger phrasing aimed at the
 # agent dispatcher. It describes no visual subject whatsoever.
 _TRIGGER_MARKERS = (
@@ -147,20 +153,83 @@ def derive_identity(agent: dict) -> dict:
     }
 
 
+def load_appearances(path: str | Path) -> dict:
+    """Load hand-written looks. Optional, and never fatal.
+
+    Lives in its own file rather than in agent frontmatter on purpose: editing
+    any agent `.md` triggers the mandatory /align-agents sync across 161 files,
+    and the design requires zero edits there.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+
+    out = {}
+    for agent, value in loaded.items():
+        if isinstance(value, str):
+            out[str(agent)] = {"appearance": value}
+        elif isinstance(value, dict):
+            out[str(agent)] = value
+    return out
+
+
+def appearance_for(identity: dict, appearances: dict) -> dict:
+    """Fold a hand-written look into an identity. Unlisted agents pass through."""
+    entry = (appearances or {}).get(identity.get("agent")) or {}
+    merged = dict(identity)
+
+    look = str(entry.get("appearance") or "").strip()
+    if look:
+        # Capped for the same reason roles are: CLIP truncates at 77 tokens, and
+        # an over-long look would push the state cue off the end -- collapsing
+        # all four states into the same image.
+        if len(look) > MAX_APPEARANCE_CHARS:
+            look = look[:MAX_APPEARANCE_CHARS].rsplit(" ", 1)[0].rstrip(",;:")
+        merged["appearance"] = look
+
+    palette = str(entry.get("palette") or "").strip()
+    if palette:
+        merged["palette"] = palette
+
+    return merged
+
+
 def build_prompt(identity: dict, state: str) -> str:
     cue = _STATE_CUES.get(state, _STATE_CUES["working"])
-    colour = (identity.get("color") or "").lower()
-    # Keep the literal colour word alongside the descriptive cue: it is a far
-    # stronger and more reliable token for the model than "amber" alone.
-    palette = _COLOUR_CUES.get(colour)
-    palette = f"{colour}, {palette}" if palette else "muted desaturated tones"
+    # A hand-written palette wins over the frontmatter colour: it was chosen for
+    # how the portrait should look, not for how the agent is tagged.
+    if identity.get("palette"):
+        palette = identity["palette"]
+    else:
+        colour = (identity.get("color") or "").lower()
+        # Keep the literal colour word alongside the descriptive cue: it is a
+        # far stronger and more reliable token for the model than "amber" alone.
+        colour_cue = _COLOUR_CUES.get(colour)
+        palette = f"{colour}, {colour_cue}" if colour_cue else "muted desaturated tones"
 
-    subject = identity.get("role") or identity.get("agent", "specialist")
+    # A hand-written appearance is the whole point of the file: it beats text
+    # scraped out of a description written for an agent router, not an artist.
+    subject = (
+        identity.get("appearance")
+        or identity.get("role")
+        or identity.get("agent", "specialist")
+    )
+
+    # Hand-written looks naturally start "a composed man..."; the template also
+    # supplies the article, giving "a a composed man".
+    if not re.match(r"(?i)^(a|an|the)\s", subject):
+        subject = f"a {subject}"
 
     return ", ".join(
         [
             "stylized illustrated character bust portrait",
-            f"a {subject}",
+            subject,
             cue,
             palette,
             "painterly digital illustration, expressive stylised features",

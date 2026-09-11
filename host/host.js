@@ -84,7 +84,12 @@ if (!helperExists) {
 // tool call pays the helper's full connect timeout waiting for a listener that
 // never appears -- strictly worse than not hooking at all.
 const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, '..', 'registry');
-const PORTRAITS_DIR = process.env.CLAUDE_CUSTOM_PORTRAITS || path.join(__dirname, '..', 'portraits');
+// Portraits live with the agents, in the agent-creator repo, not here: they are
+// a property of the agent roster, which more than one project consumes. The
+// forge writes there and the harness reads from there.
+const PORTRAITS_DIR =
+  process.env.CLAUDE_CUSTOM_PORTRAITS ||
+  'C:\\Users\\ricar\\VibeCode\\agent-creator\\portraits';
 const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
