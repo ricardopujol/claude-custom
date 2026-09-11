@@ -103,15 +103,28 @@ def test_prompt_contains_state_specific_cue(state, tmp_path):
     assert prompts[state]
 
 
-def test_default_art_direction_is_an_illustrated_bust():
+def test_default_art_direction_is_an_illustrated_head_and_shoulders():
     # Decision 8: stylized illustrated bust, not pixel art and not flat vector.
-    # This now lives in the shared style prompt, which is where it belongs --
-    # it is a property of the roster, not of any one agent.
+    # The FRAMING is still that; only the word changed (see below).
     from prompts import build_style_prompt
 
     lowered = build_style_prompt().lower()
-    assert "bust" in lowered
     assert "illustrat" in lowered
+    assert "head and shoulders" in lowered
+
+
+def test_art_direction_avoids_photographic_and_sculptural_words():
+    # Regression guard on a measured finding. These terms each collapsed mean
+    # saturation on their own (bare subject 82.7):
+    #   "bust" 18.0 (sculpture) · "rim lighting" 10.9 (studio photography)
+    #   · "charcoal" 9.7 (a drawing medium) · together 4.3
+    # Thirteen consecutive monochrome portraits came out of that, and it read as
+    # a model problem rather than a vocabulary one.
+    from prompts import build_style_prompt
+
+    lowered = (build_style_prompt() + " " + DEFAULT_STYLE["core"]).lower()
+    for word in ("bust", "rim lighting", "charcoal", "photograph", "studio lighting"):
+        assert word not in lowered, f"{word!r} is back in the art direction"
 
 
 def test_prompt_uses_the_agent_colour_as_a_palette_cue(tmp_path):
@@ -349,7 +362,11 @@ def test_subject_prompt_carries_a_compact_style_core(tmp_path):
                            load_appearances(f))
     p = build_prompt(ident, "working", style=style).lower()
     assert "facing viewer" in p
-    assert "background" in p
+    # Colour rather than background: the background clause was dropped from the
+    # core because "plain dark background" was part of what desaturated the
+    # image, and the portraits are cut to alpha in post anyway, so the
+    # background never survives into the shipped asset.
+    assert "colour" in p or "color" in p
 
 
 def test_style_core_is_configurable_and_defaulted():

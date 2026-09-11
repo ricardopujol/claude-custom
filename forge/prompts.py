@@ -156,11 +156,33 @@ def derive_identity(agent: dict) -> dict:
 # ONE art direction for all 161 agents. Per-agent entries describe the SUBJECT;
 # everything about how it is drawn, framed and lit lives here so it cannot drift
 # between agents. Tunable once, in the `_style:` block of appearances.yaml.
+#
+# WRITE THIS IN PAINTING VOCABULARY, NOT PHOTOGRAPHIC OR SCULPTURAL.
+#
+# Measured, plain SDXL, fixed seed, mean HSV saturation (bare subject = 82.7):
+#
+#   art only ("painterly ... brush texture")     77.2   fine
+#   shot only ("head and shoulders BUST")        18.0
+#   lighting only ("soft RIM LIGHTING")          10.9
+#   background only ("dark CHARCOAL background")  9.7
+#   all three together                            4.3   <- 95% collapse
+#   same instructions in painting words          88.1
+#   ... plus "rich saturated colour"            108.0
+#
+# "bust" is sculpture, "rim lighting" is studio photography, "charcoal" is a
+# drawing medium. Each drags the image toward stone, studio light and graphite,
+# and together they produced thirteen consecutive monochrome portraits that
+# looked like a model problem. Saying the SAME things as a painter does costs
+# nothing and gains everything.
+#
+# Dropping framing and lighting entirely scored 103.6 -- WORSE than keeping
+# them at 108.0 -- so they earn their place; only the register was wrong.
 DEFAULT_STYLE = {
     "art": "painterly digital illustration, visible brush texture, stylised features",
-    "shot": "head and shoulders bust, centered, facing viewer, eye level",
-    "lighting": "soft rim lighting from the upper left",
-    "background": "plain dark charcoal background, no scenery",
+    "colour": "rich saturated colour",
+    "shot": "head and shoulders portrait, centered, facing viewer",
+    "lighting": "soft warm light from the upper left",
+    "background": "plain deep muted background, no scenery",
     # The few load-bearing words repeated into the FIRST text encoder.
     #
     # Measured from real output: with the art direction only in encoder 2, SDXL
@@ -169,7 +191,7 @@ DEFAULT_STYLE = {
     # "plain dark charcoal background". Encoder 1 (CLIP-L) carries much of the
     # compositional signal, so these must appear there too. Kept deliberately
     # short: it shares encoder 1's 77-token budget with the whole description.
-    "core": "painterly illustration, facing viewer, plain dark background",
+    "core": "painterly illustration, rich colour, facing viewer",
 }
 
 STYLE_KEY = "_style"
@@ -339,8 +361,8 @@ def build_style_prompt(style: dict | None = None, palette: str | None = None) ->
     palette varies, which is per-agent by design.
     """
     style = {**DEFAULT_STYLE, **(style or {})}
-    parts = [style["art"], style["shot"], style["lighting"], style["background"],
-             "consistent character design"]
+    parts = [style["art"], style["colour"], style["shot"], style["lighting"],
+             style["background"], "consistent character design"]
     if palette:
         parts.insert(1, palette)
     return ", ".join(parts)

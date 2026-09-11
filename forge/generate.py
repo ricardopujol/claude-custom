@@ -103,7 +103,7 @@ def agent_seed(agent: str) -> int:
     return h
 
 
-def generate_candidates(pipe, identity: dict, count: int, out_dir: Path, steps: int, style: dict | None = None) -> list[Path]:
+def generate_candidates(pipe, identity: dict, count: int, out_dir: Path, steps: int, style: dict | None = None, guidance: float | None = None) -> list[Path]:
     import torch
 
     prompt = build_prompt(identity, "working", style=style)
@@ -129,7 +129,7 @@ def generate_candidates(pipe, identity: dict, count: int, out_dir: Path, steps: 
             negative_prompt=negative,
             negative_prompt_2=negative,
             num_inference_steps=steps,
-            guidance_scale=LIGHTNING_GUIDANCE,
+            guidance_scale=LIGHTNING_GUIDANCE if guidance is None else guidance,
             width=1024,
             height=1024,
             generator=torch.Generator(device="cpu").manual_seed(seed),
@@ -150,6 +150,9 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=LIGHTNING_STEPS)
     ap.add_argument("--out", default=str(PORTRAITS_ROOT))
     ap.add_argument("--offline", action="store_true", help="fail rather than download")
+    ap.add_argument("--no-lightning", action="store_true",
+                    help="plain SDXL: slower per image, markedly better prompt adherence")
+    ap.add_argument("--guidance", type=float, default=None)
     args = ap.parse_args()
 
     appearances = load_appearances(APPEARANCES_FILE)
@@ -166,7 +169,7 @@ def main() -> int:
         identities.append(appearance_for(derive_identity(parse_agent_file(path)), appearances))
 
     print("loading pipeline (first run downloads ~7 GB)...", flush=True)
-    pipe = load_pipeline(offline=args.offline)
+    pipe = load_pipeline(offline=args.offline, lightning=not args.no_lightning)
 
     out_root = Path(args.out)
     for identity in identities:
@@ -174,7 +177,8 @@ def main() -> int:
         print(f"\n{identity['agent']} ({identity['person'] or 'unnamed'}) [{source}]", flush=True)
         print(f"  {build_prompt(identity, 'working', style=style)[:120]}...", flush=True)
         generate_candidates(
-            pipe, identity, args.candidates, out_root / identity["agent"] / "candidates", args.steps, style
+            pipe, identity, args.candidates, out_root / identity["agent"] / "candidates",
+            args.steps, style, args.guidance
         )
 
     print(f"\ncandidates written under {out_root.resolve()}")
