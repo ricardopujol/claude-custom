@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+
+# Forge output — regenerable, and large
+portraits/**/*.png
+forge/models/
+forge/.cache/
+forge/outputs/
+
+# Generated at runtime
+.harness/
+*.log
