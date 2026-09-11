@@ -161,6 +161,15 @@ DEFAULT_STYLE = {
     "shot": "head and shoulders bust, centered, facing viewer, eye level",
     "lighting": "soft rim lighting from the upper left",
     "background": "plain dark charcoal background, no scenery",
+    # The few load-bearing words repeated into the FIRST text encoder.
+    #
+    # Measured from real output: with the art direction only in encoder 2, SDXL
+    # ignored framing, background and palette -- the first portrait came back in
+    # three-quarter profile on a light grey ground, against "facing viewer" and
+    # "plain dark charcoal background". Encoder 1 (CLIP-L) carries much of the
+    # compositional signal, so these must appear there too. Kept deliberately
+    # short: it shares encoder 1's 77-token budget with the whole description.
+    "core": "painterly illustration, facing viewer, plain dark background",
 }
 
 STYLE_KEY = "_style"
@@ -302,7 +311,7 @@ def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
     # ~15 for a description. SDXL has two text encoders, each with its own 77
     # budget, so the two concerns get one each and neither can truncate the
     # other.
-    return ", ".join([subject, cue, palette])
+    return ", ".join([subject, cue, palette, style["core"]])
 
 
 def build_style_prompt(style: dict | None = None) -> str:

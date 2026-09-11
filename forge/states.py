@@ -71,7 +71,11 @@ def load_img2img(offline: bool = False):
         pipe.scheduler.config, timestep_spacing="trailing"
     )
     pipe.enable_model_cpu_offload()
-    pipe.enable_vae_slicing()
+    # See generate.py: diffusers 0.40 moved this onto the VAE.
+    if hasattr(pipe.vae, "enable_slicing"):
+        pipe.vae.enable_slicing()
+    elif hasattr(pipe, "enable_vae_slicing"):
+        pipe.enable_vae_slicing()
     pipe.set_progress_bar_config(disable=True)
     return pipe
 

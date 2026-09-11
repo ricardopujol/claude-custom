@@ -72,7 +72,13 @@ def load_pipeline(offline: bool = False):
     # 8 GB will not hold the whole pipeline resident alongside activations.
     # Offload moves each submodule to the GPU only while it runs.
     pipe.enable_model_cpu_offload()
-    pipe.enable_vae_slicing()
+    # diffusers 0.40 removed pipe.enable_vae_slicing(); it lives on the VAE now.
+    # Guarded both ways so a version bump in either direction does not take the
+    # whole run down after the model has already loaded.
+    if hasattr(pipe.vae, "enable_slicing"):
+        pipe.vae.enable_slicing()
+    elif hasattr(pipe, "enable_vae_slicing"):
+        pipe.enable_vae_slicing()
     pipe.set_progress_bar_config(disable=True)
     return pipe
 

@@ -334,3 +334,36 @@ def test_lint_flags_an_expression_because_states_own_that():
     # The forge appends the expression per state; baking one in here makes all
     # four states show the same face.
     assert style_conflicts("a cheerful smiling man with a beard")
+
+
+def test_subject_prompt_carries_a_compact_style_core(tmp_path):
+    # Measured from real output: with the art direction ONLY in encoder 2, SDXL
+    # ignored framing, background and palette -- the first portrait came back in
+    # three-quarter profile on a light grey ground, against "facing viewer" and
+    # "plain dark charcoal background". Encoder 1 (CLIP-L) carries much of the
+    # compositional signal, so the few load-bearing words must appear there too.
+    f = tmp_path / "appearances.yaml"
+    f.write_text(STYLE_YAML, encoding="utf-8")
+    style = load_style(f)
+    ident = appearance_for({"agent": "code-reviewer", "role": "reviewer", "color": "blue"},
+                           load_appearances(f))
+    p = build_prompt(ident, "working", style=style).lower()
+    assert "facing viewer" in p
+    assert "background" in p
+
+
+def test_style_core_is_configurable_and_defaulted():
+    assert DEFAULT_STYLE["core"]
+    from prompts import load_style as _ls
+    assert "core" in DEFAULT_STYLE
+
+
+def test_subject_prompt_stays_short_despite_the_core(tmp_path):
+    # The core must not reintroduce the truncation it was added to avoid.
+    f = tmp_path / "appearances.yaml"
+    f.write_text(STYLE_YAML, encoding="utf-8")
+    style = load_style(f)
+    ident = appearance_for({"agent": "code-reviewer", "role": "reviewer", "color": "blue"},
+                           load_appearances(f))
+    for state in STATES:
+        assert len(build_prompt(ident, state, style=style)) <= 340

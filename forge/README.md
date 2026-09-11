@@ -50,7 +50,36 @@ Lightning LoRA ~0.4 GB, CLIP ~0.6 GB.
 Step 2 is the only mandatory human step and the real time cost. Everything
 downstream is conditioned on that choice.
 
-## Two traps worth keeping
+## Art direction vs. per-agent looks
+
+`appearances.yaml` holds two separate things, and keeping them apart is what
+makes 161 portraits look like one set:
+
+- `_style` — how everything is drawn. Shared, sent to SDXL's **second** text
+  encoder, identical for every agent.
+- per-agent entries — **only the person**. No framing, no art style, no
+  expression.
+
+**Why two encoders.** Measured with the real CLIP tokenizer: subject + state +
+palette + style in one string came to **99 tokens against a hard limit of 77**.
+The style sat last, so truncation ate *the art direction* — by a different
+amount per agent, which is exactly how a roster stops looking like a set.
+Tightening cannot rescue it (the style block alone is ~44 tokens, leaving ~15
+for a description). SDXL has two text encoders with independent 77-token
+budgets, so `prompt` carries the subject and `prompt_2` the style, and neither
+can truncate the other. After the split: style prompt 48 tokens, all agents fit.
+
+Run `python check.py` after editing. It measures with the real tokenizer and
+flags unknown agent keys, over-long entries, and text that fights the shared
+direction. Every one of those is invisible in the output — you see an
+inconsistent roster, not the entry that caused it.
+
+## Three traps worth keeping
+
+**`enable_vae_slicing()` moved.** diffusers 0.40 removed it from the pipeline;
+it is `pipe.vae.enable_slicing()` now. The old call raises `AttributeError`
+*after* the 11 GB model has finished loading, so the run dies at the most
+expensive possible moment. Both call sites are guarded in either direction.
 
 **The identity gate must NOT use ArcFace or InsightFace.** Face-recognition
 models are trained on photographs and are unreliable on illustration: they
