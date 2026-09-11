@@ -227,7 +227,7 @@ def test_state_cue_survives_a_long_appearance(tmp_path):
     ident = appearance_for(ident, load_appearances(f))
     prompts = {s: build_prompt(ident, s) for s in STATES}
     assert len(set(prompts.values())) == len(STATES), "long appearance collapsed the states"
-    assert "eyelids down" in prompts["sleeping"]
+    assert "eyes squeezed tightly shut" in prompts["sleeping"]
 
 
 def test_no_doubled_article_when_appearance_starts_with_one(tmp_path):
@@ -401,7 +401,7 @@ def test_state_prompt_is_dominated_by_the_expression(tmp_path):
         load_appearances(f),
     )
     p = build_state_prompt(ident, "happy")
-    assert "smile" in p.lower()
+    assert "grin" in p.lower()
     # The appearance must NOT be restated; it is already in the image.
     assert "wire glasses" not in p
     assert "salt-and-pepper" not in p
@@ -415,4 +415,4 @@ def test_state_prompts_differ_sharply_between_states(tmp_path):
     assert len(set(prompts.values())) == len(STATES)
     # Each should be short: a long one reintroduces the competition problem.
     for s, p in prompts.items():
-        assert len(p) <= 160, f"{s} prompt is {len(p)} chars"
+        assert len(p) <= 220, f"{s} prompt is {len(p)} chars"

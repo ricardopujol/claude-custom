@@ -71,14 +71,14 @@ _PERSON_RE = re.compile(
 # Same lesson as the art direction, one level down: say it in the register that
 # renders. Mouths, brows, eyelids, cheeks -- things an illustrator would draw.
 _STATE_CUES = {
-    "sleeping": "eyes fully closed, eyelids down, head tilted slightly down, "
-                "mouth relaxed and slightly open, face slack and soft",
-    "working": "brows drawn together, eyes narrowed and fixed straight ahead, "
-               "lips pressed into a thin line, jaw set",
-    "happy": "broad open smile, teeth visible, corners of the mouth pulled up, "
-             "cheeks raised, eyes crinkled at the outer corners",
-    "stressed": "deep vertical frown line between the brows, brows pulled low, "
-                "mouth turned down at the corners, jaw clenched, neck tendons taut",
+    "sleeping": "FAST ASLEEP, both eyes squeezed tightly shut, eyelids firmly closed, "
+                "head drooping heavily to one side, mouth hanging open, deeply unconscious",
+    "working": "INTENSE CONCENTRATION, brows slammed together in a hard scowl, "
+               "eyes narrowed to determined slits, teeth gritted, jaw rigid",
+    "happy": "LAUGHING WITH DELIGHT, enormous open-mouthed grin, upper teeth fully visible, "
+             "eyes squeezed shut with joy, cheeks bunched high, beaming",
+    "stressed": "PANICKING, eyes bulging wide with alarm, eyebrows shot up high, "
+                "mouth wrenched open in a grimace, face contorted with strain",
 }
 
 # Frontmatter colours map to a palette cue the model can actually act on.
@@ -367,7 +367,8 @@ def build_state_prompt(identity: dict, state: str) -> str:
     again at 0.62, all four states came back with the same neutral face.
     """
     cue = _STATE_CUES.get(state, _STATE_CUES["working"])
-    return f"{cue}, same character, same framing"
+    return (f"{cue}, wildly exaggerated caricatured expression, "
+            f"same character, same framing")
 
 
 def build_style_prompt(style: dict | None = None, palette: str | None = None) -> str:

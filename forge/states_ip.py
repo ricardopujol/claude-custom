@@ -82,12 +82,29 @@ def load_pipeline(offline: bool = False):
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is not available; the forge needs the GPU.")
 
+    from transformers import CLIPVisionModelWithProjection
+
     controlnet = ControlNetModel.from_pretrained(
         CONTROLNET, torch_dtype=torch.float16, local_files_only=offline
     )
+
+    # The _vit-h weights need the ViT-H encoder (1664-dim), not the bigG one
+    # (1280-dim) that sits beside them in sdxl_models/. Loaded explicitly and
+    # handed to the pipeline: passing image_encoder_folder="../models/..." is
+    # the documented shortcut but transformers rejects any path containing
+    # '..'. Getting this wrong fails deep in the forward pass with
+    #   mat1 and mat2 shapes cannot be multiplied (514x1664 and 1280x1280)
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        IP_REPO,
+        subfolder="models/image_encoder",
+        torch_dtype=torch.float16,
+        local_files_only=offline,
+    )
+
     pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
         BASE_MODEL,
         controlnet=controlnet,
+        image_encoder=image_encoder,
         torch_dtype=torch.float16,
         variant="fp16",
         use_safetensors=True,
@@ -98,11 +115,9 @@ def load_pipeline(offline: bool = False):
     # fails deep inside the forward pass with
     #   mat1 and mat2 shapes cannot be multiplied (514x1664 and 1280x1280)
     # -- 1664 is ViT-H, 1280 is bigG. The path is relative to `subfolder`.
+    # Encoder already supplied above, so tell load_ip_adapter not to look for one.
     pipe.load_ip_adapter(
-        IP_REPO,
-        subfolder=IP_SUBFOLDER,
-        weight_name=IP_WEIGHTS,
-        image_encoder_folder="../models/image_encoder",
+        IP_REPO, subfolder=IP_SUBFOLDER, weight_name=IP_WEIGHTS, image_encoder_folder=None
     )
 
     pipe.enable_model_cpu_offload()
