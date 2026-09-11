@@ -271,6 +271,38 @@ function renderProcesses(running) {
   }).join('');
 }
 
+// --- permission mode --------------------------------------------------------
+const modeEl = document.getElementById('mode');
+let modeTable = {};
+
+function renderMode(mode) {
+  if (!mode) { modeEl.innerHTML = ''; modeEl.style.display = 'none'; return; }
+  modeEl.style.display = 'flex';
+  const info = modeTable[mode] || { label: mode, rank: 0, risky: false, hint: '' };
+  const total = Object.keys(modeTable).length || 5;
+  // More filled bars = more restrictive, so a glance reads as "how guarded am I".
+  const filled = info.rank + 1;
+  const bars = Array.from({ length: total },
+    (_, i) => '<i class="' + (i < filled ? 'on' : '') + '"></i>').join('');
+  modeEl.className = info.risky ? 'risky' : '';
+  modeEl.title = info.hint ? info.label + ' — ' + info.hint : info.label;
+  modeEl.innerHTML = '<span class="lvl">' + bars + '</span><span class="nm">' + info.label + '</span>';
+}
+
+// --- party ------------------------------------------------------------------
+const partyEl = document.querySelector('#party .chain');
+
+function renderParty(party) {
+  if (!party || party.length === 0) {
+    partyEl.innerHTML = '<span class="none">no delegation</span>';
+    return;
+  }
+  partyEl.innerHTML = party.map((a, i) =>
+    (i ? '<span class="arrow">›</span>' : '') +
+    '<span class="who' + (i === party.length - 1 ? ' inner' : '') + '">' + a + '</span>'
+  ).join('');
+}
+
 function handleControl(msg) {
   if (msg.type === 'hello') {
     // The host sends `hello` immediately before replaying the current screen.
@@ -284,6 +316,9 @@ function handleControl(msg) {
     applyTheme(msg.theme);
     renderUsage(msg.usage);
     renderProcesses(msg.running);
+    if (msg.modes) modeTable = msg.modes;
+    renderMode(msg.mode);
+    renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
     renderRoster();
@@ -297,11 +332,22 @@ function handleControl(msg) {
   }
   if (msg.type === 'processes') {
     renderProcesses(msg.running);
+    if (msg.modes) modeTable = msg.modes;
+    renderMode(msg.mode);
+    renderParty(msg.party);
+    renderParty(msg.party);
+    return;
+  }
+  if (msg.type === 'mode') {
+    renderMode(msg.mode);
     return;
   }
   if (msg.type === 'usage') {
     renderUsage(msg.usage);
     renderProcesses(msg.running);
+    if (msg.modes) modeTable = msg.modes;
+    renderMode(msg.mode);
+    renderParty(msg.party);
     return;
   }
   if (msg.type === 'exit') {

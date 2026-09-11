@@ -36,6 +36,23 @@ function createTerminalState({ cols = 120, rows = 30, scrollback = 1000 } = {}) 
   return {
     write: data => term.write(data),
     serialize: () => serializer.serialize(),
+
+    // Plain text rows. serialize() carries ANSI because replay needs it, which
+    // makes it the wrong thing to parse: a colour change mid-phrase splits the
+    // text and a regex that should match quietly does not.
+    lines() {
+      const buf = term.buffer.active;
+      const out = [];
+      // baseY is the offset of the VIEWPORT within the buffer. getLine() is
+      // indexed from the start of scrollback, so without it y=0 is the oldest
+      // line in history rather than the top of the current screen -- which made
+      // the permission-mode reader parse the startup banner forever.
+      for (let y = 0; y < term.rows; y++) {
+        const line = buf.getLine(buf.baseY + y);
+        if (line) out.push(line.translateToString(true));
+      }
+      return out;
+    },
     resize(nextCols, nextRows) { term.resize(nextCols, nextRows); },
     size: () => ({ cols: term.cols, rows: term.rows }),
     unicodeVersion: () => term.unicode.activeVersion,

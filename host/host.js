@@ -29,6 +29,8 @@ const { portraitFor } = require('./portraits');
 const { readUsage } = require('./usage');
 const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
+const { createStore } = require('./store');
+const { parsePermissionMode, MODES } = require('./mode');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -96,6 +98,7 @@ console.log('[host] theme          :', theme.name);
 
 const mood = createMoodMachine();
 const processes = createProcessTracker();
+const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent, state, { portraitsDir: PORTRAITS_DIR }) });
 
 // Generated once per project folder and reused by every context window on it.
@@ -122,7 +125,7 @@ if (helperExists) {
     }
     mood.handle(ev);
     processes.handle(ev);
-    broadcastControl({ type: 'processes', running: processes.list() });
+    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
   hookBridge.on('error', e => console.log('[hook!] bridge error:', e.message));
@@ -185,6 +188,20 @@ const clients = new Set();
 // than nothing until the TUI happens to repaint.
 const termState = createTerminalState({ cols: 120, rows: 30 });
 
+// The TUI is the only authority on the current permission mode: the user can
+// change it with shift+tab at any moment. Read it back out of the screen we
+// already maintain rather than tracking it independently.
+let permissionMode = null;
+function refreshPermissionMode() {
+  const lines = termState.lines();
+  const next = parsePermissionMode(lines);
+  if (next && next !== permissionMode) {
+    permissionMode = next;
+    console.log('[host] permission mode:', permissionMode);
+    broadcastControl({ type: 'mode', mode: permissionMode });
+  }
+}
+
 // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
 // Distinguishing by content would be wrong -- terminal output can contain
 // anything, including a leading '{'.
@@ -209,7 +226,10 @@ const moodTimer = setInterval(() => {
   processes.sweep();
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
   // own a clock of its own.
-  if (processes.list().length) broadcastControl({ type: 'processes', running: processes.list() });
+  refreshPermissionMode();
+  if (processes.list().length) {
+    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
+  }
 }, 1000);
 moodTimer.unref();
 
@@ -252,6 +272,9 @@ wss.on('connection', (ws) => {
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     running: processes.list(),
+    party: mood.stack(),
+    mode: permissionMode,
+    modes: MODES,
   });
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });

@@ -71,3 +71,32 @@ test('keeps a bounded scrollback rather than growing without limit', async () =>
   assert.ok(s.serialize().includes('line 499'), 'newest output missing');
   s.dispose();
 });
+
+test('exposes plain text rows, free of escape sequences', async () => {
+  // serialize() is for REPLAY and deliberately carries ANSI. Parsing it is
+  // fragile: a colour change mid-phrase splits the text and a regex that should
+  // match silently does not. Anything reading the screen wants plain rows.
+  const s = createTerminalState({ cols: 60, rows: 8 });
+  s.write('\x1b[33mbypass \x1b[1mpermissions\x1b[0m on');
+  await flush();
+  const rows = s.lines();
+  assert.ok(Array.isArray(rows));
+  assert.ok(rows.some(r => r.includes('bypass permissions on')),
+    `escape codes leaked into ${JSON.stringify(rows.filter(Boolean))}`);
+  assert.ok(!rows.join('').includes('\x1b'), 'escape sequence present in plain rows');
+  s.dispose();
+});
+
+test('plain rows come from the VIEWPORT, not the top of scrollback', async () => {
+  // buffer.active.getLine(y) is indexed from the start of history, so once
+  // anything has scrolled, y=0 is ancient output rather than the current
+  // screen. Reading the permission mode that way returned the banner forever.
+  const s = createTerminalState({ cols: 40, rows: 6, scrollback: 200 });
+  for (let i = 0; i < 60; i++) s.write(`old line ${i}\r\n`);
+  s.write('CURRENT STATUS LINE');
+  await flush();
+  const rows = s.lines();
+  assert.ok(rows.some(r => r.includes('CURRENT STATUS LINE')), JSON.stringify(rows));
+  assert.ok(!rows.some(r => r.includes('old line 0')), 'scrollback leaked into the viewport');
+  s.dispose();
+});

@@ -167,6 +167,30 @@
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
 
+    /* --- permission mode ---------------------------------------------------
+       Five modes, measured by cycling shift+tab. Bypass is flagged because
+       "running with permissions bypassed" should be impossible to forget. */
+    #mode { display: flex; align-items: center; gap: 6px; font-size: 10.5px;
+            padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border);
+            -webkit-app-region: no-drag; }
+    #mode .lvl { display: flex; gap: 2px; }
+    #mode .lvl i { width: 3px; height: 9px; border-radius: 1px; background: var(--border); }
+    #mode .lvl i.on { background: var(--accent); }
+    #mode .nm { color: var(--text); font-weight: 600; }
+    #mode.risky { border-color: var(--bad); }
+    #mode.risky .nm { color: var(--bad); }
+    #mode.risky .lvl i.on { background: var(--bad); }
+
+    /* --- party -------------------------------------------------------------
+       The live delegation chain, so a subagent that quietly spawned six more
+       is visible rather than inferred. */
+    #party { padding: 6px 8px; border-top: 1px solid var(--border); font-size: 10.5px; }
+    #party .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+    #party .who { background: rgba(255,255,255,.06); border-radius: 4px; padding: 1px 5px; }
+    #party .who.inner { background: var(--accent); color: #12141c; font-weight: 600; }
+    #party .arrow { color: var(--dim); }
+    #party .none { color: var(--dim); opacity: .7; }
+
     /* --- running processes -------------------------------------------------
        Long work must be visible. A four-minute GPU job that shows nothing is
        indistinguishable from a hung session. */
@@ -212,6 +236,7 @@
       <span class="title">claude-custom</span>
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
+      <span id="mode" title="Permission mode — shift+tab cycles"></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
@@ -220,6 +245,7 @@
       <aside id="roster">
         <h2>Agents</h2>
         <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
+        <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
         <div id="procs">
           <h3>Running</h3>
           <div id="proclist"><div class="none">nothing running</div></div>

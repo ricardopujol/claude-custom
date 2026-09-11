@@ -141,6 +141,9 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, flashMs = 8_000 } 
   machine.handle = handle;
   machine.tick = tick;
   machine.stateOf = agent => (agents.get(agent) || { state: SLEEPING }).state;
+  // Live delegation chain, outermost first. Already maintained to attribute a
+  // failure to the innermost running agent; exposing it is free.
+  machine.stack = () => [...stack];
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state }));
 
   return machine;

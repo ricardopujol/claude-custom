@@ -196,3 +196,20 @@ test('a string zero exit status is success, not failure', () => {
   h.post('Bash', { command: 'true' }, { exit_code: '0' });
   assert.strictEqual(h.m.stateOf('code-reviewer'), 'working');
 });
+
+test('exposes the live delegation stack, innermost last', () => {
+  // Party view: the machine already keeps this to attribute a Bash failure to
+  // the innermost agent. Surfacing it costs nothing and makes a subagent that
+  // quietly spawned six more visible.
+  const h = harness();
+  h.pre('Task', { subagent_type: 'agent-organizer' });
+  h.pre('Task', { subagent_type: 'code-reviewer' });
+  h.pre('Task', { subagent_type: 'logic-reviewer' });
+  assert.deepStrictEqual(h.m.stack(), ['agent-organizer', 'code-reviewer', 'logic-reviewer']);
+  h.stop();
+  assert.deepStrictEqual(h.m.stack(), ['agent-organizer', 'code-reviewer']);
+});
+
+test('the stack is empty when nothing is delegating', () => {
+  assert.deepStrictEqual(harness().m.stack(), []);
+});
