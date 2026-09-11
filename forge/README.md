@@ -74,6 +74,31 @@ flags unknown agent keys, over-long entries, and text that fights the shared
 direction. Every one of those is invisible in the output — you see an
 inconsistent roster, not the entry that caused it.
 
+## Measured: raising guidance does NOT fix adherence
+
+The first real batch dropped much of the description — across 8 candidates
+"red hair" landed 0/4, "big glasses" 1/4, "bald" 1/4, one code-reviewer came
+back as a woman, and everything was near-monochrome despite explicit palettes.
+
+The obvious hypothesis was too little classifier-free guidance. A fixed-seed
+sweep says otherwise:
+
+| guidance | outcome |
+|---|---|
+| **1.5** | glasses present, grey background — **the best of the four** |
+| 3.0 | glasses lost |
+| 5.0 | glasses lost, posterizing |
+| 7.5 | glasses lost, heavy burn, flat coloured background |
+
+**Higher guidance made adherence worse and quality worse.** Red hair was absent
+at every level. This is consistent with Lightning being distilled for guidance
+near 1.0 — pushing it past that degrades the image without buying prompt
+fidelity, so the knob has no useful range and 1.5 stays the setting.
+
+Worth stating plainly because the instinct is to turn guidance up when a prompt
+is ignored, and here that is actively wrong. The next suspect is the Lightning
+LoRA itself; `tune.py --no-lightning` runs plain SDXL for comparison.
+
 ## Three traps worth keeping
 
 **`enable_vae_slicing()` moved.** diffusers 0.40 removed it from the pipeline;
