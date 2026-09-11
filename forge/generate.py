@@ -26,6 +26,7 @@ from prompts import (
     load_appearances,
     build_style_prompt,
     load_style,
+    resolve_palette,
     negative_prompt,
     parse_agent_file,
 )
@@ -106,7 +107,7 @@ def generate_candidates(pipe, identity: dict, count: int, out_dir: Path, steps: 
     import torch
 
     prompt = build_prompt(identity, "working", style=style)
-    style_prompt = build_style_prompt(style)
+    style_prompt = build_style_prompt(style, resolve_palette(identity))
     negative = negative_prompt()
     out_dir.mkdir(parents=True, exist_ok=True)
 

@@ -22,6 +22,7 @@ from prompts import (
     derive_identity,
     load_appearances,
     load_style,
+    resolve_palette,
     negative_prompt,
     parse_agent_file,
 )
@@ -55,7 +56,7 @@ def main() -> int:
     )
 
     prompt = build_prompt(identity, "working", style=style)
-    style_prompt = build_style_prompt(style)
+    style_prompt = build_style_prompt(style, resolve_palette(identity))
     print(f"prompt  : {prompt}")
     print(f"prompt_2: {style_prompt}\n")
 

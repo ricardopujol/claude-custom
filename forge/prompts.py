@@ -273,19 +273,27 @@ def appearance_for(identity: dict, appearances: dict) -> dict:
     return merged
 
 
+def resolve_palette(identity: dict) -> str:
+    """The agent's palette, hand-written if given, else from frontmatter colour.
+
+    A standalone function rather than a side effect of build_prompt: both
+    encoders need it, and deriving it in one and reading it from the other makes
+    call order load-bearing -- get it wrong and the palette vanishes silently,
+    which is the failure mode this whole session keeps tripping over.
+    """
+    if identity.get("palette"):
+        return identity["palette"]
+    colour = (identity.get("color") or "").lower()
+    cue = _COLOUR_CUES.get(colour)
+    # Keep the literal colour word alongside the descriptive cue: it is a far
+    # stronger and more reliable token for the model than "amber" alone.
+    return f"{colour}, {cue}" if cue else "muted desaturated tones"
+
+
 def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
     style = {**DEFAULT_STYLE, **(style or {})}
     cue = _STATE_CUES.get(state, _STATE_CUES["working"])
-    # A hand-written palette wins over the frontmatter colour: it was chosen for
-    # how the portrait should look, not for how the agent is tagged.
-    if identity.get("palette"):
-        palette = identity["palette"]
-    else:
-        colour = (identity.get("color") or "").lower()
-        # Keep the literal colour word alongside the descriptive cue: it is a
-        # far stronger and more reliable token for the model than "amber" alone.
-        colour_cue = _COLOUR_CUES.get(colour)
-        palette = f"{colour}, {colour_cue}" if colour_cue else "muted desaturated tones"
+    palette = resolve_palette(identity)
 
     # A hand-written appearance is the whole point of the file: it beats text
     # scraped out of a description written for an agent router, not an artist.
@@ -314,17 +322,28 @@ def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
     return ", ".join([subject, cue, palette, style["core"]])
 
 
-def build_style_prompt(style: dict | None = None) -> str:
-    """The shared art direction, byte-identical for every agent.
+def build_style_prompt(style: dict | None = None, palette: str | None = None) -> str:
+    """The shared art direction, plus the agent's palette.
 
     Fed to SDXL's second text encoder (`prompt_2`) so a long appearance can
     never push it out of the context window.
+
+    The palette belongs here as well as in the subject prompt. `prompt_2` drives
+    SDXL's POOLED embedding, which governs global tone -- and with the palette
+    only in encoder 1, every one of the first 13 test images came out
+    monochrome while the pooled text said "charcoal", "dark" and "soft
+    lighting". Telling the pooled embedding grey and the other encoder crimson
+    gets grey.
+
+    The art direction itself stays byte-identical for every agent; only the
+    palette varies, which is per-agent by design.
     """
     style = {**DEFAULT_STYLE, **(style or {})}
-    return ", ".join(
-        [style["art"], style["shot"], style["lighting"], style["background"],
-         "consistent character design"]
-    )
+    parts = [style["art"], style["shot"], style["lighting"], style["background"],
+             "consistent character design"]
+    if palette:
+        parts.insert(1, palette)
+    return ", ".join(parts)
 
 
 def negative_prompt() -> str:

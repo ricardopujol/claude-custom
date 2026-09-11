@@ -27,6 +27,7 @@ from prompts import (
     load_appearances,
     build_style_prompt,
     load_style,
+    resolve_palette,
     negative_prompt,
     parse_agent_file,
 )
@@ -160,7 +161,7 @@ def main() -> int:
     report = {}
     for state in STATES:
         prompt = build_prompt(identity, state, style=style)
-        style_prompt = build_style_prompt(style)
+        style_prompt = build_style_prompt(style, resolve_palette(identity))
         seed = agent_seed(identity["agent"]) + STATES.index(state) * 1000
 
         for attempt in range(MAX_RETRIES):
