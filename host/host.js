@@ -33,6 +33,7 @@ const { createStore } = require('./store');
 const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
+const { createAttention } = require('./attention');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -102,6 +103,8 @@ const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
+const attention = createAttention({ project: path.basename(CWD) });
+attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
 
 // Provider is fixed at spawn: the pty environment cannot change under a running
 // process, so switching backend means a new session rather than a hot swap.
@@ -144,6 +147,7 @@ if (helperExists) {
       const finished = mood.stack()[mood.stack().length - 1];
       if (finished) cooldowns.finished(finished);
     }
+    attention.handle(ev);
     mood.handle(ev);
     processes.handle(ev);
     broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });

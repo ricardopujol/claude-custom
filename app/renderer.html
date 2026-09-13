@@ -67,6 +67,9 @@
       background: var(--bad); transition: background .2s;
     }
     header .dot.on { background: var(--ok); }
+    /* Attention cues, cleared when the window regains focus. */
+    header .dot.wants-input { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+    header .dot.just-finished { background: var(--ok); box-shadow: 0 0 0 3px rgba(95,176,122,.35); }
     header .title { font-weight: 600; letter-spacing: .2px; }
     header .cwd { color: var(--dim); font-size: 12px; }
     header .spacer { flex: 1; }

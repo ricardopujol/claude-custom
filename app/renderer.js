@@ -271,6 +271,23 @@ function renderProcesses(running) {
   }).join('');
 }
 
+// --- attention --------------------------------------------------------------
+// A visible cue in the window as well as the OS toast, so the reason is still
+// there when you come back and the toast has gone.
+function flashAttention(msg) {
+  const dot = document.getElementById('dot');
+  if (!dot) return;
+  dot.classList.add(msg.urgent ? 'wants-input' : 'just-finished');
+  setTimeout(() => dot.classList.remove('wants-input', 'just-finished'), 12000);
+  document.title = (msg.urgent ? '● ' : '') + msg.title;
+}
+
+window.addEventListener('focus', () => {
+  const dot = document.getElementById('dot');
+  if (dot) dot.classList.remove('wants-input', 'just-finished');
+  document.title = 'claude-custom';
+});
+
 // --- permission mode --------------------------------------------------------
 const modeEl = document.getElementById('mode');
 let modeTable = {};
@@ -336,6 +353,25 @@ function handleControl(msg) {
     renderMode(msg.mode);
     renderParty(msg.party);
     renderParty(msg.party);
+    return;
+  }
+  if (msg.type === 'attention') {
+    // Suppressed while the window has focus: a toast for the thing you are
+    // already looking at is pure noise, and noise is how a notification system
+    // stops being read.
+    if (!document.hasFocus()) {
+      try {
+        const n = new Notification(msg.title, {
+          body: msg.body,
+          requireInteraction: !!msg.urgent,   // a blocked session waits for you
+          silent: !msg.urgent,
+        });
+        n.onclick = () => window.focus();
+      } catch (e) {
+        console.warn('[renderer] notification failed:', e.message);
+      }
+    }
+    flashAttention(msg);
     return;
   }
   if (msg.type === 'mode') {

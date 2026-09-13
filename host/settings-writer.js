@@ -57,6 +57,12 @@ function buildHarnessSettings({ helperPath, pipeName } = {}) {
       // critical path. It carries the session id, which is how the host finds
       // this session's transcript to read token spend from.
       SessionStart: [entry('', 'SessionStart')],
+      // Attention: the session is blocked waiting for input. Once per prompt,
+      // not per tool call.
+      Notification: [entry('', 'Notification')],
+      // Attention: the turn finished. Deliberately NOT SubagentStop, which
+      // fires constantly mid-task.
+      Stop: [entry('', 'Stop')],
     },
   };
 }

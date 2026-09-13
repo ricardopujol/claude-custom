@@ -69,7 +69,7 @@ test('hooks only the events the harness actually consumes', () => {
   const s = buildHarnessSettings(opts);
   assert.deepStrictEqual(
     Object.keys(s.hooks).sort(),
-    ['PostToolUse', 'PreToolUse', 'SessionStart', 'SubagentStop']
+    ['Notification', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']
   );
 });
 
