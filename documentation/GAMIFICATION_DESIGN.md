@@ -271,3 +271,59 @@ Two constraints already established elsewhere apply here:
 - Declared tool support is not the same as tool *fidelity*. The hook bridge
   already counts tool calls and errors, so a model can be scored on real tool
   success rate rather than trusted on its advertised capability.
+
+### 16 · Local secret clipboard
+
+A local store for passwords, keys and tokens, so they are one click away rather
+than hunted for in a text file.
+
+**Encrypted at rest via Electron `safeStorage`** (verified available, Electron
+33.4.11). On Windows that is DPAPI: encrypted with the logged-in user's
+credentials, so the file is unreadable by another user or on another machine.
+Stored at `.harness/secrets.enc`, which is already gitignored — and it must
+never go through `store.js`, which writes plain JSON.
+
+**Copy to the OS clipboard; never type into the terminal.** The two are not
+equivalent, and the difference is the whole security story:
+
+| | |
+|---|---|
+| copy to clipboard | the secret goes to the OS clipboard and nowhere near the session |
+| insert into terminal | the secret is now in the conversation |
+
+---
+
+#### THE CONSTRAINT THAT MATTERS
+
+**Anything pasted into a session is in the transcript, permanently.**
+
+Claude Code writes every prompt to `~/.claude/projects/<project>/<session>.jsonl`
+in plaintext. Those files are what `usage.js` and `recent.js` already read, they
+are not encrypted, they are not deleted when the session ends, and the model
+sees the content.
+
+So this feature makes a secret **easy to reach**. It cannot make pasting one
+into a session **safe**, and nothing in the harness can. That is a property of
+the transcript, not of the clipboard.
+
+Practical consequences:
+
+- The UI should say this at the point of copying, not bury it in a setting.
+- Prefer secrets that never need pasting at all: an env var the host sets on the
+  pty is strictly better, since the process gets it and the conversation does
+  not. The provider switch already works exactly this way — the OpenRouter key
+  reaches `claude` through the environment and never appears in a prompt.
+- The store is therefore most useful for things pasted into *other* applications
+  — a browser login, an SSH passphrase — and least useful for anything that
+  belongs in the session.
+
+#### Design
+
+- Entries: label, secret, optional note. Secret masked by default, revealed on
+  an explicit click.
+- Copy clears the OS clipboard after a timeout, so a key does not sit there
+  until the next copy.
+- No search over secret values, only labels: a search box that matches secret
+  text puts it on screen for a typo.
+- Never logged, never broadcast over the control protocol, never included in
+  `hello`. The renderer asks for one value at a time, on demand.
