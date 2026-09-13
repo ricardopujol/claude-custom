@@ -70,8 +70,14 @@ const check = (label, ok, detail) => {
     hello && require('path').basename(hello.background));
   check('background file exists on disk',
     !!(hello && hello.background && require('fs').existsSync(hello.background)));
+  // Reads the constant rather than pinning a number: the dim was lowered from
+  // 0.9 to 0.72 because the art was invisible in practice, and a hardcoded 0.9
+  // here would have failed for the wrong reason.
+  const { DIM_OPACITY } = require('../host/background');
   check('background is dimmed so text stays readable',
-    !!(hello && /opacity="0\.9"/.test(require('fs').readFileSync(hello.background, 'utf8'))));
+    !!(hello && new RegExp(`opacity="${DIM_OPACITY}"`)
+      .test(require('fs').readFileSync(hello.background, 'utf8'))),
+    `dim ${DIM_OPACITY}`);
   check('hello carries token usage', !!(hello && hello.usage && hello.usage.project),
     hello && hello.usage && `project ${hello.usage.project.total} over ${hello.usage.project.sessions} session(s)`);
   check('project usage exceeds this session, i.e. spans the folder',
