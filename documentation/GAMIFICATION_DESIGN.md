@@ -238,3 +238,36 @@ agent happens to be running. It is session policy, not equipment.
 
 It leaves the inventory entirely and becomes a setting. That also removes the
 only purely defensive category from a system otherwise about capability.
+
+### 15 · Model browser across every OpenRouter provider
+
+Once the OpenRouter key exists for the council (#12), the same key opens every
+model it offers — OpenAI, Google, Meta, Mistral, DeepSeek, Qwen and the rest.
+Switching between them should be a picker, not a config edit.
+
+`GET https://openrouter.ai/api/v1/models` returns the live catalogue with
+pricing, context length and capabilities, so the list never has to be
+hand-maintained and prices stay current.
+
+**The catalogue must be filtered by target, because the two uses have different
+requirements:**
+
+| target | needs | if the model lacks it |
+|---|---|---|
+| main session | tool use, and good tool use | the harness breaks — Task, hooks and structured output all depend on it |
+| council (#12) | nothing beyond chat | fine; a model that cannot call tools can still give an opinion |
+
+The models endpoint reports `supported_parameters`, which indicates tool
+support, so the picker can hide or flag models that cannot drive a session
+rather than letting one be selected and fail confusingly.
+
+Worth showing per row: name, provider, context window, price per million in/out,
+and whether tools are supported. Sort by price or by context.
+
+Two constraints already established elsewhere apply here:
+- A main-session model change takes effect at **spawn**, so it needs a restart.
+  A council model change is immediate, since the council does not go through the
+  pty.
+- Declared tool support is not the same as tool *fidelity*. The hook bridge
+  already counts tool calls and errors, so a model can be scored on real tool
+  success rate rather than trusted on its advertised capability.
