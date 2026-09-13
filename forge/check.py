@@ -116,6 +116,42 @@ def main() -> int:
             print("  ! the art direction itself would be truncated, so the roster")
             print("    would drift agent to agent. Shorten the _style block.")
 
+    # What the token budget actually costs each agent, in their own words.
+    #
+    # This check exists because the script said "no problems found" while CLIP
+    # was discarding the art direction from four of eight agents. The overflow
+    # was reported by the pipeline as a note about sequence length, and here not
+    # at all -- the exact "invisible in the output" failure this file is for.
+    # build_prompt now trims the SUBJECT instead, which is the right trade, but
+    # a clause quietly vanishing from hand-written text still has to be said.
+    trimmed_any = False
+    for name in sorted(looks):
+        entry = looks.get(name) or {}
+        look = str(entry.get("appearance") or "").strip()
+        md = AGENTS_DIR / (name + ".md")
+        if not look or not md.exists():
+            continue
+        merged = appearance_for(derive_identity(parse_agent_file(md)), looks)
+        # The BASE pass only, which is the only place the appearance is ever
+        # spoken: generate.py and tune.py both build with "working", and the
+        # four states come from img2img via build_state_prompt(), which omits
+        # the appearance entirely. Reporting the worst state instead made the
+        # loss look far bigger than it is -- "sleeping" has the longest cue, so
+        # it showed code-reviewer losing his beard and glasses in a prompt that
+        # is never built.
+        prompt = build_prompt(merged, "working", style=style)
+        dropped = [c.strip() for c in look.split(",")
+                   if c.strip() and c.strip() not in prompt]
+        if dropped:
+            if not trimmed_any:
+                print("")
+                print("trimmed to fit CLIP's 77 tokens "
+                      "(clause order decides what survives):")
+                trimmed_any = True
+            print("  " + name + ": dropped " + ", ".join(dropped))
+    if trimmed_any:
+        print("  put face features before clothing -- the tail is what goes.")
+
     print(f"\n{'no problems found' if problems == 0 else f'{problems} thing(s) to look at'}")
     print("(advisory only -- everything still generates)")
     return 0
