@@ -147,6 +147,10 @@ if (helperExists) {
       const finished = mood.stack()[mood.stack().length - 1];
       if (finished) cooldowns.finished(finished);
     }
+    // Logged because the roster silently showed nothing when agents ran, and
+    // there was no way to tell whether hooks were arriving at all.
+    const what = ev.payload && (ev.payload.tool_input?.subagent_type || ev.payload.tool_name);
+    console.log(`[hook] ${ev.event}${what ? ' ' + what : ''}`);
     attention.handle(ev);
     mood.handle(ev);
     processes.handle(ev);

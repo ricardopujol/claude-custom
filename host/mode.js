@@ -10,12 +10,18 @@
  * verify/probe-detach.js. The design assumed three.
  */
 
+// `skulls` is AUTONOMY, counted the way shift+tab walks it: plan is the safest
+// at one, bypass the most autonomous at five. More skulls means more happens
+// without asking you.
+//
+// `rank` is kept as the inverse (restrictiveness) because the ordering logic
+// elsewhere reads more naturally that way; skulls is what the UI draws.
 const MODES = {
-  bypass: { label: 'Bypass', rank: 0, risky: true, hint: 'every tool runs unprompted' },
-  auto: { label: 'Auto', rank: 1, risky: false, hint: 'classifier decides' },
-  'accept edits': { label: 'Accept edits', rank: 2, risky: false, hint: 'edits auto-approved' },
-  manual: { label: 'Manual', rank: 3, risky: false, hint: 'every tool asks' },
-  plan: { label: 'Plan', rank: 4, risky: false, hint: 'read-only, no changes' },
+  plan: { label: 'Plan', skulls: 1, rank: 4, risky: false, hint: 'read-only, nothing changes' },
+  manual: { label: 'Manual', skulls: 2, rank: 3, risky: false, hint: 'every tool asks first' },
+  'accept edits': { label: 'Accept edits', skulls: 3, rank: 2, risky: false, hint: 'edits auto-approved' },
+  auto: { label: 'Auto', skulls: 4, rank: 1, risky: false, hint: 'the classifier decides' },
+  bypass: { label: 'Bypass', skulls: 5, rank: 0, risky: true, hint: 'everything runs unprompted' },
 };
 
 // Order matters: "bypass permissions on" also contains no other mode name, but

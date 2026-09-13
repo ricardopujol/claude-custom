@@ -65,7 +65,9 @@ test('the image is dimmed so light text stays readable on top', () => {
   const dir = tmp();
   const svg = fs.readFileSync(backgroundFor('C:/w/alpha', { dir }).path, 'utf8');
   assert.ok(svg.includes(`opacity="${DIM_OPACITY}"`), 'no dimming overlay found');
-  assert.strictEqual(DIM_OPACITY, 0.9);
+  // Dim enough that light text reads, light enough that the art is visible at
+  // all. At 0.9 it was invisible in practice, which defeated the feature.
+  assert.ok(DIM_OPACITY >= 0.6 && DIM_OPACITY <= 0.85, `dim ${DIM_OPACITY} out of range`);
 });
 
 test('the dimming overlay is the LAST element, so nothing draws over it', () => {

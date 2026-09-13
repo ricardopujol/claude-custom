@@ -51,3 +51,23 @@ test('a later line wins, since the status line is redrawn at the bottom', () => 
   const screen = ['  ⏸ plan mode on', 'output', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'];
   assert.strictEqual(parsePermissionMode(screen), 'bypass');
 });
+
+test('autonomy is ranked plan-safest to bypass-most, as shift+tab cycles', () => {
+  // Skulls = autonomy. Plan is 1 (read-only, safest), bypass is 5 (everything
+  // runs unprompted). Shift+tab walks up that ladder.
+  const order = Object.entries(MODES)
+    .sort((a, b) => a[1].skulls - b[1].skulls)
+    .map(([name]) => name);
+  assert.deepStrictEqual(order, ['plan', 'manual', 'accept edits', 'auto', 'bypass']);
+});
+
+test('skull counts run 1 to 5 with no gaps or duplicates', () => {
+  const skulls = Object.values(MODES).map(m => m.skulls).sort((a, b) => a - b);
+  assert.deepStrictEqual(skulls, [1, 2, 3, 4, 5]);
+});
+
+test('only the maximum is flagged risky', () => {
+  const risky = Object.entries(MODES).filter(([, m]) => m.risky).map(([n]) => n);
+  assert.deepStrictEqual(risky, ['bypass']);
+  assert.strictEqual(MODES.bypass.skulls, 5);
+});

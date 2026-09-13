@@ -10,6 +10,7 @@
 const { app, BrowserWindow, shell } = require('electron');
 const { spawn } = require('child_process');
 const net = require('net');
+const fs = require('fs');
 const path = require('path');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
@@ -33,9 +34,18 @@ function spawnHost() {
   const hostPath = path.join(__dirname, '..', 'host', 'host.js');
   // detached:true is the point — the host must outlive this window so a session
   // driven from Remote Control survives the GUI being closed.
+  // Log to a FILE, not to pipes. Pipes belong to this Electron process, so
+  // when the window closes they close with it -- and the next time the detached
+  // host writes to stdout it takes EPIPE and dies. The host logs on every hook
+  // event, so "detached" sessions were dying almost immediately, which is
+  // exactly the detach property this spawn exists to provide.
+  const logPath = path.join(__dirname, '..', '.harness', 'host.log');
+  try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
+  const logFd = fs.openSync(logPath, 'a');
+
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', logFd, logFd],
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
@@ -43,8 +53,7 @@ function spawnHost() {
       CLAUDE_CUSTOM_CWD: PROJECT_CWD,
     },
   });
-  child.stdout.on('data', (d) => process.stdout.write(`[host] ${d}`));
-  child.stderr.on('data', (d) => process.stderr.write(`[host!] ${d}`));
+  console.log('[main] host log:', logPath);
   child.unref();
   return child;
 }

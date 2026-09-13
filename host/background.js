@@ -20,7 +20,14 @@ const path = require('path');
 
 // 90% black, per the requirement: the artwork must sit far enough back that
 // light foreground text stays comfortably readable on top of it.
-const DIM_OPACITY = 0.9;
+// Was 0.90, which rendered the art effectively invisible in practice -- the
+// per-project identity it exists to provide could not be seen at all. 0.72
+// keeps light terminal text comfortably readable while the art is actually
+// present. Override with CLAUDE_CUSTOM_DIM to taste; 0.85+ is near-invisible,
+// below ~0.6 starts to fight the text.
+const DIM_OPACITY = Number(process.env.CLAUDE_CUSTOM_DIM) > 0
+  ? Number(process.env.CLAUDE_CUSTOM_DIM)
+  : 0.72;
 
 const WIDTH = 1600;
 const HEIGHT = 1000;

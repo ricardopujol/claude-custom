@@ -271,6 +271,56 @@ function renderProcesses(running) {
   }).join('');
 }
 
+// --- roster width -----------------------------------------------------------
+// Narrow trades portrait size for terminal room; wide does the opposite. The
+// portrait scales with the panel, so "wider" actually buys bigger faces rather
+// than just more whitespace -- which matters because at 34px an expression is a
+// few pixels of mouth and unreadable.
+const ROSTER_MIN = 120;
+const ROSTER_MAX = 420;
+const rosterEl = document.getElementById('roster');
+
+function applyRosterWidth(px) {
+  const w = Math.max(ROSTER_MIN, Math.min(ROSTER_MAX, Math.round(px)));
+  const root = document.documentElement.style;
+  root.setProperty('--roster-w', w + 'px');
+  // Faces grow with the panel, capped so they stay a portrait and not a poster.
+  // Tuned so the default 180px panel gives a ~41px face with room for the name,
+  // and widening actually buys a bigger portrait. The first formula produced
+  // 73px faces at the default width and truncated every agent name.
+  root.setProperty('--face', Math.round(Math.max(28, Math.min(150, 28 + (w - 120) * 0.22))) + 'px');
+  try { localStorage.setItem('rosterWidth', String(w)); } catch {}
+  // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
+  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  return w;
+}
+
+(function initRosterResize() {
+  let stored = 180;
+  try { stored = Number(localStorage.getItem('rosterWidth')) || 180; } catch {}
+  applyRosterWidth(stored);
+
+  const grip = document.getElementById('roster-grip');
+  if (!grip) return;
+  let dragging = false;
+
+  grip.addEventListener('mousedown', (e) => {
+    dragging = true;
+    grip.classList.add('dragging');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    // Measured from the right edge, because the panel is right-anchored.
+    applyRosterWidth(window.innerWidth - e.clientX);
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    grip.classList.remove('dragging');
+  });
+})();
+
 // --- attention --------------------------------------------------------------
 // A visible cue in the window as well as the OS toast, so the reason is still
 // there when you come back and the toast has gone.
@@ -295,16 +345,19 @@ let modeTable = {};
 function renderMode(mode) {
   if (!mode) { modeEl.innerHTML = ''; modeEl.style.display = 'none'; return; }
   modeEl.style.display = 'flex';
-  const info = modeTable[mode] || { label: mode, rank: 0, risky: false, hint: '' };
-  const total = Object.keys(modeTable).length || 5;
-  // More filled bars = more restrictive, so a glance reads as "how guarded am I".
-  const filled = info.rank + 1;
-  const bars = Array.from({ length: total },
-    (_, i) => '<i class="' + (i < filled ? 'on' : '') + '"></i>').join('');
+  const info = modeTable[mode] || { label: mode, skulls: 1, risky: false, hint: '' };
+  const max = Math.max(5, ...Object.values(modeTable).map(m => m.skulls || 0));
+  const lit = info.skulls || 1;
+  // Skulls = autonomy. One is plan (read-only), five is bypass (everything runs
+  // unprompted). Dead skulls stay visible so the scale is readable at a glance
+  // rather than only in comparison with another session.
+  const skulls = Array.from({ length: max },
+    (_, i) => `<i class="${i < lit ? 'on' : ''}">☠</i>`).join('');
   modeEl.className = info.risky ? 'risky' : '';
-  modeEl.title = info.hint ? info.label + ' — ' + info.hint : info.label;
-  modeEl.innerHTML = '<span class="lvl">' + bars + '</span><span class="nm">' + info.label + '</span>';
+  modeEl.title = `${info.label} — ${info.hint} (${lit}/${max} autonomy)`;
+  modeEl.innerHTML = `<span class="skulls">${skulls}</span><span class="nm">${info.label}</span>`;
 }
+
 
 // --- party ------------------------------------------------------------------
 const partyEl = document.querySelector('#party .chain');
@@ -348,10 +401,10 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'processes') {
+    // Deliberately does NOT touch the mode badge. A processes message carries no
+    // `mode`, so calling renderMode(undefined) here hid the badge a second after
+    // `hello` had correctly set it -- the host was right the whole time.
     renderProcesses(msg.running);
-    if (msg.modes) modeTable = msg.modes;
-    renderMode(msg.mode);
-    renderParty(msg.party);
     renderParty(msg.party);
     return;
   }
@@ -379,11 +432,8 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'usage') {
+    // Same reason as above: no `mode` on this message, so leave the badge alone.
     renderUsage(msg.usage);
-    renderProcesses(msg.running);
-    if (msg.modes) modeTable = msg.modes;
-    renderMode(msg.mode);
-    renderParty(msg.party);
     return;
   }
   if (msg.type === 'exit') {
