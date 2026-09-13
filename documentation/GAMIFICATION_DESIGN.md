@@ -181,3 +181,60 @@ built on it.
 | 3 | OpenRouter models degrade tool use silently | Score providers on tool success rate before trusting |
 | 4 | State store corrupts and takes features down | One file per concern; every read defaults rather than throws |
 | 5 | Gamification becomes noise | Each feature must change a decision, not just decorate |
+
+---
+
+## Added 2026-09-13
+
+### 14 · Recent projects on launch
+
+Opening the harness shows the projects most recently worked on, so a session can
+be resumed without navigating. Ordered by last use.
+
+Data already exists and needs no new tracking: `~/.claude/projects/` holds one
+folder per project (encoded cwd), and `usage.js` already decodes that naming.
+Last-used is the newest transcript mtime in each folder; token totals per project
+come from the same reader. So the launcher can show each project with its real
+spend and last-touched time on day one.
+
+Worth showing per row: project name, last used, lifetime tokens, and its
+generated background art as the card — the art exists precisely so a project is
+recognisable before you have read a word.
+
+### Items apply to the MAIN CHAT, not only to agents
+
+Confirmed as a requirement, and it changes the mechanism rather than the design:
+the main session is not a `Task` call, so there is nothing to rewrite.
+
+| target | Pace (model) | Method (instructions) |
+|---|---|---|
+| agent | `PreToolUse(Task)` → `updatedInput.model` | `updatedInput.prompt` |
+| main chat | `ANTHROPIC_MODEL` at spawn — **requires a restart** | `UserPromptSubmit` → `additionalContext` |
+
+Verified present in the binary: `UserPromptSubmit` (44 occurrences),
+`additionalContext` (48), `updatedInput` (103).
+
+The asymmetry must be visible in the UI: a Pace item on an agent applies to the
+next run, but on the main chat it cannot apply until the session restarts.
+Silently not applying is the same failure the provider switch explicitly refuses.
+
+### Equipping is drag-and-drop, AT THE MOMENT IT MATTERS
+
+Not a settings screen visited once. Drag an item onto an agent right before
+invoking it, or onto the chat mid-session.
+
+The architecture already supports this: the hook helper re-reads `loadout.json`
+on every invocation, so a change lands on the very next tool call with no
+restart and no reload.
+
+**One honest limit.** Dragging onto an agent that is ALREADY running does not
+affect that run — its `Task` input was sent when it started. It applies to the
+next invocation. The UI should say so rather than appear to have done something.
+
+### Guard is GLOBAL, not an item
+
+Ricardo's call, and correct: a deny rule for `rm -rf` should not depend on which
+agent happens to be running. It is session policy, not equipment.
+
+It leaves the inventory entirely and becomes a setting. That also removes the
+only purely defensive category from a system otherwise about capability.
