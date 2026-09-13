@@ -7,7 +7,7 @@
  * window pointed at it.
  */
 
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, Notification, ipcMain, shell } = require('electron');
 const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -76,12 +76,40 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
   win.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { port: String(PORT), cwd: PROJECT_CWD },
   });
+
+  // Attention raised from main, not from the page. The renderer's own
+  // Notification is subject to page permission and can neither flash the
+  // taskbar nor focus the window when clicked; this can do all three.
+  ipcMain.on('attention', (event, surfaces) => {
+    if (event.sender !== win.webContents || !surfaces) return;
+    if (surfaces.toast && Notification.isSupported()) {
+      const n = new Notification({
+        title: String(surfaces.toast.title || 'claude-custom'),
+        body: String(surfaces.toast.body || ''),
+        silent: !!surfaces.toast.silent,
+      });
+      n.on('click', () => {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      });
+      n.show();
+    }
+    // Survives the toast: on Windows the taskbar button keeps flashing until
+    // the window is looked at, which is the whole point for a blocked session.
+    if (surfaces.flashTaskbar && !win.isFocused()) win.flashFrame(true);
+    console.log(`[main] attention: ${surfaces.toast && surfaces.toast.title}` +
+      ` (silent=${surfaces.toast && surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);
+  });
+
+  win.on('focus', () => win.flashFrame(false));
 
   // Any external link opens in the real browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {

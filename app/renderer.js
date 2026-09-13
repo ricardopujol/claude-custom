@@ -409,22 +409,30 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'attention') {
-    // Suppressed while the window has focus: a toast for the thing you are
-    // already looking at is pure noise, and noise is how a notification system
-    // stops being read.
-    if (!document.hasFocus()) {
+    // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
+    // skipped the toast whenever the window had focus, which silenced the one
+    // case the feature was built for: watching the terminal while a long task
+    // runs and wanting to be told when it ends.
+    const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
+
+    if (window.harness && window.harness.attention) {
+      // Preferred path: main raises it, so it needs no page permission and can
+      // flash the taskbar and focus the window on click.
+      window.harness.attention(surfaces);
+    } else {
       try {
-        const n = new Notification(msg.title, {
-          body: msg.body,
-          requireInteraction: !!msg.urgent,   // a blocked session waits for you
-          silent: !msg.urgent,
+        const n = new Notification(surfaces.toast.title, {
+          body: surfaces.toast.body,
+          requireInteraction: surfaces.toast.requireInteraction,
+          silent: surfaces.toast.silent,
         });
         n.onclick = () => window.focus();
       } catch (e) {
         console.warn('[renderer] notification failed:', e.message);
       }
     }
-    flashAttention(msg);
+
+    if (surfaces.cue) flashAttention(msg);
     return;
   }
   if (msg.type === 'mode') {
