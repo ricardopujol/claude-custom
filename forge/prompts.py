@@ -346,6 +346,76 @@ def resolve_palette(identity: dict) -> str:
     return f"{colour}, {cue}" if cue else "muted desaturated tones"
 
 
+# CLIP's hard context window. Text past it is not compressed, it is DISCARDED,
+# and the discarded part is the tail -- which is where the shared art direction
+# sits. Measured on the real appearances file before this existed: four of the
+# eight described agents overflowed, losing between one word and the entire core
+# block, each by a different amount. A roster whose shared direction survives by
+# a different amount per agent is not a set.
+CLIP_TOKEN_LIMIT = 77
+
+_TOKENIZER = None
+
+
+def _tokenizer():
+    """The REAL tokenizer the pipeline uses, loaded once, lazily.
+
+    Estimating token counts from characters was tempting and wrong: the budget
+    has to be exact, because being one token over discards a word silently.
+    """
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        from transformers import CLIPTokenizer
+        _TOKENIZER = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    return _TOKENIZER
+
+
+def count_tokens(text: str) -> int:
+    """Token count including CLIP's start/end markers, as the encoder sees it."""
+    return len(_tokenizer()(str(text))["input_ids"])
+
+
+def fit_subject(subject: str, budget: int) -> str:
+    """Trim a subject to `budget` tokens, at a word boundary.
+
+    The SUBJECT absorbs the trim, never the style. Losing the last clause of one
+    agent's description costs that agent some detail; losing the art direction
+    costs the whole roster its coherence, and does it unevenly.
+    """
+    subject = str(subject).strip()
+    if budget <= 0:
+        # Still name a person: a prompt that is pure style renders a style.
+        return subject.split(",")[0].strip() or subject
+    if count_tokens(subject) <= budget:
+        return subject
+
+    # CLAUSE boundaries first. A word-boundary trim cuts inside a phrase and
+    # leaves a fragment that means something else: "round wire" without
+    # "glasses", "faded band" without "t-shirt". The model draws the fragment.
+    clauses = [c.strip() for c in subject.split(",") if c.strip()]
+    kept = []
+    for clause in clauses:
+        candidate = ", ".join(kept + [clause])
+        if count_tokens(candidate) > budget:
+            break
+        kept.append(clause)
+    if kept:
+        return ", ".join(kept)
+
+    # The first clause alone does not fit. Fall back to words rather than
+    # returning nothing -- a prompt with no subject renders a style.
+    words = clauses[0].split() if clauses else subject.split()
+    lo, hi = 1, len(words)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if count_tokens(" ".join(words[:mid])) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    trimmed = " ".join(words[:lo]).rstrip(" ,;:")
+    return trimmed or (clauses[0] if clauses else subject)
+
+
 def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
     style = {**DEFAULT_STYLE, **(style or {})}
     cue = _STATE_CUES.get(state, _STATE_CUES["working"])
@@ -378,7 +448,14 @@ def build_prompt(identity: dict, state: str, style: dict | None = None) -> str:
     # ~15 for a description. SDXL has two text encoders, each with its own 77
     # budget, so the two concerns get one each and neither can truncate the
     # other.
-    return ", ".join([subject, cue, palette, style["core"]])
+    # The style tail is reserved FIRST and the subject trimmed to whatever is
+    # left, so the art direction can never be the thing CLIP discards.
+    tail = ", ".join([cue, palette, style["core"]])
+    # -1 for the ", " joining subject to tail; count_tokens already includes the
+    # two marker tokens, so measuring the tail alone over-reserves by nothing.
+    reserved = count_tokens(tail)
+    subject = fit_subject(subject, CLIP_TOKEN_LIMIT - reserved)
+    return ", ".join([subject, tail])
 
 
 def build_state_prompt(identity: dict, state: str) -> str:
