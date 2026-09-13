@@ -20,12 +20,16 @@
  */
 
 const { EventEmitter } = require('events');
+const { summarize } = require('./attention-summary');
 
 // Stop can fire more than once around a single turn ending, and two toasts for
 // one event is how a notification system loses its credibility.
 const DEFAULT_DEBOUNCE_MS = 4000;
 
-function createAttention({ now = Date.now, project = '', debounceMs = DEFAULT_DEBOUNCE_MS } = {}) {
+// `agents` is a provider, not a value: the roster changes between the moment
+// attention is wired up and the moment a turn ends.
+function createAttention({ now = Date.now, project = '', agents = () => [],
+                          debounceMs = DEFAULT_DEBOUNCE_MS } = {}) {
   const emitter = new EventEmitter();
   // Debounced per KIND, not globally: a request for input must not be swallowed
   // because a turn happened to end a moment earlier.
@@ -45,7 +49,7 @@ function createAttention({ now = Date.now, project = '', debounceMs = DEFAULT_DE
     if (event === 'Notification') {
       raise('input-needed', {
         title: project ? `${project} needs you` : 'Claude needs you',
-        body: String(p.message || 'Waiting for your input').slice(0, 200),
+        body: summarize('Notification', p, {}),
         urgent: true,
       });
       return;
@@ -54,7 +58,7 @@ function createAttention({ now = Date.now, project = '', debounceMs = DEFAULT_DE
     if (event === 'Stop') {
       raise('finished', {
         title: project ? `${project} finished` : 'Claude finished',
-        body: String(p.message || 'The turn is complete').slice(0, 200),
+        body: summarize('Stop', p, { agents: agents() }),
         urgent: false,
       });
     }

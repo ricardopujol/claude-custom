@@ -46,7 +46,10 @@ const check = (label, ok, detail) => {
   if (pipe) {
     const helper = path.join(REPO, '.harness', 'hook-helper.exe');
     // Exactly what Claude Code sends when a Task deploys a subagent.
-    for (const agent of ['logic-reviewer', 'code-reviewer']) {
+    // Two agents WITH generated portraits, two without: only a handful of the
+    // ~80 agents have art, so the placeholder is the common case and has to
+    // look deliberate rather than broken.
+    for (const agent of ['logic-reviewer', 'code-reviewer', 'security-auditor', 'backend-developer']) {
       spawnSync(helper, ['--pipe', pipe, '--event', 'PreToolUse'], {
         input: JSON.stringify({ tool_name: 'Task', tool_input: { subagent_type: agent } }),
         windowsHide: true,
@@ -58,10 +61,14 @@ const check = (label, ok, detail) => {
   await sleep(14000);
   const log2 = (() => { try { return fs.readFileSync(LOG, 'utf8'); } catch { return ''; } })();
   check('the host saw both Task hooks',
-    (log2.match(/\[hook\] PreToolUse/g) || []).length >= 2,
+    (log2.match(/\[hook\] PreToolUse/g) || []).length >= 4,
     (log2.match(/\[hook\].*/g) || []).join(' | '));
   check('a screenshot of the real window exists', fs.existsSync(SHOT),
     fs.existsSync(SHOT) ? fs.statSync(SHOT).size + ' bytes' : 'missing');
+  if (!fs.existsSync(SHOT)) {
+    console.log('--- app output ---');
+    console.log(out.slice(-2000));
+  }
 
   try { app.kill(); } catch {}
   spawnSync('taskkill', ['/IM', 'electron.exe', '/F'], { windowsHide: true });

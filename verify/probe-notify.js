@@ -58,7 +58,7 @@ const check = (label, ok, detail) => {
     check('it was raised despite the window having focus',
       /\[main\] attention:.*finished.*silent=true/.test(out));
 
-    fire('Notification', { message: 'needs permission to run npm test' });
+    fire('Notification', { message: 'Claude needs your permission to use Bash' });
     await sleep(2500);
     check('a blocked session reached MAIN too',
       /\[main\] attention:.*needs you/.test(out),
@@ -69,6 +69,15 @@ const check = (label, ok, detail) => {
 
   check('no renderer errors on the attention path', !/notification failed/.test(out),
     (out.match(/notification failed.*/) || [''])[0]);
+
+  // The body is the whole message in a toast corner: it has to say WHICH of
+  // "need permission / waiting / finished" this is, in a glance.
+  const bodies = (out.match(/\[main\] attention body: .*/g) || []).map(l => l.replace(/.*body: /, ''));
+  console.log('bodies raised:', JSON.stringify(bodies));
+  check('the permission toast names the tool', bodies.some(b => /permission.*Bash/i.test(b)));
+  check('every body is ten words or fewer',
+    bodies.length > 0 && bodies.every(b => b.trim().split(/\s+/).length <= 10),
+    bodies.map(b => b.trim().split(/\s+/).length + 'w').join(', '));
 
   try { app.kill(); } catch {}
   spawnSync('taskkill', ['/IM', 'electron.exe', '/F'], { windowsHide: true });

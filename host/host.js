@@ -103,7 +103,12 @@ const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
-const attention = createAttention({ project: path.basename(CWD) });
+// The agent list comes from the mood stack, so a finished turn can say how
+// many agents ran rather than just that something ended.
+const attention = createAttention({
+  project: path.basename(CWD),
+  agents: () => mood.stack(),
+});
 attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
 
 // Provider is fixed at spawn: the pty environment cannot change under a running

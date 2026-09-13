@@ -107,6 +107,7 @@ function createWindow() {
     if (surfaces.flashTaskbar && !win.isFocused()) win.flashFrame(true);
     console.log(`[main] attention: ${surfaces.toast && surfaces.toast.title}` +
       ` (silent=${surfaces.toast && surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);
+    console.log(`[main] attention body: ${surfaces.toast && surfaces.toast.body}`);
   });
 
   win.on('focus', () => win.flashFrame(false));
