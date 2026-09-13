@@ -90,7 +90,11 @@ test('every hook invokes the native helper with the pipe name', () => {
   for (const h of entries) {
     assert.strictEqual(h.type, 'command');
     assert.ok(h.command.includes(HELPER), `helper missing in: ${h.command}`);
-    assert.ok(h.command.includes(PIPE), `pipe name missing in: ${h.command}`);
+    // The NAME, not the \\.\pipe\ form: the command must reach the helper
+    // through a shell, and that prefix does not survive one. See the
+    // shell-survival tests below.
+    assert.ok(h.command.includes(PIPE.split('\\').pop()),
+      `pipe name missing in: ${h.command}`);
   }
 });
 
@@ -154,5 +158,56 @@ test('always keeps permissions bypassed, helper or not', () => {
   for (const helperExists of [true, false]) {
     const args = buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists });
     assert.ok(args.includes('--dangerously-skip-permissions'), `missing for ${helperExists}`);
+  }
+});
+
+// --- shell survival ---------------------------------------------------------
+// Claude Code runs a hook command through a shell. On Windows that shell can be
+// a POSIX one (Git Bash), where a backslash inside double quotes is an ESCAPE:
+// the pipe name arrives one backslash short, the helper cannot open it, catches
+// the failure and exits 0 -- so hooks silently never arrive. That is what both
+// "agents deploy but the roster stays empty" and "no notification when a task
+// ends" actually were.
+
+test('the pipe argument carries no backslashes for a shell to eat', () => {
+  const s = buildHarnessSettings({ helperPath: 'C:\\h\\hook-helper.exe', pipeName: '\\\\.\\pipe\\claude-custom-42' });
+  const cmd = s.hooks.PreToolUse[0].hooks[0].command;
+  const pipeArg = /--pipe\s+("[^"]*"|\S+)/.exec(cmd)[1];
+  assert.ok(!pipeArg.includes('\\'), `pipe argument still has backslashes: ${pipeArg}`);
+});
+
+test('the bare pipe name survives a POSIX shell unchanged', () => {
+  // Ask a real shell what it would hand the helper, rather than reasoning about
+  // escaping rules -- reasoning about them is how this shipped broken.
+  const { spawnSync } = require('child_process');
+  const s = buildHarnessSettings({ helperPath: 'C:\\h\\hook-helper.exe', pipeName: '\\\\.\\pipe\\claude-custom-42' });
+  const cmd = s.hooks.PreToolUse[0].hooks[0].command;
+  const pipeArg = /--pipe\s+("[^"]*"|\S+)/.exec(cmd)[1];
+  const r = spawnSync('bash', ['-c', `printf %s ${pipeArg}`], { encoding: 'utf8' });
+  if (r.error) return;   // no POSIX shell here; the assertion above still holds
+  assert.strictEqual(r.stdout, 'claude-custom-42');
+});
+
+test('the pipe name keeps its identity, prefix aside', () => {
+  // The helper rebuilds the prefix, so the NAME must survive intact or it
+  // connects to the wrong pipe rather than to none.
+  const s = buildHarnessSettings({ helperPath: 'C:\\h\\hook-helper.exe', pipeName: '\\\\.\\pipe\\claude-custom-7124' });
+  assert.ok(s.hooks.Stop[0].hooks[0].command.includes('claude-custom-7124'));
+});
+
+test('a pipe name given bare is passed through as-is', () => {
+  const s = buildHarnessSettings({ helperPath: 'C:\\h\\x.exe', pipeName: 'plain-name' });
+  assert.ok(/--pipe\s+"?plain-name"?\s/.test(s.hooks.Stop[0].hooks[0].command));
+});
+
+test('every event command is shell-safe, not just PreToolUse', () => {
+  const s = buildHarnessSettings({ helperPath: 'C:\\h\\x.exe', pipeName: '\\\\.\\pipe\\p-1' });
+  for (const [event, entries] of Object.entries(s.hooks)) {
+    for (const e of entries) {
+      for (const h of e.hooks) {
+        const pipeArg = /--pipe\s+("[^"]*"|\S+)/.exec(h.command)[1];
+        assert.ok(!pipeArg.includes('\\'), `${event}: ${h.command}`);
+      }
+    }
   }
 });

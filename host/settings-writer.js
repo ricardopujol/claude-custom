@@ -34,6 +34,18 @@ const HOOK_TIMEOUT_SECONDS = 5;
 
 const quote = s => `"${s}"`;
 
+// Claude Code runs a hook command through a shell, and on Windows that shell
+// may be a POSIX one. There, a backslash inside double quotes is an ESCAPE, so
+// "\\.\pipe\NAME" reaches the helper as "\.\pipe\NAME" -- one backslash
+// short, pointing at a pipe that does not exist. The helper then fails to
+// connect, swallows the error and exits 0, so hooks stop arriving with nothing
+// anywhere reporting a problem.
+//
+// So the argument carries NO backslashes at all: the bare pipe name, which no
+// shell can corrupt. The helper rebuilds the \\.\pipe\ prefix itself, and has
+// always accepted this form.
+const bareName = pipeName => String(pipeName).replace(/^\\\\\.\\pipe\\/i, '');
+
 function buildHarnessSettings({ helperPath, pipeName } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
@@ -41,7 +53,7 @@ function buildHarnessSettings({ helperPath, pipeName } = {}) {
   // A native helper, not a script: Node costs 60-100ms of startup per
   // invocation and PowerShell ~200ms, paid on every matched tool call.
   const command = event =>
-    `${quote(helperPath)} --pipe ${quote(pipeName)} --event ${event}`;
+    `${quote(helperPath)} --pipe ${quote(bareName(pipeName))} --event ${event}`;
 
   const entry = (matcher, event) => ({
     matcher,
