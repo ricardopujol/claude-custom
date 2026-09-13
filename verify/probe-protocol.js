@@ -95,8 +95,13 @@ const check = (label, ok, detail) => {
     check('mood broadcast reached the client', !!mood, mood && `${mood.agent}:${mood.state}`);
     check('mood carries a portrait for the GUI', !!(mood && mood.portrait && mood.portrait.kind),
       mood && mood.portrait && mood.portrait.kind);
-    check('placeholder has stable initials', !!(mood && mood.portrait.initials),
-      mood && mood.portrait.initials);
+    // A real generated portrait has a path; an agent without one falls back to a
+    // stable placeholder with initials. Asserting initials unconditionally made
+    // this fail the moment the first real portrait landed.
+    const art = mood && mood.portrait;
+    check('portrait is usable by the GUI',
+      !!(art && (art.kind === 'file' ? art.path : art.initials)),
+      art && (art.kind === 'file' ? 'file: ' + require('path').basename(art.path) : 'placeholder: ' + art.initials));
   }
 
   // Detach, then reattach and confirm the screen is replayed rather than lost.
