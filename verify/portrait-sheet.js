@@ -18,9 +18,16 @@ if (!fs.existsSync(root)) {
   process.exit(1);
 }
 
+// Optional comma-separated filter. A full sheet of 80 agents is taller than
+// any window, and the screenshotter clamps to the display -- so the bottom of
+// the page silently never appears in the PNG.
+const only = (process.argv[4] || '').split(',').map(s => s.trim()).filter(Boolean);
+
 const agents = fs.readdirSync(root, { withFileTypes: true })
   .filter(d => d.isDirectory())
-  .map(d => d.name);
+  .map(d => d.name)
+  .filter(name => !name.startsWith('_'))
+  .filter(name => only.length === 0 || only.includes(name));
 
 const sections = agents.map(agent => {
   const agentDir = path.join(root, agent);
