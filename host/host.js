@@ -149,7 +149,10 @@ if (helperExists) {
       console.log('[host] session id     :', sessionId);
     }
     if (ev.event === 'SubagentStop') {
-      const finished = mood.stack()[mood.stack().length - 1];
+      // agent_type when the payload carries it; the top of the stack only as a
+      // fallback. Cooldowns applied to the wrong agent are worse than none.
+      const finished = (ev.payload && ev.payload.agent_type)
+        || mood.stack()[mood.stack().length - 1];
       if (finished) cooldowns.finished(finished);
     }
     // Logged because the roster silently showed nothing when agents ran, and
@@ -160,6 +163,9 @@ if (helperExists) {
     // assert, because every test supplies the shape it expects.
     if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG) {
       const pl = ev.payload || {};
+      // The FULL payload, for verify/probe-payloads.js to check against
+      // host/payload-contract.js. The projection below is for reading by eye.
+      console.log('[hook:full] ' + JSON.stringify(pl));
       console.log('[hook:raw] ' + JSON.stringify({
         hook_event_name: pl.hook_event_name,
         tool_name: pl.tool_name,

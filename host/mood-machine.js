@@ -117,7 +117,21 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
     }
 
     if (event === 'SubagentStop') {
-      const agent = stack.pop();
+      // The payload NAMES the agent (agent_type), so use it. Popping the stack
+      // is a guess that only holds while agents finish in the order they
+      // started -- with parallel work it credits the wrong one, and then the
+      // delegation chain describes a session that never happened. Found by
+      // verify/probe-payloads.js reading a real SubagentStop.
+      const named = p.agent_type;
+      let agent;
+      if (named) {
+        const at = stack.lastIndexOf(named);
+        if (at === -1) return;              // never started here; not ours to end
+        stack.splice(at, 1);
+        agent = named;
+      } else {
+        agent = stack.pop();                // older versions send no agent_type
+      }
       if (!agent) return;
       const a = ensure(agent);
       a.lastActivity = now();

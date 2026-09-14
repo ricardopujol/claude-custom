@@ -87,3 +87,57 @@ test('the matcher still does not tax ordinary file tools', () => {
     assert.ok(!new RegExp(`\b${tool}\b`).test(m), `${tool} must not be matched`);
   }
 });
+
+// --- who actually finished ---------------------------------------------------
+// SubagentStop carries agent_type, discovered by verify/probe-payloads.js
+// against the real CLI:
+//
+//   SubagentStop: ..., agent_id, agent_type, agent_transcript_path, ...
+//
+// The machine had been popping the top of its own stack instead, which is a
+// GUESS: correct only while agents finish in the exact order they started.
+
+test('SubagentStop credits the agent the payload names, not the top of the stack', () => {
+  const mood = createMoodMachine();
+  const launch = agent => mood.handle({
+    event: 'PreToolUse',
+    payload: { tool_name: 'Agent', tool_input: { subagent_type: agent } },
+  });
+  launch('code-reviewer');
+  launch('logic-reviewer');
+
+  // The OUTER agent finishes first -- entirely possible with parallel work, and
+  // the stack says the inner one finished.
+  mood.handle({ event: 'SubagentStop', payload: { agent_type: 'code-reviewer' } });
+  assert.deepStrictEqual(mood.stack(), ['logic-reviewer'],
+    'the wrong agent was removed from the delegation chain');
+});
+
+test('the named agent is the one whose state changes', () => {
+  const mood = createMoodMachine();
+  const seen = [];
+  mood.on('change', e => seen.push(`${e.agent}:${e.state}`));
+  for (const a of ['code-reviewer', 'logic-reviewer']) {
+    mood.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: a } } });
+  }
+  seen.length = 0;
+  mood.handle({ event: 'SubagentStop', payload: { agent_type: 'code-reviewer' } });
+  assert.ok(seen.some(s => s.startsWith('code-reviewer:')), JSON.stringify(seen));
+  assert.ok(!seen.some(s => s.startsWith('logic-reviewer:')), JSON.stringify(seen));
+});
+
+test('without agent_type it still falls back to the stack', () => {
+  // Older Claude Code versions, and any event that omits it. The guess is worse
+  // than the fact, but far better than ignoring the event.
+  const mood = createMoodMachine();
+  mood.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'code-reviewer' } } });
+  mood.handle({ event: 'SubagentStop', payload: {} });
+  assert.deepStrictEqual(mood.stack(), []);
+});
+
+test('a SubagentStop naming an agent that never started is ignored', () => {
+  const mood = createMoodMachine();
+  mood.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'code-reviewer' } } });
+  mood.handle({ event: 'SubagentStop', payload: { agent_type: 'never-ran' } });
+  assert.deepStrictEqual(mood.stack(), ['code-reviewer'], 'a ghost agent disturbed the chain');
+});
