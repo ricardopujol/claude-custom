@@ -6,7 +6,7 @@
  * face is wrong and you need to know why. Every transition below is traceable
  * to one hook event or one elapsed timeout.
  *
- *   PreToolUse(Task)        -> working
+ *   PreToolUse(Agent|Task)  -> working
  *   PostToolUse ok          -> working
  *   PostToolUse error       -> stressed (err++)
  *   same tool x3 running    -> stressed
@@ -67,11 +67,18 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, flashMs = 8_000 } 
     return stack.length ? stack[stack.length - 1] : null;
   }
 
+// The tool that launches a subagent. Claude Code calls it "Agent"; older
+// versions called it "Task". Verified against the real CLI, which sends
+// tool_name:"Agent" with subagent_type in tool_input -- this repo had assumed
+// "Task" everywhere, so the roster stayed empty in every real session while
+// every test passed on hand-written "Task" fixtures.
+const AGENT_TOOLS = new Set(['Agent', 'Task']);
+
   function handle({ event, payload }) {
     const p = payload || {};
     const tool = p.tool_name;
 
-    if (event === 'PreToolUse' && tool === 'Task') {
+    if (event === 'PreToolUse' && AGENT_TOOLS.has(tool)) {
       const agent = p.tool_input && p.tool_input.subagent_type;
       if (!agent) return;                     // nothing identifiable to light up
       const a = ensure(agent);

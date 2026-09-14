@@ -93,7 +93,7 @@ const check = (label, ok, detail) => {
   if (pipe) {
     const helper = path.join(REPO, '.harness', 'hook-helper.exe');
     spawnSync(helper, ['--pipe', pipe, '--event', 'PreToolUse'], {
-      input: JSON.stringify({ tool_name: 'Task', tool_input: { subagent_type: 'code-reviewer' } }),
+      input: JSON.stringify({ tool_name: 'Agent', tool_input: { subagent_type: 'code-reviewer' } }),
       windowsHide: true,
     });
     await sleep(800);

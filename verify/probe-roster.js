@@ -53,7 +53,7 @@ const check = (label, ok, detail) => {
                          'ui-ux-tester', 'agent-organizer', 'spec-partner',
                          'security-auditor', 'media-pipeline-engineer']) {
       spawnSync(helper, ['--pipe', pipe, '--event', 'PreToolUse'], {
-        input: JSON.stringify({ tool_name: 'Task', tool_input: { subagent_type: agent } }),
+        input: JSON.stringify({ tool_name: 'Agent', tool_input: { subagent_type: agent } }),
         windowsHide: true,
       });
       await sleep(400);

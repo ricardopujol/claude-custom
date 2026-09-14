@@ -23,13 +23,15 @@ const path = require('path');
 // matchers stay deliberately narrow. A '*' matcher would tax every Read, Grep
 // and edit; the mood engine's appetite for signal is paid for in agent speed.
 //
-// Task AND Bash. Task alone was enough for the mood engine, but the process
+// Agent AND Bash. "Agent" is what Claude Code actually names the subagent
+// tool -- "Task" is kept for older versions. Agent alone was enough for the
+// mood engine, but the process
 // panel needs to see a Bash command START, not only finish -- a four-minute GPU
 // job that only reports on completion is invisible for the whole time it
 // matters. Bash already pays a PostToolUse hook, so this adds one more ~23ms
 // call to Bash only, not to Read/Grep/Edit.
-const PRE_TOOL_MATCHER = 'Task|Bash';
-const POST_TOOL_MATCHER = 'Task|Bash';    // completion and error signals
+const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
+const POST_TOOL_MATCHER = 'Agent|Task|Bash';    // completion and error signals
 const HOOK_TIMEOUT_SECONDS = 5;
 
 const quote = s => `"${s}"`;

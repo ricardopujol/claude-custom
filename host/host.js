@@ -156,6 +156,18 @@ if (helperExists) {
     // there was no way to tell whether hooks were arriving at all.
     const what = ev.payload && (ev.payload.tool_input?.subagent_type || ev.payload.tool_name);
     console.log(`[hook] ${ev.event}${what ? ' ' + what : ''}`);
+    // The shape Claude Code actually sends is the one thing no local test can
+    // assert, because every test supplies the shape it expects.
+    if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG) {
+      const pl = ev.payload || {};
+      console.log('[hook:raw] ' + JSON.stringify({
+        hook_event_name: pl.hook_event_name,
+        tool_name: pl.tool_name,
+        tool_input_keys: pl.tool_input ? Object.keys(pl.tool_input) : null,
+        subagent_type: pl.tool_input && pl.tool_input.subagent_type,
+        top_keys: Object.keys(pl),
+      }));
+    }
     attention.handle(ev);
     mood.handle(ev);
     processes.handle(ev);

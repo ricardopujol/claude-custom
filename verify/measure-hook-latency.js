@@ -22,7 +22,7 @@ const WARMUP = 5;
 
 const PAYLOAD = JSON.stringify({
   session_id: 'bench',
-  tool_name: 'Task',
+  tool_name: 'Agent',
   tool_input: { subagent_type: 'code-reviewer', description: 'review the diff' },
 });
 

@@ -37,7 +37,7 @@ host.stderr.on('data', d => { log += d.toString(); });
   const helper = path.join(REPO, '.harness', 'hook-helper.exe');
   const payload = JSON.stringify({
     session_id: 'e2e',
-    tool_name: 'Task',
+    tool_name: 'Agent',
     tool_input: { subagent_type: 'logic-reviewer' },
   });
 

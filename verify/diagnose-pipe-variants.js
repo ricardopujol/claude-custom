@@ -35,7 +35,7 @@ function makeServer(variant, pipe) {
 function drive(pipe) {
   for (let i = 0; i < N; i++) {
     spawnSync(NATIVE, ['--pipe', pipe, '--event', 'PreToolUse'],
-      { input: '{"tool_name":"Task"}', windowsHide: true });
+      { input: '{"tool_name":"Agent"}', windowsHide: true });
   }
 }
 

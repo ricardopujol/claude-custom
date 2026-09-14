@@ -44,7 +44,7 @@ server.listen(PIPE, () => {
     for (let i = 0; i < N; i++) {
       const t0 = process.hrtime.bigint();
       spawnSync(NATIVE, ['--pipe', PIPE, '--event', 'PreToolUse'], {
-        input: '{"tool_name":"Task"}', windowsHide: true,
+        input: '{"tool_name":"Agent"}', windowsHide: true,
       });
       times.push(Number(process.hrtime.bigint() - t0) / 1e6);
       if (extraDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, extraDelayMs);

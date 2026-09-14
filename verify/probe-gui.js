@@ -35,7 +35,7 @@ const fire = (pipe, event, payload) =>
   // Fired AFTER the GUI has attached and shortly before capture. happy and
   // stressed are 8-second flashes that decay to sleeping, so firing them up
   // front captures two sleeping agents and proves nothing about those styles.
-  const task = agent => ({ tool_name: 'Task', tool_input: { subagent_type: agent } });
+  const task = agent => ({ tool_name: 'Agent', tool_input: { subagent_type: agent } });
 
   const SCREENSHOT_DELAY = 11000;
 
