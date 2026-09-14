@@ -508,3 +508,119 @@ elapsed.
 growing, on a roster that redraws often. It reuses `host/usage.js`'s incremental
 reader rather than growing a second one — a per-agent copy of that logic is
 exactly the duplication that lets the two drift.
+
+---
+
+## ASCII exploration — CLOSED, with one survivor (2026-09-14)
+
+Judged by Naomi against captures verified at DPR 1, fonts resolved, subpixel AA
+off, and an end-of-sheet sentinel asserted to be inside the image. All 80 `ascii`
+renders and all 16 braille 16×8 renders, at 16 / 24 / 34 / 48px.
+
+### The correction that reaches everything before it
+
+**Every legibility judgement in the first ASCII report was made against images
+~1.24× larger than their labels.** Verified: the 48px box occupied 62 image px
+in the old capture and exactly 50 in the new one. The old screenshotter returned
+1127px wide for a 900px request, because this display runs at DPR 1.25.
+
+The error is uniform and it *flatters every candidate*. Concretely: the "24px
+cliff" was 30px of pixels called 24, and "sextant 12×6 survives at 34px" — the
+single finding that kept a glyph path alive — was a judgement at 42px, which
+does not hold at a true 34.
+
+**So every block-technique finding from that first pass is optimistic and has
+not been re-measured.** Sextant, quadrant, halfblock, shade and braille 8×4 are
+all still at 1.24×. Re-shoot before trusting any of them.
+
+### ASCII: closed
+
+The structural prediction held — a letterform at 2.83px is a smudge whose
+darkness is its only signal — but the mechanism is worse than predicted, because
+it fails at BOTH ends:
+
+| variant | 34px | 48px |
+|---|---|---|
+| `ascii 16x8 accent` | 31.6 | **26.8** |
+| `ascii 12x6 truecolor` | 31.6 | **26.7** |
+
+**Separation DROPS as the icon grows.** The only technique on either sheet that
+does this: all four subjects draw from the same ten-level character ramp, so
+extra pixels render *shared characters* more crisply. More size buys more
+legible sameness.
+
+And it flips the viewer's mode. At 48px `potion_ascii_4x2_mono` is unambiguously
+the characters `++` over `:%%:` — the eye stops looking and starts *reading*,
+gets punctuation, and gets nothing. A smudge is ignorable; text demands parsing
+and pays out zero.
+
+At the 16px label, `ascii 4x2 mono` renders potion and bug as **pixel-identical
+images** — separation 0.0. `ascii mono` never works at any grid or size.
+
+Below 24px nothing carries identity, and that is arithmetic rather than tuning:
+the smallest font-size drawn is **1.71px** (16×8 at a 16px target). No
+rasterizer produces distinct letterforms there, so no threshold, ramp or
+downsample setting can move it.
+
+### Braille 16×8: NOT closed — the one survivor
+
+32×32 addressable dots (16×8 cells × 2×4), more resolution than anything else
+tested, and **the first technique to render all four subjects recognisably.**
+
+Most importantly it **fixes the spell**, which is the failure flagged hardest in
+the first pass: at every lower grid the 4-point star collapsed into a `+` and
+meant *add* — an icon that confidently means the wrong thing, which is worse
+than one that means nothing. At 32×32 dots the concave taper survives and it
+reads as a burst.
+
+Separation at 34px, same 1:1 capture: emoji **48.6**, braille 16×8 accent 26.5,
+duotone 15.3, mono 11.9. It still loses to the emoji by about half — but it is
+the first candidate in the same conversation.
+
+**Do not let the metric pick.** It ranks best-ascii (31.6) above best-braille
+(26.5) at 34px and is WRONG there: ASCII's separation comes from *texture*,
+which pixel distance rewards and humans do not use to identify things; braille's
+comes from *silhouette*, which is what recognition actually uses.
+
+### The contrast defect, which is an app problem and not a spike problem
+
+WCAG 1.4.11 requires **3:1** for non-text graphical objects. Measured as the
+strongest ink pixel against its surface:
+
+| render | on panel `#171a23` | on light chrome `#dfe4ee` |
+|---|---|---|
+| ascii mono / duotone | 10.9–11.0:1 | **1.24:1** |
+| braille 16×8 mono / duotone | 5.01:1 | **1.14:1** |
+| **braille 16×8 accent** | **2.26:1 FAILS** | 1.43:1 |
+| **braille 16×8 truecolor** | **2.68:1 FAILS** | — |
+
+**The two best braille colour modes fail contrast on this app's own panel
+colour.** Braille dots are small and antialiased so they never reach full ink
+coverage — the technique buys shape at the cost of effective contrast. ASCII has
+the contrast and no shape; braille has the shape and not enough contrast.
+
+And it lands exactly on the mode otherwise worth recommending: `accent` roughly
+doubles distinguishability over `mono`, and `accent` is the one at 2.26:1.
+
+On any light surface every candidate is 1.14–1.24:1 — these icons would not
+degrade, they would **disappear**.
+
+### The decision
+
+- **Ship emoji everywhere**, including everywhere at 16 and 24px.
+- **ASCII: closed.** Nothing here is worth a second icon system.
+- **Braille 16×8 stays open**, conditionally, and only if someone wants it:
+  1. **≥34px only.** Marginal at 24, dead at 16. Any surface showing icons at
+     16px keeps emoji.
+  2. **`duotone`, not `accent`** — 15.3 separation at 5.01:1, versus 26.5 at a
+     failing 2.26:1. Or fix the accent palette to clear 3:1 on `#171a23` and
+     re-measure, because accent-with-adequate-contrast would be the best
+     candidate in the entire exploration.
+  3. **Fix the ink for light surfaces first**, or it vanishes at 1.14:1.
+
+### One thing worth keeping regardless
+
+The audit measures the emoji advance at **1.3730em** against mono's 0.5859em, so
+an emoji occupies **2.34 character cells** of width. Irrelevant to a
+CSS-laid-out roster; it matters the moment anything is drawn into a fixed
+character grid.
