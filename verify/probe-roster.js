@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
+
 // The host refuses any connection without the session token -- see
 // host/gatekeeper.js. A local tool reads it from the file the host writes,
 // which is precisely what a web page cannot do.
@@ -46,6 +47,7 @@ const check = (label, ok, detail) => {
       CLAUDE_CUSTOM_CWD: REPO,
       CLAUDE_CUSTOM_SCREENSHOT: SHOT,
       CLAUDE_CUSTOM_SCREENSHOT_DELAY: '26000',
+      CLAUDE_CUSTOM_FLOURISH: process.env.CLAUDE_CUSTOM_FLOURISH || '',
       // Which side tab to photograph: the sidebar is the one surface the
       // headless checks cannot look at.
       CLAUDE_CUSTOM_SIDE_TAB: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',

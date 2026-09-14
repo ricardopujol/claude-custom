@@ -34,6 +34,8 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
+const { milestoneFor, nextMilestone, progressTo, describeSpend,
+        createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
@@ -341,9 +343,67 @@ console.log('[host] background     :', path.basename(background.path), backgroun
 // project total is knowable -- readUsage handles that rather than blocking.
 let sessionId = null;
 let lastUsage = null;
+
+// WHEN to announce lives in host/milestones.js, not here. It used to be a
+// private function in this file, which nothing can require -- so the tests
+// written for it scored a copy of the algorithm re-implemented inside the test
+// file, and deleting the real high-water mark left every test green.
+const announcer = createAnnouncer();
+
+// A crossing that happened while nothing was attached. The pty deliberately
+// outlives the window, so a milestone reached during a detached session was
+// broadcast to an empty client set and lost forever.
+let pendingMilestone = null;
+
+// A counter, never a limit -- so this reports where you ARE and what is next,
+// and has no concept of anything running out.
+function decorateUsage(usage) {
+  const total = usage && usage.project ? usage.project.total : 0;
+  const reached = milestoneFor(total);
+  const next = nextMilestone(total);
+  return {
+    ...usage,
+    milestone: {
+      reached,
+      next,
+      progress: progressTo(total),
+      // Same numbers, framed by what they COST: on a subscription the marginal
+      // cost inside quota is zero, so a playful counter is honest; on a metered
+      // provider it is somebody's bill.
+      spend: describeSpend(usage && usage.project, { metered: !!provider.metered }),
+    },
+  };
+}
+
 function currentUsage() {
-  lastUsage = readUsage({ cwd: CWD, sessionId });
+  lastUsage = decorateUsage(readUsage({ cwd: CWD, sessionId }));
   return lastUsage;
+}
+
+// Announce a newly reached milestone once. Deliberately separate from the usage
+// broadcast: the flourish is an EVENT, and folding it into a value that is
+// re-sent every few seconds would replay the celebration forever.
+function checkMilestone(usage) {
+  const total = usage && usage.project ? usage.project.total : 0;
+  // `ok === false` means readUsage could not read the transcripts at all. That
+  // is absence, not zero, and seeding or baselining from it announced the whole
+  // ladder on the next good tick.
+  const hit = announcer.see(total, usage ? usage.ok !== false : false);
+  if (!hit) return;
+
+  console.log('[host] milestone      :', hit.name, hit.icon);
+  const message = { type: 'milestone', milestone: hit, total };
+
+  // At least one OPEN client, not merely a non-empty set: a socket that is
+  // CLOSING is still in `clients` (it is removed on 'close'), so size alone
+  // said "someone is listening" while sendControl skipped it -- dropping the
+  // milestone rather than holding it, which is the loss this guard prevents.
+  const listening = [...clients].some(ws => ws.readyState === ws.OPEN);
+  if (!listening) {
+    pendingMilestone = message;
+    return;
+  }
+  broadcastControl(message);
 }
 
 let hookBridge = null;
@@ -543,8 +603,18 @@ moodTimer.unref();
 // constantly and only the total is displayed.
 const usageTimer = setInterval(() => {
   const before = lastUsage && lastUsage.session.total;
+  const beforeProject = lastUsage && lastUsage.project.total;
   const usage = currentUsage();
-  if (usage.session.total !== before) broadcastControl({ type: 'usage', usage });
+  // Gated on EITHER total. The milestone payload is project-scoped, so gating
+  // only on the session figure let another window advance the project past a
+  // rung while this window's bar kept showing the old one -- the UI celebrating
+  // and denying the same event at once.
+  if (usage.session.total !== before || usage.project.total !== beforeProject) {
+    broadcastControl({ type: 'usage', usage });
+  }
+  // Checked on every tick, not only when the session total moved: the PROJECT
+  // total can advance because another window on the same folder did work.
+  checkMilestone(usage);
 }, 5000);
 usageTimer.unref();
 
@@ -583,6 +653,19 @@ wss.on('connection', (ws) => {
     cooldowns: cooldowns.list(),
     health: healthState,
   });
+  // A milestone reached while nothing was attached is delivered now rather than
+  // lost: the pty outlives the window by design, so the crossing can easily
+  // happen with no observer.
+  if (pendingMilestone && ws.readyState === ws.OPEN) {
+    try {
+      ws.send(JSON.stringify(pendingMilestone));
+      // Cleared only on a SUCCESSFUL send. Clearing outside the try discarded
+      // the held milestone when the send threw -- losing it for the same reason
+      // holding it exists to prevent.
+      pendingMilestone = null;
+    } catch { /* keep it for the next client to attach */ }
+  }
+
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
 

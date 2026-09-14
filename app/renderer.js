@@ -264,6 +264,12 @@ window.addEventListener('DOMContentLoaded', () => {
   // Screenshot support only: type a value into the new-secret field and reveal
   // it, so the toggle can actually be LOOKED at. Never a real secret -- the
   // probe passes a throwaway string.
+  // Screenshot support only: the flourish lives ~4s and is the one surface a
+  // headless check cannot look at.
+  if (new URLSearchParams(location.search).get('flourish')) {
+    setTimeout(() => flourish({ name: 'Billionaire', icon: '🌕' }), 22000);
+  }
+
   const demo = new URLSearchParams(location.search).get('demosecret');
   if (demo) {
     setTimeout(() => {
@@ -556,12 +562,24 @@ setInterval(() => {
 const usageEl = document.getElementById('usage');
 
 // Compact, because this sits in a header: 1.2M / 984k / 512.
+// NOTE: duplicated from host/milestones.js because the renderer has no module
+// system. Both copies round INSIDE the unit -- the naive version emitted
+// "1000k" for 999_950, longer than the number it abbreviates.
 function compact(n) {
-  if (!Number.isFinite(n)) return '—';
-  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(n);
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '—';
+  const units = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
+  for (let i = 0; i < units.length; i++) {
+    const [size, suffix] = units[i];
+    if (v < size) continue;
+    const scaled = Number((v / size).toFixed(1));
+    if (scaled >= 1000 && i > 0) {
+      const [bigger, biggerSuffix] = units[i - 1];
+      return String(Number((v / bigger).toFixed(1))) + biggerSuffix;
+    }
+    return String(scaled) + suffix;
+  }
+  return String(Math.round(v));
 }
 
 function renderUsage(usage) {
@@ -587,7 +605,67 @@ function renderUsage(usage) {
       `<span class="lbl">project</span>` +
       `<span class="val">${compact(project.total)}</span>` +
       `<span class="sub">${project.sessions} session${project.sessions === 1 ? '' : 's'}</span>` +
-    `</span>`;
+    `</span>` +
+    milestoneHtml(usage.milestone);
+}
+
+// A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
+// depletes an allowance, never goes red, and never warns. The same geometry
+// labelled "remaining" would read as a leash, and the harness has no business
+// rationing someone's own subscription.
+function milestoneHtml(m) {
+  if (!m) return '';
+  const reached = m.reached;
+  const next = m.next;
+  // Clamped AND finite-checked. `width:NaN%` is an invalid declaration the
+  // browser drops, and .fill has no other width, so it took auto width and
+  // filled the whole track -- a broken value reading as "complete".
+  const raw = Number(m.progress);
+  const safe = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0;
+  const pct = Math.round(safe * 100);
+
+  // The cache share travels with it, because it is most of the total: ~97M of
+  // 119M on this project. A milestone celebrating a number that is 80% cache
+  // reads should say so rather than imply that much fresh spend.
+  const share = m.spend && m.spend.cacheShare
+    ? ` · ${Math.round(m.spend.cacheShare * 100)}% cache`
+    : '';
+  const title = (reached ? `${reached.name} reached. ` : '')
+    + (next ? `${compact(next.at)} for ${next.name}.` : 'Top of the ladder.')
+    + share;
+
+  return `<span class="grp milestone" title="${escapeHtml(title)}">` +
+           `<span class="icon">${escapeHtml(reached ? reached.icon : '·')}</span>` +
+           `<span class="track"><span class="fill" style="width:${pct}%"></span></span>` +
+         `</span>`;
+}
+
+// The flourish. An EVENT, not a value -- folding it into the usage payload
+// (which is re-sent every few seconds) would replay the celebration forever.
+let activeFlourish = null;
+
+function flourish(milestone) {
+  if (!milestone) return;
+  // One at a time. Two are position:fixed at the same coordinates and
+  // composite into unreadable overlap; nothing caps how many can queue.
+  if (activeFlourish) {
+    clearTimeout(activeFlourish.show);
+    clearTimeout(activeFlourish.hide);
+    activeFlourish.el.remove();
+    activeFlourish = null;
+  }
+  const el = document.createElement('div');
+  el.className = 'flourish';
+  el.innerHTML = `<span class="icon">${escapeHtml(milestone.icon)}</span>` +
+                 `<span class="name">${escapeHtml(milestone.name)}</span>`;
+  document.body.appendChild(el);
+  // Long enough to notice, short enough not to sit over the terminal.
+  const show = setTimeout(() => el.classList.add('go'), 50);
+  const hide = setTimeout(() => {
+    el.remove();
+    if (activeFlourish && activeFlourish.el === el) activeFlourish = null;
+  }, 4200);
+  activeFlourish = { el, show, hide };
 }
 
 function applyBackground(filePath) {
@@ -797,6 +875,10 @@ function handleControl(msg) {
     if (surfaces.cue) flashAttention(msg);
     return;
   }
+<<<<<<< HEAD
+  if (msg.type === 'milestone') {
+    flourish(msg.milestone);
+=======
   if (msg.type === 'health') {
     renderHealth(msg.health);
     return;
@@ -807,6 +889,7 @@ function handleControl(msg) {
   }
   if (msg.type === 'fog') {
     renderFog(msg);
+>>>>>>> origin/develop
     return;
   }
   if (msg.type === 'mode') {
