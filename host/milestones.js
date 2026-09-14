@@ -120,6 +120,53 @@ const UNITS = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
 // "1000.0", so the naive version emitted "1000k" -- longer than the number it
 // abbreviates, and unrecognisable beside the "1M" the tooltip prints for a rung
 // one token away. When rounding carries, the unit is PROMOTED.
+/**
+ * Decides WHEN to announce, which is the whole of the once-only guarantee.
+ *
+ * Lives here rather than in host.js because requiring host.js boots a pty and a
+ * WebSocket server. The previous version was a private function in the host, so
+ * the tests written for it were aimed at a COPY of the algorithm re-implemented
+ * inside the test file -- deleting the real high-water mark left every test
+ * green. A fix that lands where nothing can reach it looks complete in the diff
+ * and is scored by nothing.
+ *
+ * Three rules, each of which was a bug before it was a rule:
+ *
+ *   - A FAILED READING IS NOT A READING. readUsage returns zeros with
+ *     `ok: false` when it cannot read the transcripts, and a caller that
+ *     treated that as a real total announced the whole ladder on the next good
+ *     tick.
+ *   - THE FIRST READING SEEDS, it does not announce. Otherwise every launch
+ *     celebrates work done weeks ago.
+ *   - A RUNG IS ANNOUNCED ONCE. `crossed` refuses to celebrate while a total
+ *     FALLS but not on the way back up, and the project total legitimately
+ *     jitters -- transcripts expire, a partial final line is skipped.
+ */
+function createAnnouncer() {
+  let lastTotal = null;
+  let highest = null;
+
+  return {
+    see(total, ok = true) {
+      if (!ok) return null;                     // absence is not a measurement
+      if (lastTotal === null) {
+        lastTotal = total;
+        highest = milestoneFor(total);          // seed: where we already stand
+        return null;
+      }
+      const hit = crossed(lastTotal, total);
+      lastTotal = total;
+      if (!hit) return null;
+      if (highest && highest.at >= hit.at) return null;
+      highest = hit;
+      return hit;
+    },
+
+    // For tests and diagnostics; never used to make a decision.
+    state: () => ({ lastTotal, highest }),
+  };
+}
+
 const compact = (n) => {
   const v = num(n);
   for (let i = 0; i < UNITS.length; i++) {
@@ -177,5 +224,6 @@ function describeSpend(usage, { metered = false, usdPerMillion = null } = {}) {
 }
 
 module.exports = {
-  MILESTONES, milestoneFor, nextMilestone, progressTo, crossed, describeSpend, compact,
+  MILESTONES, milestoneFor, nextMilestone, progressTo, crossed, describeSpend,
+  compact, createAnnouncer,
 };

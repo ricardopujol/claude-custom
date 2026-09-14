@@ -14,28 +14,17 @@ const assert = require('node:assert');
 
 const {
   MILESTONES, milestoneFor, progressTo, crossed, describeSpend, compact,
+  createAnnouncer,
 } = require('../host/milestones');
 
-// A standalone copy of the host's announce rule, so the SEQUENCE behaviour is
-// testable without booting a pty. It must mirror host.js checkMilestone.
-function announcer() {
-  let lastTotal = null;
-  let highest = null;
-  return function see(total) {
-    // The first reading seeds where we already stand rather than announcing it.
-    if (lastTotal === null) {
-      lastTotal = total;
-      highest = milestoneFor(total);
-      return null;
-    }
-    const hit = crossed(lastTotal, total);
-    lastTotal = total;
-    if (!hit) return null;
-    if (highest && highest.at >= hit.at) return null;
-    highest = hit;
-    return hit;
-  };
-}
+// THE PRODUCTION announcer, required from host/milestones.js. This used to be
+// a copy of the algorithm re-implemented right here -- which meant deleting the
+// real high-water mark in host.js left every one of these tests green. The
+// tests were fine; they were aimed at nothing.
+const announcer = () => {
+  const a = createAnnouncer();
+  return (total, ok) => a.see(total, ok === undefined ? true : ok);
+};
 
 // --- the sequence properties -------------------------------------------------
 
@@ -211,4 +200,48 @@ test('progress at an exact rung is the start of the new segment', () => {
   // survived because the assertion allowed 0.01 of slack.
   assert.strictEqual(progressTo(MILESTONES[1].at), 0);
   assert.strictEqual(progressTo(MILESTONES[0].at / 2), 0.5);
+});
+
+// --- the cold start, which both reviewers predicted --------------------------
+// The seed is taken from the FIRST reading, and readUsage returns zeros on any
+// readdir failure. A first tick that fails therefore seeded "nothing reached",
+// and the next good tick announced the entire ladder -- five seconds after a
+// process-tree spawn, which is the MOST likely moment for an indexer or AV to
+// hold that folder, not the least.
+
+test('a failed FIRST reading does not seed, and does not announce later', () => {
+  const see = announcer();
+  assert.strictEqual(see(0, false), null, 'a failed read must not announce');
+  assert.strictEqual(see(1.06e9, true), null,
+    'the first SUCCESSFUL read is the seed, not a crossing');
+  assert.strictEqual(see(1.06e9 + 500, true), null, 'no crossing occurred');
+});
+
+test('a failed reading mid-run neither announces nor moves the baseline', () => {
+  const see = announcer();
+  see(1.06e9, true);                       // seed
+  assert.strictEqual(see(0, false), null, 'a failed read announces nothing');
+  assert.strictEqual(see(1.06e9, true), null, 'and did not reset the baseline');
+});
+
+test('a genuine crossing after a failed reading still announces', () => {
+  // The guard must not swallow real crossings -- that would trade one silent
+  // wrongness for another.
+  const see = announcer();
+  see(MILESTONES[2].at - 1, true);
+  assert.strictEqual(see(0, false), null);
+  const hit = see(MILESTONES[2].at + 1, true);
+  assert.ok(hit, 'a real crossing after a failed read was swallowed');
+  assert.strictEqual(hit.name, MILESTONES[2].name);
+});
+
+test('an UNDER-read on the first tick cannot be distinguished, and is seeded', () => {
+  // Honest limit, asserted so nobody assumes otherwise: a partial read that
+  // succeeds looks exactly like a genuine lower total. Only a read that FAILS
+  // is detectable. The durable fix would be persisting the high-water mark
+  // across restarts, which is not built.
+  const see = announcer();
+  see(160e6, true);                        // a real, but partial, reading
+  const hit = see(1.06e9, true);
+  assert.ok(hit, 'this is indistinguishable from a genuine climb');
 });

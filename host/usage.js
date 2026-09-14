@@ -15,14 +15,9 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { projectDirName } = require('./project-dir');
 
 const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sessions: 0 };
-
-// Claude Code encodes the cwd by replacing every path separator and colon with
-// a dash: C:\Users\x\proj -> C--Users-x-proj
-function projectDirName(cwd) {
-  return String(cwd || '').replace(/\\/g, '/').replace(/[/:]/g, '-');
-}
 
 function defaultProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects');
@@ -77,11 +72,18 @@ function readUsage({ cwd, sessionId, projectsDir } = {}) {
   try {
     files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
   } catch {
-    return { session: { ...EMPTY }, project: { ...EMPTY } };
+    // `ok: false` -- ABSENCE, not zero. A readdir failure (EBUSY or EPERM from
+    // an indexer or AV touching this folder is ordinary on Windows) used to be
+    // indistinguishable from "this project has spent no tokens", so a caller
+    // that seeded state from it recorded the failure as a fact. The milestone
+    // announcer seeds from the first reading, and a failed first reading made
+    // it announce the entire ladder on the next good tick.
+    return { ok: false, session: { ...EMPTY }, project: { ...EMPTY } };
   }
 
   const project = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
   let session = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+  let matchedSession = false;
 
   for (const f of files) {
     const acc = readFileUsage(path.join(dir, f));
@@ -89,11 +91,16 @@ function readUsage({ cwd, sessionId, projectsDir } = {}) {
     project.output += acc.output;
     project.cacheWrite += acc.cacheWrite;
     project.cacheRead += acc.cacheRead;
-    if (sessionId && f === sessionId + '.jsonl') session = acc;
+    if (sessionId && f === sessionId + '.jsonl') { session = acc; matchedSession = true; }
   }
 
   return {
-    session: withTotal(session, session === EMPTY ? 0 : 1),
+    ok: true,
+    // `sessions: 0` when no session file matched. The old identity test
+    // `session === EMPTY` could never be true, because `session` is a fresh
+    // object literal above -- so this always reported 1, including before the
+    // SessionStart hook has told us which session we are.
+    session: withTotal(session, matchedSession ? 1 : 0),
     project: withTotal(project, files.length),
   };
 }

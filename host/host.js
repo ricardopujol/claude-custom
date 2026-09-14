@@ -34,7 +34,8 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
-const { milestoneFor, nextMilestone, progressTo, crossed, describeSpend } = require('./milestones');
+const { milestoneFor, nextMilestone, progressTo, describeSpend,
+        createAnnouncer } = require('./milestones');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -137,30 +138,15 @@ console.log('[host] background     :', path.basename(background.path), backgroun
 let sessionId = null;
 let lastUsage = null;
 
-// The previous PROJECT total, for detecting a crossing. Starts null rather than
-// 0 on purpose: a first reading is not a crossing, and treating it as 0 -> 900M
-// would throw a party for work done weeks ago on every launch.
-let lastProjectTotal = null;
-
-// The highest rung ANNOUNCED, which is what makes the announcement once-only.
-// `crossed()` compares two adjacent readings, so it refuses to celebrate while
-// a total falls -- but not on the way back up. Two ways that fires a spurious
-// party, both reachable without anything exotic:
-//
-//   - readUsage returns total 0 on ANY readdir failure (EBUSY/EPERM from an
-//     indexer or AV touching ~/.claude/projects), so the baseline resets to 0
-//     and the next good read looks like 0 -> 1.06B.
-//   - the project total legitimately jitters: a partially-written final line is
-//     skipped, and Claude Code expires old transcripts, so a dip back across a
-//     rung replays it.
-//
-// A high-water mark survives both by construction.
-let highestAnnounced = null;
+// WHEN to announce lives in host/milestones.js, not here. It used to be a
+// private function in this file, which nothing can require -- so the tests
+// written for it scored a copy of the algorithm re-implemented inside the test
+// file, and deleting the real high-water mark left every test green.
+const announcer = createAnnouncer();
 
 // A crossing that happened while nothing was attached. The pty deliberately
 // outlives the window, so a milestone reached during a detached session was
-// broadcast to an empty client set and lost forever -- the baseline had already
-// advanced past it.
+// broadcast to an empty client set and lost forever.
 let pendingMilestone = null;
 
 // A counter, never a limit -- so this reports where you ARE and what is next,
@@ -193,26 +179,21 @@ function currentUsage() {
 // re-sent every few seconds would replay the celebration forever.
 function checkMilestone(usage) {
   const total = usage && usage.project ? usage.project.total : 0;
-  // The FIRST reading seeds where we already stand. Without it the high-water
-  // mark stays null through the opening reading, so the first dip-and-recover
-  // still announces a rung that was passed weeks ago.
-  if (lastProjectTotal === null) {
-    lastProjectTotal = total;
-    highestAnnounced = milestoneFor(total);
-    return;
-  }
-
-  const hit = crossed(lastProjectTotal, total);
-  lastProjectTotal = total;
+  // `ok === false` means readUsage could not read the transcripts at all. That
+  // is absence, not zero, and seeding or baselining from it announced the whole
+  // ladder on the next good tick.
+  const hit = announcer.see(total, usage ? usage.ok !== false : false);
   if (!hit) return;
-  // Once per rung, per process. See highestAnnounced above.
-  if (highestAnnounced && highestAnnounced.at >= hit.at) return;
-  highestAnnounced = hit;
 
   console.log('[host] milestone      :', hit.name, hit.icon);
   const message = { type: 'milestone', milestone: hit, total };
-  if (clients.size === 0) {
-    // Held, not dropped. Delivered when a window next attaches.
+
+  // At least one OPEN client, not merely a non-empty set: a socket that is
+  // CLOSING is still in `clients` (it is removed on 'close'), so size alone
+  // said "someone is listening" while sendControl skipped it -- dropping the
+  // milestone rather than holding it, which is the loss this guard prevents.
+  const listening = [...clients].some(ws => ws.readyState === ws.OPEN);
+  if (!listening) {
     pendingMilestone = message;
     return;
   }
@@ -425,9 +406,14 @@ wss.on('connection', (ws) => {
   // A milestone reached while nothing was attached is delivered now rather than
   // lost: the pty outlives the window by design, so the crossing can easily
   // happen with no observer.
-  if (pendingMilestone) {
-    try { ws.send(JSON.stringify(pendingMilestone)); } catch {}
-    pendingMilestone = null;
+  if (pendingMilestone && ws.readyState === ws.OPEN) {
+    try {
+      ws.send(JSON.stringify(pendingMilestone));
+      // Cleared only on a SUCCESSFUL send. Clearing outside the try discarded
+      // the held milestone when the send threw -- losing it for the same reason
+      // holding it exists to prevent.
+      pendingMilestone = null;
+    } catch { /* keep it for the next client to attach */ }
   }
 
   const replay = termState.serialize();
