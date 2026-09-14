@@ -40,8 +40,56 @@
     body.has-bg #termwrap { background: transparent; }
     body.has-bg header,
     body.has-bg #roster,
+    body.has-bg #vault,
     body.has-bg #diag { background: color-mix(in srgb, var(--chrome) 72%, transparent); }
     body.has-bg .xterm-viewport { background: transparent !important; }
+
+
+    /* --- vault ------------------------------------------------------------
+       Deliberately plain. Nothing here animates or flashes: a panel holding
+       passwords should look like a drawer, not a feature. */
+    #vault {
+      width: 320px; flex: 0 0 320px;
+      background: var(--chrome);
+      border-left: 1px solid var(--border);
+      display: none; flex-direction: column;
+    }
+    #vault.show { display: flex; }
+    #vault h2 {
+      margin: 0; padding: 10px 12px;
+      font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+      color: var(--accent); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    #vault h2 .sub { color: var(--dim); text-transform: none; letter-spacing: 0; font-size: 10px; }
+    #vault-body { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: 10px 12px; gap: 10px; }
+    #vault input, #vault button {
+      font: inherit; font-size: 12px;
+      background: #1b1f2a; color: var(--text);
+      border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px;
+    }
+    #vault button { cursor: pointer; }
+    #vault button:hover { border-color: var(--accent); }
+    #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    #vault-list .none, #vault-list .err { color: var(--dim); font-size: 11px; line-height: 1.5; }
+    #vault-list .err { color: var(--bad); }
+    .sec {
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 7px 9px; background: rgba(255,255,255,.02);
+    }
+    .sec .row { display: flex; align-items: center; gap: 8px; }
+    .sec .label { flex: 1; min-width: 0; font-size: 12px; font-weight: 600;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sec button { padding: 3px 7px; font-size: 11px; }
+    .sec .shown {
+      margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+      word-break: break-all; color: var(--accent);
+      background: #12151d; border-radius: 4px; padding: 5px 6px;
+    }
+    .sec .said { margin-top: 5px; font-size: 10.5px; color: var(--ok); }
+    #vault-add { display: flex; flex-direction: column; gap: 6px;
+                 border-top: 1px solid var(--border); padding-top: 10px; }
+    #vault .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
 
     /* --- token spend ------------------------------------------------------- */
     #usage {
@@ -264,6 +312,23 @@
         <div id="procs">
           <h3>Running</h3>
           <div id="proclist"><div class="none">nothing running</div></div>
+        </div>
+      </aside>
+      <!-- The secret store. A sibling of the terminal, never inside it: nothing
+           here is ever written to the pty, so a secret cannot reach the session
+           by being rendered in the wrong place. -->
+      <aside id="vault">
+        <h2>Vault <span class="sub">local · encrypted</span></h2>
+        <div id="vault-body">
+          <input id="vault-search" type="search" placeholder="search labels" autocomplete="off" />
+          <div id="vault-list"></div>
+          <form id="vault-add" autocomplete="off">
+            <input id="vault-label" placeholder="label (e.g. github token)" autocomplete="off" />
+            <input id="vault-secret" type="password" placeholder="secret" autocomplete="new-password" />
+            <button type="submit">Store</button>
+          </form>
+          <p class="warn">Pasting a secret into the session writes it to the
+            transcript in plaintext, permanently. Copy is for other apps.</p>
         </div>
       </aside>
       <aside id="diag">

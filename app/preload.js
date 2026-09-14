@@ -13,4 +13,16 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('harness', {
   attention: (surfaces) => ipcRenderer.send('attention', surfaces),
+
+  // The secret store. Every call crosses into main, where the vault lives --
+  // the window never holds the file, the key, or more than one secret at a
+  // time, and the host (which owns the pty) never sees any of it at all.
+  secrets: {
+    available: () => ipcRenderer.invoke('secrets:available'),
+    list: (query) => ipcRenderer.invoke('secrets:list', query),
+    add: (entry) => ipcRenderer.invoke('secrets:add', entry),
+    remove: (id) => ipcRenderer.invoke('secrets:remove', id),
+    reveal: (id) => ipcRenderer.invoke('secrets:reveal', id),
+    copy: (id) => ipcRenderer.invoke('secrets:copy', id),
+  },
 });

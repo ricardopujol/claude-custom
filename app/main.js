@@ -7,7 +7,9 @@
  * window pointed at it.
  */
 
-const { app, BrowserWindow, Notification, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Notification, clipboard, ipcMain, safeStorage, shell } = require('electron');
+const { createVault } = require('./secret-vault');
+const { createSecretService } = require('./secret-service');
 const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -81,7 +83,8 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'renderer.html'), {
-    query: { port: String(PORT), cwd: PROJECT_CWD },
+    query: { port: String(PORT), cwd: PROJECT_CWD,
+             vault: process.env.CLAUDE_CUSTOM_VAULT_OPEN ? '1' : '' },
   });
 
   // Attention raised from main, not from the page. The renderer's own
@@ -117,6 +120,56 @@ function createWindow() {
   });
 
   win.on('focus', () => win.flashFrame(false));
+
+  // The secret store lives HERE, in main. Not in the host: the host owns the
+  // pty, so keeping secrets out of it means no wiring mistake can put one into
+  // the session. Not in the renderer: the window would then hold the file and
+  // every value in it.
+  const secrets = createSecretService({
+    vault: createVault({
+      file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
+      crypto: safeStorage,
+    }),
+    clipboard: {
+      writeText: (t) => clipboard.writeText(t),
+      readText: () => clipboard.readText(),
+      clear: () => clipboard.writeText(''),
+    },
+  });
+
+  const fromWindow = (event) => event.sender === win.webContents;
+  ipcMain.handle('secrets:available', (e) => fromWindow(e) && secrets.available());
+  ipcMain.handle('secrets:list', (e, query) => (fromWindow(e) ? secrets.list({ query }) : []));
+  ipcMain.handle('secrets:add', (e, entry) => (fromWindow(e) ? secrets.add(entry || {}) : { ok: false }));
+  ipcMain.handle('secrets:remove', (e, id) => (fromWindow(e) ? secrets.remove(id) : { ok: false }));
+  ipcMain.handle('secrets:reveal', (e, id) => (fromWindow(e) ? secrets.reveal(id) : { ok: false }));
+  ipcMain.handle('secrets:copy', (e, id) => (fromWindow(e) ? secrets.copy(id) : { ok: false }));
+
+  // Headless verification of the secret store. The unit tests inject a fake
+  // cipher, so they say nothing about whether DPAPI actually works here; this
+  // exercises the real safeStorage and the real OS clipboard. It prints only
+  // BOOLEANS -- never the secret, which would defeat the thing being tested.
+  if (process.env.CLAUDE_CUSTOM_VAULT_PROBE) {
+    const value = process.env.CLAUDE_CUSTOM_VAULT_PROBE;
+    setTimeout(() => {
+      console.log('[vault-probe] available:', secrets.available());
+      const added = secrets.add({ label: 'probe entry', secret: value });
+      console.log('[vault-probe] stored:', added.ok, added.error || '');
+      const listed = secrets.list();
+      console.log('[vault-probe] listed:', listed.length);
+      console.log('[vault-probe] list-leaks:', JSON.stringify(listed).includes(value));
+      if (added.ok) {
+        const shown = secrets.reveal(added.entry.id);
+        console.log('[vault-probe] revealed-matches:', shown.ok && shown.secret === value);
+        secrets.copy(added.entry.id);
+        console.log('[vault-probe] clipboard-matches:', clipboard.readText() === value);
+        // Deliberately NOT removed. The probe's strongest assertion is that the
+        // file holds no plaintext, and deleting the entry first made that
+        // assertion pass against an empty 25-byte vault -- vacuously true.
+        console.log('[vault-probe] left-on-disk: true');
+      }
+    }, 2500);
+  }
 
   // Any external link opens in the real browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {

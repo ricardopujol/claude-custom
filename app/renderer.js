@@ -109,6 +109,134 @@ document.addEventListener('keydown', (e) => {
     setTimeout(() => { fit.fit(); sendResize(); }, 0);
     e.preventDefault();
   }
+  if (e.ctrlKey && e.shiftKey && e.code === 'KeyK') {
+    toggleVault();
+    e.preventDefault();
+  }
+});
+
+// --- vault ------------------------------------------------------------------
+// An isolated panel. Nothing in it is ever written to the pty: the secret only
+// ever travels renderer -> main -> OS clipboard, and the host that owns the
+// terminal never sees it. Pasting is then the user's own deliberate act.
+const vaultEl = () => document.getElementById('vault');
+
+// Opened at launch only for the screenshot probe: the panel is the one
+// surface no headless check can look at.
+if (new URLSearchParams(location.search).get('vault')) {
+  window.addEventListener('DOMContentLoaded', () => setTimeout(toggleVault, 3500));
+}
+
+function toggleVault() {
+  const el = vaultEl();
+  const showing = el.classList.toggle('show');
+  if (showing) {
+    renderVault();
+    setTimeout(() => document.getElementById('vault-search').focus(), 0);
+  } else {
+    // Leaving the panel puts every revealed secret back out of sight; a value
+    // left on screen outlives the moment someone needed it.
+    hideRevealed();
+    term.focus();
+  }
+  setTimeout(() => { fit.fit(); sendResize(); }, 0);
+}
+
+function hideRevealed() {
+  for (const el of document.querySelectorAll('#vault-list .shown')) el.remove();
+}
+
+const escapeHtml = s => String(s).replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function renderVault() {
+  const list = document.getElementById('vault-list');
+  if (!window.harness || !window.harness.secrets) {
+    list.innerHTML = '<div class="err">the secret store is unavailable in this window</div>';
+    return;
+  }
+  if (!(await window.harness.secrets.available())) {
+    list.innerHTML = '<div class="err">This machine cannot encrypt secrets, so nothing ' +
+      'will be stored. Storing them in plaintext would be worse than not storing them.</div>';
+    return;
+  }
+  const query = document.getElementById('vault-search').value;
+  const entries = await window.harness.secrets.list(query);
+  if (!entries.length) {
+    list.innerHTML = `<div class="none">${query ? 'nothing matches that label.'
+      : 'empty — store a password or key below.'}</div>`;
+    return;
+  }
+  // Labels only. The value is fetched one at a time, on demand.
+  list.innerHTML = entries.map(e => `
+    <div class="sec" data-id="${escapeHtml(e.id)}">
+      <div class="row">
+        <span class="label" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
+        <button data-act="copy">Copy</button>
+        <button data-act="reveal">Show</button>
+        <button data-act="remove" title="delete permanently">×</button>
+      </div>
+    </div>`).join('');
+}
+
+document.addEventListener('click', async (e) => {
+  const button = e.target.closest('#vault-list button');
+  if (!button) return;
+  const card = button.closest('.sec');
+  const id = card.dataset.id;
+  const act = button.dataset.act;
+
+  if (act === 'copy') {
+    const res = await window.harness.secrets.copy(id);
+    const said = document.createElement('div');
+    said.className = 'said';
+    said.textContent = res.ok
+      ? `copied — clipboard clears in ${Math.round(res.clearsInMs / 1000)}s`
+      : `could not copy: ${res.error}`;
+    card.querySelectorAll('.said').forEach(n => n.remove());
+    card.appendChild(said);
+    setTimeout(() => said.remove(), 4000);
+    return;
+  }
+
+  if (act === 'reveal') {
+    const existing = card.querySelector('.shown');
+    if (existing) { existing.remove(); button.textContent = 'Show'; return; }
+    const res = await window.harness.secrets.reveal(id);
+    const shown = document.createElement('div');
+    shown.className = 'shown';
+    shown.textContent = res.ok ? res.secret : `could not read it: ${res.error}`;
+    card.appendChild(shown);
+    button.textContent = 'Hide';
+    return;
+  }
+
+  if (act === 'remove') {
+    // No confirm dialog: an Electron modal blocks the whole window, and this
+    // is a two-click action on a labelled card rather than a destructive sweep.
+    await window.harness.secrets.remove(id);
+    renderVault();
+  }
+});
+
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'vault-search') renderVault();
+});
+
+document.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'vault-add') return;
+  e.preventDefault();
+  const label = document.getElementById('vault-label');
+  const secret = document.getElementById('vault-secret');
+  const res = await window.harness.secrets.add({ label: label.value, secret: secret.value });
+  if (!res.ok) {
+    const list = document.getElementById('vault-list');
+    list.innerHTML = `<div class="err">${escapeHtml(res.error)}</div>` + list.innerHTML;
+    return;
+  }
+  label.value = '';
+  secret.value = '';
+  renderVault();
 });
 
 // --- theme ------------------------------------------------------------------
