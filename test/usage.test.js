@@ -18,6 +18,18 @@ function transcripts(cwd, files) {
   return root;
 }
 
+// Subagent transcripts, which is where Claude Code actually puts them:
+// <projectsDir>/<encoded-cwd>/<session-uuid>/subagents/*.jsonl
+function subagents(root, cwd, sessionId, files) {
+  const dir = path.join(root, projectDirName(cwd), sessionId, 'subagents');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [name, lines] of Object.entries(files)) {
+    fs.writeFileSync(path.join(dir, name + '.jsonl'),
+      lines.map(l => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n');
+  }
+  return dir;
+}
+
 const msg = (usage, extra = {}) => ({ type: 'assistant', message: { usage }, ...extra });
 const U = (input, output, cw = 0, cr = 0) => ({
   input_tokens: input, output_tokens: output,
@@ -79,13 +91,69 @@ test('does NOT double count the per-iteration breakdown', async () => {
   assert.strictEqual((await readUsage({ cwd, sessionId: 's1', projectsDir: root })).session.total, 100);
 });
 
-test('counts subagent (sidechain) spend', async () => {
-  // Subagent tokens are real money and are exactly what the roster is showing.
+test('usage is counted regardless of the isSidechain flag', async () => {
+  // RENAMED from 'counts subagent (sidechain) spend', which is not what it
+  // pinned. It writes the sidechain message into the TOP-LEVEL transcript, and
+  // Claude Code does not produce that shape -- subagents get their own file
+  // under <session>/subagents/. So the test asserting subagent spend was
+  // counted was the only thing standing between this module and omitting ALL of
+  // it, and it passed by describing a layout that does not exist.
+  // What it DOES pin, and is worth keeping: nothing filters on isSidechain.
   const cwd = 'C:/w/proj';
   const root = transcripts(cwd, {
     s1: [msg(U(10, 10)), msg(U(5, 5), { isSidechain: true })],
   });
   assert.strictEqual((await readUsage({ cwd, sessionId: 's1', projectsDir: root })).session.total, 30);
+});
+
+test('counts subagent spend, which lives in <session>/subagents/*.jsonl', async () => {
+  // MEASURED on this project when the omission was found: 23 top-level files
+  // held 1,308,926,474 tokens and 30 subagent transcripts held another
+  // 104,427,203 -- the project total understated by 7.4%, and that share grows
+  // with how agent-driven the work is. This repo mandates a multi-agent review
+  // gate on every merge, so it is the agent-driven case by construction.
+  const cwd = 'C:/w/proj';
+  const root = transcripts(cwd, { s1: [msg(U(10, 0))] });
+  subagents(root, cwd, 's1', { 'agent-x': [msg(U(1000, 0))] });
+
+  const r = await readUsage({ cwd, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.project.total, 1010);
+});
+
+test("a subagent's spend belongs to the session that spawned it", async () => {
+  // It was spent on that session's behalf, so the session figure has to include
+  // it or the two numbers disagree about the same work.
+  const cwd = 'C:/w/proj';
+  const root = transcripts(cwd, { s1: [msg(U(10, 0))], s2: [msg(U(7, 0))] });
+  subagents(root, cwd, 's1', { 'agent-x': [msg(U(1000, 0))] });
+  subagents(root, cwd, 's2', { 'agent-y': [msg(U(500, 0))] });
+
+  const r = await readUsage({ cwd, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 1010, "s1's own agent counts toward s1");
+  assert.strictEqual(r.project.total, 1517, 'and every session still sums');
+});
+
+test('.meta.json siblings are not transcripts', async () => {
+  // They sit right beside the .jsonl files and are not JSONL at all. Counting
+  // them would not throw -- it would silently add nothing and inflate the
+  // session count.
+  const cwd = 'C:/w/proj';
+  const root = transcripts(cwd, { s1: [msg(U(10, 0))] });
+  const dir = path.join(root, projectDirName(cwd), 's1', 'subagents');
+  subagents(root, cwd, 's1', { 'agent-x': [msg(U(1000, 0))] });
+  fs.writeFileSync(path.join(dir, 'agent-x.meta.json'),
+    JSON.stringify({ agentType: 'code-reviewer' }));
+
+  const r = await readUsage({ cwd, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.project.total, 1010);
+});
+
+test('a session with no subagents is the ordinary case, not an error', async () => {
+  const cwd = 'C:/w/proj';
+  const root = transcripts(cwd, { s1: [msg(U(10, 0))] });
+  const r = await readUsage({ cwd, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.project.total, 10);
 });
 
 test('tolerates a truncated final line', async () => {

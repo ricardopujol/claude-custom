@@ -292,15 +292,35 @@ test('a read failure is still ABSENCE, not a cached zero', async () => {
   assert.strictEqual(r.project.total, 0);
 });
 
-test('one unreadable transcript does not silently understate the project', async () => {
-  // A file that cannot be read is not a file worth zero. Reporting a confident
+test('a top-level DIRECTORY named like a transcript is not one', async () => {
+  // Rewritten: this used to assert such a directory made the read `unreadable`.
+  // It is not unreadable, it is not a transcript -- and since the enumeration
+  // moved to host/transcripts.js it is skipped on the way in, which is the
+  // right answer rather than a tolerated one. The session count must not
+  // include it either.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 'a.jsonl'), line(U(10, 0)));
+  fs.mkdirSync(path.join(dir, 'b.jsonl'));
+
+  const r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.project.total, 10);
+  assert.strictEqual(r.project.sessions, 1, 'a directory is not a session');
+});
+
+test('a transcript that is enumerated but cannot be read is REPORTED', async () => {
+  // The real trigger, which the old fixture never reached: inside subagents/
+  // the listing is by name, so a directory ending .jsonl IS enumerated and then
+  // fails to read. What WAS readable is still reported -- reporting a confident
   // lower total is what seeds a false baseline and throws a party later.
   const { root, dir } = project(CWD);
   fs.writeFileSync(path.join(dir, 'a.jsonl'), line(U(10, 0)));
-  fs.mkdirSync(path.join(dir, 'b.jsonl'));    // a directory named like a transcript
+  const sub = path.join(dir, 'a', 'subagents');
+  fs.mkdirSync(sub, { recursive: true });
+  fs.mkdirSync(path.join(sub, 'agent-x.jsonl'));
 
   const r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root });
-  assert.strictEqual(r.ok, false, 'an unreadable transcript must be reported');
+  assert.strictEqual(r.unreadable, 1, 'the failure must be counted');
   assert.strictEqual(r.project.total, 10, 'what WAS readable is still reported');
 });
 

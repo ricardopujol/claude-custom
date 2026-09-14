@@ -39,6 +39,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const { projectDirName } = require('./project-dir');
+const { transcriptFiles } = require('./transcripts');
 
 const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sessions: 0 };
 
@@ -186,10 +187,12 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
   const root = projectsDir || defaultProjectsDir();
   const dir = path.join(root, projectDirName(cwd));
 
-  let files = [];
-  try {
-    files = (await fsp.readdir(dir)).filter(f => f.endsWith('.jsonl'));
-  } catch {
+  // Top-level sessions AND their subagents -- see host/transcripts.js. Reusing
+  // that enumeration rather than repeating it here is the whole point of the
+  // module: the version this replaced walked only the top level, so every
+  // subagent's spend was missing from a figure the milestone ladder is built on.
+  const files = await transcriptFiles(dir);
+  if (files === null) {
     // `ok: false` -- ABSENCE, not zero. A readdir failure (EBUSY or EPERM from
     // an indexer or AV touching this folder is ordinary on Windows) used to be
     // indistinguishable from "this project has spent no tokens", so a caller
@@ -200,18 +203,25 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
   }
 
   const project = zero();
-  let session = zero();
+  const session = zero();
   let matchedSession = false;
   let unreadable = 0;
+  let sessions = 0;
   const live = new Set();
 
-  for (const f of files) {
-    const full = path.join(dir, f);
-    live.add(full);
-    const acc = await readFileUsage(full, cache);
+  for (const entry of files) {
+    live.add(entry.file);
+    if (!entry.subagent) sessions++;
+    const acc = await readFileUsage(entry.file, cache);
     if (!acc) { unreadable++; continue; }
     addInto(project, acc);
-    if (sessionId && f === sessionId + '.jsonl') { session = acc; matchedSession = true; }
+    // A subagent's spend belongs to the session that SPAWNED it -- it was spent
+    // on that session's behalf, and filing it anywhere else makes the session
+    // and project figures disagree about the same work.
+    if (sessionId && entry.session === sessionId) {
+      addInto(session, acc);
+      matchedSession = true;
+    }
   }
 
   // Forget transcripts that are gone, so a long-lived host does not hold the
@@ -232,7 +242,9 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
     // object literal above -- so this always reported 1, including before the
     // SessionStart hook has told us which session we are.
     session: withTotal(session, matchedSession ? 1 : 0),
-    project: withTotal(project, files.length),
+    // Sessions, not transcripts: a session with four subagents is one session,
+    // and counting its five files would make the header say so.
+    project: withTotal(project, sessions),
   };
 }
 
