@@ -283,3 +283,43 @@ test('a transcript with no meta still has its tokens counted somewhere or not at
   const r = await readAgentStats({ cwd: CWD, projectsDir: root });
   assert.deepStrictEqual(r.agents, []);
 });
+
+test('a career does not double-count a multi-block message', async () => {
+  // The same defect as host/usage.js: one message is one API call with one
+  // usage figure, but Claude Code writes each content block on its own line and
+  // repeats the usage on every one. Measured project-wide at a 44.3% overcount,
+  // and an agent's career is read the same way, so it had the same inflation.
+  const { root, dir } = project();
+  session(dir, 's1', [{ id: 't1', type: 'code-reviewer' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'a1.meta.json'),
+    JSON.stringify({ agentType: 'code-reviewer', toolUseId: 't1' }));
+  const usage = U(2, 99, 49066, 51634);
+  const at = new Date(Date.UTC(2026, 0, 1, 12, 0)).toISOString();
+  fs.writeFileSync(path.join(sd, 'a1.jsonl'), [
+    JSON.stringify({ type: 'assistant', timestamp: at, message: { id: 'msg_a', usage, content: [{ type: 'thinking' }] } }),
+    JSON.stringify({ type: 'assistant', timestamp: at, message: { id: 'msg_a', usage, content: [{ type: 'tool_use' }] } }),
+  ].join(NL) + NL);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.agents[0].tokens, 2 + 99 + 49066 + 51634);
+});
+
+test('two distinct messages in one career are both counted', async () => {
+  const { root, dir } = project();
+  session(dir, 's1', [{ id: 't1', type: 'code-reviewer' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'a1.meta.json'),
+    JSON.stringify({ agentType: 'code-reviewer', toolUseId: 't1' }));
+  const at = m => new Date(Date.UTC(2026, 0, 1, 12, m)).toISOString();
+  fs.writeFileSync(path.join(sd, 'a1.jsonl'), [
+    JSON.stringify({ type: 'assistant', timestamp: at(0), message: { id: 'msg_a', usage: U(10, 0), content: [{ type: 'thinking' }] } }),
+    JSON.stringify({ type: 'assistant', timestamp: at(0), message: { id: 'msg_a', usage: U(10, 0), content: [{ type: 'tool_use' }] } }),
+    JSON.stringify({ type: 'assistant', timestamp: at(1), message: { id: 'msg_b', usage: U(5, 0), content: [{ type: 'text' }] } }),
+  ].join(NL) + NL);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.agents[0].tokens, 15);
+});
