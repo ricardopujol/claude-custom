@@ -1,0 +1,885 @@
+{
+  "subjects": [
+    {
+      "id": "sword",
+      "label": "Sword — item",
+      "emoji": "🗡️",
+      "note": "Must read as a bladed weapon: one long stroke plus a perpendicular bar near one end. Blade-to-hilt ratio is the only proportion that carries; pommel detail is invisible below 48px. The baseline emoji is a DAGGER, so a short blade is on-brief, not a compromise."
+    },
+    {
+      "id": "potion",
+      "label": "Potion — item",
+      "emoji": "🧪",
+      "note": "Must read as a vessel: a narrow neck over a wide body. The fill level is what makes it a potion rather than a bottle, so it has to survive to the smallest grid -- by outline where there is resolution, by colour where there is not."
+    },
+    {
+      "id": "spell",
+      "label": "Spell — skill tab / the wand",
+      "emoji": "✨",
+      "note": "Must read as a radial burst. Low-frequency and near-symmetric, so it is the one subject that survives tiny grids intact. Size contrast between a large and a small spark is what makes it sparkles rather than a single star."
+    },
+    {
+      "id": "bug",
+      "label": "Bug — bug vault creature",
+      "emoji": "🐛",
+      "note": "Must read as a creature with limbs. Legs and antennae are the entire signal; a legless oval is a pill. Thin protrusions are precisely what the smallest grids cannot draw, which makes this the hardest of the four."
+    }
+  ],
+  "renders": [
+    {
+      "id": "sword__hand-braille__4x2__mono",
+      "subject": "sword",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        "⠀⢀⡴⠋",
+        "⣩⠟⠉⠀"
+      ],
+      "fg": null,
+      "note": "8x8 dots. Blade 2 dots thick so it survives antialiasing; guard is horizontal rather than anatomically perpendicular because a 45-degree guard reads as a second blade at this pitch."
+    },
+    {
+      "id": "sword__hand-braille__4x2__duotone",
+      "subject": "sword",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "duotone",
+      "lines": [
+        "⠀⢀⡴⠋",
+        "⣩⠟⠉⠀"
+      ],
+      "fg": [
+        [
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede"
+        ],
+        [
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a"
+        ]
+      ],
+      "note": "Same bitmap, split on the cell-row boundary: steel blade over a warm hilt. The guard was moved to dot-row 4 specifically so this split is clean -- colour resolution is 1/8 of dot resolution."
+    },
+    {
+      "id": "sword__hand-braille__6x3__mono",
+      "subject": "sword",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "⠀⠀⠀⢀⡴⠋",
+        "⠀⢀⡴⠋⠀⠀",
+        "⣩⡟⠉⠀⠀⠀"
+      ],
+      "fg": null,
+      "note": "12x12 dots. Blade 2 dots thick over 8 rows, so the blade:hilt ratio finally reads as a sword rather than a dagger."
+    },
+    {
+      "id": "sword__hand-braille__6x3__duotone",
+      "subject": "sword",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "duotone",
+      "lines": [
+        "⠀⠀⠀⢀⡴⠋",
+        "⠀⢀⡴⠋⠀⠀",
+        "⣩⡟⠉⠀⠀⠀"
+      ],
+      "fg": [
+        [
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede"
+        ],
+        [
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede"
+        ],
+        [
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a"
+        ]
+      ],
+      "note": "Guard sits on the row-2 cell boundary; the bottom third is hilt."
+    },
+    {
+      "id": "sword__hand-braille__8x4__mono",
+      "subject": "sword",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        "⠀⠀⠀⠀⠀⢀⣴⠟",
+        "⠀⠀⠀⢀⣴⠟⠁⠀",
+        "⠀⢀⣴⠟⠁⠀⠀⠀",
+        "⣩⡿⠋⠉⠀⠀⠀⠀"
+      ],
+      "fg": null,
+      "note": "16x16 dots, 3-dot blade with a tapered tip. Only legible at 48px -- at 34px the dot pitch is 2.1px and this collapses to a grey diagonal smear."
+    },
+    {
+      "id": "sword__hand-ascii__4x2__mono",
+      "subject": "sword",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        " ///",
+        "o+  "
+      ],
+      "fg": null,
+      "note": "The 4x2 ASCII sword is a dagger, and that is correct -- the baseline emoji is a dagger. Blade 3 chars, hilt 2. The slash glyph is a hinted diagonal stroke, so it stays crisp at 6.7px where any bitmap of the same line is mush."
+    },
+    {
+      "id": "sword__hand-ascii__6x3__mono",
+      "subject": "sword",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "   ///",
+        "  //  ",
+        "oX/   "
+      ],
+      "fg": null,
+      "note": "Blade steps 1 col per row, matching the slash glyph's own ~59-degree slope in a 0.6:1 cell -- step 2 cols and the blade visibly stair-steps. X is the crossguard: a cross rotated to match a 45-degree blade."
+    },
+    {
+      "id": "sword__hand-ascii__8x4__mono",
+      "subject": "sword",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        "     ///",
+        "    //  ",
+        "   //   ",
+        "oX/     "
+      ],
+      "fg": null,
+      "note": "Same construction at 8x4. Only `/`, `o`, `X` -- all survive 7px. Punctuation-based hilts (comma, apostrophe) do not, which is why the pommel is an `o`."
+    },
+    {
+      "id": "sword__hand-block__4x2__mono",
+      "subject": "sword",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        "▗█▄▖",
+        "▝█▀▘"
+      ],
+      "fg": null,
+      "note": "HORIZONTAL, not diagonal -- see the note in the report. Pommel is a half-cell dash, guard is a full block, blade is a 2-subrow bar straddling the row boundary (the only way to get a bar on the vertical centreline of a 2-row grid), tip tapers to quarter width."
+    },
+    {
+      "id": "sword__hand-block__6x3__mono",
+      "subject": "sword",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        " █    ",
+        "◆████◣",
+        " █    "
+      ],
+      "fg": null,
+      "note": "3 rows lets the guard be full-height while the blade is one row -- that height contrast is what says \"sword\" without a single diagonal. Lower-left triangle bevels the tip."
+    },
+    {
+      "id": "potion__hand-braille__4x2__mono",
+      "subject": "potion",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        "⢀⠼⠧⡀",
+        "⠸⣿⣿⠇"
+      ],
+      "fg": null,
+      "note": "8x8 dots. Neck, flared shoulder, hollow upper body, solid lower body. The hollow/solid contrast IS the fill level, and it is the only thing separating a potion from a bottle."
+    },
+    {
+      "id": "potion__hand-braille__4x2__duotone",
+      "subject": "potion",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "duotone",
+      "lines": [
+        "⢀⠼⠧⡀",
+        "⠸⣿⣿⠇"
+      ],
+      "fg": [
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a"
+        ]
+      ],
+      "note": "Glass dim, liquid green. The liquid line was placed on dot-row 4 for exactly this -- draw it anywhere else and the surface row takes the glass colour."
+    },
+    {
+      "id": "potion__hand-braille__6x3__mono",
+      "subject": "potion",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "⠀⢀⡏⢹⡀⠀",
+        "⠀⡏⠀⠀⢹⠀",
+        "⠀⢿⣿⣿⡿⠀"
+      ],
+      "fg": null,
+      "note": "12x12 dots. Real outline now: 1-dot glass walls with a lip, and four rows of liquid. The best potion of the set."
+    },
+    {
+      "id": "potion__hand-braille__6x3__duotone",
+      "subject": "potion",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "duotone",
+      "lines": [
+        "⠀⢀⡏⢹⡀⠀",
+        "⠀⡏⠀⠀⢹⠀",
+        "⠀⢿⣿⣿⡿⠀"
+      ],
+      "fg": [
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a"
+        ]
+      ],
+      "note": "Bottom cell-row is entirely liquid by construction."
+    },
+    {
+      "id": "potion__hand-braille__8x4__mono",
+      "subject": "potion",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        "⠀⠀⠸⣭⣭⠇⠀⠀",
+        "⠀⢀⡴⠃⠘⢦⡀⠀",
+        "⠀⢸⣿⣿⣿⣿⡇⠀",
+        "⠀⠈⠻⣿⣿⠟⠁⠀"
+      ],
+      "fg": null,
+      "note": "16x16 dots with a corked stopper. 48px only."
+    },
+    {
+      "id": "potion__hand-braille__8x4__duotone",
+      "subject": "potion",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "duotone",
+      "lines": [
+        "⠀⠀⠸⣭⣭⠇⠀⠀",
+        "⠀⢀⡴⠃⠘⢦⡀⠀",
+        "⠀⢸⣿⣿⣿⣿⡇⠀",
+        "⠀⠈⠻⣿⣿⠟⠁⠀"
+      ],
+      "fg": [
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a"
+        ],
+        [
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a"
+        ]
+      ],
+      "note": "Cork and neck dim, lower two cell-rows liquid."
+    },
+    {
+      "id": "potion__hand-ascii__4x2__mono",
+      "subject": "potion",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        " [] ",
+        "(##)"
+      ],
+      "fg": null,
+      "note": "Two rows map exactly onto neck-over-body. Brackets are full-height verticals so the neck has mass; parens are the only ASCII glyph that curves. No fill level is expressible -- that is the loss at this budget."
+    },
+    {
+      "id": "potion__hand-ascii__6x3__mono",
+      "subject": "potion",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "  ||  ",
+        " /##\\ ",
+        "/####\\"
+      ],
+      "fg": null,
+      "note": "Erlenmeyer, not test tube: a conical flask is wide at the bottom, which fits a wide icon box. A test tube is tall and narrow and wastes half the grid."
+    },
+    {
+      "id": "potion__hand-ascii__8x4__mono",
+      "subject": "potion",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        "   ||   ",
+        "  /--\\  ",
+        " /####\\ ",
+        "/######\\"
+      ],
+      "fg": null,
+      "note": "The dashes are the fill line -- the one grid where ASCII can show liquid level. Uses only `/ \\ | - #`, all of which are solid strokes at 7px."
+    },
+    {
+      "id": "potion__hand-block__4x2__mono",
+      "subject": "potion",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        " ▐▌ ",
+        "▟██▙"
+      ],
+      "fg": null,
+      "note": "Right-half + left-half in adjacent cells makes a narrow neck centred on the icon axis -- blocks can do that and ASCII cannot. Three-quarter blocks bevel the body shoulders."
+    },
+    {
+      "id": "potion__hand-block__4x2__duotone",
+      "subject": "potion",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "duotone",
+      "lines": [
+        " ▐▌ ",
+        "▟██▙"
+      ],
+      "fg": [
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a"
+        ]
+      ],
+      "note": "Blocks cannot draw a thin outline, so they cannot show a fill level in mono. Colour is not decoration here -- it is the only channel left."
+    },
+    {
+      "id": "potion__hand-block__6x3__mono",
+      "subject": "potion",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "  ▐▌  ",
+        " ▟██▙ ",
+        "▐████▌"
+      ],
+      "fg": null,
+      "note": "Three-step widening: neck 1 cell, shoulder 4, body 5. The silhouette does all the work."
+    },
+    {
+      "id": "potion__hand-block__6x3__duotone",
+      "subject": "potion",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "duotone",
+      "lines": [
+        "  ▐▌  ",
+        " ▟██▙ ",
+        "▐████▌"
+      ],
+      "fg": [
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689",
+          "#6d7689"
+        ],
+        [
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a",
+          "#5fb07a"
+        ]
+      ],
+      "note": "Fill level = the bottom row being liquid-coloured. Cheapest legible potion in the set."
+    },
+    {
+      "id": "spell__hand-braille__4x2__mono",
+      "subject": "spell",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        "⣀⣼⣧⣀",
+        "⠉⢻⡟⠉"
+      ],
+      "fg": null,
+      "note": "8x8 dots, one bold 4-point star filling the whole grid. No room for a companion spark at this budget, and a single bold star beats two weak ones."
+    },
+    {
+      "id": "spell__hand-braille__6x3__mono",
+      "subject": "spell",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "⠀⣠⣿⣄⠀⠀",
+        "⠛⢿⣿⡿⠛⠀",
+        "⠀⠀⠛⠀⠠⡦"
+      ],
+      "fg": null,
+      "note": "12x12 dots. Big star in the upper-left ten columns plus a 3x3 companion spark bottom-right -- the size contrast is what makes it \"sparkles\" rather than \"a star\"."
+    },
+    {
+      "id": "spell__hand-braille__6x3__duotone",
+      "subject": "spell",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "duotone",
+      "lines": [
+        "⠀⣠⣿⣄⠀⠀",
+        "⠛⢿⣿⡿⠛⠀",
+        "⠀⠀⠛⠀⠠⡦"
+      ],
+      "fg": [
+        [
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede"
+        ],
+        [
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a"
+        ],
+        [
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede"
+        ]
+      ],
+      "note": "The star's horizontal blaze occupies cell-row 1 exactly, so tinting that row alone gives a glint without redrawing anything."
+    },
+    {
+      "id": "spell__hand-braille__8x4__mono",
+      "subject": "spell",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        "⠀⠀⠀⣰⣆⠀⠀⠀",
+        "⣀⣀⣴⣿⣿⣦⣀⣀",
+        "⠉⠉⠻⣿⣿⠟⠉⠉",
+        "⠀⠀⠀⠹⠏⠀⠀⠀"
+      ],
+      "fg": null,
+      "note": "16x16 dots, tapered arms, vertically centred with a blank dot-row top and bottom. 48px only."
+    },
+    {
+      "id": "spell__hand-ascii__4x2__mono",
+      "subject": "spell",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        " *  ",
+        "  + "
+      ],
+      "fg": null,
+      "note": "Two glyphs and it is done. WARNING: `*` sits at cap height in most monospace faces while `+` sits on the math axis, so the pair is not optically centred -- worth a manual line-height nudge rather than a redesign. This is the cheapest legible icon in the whole set."
+    },
+    {
+      "id": "spell__hand-ascii__6x3__mono",
+      "subject": "spell",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        " \\|/  ",
+        " -*-  ",
+        " /|\\ +"
+      ],
+      "fg": null,
+      "note": "The drawn sparkle, which beats a bare `*` as soon as there are 3 rows -- rays are real strokes instead of one hinted blob. Companion `+` kept 1 cell clear of the big star so they do not merge."
+    },
+    {
+      "id": "spell__hand-ascii__8x4__mono",
+      "subject": "spell",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        " \\|/    ",
+        "--*--   ",
+        " /|\\    ",
+        "      + "
+      ],
+      "fg": null,
+      "note": "Longer horizontal rays. Sparse by nature: a sparkle that fills its box is a sun."
+    },
+    {
+      "id": "spell__hand-block__4x2__mono",
+      "subject": "spell",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        " ◆  ",
+        "   ◇"
+      ],
+      "fg": null,
+      "note": "Two code points. Filled diamond + hollow diamond gives the large/small contrast that a repeated glyph cannot. Font risk: U+25C7 is thin-stroked and may vanish below 24px."
+    },
+    {
+      "id": "spell__hand-block__6x3__mono",
+      "subject": "spell",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        " ▄██▄ ",
+        "██████",
+        " ▀██▀ "
+      ],
+      "fg": null,
+      "note": "Tapered 4-point star: full-width horizontal arm on the middle row, 2-cell vertical arm, half-blocks softening the junction. Boldest spell of the set."
+    },
+    {
+      "id": "spell__hand-block__6x3__duotone",
+      "subject": "spell",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "duotone",
+      "lines": [
+        " ▄██▄ ",
+        "██████",
+        " ▀██▀ "
+      ],
+      "fg": [
+        [
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede"
+        ],
+        [
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a",
+          "#d08c4a"
+        ],
+        [
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede",
+          "#c7cede"
+        ]
+      ],
+      "note": "Accent on the blaze row only."
+    },
+    {
+      "id": "bug__hand-braille__4x2__mono",
+      "subject": "bug",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        "⢌⣾⣷⡡",
+        "⠅⢿⡿⠨"
+      ],
+      "fg": null,
+      "note": "8x8 dots: 3 leg pairs + antennae around a 4-dot body. WEAKEST of the braille set -- the legs are single dots separated from the body by a full dot of gap, so at 34px they read as specks rather than limbs."
+    },
+    {
+      "id": "bug__hand-braille__6x3__mono",
+      "subject": "bug",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "⠑⠢⣀⣀⠔⠊",
+        "⣒⢸⣿⣿⡇⣒",
+        "⠒⠘⢿⡿⠃⠒"
+      ],
+      "fg": null,
+      "note": "12x12 dots. Legs are 2 dots and touch the thorax; antennae curve out over three rows. This is where the bug becomes a bug -- the jump from 8x8 to 12x12 is bigger for this subject than for any other."
+    },
+    {
+      "id": "bug__hand-braille__8x4__mono",
+      "subject": "bug",
+      "technique": "hand-braille",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        "⠑⠢⢄⣀⣀⡠⠔⠊",
+        "⣀⠀⣼⡶⢶⣧⠀⣀",
+        "⣭⠀⣿⡇⢸⣿⠀⣭",
+        "⠒⠀⠹⣷⣾⠏⠀⠒"
+      ],
+      "fg": null,
+      "note": "16x16 dots with a split elytra and hollow eyes. 48px only."
+    },
+    {
+      "id": "bug__hand-ascii__4x2__mono",
+      "subject": "bug",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        "\\##/",
+        "/##\\"
+      ],
+      "fg": null,
+      "note": "Four splayed legs around a 2-cell body. Slash and backslash are the only ASCII glyphs that read as a limb at an angle, which is exactly what a bug needs and what blocks cannot supply."
+    },
+    {
+      "id": "bug__hand-ascii__6x3__mono",
+      "subject": "bug",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        " (oo) ",
+        "/|##|\\",
+        "\\|##|/"
+      ],
+      "fg": null,
+      "note": "Eyes read as \"creature\" harder than any body shape does. Pipes separate the elytra from the legs so the silhouette does not close into an oval."
+    },
+    {
+      "id": "bug__hand-ascii__8x4__mono",
+      "subject": "bug",
+      "technique": "hand-ascii",
+      "source": "hand",
+      "cols": 8,
+      "rows": 4,
+      "color": "mono",
+      "lines": [
+        "  \\  /  ",
+        " /(oo)\\ ",
+        " \\|##|/ ",
+        "  \\##/  "
+      ],
+      "fg": null,
+      "note": "Antennae get their own row. Note `oo` needs ~10px font to stay round, so this grid is a 48px design, not a 34px one."
+    },
+    {
+      "id": "bug__hand-block__4x2__mono",
+      "subject": "bug",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 4,
+      "rows": 2,
+      "color": "mono",
+      "lines": [
+        "▝▟▙▘",
+        "▗▜▛▖"
+      ],
+      "fg": null,
+      "note": "Quadrant stubs at the four corners are the closest blocks get to legs, and the three-quarter blocks bevel the body into an oval. Honest verdict: this reads as \"a critter\" but never as \"a bug\"."
+    },
+    {
+      "id": "bug__hand-block__6x3__mono",
+      "subject": "bug",
+      "technique": "hand-block",
+      "source": "hand",
+      "cols": 6,
+      "rows": 3,
+      "color": "mono",
+      "lines": [
+        "▗▄██▄▖",
+        "▄████▄",
+        "▝▀██▀▘"
+      ],
+      "fg": null,
+      "note": "Three nub pairs at three heights reads as three leg pairs, which is entomologically right and visually just barely enough. Blocks have no thin stroke, so this is the ceiling for the technique on this subject."
+    }
+  ]
+}
