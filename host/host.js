@@ -389,18 +389,22 @@ function currentUsage() {
   return lastUsage;
 }
 
-let usageInFlight = false;
-async function refreshUsage() {
-  // One read at a time. A tick that overlapped the previous one would race two
-  // incremental readers over the same cache entries.
-  if (usageInFlight) return lastUsage;
-  usageInFlight = true;
-  try {
-    lastUsage = decorateUsage(await readUsage({ cwd: CWD, sessionId }));
-    return lastUsage;
-  } finally {
-    usageInFlight = false;
-  }
+// Miguel, B1: hold the PROMISE, not a boolean. A boolean guard makes a
+// coalesced caller receive `lastUsage`, which is null until the first read
+// lands -- and the interval is installed at module scope alongside the boot
+// read, so the very first tick can arrive while that read is still in flight.
+// The timer then dereferenced null and logged an error naming the wrong cause.
+// Sharing the promise gives every caller the real result instead.
+let usagePending = null;
+function refreshUsage() {
+  if (usagePending) return usagePending;
+  usagePending = readUsage({ cwd: CWD, sessionId })
+    .then((u) => {
+      lastUsage = decorateUsage(u);
+      return lastUsage;
+    })
+    .finally(() => { usagePending = null; });
+  return usagePending;
 }
 
 // Announce a newly reached milestone once. Deliberately separate from the usage
@@ -692,6 +696,20 @@ wss.on('connection', (ws) => {
     cooldowns: cooldowns.list(),
     health: healthState,
   });
+  // The handshake above carries `lastUsage`, which is ABSENCE until the first
+  // read lands (~340ms cold). Nothing corrected it: the boot broadcast fires
+  // while `clients` is still empty, and the 5s tick only broadcasts on a
+  // CHANGE -- so a client that attached early sat on "reading..." until the
+  // user happened to spend a token. Coalesces onto the in-flight boot read
+  // rather than starting another.
+  if (!lastUsage) {
+    refreshUsage()
+      .then((usage) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'usage', usage });
+      })
+      .catch(() => { /* the next tick will carry it */ });
+  }
+
   // A milestone reached while nothing was attached is delivered now rather than
   // lost: the pty outlives the window by design, so the crossing can easily
   // happen with no observer.

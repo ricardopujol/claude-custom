@@ -586,26 +586,43 @@ function renderUsage(usage) {
   if (!usage) return;
   const { session, project } = usage;
 
+  // HOW WELL the figure is known, not just what it is. host/usage.js
+  // distinguishes "not read yet" and "could not read one of them" from zero at
+  // some length, and this function used to discard all of it and print a
+  // confident number -- so an attach before the first read drew
+  // "session 0 - project 0 - 0 sessions" for a project with a billion tokens
+  // in it. See app/usage-display.js.
+  const how = usageDisplay(usage);
+
   // Cache reads dominate the raw total -- they were ~99% of it when this was
   // built -- so "fresh" (input + output) is shown alongside it. A single
   // headline number here would read as runaway spend when almost all of it is
   // cheap cache traffic.
   const fresh = s => s.input + s.output;
   const detail = s =>
-    `in ${s.input.toLocaleString()} · out ${s.output.toLocaleString()} · ` +
-    `cache write ${s.cacheWrite.toLocaleString()} · cache read ${s.cacheRead.toLocaleString()}`;
+    `in ${s.input.toLocaleString()} - out ${s.output.toLocaleString()} - ` +
+    `cache write ${s.cacheWrite.toLocaleString()} - cache read ${s.cacheRead.toLocaleString()}`;
 
+  // A placeholder replaces the number entirely; a prefix qualifies it.
+  const num = n => (how.placeholder !== null ? how.placeholder : how.prefix + compact(n));
+  const title = base => (how.note ? `${base} - ${how.note}` : base);
+  const sub = inner => (how.placeholder !== null ? '' : inner);
+
+  usageEl.className = 'usage-' + how.state;
   usageEl.innerHTML =
-    `<span class="grp" title="This session — ${detail(session)}">` +
+    `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
       `<span class="lbl">session</span>` +
-      `<span class="val">${compact(session.total)}</span>` +
-      `<span class="sub">(${compact(fresh(session))} fresh)</span>` +
+      `<span class="val">${num(session.total)}</span>` +
+      `<span class="sub">${sub(`(${compact(fresh(session))} fresh)`)}</span>` +
     `</span>` +
-    `<span class="grp" title="Every session on this folder — ${detail(project)}">` +
+    `<span class="grp" title="${title(`Every session on this folder - ${detail(project)}`)}">` +
       `<span class="lbl">project</span>` +
-      `<span class="val">${compact(project.total)}</span>` +
-      `<span class="sub">${project.sessions} session${project.sessions === 1 ? '' : 's'}</span>` +
+      `<span class="val">${num(project.total)}</span>` +
+      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'}`)}</span>` +
     `</span>` +
+    // Said out loud, not only in a tooltip. A status nobody can see is the
+    // defect this whole change exists to fix.
+    (how.note ? `<span class="grp note" title="${how.note}">${how.note}</span>` : '') +
     milestoneHtml(usage.milestone);
 }
 
@@ -875,10 +892,10 @@ function handleControl(msg) {
     if (surfaces.cue) flashAttention(msg);
     return;
   }
-<<<<<<< HEAD
   if (msg.type === 'milestone') {
     flourish(msg.milestone);
-=======
+    return;
+  }
   if (msg.type === 'health') {
     renderHealth(msg.health);
     return;
@@ -889,7 +906,6 @@ function handleControl(msg) {
   }
   if (msg.type === 'fog') {
     renderFog(msg);
->>>>>>> origin/develop
     return;
   }
   if (msg.type === 'mode') {
