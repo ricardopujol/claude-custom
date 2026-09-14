@@ -16,6 +16,23 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
+
+// One secret, handed to both children. Main spawns the host AND owns the
+// window, so it is the only place that can give them the same value without
+// either having to go looking for it.
+//
+// A reattaching window (the host was already running) reads the token the host
+// wrote, because that host generated its own.
+const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN
+  || require('crypto').randomBytes(24).toString('hex');
+
+function tokenForRunningHost() {
+  try {
+    return fs.readFileSync(path.join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
+  } catch {
+    return SESSION_TOKEN;
+  }
+}
 const PROJECT_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 
 function isHostListening(port) {
@@ -53,6 +70,7 @@ function spawnHost() {
       ELECTRON_RUN_AS_NODE: '1',
       CLAUDE_CUSTOM_PORT: String(PORT),
       CLAUDE_CUSTOM_CWD: PROJECT_CWD,
+      CLAUDE_CUSTOM_TOKEN: SESSION_TOKEN,
     },
   });
   console.log('[main] host log:', logPath);
@@ -69,7 +87,7 @@ async function waitForHost(port, timeoutMs = 10000) {
   return false;
 }
 
-function createWindow() {
+function createWindow(spawnedHost) {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -84,6 +102,10 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { port: String(PORT), cwd: PROJECT_CWD,
+             // The token the host will demand. Read back from disk when we
+             // reattached to a host that was already running and therefore
+             // generated its own.
+             token: spawnedHost ? SESSION_TOKEN : tokenForRunningHost(),
              tab: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
              demosecret: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '' },
   });
@@ -182,16 +204,18 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  let spawnedHost = false;
   if (!(await isHostListening(PORT))) {
     console.log('[main] no host on port', PORT, '— spawning one');
     spawnHost();
+    spawnedHost = true;
     const up = await waitForHost(PORT);
     if (!up) console.error('[main] host did not come up in time');
   } else {
     console.log('[main] host already listening on', PORT, '— reattaching');
   }
 
-  const win = createWindow();
+  const win = createWindow(spawnedHost);
 
   // Headless verification path. CLAUDE_CUSTOM_SCREENSHOT=<file> renders the
   // real window, waits for the TUI to draw, writes a PNG and exits. The GUI is
@@ -253,7 +277,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(false);
   });
 });
 

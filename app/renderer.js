@@ -654,7 +654,10 @@ let ws = null;
 let pendingKeyDesc = null;
 
 function connect() {
-  ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+  // The token goes in the URL, which is the only channel a WebSocket
+  // handshake offers. It never touches the pty.
+  const auth = params.get('token') ? `?token=${encodeURIComponent(params.get('token'))}` : '';
+  ws = new WebSocket(`ws://127.0.0.1:${PORT}${auth}`);
 
   ws.onopen = () => {
     dot.classList.add('on');

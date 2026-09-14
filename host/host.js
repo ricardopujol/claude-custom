@@ -34,6 +34,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
+const { allowConnection, newToken } = require('./gatekeeper');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -234,7 +235,39 @@ const term = pty.spawn(CLAUDE_BIN, ARGS, {
 console.log('[host] pty pid       :', term.pid);
 
 // --- attach surface ---------------------------------------------------------
-const wss = new WebSocketServer({ host: '127.0.0.1', port: PORT });
+// The session token. Taken from the environment when the Electron main process
+// supplies one (it spawns both the host and the window, so it can hand the same
+// secret to both), otherwise generated here and written to a 0600 file that
+// local tools -- the probes -- can read. A web page cannot read a local file,
+// which is the whole point: this separates "a program on this machine" from
+// "a page the user happened to visit".
+//
+// NEVER passed through the pty. It travels host <-> client only.
+const TOKEN_FILE = path.join(HARNESS_DIR, 'session-token');
+const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN || newToken();
+try {
+  fs.mkdirSync(HARNESS_DIR, { recursive: true });
+  fs.writeFileSync(TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
+} catch (err) {
+  console.log('[host] could not write the session token file:', err.message);
+}
+
+const wss = new WebSocketServer({
+  host: '127.0.0.1',
+  port: PORT,
+  // Refused at the HANDSHAKE, before a socket exists. Browsers do not apply
+  // CORS to WebSocket, so without this any page the user visits could connect
+  // and send {type:'input'} into a pty running with permissions bypassed.
+  verifyClient: ({ origin, req }, done) => {
+    const token = new URL(req.url, 'ws://127.0.0.1').searchParams.get('token');
+    const verdict = allowConnection({ origin, token }, { expectedToken: SESSION_TOKEN });
+    if (!verdict.ok) {
+      console.log('[host] refused a connection:', verdict.reason);
+      return done(false, 403, 'Forbidden');
+    }
+    done(true);
+  },
+});
 const clients = new Set();
 
 // Authoritative screen, so a GUI attaching later gets the CURRENT state rather
