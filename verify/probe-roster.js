@@ -31,6 +31,9 @@ const check = (label, ok, detail) => {
       CLAUDE_CUSTOM_CWD: REPO,
       CLAUDE_CUSTOM_SCREENSHOT: SHOT,
       CLAUDE_CUSTOM_SCREENSHOT_DELAY: '26000',
+      // Which side tab to photograph: the sidebar is the one surface the
+      // headless checks cannot look at.
+      CLAUDE_CUSTOM_SIDE_TAB: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

@@ -109,8 +109,11 @@ document.addEventListener('keydown', (e) => {
     setTimeout(() => { fit.fit(); sendResize(); }, 0);
     e.preventDefault();
   }
-  if (e.ctrlKey && e.shiftKey && e.code === 'KeyK') {
-    toggleVault();
+  // Ctrl+B shows or hides the whole side panel. The TAB is the real control;
+  // this is only the way back once the panel is collapsed and its tabs are
+  // gone with it.
+  if (e.ctrlKey && !e.shiftKey && e.code === 'KeyB') {
+    setTab(activeTab === null ? lastTab : null);
     e.preventDefault();
   }
 });
@@ -119,28 +122,58 @@ document.addEventListener('keydown', (e) => {
 // An isolated panel. Nothing in it is ever written to the pty: the secret only
 // ever travels renderer -> main -> OS clipboard, and the host that owns the
 // terminal never sees it. Pasting is then the user's own deliberate act.
-const vaultEl = () => document.getElementById('vault');
+// --- side tabs --------------------------------------------------------------
+let activeTab = DEFAULT_TAB;
+let lastTab = DEFAULT_TAB;      // what Ctrl+B reopens after a collapse
 
-// Opened at launch only for the screenshot probe: the panel is the one
-// surface no headless check can look at.
-if (new URLSearchParams(location.search).get('vault')) {
-  window.addEventListener('DOMContentLoaded', () => setTimeout(toggleVault, 3500));
-}
+function setTab(tab) {
+  activeTab = tab;
+  if (tab) lastTab = tab;
 
-function toggleVault() {
-  const el = vaultEl();
-  const showing = el.classList.toggle('show');
-  if (showing) {
+  document.getElementById('roster').classList.toggle('hidden', tab === null);
+  for (const b of document.querySelectorAll('#side-tabs button')) {
+    b.classList.toggle('on', b.dataset.tab === tab);
+  }
+  for (const p of document.querySelectorAll('#roster .panel')) {
+    p.classList.toggle('on', p.dataset.panel === tab);
+  }
+
+  if (tab === 'vault') {
     renderVault();
     setTimeout(() => document.getElementById('vault-search').focus(), 0);
   } else {
-    // Leaving the panel puts every revealed secret back out of sight; a value
+    // Leaving the vault puts every revealed secret back out of sight: a value
     // left on screen outlives the moment someone needed it.
     hideRevealed();
     term.focus();
   }
+  try { localStorage.setItem('sideTab', tab === null ? '' : tab); } catch {}
   setTimeout(() => { fit.fit(); sendResize(); }, 0);
 }
+
+document.addEventListener('click', (e) => {
+  const button = e.target.closest('#side-tabs button');
+  if (!button) return;
+  setTab(nextTab(activeTab, button.dataset.tab));
+});
+
+document.getElementById('side-hint').addEventListener('click', () => {
+  setTab(activeTab === null ? lastTab : null);
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Restored per window, so a collapsed sidebar stays collapsed across a
+  // restart rather than springing back every launch.
+  let saved = DEFAULT_TAB;
+  try {
+    const stored = localStorage.getItem('sideTab');
+    if (stored !== null) saved = stored === '' ? null : stored;
+  } catch {}
+  // A screenshot probe can pin the tab: the sidebar is the one surface the
+  // headless checks cannot look at.
+  const forced = new URLSearchParams(location.search).get('tab');
+  setTab(forced || saved);
+});
 
 function hideRevealed() {
   for (const el of document.querySelectorAll('#vault-list .shown')) el.remove();

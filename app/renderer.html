@@ -40,7 +40,6 @@
     body.has-bg #termwrap { background: transparent; }
     body.has-bg header,
     body.has-bg #roster,
-    body.has-bg #vault,
     body.has-bg #diag { background: color-mix(in srgb, var(--chrome) 72%, transparent); }
     body.has-bg .xterm-viewport { background: transparent !important; }
 
@@ -48,28 +47,14 @@
     /* --- vault ------------------------------------------------------------
        Deliberately plain. Nothing here animates or flashes: a panel holding
        passwords should look like a drawer, not a feature. */
-    #vault {
-      width: 320px; flex: 0 0 320px;
-      background: var(--chrome);
-      border-left: 1px solid var(--border);
-      display: none; flex-direction: column;
-    }
-    #vault.show { display: flex; }
-    #vault h2 {
-      margin: 0; padding: 10px 12px;
-      font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-      color: var(--accent); border-bottom: 1px solid var(--border);
-      display: flex; justify-content: space-between; align-items: baseline;
-    }
-    #vault h2 .sub { color: var(--dim); text-transform: none; letter-spacing: 0; font-size: 10px; }
-    #vault-body { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: 10px 12px; gap: 10px; }
-    #vault input, #vault button {
+    #vault-body { padding: 10px 12px; gap: 10px; }
+    #vault-body input, #vault-body button {
       font: inherit; font-size: 12px;
       background: #1b1f2a; color: var(--text);
       border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px;
     }
-    #vault button { cursor: pointer; }
-    #vault button:hover { border-color: var(--accent); }
+    #vault-body button { cursor: pointer; }
+    #vault-body button:hover { border-color: var(--accent); }
     #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
     #vault-list .none, #vault-list .err { color: var(--dim); font-size: 11px; line-height: 1.5; }
     #vault-list .err { color: var(--bad); }
@@ -89,7 +74,7 @@
     .sec .said { margin-top: 5px; font-size: 10.5px; color: var(--ok); }
     #vault-add { display: flex; flex-direction: column; gap: 6px;
                  border-top: 1px solid var(--border); padding-top: 10px; }
-    #vault .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
+    #vault-body .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
 
     /* --- token spend ------------------------------------------------------- */
     #usage {
@@ -178,12 +163,31 @@
       border-left: 1px solid var(--border);
       display: flex; flex-direction: column;
     }
-    #roster h2 {
-      margin: 0; padding: 10px 12px;
-      font-size: 11px; text-transform: uppercase;
-      letter-spacing: .08em; color: var(--dim);
+    /* Collapsed: the sidebar is gone entirely, terminal takes the room. The
+       tab strip reappears with it, so the only way back is the header hint --
+       which is why the hint is always visible. */
+    #roster.hidden { display: none; }
+
+    #side-tabs {
+      display: flex; flex: 0 0 auto;
       border-bottom: 1px solid var(--border);
+      -webkit-app-region: no-drag;
     }
+    #side-tabs button {
+      flex: 1; min-width: 0;
+      font: inherit; font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+      padding: 9px 6px; cursor: pointer;
+      background: transparent; color: var(--dim);
+      border: 0; border-bottom: 2px solid transparent;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #side-tabs button:hover { color: var(--text); }
+    #side-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* Only the selected panel is in the layout at all -- a hidden panel that
+       still occupies space is the usual way a tab strip goes wrong. */
+    #roster .panel { display: none; flex-direction: column; min-height: 0; flex: 1; }
+    #roster .panel.on { display: flex; }
     #agents { flex: 1; overflow-y: auto; padding: 8px; }
 
     /* Drag handle. Sits on the roster's left edge, over the terminal boundary. */
@@ -300,26 +304,29 @@
       <span class="spacer"></span>
       <span id="mode" title="Permission mode — shift+tab cycles"></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
+      <span class="hint" id="side-hint" title="Show or hide the side panel">panel <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
     <div id="body">
       <div id="termwrap"><div id="term"></div></div>
+      <!-- One sidebar, two tabs. The vault is a PANEL here, never inside the
+           terminal: nothing in it is written to the pty, so a secret cannot
+           reach the session by being rendered in the wrong place. -->
       <aside id="roster">
         <div id="roster-grip" title="Drag to resize — portraits scale with width"></div>
-        <h2>Agents</h2>
-        <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
-        <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
-        <div id="procs">
-          <h3>Running</h3>
-          <div id="proclist"><div class="none">nothing running</div></div>
+        <nav id="side-tabs">
+          <button data-tab="agents" title="Who is working, and on what">Agents</button>
+          <button data-tab="vault" title="Local encrypted secrets">Vault</button>
+        </nav>
+        <div class="panel" data-panel="agents">
+          <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
+          <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
+          <div id="procs">
+            <h3>Running</h3>
+            <div id="proclist"><div class="none">nothing running</div></div>
+          </div>
         </div>
-      </aside>
-      <!-- The secret store. A sibling of the terminal, never inside it: nothing
-           here is ever written to the pty, so a secret cannot reach the session
-           by being rendered in the wrong place. -->
-      <aside id="vault">
-        <h2>Vault <span class="sub">local · encrypted</span></h2>
-        <div id="vault-body">
+        <div class="panel" data-panel="vault" id="vault-body">
           <input id="vault-search" type="search" placeholder="search labels" autocomplete="off" />
           <div id="vault-list"></div>
           <form id="vault-add" autocomplete="off">
@@ -343,6 +350,7 @@
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
+  <script src="./side-tabs.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./renderer.js"></script>
 </body>

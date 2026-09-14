@@ -84,7 +84,7 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { port: String(PORT), cwd: PROJECT_CWD,
-             vault: process.env.CLAUDE_CUSTOM_VAULT_OPEN ? '1' : '' },
+             tab: process.env.CLAUDE_CUSTOM_SIDE_TAB || '' },
   });
 
   // Attention raised from main, not from the page. The renderer's own
