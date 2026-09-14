@@ -34,6 +34,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
+const { detectRunner, parseResults, healthFrom } = require('./health');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -71,6 +72,72 @@ const PIPE_NAME = `\\\\.\\pipe\\claude-custom-${SESSION_ID}`;
 const HARNESS_DIR = path.join(__dirname, '..', '.harness');
 const HELPER_PATH =
   process.env.CLAUDE_CUSTOM_HELPER || path.join(HARNESS_DIR, 'hook-helper.exe');
+
+// Project HP. The suite runs in a CHILD PROCESS, never in this one: a test run
+// is seconds of work, and the host's event loop is what accepts the hook
+// helper's named-pipe connection inside its 80ms timeout. Detection is cheap
+// enough to do inline; the RUN never is.
+//
+// One run at a time. A second request while a run is in flight joins the first
+// instead of starting a competing process -- two `npm test` runs in one repo
+// fight over the same build output.
+const healthRunner = detectRunner(CWD);
+let healthState = {
+  ...healthFrom(null),
+  runner: healthRunner ? healthRunner.kind : null,
+  running: false,
+};
+let healthInFlight = null;
+
+function settleHealth(results, started) {
+  healthState = {
+    ...healthFrom(results),
+    runner: healthRunner ? healthRunner.kind : null,
+    running: false,
+    ranAt: Date.now(),
+    tookMs: Date.now() - started,
+  };
+  broadcastControl({ type: 'health', health: healthState });
+  return healthState;
+}
+
+function runHealth() {
+  if (healthInFlight) return healthInFlight;
+  if (!healthRunner) {
+    // No recognisable suite. UNKNOWN, not zero: a project without tests is not
+    // a project whose tests all fail.
+    healthState = { ...healthFrom(null), runner: null, running: false };
+    broadcastControl({ type: 'health', health: healthState });
+    return Promise.resolve(healthState);
+  }
+
+  healthState = { ...healthState, running: true };
+  broadcastControl({ type: 'health', health: healthState });
+
+  const [cmd, ...args] = healthRunner.command;
+  const started = Date.now();
+  healthInFlight = new Promise((resolve) => {
+    const env = { ...process.env };
+    // A child that inherits NODE_TEST_CONTEXT switches to the v8 serializer
+    // protocol and writes NOTHING to stdout, which reads as a broken parser.
+    delete env.NODE_TEST_CONTEXT;
+
+    const child = require('child_process').spawn(cmd, args, {
+      cwd: CWD, env, windowsHide: true,
+      shell: process.platform === 'win32',      // npm is a .cmd shim on Windows
+    });
+
+    let out = '';
+    const take = d => { out += d.toString(); };
+    child.stdout.on('data', take);
+    child.stderr.on('data', take);              // some runners summarise on stderr
+
+    child.on('error', () => resolve(settleHealth(null, started)));
+    child.on('close', () => resolve(settleHealth(parseResults(healthRunner.parser, out), started)));
+  }).finally(() => { healthInFlight = null; });
+
+  return healthInFlight;
+}
 
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
@@ -153,7 +220,12 @@ if (helperExists) {
       // fallback. Cooldowns applied to the wrong agent are worse than none.
       const finished = (ev.payload && ev.payload.agent_type)
         || mood.stack()[mood.stack().length - 1];
-      if (finished) cooldowns.finished(finished);
+      if (finished) {
+        cooldowns.finished(finished);
+        // Broadcast, or the panel only learns about a cooldown on reattach --
+        // which is exactly when it is least useful.
+        broadcastControl({ type: 'cooldowns', cooldowns: cooldowns.list() });
+      }
     }
     // Logged because the roster silently showed nothing when agents ran, and
     // there was no way to tell whether hooks were arriving at all.
@@ -332,6 +404,7 @@ wss.on('connection', (ws) => {
     modes: MODES,
     provider,
     cooldowns: cooldowns.list(),
+    health: healthState,
   });
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
@@ -346,6 +419,10 @@ wss.on('connection', (ws) => {
           if (msg.type === 'resize') {
             term.resize(msg.cols, msg.rows);
             termState.resize(msg.cols, msg.rows);
+            return;
+          }
+          if (msg.type === 'health') {
+            runHealth();          // broadcasts on start and again on finish
             return;
           }
           if (msg.type === 'input') {

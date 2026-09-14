@@ -28,5 +28,5 @@ function nextTab(current, clicked) {
   return current === clicked ? null : clicked; // clicking the active tab hides it
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { nextTab, TABS, DEFAULT_TAB };
-else if (typeof window !== 'undefined') Object.assign(window, { nextTab, TABS, DEFAULT_TAB });
+if (typeof module !== 'undefined' && module.exports) module.exports = { nextTab, TABS, DEFAULT_TAB, isKnownTab: known };
+else if (typeof window !== 'undefined') Object.assign(window, { nextTab, TABS, DEFAULT_TAB, isKnownTab: known });

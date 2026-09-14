@@ -170,7 +170,11 @@ window.addEventListener('DOMContentLoaded', () => {
   let saved = DEFAULT_TAB;
   try {
     const stored = localStorage.getItem('sideTab');
-    if (stored !== null) saved = stored === '' ? null : stored;
+    // A stored tab this build does not have leaves the sidebar BLANK: no tab
+    // is active, no panel matches, and the whole thing renders empty. Seen for
+    // real -- a 'fog' tab saved by another branch emptied the sidebar here.
+    if (stored === '') saved = null;
+    else if (stored !== null) saved = isKnownTab(stored) ? stored : DEFAULT_TAB;
   } catch {}
   // A screenshot probe can pin the tab: the sidebar is the one surface the
   // headless checks cannot look at.
@@ -390,6 +394,75 @@ function renderRoster() {
   ).join('');
 }
 
+// --- project HP -------------------------------------------------------------
+// One bar, one meaning: pass rate. The label says so, because a composite
+// number gets quoted as though it included coverage and lint.
+const HP_STATES = ['healthy', 'hurt', 'critical', 'unknown'];
+
+function renderHealth(h) {
+  const el = document.getElementById('hp');
+  if (!el || !h) return;
+  el.classList.add('show');
+  el.classList.remove(...HP_STATES, 'running');
+  el.classList.add(HP_STATES.includes(h.state) ? h.state : 'unknown');
+  if (h.running) el.classList.add('running');
+
+  const pct = h.fraction === null || h.fraction === undefined
+    ? 0 : Math.round(h.fraction * 100);
+
+  const label = h.running ? 'running…'
+    : h.state === 'unknown'
+      ? (h.runner ? 'no result yet' : 'no test suite')
+      : `${h.passed}/${h.total}`;
+
+  el.innerHTML = `<span>HP</span><span class="track"><span class="fill"></span></span>` +
+                 `<span class="num">${escapeHtml(label)}</span>`;
+  el.querySelector('.fill').style.width = pct + '%';
+
+  el.title = h.state === 'unknown' && !h.runner
+    ? 'No recognisable test suite in this project'
+    : `Pass rate only — ${h.passed || 0} passed, ${h.failed || 0} failed` +
+      (h.tookMs ? ` in ${(h.tookMs / 1000).toFixed(1)}s` : '') +
+      '. Click to run the suite.';
+}
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#hp')) return;
+  try { ws.send(JSON.stringify({ type: 'health' })); } catch {}
+});
+
+// --- cooldowns ---------------------------------------------------------------
+// Advisory, never blocking. The point is to make a cost visible, not to
+// overrule a deliberate decision, so this is a note rather than a barrier.
+let cooldownState = [];
+
+function renderCooldowns(list) {
+  if (Array.isArray(list)) cooldownState = list;
+  const el = document.getElementById('cooldowns');
+  if (!el) return;
+  if (!cooldownState.length) { el.innerHTML = ''; return; }
+
+  el.innerHTML = '<h3>Cooling down</h3>' + cooldownState.map(c => {
+    const left = Math.max(0, c.remainingMs);
+    const frac = c.durationMs ? Math.max(0, Math.min(1, left / c.durationMs)) : 0;
+    const mins = Math.ceil(left / 60000);
+    return `<div class="cool"><span class="who" title="${escapeHtml(c.agent)}">${escapeHtml(c.agent)}</span>` +
+           `<span class="bar"><i style="width:${(frac * 100).toFixed(0)}%"></i></span>` +
+           `<span class="left">${mins}m</span></div>`;
+  }).join('');
+}
+
+// Counted down locally so the remaining time is honest between broadcasts;
+// the host stays the source of truth for what is ON cooldown.
+setInterval(() => {
+  if (!cooldownState.length) return;
+  const now = Date.now();
+  cooldownState = cooldownState
+    .map(c => ({ ...c, remainingMs: c.remainingMs - (now - (c._tick || now)), _tick: now }))
+    .filter(c => c.remainingMs > 0);
+  renderCooldowns();
+}, 15000);
+
 // --- token spend ------------------------------------------------------------
 const usageEl = document.getElementById('usage');
 
@@ -583,6 +656,8 @@ function handleControl(msg) {
     applyBackground(msg.background);
     applyTheme(msg.theme);
     renderUsage(msg.usage);
+    renderHealth(msg.health);
+    renderCooldowns(msg.cooldowns);
     renderProcesses(msg.running);
     if (msg.modes) modeTable = msg.modes;
     renderMode(msg.mode);
@@ -631,6 +706,14 @@ function handleControl(msg) {
     }
 
     if (surfaces.cue) flashAttention(msg);
+    return;
+  }
+  if (msg.type === 'health') {
+    renderHealth(msg.health);
+    return;
+  }
+  if (msg.type === 'cooldowns') {
+    renderCooldowns(msg.cooldowns);
     return;
   }
   if (msg.type === 'mode') {

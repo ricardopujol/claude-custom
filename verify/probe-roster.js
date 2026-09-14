@@ -7,6 +7,7 @@
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const WebSocket = require('ws');
 
 const REPO = path.join(__dirname, '..');
 const PORT = 7798;
@@ -63,6 +64,30 @@ const check = (label, ok, detail) => {
       await sleep(400);
     }
   }
+
+  // Finish mutation-tester so a COOLDOWN exists to render. Mortimer is the
+  // motivating case for the feature: the project rule is one run per stable
+  // tree, and that rule has already been broken once, wasting a full run.
+  if (pipe) {
+    const helper = path.join(REPO, '.harness', 'hook-helper.exe');
+    spawnSync(helper, ['--pipe', pipe, '--event', 'SubagentStop'], {
+      input: JSON.stringify({ agent_type: 'mutation-tester' }), windowsHide: true,
+    });
+  }
+
+  // Ask the host to run the suite. The host BROADCASTS health to every client,
+  // so requesting it from a second connection lands in the Electron window too
+  // -- which is how the screenshot gets a real bar instead of "no result yet".
+  // Deliberately not automatic on launch: running someone's test suite the
+  // moment they open a window is intrusive and slow.
+  await new Promise((resolve) => {
+    const probe = new WebSocket(`ws://127.0.0.1:${PORT}`);
+    probe.on('open', () => {
+      probe.send(JSON.stringify({ type: 'health' }));
+      setTimeout(() => { try { probe.close(); } catch {} resolve(); }, 6000);
+    });
+    probe.on('error', resolve);
+  });
 
   await sleep(14000);
   const log2 = (() => { try { return fs.readFileSync(LOG, 'utf8'); } catch { return ''; } })();
