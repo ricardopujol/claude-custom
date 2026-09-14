@@ -460,6 +460,45 @@ function faceHtml(portrait) {
          `justify-content:center;background:hsl(${p.hue} 42% 62%)">${p.initials}</span>`;
 }
 
+// Career stats per agent, keyed by agent type. Arrives with the handshake and
+// again whenever an agent finishes, so the figures move as work happens.
+let agentStats = new Map();
+
+// Ricardo: tokens spent and time worked IN THE PROJECT, not in this window.
+// Compact because it sits beside a 40px portrait -- "47.1M / 30m" reads at a
+// glance, the tooltip carries the exact figures.
+function compactTokens(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(Math.round(n));
+}
+
+function compactMinutes(ms) {
+  const mins = Math.round((Number(ms) || 0) / 60000);
+  if (mins < 60) return mins + 'm';
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h}h${m}m` : `${h}h`;
+}
+
+function careerHtml(agent) {
+  const st = agentStats.get(agent);
+  // An agent that has never finished a run has no career yet. Drawing "0 / 0m"
+  // would read as "did nothing", which is a different claim from "no record".
+  if (!st || !st.runs) return '';
+  const detail = `${st.runs} run${st.runs === 1 ? '' : 's'} in this project - ` +
+    `${st.tokens.toLocaleString()} tokens - ${Math.round(st.ms / 60000)} min worked` +
+    (st.resolved === false ? ' - identity unresolved, this is a label not an agent type' : '');
+  return `<div class="career" title="${detail}">` +
+    `<span class="career-tok">${compactTokens(st.tokens)}</span>` +
+    `<span class="career-sep">/</span>` +
+    `<span class="career-min">${compactMinutes(st.ms)}</span>` +
+    (st.resolved === false ? '<span class="career-warn" title="identity unresolved">?</span>' : '') +
+    `</div>`;
+}
+
 function renderRoster() {
   if (roster.size === 0) {
     agentsEl.innerHTML = '<div class="empty">No agents yet — portraits light up when one runs.</div>';
@@ -475,9 +514,17 @@ function renderRoster() {
     `<div class="agent" data-state="${r.state}">` +
       `<div class="face">${faceHtml(r.portrait)}</div>` +
       `<div class="meta"><div class="name" title="${r.agent}">${r.agent}</div>` +
-      `<div class="state">${r.state}</div></div>` +
+      `<div class="state">${r.state}</div>` +
+      careerHtml(r.agent) +
+      `</div>` +
     `</div>`
   ).join('');
+}
+
+function renderAgentStats(stats) {
+  if (!stats || !Array.isArray(stats.agents)) return;
+  agentStats = new Map(stats.agents.map(a => [a.agent, a]));
+  renderRoster();
 }
 
 // --- project HP -------------------------------------------------------------
@@ -848,6 +895,9 @@ function handleControl(msg) {
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
+    // Before renderRoster, so the first paint already carries the careers
+    // rather than flashing the roster without them.
+    renderAgentStats(msg.agentStats);
     renderRoster();
     if (!msg.hooks) console.warn('[renderer] host reports no hook helper — moods will not update');
     return;
@@ -906,6 +956,10 @@ function handleControl(msg) {
   }
   if (msg.type === 'fog') {
     renderFog(msg);
+    return;
+  }
+  if (msg.type === 'agentStats') {
+    renderAgentStats(msg.stats);
     return;
   }
   if (msg.type === 'mode') {
