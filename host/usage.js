@@ -15,15 +15,12 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { projectDirName } = require('./project-dir');
 
 const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sessions: 0 };
 
 // Claude Code encodes the cwd by replacing every path separator and colon with
 // a dash: C:\Users\x\proj -> C--Users-x-proj
-function projectDirName(cwd) {
-  return String(cwd || '').replace(/\\/g, '/').replace(/[/:]/g, '-');
-}
-
 function defaultProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects');
 }

@@ -14,6 +14,7 @@
 const TABS = [
   { id: 'agents', label: 'Agents', title: 'Who is working, and on what' },
   { id: 'vault', label: 'Vault', title: 'Local encrypted secrets' },
+  { id: 'fog', label: 'Map', title: 'What this project has actually been read' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

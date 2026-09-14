@@ -118,6 +118,82 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// --- fog of war ---
+// A closed whitelist: the tier decides a CSS class, so it must never be
+// interpolated straight from host data even though it is an enum today.
+const TIER_CLASS = { edited: 'edited', read: 'read', dark: 'dark' };
+const FOG_ROW_CAP = 600;
+// ----------------------------------------------------------
+// Asked for on demand, never pushed: a cold read is ~175ms of synchronous work
+// in the host, and the host's event loop is what delivers hook events.
+function requestFog() {
+  const list = document.getElementById('fog-list');
+  if (!list.dataset.loaded) document.getElementById('fog-summary').textContent = 'reading the map…';
+  // Silently dropped if the socket is not open yet; ws.onopen asks again. A
+  // swallowed throw here is what left the panel reading "reading the map…"
+  // forever, which looks like a slow host rather than a lost message.
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'fog' })); } catch {}
+}
+
+function renderFog(fog) {
+  const list = document.getElementById('fog-list');
+  const summary = document.getElementById('fog-summary');
+  const files = fog.files || [];
+  const status = fog.status || {};
+  list.dataset.loaded = '1';
+
+  // STATUS FIRST. Every failure in this feature otherwise renders as a
+  // confident map, and one of them ("git unavailable") renders as PERFECT
+  // coverage with zero blind spots -- the feature lying in the exact direction
+  // that makes you stop looking. A partial map that says what it is missing is
+  // usable; a complete-looking wrong one is worse than no map.
+  const warnings = [];
+  if (status.failed) warnings.push(`the map could not be read: ${escapeHtml(status.error || 'unknown error')}`);
+  if (status.transcriptsMissing) warnings.push('no transcripts for this project — nothing has been recorded here yet');
+  if (status.transcriptErrors) warnings.push(`${status.transcriptErrors} transcript(s) unreadable — those files may show as unexplored`);
+  if (!status.trackedOk && !status.failed) {
+    warnings.push('file list unavailable (not a git repo?) — <b>never-opened files are NOT counted</b>');
+  }
+
+  if (!files.length) {
+    summary.innerHTML = warnings.length
+      ? warnings.map(w => `<span class="fog-warn">${w}</span>`).join('<br>')
+      : 'nothing read yet — the whole project is dark.';
+    list.innerHTML = '';
+    return;
+  }
+
+  const dark = files.filter(f => f.tier === 'dark').length;
+  const edited = files.filter(f => f.tier === 'edited').length;
+  // The host already computed these against the project; recomputing them here
+  // would be a second definition of one number, free to drift from the first.
+  const explored = Number.isFinite(fog.explored) ? fog.explored : files.length - dark;
+  const total = Number.isFinite(fog.total) ? fog.total : files.length;
+
+  summary.innerHTML =
+    `<b>${explored}</b> of <b>${total}</b> files explored · <b>${edited}</b> edited · ` +
+    `<span class="dark-count">${dark} never opened</span>` +
+    warnings.map(w => `<br><span class="fog-warn">${w}</span>`).join('');
+
+  // Capped. One innerHTML string with a div per file is a multi-second layout
+  // freeze on a large repo, and nobody reads the 3000th row.
+  const shown = files.slice(0, FOG_ROW_CAP);
+  list.innerHTML = shown.map(f => {
+    // Brightness is applied per row rather than bucketed into classes: the
+    // decay is continuous, and three shades would discard the signal.
+    const dim = f.tier === 'dark' ? '' : `style="opacity:${(0.35 + f.brightness * 0.65).toFixed(2)}"`;
+    const count = f.touches ? `<span class="n">${f.touches}</span>` : '';
+    const tier = TIER_CLASS[f.tier] || 'dark';
+    return `<div class="fog-row ${tier}" ${dim} title="${escapeHtml(f.path)}">` +
+           `<span class="name"><bdi>${escapeHtml(f.path)}</bdi></span>${count}</div>`;
+  }).join('');
+
+  if (files.length > shown.length) {
+    list.innerHTML += `<div class="fog-more">+${files.length - shown.length} more</div>`;
+  }
+}
+
 // --- vault ------------------------------------------------------------------
 // An isolated panel. Nothing in it is ever written to the pty: the secret only
 // ever travels renderer -> main -> OS clipboard, and the host that owns the
@@ -138,6 +214,7 @@ function setTab(tab) {
     p.classList.toggle('on', p.dataset.panel === tab);
   }
 
+  if (tab === 'fog') requestFog();
   if (tab === 'vault') {
     renderVault();
     setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -633,6 +710,10 @@ function handleControl(msg) {
     if (surfaces.cue) flashAttention(msg);
     return;
   }
+  if (msg.type === 'fog') {
+    renderFog(msg);
+    return;
+  }
   if (msg.type === 'mode') {
     renderMode(msg.mode);
     return;
@@ -663,6 +744,9 @@ function connect() {
     dot.classList.add('on');
     term.focus();
     sendResize();
+    // The tab is restored before the socket is open, so a fog request made at
+    // load is thrown away. Ask again once there is somewhere to ask.
+    if (activeTab === 'fog') requestFog();
   };
 
   // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.

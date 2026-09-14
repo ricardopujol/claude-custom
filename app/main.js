@@ -257,9 +257,24 @@ app.whenReady().then(async () => {
     setTimeout(async () => {
       try {
         const fsMod = require('fs');
-        const image = await win.webContents.capturePage();
-        const png = image.toPNG();
-        if (!png || png.length === 0) throw new Error('capturePage returned an empty image');
+        // RETRIED. capturePage intermittently returns an empty image -- observed
+        // several times in a row while the host, the hooks and the renderer all
+        // reported healthy, so it is the capture and not the page. Reporting it
+        // as a probe failure sent me looking for a product bug that was not
+        // there, more than once.
+        let png = null;
+        for (let attempt = 1; attempt <= 4 && !(png && png.length); attempt++) {
+          if (attempt > 1) {
+            console.log(`[main] capturePage came back empty, retry ${attempt - 1}`);
+            await new Promise(r => setTimeout(r, 700));
+          }
+          try {
+            png = (await win.webContents.capturePage()).toPNG();
+          } catch (err) {
+            console.log('[main] capturePage threw:', err.message);
+          }
+        }
+        if (!png || png.length === 0) throw new Error('capturePage returned an empty image 4 times');
         fsMod.writeFileSync(outFile, png);
         // Verify before exiting. app.exit() is a hard exit that has been
         // observed truncating the file to zero bytes even after a synchronous

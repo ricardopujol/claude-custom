@@ -55,6 +55,33 @@
     }
     #vault-body button { cursor: pointer; }
     #vault-body button:hover { border-color: var(--accent); }
+    /* --- fog of war -------------------------------------------------------
+       A dark map. Brightness carries the signal, so the rows are deliberately
+       plain: no borders, no chrome competing with the one variable that means
+       something. */
+    #fog-body { padding: 8px 10px; gap: 8px; }
+    .fog-sum { font-size: 11px; color: var(--dim); line-height: 1.5; flex: 0 0 auto; }
+    .fog-sum b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .fog-sum .dark-count { color: var(--accent); }
+    .fog-sum .fog-warn { color: var(--bad); }
+    .fog-more { font-size: 10.5px; color: var(--dim); padding: 4px 0; }
+    #fog-list { flex: 1; overflow-y: auto; font-family: ui-monospace, Consolas, monospace; }
+    .fog-row {
+      display: flex; align-items: baseline; gap: 6px;
+      font-size: 11px; padding: 1px 0; white-space: nowrap;
+    }
+    /* direction:rtl puts the ellipsis on the LEFT, so a long path keeps its
+       filename -- the part worth reading. The text itself must be isolated in
+       a <bdi>, or a path starting with a dot renders as "harness/x.png." with
+       the leading dot flipped to the end. */
+    .fog-row .name { overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+    .fog-row .name bdi { direction: ltr; }
+    .fog-row .n { margin-left: auto; font-size: 9.5px; opacity: .5; }
+    /* Never touched. Dimmer than anything explored, and the only row with no
+       brightness of its own -- which is what "unexplored" has to look like. */
+    .fog-row.dark .name { color: #3a4050; }
+    .fog-row.edited .name { color: var(--ok); }
+    .fog-row.read .name { color: var(--text); }
     #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
     #vault-list .none, #vault-list .err { color: var(--dim); font-size: 11px; line-height: 1.5; }
     #vault-list .err { color: var(--bad); }
@@ -323,6 +350,7 @@
         <nav id="side-tabs">
           <button data-tab="agents" title="Who is working, and on what">Agents</button>
           <button data-tab="vault" title="Local encrypted secrets">Vault</button>
+          <button data-tab="fog" title="What this project has actually been read">Map</button>
         </nav>
         <div class="panel" data-panel="agents">
           <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
@@ -345,6 +373,11 @@
           </form>
           <p class="warn">Pasting a secret into the session writes it to the
             transcript in plaintext, permanently. Copy is for other apps.</p>
+        </div>
+        <!-- Fog of war. The DARK rows are the point: files nobody has opened. -->
+        <div class="panel" data-panel="fog" id="fog-body">
+          <div id="fog-summary" class="fog-sum">reading the map…</div>
+          <div id="fog-list"></div>
         </div>
       </aside>
       <aside id="diag">
