@@ -605,18 +605,39 @@ doubles distinguishability over `mono`, and `accent` is the one at 2.26:1.
 On any light surface every candidate is 1.14–1.24:1 — these icons would not
 degrade, they would **disappear**.
 
-### The decision
+### The decision — RICARDO, 2026-09-14: ship emoji, close all of it
 
-- **Ship emoji everywhere**, including everywhere at 16 and 24px.
-- **ASCII: closed.** Nothing here is worth a second icon system.
-- **Braille 16×8 stays open**, conditionally, and only if someone wants it:
-  1. **≥34px only.** Marginal at 24, dead at 16. Any surface showing icons at
-     16px keeps emoji.
-  2. **`duotone`, not `accent`** — 15.3 separation at 5.01:1, versus 26.5 at a
-     failing 2.26:1. Or fix the accent palette to clear 3:1 on `#171a23` and
-     re-measure, because accent-with-adequate-contrast would be the best
-     candidate in the entire exploration.
-  3. **Fix the ink for light surfaces first**, or it vanishes at 1.14:1.
+**Closed. Emoji everywhere, at every size. No second icon system.**
+
+That includes braille 16x8, which survived the judging. It is closed as a
+DECISION rather than as a finding, and the difference matters if anyone reopens
+this: it was the best glyph result in the exploration and it still lost.
+
+The reasoning, in the order it decides:
+
+1. It loses to a single emoji character by roughly 2:1 on measured
+   distinguishability (48.6 vs 26.5) -- and that is its BEST colour mode.
+2. That best mode fails WCAG non-text contrast on this app's own panel colour
+   (2.26:1 against a 3:1 minimum). The mode that passes contrast scores 15.3,
+   which is a third of the emoji.
+3. The price of taking it anyway is a whole second icon system, gated to >=34px
+   because it is dead at 16, plus a palette fix, plus a light-surface ink fix --
+   to still lose.
+
+Naomi's conditions for pursuing it are left in place above, unaltered, so that
+reopening this is a matter of satisfying them rather than re-running the work.
+
+**Not re-measured, and deliberately so:** sextant, quadrant, halfblock, shade
+and braille 8x4 are all still judged at 1.24x their labels. Re-shooting them is
+one command each now (`verify/shoot-full.js`), but there is no point: the
+technique that beat all of them at a verified 1:1 is the one just declined.
+Anyone reopening this must re-shoot before quoting a single number from the
+first report.
+
+**What survives into the product:** the ART PLACEHOLDER RULE stands, and the
+emoji stay as data beside the thing they mark rather than baked into markup, so
+replacing them with generated art later is still one field.
+
 
 ### One thing worth keeping regardless
 
