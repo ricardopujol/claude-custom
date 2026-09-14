@@ -34,6 +34,11 @@ const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const { projectDirName } = require('./project-dir');
+// ONE enumeration, shared with usage.js -- see host/transcripts.js. It used
+// to live here, and usage.js had its own top-level-only version, so the map
+// counted every subagent's file reads while the token counter beside it
+// counted none of their tokens.
+const { transcriptFiles } = require('./transcripts');
 
 // DARK is the tier that matters. A map of only what you have already seen is a
 // history, not a map -- the unexplored regions are the entire signal, so they
@@ -186,42 +191,13 @@ function mergeInto(target, entries) {
   }
 }
 
-// Top-level sessions AND subagent transcripts. Subagents write to
-// <session-uuid>/subagents/*.jsonl, and the parent transcript records only the
-// Agent tool_use and the agent's final message -- never the inner Read/Edit
-// blocks. Missing them biases the map toward darkness on exactly the repos
-// whose work is agent-driven, which is the failure this feature exists to
-// prevent. (.meta.json siblings are not transcripts.)
-async function transcriptFiles(dir) {
-  const out = [];
-  let top;
-  try {
-    top = await fsp.readdir(dir, { withFileTypes: true });
-  } catch {
-    return null;                 // ABSENT is not EMPTY; the caller reports it
-  }
-  for (const item of top) {
-    if (item.isFile() && item.name.endsWith('.jsonl')) {
-      out.push(path.join(dir, item.name));
-      continue;
-    }
-    if (!item.isDirectory()) continue;
-    const sub = path.join(dir, item.name, 'subagents');
-    try {
-      for (const f of await fsp.readdir(sub)) {
-        if (f.endsWith('.jsonl')) out.push(path.join(sub, f));
-      }
-    } catch { /* a session with no subagents is the normal case */ }
-  }
-  return out;
-}
-
 async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = {}) {
   const root = normalize(cwd);
   const dir = path.join(projectsDir || path.join(os.homedir(), '.claude', 'projects'),
     projectDirName(root));
 
-  const files = await transcriptFiles(dir);
+  const { files: records, errors: enumErrors } = await transcriptFiles(dir);
+  const files = records === null ? null : records.map(r => r.file);
 
   // Status travels WITH the data. Every failure here otherwise renders as a
   // confident map: a missing directory reads as "nothing explored", and a
@@ -230,7 +206,10 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   // you stop looking.
   const status = {
     transcriptsFound: files === null ? 0 : files.length,
-    transcriptErrors: 0,
+    // Seeded with the ENUMERATION's failures, not just per-file ones. A
+    // subagents directory we could not read drops every transcript in it,
+    // and counting only the files we managed to list makes that invisible.
+    transcriptErrors: enumErrors,
     transcriptsMissing: files === null,
     trackedOk: Array.isArray(tracked) && tracked.length > 0,
   };
@@ -248,7 +227,7 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   if (files) {
     const live = new Set(files);
     for (const key of parsedCache.keys()) {
-      if (key.startsWith(dir) && !live.has(key)) parsedCache.delete(key);
+      if (key.startsWith(dir + path.sep) && !live.has(key)) parsedCache.delete(key);
     }
   }
 

@@ -26,7 +26,7 @@ const { createTerminalState } = require('./terminal-state');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
-const { readUsage } = require('./usage');
+const { readUsage, EMPTY } = require('./usage');
 const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
@@ -375,9 +375,36 @@ function decorateUsage(usage) {
   };
 }
 
+// Reading the transcripts is ASYNCHRONOUS, so this returns the last reading
+// rather than taking one; `refreshUsage` is what takes one. The split exists
+// because the attach handshake is built synchronously and must not be the thing
+// that waits 300ms on a cold 64MB read -- see host/usage.js.
 function currentUsage() {
-  lastUsage = decorateUsage(readUsage({ cwd: CWD, sessionId }));
+  // Before the first reading lands, report ABSENCE rather than zero. `ok:false`
+  // is what stops the milestone announcer seeding a baseline from a figure that
+  // simply has not been read yet.
+  if (!lastUsage) {
+    return decorateUsage({ ok: false, unreadable: 0, session: { ...EMPTY }, project: { ...EMPTY } });
+  }
   return lastUsage;
+}
+
+// Miguel, B1: hold the PROMISE, not a boolean. A boolean guard makes a
+// coalesced caller receive `lastUsage`, which is null until the first read
+// lands -- and the interval is installed at module scope alongside the boot
+// read, so the very first tick can arrive while that read is still in flight.
+// The timer then dereferenced null and logged an error naming the wrong cause.
+// Sharing the promise gives every caller the real result instead.
+let usagePending = null;
+function refreshUsage() {
+  if (usagePending) return usagePending;
+  usagePending = readUsage({ cwd: CWD, sessionId })
+    .then((u) => {
+      lastUsage = decorateUsage(u);
+      return lastUsage;
+    })
+    .finally(() => { usagePending = null; });
+  return usagePending;
 }
 
 // Announce a newly reached milestone once. Deliberately separate from the usage
@@ -604,19 +631,35 @@ moodTimer.unref();
 const usageTimer = setInterval(() => {
   const before = lastUsage && lastUsage.session.total;
   const beforeProject = lastUsage && lastUsage.project.total;
-  const usage = currentUsage();
-  // Gated on EITHER total. The milestone payload is project-scoped, so gating
-  // only on the session figure let another window advance the project past a
-  // rung while this window's bar kept showing the old one -- the UI celebrating
-  // and denying the same event at once.
-  if (usage.session.total !== before || usage.project.total !== beforeProject) {
-    broadcastControl({ type: 'usage', usage });
-  }
-  // Checked on every tick, not only when the session total moved: the PROJECT
-  // total can advance because another window on the same folder did work.
-  checkMilestone(usage);
+  refreshUsage().then(usage => {
+    // Gated on EITHER total. The milestone payload is project-scoped, so gating
+    // only on the session figure let another window advance the project past a
+    // rung while this window's bar kept showing the old one -- the UI
+    // celebrating and denying the same event at once.
+    if (usage.session.total !== before || usage.project.total !== beforeProject) {
+      broadcastControl({ type: 'usage', usage });
+    }
+    // Checked on every tick, not only when the session total moved: the PROJECT
+    // total can advance because another window on the same folder did work.
+    checkMilestone(usage);
+    if (usage && usage.unreadable) {
+      // Said out loud rather than absorbed: an unreadable transcript makes the
+      // project total an UNDERCOUNT, which is why `ok` goes false and the
+      // milestone announcer stops trusting it. Permanently unreadable is a
+      // broken state worth seeing, not one to paper over.
+      console.log('[host] usage         :', usage.unreadable, 'transcript(s) unreadable');
+    }
+  }).catch(err => console.error('[host] usage read failed:', err && err.message));
 }, 5000);
 usageTimer.unref();
+
+// The first reading immediately rather than five seconds in. A cold read of
+// this project's transcripts is ~330ms, so waiting a full tick would show the
+// counter at "not read yet" for the whole of a window's first impression.
+refreshUsage().then(usage => {
+  checkMilestone(usage);
+  broadcastControl({ type: 'usage', usage });
+}).catch(() => {});
 
 term.onExit(({ exitCode, signal }) => {
   console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
@@ -653,6 +696,20 @@ wss.on('connection', (ws) => {
     cooldowns: cooldowns.list(),
     health: healthState,
   });
+  // The handshake above carries `lastUsage`, which is ABSENCE until the first
+  // read lands (~340ms cold). Nothing corrected it: the boot broadcast fires
+  // while `clients` is still empty, and the 5s tick only broadcasts on a
+  // CHANGE -- so a client that attached early sat on "reading..." until the
+  // user happened to spend a token. Coalesces onto the in-flight boot read
+  // rather than starting another.
+  if (!lastUsage) {
+    refreshUsage()
+      .then((usage) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'usage', usage });
+      })
+      .catch(() => { /* the next tick will carry it */ });
+  }
+
   // A milestone reached while nothing was attached is delivered now rather than
   // lost: the pty outlives the window by design, so the crossing can easily
   // happen with no observer.

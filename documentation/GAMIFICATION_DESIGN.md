@@ -441,3 +441,70 @@ State to show, mirroring the roster: idle, casting, done, failed. The emoji is
 the spell's face, so it needs the same four-state treatment the portraits get
 -- which the emoji rule makes trivial (a ring or a tint around the glyph,
 rather than four generated images).
+
+---
+
+## Added 2026-09-14
+
+### 18 · Per-agent career stats — tokens spent and time worked, IN THIS PROJECT
+
+Ricardo: *"Next to the agents it should say how many tokens they have spent IN
+THAT PROJECT, and it should say also how much time they have worked IN THAT
+PROJECT. Not in that context window or session, in the project."*
+
+So this is a **career record**, not a session gauge. It is the roster equivalent
+of the project token counter: the same "this folder, all of its history" scope,
+the same counter-never-a-limit framing.
+
+**The data exists and was measured, not assumed.** Subagent transcripts live at
+`~/.claude/projects/<encoded-cwd>/<session-uuid>/subagents/*.jsonl`, each with a
+`.meta.json` sibling. Measured on this project: 15 session dirs, 30 subagent
+transcripts, 30 metas. The meta carries the agent identity:
+
+```json
+{"agentType":"code-reviewer","description":"Say OK","toolUseId":"toolu_…",
+ "spawnDepth":1,"requestShape":"background","requestNonInteractive":true}
+```
+
+and the transcript carries `message.usage` per line and an ISO `timestamp`, so
+both figures fall straight out. A throwaway aggregation over this project's real
+transcripts already produces the display:
+
+```
+code-reviewer           14 runs    31.0M tokens    19.2 min
+logic-reviewer           4 runs     7.1M tokens    12.7 min
+agent-organizer          1 runs    13.4M tokens     9.6 min
+```
+
+**The one thing that is NOT settled, and would be a silent wrongness if
+guessed.** When an agent is spawned with an explicit `name`, the meta records
+THAT NAME in `agentType` — the name replaces the type rather than sitting beside
+it. So this project's 14 `code-reviewer` runs are also filed under
+`miguel-usage`, `miguel-review`, `miguel-merged-settings`… and one agent's
+career is split across several keys, none of which match the roster's key.
+
+This is the `Agent` vs `Task` shape of mistake again: the aggregate looks
+perfectly reasonable while attributing one agent's work to four strangers. Two
+honest options, and the choice needs measuring first:
+
+1. Group by `agentType` verbatim, and accept that named spawns appear as
+   separate "agents". Wrong, but visibly wrong.
+2. Recover the real type — `SubagentStop` carries `agent_type`, and
+   `toolUseId` links the meta back to the `Agent` tool_use block in the parent
+   transcript, whose `subagent_type` input IS the type. Costs a parent-transcript
+   join; gives the right answer.
+
+(2) is almost certainly right, but **confirm the `subagent_type` input is
+actually present on a named spawn before building on it** — `verify/probe-payloads.js`
+and `host/payload-contract.js` are where that gets pinned.
+
+**Time worked** is `last timestamp − first timestamp` within one transcript,
+summed over runs. Deliberately NOT wall-clock from spawn to `SubagentStop`: that
+would count time an agent spent queued. Two agents running in parallel therefore
+both count their own minutes, which is correct — it is time *worked*, not
+elapsed.
+
+**Cost shape.** Same trap as `readUsage` before it was fixed: 30 transcripts and
+growing, on a roster that redraws often. It reuses `host/usage.js`'s incremental
+reader rather than growing a second one — a per-agent copy of that logic is
+exactly the duplication that lets the two drift.
