@@ -19,10 +19,34 @@ const path = require('path');
 // Claude Code's TUI draws with box-drawing characters and braille spinners. A
 // per-project font without that coverage renders as tofu, so these are appended
 // to whatever a theme asks for rather than trusted to the theme author.
+//
+// ORDER IS THE WHOLE POINT, and it was wrong. CSS falls through per family and
+// then per character, so the first family that HAS a glyph supplies it -- which
+// means a partially-covered face early in the chain hands over its own broken
+// subset before a complete face further back is ever consulted.
+//
+// MEASURED on this machine by verify/probe-fonts.js, which reads each installed
+// font's cmap:
+//
+//   CaskaydiaCove Nerd Font   NOT INSTALLED
+//   Cascadia Mono             box 11/11 · braille 7/7 · blocks 8/8
+//   Consolas                  box 11/11 · braille 0/7 · blocks 8/8
+//
+// So the old stack led with a font nobody has, was saved only by Cascadia Mono
+// sitting second, and had Consolas -- which cannot draw a single braille dot --
+// one position behind that. One uninstall and every spinner in the TUI is tofu,
+// with nothing anywhere reporting it.
+//
+// Consolas is therefore REMOVED rather than demoted: it buys nothing that
+// generic `monospace` does not, and on Windows `monospace` typically resolves
+// to it anyway, so keeping it only creates a reachable tofu path. The Nerd Font
+// stays in front as an optional preference -- a missing family costs nothing,
+// CSS simply skips it -- and two complete faces now stand behind it.
 const FALLBACK_FONTS = [
-  '"CaskaydiaCove Nerd Font"',
+  '"CaskaydiaCove Nerd Font"',   // optional; preferred when present
   '"Cascadia Mono"',
-  'Consolas',
+  '"Cascadia Code"',
+  '"Segoe UI Symbol"',
   'monospace',
 ];
 

@@ -88,15 +88,78 @@ test('a partial theme file is completed from the default', () => {
   assert.ok(t.chrome && t.chrome.bg, 'chrome should come from the default');
 });
 
-test('the font stack always ends in glyph-complete fallbacks', () => {
-  // Claude Code's TUI uses box-drawing and braille spinners. A per-project font
-  // without that coverage renders the UI as tofu, so the chain is enforced
-  // rather than trusted to whoever wrote the theme file.
+test('a theme face goes first, and the fallbacks all stay behind it', () => {
+  // RENAMED. This was called "the font stack always ends in glyph-complete
+  // fallbacks" and asserted that the chain contains every entry of
+  // FALLBACK_FONTS -- which is true by construction, whatever the list happens
+  // to say. It never checked coverage, so it passed just as happily when the
+  // list led with a font nobody has and carried Consolas, which cannot draw a
+  // single braille dot, one position behind the only complete face.
+  //
+  // Coverage cannot be measured here: it depends on what is installed. That is
+  // verify/probe-fonts.js, which reads each font's cmap. This pins the part
+  // that IS a pure function -- the ordering contract.
   const dir = registry({ '*': 'fancy' }, { fancy: { name: 'fancy', font: { family: 'Some Display Face' } } });
   const t = resolveTheme('C:/anywhere', { registryDir: dir });
   assert.ok(t.font.family.startsWith('"Some Display Face"'), t.font.family);
   for (const f of FALLBACK_FONTS) {
     assert.ok(t.font.family.includes(f), `missing fallback ${f} in ${t.font.family}`);
+  }
+});
+
+test('the fallbacks keep their declared order in the resolved stack', () => {
+  // That the RESOLVER preserves order. Worth having on its own -- buildFontStack
+  // filters and re-joins, and a filter that reordered would be silent.
+  const t = resolveTheme('C:/anywhere', { registryDir: registry({}, {}) });
+  const chain = t.font.family.split(',').map(x => x.trim());
+  const positions = FALLBACK_FONTS.map(f => chain.indexOf(f));
+  assert.ok(positions.every(p => p >= 0), `${t.font.family}`);
+  for (let i = 1; i < positions.length; i++) {
+    assert.ok(positions[i] > positions[i - 1],
+      `${FALLBACK_FONTS[i]} must stay behind ${FALLBACK_FONTS[i - 1]} in ${t.font.family}`);
+  }
+});
+
+test('the fallback ORDER is what was measured, pinned literally', () => {
+  // The test above uses FALLBACK_FONTS as its own oracle, so it cannot notice
+  // the LIST being reordered -- swapping two entries left it green. Found by
+  // mutation, and it is the third self-referential assertion this project has
+  // shipped: a test whose expected value is derived from the thing under test
+  // can only ever agree with it.
+  //
+  // So the order is pinned to literals. CSS falls through per family and per
+  // CHARACTER, which makes this ordering load-bearing rather than cosmetic: a
+  // partially-covered face early in the chain hands over its own broken subset
+  // before a complete face behind it is consulted.
+  //
+  // Changing this list is a decision, not a tidy-up. Re-run
+  // verify/probe-fonts.js against real cmaps and update the measurements in
+  // host/themes.js in the same commit.
+  assert.deepStrictEqual(FALLBACK_FONTS, [
+    '"CaskaydiaCove Nerd Font"',
+    '"Cascadia Mono"',
+    '"Cascadia Code"',
+    '"Segoe UI Symbol"',
+    'monospace',
+  ]);
+});
+
+test('the generic family is last, so nothing is stranded behind it', () => {
+  // `monospace` matches everything, so any face listed after it is unreachable.
+  assert.strictEqual(FALLBACK_FONTS[FALLBACK_FONTS.length - 1], 'monospace');
+  assert.strictEqual(FALLBACK_FONTS.filter(f => f === 'monospace').length, 1);
+});
+
+test('no font known to lack braille is in the stack', () => {
+  // Measured by verify/probe-fonts.js against the real cmaps on 2026-09-14:
+  // Consolas covers box drawing 11/11 and blocks 8/8 but braille 0/7. Claude
+  // Code's spinner is braille, so a chain that can reach Consolas can render
+  // the spinner as tofu. It bought nothing over generic `monospace` -- which on
+  // Windows typically resolves to Consolas anyway -- so it is out.
+  const KNOWN_INCOMPLETE = ['Consolas', '"Consolas"'];
+  for (const bad of KNOWN_INCOMPLETE) {
+    assert.ok(!FALLBACK_FONTS.includes(bad),
+      `${bad} cannot draw braille and must not be in the fallback chain`);
   }
 });
 
