@@ -16,6 +16,23 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
+
+// One secret, handed to both children. Main spawns the host AND owns the
+// window, so it is the only place that can give them the same value without
+// either having to go looking for it.
+//
+// A reattaching window (the host was already running) reads the token the host
+// wrote, because that host generated its own.
+const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN
+  || require('crypto').randomBytes(24).toString('hex');
+
+function tokenForRunningHost() {
+  try {
+    return fs.readFileSync(path.join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
+  } catch {
+    return SESSION_TOKEN;
+  }
+}
 const PROJECT_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 
 function isHostListening(port) {
@@ -53,6 +70,7 @@ function spawnHost() {
       ELECTRON_RUN_AS_NODE: '1',
       CLAUDE_CUSTOM_PORT: String(PORT),
       CLAUDE_CUSTOM_CWD: PROJECT_CWD,
+      CLAUDE_CUSTOM_TOKEN: SESSION_TOKEN,
     },
   });
   console.log('[main] host log:', logPath);
@@ -69,7 +87,7 @@ async function waitForHost(port, timeoutMs = 10000) {
   return false;
 }
 
-function createWindow() {
+function createWindow(spawnedHost) {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -84,6 +102,10 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { port: String(PORT), cwd: PROJECT_CWD,
+             // The token the host will demand. Read back from disk when we
+             // reattached to a host that was already running and therefore
+             // generated its own.
+             token: spawnedHost ? SESSION_TOKEN : tokenForRunningHost(),
              tab: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
              demosecret: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '' },
   });
@@ -182,16 +204,18 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  let spawnedHost = false;
   if (!(await isHostListening(PORT))) {
     console.log('[main] no host on port', PORT, '— spawning one');
     spawnHost();
+    spawnedHost = true;
     const up = await waitForHost(PORT);
     if (!up) console.error('[main] host did not come up in time');
   } else {
     console.log('[main] host already listening on', PORT, '— reattaching');
   }
 
-  const win = createWindow();
+  const win = createWindow(spawnedHost);
 
   // Headless verification path. CLAUDE_CUSTOM_SCREENSHOT=<file> renders the
   // real window, waits for the TUI to draw, writes a PNG and exits. The GUI is
@@ -233,9 +257,24 @@ app.whenReady().then(async () => {
     setTimeout(async () => {
       try {
         const fsMod = require('fs');
-        const image = await win.webContents.capturePage();
-        const png = image.toPNG();
-        if (!png || png.length === 0) throw new Error('capturePage returned an empty image');
+        // RETRIED. capturePage intermittently returns an empty image -- observed
+        // several times in a row while the host, the hooks and the renderer all
+        // reported healthy, so it is the capture and not the page. Reporting it
+        // as a probe failure sent me looking for a product bug that was not
+        // there, more than once.
+        let png = null;
+        for (let attempt = 1; attempt <= 4 && !(png && png.length); attempt++) {
+          if (attempt > 1) {
+            console.log(`[main] capturePage came back empty, retry ${attempt - 1}`);
+            await new Promise(r => setTimeout(r, 700));
+          }
+          try {
+            png = (await win.webContents.capturePage()).toPNG();
+          } catch (err) {
+            console.log('[main] capturePage threw:', err.message);
+          }
+        }
+        if (!png || png.length === 0) throw new Error('capturePage returned an empty image 4 times');
         fsMod.writeFileSync(outFile, png);
         // Verify before exiting. app.exit() is a hard exit that has been
         // observed truncating the file to zero bytes even after a synchronous
@@ -253,7 +292,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(false);
   });
 });
 

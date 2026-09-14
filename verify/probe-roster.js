@@ -9,6 +9,20 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
+// The host refuses any connection without the session token -- see
+// host/gatekeeper.js. A local tool reads it from the file the host writes,
+// which is precisely what a web page cannot do.
+function sessionToken() {
+  try {
+    return require('fs').readFileSync(
+      require('path').join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+const withToken = (url) => url + '?token=' + encodeURIComponent(sessionToken());
+
+
 const REPO = path.join(__dirname, '..');
 const PORT = 7798;
 const LOG = path.join(REPO, '.harness', 'host.log');
@@ -81,7 +95,7 @@ const check = (label, ok, detail) => {
   // Deliberately not automatic on launch: running someone's test suite the
   // moment they open a window is intrusive and slow.
   await new Promise((resolve) => {
-    const probe = new WebSocket(`ws://127.0.0.1:${PORT}`);
+    const probe = new WebSocket(withToken(`ws://127.0.0.1:${PORT}`));
     probe.on('open', () => {
       probe.send(JSON.stringify({ type: 'health' }));
       setTimeout(() => { try { probe.close(); } catch {} resolve(); }, 6000);

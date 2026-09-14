@@ -36,6 +36,8 @@ const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
 const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
+const { readFog } = require('./fog');
+const { allowConnection, newToken } = require('./gatekeeper');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -230,6 +232,47 @@ function runHealth() {
   return healthInFlight;
 }
 
+// The project's file map. NOT computed at startup or pushed in `hello`: a cold
+// read costs ~175ms of synchronous work, and the host's event loop is what
+// delivers hook events -- this project measured a spawnSync in the server
+// dropping 31 of 35 of them. It is computed when the client asks for it, and
+// the mtime cache makes every later read ~1ms.
+//
+// `tracked` comes from git, because the DARK files are the whole point and this
+// host must never invent a file that does not exist.
+function trackedFiles() {
+  try {
+    // -z and core.quotePath=false: by default git C-QUOTES any path with a
+    // non-ASCII or special character ("src/cafÃ©.js"), which then matches
+    // no transcript path and appears BOTH as explored and as a phantom dark
+    // row. NUL separation also survives filenames containing newlines.
+    //
+    // maxBuffer raised because the 1MiB default throws ENOBUFS on a repo of
+    // ~15k files -- and that error used to land in the "everything explored"
+    // branch, which is the worst possible direction to fail in.
+    const out = require('child_process').execFileSync(
+      'git', ['-C', CWD, '-c', 'core.quotePath=false', 'ls-files', '-z'],
+      { encoding: 'utf8', timeout: 4000, maxBuffer: 64 * 1024 * 1024 });
+    // No .trim(): a filename may legitimately begin or end with a space.
+    return { ok: true, files: out.split(String.fromCharCode(0)).filter(Boolean) };
+  } catch (err) {
+    // NOT an empty list. An empty list means "this project has no files", which
+    // renders as zero dark rows -- "everything explored, no blind spots" -- the
+    // single most misleading thing this panel could say.
+    return { ok: false, files: [], error: err.message };
+  }
+}
+
+async function currentFog() {
+  const tracked = trackedFiles();
+  const fog = await readFog({ cwd: CWD, tracked: tracked.files });
+  // The git failure travels with the data, so the panel can say "dark files
+  // not counted" instead of silently claiming full coverage.
+  fog.status.trackedOk = tracked.ok && tracked.files.length > 0;
+  fog.status.trackedError = tracked.ok ? null : tracked.error;
+  return fog;
+}
+
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
   pipeName: PIPE_NAME,
@@ -402,7 +445,39 @@ const term = pty.spawn(CLAUDE_BIN, ARGS, {
 console.log('[host] pty pid       :', term.pid);
 
 // --- attach surface ---------------------------------------------------------
-const wss = new WebSocketServer({ host: '127.0.0.1', port: PORT });
+// The session token. Taken from the environment when the Electron main process
+// supplies one (it spawns both the host and the window, so it can hand the same
+// secret to both), otherwise generated here and written to a 0600 file that
+// local tools -- the probes -- can read. A web page cannot read a local file,
+// which is the whole point: this separates "a program on this machine" from
+// "a page the user happened to visit".
+//
+// NEVER passed through the pty. It travels host <-> client only.
+const TOKEN_FILE = path.join(HARNESS_DIR, 'session-token');
+const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN || newToken();
+try {
+  fs.mkdirSync(HARNESS_DIR, { recursive: true });
+  fs.writeFileSync(TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
+} catch (err) {
+  console.log('[host] could not write the session token file:', err.message);
+}
+
+const wss = new WebSocketServer({
+  host: '127.0.0.1',
+  port: PORT,
+  // Refused at the HANDSHAKE, before a socket exists. Browsers do not apply
+  // CORS to WebSocket, so without this any page the user visits could connect
+  // and send {type:'input'} into a pty running with permissions bypassed.
+  verifyClient: ({ origin, req }, done) => {
+    const token = new URL(req.url, 'ws://127.0.0.1').searchParams.get('token');
+    const verdict = allowConnection({ origin, token }, { expectedToken: SESSION_TOKEN });
+    if (!verdict.ok) {
+      console.log('[host] refused a connection:', verdict.reason);
+      return done(false, 403, 'Forbidden');
+    }
+    done(true);
+  },
+});
 const clients = new Set();
 
 // Authoritative screen, so a GUI attaching later gets the CURRENT state rather
@@ -530,6 +605,24 @@ wss.on('connection', (ws) => {
           }
           if (msg.type === 'input') {
             term.write(msg.data);
+            return;
+          }
+          if (msg.type === 'fog') {
+            // Answered on demand, asynchronously, yielding as it goes -- the
+            // read must never hold the loop past the helper's 80ms connect
+            // timeout, or it drops the hook events this panel is drawn from.
+            currentFog().then(
+              fog => ws.send(JSON.stringify({ type: 'fog', ...fog })),
+              err => {
+                // Tell the CLIENT, not just the log. A silent failure left the
+                // panel reading "reading the map..." forever, which looks like
+                // a slow host rather than a lost answer.
+                console.log('[host] fog read failed:', err.message);
+                try {
+                  ws.send(JSON.stringify({ type: 'fog', files: [], explored: 0, total: 0,
+                    status: { failed: true, error: err.message } }));
+                } catch { /* the client went away */ }
+              });
             return;
           }
         } catch {

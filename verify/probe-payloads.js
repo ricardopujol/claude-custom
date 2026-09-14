@@ -17,6 +17,20 @@ const WebSocket = require('ws');
 
 const { CONTRACT, checkPayload } = require('../host/payload-contract');
 
+// The host refuses any connection without the session token -- see
+// host/gatekeeper.js. A local tool reads it from the file the host writes,
+// which is precisely what a web page cannot do.
+function sessionToken() {
+  try {
+    return require('fs').readFileSync(
+      require('path').join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+const withToken = (url) => url + '?token=' + encodeURIComponent(sessionToken());
+
+
 const REPO = path.join(__dirname, '..');
 const PORT = 7805;
 const DUMP = process.argv.includes('--dump');
@@ -45,7 +59,7 @@ const seen = () => (log.match(/\[hook:full\] .*/g) || [])
 
 (async () => {
   await sleep(12000);
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+  const ws = new WebSocket(withToken(`ws://127.0.0.1:${PORT}`));
   await new Promise(r => ws.on('open', r));
   ws.send(JSON.stringify({ type: 'resize', cols: 100, rows: 30 }));
   await sleep(2500);
