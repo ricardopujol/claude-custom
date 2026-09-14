@@ -142,9 +142,12 @@ function setTab(tab) {
     renderVault();
     setTimeout(() => document.getElementById('vault-search').focus(), 0);
   } else {
-    // Leaving the vault puts every revealed secret back out of sight: a value
-    // left on screen outlives the moment someone needed it.
+    // Leaving the vault puts every revealed secret back out of sight -- both
+    // the listed ones and whatever is half-typed in the field. A value left on
+    // screen outlives the moment someone needed it.
     hideRevealed();
+    secretMask.left();
+    applyMask();
     term.focus();
   }
   try { localStorage.setItem('sideTab', tab === null ? '' : tab); } catch {}
@@ -173,6 +176,38 @@ window.addEventListener('DOMContentLoaded', () => {
   // headless checks cannot look at.
   const forced = new URLSearchParams(location.search).get('tab');
   setTab(forced || saved);
+
+  // Screenshot support only: type a value into the new-secret field and reveal
+  // it, so the toggle can actually be LOOKED at. Never a real secret -- the
+  // probe passes a throwaway string.
+  const demo = new URLSearchParams(location.search).get('demosecret');
+  if (demo) {
+    setTimeout(() => {
+      document.getElementById('vault-label').value = 'openrouter key';
+      document.getElementById('vault-secret').value = demo;
+      secretMask.toggle();
+      applyMask();
+    }, 1200);
+  }
+});
+
+// The reveal state of the NEW-secret field. Deliberately temporary: it
+// survives neither storing the entry nor leaving the panel.
+const secretMask = createMask();
+
+function applyMask() {
+  const input = document.getElementById('vault-secret');
+  const button = document.getElementById('vault-mask');
+  if (!input || !button) return;
+  input.type = secretMask.inputType();
+  button.textContent = secretMask.label();
+}
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#vault-mask')) return;
+  secretMask.toggle();
+  applyMask();
+  document.getElementById('vault-secret').focus();
 });
 
 function hideRevealed() {
@@ -269,6 +304,8 @@ document.addEventListener('submit', async (e) => {
   }
   label.value = '';
   secret.value = '';
+  secretMask.stored();      // the next secret typed is not the one just revealed
+  applyMask();
   renderVault();
 });
 

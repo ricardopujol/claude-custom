@@ -72,6 +72,12 @@
       background: #12151d; border-radius: 4px; padding: 5px 6px;
     }
     .sec .said { margin-top: 5px; font-size: 10.5px; color: var(--ok); }
+    /* The reveal toggle sits INSIDE the field's row, so it reads as part of the
+       input rather than as another action in the form. */
+    .secret-field { display: flex; gap: 6px; }
+    .secret-field input { flex: 1; min-width: 0; }
+    .secret-field button { flex: 0 0 auto; font-size: 11px; padding: 6px 8px; }
+    #vault-secret[type="text"] { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
     #vault-add { display: flex; flex-direction: column; gap: 6px;
                  border-top: 1px solid var(--border); padding-top: 10px; }
     #vault-body .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
@@ -331,7 +337,10 @@
           <div id="vault-list"></div>
           <form id="vault-add" autocomplete="off">
             <input id="vault-label" placeholder="label (e.g. github token)" autocomplete="off" />
-            <input id="vault-secret" type="password" placeholder="secret" autocomplete="new-password" />
+            <div class="secret-field">
+              <input id="vault-secret" type="password" placeholder="secret" autocomplete="new-password" />
+              <button type="button" id="vault-mask" title="Show or hide what you are typing">Show</button>
+            </div>
             <button type="submit">Store</button>
           </form>
           <p class="warn">Pasting a secret into the session writes it to the
@@ -351,6 +360,7 @@
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="./side-tabs.js"></script>
+  <script src="./secret-mask.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./renderer.js"></script>
 </body>

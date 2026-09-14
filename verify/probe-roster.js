@@ -34,6 +34,7 @@ const check = (label, ok, detail) => {
       // Which side tab to photograph: the sidebar is the one surface the
       // headless checks cannot look at.
       CLAUDE_CUSTOM_SIDE_TAB: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
+      CLAUDE_CUSTOM_DEMO_SECRET: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
