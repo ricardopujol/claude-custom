@@ -11,3 +11,16 @@ forge/outputs/
 # Generated at runtime
 .harness/
 *.log
+
+# .NET build artefacts for the hook helper
+helper/bin/
+helper/obj/
+
+# Per-project background art (regenerable, deterministic from path)
+backgrounds/
+
+forge/.venv/
+
+__pycache__/
+*.pyc
+.pytest_cache/

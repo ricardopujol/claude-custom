@@ -22,7 +22,76 @@
       font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
       overflow: hidden;
     }
-    #app { display: flex; flex-direction: column; height: 100%; }
+    #app { display: flex; flex-direction: column; height: 100%; position: relative; }
+
+    /* Per-project background art. Fixed and behind everything; the artwork is
+       already dimmed to 10% in the SVG itself, so nothing here needs to darken
+       it further and the palette stays the theme's. */
+    #bg {
+      position: fixed; inset: 0; z-index: 0;
+      background-size: cover; background-position: center;
+      pointer-events: none;
+    }
+    #app > * { position: relative; z-index: 1; }
+
+    /* The terminal and panels must NOT paint an opaque background or the art
+       behind them is invisible. Transparency here is what makes it a
+       background rather than a border decoration. */
+    body.has-bg #termwrap { background: transparent; }
+    body.has-bg header,
+    body.has-bg #roster,
+    body.has-bg #diag { background: color-mix(in srgb, var(--chrome) 72%, transparent); }
+    body.has-bg .xterm-viewport { background: transparent !important; }
+
+
+    /* --- vault ------------------------------------------------------------
+       Deliberately plain. Nothing here animates or flashes: a panel holding
+       passwords should look like a drawer, not a feature. */
+    #vault-body { padding: 10px 12px; gap: 10px; }
+    #vault-body input, #vault-body button {
+      font: inherit; font-size: 12px;
+      background: #1b1f2a; color: var(--text);
+      border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px;
+    }
+    #vault-body button { cursor: pointer; }
+    #vault-body button:hover { border-color: var(--accent); }
+    #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    #vault-list .none, #vault-list .err { color: var(--dim); font-size: 11px; line-height: 1.5; }
+    #vault-list .err { color: var(--bad); }
+    .sec {
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 7px 9px; background: rgba(255,255,255,.02);
+    }
+    .sec .row { display: flex; align-items: center; gap: 8px; }
+    .sec .label { flex: 1; min-width: 0; font-size: 12px; font-weight: 600;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sec button { padding: 3px 7px; font-size: 11px; }
+    .sec .shown {
+      margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+      word-break: break-all; color: var(--accent);
+      background: #12151d; border-radius: 4px; padding: 5px 6px;
+    }
+    .sec .said { margin-top: 5px; font-size: 10.5px; color: var(--ok); }
+    /* The reveal toggle sits INSIDE the field's row, so it reads as part of the
+       input rather than as another action in the form. */
+    .secret-field { display: flex; gap: 6px; }
+    .secret-field input { flex: 1; min-width: 0; }
+    .secret-field button { flex: 0 0 auto; font-size: 11px; padding: 6px 8px; }
+    #vault-secret[type="text"] { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+    #vault-add { display: flex; flex-direction: column; gap: 6px;
+                 border-top: 1px solid var(--border); padding-top: 10px; }
+    #vault-body .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
+
+    /* --- token spend ------------------------------------------------------- */
+    #usage {
+      display: flex; align-items: center; gap: 14px;
+      font-size: 11px; color: var(--dim);
+      -webkit-app-region: no-drag;
+    }
+    #usage .grp { display: flex; align-items: baseline; gap: 5px; }
+    #usage .lbl { text-transform: uppercase; letter-spacing: .07em; font-size: 9.5px; opacity: .75; }
+    #usage .val { color: var(--text); font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
+    #usage .sub { opacity: .8; font-variant-numeric: tabular-nums; }
 
     header {
       display: flex; align-items: center; gap: 12px;
@@ -37,6 +106,9 @@
       background: var(--bad); transition: background .2s;
     }
     header .dot.on { background: var(--ok); }
+    /* Attention cues, cleared when the window regains focus. */
+    header .dot.wants-input { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+    header .dot.just-finished { background: var(--ok); box-shadow: 0 0 0 3px rgba(95,176,122,.35); }
     header .title { font-weight: 600; letter-spacing: .2px; }
     header .cwd { color: var(--dim); font-size: 12px; }
     header .spacer { flex: 1; }
@@ -84,19 +156,197 @@
     #log .k { color: var(--accent); }
     #log .b { color: var(--text); }
     #log .n { color: var(--dim); }
+
+    /* --- agent roster ------------------------------------------------------
+       Reactive, not a gallery: an agent appears when it first runs and its
+       portrait reflects the mood machine's state. */
+    /* Width is user-set and persisted. Narrow trades portrait size for terminal
+       room; wide does the opposite. Portraits scale with it via --face. */
+    #roster {
+      width: var(--roster-w, 180px); flex: 0 0 var(--roster-w, 180px);
+      position: relative;
+      background: var(--chrome);
+      border-left: 1px solid var(--border);
+      display: flex; flex-direction: column;
+    }
+    /* Collapsed: the sidebar is gone entirely, terminal takes the room. The
+       tab strip reappears with it, so the only way back is the header hint --
+       which is why the hint is always visible. */
+    #roster.hidden { display: none; }
+
+    #side-tabs {
+      display: flex; flex: 0 0 auto;
+      border-bottom: 1px solid var(--border);
+      -webkit-app-region: no-drag;
+    }
+    #side-tabs button {
+      flex: 1; min-width: 0;
+      font: inherit; font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+      padding: 9px 6px; cursor: pointer;
+      background: transparent; color: var(--dim);
+      border: 0; border-bottom: 2px solid transparent;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #side-tabs button:hover { color: var(--text); }
+    #side-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* Only the selected panel is in the layout at all -- a hidden panel that
+       still occupies space is the usual way a tab strip goes wrong. */
+    #roster .panel { display: none; flex-direction: column; min-height: 0; flex: 1; }
+    #roster .panel.on { display: flex; }
+    #agents { flex: 1; overflow-y: auto; padding: 8px; }
+
+    /* Drag handle. Sits on the roster's left edge, over the terminal boundary. */
+    #roster-grip {
+      position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
+      cursor: col-resize; z-index: 5; -webkit-app-region: no-drag;
+    }
+    #roster-grip:hover, #roster-grip.dragging { background: var(--accent); opacity: .5; }
+    #agents .empty { color: var(--dim); font-size: 11px; padding: 8px; line-height: 1.5; }
+
+    .agent {
+      display: flex; align-items: center; gap: 9px;
+      padding: 6px; border-radius: 6px; margin-bottom: 4px;
+      transition: background .25s, opacity .35s;
+    }
+    .agent .face {
+      width: var(--face, 34px); height: var(--face, 34px); flex: 0 0 var(--face, 34px);
+      border-radius: 7px; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; letter-spacing: .04em;
+      color: #0e1017;
+      border: 1px solid rgba(255,255,255,.10);
+    }
+    .agent .face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .agent .meta { min-width: 0; }
+    .agent .name {
+      font-size: clamp(10.5px, calc(var(--face, 34px) * .3), 15px); font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .agent .state { font-size: 10px; color: var(--dim); text-transform: capitalize; }
+
+    /* State is carried by opacity and a ring, so it still reads when the
+       portrait itself is a placeholder. */
+    .agent[data-state="sleeping"] { opacity: .42; }
+    .agent[data-state="working"]  { background: rgba(255,255,255,.05); }
+    .agent[data-state="working"] .face { box-shadow: 0 0 0 2px var(--accent); }
+    .agent[data-state="happy"]    { background: rgba(95,176,122,.14); }
+    .agent[data-state="happy"] .face { box-shadow: 0 0 0 2px var(--ok); }
+    .agent[data-state="stressed"] { background: rgba(204,95,95,.14); }
+    .agent[data-state="stressed"] .face { box-shadow: 0 0 0 2px var(--bad); }
+    .agent[data-state="working"] .state { color: var(--accent); }
+    .agent[data-state="happy"] .state { color: var(--ok); }
+    .agent[data-state="stressed"] .state { color: var(--bad); }
+
+    /* --- permission mode ---------------------------------------------------
+       Five modes, measured by cycling shift+tab. Bypass is flagged because
+       "running with permissions bypassed" should be impossible to forget. */
+    #mode { display: flex; align-items: center; gap: 6px; font-size: 10.5px;
+            padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border);
+            -webkit-app-region: no-drag; }
+    #mode .skulls { display: flex; gap: 1px; font-style: normal; line-height: 1; }
+    #mode .skulls i { font-style: normal; font-size: 13px; color: var(--border); transition: color .2s; }
+    #mode .skulls i.on { color: var(--accent); text-shadow: 0 0 6px color-mix(in srgb, var(--accent) 55%, transparent); }
+    #mode.risky .skulls i.on { color: var(--bad); text-shadow: 0 0 8px color-mix(in srgb, var(--bad) 65%, transparent); }
+    #mode .nm { color: var(--text); font-weight: 600; }
+    #mode.risky { border-color: var(--bad); }
+    #mode.risky .nm { color: var(--bad); }
+
+
+    /* --- party -------------------------------------------------------------
+       The live delegation chain, so a subagent that quietly spawned six more
+       is visible rather than inferred. */
+    #party { padding: 6px 8px; border-top: 1px solid var(--border); font-size: 10.5px; }
+    #party .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+    #party .who { background: rgba(255,255,255,.06); border-radius: 4px; padding: 1px 5px; }
+    #party .who.inner { background: var(--accent); color: #12141c; font-weight: 600; }
+    #party .arrow { color: var(--dim); }
+    #party .none { color: var(--dim); opacity: .7; }
+
+    /* --- running processes -------------------------------------------------
+       Long work must be visible. A four-minute GPU job that shows nothing is
+       indistinguishable from a hung session. */
+    #procs { border-top: 1px solid var(--border); padding: 8px; flex: 0 0 auto; max-height: 190px; overflow-y: auto; }
+    #procs h3 { margin: 0 0 6px; font-size: 10px; text-transform: uppercase;
+                letter-spacing: .08em; color: var(--dim); font-weight: 600; }
+    #procs .none { color: var(--dim); font-size: 10.5px; opacity: .7; }
+    .proc { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; font-size: 11px; }
+    .proc .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+                 flex: 0 0 5px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+    .proc .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; font-family: ui-monospace, monospace; font-size: 10.5px; }
+    .proc .el { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+    /* Anything past a minute is worth noticing rather than assuming hung. */
+    .proc.slow .el { color: var(--accent); }
+
+    /* Scrollbars follow the theme. The default chrome scrollbar is a bright
+       grey slab that ignores the palette entirely and is the one element that
+       gives away that this is a web view rather than a terminal. */
+    .xterm-viewport::-webkit-scrollbar,
+    #agents::-webkit-scrollbar,
+    #log::-webkit-scrollbar { width: 9px; }
+    .xterm-viewport::-webkit-scrollbar-track,
+    #agents::-webkit-scrollbar-track,
+    #log::-webkit-scrollbar-track { background: transparent; }
+    .xterm-viewport::-webkit-scrollbar-thumb,
+    #agents::-webkit-scrollbar-thumb,
+    #log::-webkit-scrollbar-thumb {
+      background: var(--border); border-radius: 5px;
+      border: 2px solid transparent; background-clip: content-box;
+    }
+    .xterm-viewport::-webkit-scrollbar-thumb:hover,
+    #agents::-webkit-scrollbar-thumb:hover,
+    #log::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: content-box; }
   </style>
 </head>
 <body>
+  <div id="bg"></div>
   <div id="app">
     <header>
       <span class="dot" id="dot"></span>
       <span class="title">claude-custom</span>
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
+      <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
+      <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
+      <span class="hint" id="side-hint" title="Show or hide the side panel">panel <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
     <div id="body">
       <div id="termwrap"><div id="term"></div></div>
+      <!-- One sidebar, two tabs. The vault is a PANEL here, never inside the
+           terminal: nothing in it is written to the pty, so a secret cannot
+           reach the session by being rendered in the wrong place. -->
+      <aside id="roster">
+        <div id="roster-grip" title="Drag to resize — portraits scale with width"></div>
+        <nav id="side-tabs">
+          <button data-tab="agents" title="Who is working, and on what">Agents</button>
+          <button data-tab="vault" title="Local encrypted secrets">Vault</button>
+        </nav>
+        <div class="panel" data-panel="agents">
+          <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
+          <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
+          <div id="procs">
+            <h3>Running</h3>
+            <div id="proclist"><div class="none">nothing running</div></div>
+          </div>
+        </div>
+        <div class="panel" data-panel="vault" id="vault-body">
+          <input id="vault-search" type="search" placeholder="search labels" autocomplete="off" />
+          <div id="vault-list"></div>
+          <form id="vault-add" autocomplete="off">
+            <input id="vault-label" placeholder="label (e.g. github token)" autocomplete="off" />
+            <div class="secret-field">
+              <input id="vault-secret" type="password" placeholder="secret" autocomplete="new-password" />
+              <button type="button" id="vault-mask" title="Show or hide what you are typing">Show</button>
+            </div>
+            <button type="submit">Store</button>
+          </form>
+          <p class="warn">Pasting a secret into the session writes it to the
+            transcript in plaintext, permanently. Copy is for other apps.</p>
+        </div>
+      </aside>
       <aside id="diag">
         <h2>Key diagnostics</h2>
         <div id="checks"></div>
@@ -109,6 +359,9 @@
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
+  <script src="./side-tabs.js"></script>
+  <script src="./secret-mask.js"></script>
+  <script src="./attention-surface.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

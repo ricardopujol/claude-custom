@@ -1,0 +1,36 @@
+{
+  "name": "amber-warm",
+  "terminal": {
+    "background": "#161009",
+    "foreground": "#e4d3b4",
+    "cursor": "#e09b45",
+    "selectionBackground": "#3a2c17",
+    "black": "#161009",
+    "red": "#c85f4a",
+    "green": "#8a9a52",
+    "yellow": "#e09b45",
+    "blue": "#6f8fa8",
+    "magenta": "#b07a9a",
+    "cyan": "#6fa39a",
+    "white": "#e4d3b4",
+    "brightBlack": "#7d6c53",
+    "brightRed": "#e07a62",
+    "brightGreen": "#a8b96a",
+    "brightYellow": "#f0b968",
+    "brightBlue": "#8aa9c4",
+    "brightMagenta": "#cc96b6",
+    "brightCyan": "#8ac0b6",
+    "brightWhite": "#f6ecd8"
+  },
+  "chrome": {
+    "bg": "#161009",
+    "panel": "#1d160d",
+    "border": "#332614",
+    "text": "#e4d3b4",
+    "dim": "#8d7c62",
+    "accent": "#e09b45",
+    "ok": "#a8b96a",
+    "bad": "#e07a62"
+  },
+  "font": { "size": 14, "lineHeight": 1.2 }
+}
