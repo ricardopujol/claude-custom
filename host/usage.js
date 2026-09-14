@@ -50,6 +50,11 @@ const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sess
 const READ_CHUNK = 1 << 20;
 const PARSE_BATCH = 500;
 
+// Bytes kept from just before the resume point, to prove the cached prefix is
+// still this file's prefix. Content-based on purpose: birthtime and inode are
+// not populated reliably on Windows.
+const FINGERPRINT_BYTES = 64;
+
 const NL = 10;   // '\n'
 
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
@@ -103,6 +108,37 @@ async function parseLines(text, acc) {
   }
 }
 
+// The bytes immediately before `offset`, or null when there are none. Read back
+// from the file rather than carried out of the parse loop: one small extra
+// read, and it cannot drift from what is actually on disk.
+async function readFingerprint(fh, offset) {
+  const len = Math.min(FINGERPRINT_BYTES, offset);
+  if (len <= 0) return null;
+  const buf = Buffer.allocUnsafe(len);
+  try {
+    const { bytesRead } = await fh.read(buf, 0, len, offset - len);
+    return bytesRead === len ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+// Is the cached prefix still this file's prefix? Fails CLOSED: a missing or
+// unreadable fingerprint means re-read, never "assume it is fine". Being wrong
+// that way costs one full parse; being wrong the other way is a permanently
+// wrong total.
+async function prefixIntact(fh, cached) {
+  if (!cached.fingerprint) return cached.offset === 0;
+  const len = cached.fingerprint.length;
+  const buf = Buffer.allocUnsafe(len);
+  try {
+    const { bytesRead } = await fh.read(buf, 0, len, cached.offset - len);
+    return bytesRead === len && buf.equals(cached.fingerprint);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The tokens in one transcript, reusing whatever of it was already parsed.
  * Returns null when the file could not be read at all — which is ABSENCE, not
@@ -126,14 +162,6 @@ async function readFileUsage(file, cache) {
     return { ...cached.acc };
   }
 
-  // Resume ONLY when the file grew. A file that shrank, or that changed at the
-  // same length, is not the file we cached — append-only is an assumption about
-  // someone else's writer, not a guarantee, and trusting it blindly would leave
-  // a stale total that never recovers.
-  const grown = cached && stat.size > cached.size;
-  let pos = grown ? cached.offset : 0;
-  const acc = grown ? { ...cached.acc } : zero();
-
   let fh;
   try {
     fh = await fsp.open(file, 'r');
@@ -142,6 +170,15 @@ async function readFileUsage(file, cache) {
   }
 
   try {
+    // Resume only when the file grew AND the bytes before the resume point are
+    // still the bytes we parsed. Growth alone is not evidence of an append: it
+    // is equally consistent with a rewrite that happens to be longer, and
+    // resuming onto the stale accumulator poisons the total permanently.
+    const grown = cached && stat.size > cached.size;
+    const resume = grown && await prefixIntact(fh, cached);
+    let pos = resume ? cached.offset : 0;
+    const acc = resume ? { ...cached.acc } : zero();
+
     // Bytes read past the last newline: they belong to a line that is still
     // being written, so they are re-read next time rather than parsed now.
     let carry = null;
@@ -168,7 +205,15 @@ async function readFileUsage(file, cache) {
     }
 
     const offset = pos - (carry ? carry.length : 0);
-    cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, offset, acc: { ...acc } });
+    // `pos`, not `stat.size`. The loop can exit early on a zero-byte read below
+    // EOF, and recording stat.size would claim `acc` describes the whole file
+    // when it describes less -- the next growth past stat.size would then resume
+    // at `offset` and silently skip everything in between. Recording what was
+    // actually consumed makes that region look like ordinary growth instead.
+    cache.set(file, {
+      mtimeMs: stat.mtimeMs, size: pos, offset, acc: { ...acc },
+      fingerprint: await readFingerprint(fh, offset),
+    });
     return { ...acc };
   } catch {
     return null;

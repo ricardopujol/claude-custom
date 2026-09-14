@@ -133,22 +133,58 @@ test('a line completed across several appends is still counted exactly once', as
 });
 
 test('multi-byte characters do not corrupt the resume point', async () => {
-  // The offset is in BYTES and the parse is in characters. Mixing the two
-  // splits a UTF-8 sequence and the following line fails to parse -- another
-  // silent undercount, and one that only appears on transcripts containing
-  // non-ASCII, which is most real ones.
+  // REWRITTEN. Dexter, Finding 4: the previous fixture did not pin this, and
+  // the bug it exists to prevent PASSED it. That fixture drifted bytes against
+  // UTF-16 units by only 11, so a character-offset resume started 11 bytes
+  // early, landed inside the tail of line 1, and produced an ASCII fragment
+  // that fails JSON.parse and contributes NOTHING. The total came out right by
+  // accident.
+  //
+  // The fix is to make the drift LARGER than a whole line, so a character-offset
+  // resume re-counts that line in full instead of producing garbage.
   const { root, dir } = project(CWD);
   const f = path.join(dir, 's1.jsonl');
-  const emoji = JSON.stringify({
-    type: 'user', message: { content: 'árbol 🌲 日本語 ✨', usage: U(7, 0) },
-  }) + NL;
-  fs.writeFileSync(f, emoji);
-  let r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
-  assert.strictEqual(r.session.total, 7);
 
-  fs.appendFileSync(f, emoji);
+  const heavy = JSON.stringify({
+    type: 'user', message: { content: '\u{1F332}'.repeat(300), usage: U(1, 0) },
+  }) + NL;                                   // 300 astral chars: drift = 600 bytes
+  const light = line(U(1000, 0));            // far smaller than the drift
+  assert.ok(Buffer.byteLength(heavy) - heavy.length > Buffer.byteLength(light),
+    'fixture must drift further than one whole line, or it pins nothing');
+
+  fs.writeFileSync(f, heavy + light);
+  let r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 1001);
+
+  fs.appendFileSync(f, line(U(0, 0)));
   r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
-  assert.strictEqual(r.session.total, 14);
+  assert.strictEqual(r.session.total, 1001, 'a character-offset resume re-counts a line');
+});
+
+test('a multi-byte sequence straddling a READ_CHUNK boundary is not split', async () => {
+  // The carry-concat path across chunks was correct but pinned by nothing: both
+  // multi-chunk tests were pure ASCII. Sequences crossing the 1MB edge are the
+  // case that would corrupt a decode done per chunk rather than per line.
+  const { READ_CHUNK } = require('../host/usage');
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+
+  const chunks = [];
+  let bytes = 0;
+  while (bytes < READ_CHUNK * 3) {
+    const l = JSON.stringify({
+      type: 'user', message: { content: '\u{1F332}\u00E1\u65E5'.repeat(40), usage: U(1, 0) },
+    }) + NL;
+    chunks.push(l);
+    bytes += Buffer.byteLength(l);
+  }
+  fs.writeFileSync(f, chunks.join(''));
+  assert.ok(fs.statSync(f).size > READ_CHUNK * 3, 'fixture must span several chunks');
+
+  const incremental = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  const cold = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache: new Map() });
+  assert.strictEqual(incremental.session.total, chunks.length);
+  assert.strictEqual(incremental.session.total, cold.session.total);
 });
 
 // --- when the append-only assumption breaks ----------------------------------
@@ -342,4 +378,66 @@ test('a SIZE change alone invalidates the cache, even with an unchanged mtime', 
   fs.utimesSync(f, atime, mtime);              // as if the clock had not moved
   r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
   assert.strictEqual(r.session.total, 15, 'an append was invisible behind a stale mtime');
+});
+
+// --- the resume point has to prove it is still the same file ------------------
+
+test('a file REPLACED between ticks does not resume onto a stale total', async () => {
+  // Dexter, Finding 2. `size > cached.size` was used as a proxy for "the cached
+  // prefix is still this file's prefix", and it is not. No truncation-during-
+  // read is needed -- a delete-and-recreate between two 5-second ticks is
+  // enough, and the poisoned accumulator is PERMANENT: every later append keeps
+  // resuming from it. The existing shrink test only heals this if a read
+  // happens while the file is small, which a shrink-and-regrow never allows.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+
+  fs.writeFileSync(f, line(U(10, 20)) + line(U(100, 200)));
+  let r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 330);
+
+  // Replaced with DIFFERENT content that happens to be longer.
+  fs.writeFileSync(f, line(U(1, 1)) + line(U(1, 1)) + line(U(1, 1)));
+  assert.ok(fs.statSync(f).size > 0);
+  r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 6, 'resumed onto a total from a file that no longer exists');
+});
+
+test('a genuine append still takes the fast path, so the guard is not just "always re-read"', async () => {
+  // The other half. A guard that re-reads everything would pass the test above
+  // and silently undo the entire optimisation -- which is the failure mode that
+  // looks like success.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+  const many = [];
+  for (let i = 0; i < 20000; i++) many.push(line(U(1, 1)));
+  fs.writeFileSync(f, many.join(''));
+
+  const cache = new Map();
+  const t0 = process.hrtime.bigint();
+  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
+  const cold = Number(process.hrtime.bigint() - t0) / 1e6;
+
+  fs.appendFileSync(f, line(U(3, 4)));
+  const t1 = process.hrtime.bigint();
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
+  const warm = Number(process.hrtime.bigint() - t1) / 1e6;
+
+  assert.strictEqual(r.session.total, 20000 * 2 + 7);
+  assert.ok(warm < cold / 4, `the fast path was lost: cold ${cold.toFixed(1)}ms, append ${warm.toFixed(1)}ms`);
+});
+
+test('a rewrite that PRESERVES the prefix is still resumed, not re-read', async () => {
+  // The fingerprint checks the bytes before the resume point. If those are
+  // unchanged the cached total describes them correctly, whatever else moved.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+  const head = line(U(10, 20)) + line(U(100, 200));
+  fs.writeFileSync(f, head);
+  let r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 330);
+
+  fs.writeFileSync(f, head + line(U(1, 1)));      // same prefix, appended
+  r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 332);
 });
