@@ -117,9 +117,13 @@ visible.
 Test pass rate, coverage and lint as one bar. Needs a small per-project command
 config, since every repo reports differently.
 
-### 10 · Difficulty dial
+### 10 · Hazard Level
+The HAZARD LEVEL. Ricardo's name for it, 2026-09-13, and the right one: these
+are not degrees of difficulty, they are degrees of how much can go wrong
+unsupervised.
+
 The five permission modes — bypass, auto, manual, accept edits, plan — surfaced
-in the header. Pure display over data already parsed from the TUI. Makes
+in the header as skulls. Pure display over data already parsed from the TUI. Makes
 "running with permissions bypassed" impossible to forget.
 
 ### 11 · Provider switch — Claude Max ↔ OpenRouter
@@ -141,6 +145,31 @@ counts tool calls and errors per session, so a provider can be scored on tool
 success rate over a fixed task.
 
 ### 12 · Model council
+
+**The design is already written, elsewhere, and locked:**
+`C:\Users\ricar\VibeCode\council-mcp\HANDOFF.md` — a `/brainstorming` session
+from 2026-07-09, greenfield and unimplemented. Mirror what is usable from it
+rather than redesigning it; it inherits from Karpathy's `llm-council`.
+
+The lesson it rests on: an ensemble only helps if the models **fail
+differently**. All ~161 agents here run on the same Claude model, so three of
+them agreeing is shared blind spots rather than confirmation.
+
+**The constraint that shapes everything:** Claude Code's `Agent` tool only ever
+spawns CLAUDE subagents. A non-Claude seat therefore cannot be an agent — it
+must be a callable primitive returning the answer as DATA. Hence an MCP server
+with a deliberately thin surface (`ask_model`, `list_models`), leaving fan-out,
+ranking and the Chairman in the calling layer.
+
+**Ricardo, 2026-09-13:** the user picks **up to three models** for the council,
+from ANY provider OpenRouter offers. So the seat picker belongs to this
+harness, while the primitive that answers belongs to the MCP server.
+
+Non-negotiables carried over: a hard fail-closed budget cap (never silently
+downgrade to a cheaper model — that corrupts the diversity guarantee AND hides
+spend), a persistent spend ledger, a model allowlist, and the key from env
+only, never logged.
+
 Karpathy-style: several models answer, cross-review, a chairman synthesises.
 
 **Deliberately NOT routed through the pty.** A host-side panel with its own HTTP
