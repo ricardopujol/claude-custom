@@ -10,15 +10,48 @@
  *
  * "Project total" is the sum across every session file in that folder, which is
  * what makes it a per-folder lifetime figure rather than a per-window one.
+ *
+ * ASYNCHRONOUS, INCREMENTAL, AND YIELDING — all three for the same reason.
+ * Measured on this project: 23 transcripts, 64.4MB, 331-375ms of fully
+ * synchronous work, on a 5-second timer. The host's event loop is what accepts
+ * the hook helper's named-pipe connection and that helper gives up after 80ms,
+ * so every tick was a window in which hook events are dropped. That is not a
+ * hypothetical: it is the incident that cost 31 of 35 events and made fog.js
+ * yield.
+ *
+ * An mtime cache alone would not have fixed it. Of that 331ms, 237ms is ONE
+ * file — the active session, 52.8MB of the 64.4MB — and it changes every turn,
+ * so it invalidates on every tick. The saving has to come from not re-parsing
+ * the 52.8MB that did not change, which transcripts allow because they are
+ * append-only: this reads only the appended bytes.
+ *
+ * The one new way that can go wrong is silent, so it is worth naming. A read
+ * routinely lands mid-line, because the file is being appended to while it is
+ * read. Resuming from the previous BYTE COUNT would start the next read inside
+ * that line; the completed line would never parse and its tokens would be lost
+ * permanently — an undercount no later read can heal, in the number the whole
+ * milestone ladder is built on. So the resume point is the last NEWLINE, never
+ * the size.
  */
 
 const fs = require('fs');
+const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const { projectDirName } = require('./project-dir');
 
 const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sessions: 0 };
 
+// Bytes per read, and lines parsed between yields. Both exist to bound a single
+// synchronous span: a whole-file read would convert 52MB to a string in one go,
+// which blocks the loop for longer than the helper's 80ms connect timeout even
+// though the read itself is awaited.
+const READ_CHUNK = 1 << 20;
+const PARSE_BATCH = 500;
+
+const NL = 10;   // '\n'
+
+const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
 // Claude Code encodes the cwd by replacing every path separator and colon with
 // a dash: C:\Users\x\proj -> C--Users-x-proj
@@ -38,27 +71,109 @@ function addUsage(acc, usage) {
   acc.cacheRead += num(usage.cache_read_input_tokens);
 }
 
-function readFileUsage(file) {
-  const acc = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
-  let raw;
-  try {
-    raw = fs.readFileSync(file, 'utf8');
-  } catch {
-    return acc;
-  }
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let obj;
-    try {
-      obj = JSON.parse(trimmed);
-    } catch {
-      // The transcript is appended to live, so a partial final line is normal.
-      continue;
+const zero = () => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0 });
+const addInto = (target, acc) => {
+  target.input += acc.input;
+  target.output += acc.output;
+  target.cacheWrite += acc.cacheWrite;
+  target.cacheRead += acc.cacheRead;
+};
+
+// Parsed totals, keyed by ABSOLUTE path — `s1.jsonl` exists in every project
+// folder, so a basename key would report one project's spend as another's.
+// Each entry records where the last COMPLETE line ended, so a resumed read
+// starts on a line boundary rather than inside a half-written line.
+const defaultCache = new Map();
+
+async function parseLines(text, acc) {
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed) {
+      try {
+        const obj = JSON.parse(trimmed);
+        addUsage(acc, obj && obj.message && obj.message.usage);
+      } catch {
+        // A line that is complete but unparseable is not a partial write; it is
+        // simply not ours. Either way it contributes nothing.
+      }
     }
-    addUsage(acc, obj && obj.message && obj.message.usage);
+    if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
   }
-  return acc;
+}
+
+/**
+ * The tokens in one transcript, reusing whatever of it was already parsed.
+ * Returns null when the file could not be read at all — which is ABSENCE, not
+ * a file worth zero, and the caller reports it rather than quietly understating
+ * the project.
+ */
+async function readFileUsage(file, cache) {
+  let stat;
+  try {
+    stat = await fsp.stat(file);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile()) return null;
+
+  const cached = cache.get(file);
+
+  // Untouched since the last read. This covers every historical session, which
+  // is most of the files and none of the cost.
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return { ...cached.acc };
+  }
+
+  // Resume ONLY when the file grew. A file that shrank, or that changed at the
+  // same length, is not the file we cached — append-only is an assumption about
+  // someone else's writer, not a guarantee, and trusting it blindly would leave
+  // a stale total that never recovers.
+  const grown = cached && stat.size > cached.size;
+  let pos = grown ? cached.offset : 0;
+  const acc = grown ? { ...cached.acc } : zero();
+
+  let fh;
+  try {
+    fh = await fsp.open(file, 'r');
+  } catch {
+    return null;
+  }
+
+  try {
+    // Bytes read past the last newline: they belong to a line that is still
+    // being written, so they are re-read next time rather than parsed now.
+    let carry = null;
+    while (pos < stat.size) {
+      const want = Math.min(READ_CHUNK, stat.size - pos);
+      const buf = Buffer.allocUnsafe(want);
+      const { bytesRead } = await fh.read(buf, 0, want, pos);
+      if (bytesRead <= 0) break;
+      pos += bytesRead;
+
+      let chunk = bytesRead === buf.length ? buf : buf.subarray(0, bytesRead);
+      if (carry) chunk = Buffer.concat([carry, chunk]);
+
+      // Split on the newline BYTE. 0x0A cannot occur inside a multi-byte UTF-8
+      // sequence, so this boundary is always a safe place to decode — which a
+      // character-offset resume would not be, and the corruption would only
+      // show up on transcripts containing non-ASCII, i.e. most real ones.
+      const end = chunk.lastIndexOf(NL);
+      if (end === -1) { carry = chunk; continue; }
+
+      await parseLines(chunk.subarray(0, end + 1).toString('utf8'), acc);
+      carry = end + 1 < chunk.length ? Buffer.from(chunk.subarray(end + 1)) : null;
+      await yieldToLoop();
+    }
+
+    const offset = pos - (carry ? carry.length : 0);
+    cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, offset, acc: { ...acc } });
+    return { ...acc };
+  } catch {
+    return null;
+  } finally {
+    try { await fh.close(); } catch { /* already gone */ }
+  }
 }
 
 const withTotal = (acc, sessions) => ({
@@ -67,13 +182,13 @@ const withTotal = (acc, sessions) => ({
   sessions,
 });
 
-function readUsage({ cwd, sessionId, projectsDir } = {}) {
+async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } = {}) {
   const root = projectsDir || defaultProjectsDir();
   const dir = path.join(root, projectDirName(cwd));
 
   let files = [];
   try {
-    files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    files = (await fsp.readdir(dir)).filter(f => f.endsWith('.jsonl'));
   } catch {
     // `ok: false` -- ABSENCE, not zero. A readdir failure (EBUSY or EPERM from
     // an indexer or AV touching this folder is ordinary on Windows) used to be
@@ -81,24 +196,37 @@ function readUsage({ cwd, sessionId, projectsDir } = {}) {
     // that seeded state from it recorded the failure as a fact. The milestone
     // announcer seeds from the first reading, and a failed first reading made
     // it announce the entire ladder on the next good tick.
-    return { ok: false, session: { ...EMPTY }, project: { ...EMPTY } };
+    return { ok: false, unreadable: 0, session: { ...EMPTY }, project: { ...EMPTY } };
   }
 
-  const project = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
-  let session = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+  const project = zero();
+  let session = zero();
   let matchedSession = false;
+  let unreadable = 0;
+  const live = new Set();
 
   for (const f of files) {
-    const acc = readFileUsage(path.join(dir, f));
-    project.input += acc.input;
-    project.output += acc.output;
-    project.cacheWrite += acc.cacheWrite;
-    project.cacheRead += acc.cacheRead;
+    const full = path.join(dir, f);
+    live.add(full);
+    const acc = await readFileUsage(full, cache);
+    if (!acc) { unreadable++; continue; }
+    addInto(project, acc);
     if (sessionId && f === sessionId + '.jsonl') { session = acc; matchedSession = true; }
   }
 
+  // Forget transcripts that are gone, so a long-lived host does not hold the
+  // parsed totals of every session it has ever seen.
+  for (const key of cache.keys()) {
+    if (key.startsWith(dir + path.sep) && !live.has(key)) cache.delete(key);
+  }
+
   return {
-    ok: true,
+    // Complete AND trustworthy, which is what every caller actually asks. A
+    // transcript that could not be read is not one worth zero: reporting a
+    // confident lower total is exactly what seeds a false baseline and throws a
+    // party for work done weeks ago.
+    ok: unreadable === 0,
+    unreadable,
     // `sessions: 0` when no session file matched. The old identity test
     // `session === EMPTY` could never be true, because `session` is a fresh
     // object literal above -- so this always reported 1, including before the
@@ -108,4 +236,4 @@ function readUsage({ cwd, sessionId, projectsDir } = {}) {
   };
 }
 
-module.exports = { readUsage, projectDirName, defaultProjectsDir, EMPTY };
+module.exports = { readUsage, projectDirName, defaultProjectsDir, EMPTY, READ_CHUNK, PARSE_BATCH };
