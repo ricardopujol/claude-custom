@@ -12,6 +12,20 @@ const REPO = 'C:/Users/ricar/VibeCode/claude-custom';
 
 const term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
+
+// The host refuses any connection without the session token -- see
+// host/gatekeeper.js. A local tool reads it from the file the host writes,
+// which is precisely what a web page cannot do.
+function sessionToken() {
+  try {
+    return require('fs').readFileSync(
+      require('path').join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+const withToken = (url) => url + '?token=' + encodeURIComponent(sessionToken());
+
 term.loadAddon(new Unicode11Addon());
 term.unicode.activeVersion = '11';
 
@@ -41,7 +55,7 @@ const ruleWidths = () => lines()
 (async () => {
   let ws;
   for (let i = 0; i < 40; i++) {
-    ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+    ws = new WebSocket(withToken(`ws://127.0.0.1:${PORT}`));
     const ok = await new Promise(r => {
       ws.once('open', () => r(true));
       ws.once('error', () => r(false));

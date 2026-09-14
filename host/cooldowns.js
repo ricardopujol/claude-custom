@@ -30,8 +30,15 @@ function createCooldowns({ now = Date.now, store, cooldowns = DEFAULT_COOLDOWNS 
   const save = (v) => store.write(STORE_KEY, v);
 
   function finished(agent) {
-    const duration = cooldowns[agent];
-    if (!duration) return;                 // not an expensive agent
+    // hasOwnProperty, not a bare read. `agent` comes from the hook payload, and
+    // a bare lookup of 'constructor' or 'toString' resolves to an inherited
+    // FUNCTION: truthy, so it passes the guard, then `now() + duration` string-
+    // concatenates, `until` is persisted as a string, `until <= t` compares as
+    // NaN and is never true -- an immortal cooldown rendering "NaNm" forever
+    // with no way to clear it.
+    const duration = Object.prototype.hasOwnProperty.call(cooldowns, agent)
+      ? cooldowns[agent] : undefined;
+    if (typeof duration !== 'number' || !(duration > 0)) return;   // not an expensive agent
     const state = load();
     // Restart the clock rather than stacking: two runs in a row is one thing to
     // warn about, not a doubled penalty.

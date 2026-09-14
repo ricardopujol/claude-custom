@@ -9,6 +9,21 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
+
+// The host refuses any connection without the session token -- see
+// host/gatekeeper.js. A local tool reads it from the file the host writes,
+// which is precisely what a web page cannot do.
+function sessionToken() {
+  try {
+    return require('fs').readFileSync(
+      require('path').join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+const withToken = (url) => url + '?token=' + encodeURIComponent(sessionToken());
+
+
 const REPO = path.join(__dirname, '..');
 const PORT = 7798;
 const LOG = path.join(REPO, '.harness', 'host.log');
@@ -65,6 +80,30 @@ const check = (label, ok, detail) => {
       await sleep(400);
     }
   }
+
+  // Finish mutation-tester so a COOLDOWN exists to render. Mortimer is the
+  // motivating case for the feature: the project rule is one run per stable
+  // tree, and that rule has already been broken once, wasting a full run.
+  if (pipe) {
+    const helper = path.join(REPO, '.harness', 'hook-helper.exe');
+    spawnSync(helper, ['--pipe', pipe, '--event', 'SubagentStop'], {
+      input: JSON.stringify({ agent_type: 'mutation-tester' }), windowsHide: true,
+    });
+  }
+
+  // Ask the host to run the suite. The host BROADCASTS health to every client,
+  // so requesting it from a second connection lands in the Electron window too
+  // -- which is how the screenshot gets a real bar instead of "no result yet".
+  // Deliberately not automatic on launch: running someone's test suite the
+  // moment they open a window is intrusive and slow.
+  await new Promise((resolve) => {
+    const probe = new WebSocket(withToken(`ws://127.0.0.1:${PORT}`));
+    probe.on('open', () => {
+      probe.send(JSON.stringify({ type: 'health' }));
+      setTimeout(() => { try { probe.close(); } catch {} resolve(); }, 6000);
+    });
+    probe.on('error', resolve);
+  });
 
   await sleep(14000);
   const log2 = (() => { try { return fs.readFileSync(LOG, 'utf8'); } catch { return ''; } })();

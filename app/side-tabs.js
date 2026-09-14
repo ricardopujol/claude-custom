@@ -14,6 +14,7 @@
 const TABS = [
   { id: 'agents', label: 'Agents', title: 'Who is working, and on what' },
   { id: 'vault', label: 'Vault', title: 'Local encrypted secrets' },
+  { id: 'fog', label: 'Map', title: 'What this project has actually been read' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to
@@ -28,5 +29,5 @@ function nextTab(current, clicked) {
   return current === clicked ? null : clicked; // clicking the active tab hides it
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { nextTab, TABS, DEFAULT_TAB };
-else if (typeof window !== 'undefined') Object.assign(window, { nextTab, TABS, DEFAULT_TAB });
+if (typeof module !== 'undefined' && module.exports) module.exports = { nextTab, TABS, DEFAULT_TAB, isKnownTab: known };
+else if (typeof window !== 'undefined') Object.assign(window, { nextTab, TABS, DEFAULT_TAB, isKnownTab: known });

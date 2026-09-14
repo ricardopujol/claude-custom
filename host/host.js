@@ -36,6 +36,10 @@ const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
+const { detectRunner, parseResults, healthFrom } = require('./health');
+const { createCappedBuffer } = require('./capped-buffer');
+const { readFog } = require('./fog');
+const { allowConnection, newToken } = require('./gatekeeper');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -74,6 +78,203 @@ const HARNESS_DIR = path.join(__dirname, '..', '.harness');
 const HELPER_PATH =
   process.env.CLAUDE_CUSTOM_HELPER || path.join(HARNESS_DIR, 'hook-helper.exe');
 
+// Project HP. The suite runs in a CHILD PROCESS, never in this one: a test run
+// is seconds of work, and the host's event loop is what accepts the hook
+// helper's named-pipe connection inside its 80ms timeout. Detection is cheap
+// enough to do inline; the RUN never is.
+//
+// One run at a time. A second request while a run is in flight joins the first
+// instead of starting a competing process -- two `npm test` runs in one repo
+// fight over the same build output.
+const healthRunner = detectRunner(CWD);
+let healthState = {
+  ...healthFrom(null),
+  runner: healthRunner ? healthRunner.kind : null,
+  running: false,
+};
+let healthInFlight = null;
+
+function settleHealth(results, started) {
+  healthState = {
+    ...healthFrom(results),
+    runner: healthRunner ? healthRunner.kind : null,
+    running: false,
+    ranAt: Date.now(),
+    tookMs: Date.now() - started,
+  };
+  // A throw inside a 'close' listener is an UNCAUGHT EXCEPTION, not a
+  // rejection -- it would kill the host and the user's live session with it.
+  try { broadcastControl({ type: 'health', health: healthState }); } catch {}
+  return healthState;
+}
+
+// A wall-clock ceiling. Without one, a suite that HANGS -- a watch script, a
+// runner prompting on stdin, a `pdb` breakpoint, cmd.exe's "Terminate batch
+// job (Y/N)?" -- leaves the bar pulsing forever AND wedges healthInFlight, so
+// every later click is a silent no-op. The host is spawned detached, so
+// reopening the window reattaches to the same stuck host: there would be no
+// way out from inside the product.
+const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
+
+// An unbounded `out +=` in the HOST is two hazards at once: past V8's ~512MB
+// string limit it throws RangeError inside a 'data' listener, killing the host
+// and the user's live session; and long before that, growing a huge string
+// forces major GC pauses in the one event loop that must accept the hook
+// helper's connection within 80ms.
+//
+// HEAD *AND* TAIL, because runners disagree about where the summary goes:
+//
+//   pytest      prints its counts LAST              -> the tail has it
+//   node:test   prints its counters, THEN the        -> the HEAD has it
+//               "failing tests:" detail
+//
+// A blind tail was measured losing the node:test counter block at ~48 failures
+// (120 failures puts it 156KB from the end), so the reddest suite in the repo
+// reported "unknown" instead of "critical" -- the exact defect this branch
+// called blocker-grade for pytest, reintroduced for the default runner.
+const HEALTH_OUTPUT_CAP = 64 * 1024;
+
+function killTree(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32') {
+    // The try/catch below does NOT catch this: a ChildProcess reports a failed
+    // spawn through an ASYNC 'error' event, and an EventEmitter with no 'error'
+    // listener THROWS -- an uncaught exception that kills the host and the
+    // user's live Claude session with it. Reproduced: taskkill missing from
+    // PATH exits the host with ENOENT.
+    //
+    // Worst on the timeout path, which runs precisely when a suite has hung and
+    // the timeout is the user's only way out.
+    try {
+      const killer = require('child_process').spawn(
+        'taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+      killer.on('error', (err) => {
+        console.log('[host] taskkill failed:', err.code || err.message, '- falling back');
+        try { child.kill('SIGTERM'); } catch {}
+      });
+      return;
+    } catch { /* fall through to the portable kill */ }
+  }
+  try { child.kill('SIGTERM'); } catch {}
+}
+
+let healthChild = null;
+
+function runHealth() {
+  if (healthInFlight) return healthInFlight;
+  if (!healthRunner) {
+    // No recognisable suite. UNKNOWN, not zero: a project without tests is not
+    // a project whose tests all fail.
+    healthState = { ...healthFrom(null), runner: null, running: false };
+    broadcastControl({ type: 'health', health: healthState });
+    return Promise.resolve(healthState);
+  }
+
+  healthState = { ...healthState, running: true };
+  broadcastControl({ type: 'health', health: healthState });
+
+  const [cmd, ...args] = healthRunner.command;
+  const started = Date.now();
+  healthInFlight = new Promise((resolve) => {
+    const env = { ...process.env };
+    // A child that inherits NODE_TEST_CONTEXT switches to the v8 serializer
+    // protocol and writes NOTHING to stdout, which reads as a broken parser.
+    delete env.NODE_TEST_CONTEXT;
+
+    const child = require('child_process').spawn(cmd, args, {
+      cwd: CWD, env, windowsHide: true,
+      // stdin IGNORED, so an interactive runner reads EOF and exits instead of
+      // waiting forever for input nobody can type.
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Narrow: npm is a .cmd shim on Windows and needs a shell. python.exe is
+      // a real executable and does not -- and routing it through cmd.exe is
+      // what makes killing it require a tree kill.
+      shell: healthRunner.kind === 'npm' && process.platform === 'win32',
+    });
+    healthChild = child;
+
+    // Separate buffers per stream. One shared accumulator interleaves the two
+    // at arbitrary chunk boundaries, splicing a counter line in half ("i pa" +
+    // "npm WARN ..." + "ss 319") so a fully green run parses as null.
+    const stdout = createCappedBuffer(HEALTH_OUTPUT_CAP);
+    const stderr = createCappedBuffer(HEALTH_OUTPUT_CAP);
+    child.stdout.setEncoding('utf8');       // no split multi-byte characters
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', d => stdout.push(d));
+    child.stderr.on('data', d => stderr.push(d));
+
+    // ONE settle per run. Node can emit both 'error' and 'close' for a single
+    // spawn failure, which broadcast two results with different timestamps.
+    let settled = false;
+    const done = (results) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      healthChild = null;
+      resolve(settleHealth(results, started));
+    };
+
+    const timer = setTimeout(() => {
+      console.log('[host] health run timed out after', HEALTH_TIMEOUT_MS, 'ms');
+      killTree(child);
+      done(null);                 // unknown, not zero: we never saw a result
+    }, HEALTH_TIMEOUT_MS);
+    if (timer.unref) timer.unref();
+
+    child.on('error', () => done(null));
+    child.on('close', () => {
+      // stdout first: some runners summarise on stderr, but a runner that
+      // writes to both must not have its summary preceded by warnings.
+      const parsed = parseResults(healthRunner.parser, stdout.text())
+        || parseResults(healthRunner.parser, stderr.text());
+      done(parsed);
+    });
+  }).finally(() => { healthInFlight = null; });
+
+  return healthInFlight;
+}
+
+// The project's file map. NOT computed at startup or pushed in `hello`: a cold
+// read costs ~175ms of synchronous work, and the host's event loop is what
+// delivers hook events -- this project measured a spawnSync in the server
+// dropping 31 of 35 of them. It is computed when the client asks for it, and
+// the mtime cache makes every later read ~1ms.
+//
+// `tracked` comes from git, because the DARK files are the whole point and this
+// host must never invent a file that does not exist.
+function trackedFiles() {
+  try {
+    // -z and core.quotePath=false: by default git C-QUOTES any path with a
+    // non-ASCII or special character ("src/cafÃ©.js"), which then matches
+    // no transcript path and appears BOTH as explored and as a phantom dark
+    // row. NUL separation also survives filenames containing newlines.
+    //
+    // maxBuffer raised because the 1MiB default throws ENOBUFS on a repo of
+    // ~15k files -- and that error used to land in the "everything explored"
+    // branch, which is the worst possible direction to fail in.
+    const out = require('child_process').execFileSync(
+      'git', ['-C', CWD, '-c', 'core.quotePath=false', 'ls-files', '-z'],
+      { encoding: 'utf8', timeout: 4000, maxBuffer: 64 * 1024 * 1024 });
+    // No .trim(): a filename may legitimately begin or end with a space.
+    return { ok: true, files: out.split(String.fromCharCode(0)).filter(Boolean) };
+  } catch (err) {
+    // NOT an empty list. An empty list means "this project has no files", which
+    // renders as zero dark rows -- "everything explored, no blind spots" -- the
+    // single most misleading thing this panel could say.
+    return { ok: false, files: [], error: err.message };
+  }
+}
+
+async function currentFog() {
+  const tracked = trackedFiles();
+  const fog = await readFog({ cwd: CWD, tracked: tracked.files });
+  // The git failure travels with the data, so the panel can say "dark files
+  // not counted" instead of silently claiming full coverage.
+  fog.status.trackedOk = tracked.ok && tracked.files.length > 0;
+  fog.status.trackedError = tracked.ok ? null : tracked.error;
+  return fog;
+}
+
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
   pipeName: PIPE_NAME,
@@ -107,6 +308,11 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
 // The agent list comes from the mood stack, so a finished turn can say how
 // many agents ran rather than just that something ended.
+// Tracks whether a cooldown list was last non-empty, so the falling edge is
+// broadcast too. Without it the panel is never told the list emptied and the
+// final row stays on screen.
+let cooldownsWere = 0;
+
 const attention = createAttention({
   project: path.basename(CWD),
   agents: () => mood.stack(),
@@ -213,7 +419,12 @@ if (helperExists) {
       // fallback. Cooldowns applied to the wrong agent are worse than none.
       const finished = (ev.payload && ev.payload.agent_type)
         || mood.stack()[mood.stack().length - 1];
-      if (finished) cooldowns.finished(finished);
+      if (finished) {
+        cooldowns.finished(finished);
+        // Broadcast, or the panel only learns about a cooldown on reattach --
+        // which is exactly when it is least useful.
+        broadcastControl({ type: 'cooldowns', cooldowns: cooldowns.list() });
+      }
     }
     // Logged because the roster silently showed nothing when agents ran, and
     // there was no way to tell whether hooks were arriving at all.
@@ -294,7 +505,39 @@ const term = pty.spawn(CLAUDE_BIN, ARGS, {
 console.log('[host] pty pid       :', term.pid);
 
 // --- attach surface ---------------------------------------------------------
-const wss = new WebSocketServer({ host: '127.0.0.1', port: PORT });
+// The session token. Taken from the environment when the Electron main process
+// supplies one (it spawns both the host and the window, so it can hand the same
+// secret to both), otherwise generated here and written to a 0600 file that
+// local tools -- the probes -- can read. A web page cannot read a local file,
+// which is the whole point: this separates "a program on this machine" from
+// "a page the user happened to visit".
+//
+// NEVER passed through the pty. It travels host <-> client only.
+const TOKEN_FILE = path.join(HARNESS_DIR, 'session-token');
+const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN || newToken();
+try {
+  fs.mkdirSync(HARNESS_DIR, { recursive: true });
+  fs.writeFileSync(TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
+} catch (err) {
+  console.log('[host] could not write the session token file:', err.message);
+}
+
+const wss = new WebSocketServer({
+  host: '127.0.0.1',
+  port: PORT,
+  // Refused at the HANDSHAKE, before a socket exists. Browsers do not apply
+  // CORS to WebSocket, so without this any page the user visits could connect
+  // and send {type:'input'} into a pty running with permissions bypassed.
+  verifyClient: ({ origin, req }, done) => {
+    const token = new URL(req.url, 'ws://127.0.0.1').searchParams.get('token');
+    const verdict = allowConnection({ origin, token }, { expectedToken: SESSION_TOKEN });
+    if (!verdict.ok) {
+      console.log('[host] refused a connection:', verdict.reason);
+      return done(false, 403, 'Forbidden');
+    }
+    done(true);
+  },
+});
 const clients = new Set();
 
 // Authoritative screen, so a GUI attaching later gets the CURRENT state rather
@@ -343,8 +586,14 @@ const moodTimer = setInterval(() => {
   if (processes.list().length) {
     broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
   }
+  // The FALLING EDGE matters as much as the rising one. Broadcasting only a
+  // non-empty list means the panel is never told the last cooldown expired, so
+  // the final row stays on screen claiming an agent is still unavailable.
   const cooling = cooldowns.list();
-  if (cooling.length) broadcastControl({ type: 'cooldowns', cooldowns: cooling });
+  if (cooling.length || cooldownsWere) {
+    broadcastControl({ type: 'cooldowns', cooldowns: cooling });
+  }
+  cooldownsWere = cooling.length;
 }, 1000);
 moodTimer.unref();
 
@@ -402,6 +651,7 @@ wss.on('connection', (ws) => {
     modes: MODES,
     provider,
     cooldowns: cooldowns.list(),
+    health: healthState,
   });
   // A milestone reached while nothing was attached is delivered now rather than
   // lost: the pty outlives the window by design, so the crossing can easily
@@ -431,8 +681,31 @@ wss.on('connection', (ws) => {
             termState.resize(msg.cols, msg.rows);
             return;
           }
+          if (msg.type === 'health') {
+            // Caught: an unhandled rejection terminates Node by default.
+            runHealth().catch(() => {});   // broadcasts on start and on finish
+            return;
+          }
           if (msg.type === 'input') {
             term.write(msg.data);
+            return;
+          }
+          if (msg.type === 'fog') {
+            // Answered on demand, asynchronously, yielding as it goes -- the
+            // read must never hold the loop past the helper's 80ms connect
+            // timeout, or it drops the hook events this panel is drawn from.
+            currentFog().then(
+              fog => ws.send(JSON.stringify({ type: 'fog', ...fog })),
+              err => {
+                // Tell the CLIENT, not just the log. A silent failure left the
+                // panel reading "reading the map..." forever, which looks like
+                // a slow host rather than a lost answer.
+                console.log('[host] fog read failed:', err.message);
+                try {
+                  ws.send(JSON.stringify({ type: 'fog', files: [], explored: 0, total: 0,
+                    status: { failed: true, error: err.message } }));
+                } catch { /* the client went away */ }
+              });
             return;
           }
         } catch {
@@ -455,8 +728,19 @@ wss.on('connection', (ws) => {
 
 console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
 
-process.on('SIGINT', () => {
+// A test run outlives the host unless it is killed here. With shell:true the
+// child is cmd.exe, so an orphaned npm/node keeps running with no parent and
+// no window -- invisible, and still holding the repo's build output.
+function shutdown() {
   try { term.kill(); } catch {}
+  killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }
-  process.exit(0);
-});
+}
+
+// SIGINT is not how this host usually dies: main.js spawns it DETACHED so it
+// survives the window closing. SIGTERM and exit are the paths that actually
+// fire, and leaving them unhandled is what orphans the child.
+process.on('SIGINT', () => { shutdown(); process.exit(0); });
+process.on('SIGTERM', () => { shutdown(); process.exit(0); });
+process.on('exit', () => { killTree(healthChild); });
+
