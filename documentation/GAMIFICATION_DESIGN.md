@@ -417,7 +417,27 @@ do. The harness can enumerate them without asking Claude Code anything.
 - Adding a skill to the tab is drag-and-drop at the moment it is relevant, per
   the inventory decision — most naturally, dragging from a list of all skills.
 
-**Open question for later:** whether a spell that is currently running shows
-state the way an agent portrait does. The Skill tool runs some skills in a
-subagent, which would arrive as an `Agent` PreToolUse -- so the roster may
-already cover that case, and the wand only needs to cast.
+**DECIDED (Ricardo, 2026-09-13): a running spell SHOWS STATE**, the way an
+agent portrait does. Casting is not fire-and-forget; the wand reports.
+
+That decision has a dependency nobody should discover late:
+
+- The mood machine is driven by `PreToolUse` / `PostToolUse`, and the settings
+  matcher is currently `Agent|Task|Bash`. A skill invocation will not fire a
+  hook at all until whatever tool name it uses is added to that matcher.
+- **We do not know that tool name.** It is plausibly `Skill`, and plausibly
+  not. Guessing it is precisely the mistake that cost three sessions on
+  `Agent` vs `Task`, where the host read a name Claude Code does not send and
+  every fixture agreed with the host.
+- So: **measure it, do not assume it.** `CLAUDE_CUSTOM_HOOK_DEBUG=1` prints
+  every payload, and `verify/probe-payloads.js` checks real shapes against
+  `host/payload-contract.js`. Invoke one harmless skill through the real CLI,
+  read the `tool_name`, then widen the matcher and add it to the contract.
+- Some skills run in a subagent, which arrives as an `Agent` PreToolUse and is
+  already handled. A skill that runs INLINE is the case that needs the new
+  matcher, and the two will look different on the wire.
+
+State to show, mirroring the roster: idle, casting, done, failed. The emoji is
+the spell's face, so it needs the same four-state treatment the portraits get
+-- which the emoji rule makes trivial (a ring or a tint around the glyph,
+rather than four generated images).
