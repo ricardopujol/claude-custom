@@ -29,6 +29,12 @@
                           failure mode that survives every check keyed on the
                           artifact's own contents.
 
+   Before capturing it sets `data-full-capture="1"` on <html> and calls
+   `window.onFullCapture()` if the page defines one, so a page that draws a
+   viewport-based "screenshot fold" warning can retract it. Without that the
+   sheet warns about the very clipping this tool prevents, and draws its fold
+   line through the content being judged.
+
    Subpixel antialiasing is disabled, because glyph candidates labelled "mono"
    were being rendered with cyan and orange fringing on every vertical stroke --
    so the noise being judged was partly the compositor's, not the technique's. */
@@ -82,6 +88,20 @@ app.whenReady().then(async () => {
   // laid out in the fallback is a measurement of the fallback.
   await win.webContents.executeJavaScript(
     'document.fonts.ready.then(() => true)').catch(() => false);
+  // Tell the page it is being captured WHOLE. A page that draws its own
+  // "screenshot fold" warning computes it from the viewport height, and
+  // captureBeyondViewport makes that arithmetic wrong -- so without this the
+  // sheet cries wolf about the exact failure this tool just fixed, and its
+  // fold line is drawn straight through a row of the content being judged.
+  //
+  // Generic on purpose: the flag and the hook are the contract, and this tool
+  // knows nothing about any particular page.
+  await win.webContents.executeJavaScript(`(() => {
+    document.documentElement.setAttribute('data-full-capture', '1');
+    if (typeof window.onFullCapture === 'function') window.onFullCapture();
+    return true;
+  })()`).catch(() => false);
+
   await new Promise(r => setTimeout(r, 400));   // gradients and filters
 
   const page = await win.webContents.executeJavaScript(`(() => ({
