@@ -419,7 +419,7 @@ function handleControl(msg) {
       // Preferred path: main raises it, so it needs no page permission and can
       // flash the taskbar and focus the window on click.
       window.harness.attention(surfaces);
-    } else {
+    } else if (surfaces.toast) {
       try {
         const n = new Notification(surfaces.toast.title, {
           body: surfaces.toast.body,

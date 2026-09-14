@@ -89,6 +89,10 @@ function createWindow() {
   // taskbar nor focus the window when clicked; this can do all three.
   ipcMain.on('attention', (event, surfaces) => {
     if (event.sender !== win.webContents || !surfaces) return;
+    // Logged even when nothing is shown. "Suppressed because you are looking at
+    // it" and "never arrived" are the same silence otherwise, and telling those
+    // two apart is what took two wrong diagnoses to learn.
+    if (!surfaces.toast) console.log('[main] attention: suppressed (window focused)');
     if (surfaces.toast && Notification.isSupported()) {
       const n = new Notification({
         title: String(surfaces.toast.title || 'claude-custom'),
@@ -105,9 +109,11 @@ function createWindow() {
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
     if (surfaces.flashTaskbar && !win.isFocused()) win.flashFrame(true);
-    console.log(`[main] attention: ${surfaces.toast && surfaces.toast.title}` +
-      ` (silent=${surfaces.toast && surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);
-    console.log(`[main] attention body: ${surfaces.toast && surfaces.toast.body}`);
+    if (surfaces.toast) {
+      console.log(`[main] attention: ${surfaces.toast.title}` +
+        ` (silent=${surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);
+    }
+    if (surfaces.toast) console.log(`[main] attention body: ${surfaces.toast.body}`);
   });
 
   win.on('focus', () => win.flashFrame(false));

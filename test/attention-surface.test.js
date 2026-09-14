@@ -7,31 +7,32 @@ const { surfacesFor } = require('../app/attention-surface');
 const finished = { kind: 'finished', title: 'p finished', body: 'done', urgent: false };
 const needsYou = { kind: 'input-needed', title: 'p needs you', body: 'permission?', urgent: true };
 
-test('a finished task notifies even while the window is focused', () => {
-  // THE reported bug. The old rule suppressed every toast when the window had
-  // focus, so watching the terminal while a task ran meant never being told it
-  // ended -- which is the exact case the feature was asked for.
-  const s = surfacesFor(finished, { focused: true });
-  assert.ok(s.toast, 'no toast for a finished task in a focused window');
+test('a focused window gets NO toast at all', () => {
+  // A toast for the thing you are already looking at is noise, and noise is
+  // how a notification system stops being read.
+  //
+  // This was briefly the other way round, on the theory that focus suppression
+  // was why notifications never arrived. It was not: no hook was reaching the
+  // host at all (tool_name "Agent" vs "Task"). Suppressing while focused was
+  // right, and removing it fixed nothing while adding noise.
+  assert.strictEqual(surfacesFor(finished, { focused: true }).toast, null);
 });
 
-test('a focused window gets a quiet, non-sticky toast', () => {
-  // Still looking at it: say so once, do not make noise and do not demand a
-  // click to dismiss.
-  const s = surfacesFor(finished, { focused: true });
+test('an urgent request is also silent while focused', () => {
+  // Even a blocked session: if the window is in front of you, the in-window
+  // cue is already telling you, and a toast on top of it is duplication.
+  assert.strictEqual(surfacesFor(needsYou, { focused: true }).toast, null);
+});
+
+test('an unfocused window does get a toast', () => {
+  const s = surfacesFor(finished, { focused: false });
+  assert.ok(s.toast, 'no toast raised for an unfocused window');
   assert.strictEqual(s.toast.silent, true);
-  assert.strictEqual(s.toast.requireInteraction, false);
 });
 
 test('an urgent toast in an unfocused window sticks until acknowledged', () => {
   const s = surfacesFor(needsYou, { focused: false });
   assert.strictEqual(s.toast.requireInteraction, true);
-  assert.strictEqual(s.toast.silent, false);
-});
-
-test('an urgent event is never silent, even with focus', () => {
-  // A blocked session is blocked whether or not you are looking at the window.
-  const s = surfacesFor(needsYou, { focused: true });
   assert.strictEqual(s.toast.silent, false);
 });
 

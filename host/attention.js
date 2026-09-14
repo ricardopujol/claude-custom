@@ -12,11 +12,9 @@
  * work, and notifying on those would fire dozens of times per task, which
  * trains you to ignore the notifications entirely.
  *
- * The host decides WHAT is worth raising. The GUI decides how loudly to raise
- * it (see app/attention-surface.js) but never whether to raise it at all: an
- * earlier version skipped the toast whenever the window had focus, which
- * silenced the exact case this exists for — sitting watching a long task run,
- * waiting to be told it finished.
+ * The host decides WHAT is worth raising; app/attention-surface.js decides
+ * where it goes. An OS toast only appears when the window is NOT focused —
+ * if you are already looking at it, the in-window cue has said it.
  */
 
 const { EventEmitter } = require('events');
