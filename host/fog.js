@@ -196,7 +196,7 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   const dir = path.join(projectsDir || path.join(os.homedir(), '.claude', 'projects'),
     projectDirName(root));
 
-  const records = await transcriptFiles(dir);
+  const { files: records, errors: enumErrors } = await transcriptFiles(dir);
   const files = records === null ? null : records.map(r => r.file);
 
   // Status travels WITH the data. Every failure here otherwise renders as a
@@ -206,7 +206,10 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   // you stop looking.
   const status = {
     transcriptsFound: files === null ? 0 : files.length,
-    transcriptErrors: 0,
+    // Seeded with the ENUMERATION's failures, not just per-file ones. A
+    // subagents directory we could not read drops every transcript in it,
+    // and counting only the files we managed to list makes that invisible.
+    transcriptErrors: enumErrors,
     transcriptsMissing: files === null,
     trackedOk: Array.isArray(tracked) && tracked.length > 0,
   };
@@ -224,7 +227,7 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   if (files) {
     const live = new Set(files);
     for (const key of parsedCache.keys()) {
-      if (key.startsWith(dir) && !live.has(key)) parsedCache.delete(key);
+      if (key.startsWith(dir + path.sep) && !live.has(key)) parsedCache.delete(key);
     }
   }
 

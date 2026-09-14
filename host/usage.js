@@ -236,7 +236,7 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
   // that enumeration rather than repeating it here is the whole point of the
   // module: the version this replaced walked only the top level, so every
   // subagent's spend was missing from a figure the milestone ladder is built on.
-  const files = await transcriptFiles(dir);
+  const { files, errors: enumErrors } = await transcriptFiles(dir);
   if (files === null) {
     // `ok: false` -- ABSENCE, not zero. A readdir failure (EBUSY or EPERM from
     // an indexer or AV touching this folder is ordinary on Windows) used to be
@@ -250,7 +250,10 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
   const project = zero();
   const session = zero();
   let matchedSession = false;
-  let unreadable = 0;
+  // Enumeration failures are absence too: a subagents directory we could not
+  // READ may hold transcripts, and dropping them silently is how a 7.4%
+  // undercount gets reported as complete.
+  let unreadable = enumErrors;
   let sessions = 0;
   const live = new Set();
 

@@ -202,3 +202,43 @@ test('missing usage fields default to zero instead of NaN', async () => {
   assert.strictEqual(r.session.total, 5);
   assert.ok(Number.isFinite(r.session.input));
 });
+
+// --- the enumeration's own absence path --------------------------------------
+// Dexter, combination hazard. The subagent walk swallowed a failed readdir with
+// a comment saying "a session with no subagents is the normal case" -- which
+// conflates HAD NONE with COULD NOT LOOK. An EBUSY on that directory hid all
+// 104,427,203 recovered tokens behind `ok: true`: a 7.4% undercount reported as
+// complete and trustworthy. Same shape as the reference implementation that
+// agreed with the bug because it shared the omission.
+
+test('a subagents directory that cannot be READ is absence, not emptiness', async () => {
+  const cwd = 'C:/w/proj';
+  const root = transcripts(cwd, { s1: [msg(U(10, 0))] });
+  // A FILE where the subagents directory should be: readdir fails with ENOTDIR,
+  // which is "could not look", not "nothing there".
+  const sdir = path.join(root, projectDirName(cwd), 's1');
+  fs.mkdirSync(sdir, { recursive: true });
+  fs.writeFileSync(path.join(sdir, 'subagents'), 'not a directory');
+
+  const r = await readUsage({ cwd, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.ok, false, 'an unreadable subagents dir must poison ok');
+  assert.strictEqual(r.project.total, 10, 'what WAS readable is still reported');
+});
+
+test('a session DIRECTORY with no subagents/ inside is ordinary, and stays ok', async () => {
+  // The sibling case, and it must not share a code path with the one above --
+  // if it did, every ordinary session would report absence forever.
+  //
+  // The session directory has to EXIST for this to pin anything: the walk only
+  // descends into directories, so a fixture with just `s1.jsonl` never reaches
+  // the ENOENT branch at all. Found by mutation -- `errors++` unconditionally
+  // (ENOENT treated as a failure) survived the version of this test that
+  // omitted the directory.
+  const cwd = 'C:/w/proj';
+  const root = transcripts(cwd, { s1: [msg(U(10, 0))] });
+  fs.mkdirSync(path.join(root, projectDirName(cwd), 's1'), { recursive: true });
+
+  const r = await readUsage({ cwd, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.ok, true, 'a session that spawned no agents is not a failure');
+  assert.strictEqual(r.project.total, 10);
+});

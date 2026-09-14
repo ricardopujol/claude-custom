@@ -30,18 +30,27 @@ const SUBAGENTS = 'subagents';
  * Every transcript belonging to one project folder, as absolute paths, each
  * tagged with the session it belongs to.
  *
- * Returns null -- never [] -- when the folder itself could not be read. ABSENT
- * is not EMPTY: a caller that cannot tell them apart reports a failure as
- * "this project has spent nothing", which is the shape of wrongness that seeds
- * a false baseline.
+ * Returns `{ files, errors }`, and `files: null` -- never [] -- when the folder
+ * itself could not be read. ABSENT is not EMPTY: a caller that cannot tell them
+ * apart reports a failure as "this project has spent nothing", which is the
+ * shape of wrongness that seeds a false baseline.
+ *
+ * `errors` exists because the SAME conflation hid one level down. The subagent
+ * walk used to swallow every readdir failure under a comment reading "a session
+ * with no subagents is the normal case" -- true for ENOENT, and a silent lie for
+ * every other errno. An indexer holding one subagents directory would drop all
+ * of its transcripts, increment nothing, and let the caller report a 7.4%
+ * undercount as complete. A failure nobody counts is indistinguishable from
+ * an absence of work.
  */
 async function transcriptFiles(dir) {
   const out = [];
+  let errors = 0;
   let top;
   try {
     top = await fsp.readdir(dir, { withFileTypes: true });
   } catch {
-    return null;
+    return { files: null, errors: 0 };
   }
 
   for (const item of top) {
@@ -54,21 +63,28 @@ async function transcriptFiles(dir) {
     if (!item.isDirectory()) continue;
 
     const sub = path.join(dir, item.name, SUBAGENTS);
+    let names;
     try {
-      for (const f of await fsp.readdir(sub)) {
-        // `.endsWith('.jsonl')` and not merely "not .meta.json": the meta files
-        // sit right beside the transcripts, and parsing one would not throw --
-        // it would silently contribute nothing and inflate the session count.
-        if (f.endsWith('.jsonl')) {
-          out.push({ file: path.join(sub, f), session: item.name, subagent: true });
-        }
+      names = await fsp.readdir(sub);
+    } catch (err) {
+      // ENOENT ONLY. A session that spawned no agents has no such directory,
+      // and that is genuinely nothing to report. Every other errno -- EBUSY,
+      // EPERM, ENOTDIR, EACCES -- means the transcripts may be there and we
+      // could not look, which is absence and must reach `ok`.
+      if (!err || err.code !== 'ENOENT') errors++;
+      continue;
+    }
+    for (const f of names) {
+      // `.endsWith('.jsonl')` and not merely "not .meta.json": the meta files
+      // sit right beside the transcripts, and parsing one would not throw --
+      // it would silently contribute nothing and inflate the session count.
+      if (f.endsWith('.jsonl')) {
+        out.push({ file: path.join(sub, f), session: item.name, subagent: true });
       }
-    } catch {
-      // A session with no subagents is the ordinary case, not an error.
     }
   }
 
-  return out;
+  return { files: out, errors };
 }
 
 module.exports = { transcriptFiles, SUBAGENTS };
