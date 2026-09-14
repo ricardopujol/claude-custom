@@ -93,6 +93,42 @@
     #usage .val { color: var(--text); font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
     #usage .sub { opacity: .8; font-variant-numeric: tabular-nums; }
 
+    /* --- token milestones --------------------------------------------------
+       A counter, never a limit. The bar FILLS toward the next milestone and has
+       no empty/full state to be alarmed by: no red, no warning, nothing that
+       can run out. */
+    #usage .milestone { display: flex; align-items: center; gap: 5px; }
+    #usage .milestone .icon { font-size: 12px; line-height: 1; }
+    #usage .milestone .track {
+      width: 46px; height: 4px; border-radius: 3px;
+      background: #262b38; overflow: hidden; border: 1px solid var(--border);
+    }
+    #usage .milestone .fill {
+      display: block; height: 100%;
+      background: var(--accent); opacity: .85;
+      transition: width .6s ease;
+    }
+
+    /* The flourish. Deliberately out of the way and short-lived: a celebration
+       that covers the terminal stops being a celebration on its second showing. */
+    .flourish {
+      position: fixed; right: 18px; bottom: 22px; z-index: 40;
+      display: flex; align-items: center; gap: 9px;
+      padding: 9px 14px; border-radius: 9px;
+      background: color-mix(in srgb, var(--chrome) 92%, transparent);
+      border: 1px solid var(--accent);
+      box-shadow: 0 6px 24px rgba(0,0,0,.45);
+      opacity: 0; transform: translateY(10px);
+      transition: opacity .35s ease, transform .35s ease;
+      pointer-events: none;
+    }
+    .flourish.go { opacity: 1; transform: translateY(0); }
+    .flourish .icon { font-size: 20px; line-height: 1; }
+    .flourish .name {
+      font-size: 12px; font-weight: 600; color: var(--accent);
+      letter-spacing: .03em; white-space: nowrap;
+    }
+
     header {
       display: flex; align-items: center; gap: 12px;
       padding: 8px 14px;

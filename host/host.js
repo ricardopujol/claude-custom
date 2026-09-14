@@ -34,6 +34,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
+const { milestoneFor, nextMilestone, progressTo, crossed, describeSpend } = require('./milestones');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -135,9 +136,48 @@ console.log('[host] background     :', path.basename(background.path), backgroun
 // project total is knowable -- readUsage handles that rather than blocking.
 let sessionId = null;
 let lastUsage = null;
+
+// The previous PROJECT total, for detecting a milestone crossing. Starts null
+// rather than 0 on purpose: a first reading is not a crossing, and treating it
+// as 0 -> 900M would throw a party for work done weeks ago on every launch.
+let lastProjectTotal = null;
+
+// A counter, never a limit -- so this reports where you ARE and what is next,
+// and has no concept of anything running out.
+function decorateUsage(usage) {
+  const total = usage && usage.project ? usage.project.total : 0;
+  const reached = milestoneFor(total);
+  const next = nextMilestone(total);
+  return {
+    ...usage,
+    milestone: {
+      reached,
+      next,
+      progress: progressTo(total),
+      // Same numbers, framed by what they COST: on a subscription the marginal
+      // cost inside quota is zero, so a playful counter is honest; on a metered
+      // provider it is somebody's bill.
+      spend: describeSpend(usage && usage.project, { metered: !!provider.metered }),
+    },
+  };
+}
+
 function currentUsage() {
-  lastUsage = readUsage({ cwd: CWD, sessionId });
+  lastUsage = decorateUsage(readUsage({ cwd: CWD, sessionId }));
   return lastUsage;
+}
+
+// Announce a newly reached milestone once. Deliberately separate from the usage
+// broadcast: the flourish is an EVENT, and folding it into a value that is
+// re-sent every few seconds would replay the celebration forever.
+function checkMilestone(usage) {
+  const total = usage && usage.project ? usage.project.total : 0;
+  const hit = crossed(lastProjectTotal, total);
+  lastProjectTotal = total;
+  if (hit) {
+    console.log('[host] milestone      :', hit.name, hit.icon);
+    broadcastControl({ type: 'milestone', milestone: hit, total });
+  }
 }
 
 let hookBridge = null;
@@ -296,6 +336,9 @@ const usageTimer = setInterval(() => {
   const before = lastUsage && lastUsage.session.total;
   const usage = currentUsage();
   if (usage.session.total !== before) broadcastControl({ type: 'usage', usage });
+  // Checked on every tick, not only when the session total moved: the PROJECT
+  // total can advance because another window on the same folder did work.
+  checkMilestone(usage);
 }, 5000);
 usageTimer.unref();
 
@@ -346,6 +389,13 @@ wss.on('connection', (ws) => {
           if (msg.type === 'resize') {
             term.resize(msg.cols, msg.rows);
             termState.resize(msg.cols, msg.rows);
+            return;
+          }
+          if (msg.type === 'demo-milestone' && process.env.CLAUDE_CUSTOM_DEMO) {
+            // Screenshot support only, and gated behind an env var: the
+            // flourish is the one surface a headless check cannot look at.
+            const { MILESTONES } = require('./milestones');
+            broadcastControl({ type: 'milestone', milestone: MILESTONES[8], total: 1e9 });
             return;
           }
           if (msg.type === 'input') {

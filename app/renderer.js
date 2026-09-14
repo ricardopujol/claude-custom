@@ -180,6 +180,12 @@ window.addEventListener('DOMContentLoaded', () => {
   // Screenshot support only: type a value into the new-secret field and reveal
   // it, so the toggle can actually be LOOKED at. Never a real secret -- the
   // probe passes a throwaway string.
+  // Screenshot support only: the flourish lives ~4s and is the one surface a
+  // headless check cannot look at.
+  if (new URLSearchParams(location.search).get('flourish')) {
+    setTimeout(() => flourish({ name: 'Billionaire', icon: '🌕' }), 22000);
+  }
+
   const demo = new URLSearchParams(location.search).get('demosecret');
   if (demo) {
     setTimeout(() => {
@@ -425,7 +431,48 @@ function renderUsage(usage) {
       `<span class="lbl">project</span>` +
       `<span class="val">${compact(project.total)}</span>` +
       `<span class="sub">${project.sessions} session${project.sessions === 1 ? '' : 's'}</span>` +
-    `</span>`;
+    `</span>` +
+    milestoneHtml(usage.milestone);
+}
+
+// A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
+// depletes an allowance, never goes red, and never warns. The same geometry
+// labelled "remaining" would read as a leash, and the harness has no business
+// rationing someone's own subscription.
+function milestoneHtml(m) {
+  if (!m) return '';
+  const reached = m.reached;
+  const next = m.next;
+  const pct = Math.round((m.progress || 0) * 100);
+
+  // The cache share travels with it, because it is most of the total: ~97M of
+  // 119M on this project. A milestone celebrating a number that is 80% cache
+  // reads should say so rather than imply that much fresh spend.
+  const share = m.spend && m.spend.cacheShare
+    ? ` · ${Math.round(m.spend.cacheShare * 100)}% cache`
+    : '';
+  const title = (reached ? `${reached.name} reached. ` : '')
+    + (next ? `${compact(next.at)} for ${next.name}.` : 'Top of the ladder.')
+    + share;
+
+  return `<span class="grp milestone" title="${escapeHtml(title)}">` +
+           `<span class="icon">${escapeHtml(reached ? reached.icon : '·')}</span>` +
+           `<span class="track"><span class="fill" style="width:${pct}%"></span></span>` +
+         `</span>`;
+}
+
+// The flourish. An EVENT, not a value -- folding it into the usage payload
+// (which is re-sent every few seconds) would replay the celebration forever.
+function flourish(milestone) {
+  if (!milestone) return;
+  const el = document.createElement('div');
+  el.className = 'flourish';
+  el.innerHTML = `<span class="icon">${escapeHtml(milestone.icon)}</span>` +
+                 `<span class="name">${escapeHtml(milestone.name)}</span>`;
+  document.body.appendChild(el);
+  // Long enough to notice, short enough not to sit over the terminal.
+  setTimeout(() => el.classList.add('go'), 50);
+  setTimeout(() => el.remove(), 4200);
 }
 
 function applyBackground(filePath) {
@@ -631,6 +678,10 @@ function handleControl(msg) {
     }
 
     if (surfaces.cue) flashAttention(msg);
+    return;
+  }
+  if (msg.type === 'milestone') {
+    flourish(msg.milestone);
     return;
   }
   if (msg.type === 'mode') {
