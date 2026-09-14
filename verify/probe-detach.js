@@ -6,6 +6,20 @@ const path = require('path');
 const WebSocket = require('ws');
 const { Terminal } = require('@xterm/headless');
 
+// The host refuses any connection without the session token -- see
+// host/gatekeeper.js. A local tool reads it from the file the host writes,
+// which is precisely what a web page cannot do.
+function sessionToken() {
+  try {
+    return require('fs').readFileSync(
+      require('path').join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+const withToken = (url) => url + '?token=' + encodeURIComponent(sessionToken());
+
+
 const PORT = 7703, COLS = 100, ROWS = 30;
 const REPO = 'C:/Users/ricar/VibeCode/claude-custom';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -36,7 +50,7 @@ const statusOf = t => rows(t).find(s => /⏵⏵|⏸|plan mode|accept edits|bypas
 async function attach(t) {
   let ws;
   for (let i = 0; i < 40; i++) {
-    ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+    ws = new WebSocket(withToken(`ws://127.0.0.1:${PORT}`));
     const ok = await new Promise(r => { ws.once('open', () => r(true)); ws.once('error', () => r(false)); });
     if (ok) break;
     await sleep(250);
