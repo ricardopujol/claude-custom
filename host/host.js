@@ -34,6 +34,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
+const { readFog } = require('./fog');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -71,6 +72,28 @@ const PIPE_NAME = `\\\\.\\pipe\\claude-custom-${SESSION_ID}`;
 const HARNESS_DIR = path.join(__dirname, '..', '.harness');
 const HELPER_PATH =
   process.env.CLAUDE_CUSTOM_HELPER || path.join(HARNESS_DIR, 'hook-helper.exe');
+
+// The project's file map. NOT computed at startup or pushed in `hello`: a cold
+// read costs ~175ms of synchronous work, and the host's event loop is what
+// delivers hook events -- this project measured a spawnSync in the server
+// dropping 31 of 35 of them. It is computed when the client asks for it, and
+// the mtime cache makes every later read ~1ms.
+//
+// `tracked` comes from git, because the DARK files are the whole point and this
+// host must never invent a file that does not exist.
+function trackedFiles() {
+  try {
+    return require('child_process')
+      .execFileSync('git', ['-C', CWD, 'ls-files'], { encoding: 'utf8', timeout: 4000 })
+      .split(String.fromCharCode(10)).map(s => s.trim()).filter(Boolean);
+  } catch {
+    return [];            // not a git repo, or git is missing: fog still works
+  }
+}
+
+function currentFog() {
+  return readFog({ cwd: CWD, tracked: trackedFiles() });
+}
 
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
@@ -350,6 +373,19 @@ wss.on('connection', (ws) => {
           }
           if (msg.type === 'input') {
             term.write(msg.data);
+            return;
+          }
+          if (msg.type === 'fog') {
+            // Answered on demand. setImmediate so the ~175ms cold read happens
+            // after this message is off the stack rather than inside the
+            // socket handler, where it would stall hook delivery.
+            setImmediate(() => {
+              try {
+                ws.send(JSON.stringify({ type: 'fog', ...currentFog() }));
+              } catch (err) {
+                console.log('[host] fog read failed:', err.message);
+              }
+            });
             return;
           }
         } catch {

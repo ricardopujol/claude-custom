@@ -118,6 +118,48 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// --- fog of war -------------------------------------------------------------
+// Asked for on demand, never pushed: a cold read is ~175ms of synchronous work
+// in the host, and the host's event loop is what delivers hook events.
+function requestFog() {
+  const list = document.getElementById('fog-list');
+  if (!list.dataset.loaded) document.getElementById('fog-summary').textContent = 'reading the map…';
+  // Silently dropped if the socket is not open yet; ws.onopen asks again. A
+  // swallowed throw here is what left the panel reading "reading the map…"
+  // forever, which looks like a slow host rather than a lost message.
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'fog' })); } catch {}
+}
+
+function renderFog(fog) {
+  const list = document.getElementById('fog-list');
+  const summary = document.getElementById('fog-summary');
+  const files = fog.files || [];
+  list.dataset.loaded = '1';
+
+  if (!files.length) {
+    summary.textContent = 'nothing read yet — the whole project is dark.';
+    list.innerHTML = '';
+    return;
+  }
+
+  const dark = files.filter(f => f.tier === 'dark').length;
+  const edited = files.filter(f => f.tier === 'edited').length;
+  summary.innerHTML =
+    `<b>${files.length - dark}</b> of <b>${files.length}</b> files explored · ` +
+    `<b>${edited}</b> edited · <span class="dark-count">${dark} never opened</span>`;
+
+  // Brightness is applied per row rather than by class: the decay is continuous
+  // and bucketing it into three shades would throw away the signal the module
+  // exists to produce.
+  list.innerHTML = files.map(f => {
+    const dim = f.tier === 'dark' ? '' : `style="opacity:${(0.35 + f.brightness * 0.65).toFixed(2)}"`;
+    const count = f.touches ? `<span class="n">${f.touches}</span>` : '';
+    return `<div class="fog-row ${f.tier}" ${dim} title="${escapeHtml(f.path)}">` +
+           `<span class="name"><bdi>${escapeHtml(f.path)}</bdi></span>${count}</div>`;
+  }).join('');
+}
+
 // --- vault ------------------------------------------------------------------
 // An isolated panel. Nothing in it is ever written to the pty: the secret only
 // ever travels renderer -> main -> OS clipboard, and the host that owns the
@@ -138,6 +180,7 @@ function setTab(tab) {
     p.classList.toggle('on', p.dataset.panel === tab);
   }
 
+  if (tab === 'fog') requestFog();
   if (tab === 'vault') {
     renderVault();
     setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -633,6 +676,10 @@ function handleControl(msg) {
     if (surfaces.cue) flashAttention(msg);
     return;
   }
+  if (msg.type === 'fog') {
+    renderFog(msg);
+    return;
+  }
   if (msg.type === 'mode') {
     renderMode(msg.mode);
     return;
@@ -660,6 +707,9 @@ function connect() {
     dot.classList.add('on');
     term.focus();
     sendResize();
+    // The tab is restored before the socket is open, so a fog request made at
+    // load is thrown away. Ask again once there is somewhere to ask.
+    if (activeTab === 'fog') requestFog();
   };
 
   // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
