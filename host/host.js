@@ -35,6 +35,7 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createAttention } = require('./attention');
 const { detectRunner, parseResults, healthFrom } = require('./health');
+const { createCappedBuffer } = require('./capped-buffer');
 
 const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 
@@ -111,21 +112,42 @@ function settleHealth(results, started) {
 // way out from inside the product.
 const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
 
-// Only the tail is ever parsed, and an unbounded `out +=` in the HOST is two
-// hazards at once: past V8's ~512MB string limit it throws RangeError inside a
-// 'data' listener, killing the host and the user's live session; and long
-// before that, growing a huge string forces major GC pauses in the one event
-// loop that must accept the hook helper's connection within 80ms.
+// An unbounded `out +=` in the HOST is two hazards at once: past V8's ~512MB
+// string limit it throws RangeError inside a 'data' listener, killing the host
+// and the user's live session; and long before that, growing a huge string
+// forces major GC pauses in the one event loop that must accept the hook
+// helper's connection within 80ms.
+//
+// HEAD *AND* TAIL, because runners disagree about where the summary goes:
+//
+//   pytest      prints its counts LAST              -> the tail has it
+//   node:test   prints its counters, THEN the        -> the HEAD has it
+//               "failing tests:" detail
+//
+// A blind tail was measured losing the node:test counter block at ~48 failures
+// (120 failures puts it 156KB from the end), so the reddest suite in the repo
+// reported "unknown" instead of "critical" -- the exact defect this branch
+// called blocker-grade for pytest, reintroduced for the default runner.
 const HEALTH_OUTPUT_CAP = 64 * 1024;
 
 function killTree(child) {
   if (!child || child.exitCode !== null) return;
   if (process.platform === 'win32') {
-    // With shell:true the child IS cmd.exe; killing it orphans npm/node
-    // underneath. /T takes the whole tree.
+    // The try/catch below does NOT catch this: a ChildProcess reports a failed
+    // spawn through an ASYNC 'error' event, and an EventEmitter with no 'error'
+    // listener THROWS -- an uncaught exception that kills the host and the
+    // user's live Claude session with it. Reproduced: taskkill missing from
+    // PATH exits the host with ENOENT.
+    //
+    // Worst on the timeout path, which runs precisely when a suite has hung and
+    // the timeout is the user's only way out.
     try {
-      require('child_process').spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'],
-        { windowsHide: true });
+      const killer = require('child_process').spawn(
+        'taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+      killer.on('error', (err) => {
+        console.log('[host] taskkill failed:', err.code || err.message, '- falling back');
+        try { child.kill('SIGTERM'); } catch {}
+      });
       return;
     } catch { /* fall through to the portable kill */ }
   }
@@ -170,18 +192,12 @@ function runHealth() {
     // Separate buffers per stream. One shared accumulator interleaves the two
     // at arbitrary chunk boundaries, splicing a counter line in half ("i pa" +
     // "npm WARN ..." + "ss 319") so a fully green run parses as null.
-    let stdout = '';
-    let stderr = '';
+    const stdout = createCappedBuffer(HEALTH_OUTPUT_CAP);
+    const stderr = createCappedBuffer(HEALTH_OUTPUT_CAP);
     child.stdout.setEncoding('utf8');       // no split multi-byte characters
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', d => {
-      stdout += d;
-      if (stdout.length > HEALTH_OUTPUT_CAP) stdout = stdout.slice(-HEALTH_OUTPUT_CAP);
-    });
-    child.stderr.on('data', d => {
-      stderr += d;
-      if (stderr.length > HEALTH_OUTPUT_CAP) stderr = stderr.slice(-HEALTH_OUTPUT_CAP);
-    });
+    child.stdout.on('data', d => stdout.push(d));
+    child.stderr.on('data', d => stderr.push(d));
 
     // ONE settle per run. Node can emit both 'error' and 'close' for a single
     // spawn failure, which broadcast two results with different timestamps.
@@ -205,8 +221,8 @@ function runHealth() {
     child.on('close', () => {
       // stdout first: some runners summarise on stderr, but a runner that
       // writes to both must not have its summary preceded by warnings.
-      const parsed = parseResults(healthRunner.parser, stdout)
-        || parseResults(healthRunner.parser, stderr);
+      const parsed = parseResults(healthRunner.parser, stdout.text())
+        || parseResults(healthRunner.parser, stderr.text());
       done(parsed);
     });
   }).finally(() => { healthInFlight = null; });
@@ -551,3 +567,4 @@ function shutdown() {
 process.on('SIGINT', () => { shutdown(); process.exit(0); });
 process.on('SIGTERM', () => { shutdown(); process.exit(0); });
 process.on('exit', () => { killTree(healthChild); });
+
