@@ -27,6 +27,7 @@ const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
+const { readAgentStats } = require('./agent-stats');
 const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
@@ -433,6 +434,25 @@ function checkMilestone(usage) {
   broadcastControl(message);
 }
 
+// Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
+// every session on the folder. Cached and refreshed when an agent finishes
+// rather than polled -- it reads every transcript in the project, so a timer
+// would put that cost on a clock for a figure that only changes on a finish.
+let lastAgentStats = { ok: false, agents: [], unresolved: 0 };
+let agentStatsPending = null;
+
+function refreshAgentStats() {
+  if (agentStatsPending) return agentStatsPending;
+  agentStatsPending = readAgentStats({ cwd: CWD })
+    .then((stats) => { lastAgentStats = stats; return stats; })
+    .catch((err) => {
+      console.error('[host] agent stats failed:', err && err.message);
+      return lastAgentStats;
+    })
+    .finally(() => { agentStatsPending = null; });
+  return agentStatsPending;
+}
+
 let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
@@ -442,6 +462,11 @@ if (helperExists) {
       console.log('[host] session id     :', sessionId);
     }
     if (ev.event === 'SubagentStop') {
+      // The transcript is on disk by the time this fires, so its tokens and
+      // timestamps are already there to read.
+      refreshAgentStats()
+        .then((stats) => broadcastControl({ type: 'agentStats', stats }))
+        .catch(() => { /* the next finish will carry it */ });
       // agent_type when the payload carries it; the top of the stack only as a
       // fallback. Cooldowns applied to the wrong agent are worse than none.
       const finished = (ev.payload && ev.payload.agent_type)
@@ -661,6 +686,13 @@ refreshUsage().then(usage => {
   broadcastControl({ type: 'usage', usage });
 }).catch(() => {});
 
+// The careers are HISTORY, so they are worth reading once at boot rather than
+// waiting for an agent to finish -- a window attached to a project with a long
+// past would otherwise show nothing beside every portrait.
+refreshAgentStats().then((stats) => {
+  broadcastControl({ type: 'agentStats', stats });
+}).catch(() => {});
+
 term.onExit(({ exitCode, signal }) => {
   console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
   for (const ws of clients) {
@@ -695,6 +727,7 @@ wss.on('connection', (ws) => {
     provider,
     cooldowns: cooldowns.list(),
     health: healthState,
+    agentStats: lastAgentStats,
   });
   // The handshake above carries `lastUsage`, which is ABSENCE until the first
   // read lands (~340ms cold). Nothing corrected it: the boot broadcast fires
@@ -708,6 +741,18 @@ wss.on('connection', (ws) => {
         if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'usage', usage });
       })
       .catch(() => { /* the next tick will carry it */ });
+  }
+
+  // The careers have the SAME hazard, and it is worse: they refresh only when
+  // an agent finishes, so a client that attached before the boot read landed
+  // would show nothing beside every portrait until the next SubagentStop --
+  // which on a project being read rather than worked is never.
+  if (!lastAgentStats.ok) {
+    refreshAgentStats()
+      .then((stats) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'agentStats', stats });
+      })
+      .catch(() => { /* the next finish will carry it */ });
   }
 
   // A milestone reached while nothing was attached is delivered now rather than

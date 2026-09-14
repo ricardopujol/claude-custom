@@ -334,6 +334,16 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .agent .state { font-size: 10px; color: var(--dim); text-transform: capitalize; }
+    /* Career: tokens spent and time worked IN THIS PROJECT, across every
+       session on the folder. Dimmer than the state so it reads as a footnote
+       to the portrait rather than competing with it. */
+    .agent .career {
+      font-size: 10px; color: var(--dim); opacity: 0.75;
+      font-variant-numeric: tabular-nums; margin-top: 1px;
+      display: flex; gap: 3px; align-items: baseline;
+    }
+    .agent .career-sep { opacity: 0.5; }
+    .agent .career-warn { color: var(--accent); font-weight: 600; cursor: help; }
 
     /* State is carried by opacity and a ring, so it still reads when the
        portrait itself is a placeholder. */
