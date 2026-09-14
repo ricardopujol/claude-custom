@@ -344,11 +344,11 @@ test('a top-level DIRECTORY named like a transcript is not one', async () => {
   assert.strictEqual(r.project.sessions, 1, 'a directory is not a session');
 });
 
-test('a transcript that is enumerated but cannot be read is REPORTED', async () => {
-  // The real trigger, which the old fixture never reached: inside subagents/
-  // the listing is by name, so a directory ending .jsonl IS enumerated and then
-  // fails to read. What WAS readable is still reported -- reporting a confident
-  // lower total is what seeds a false baseline and throws a party later.
+test('a DIRECTORY named like a subagent transcript is gone, not absence', async () => {
+  // Rewritten. This used to assert such a directory made the read absent. It
+  // does not: there are no tokens at that path to miss, so contributing nothing
+  // IS the complete total. Absence is reserved for "something is there and we
+  // could not read it", which the lock tests cover properly.
   const { root, dir } = project(CWD);
   fs.writeFileSync(path.join(dir, 'a.jsonl'), line(U(10, 0)));
   const sub = path.join(dir, 'a', 'subagents');
@@ -356,8 +356,9 @@ test('a transcript that is enumerated but cannot be read is REPORTED', async () 
   fs.mkdirSync(path.join(sub, 'agent-x.jsonl'));
 
   const r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root });
-  assert.strictEqual(r.unreadable, 1, 'the failure must be counted');
-  assert.strictEqual(r.project.total, 10, 'what WAS readable is still reported');
+  assert.strictEqual(r.absent, 0);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.project.total, 10);
 });
 
 test('a SIZE change alone invalidates the cache, even with an unchanged mtime', async () => {
@@ -529,4 +530,159 @@ test('a file with no newline at all is abandoned, not buffered into the heap', a
   assert.strictEqual(r.project.total, 10, 'the readable file is still counted');
   assert.strictEqual(r.unreadable, 1, 'the junk file is absence, not a zero-token file');
   assert.ok(worst < 400, `longest synchronous span was ${worst}ms`);
+});
+
+// --- fresh / stale / absent ---------------------------------------------------
+// Dexter and Miguel converged here from opposite directions. `ok` gates whether
+// the milestone announcer trusts a total as a BASELINE, so the only question it
+// answers is "could the true total be higher than what I am reporting?"
+//
+//   a locked file we have read before  -> substitute its last known total (STALE)
+//   a locked file we have never read   -> ABSENT, and ok must go false
+//   a file that vanished               -> contributes nothing, and that is CORRECT
+//   a directory named *.jsonl          -> not a transcript, no tokens there
+//
+// Only the first two are absence. Counting a benign deletion as absence was
+// Miguel's point; refusing to substitute for a vanished file was Dexter's, and
+// his reason is sharper than mine was: substituting for a file that is GONE
+// over-reports, which can announce a rung early -- after which `highest`
+// suppresses the real crossing permanently.
+
+// A lock is not reproducible portably, so the open is injectable. Without this
+// seam the most load-bearing new logic on the branch would sit in a region
+// nothing measures, which is the trap this project has hit before.
+const lockOn = (names) => {
+  const fsp = require('fs/promises');
+  return (file, flags) =>
+    names.some(n => file.endsWith(n))
+      ? Promise.reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }))
+      : fsp.open(file, flags);
+};
+
+test('a file locked for ONE tick keeps its last known total, and stays ok', async () => {
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 'big.jsonl'), line(U(1000, 0)));
+  fs.writeFileSync(path.join(dir, 'small.jsonl'), line(U(7, 0)));
+  const cache = new Map();
+
+  let r = await readUsage({ cwd: CWD, sessionId: 'big', projectsDir: root, cache });
+  assert.strictEqual(r.project.total, 1007);
+
+  // It has to have CHANGED, or the mtime+size fast path answers from cache and
+  // never opens the file -- which made this test pass without ever reaching the
+  // lock on its first draft.
+  fs.appendFileSync(path.join(dir, 'big.jsonl'), line(U(5, 0)));
+  r = await readUsage({ cwd: CWD, sessionId: 'big', projectsDir: root, cache,
+    openFile: lockOn(['big.jsonl']) });
+  assert.strictEqual(r.project.total, 1007, 'the total must not DROP on a lock');
+  assert.strictEqual(r.ok, true, 'a stale figure is still a usable baseline');
+  assert.strictEqual(r.stale, 1);
+  assert.strictEqual(r.absent, 0);
+});
+
+test('a locked file keeps its SESSION figure too, with the session still counted', async () => {
+  // The old `continue` skipped the matchedSession assignment as well, so a lock
+  // on the active session zeroed session.total AND left sessions at 0.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), line(U(1000, 0)));
+  const cache = new Map();
+  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
+
+  fs.appendFileSync(path.join(dir, 's1.jsonl'), line(U(5, 0)));   // so the open is reached
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache,
+    openFile: lockOn(['s1.jsonl']) });
+  assert.strictEqual(r.session.total, 1000, 'the last known figure, not zero');
+  assert.strictEqual(r.stale, 1);
+  assert.strictEqual(r.session.sessions, 1, 'a non-zero total alongside sessions:0 is incoherent');
+});
+
+test('a file locked on the FIRST tick is absence, because there is nothing to substitute', async () => {
+  // The test that catches narrowing `ok` to "the folder could not be read".
+  // Substitution cannot cover a cold cache, and the first tick is exactly when
+  // the announcer seeds -- an AV lock at launch would otherwise seed the
+  // baseline at a fraction of the truth and announce a rung it already passed.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 'big.jsonl'), line(U(1000, 0)));
+  fs.writeFileSync(path.join(dir, 'small.jsonl'), line(U(7, 0)));
+
+  const r = await readUsage({ cwd: CWD, sessionId: 'big', projectsDir: root,
+    cache: new Map(), openFile: lockOn(['big.jsonl']) });
+  assert.strictEqual(r.ok, false, 'a cold-cache lock must NOT be a trustworthy baseline');
+  assert.strictEqual(r.absent, 1);
+  assert.strictEqual(r.stale, 0);
+  assert.strictEqual(r.project.total, 7, 'what WAS readable is still reported');
+});
+
+test('a DELETED transcript contributes nothing, and that is the correct total', async () => {
+  // Not absence: the total over the files that exist is complete. Substituting
+  // here would over-report and could announce a rung early.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 'a.jsonl'), line(U(10, 0)));
+  fs.writeFileSync(path.join(dir, 'b.jsonl'), line(U(1000, 0)));
+  const cache = new Map();
+  let r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root, cache });
+  assert.strictEqual(r.project.total, 1010);
+
+  fs.unlinkSync(path.join(dir, 'b.jsonl'));
+  r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root, cache });
+  assert.strictEqual(r.project.total, 10, 'a vanished file must not be substituted');
+  assert.strictEqual(r.ok, true, 'a deletion is not a failure to read');
+  assert.strictEqual(r.stale, 0);
+  assert.strictEqual(r.absent, 0);
+});
+
+test('a lock that persists is a VISIBLE freeze, not an invisible one', async () => {
+  // Dexter's rider. Substitution trades a visible drop for a frozen number, and
+  // a frozen number with no signal is the worse of the two. `stale` is how the
+  // host can say "held steady because we could not read it" rather than
+  // implying nothing has happened.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), line(U(1000, 0)));
+  const cache = new Map();
+  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
+  fs.appendFileSync(path.join(dir, 's1.jsonl'), line(U(5, 0)));   // so the open is reached
+
+  for (let i = 0; i < 5; i++) {
+    const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache,
+      openFile: lockOn(['s1.jsonl']) });
+    assert.strictEqual(r.stale, 1, `tick ${i} must keep reporting the substitution`);
+    assert.strictEqual(r.project.total, 1000);
+  }
+});
+
+test('a transcript deleted BETWEEN the listing and the read is not substituted', async () => {
+  // Found by mutation: substituting a vanished file's cached total survived
+  // every other test here, because a deleted file is not enumerated at all --
+  // so the ENOENT-on-stat path was never reached. The genuine race is a file
+  // that WAS listed and is gone by the time we stat it, and it has to be
+  // constructed deterministically to be pinned.
+  //
+  // Why it matters, per Dexter: substituting here OVER-reports, an over-report
+  // can cross a rung that was never really crossed, and `highest` then
+  // suppresses the genuine crossing permanently. One rung, silently, forever.
+  const { root, dir } = project(CWD);
+  const a = path.join(dir, 'a.jsonl');
+  const b = path.join(dir, 'b.jsonl');
+  fs.writeFileSync(a, line(U(10, 0)));
+  fs.writeFileSync(b, line(U(1000, 0)));
+
+  const cache = new Map();
+  let r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root, cache });
+  assert.strictEqual(r.project.total, 1010, 'both files are cached');
+
+  // Make both files look changed so neither takes the mtime fast path, then
+  // delete b at the moment a is opened -- b is already in the listing.
+  fs.appendFileSync(a, line(U(1, 0)));
+  fs.appendFileSync(b, line(U(1, 0)));
+  const fsp = require('fs/promises');
+  const raceOn = (file, flags) => {
+    if (file.endsWith('a.jsonl') && fs.existsSync(b)) fs.unlinkSync(b);
+    return fsp.open(file, flags);
+  };
+
+  r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root, cache, openFile: raceOn });
+  assert.strictEqual(r.project.total, 11, 'the vanished file must contribute NOTHING');
+  assert.strictEqual(r.stale, 0, 'a deletion is not a lock');
+  assert.strictEqual(r.absent, 0, 'nor is it absence -- the total is correct without it');
+  assert.strictEqual(r.ok, true);
 });

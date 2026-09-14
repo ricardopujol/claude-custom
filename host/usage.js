@@ -156,18 +156,38 @@ async function prefixIntact(fh, cached) {
 
 /**
  * The tokens in one transcript, reusing whatever of it was already parsed.
- * Returns null when the file could not be read at all — which is ABSENCE, not
- * a file worth zero, and the caller reports it rather than quietly understating
- * the project.
+ *
+ * Returns `{ acc, state }`:
+ *
+ *   fresh   read this tick.
+ *   stale   could not be opened, but we have read it before, so its last known
+ *           total stands in. An undercount at worst, never an overcount, and
+ *           `crossed` never celebrates downward, so the cost is announcing
+ *           LATE, which is the safe direction.
+ *   absent  could not be read and has NEVER been read. The true total may be
+ *           higher than what we report, so this is the one file-level condition
+ *           that must not be trusted as a baseline.
+ *   gone    vanished between the listing and the read, or is not a file. It
+ *           contributes nothing, and that is the CORRECT total.
+ *
+ * The gone/absent split is the whole point, and stat() succeeding is exactly
+ * the evidence that separates them: a lock cannot make a file disappear from
+ * stat, and a deletion cannot be mistaken for one. Substituting for a vanished
+ * file would over-report, and an over-report can announce a rung early, after
+ * which `highest` suppresses the genuine crossing forever.
  */
-async function readFileUsage(file, cache) {
+async function readFileUsage(file, cache, openFile) {
   let stat;
   try {
     stat = await fsp.stat(file);
   } catch {
-    return null;
+    cache.delete(file);
+    return { acc: null, state: 'gone' };
   }
-  if (!stat.isFile()) return null;
+  if (!stat.isFile()) {
+    cache.delete(file);
+    return { acc: null, state: 'gone' };
+  }
 
   const cached = cache.get(file);
 
@@ -176,14 +196,18 @@ async function readFileUsage(file, cache) {
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
     // acc AND tail: an unterminated final record lives only in `tail`, and this
     // path is the one a finished file takes forever after.
-    return plus(cached.acc, cached.tail);
+    return { acc: plus(cached.acc, cached.tail), state: 'fresh' };
   }
 
   let fh;
   try {
-    fh = await fsp.open(file, 'r');
+    fh = await openFile(file, 'r');
   } catch {
-    return null;
+    // stat() succeeded, so the file is there and we could not open it -- a lock.
+    // Stand in the last known total if we have one; otherwise this is absence.
+    return cached
+      ? { acc: plus(cached.acc, cached.tail), state: 'stale' }
+      : { acc: null, state: 'absent' };
   }
 
   try {
@@ -230,7 +254,13 @@ async function readFileUsage(file, cache) {
       await yieldToLoop();
     }
 
-    if (overlong) return null;     // absence, not a zero-token file
+    // Absence, not a zero-token file: something is there and we declined to
+    // buffer it, so we cannot claim it holds nothing.
+    if (overlong) {
+      return cached
+        ? { acc: plus(cached.acc, cached.tail), state: 'stale' }
+        : { acc: null, state: 'absent' };
+    }
 
     // The unterminated tail, parsed TENTATIVELY. A record whose newline never
     // arrives (a killed process, a writer that does not terminate the last one)
@@ -254,9 +284,11 @@ async function readFileUsage(file, cache) {
       mtimeMs: stat.mtimeMs, size: pos, offset, acc: { ...acc }, tail: { ...tail },
       fingerprint: await readFingerprint(fh, offset),
     });
-    return plus(acc, tail);
+    return { acc: plus(acc, tail), state: 'fresh' };
   } catch {
-    return null;
+    return cached
+      ? { acc: plus(cached.acc, cached.tail), state: 'stale' }
+      : { acc: null, state: 'absent' };
   } finally {
     try { await fh.close(); } catch { /* already gone */ }
   }
@@ -268,7 +300,13 @@ const withTotal = (acc, sessions) => ({
   sessions,
 });
 
-async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } = {}) {
+async function readUsage({
+  cwd, sessionId, projectsDir, cache = defaultCache,
+  // Injectable because a locked file is not reproducible portably, and leaving
+  // the stale/absent split untested would put the most load-bearing logic here
+  // in a region nothing measures.
+  openFile = (f, flags) => fsp.open(f, flags),
+} = {}) {
   const root = projectsDir || defaultProjectsDir();
   const dir = path.join(root, projectDirName(cwd));
 
@@ -284,7 +322,10 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
     // that seeded state from it recorded the failure as a fact. The milestone
     // announcer seeds from the first reading, and a failed first reading made
     // it announce the entire ladder on the next good tick.
-    return { ok: false, unreadable: 0, session: { ...EMPTY }, project: { ...EMPTY } };
+    return {
+      ok: false, absent: 0, stale: 0, unreadable: 0,
+      session: { ...EMPTY }, project: { ...EMPTY },
+    };
   }
 
   const project = zero();
@@ -293,15 +334,18 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
   // Enumeration failures are absence too: a subagents directory we could not
   // READ may hold transcripts, and dropping them silently is how a 7.4%
   // undercount gets reported as complete.
-  let unreadable = enumErrors;
+  let absent = enumErrors;
+  let stale = 0;
   let sessions = 0;
   const live = new Set();
 
   for (const entry of files) {
     live.add(entry.file);
     if (!entry.subagent) sessions++;
-    const acc = await readFileUsage(entry.file, cache);
-    if (!acc) { unreadable++; continue; }
+    const { acc, state } = await readFileUsage(entry.file, cache, openFile);
+    if (state === 'stale') stale++;
+    if (state === 'absent') absent++;
+    if (!acc) continue;                 // absent or gone: nothing to add
     addInto(project, acc);
     // A subagent's spend belongs to the session that SPAWNED it -- it was spent
     // on that session's behalf, and filing it anywhere else makes the session
@@ -319,12 +363,20 @@ async function readUsage({ cwd, sessionId, projectsDir, cache = defaultCache } =
   }
 
   return {
-    // Complete AND trustworthy, which is what every caller actually asks. A
-    // transcript that could not be read is not one worth zero: reporting a
-    // confident lower total is exactly what seeds a false baseline and throws a
-    // party for work done weeks ago.
-    ok: unreadable === 0,
-    unreadable,
+    // "Could the true total be higher than this?" -- which is the only question
+    // the milestone announcer is asking when it decides whether to seed. A
+    // STALE figure can be used: it is the last thing we actually read, it can
+    // only lag, and `crossed` never celebrates downward, so the worst case is
+    // announcing late. ABSENT cannot: we have never read that file and have no
+    // idea what is in it.
+    ok: absent === 0,
+    absent,
+    // Surfaced rather than absorbed, because substitution trades a visible drop
+    // for a frozen number -- and a frozen number with no signal is the worse of
+    // the two.
+    stale,
+    // Kept for callers that only care that something went wrong.
+    unreadable: absent + stale,
     // `sessions: 0` when no session file matched. The old identity test
     // `session === EMPTY` could never be true, because `session` is a fresh
     // object literal above -- so this always reported 1, including before the
