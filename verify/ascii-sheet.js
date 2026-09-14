@@ -3,6 +3,13 @@
    glyphs would ACTUALLY be displayed.
 
      node verify/ascii-sheet.js [generated.json] [hand-authored.json] [out.html] [subject,subject]
+     node verify/ascii-sheet.js --only=sword --grid=8x4 --color=mono --zoom=0 --out=.harness/s.html
+
+   Flags (all optional, all combinable): --gen= --hand= --out= --only= --tech=
+   --color= --grid= --source= --max=N --zoom=N (--zoom=0 drops the magnified
+   column) --tables (the full measurement breakdown, ~250px of page, shown
+   automatically whenever a block fails its size assertion). Run it with no
+   arguments to print the values available for each filter.
 
    Then render it:  npx electron verify/shoot.js <out.html> <out.png> 1500 900
 
@@ -49,11 +56,37 @@ const argv = process.argv.slice(2);
 const flagOnly = argv.filter(a => a.startsWith('--only='));
 const pos = argv.filter(a => !a.startsWith('--'));
 
-const genFile = path.resolve(pos[0] || path.join(repo, '.harness', 'ascii', 'generated.json'));
-const handFile = path.resolve(pos[1] || path.join(repo, 'spike-ascii', 'hand-authored.json'));
-const outFile = path.resolve(pos[2] || path.join(repo, '.harness', 'ascii-sheet.html'));
+// --out= as well as the positional form: with the manifests at their defaults,
+// the positional slot for the output is the THIRD one, and passing it alone
+// silently makes your output path the generated manifest. (Done that.)
+const flagVal = name => {
+  const f = argv.find(a => a.startsWith(`--${name}=`));
+  return f ? f.slice(name.length + 3) : '';
+};
+const genFile = path.resolve(flagVal('gen') || pos[0] || path.join(repo, '.harness', 'ascii', 'generated.json'));
+const handFile = path.resolve(flagVal('hand') || pos[1] || path.join(repo, 'spike-ascii', 'hand-authored.json'));
+const outFile = path.resolve(flagVal('out') || pos[2] || path.join(repo, '.harness', 'ascii-sheet.html'));
 const only = [...flagOnly.map(f => f.slice(7)), pos[3] || '']
   .join(',').split(',').map(s => s.trim()).filter(Boolean);
+
+// The real generated.json is a full cross product -- technique x grid x colour,
+// 120 renders PER SUBJECT. Filtering by subject alone leaves a 19,000px page,
+// which is 23 screenfuls of a screenshotter that captures one. So the sheet
+// also slices by the dimensions the cross product varies.
+const listFlag = name => {
+  const f = argv.filter(a => a.startsWith(`--${name}=`));
+  return f.join(',').split(',').map(s => s.replace(new RegExp(`^--${name}=`), '').trim())
+    .filter(Boolean).map(s => s.toLowerCase());
+};
+const pickTech = listFlag('tech');
+const pickColor = listFlag('color');
+const pickGrid = listFlag('grid');           // e.g. --grid=8x4,12x6
+const pickSource = listFlag('source');       // procedural | hand
+const maxPer = (() => {
+  const f = argv.find(a => a.startsWith('--max='));
+  const n = f ? Number(f.slice(6)) : 0;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+})();
 
 // True display sizes. 34 is the roster's face size and the one that decides
 // this spike; 16 is the smallest place an icon lands; 48 is the generous case.
@@ -145,6 +178,29 @@ const sources = { ...gen.sources, ...hand.sources };
 
 let list = [...subjects.values()];
 if (only.length) list = list.filter(s => only.includes(s.id));
+
+const lc = v => String(v == null ? '' : v).toLowerCase();
+const passes = r =>
+  (!pickTech.length || pickTech.includes(lc(r.technique))) &&
+  (!pickColor.length || pickColor.includes(lc(r.color))) &&
+  (!pickSource.length || pickSource.includes(lc(r.source))) &&
+  (!pickGrid.length || pickGrid.includes(`${r.cols}x${r.rows}`.toLowerCase()));
+
+/** Every caller goes through this, so the page, the height estimate and the
+ *  "showing N of M" note can never disagree about what is on the sheet. */
+const rendersFor = id => {
+  const all = renders.filter(r => (r.subject || '(no subject)') === id);
+  const kept = all.filter(passes);
+  return { all: all.length, matched: kept.length, shown: maxPer ? kept.slice(0, maxPer) : kept };
+};
+
+const activeFilters = [
+  pickTech.length ? `technique=${pickTech.join('/')}` : '',
+  pickColor.length ? `color=${pickColor.join('/')}` : '',
+  pickGrid.length ? `grid=${pickGrid.join('/')}` : '',
+  pickSource.length ? `source=${pickSource.join('/')}` : '',
+  maxPer ? `max ${maxPer} per subject` : '',
+].filter(Boolean);
 
 // --------------------------------------------------------------- render ----
 
@@ -253,7 +309,8 @@ function sourceRow(subjectId) {
 }
 
 const sections = list.map(s => {
-  const rs = renders.filter(r => (r.subject || '(no subject)') === s.id);
+  const sel = rendersFor(s.id);
+  const rs = sel.shown;
   const emojiRow = s.emoji
     ? `<div class="rrow baseline"><div class="lbl"><b>emoji baseline</b>` +
       `<div class="meta">what this already has today (ART PLACEHOLDER RULE)</div></div>` +
@@ -262,9 +319,19 @@ const sections = list.map(s => {
     : `<div class="rrow baseline"><div class="lbl"><b>emoji baseline</b><div class="warn">no emoji declared for this subject — ` +
       `there is nothing to beat, so a "win" here is unmeasured</div></div></div>`;
 
+  // Say what is NOT here. A filtered sheet and a complete one look identical,
+  // and "braille lost" is a different claim from "braille lost among the four
+  // variants I happened to page to".
+  const shownNote = sel.shown.length === sel.all
+    ? `all ${sel.all} renders`
+    : `<b class="cut">showing ${sel.shown.length} of ${sel.all}</b>` +
+      (sel.matched !== sel.all ? ` (${sel.matched} matched the filter)` : '') +
+      ` — the rest are NOT on this page`;
+
   return `<section><h2>${esc(s.label)} <span class="sid">${esc(s.id)}</span>` +
     (s.declared ? '' : ` <span class="badge">undeclared subject — renders exist, no subjects[] entry</span>`) +
     `</h2>` +
+    `<div class="snote">${shownNote}</div>` +
     (s.note ? `<div class="snote">${esc(s.note)}</div>` : '') +
     sizeHeader() +
     emojiRow +
@@ -277,7 +344,8 @@ const sections = list.map(s => {
 const banners = [gen, hand].filter(m => !m.ok).map(m =>
   `<div class="banner">${esc(m.label)} manifest ${esc(m.why)} — this sheet shows only the other source. ` +
   `Any comparison drawn from it is one-sided.</div>`
-).join('') + (list.length === 0 ? `<div class="banner">no subjects to show${only.length ? ` for filter: ${esc(only.join(', '))}` : ''}</div>` : '');
+).join('') + (list.length === 0 ? `<div class="banner">no subjects to show${only.length ? ` for filter: ${esc(only.join(', '))}` : ''}</div>` : '')
+  + (activeFilters.length ? `<div class="filters">FILTERED SHEET — ${esc(activeFilters.join('  ·  '))}. Anything not matching is absent, not rejected.</div>` : '');
 
 // ------------------------------------------------------------- the page ----
 
@@ -325,6 +393,8 @@ pre.g.emoji{font-family:${EMOJI_STACK}}
 #report td,#report th{padding:1px 10px 1px 0;text-align:left;color:var(--dim);font-weight:400}
 #report th{color:var(--text)}
 .banner{background:#2a1d1d;border:1px solid var(--bad);color:#e8a9a9;border-radius:6px;padding:7px 10px;margin-bottom:10px;font-size:11px}
+.filters{background:#241d12;border:1px solid var(--accent);color:#e2b478;border-radius:6px;padding:6px 10px;margin-bottom:10px;font-size:11px;letter-spacing:.03em}
+.cut{color:var(--accent)}
 .tail{margin-top:6px;padding:8px 10px;border:1px dashed var(--accent);color:var(--accent);font-size:11px;border-radius:6px}
 #fold{position:absolute;left:0;right:0;height:0;border-top:2px dashed var(--bad);z-index:9}
 #fold span{position:absolute;right:4px;top:-15px;color:var(--bad);font-size:10px;background:var(--bg);padding:0 4px}
@@ -335,6 +405,7 @@ ${sections}
 <div class="tail">END OF SHEET — if this line is not in your screenshot, shoot.js clamped to the display and subjects below the fold are MISSING. Re-run with a subject filter.</div>
 <script>
 (function(){
+  const WANT_TABLES = ${argv.includes('--tables')};
   // ---- 1. Measure the advance ratio in-page, per glyph class. 0.6em is
   // folklore, and braille/blocks may resolve to a different face than ASCII.
   function probe(cls, ch, n){
@@ -405,6 +476,8 @@ ${sections}
     rows.push('<tr><td>' + k + '</td><td>' + PR[k].ratio.toFixed(4) + 'em</td><td>' +
       (d >= 0 ? '+' : '') + d.toFixed(1) + '%</td><td>' + PR[k].height.toFixed(3) + 'em</td></tr>');
   }
+  let smallestFs = Infinity;
+  for (const g of byTech.values()) smallestFs = Math.min(smallestFs, g.minFs);
   const tech = [];
   tech.push('<tr><th>technique</th><th>blocks</th><th>effective advance</th><th>smallest font-size drawn</th></tr>');
   for (const [k, g] of byTech){
@@ -435,17 +508,30 @@ ${sections}
         (fails.length > 40 ? '<br>\\u2026and ' + (fails.length - 40) + ' more' : '') + '</div>'
       : '<div class="pass">all ' + pres.length + ' blocks measure within 1px of their labelled size</div>') +
     clip + scale +
-    '<div class="tables"><table>' + rows.join('') + '</table>' +
-    '<table>' + tech.join('') + '</table>' +
-    '<div style="color:var(--dim);align-self:flex-end">viewport ' + vw + '\\u00d7' + vh + ' css px</div></div>';
+    // The tables are ~250px of an ~860px viewport, which is three render rows
+    // Ricardo doesn't get to see. When every block passed they have no verdict
+    // left to deliver, so the measurement collapses to one line that still
+    // states the number -- the honesty is in the figure, not the table.
+    (fails.length || WANT_TABLES
+      ? '<div class="tables"><table>' + rows.join('') + '</table>' +
+        '<table>' + tech.join('') + '</table>' +
+        '<div style="color:var(--dim);align-self:flex-end">viewport ' + vw + '\\u00d7' + vh + ' css px</div></div>'
+      : '<div style="color:var(--dim)">advance measured in-page: mono ' + PR.ascii.ratio.toFixed(4) +
+        'em (braille ' + PR.braille.ratio.toFixed(4) + ', blocks ' + PR.blocks.ratio.toFixed(4) +
+        '), emoji ' + PR.emoji.ratio.toFixed(4) + 'em \\u2014 the 0.6 assumption is off by ' +
+        ((PR.ascii.ratio - 0.6) / 0.6 * 100).toFixed(1) + '%. Smallest font-size drawn: ' +
+        smallestFs.toFixed(2) + 'px. Viewport ' + vw + '\\u00d7' + vh + '. Pass --tables for the full breakdown.</div>');
 
   // ---- 4. The screenshot's own honesty. shoot.js asks for a window height and
   // the compositor gives whatever the display allows, so the PNG can be shorter
   // than the page with nothing anywhere to say so. Draw the fold and name what
   // falls below it, ON the page, where the screenshot will capture it.
   const docH = document.documentElement.scrollHeight;
+  // Test the BOTTOM, not the top: a subject whose heading is above the fold and
+  // whose renders are below it is the worst case, because the PNG shows the
+  // heading and looks complete.
   const below = Array.from(document.querySelectorAll('section')).filter(
-    s => s.getBoundingClientRect().top + window.scrollY + 40 > vh
+    s => s.getBoundingClientRect().bottom + window.scrollY > vh
   ).map(s => (s.querySelector('.sid') ? s.querySelector('.sid').textContent : '?'));
   if (docH > vh + 2){
     const f = document.createElement('div');
@@ -457,9 +543,27 @@ ${sections}
   document.getElementById('clip').innerHTML = docH > vh + 2
     ? '<div class="fail"><b>PAGE IS TALLER THAN THE WINDOW</b>: ' + docH + 'px of page in a ' + vh +
       'px viewport. Everything under the red fold line is absent from the screenshot' +
-      (below.length ? ', including subject(s): <b>' + below.join(', ') + '</b>' : '') +
-      '. Re-run with --only=&lt;subject&gt;, or --zoom=0 to drop the magnified column.</div>'
+      (below.length ? '. Cut off or missing entirely: <b>' + below.join(', ') + '</b>' : '') +
+      '. Narrow it: --only=&lt;subject&gt;, --tech=, --color=, --grid=, --max=N, or --zoom=0.</div>'
     : '<div class="pass">page (' + docH + 'px) fits the ' + vh + 'px viewport \\u2014 nothing is cropped</div>';
+
+  // verify/shoot-full.js calls this before capturing, because it captures
+  // BEYOND the viewport and the arithmetic above is then simply wrong.
+  //
+  // Without it the sheet cried wolf about the exact failure that tool fixes --
+  // it printed "Cut off or missing entirely: sword, potion, spell, bug" onto an
+  // image that contained all four -- and drew its fold line straight through a
+  // candidate's row, contaminating the thing being judged. A warning that fires
+  // when nothing is wrong is not a safe default: it teaches the next reader to
+  // ignore the one case where it is right.
+  window.onFullCapture = function(){
+    var f = document.getElementById('fold');
+    if (f) f.remove();
+    document.getElementById('clip').innerHTML =
+      '<div class="pass">FULL-PAGE CAPTURE \\u2014 all ' + docH + 'px are in the PNG, ' +
+      'verified by shoot-full.js against the height in the PNG header. The viewport fold ' +
+      'does not apply.</div>';
+  };
 })();
 </script>`;
 
@@ -470,16 +574,29 @@ console.log(outFile);
 console.log(`  generated:    ${gen.ok ? `${gen.renders.length} renders` : `MISSING (${gen.why})`}`);
 console.log(`  hand:         ${hand.ok ? `${hand.renders.length} renders` : `MISSING (${hand.why})`}`);
 console.log(`  subjects:     ${list.length}${only.length ? ` (filtered: ${only.join(', ')})` : ''}`);
+console.log(`  on the sheet: ${list.reduce((n, s) => n + rendersFor(s.id).shown.length, 0)} renders` +
+  (activeFilters.length ? `  [${activeFilters.join(' · ')}]` : ''));
+// The cross product is per-subject, so list what is available to slice by --
+// otherwise the only discoverable filter is the one you already knew about.
+const dims = (key, fn) => [...new Set(renders.map(fn).filter(Boolean))].sort().join(', ');
+if (renders.length) {
+  console.log(`  --tech=  ${dims('t', r => r.technique)}`);
+  console.log(`  --color= ${dims('c', r => r.color)}`);
+  console.log(`  --grid=  ${dims('g', r => (r.cols && r.rows ? `${r.cols}x${r.rows}` : ''))}`);
+}
 
 // Paging. shoot.js clamps to the display, so a long sheet loses its bottom with
 // no error -- one PNG per subject is cheaper than discovering that later.
-const ROW = (showZoom ? ZOOM : Math.max(...SIZES)) + 15;   // the tallest cell sets the row
+// With the zoom column off it is the four-line LABEL, not the 48px cell, that
+// sets the row height -- measured at ~74px against an estimate of 48, which is
+// the direction that lies (it promises a fit that isn't there). Estimate high.
+const ROW = Math.max(showZoom ? ZOOM : 0, 74) + 9;
 const heightOf = s => {
-  const n = renders.filter(r => (r.subject || '(no subject)') === s.id).length;
+  const n = rendersFor(s.id).shown.length;
   const rows = 1 + (sources[s.id] ? 1 : 0) + Math.max(n, 1);   // emoji baseline + source + renders
   return 62 + rows * ROW + 2 * (ZOOM_OF + 9) + 22 + 28;        // + contrast strip + heading chrome
 };
-const total = list.reduce((sum, s) => sum + heightOf(s), 220);
+const total = list.reduce((sum, s) => sum + heightOf(s), 280);  // + the report block
 const tallest = list.reduce((m, s) => Math.max(m, heightOf(s)), 0);
 console.log(`\n  whole sheet is roughly ${Math.round(total)}px tall; the tallest subject block ~${Math.round(tallest)}px`);
 console.log(showZoom
@@ -500,3 +617,10 @@ for (const s of list) {
 console.log(`\n  the page ends in an END OF SHEET marker: if it is not in the PNG, the shot was clamped.`);
 console.log(`  the page also draws its own fold line and names the subjects below it, so a`);
 console.log(`  clipped PNG says so in the PNG rather than looking complete.`);
+
+// A sheet with nothing on it must not exit 0: the page still gets written (the
+// banners explain why it is empty) but a green exit would read as "compared".
+if (!renders.length) {
+  console.error('\nNOTHING TO COMPARE: no renders from either manifest. The page was still written, with banners.');
+  process.exitCode = 1;
+}

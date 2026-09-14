@@ -34,6 +34,10 @@ BG = "#11131a"
 # smudge. Truecolor renders get lifted to it; see the note on each render.
 MIN_LUMA = 0.30
 
+# Below this luminance spread a subject has no second tone to give, and duotone
+# falls back to mono rather than splitting quantisation noise into two colours.
+DUOTONE_MIN_RANGE = 0.08
+
 
 def coverage(img, cols_px, rows_px, filt):
     """Alpha coverage resampled to a dot grid, as floats in [0, 1]."""
@@ -208,20 +212,23 @@ def foreground(img, cols, rows, mode):
     rgb, alpha = sample_cell_colors(img, cols, rows)
     if mode == "duotone":
         lum = _luma(rgb)
-        # Snap each cell to whichever of the two palette colours it is closer to
-        # in luminance. Bright steel lands on --text, warm metal on --accent.
-        text_l, accent_l = 0.788, 0.616
-        out = []
-        for y in range(rows):
-            row = []
-            for x in range(cols):
-                if alpha[y, x] < 0.02:
-                    row.append(TEXT)
-                else:
-                    row.append(TEXT if abs(lum[y, x] - text_l) <= abs(lum[y, x] - accent_l)
-                               else ACCENT)
-            out.append(row)
-        return out
+        covered = alpha >= 0.02
+        # Split at the midpoint of the luminance range THIS subject actually
+        # occupies, not at a fixed pair of palette luminances. Snapping to fixed
+        # values collapses whenever a subject sits nearer one of them -- measured:
+        # the potion came out entirely --accent, i.e. duotone degenerating into
+        # the accent mode and earning nothing.
+        if not covered.any():
+            return [[TEXT] * cols for _ in range(rows)]
+        lo, hi = float(lum[covered].min()), float(lum[covered].max())
+        if hi - lo < DUOTONE_MIN_RANGE:
+            # Genuinely one-tone subject. Forcing a split here would invent detail
+            # out of quantisation noise, so say so by staying monochrome.
+            return [[TEXT] * cols for _ in range(rows)]
+        mid = (lo + hi) / 2.0
+        return [[TEXT if (alpha[y, x] >= 0.02 and lum[y, x] >= mid) else
+                 (ACCENT if alpha[y, x] >= 0.02 else TEXT)
+                 for x in range(cols)] for y in range(rows)]
     if mode == "truecolor":
         return [[TEXT if alpha[y, x] < 0.02 else _hex(_lift(rgb[y, x]))
                  for x in range(cols)] for y in range(rows)]

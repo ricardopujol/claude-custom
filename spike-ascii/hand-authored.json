@@ -220,7 +220,7 @@
         " █    "
       ],
       "fg": null,
-      "note": "3 rows lets the guard be full-height while the blade is one row -- that height contrast is what says \"sword\" without a single diagonal. Lower-left triangle bevels the tip."
+      "note": "3 rows lets the guard be full-height while the blade is one row -- that height contrast is what says \"sword\" without a single diagonal. Lower-left triangle bevels the tip. MEASURED font gap: U+25C6/U+25E3 are absent from Consolas but present in Cascadia Mono, Cascadia Code and Segoe UI Symbol."
     },
     {
       "id": "potion__hand-braille__4x2__mono",
@@ -695,7 +695,7 @@
         "   ◇"
       ],
       "fg": null,
-      "note": "Two code points. Filled diamond + hollow diamond gives the large/small contrast that a repeated glyph cannot. Font risk: U+25C7 is thin-stroked and may vanish below 24px."
+      "note": "Two code points. Filled diamond + hollow diamond gives the large/small contrast that a repeated glyph cannot. MEASURED font gap: U+25C6/U+25C7 are absent from Consolas (present in Cascadia Mono, Cascadia Code, Segoe UI Symbol). Geometric Shapes is not covered by the pipeline survey's six buckets, so this is the one charset nothing else checks."
     },
     {
       "id": "spell__hand-block__6x3__mono",

@@ -25,6 +25,9 @@ for row, name in enumerate(paths):
     for size in sizes:
         sheet.paste(src.resize((size, size), Image.LANCZOS), (x, y), src.resize((size, size), Image.LANCZOS))
         x += size + pad
-out = HERE / "sources" / "_contact.png"
+# Deliberately NOT inside sources/ -- that directory is the manifest's source
+# list, and a contact sheet sitting in it would be picked up by anything that
+# globs the folder instead of reading generated.json.
+out = HERE / "sources-contact.png"
 sheet.save(out)
 print("contact sheet", out.resolve())

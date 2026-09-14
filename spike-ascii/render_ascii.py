@@ -27,6 +27,7 @@ import numpy as np           # noqa: E402
 from PIL import Image        # noqa: E402
 
 import convert               # noqa: E402
+import fontsupport           # noqa: E402
 import glyphs                # noqa: E402
 import sources               # noqa: E402
 
@@ -286,6 +287,7 @@ def main():
     report_per_technique(images, filt, thr)
     report_confusion(images, filt, thr)
     report_ramp_filters(images)
+    font_support = fontsupport.report(fontsupport.survey())
 
     print(f"\n=== RENDERING with {filt} + {thr} ===")
     renders, timings = [], []
@@ -331,6 +333,10 @@ def main():
             "colors": COLORS,
             "palette": {"text": convert.TEXT, "dim": convert.DIM,
                         "accent": convert.ACCENT, "bg": convert.BG},
+            # Which techniques the machine can actually draw. A sheet that shows
+            # sextants without saying no installed font has them is comparing
+            # tofu against art.
+            "fontSupport": font_support,
         },
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
