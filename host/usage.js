@@ -55,6 +55,14 @@ const PARSE_BATCH = 500;
 // not populated reliably on Windows.
 const FINGERPRINT_BYTES = 64;
 
+// A ceiling on the unterminated tail we are willing to hold. Past this it
+// cannot be a real JSONL record, and `carry` grows by Buffer.concat on every
+// chunk -- quadratic synchronous memcpy. Measured shape of the hazard: a 60MB
+// file with no newline in it (a corrupted transcript, a binary that got the
+// extension) copies ~1.8GB in spans reaching 60MB, which is the exact thing the
+// chunked read exists to prevent.
+const MAX_CARRY = 4 * READ_CHUNK;
+
 const NL = 10;   // '\n'
 
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
@@ -78,6 +86,13 @@ function addUsage(acc, usage) {
 }
 
 const zero = () => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0 });
+const plus = (a, b) => (b ? {
+  input: a.input + b.input,
+  output: a.output + b.output,
+  cacheWrite: a.cacheWrite + b.cacheWrite,
+  cacheRead: a.cacheRead + b.cacheRead,
+} : { ...a });
+
 const addInto = (target, acc) => {
   target.input += acc.input;
   target.output += acc.output;
@@ -159,7 +174,9 @@ async function readFileUsage(file, cache) {
   // Untouched since the last read. This covers every historical session, which
   // is most of the files and none of the cost.
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-    return { ...cached.acc };
+    // acc AND tail: an unterminated final record lives only in `tail`, and this
+    // path is the one a finished file takes forever after.
+    return plus(cached.acc, cached.tail);
   }
 
   let fh;
@@ -179,9 +196,11 @@ async function readFileUsage(file, cache) {
     let pos = resume ? cached.offset : 0;
     const acc = resume ? { ...cached.acc } : zero();
 
-    // Bytes read past the last newline: they belong to a line that is still
-    // being written, so they are re-read next time rather than parsed now.
+    // Bytes read past the last newline. They may be a line still being written,
+    // or a complete record the writer never terminated -- see the tentative
+    // parse below.
     let carry = null;
+    let overlong = false;
     while (pos < stat.size) {
       const want = Math.min(READ_CHUNK, stat.size - pos);
       const buf = Buffer.allocUnsafe(want);
@@ -197,12 +216,33 @@ async function readFileUsage(file, cache) {
       // character-offset resume would not be, and the corruption would only
       // show up on transcripts containing non-ASCII, i.e. most real ones.
       const end = chunk.lastIndexOf(NL);
-      if (end === -1) { carry = chunk; continue; }
+      if (end === -1) {
+        // Abandon a line that cannot be one. Advancing past it keeps the read
+        // bounded and keeps the file readable again later; the file is reported
+        // as unreadable rather than silently half-parsed.
+        if (chunk.length > MAX_CARRY) { carry = null; overlong = true; continue; }
+        carry = chunk;
+        continue;
+      }
 
       await parseLines(chunk.subarray(0, end + 1).toString('utf8'), acc);
       carry = end + 1 < chunk.length ? Buffer.from(chunk.subarray(end + 1)) : null;
       await yieldToLoop();
     }
+
+    if (overlong) return null;     // absence, not a zero-token file
+
+    // The unterminated tail, parsed TENTATIVELY. A record whose newline never
+    // arrives (a killed process, a writer that does not terminate the last one)
+    // is otherwise lost permanently: the file's mtime and size never change
+    // again, so the fast path returns the cached total forever.
+    //
+    // Reported, never cached, and never a resume base. That is what makes it
+    // safe: a genuinely partial line fails JSON.parse and contributes nothing,
+    // and a complete-but-unterminated one is re-read and counted once when the
+    // writer eventually appends.
+    const tail = zero();
+    if (carry && carry.length) await parseLines(carry.toString('utf8'), tail);
 
     const offset = pos - (carry ? carry.length : 0);
     // `pos`, not `stat.size`. The loop can exit early on a zero-byte read below
@@ -211,10 +251,10 @@ async function readFileUsage(file, cache) {
     // at `offset` and silently skip everything in between. Recording what was
     // actually consumed makes that region look like ordinary growth instead.
     cache.set(file, {
-      mtimeMs: stat.mtimeMs, size: pos, offset, acc: { ...acc },
+      mtimeMs: stat.mtimeMs, size: pos, offset, acc: { ...acc }, tail: { ...tail },
       fingerprint: await readFingerprint(fh, offset),
     });
-    return { ...acc };
+    return plus(acc, tail);
   } catch {
     return null;
   } finally {

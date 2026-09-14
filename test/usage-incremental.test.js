@@ -441,3 +441,92 @@ test('a rewrite that PRESERVES the prefix is still resumed, not re-read', async 
   r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
   assert.strictEqual(r.session.total, 332);
 });
+
+// --- the final line, when nothing terminates it -------------------------------
+
+test('a COMPLETE final line with no trailing newline is still counted', async () => {
+  // Miguel, I1 -- a regression this branch introduced, and a silent, permanent
+  // one. The old code split the whole buffer and parsed the last line whatever
+  // followed it. The new code parses only up to the last newline, so an
+  // unterminated final record becomes `carry` and is discarded. Worse, the file
+  // is then FINISHED: its mtime and size never change again, so the fast path
+  // returns the cached total forever and those tokens are lost for the life of
+  // the project folder.
+  //
+  // Both fixture helpers append a trailing newline, which is why nothing caught
+  // it. This one deliberately does not.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+  fs.writeFileSync(f, line(U(10, 20)) + JSON.stringify({
+    type: 'assistant', message: { usage: U(100, 200) },
+  }));                                          // no NL
+
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 330);
+});
+
+test('the unterminated final line survives the CACHED path too', async () => {
+  // The half that makes it permanent. A second read of an unchanged file takes
+  // the mtime+size fast path, so caching only the terminated part loses the
+  // tail on every read after the first.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+  fs.writeFileSync(f, line(U(10, 20)) + JSON.stringify({
+    type: 'assistant', message: { usage: U(100, 200) },
+  }));
+
+  const a = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  const b = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(a.session.total, 330);
+  assert.strictEqual(b.session.total, 330, 'the tail was dropped on the cached path');
+});
+
+test('counting an unterminated line does not double-count it when it completes', async () => {
+  // The safety property that makes the fix admissible: the tentative tail is
+  // reported but never cached, so when the writer terminates the line and
+  // appends more, the resume re-reads it and still counts it once.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+  const whole = line(U(100, 200));
+  fs.writeFileSync(f, line(U(10, 20)) + whole.slice(0, whole.length - 1));  // no NL
+
+  let r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 330);
+
+  fs.appendFileSync(f, NL + line(U(1, 1)));
+  r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 332, 'the tail was counted twice');
+});
+
+test('a genuinely PARTIAL final line still contributes nothing', async () => {
+  // Unchanged behaviour, re-asserted because the fix above is what could break
+  // it: half a JSON object does not parse, so it contributes nothing whether it
+  // is read tentatively or not.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+  const whole = line(U(100, 200));
+  fs.writeFileSync(f, line(U(10, 20)) + whole.slice(0, Math.floor(whole.length / 2)));
+
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 30);
+});
+
+test('a file with no newline at all is abandoned, not buffered into the heap', async () => {
+  // Miguel, I2. `carry` grew by Buffer.concat on every chunk, so a 60MB file
+  // with no newline copies ~1.8GB synchronously in spans reaching 60MB -- the
+  // exact hazard the chunked read exists to prevent, reached by a corrupted
+  // transcript or anything binary that got the extension.
+  const { root, dir } = project(CWD);
+  const { READ_CHUNK } = require('../host/usage');
+  fs.writeFileSync(path.join(dir, 'good.jsonl'), line(U(10, 0)));
+  fs.writeFileSync(path.join(dir, 'junk.jsonl'), 'x'.repeat(READ_CHUNK * 6));
+
+  let worst = 0, last = Date.now();
+  const iv = setInterval(() => { const n = Date.now(); worst = Math.max(worst, n - last); last = n; }, 1);
+  const r = await readUsage({ cwd: CWD, sessionId: 'good', projectsDir: root });
+  clearInterval(iv);
+
+  assert.strictEqual(r.project.total, 10, 'the readable file is still counted');
+  assert.strictEqual(r.unreadable, 1, 'the junk file is absence, not a zero-token file');
+  assert.ok(worst < 400, `longest synchronous span was ${worst}ms`);
+});
