@@ -49,12 +49,14 @@ function detectRunner(cwd) {
   const pkg = readJson(path.join(cwd, 'package.json'));
   const script = pkg && pkg.scripts && pkg.scripts.test;
   if (script && !PLACEHOLDER.test(script)) {
-    return { kind: 'npm', command: RUNNERS.npm.command, parser: parserForScript(script), script };
+    // A COPY. Returning the module-level literal let any caller's push() or
+    // shift() corrupt the constant for the life of the process.
+    return { kind: 'npm', command: [...RUNNERS.npm.command], parser: parserForScript(script), script };
   }
 
   for (const marker of ['pyproject.toml', 'pytest.ini', 'setup.cfg', 'tox.ini']) {
     if (fs.existsSync(path.join(cwd, marker))) {
-      return { kind: 'pytest', command: RUNNERS.pytest.command, parser: 'pytest', script: marker };
+      return { kind: 'pytest', command: [...RUNNERS.pytest.command], parser: 'pytest', script: marker };
     }
   }
 
@@ -64,33 +66,77 @@ function detectRunner(cwd) {
   return null;
 }
 
-// Every parser returns the LAST summary in the output: a multi-project or
-// watch-mode run prints one per project, and the final one is the total.
+// Every parser reads the runner's SUMMARY BLOCK, never the whole stream. That
+// distinction is the difference between a green bar and a true one -- see the
+// two parsers below, each of which had it wrong in a different way.
 const PARSERS = {
   'node-test': (out) => {
-    // Two shapes, because node:test has two reporters and the DEFAULT is not
-    // the one the fixtures were written against:
-    //   TAP   "# pass 293"
-    //   spec  "ℹ pass 293"      <- what `npm test` actually prints here
-    // The fixture-only version returned null on this project's own output. The
-    // marker is therefore anything-but-a-digit, not a literal '#'.
-    const pass = [...String(out).matchAll(/^\s*\D*\bpass\s+(\d+)/gm)].pop();
-    const fail = [...String(out).matchAll(/^\s*\D*\bfail\s+(\d+)/gm)].pop();
-    if (!pass || !fail) return null;
-    const passed = Number(pass[1]);
-    const failed = Number(fail[1]);
-    return { passed, failed, total: passed + failed };
+    // node:test prints its counters as a contiguous diagnostic block, and THEN
+    // a "failing tests:" section listing each failure BY NAME. Scanning the
+    // whole stream for the last /fail\s+(\d+)/ therefore reads a TEST NAME:
+    //
+    //   ℹ pass 1
+    //   ℹ fail 1                          <- the truth
+    //   ✖ failing tests:
+    //   ✖ fail 0 times before giving up   <- what .pop() used to take
+    //
+    // A real suite with that test reported "healthy 1/1" while red. Verified by
+    // running node --test over exactly that case, not by reasoning about it.
+    //
+    // So: find the LAST counter block (it starts at "tests N") and read only
+    // from there. Two reporters produce it -- TAP "# pass 1" and the default
+    // spec "ℹ pass 1" -- hence a non-word marker rather than a literal '#'.
+    const lines = stripAnsi(out).split('\n');
+    let start = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^\W*tests\s+\d+\s*$/.test(lines[i])) { start = i; break; }
+    }
+    if (start === -1) return null;
+
+    const counter = (name) => {
+      // The block is short and contiguous; stop at the first line that is not
+      // a counter so a following section can never be read as one.
+      for (let i = start; i < lines.length; i++) {
+        const m = /^\W*([a-z_]+)\s+([\d.]+)\s*$/.exec(lines[i]);
+        if (!m) break;
+        if (m[1] === name) return Number(m[2]);
+      }
+      return null;
+    };
+
+    const passed = counter('pass');
+    const failed = counter('fail');
+    if (passed === null || failed === null) return null;
+    // A cancelled test produced no result at all. Leaving it out of the
+    // denominator reports a run aborted at 12% as "healthy 40/40".
+    const cancelled = counter('cancelled') || 0;
+    return { passed, failed: failed + cancelled, total: passed + failed + cancelled };
   },
 
   pytest: (out) => {
-    const line = [...String(out).matchAll(/(\d+)\s+passed(?:[^\n]*)/g)].pop();
+    // pytest ALWAYS prints failed BEFORE passed -- _pytest/terminal.py emits
+    // the categories in a fixed order (failed, passed, skipped, xfailed,
+    // xpassed, errors). Verified by running it: "1 failed, 1 passed in 59.87s".
+    //
+    // The previous version anchored on "N passed" and searched only the TAIL
+    // from there, so `failed` -- which is always to the LEFT -- was invisible,
+    // and every red Python suite reported a full green bar. The fixture said
+    // "63 passed, 2 failed" because it was written from memory, so the test
+    // agreed with the bug.
+    //
+    // Match the summary LINE, then read each count from the whole line.
+    const line = [...stripAnsi(out).matchAll(/^.*?\b\d+\s+(?:passed|failed|errors?)\b.*$/gm)].pop();
     if (!line) return null;
-    const tail = line[0];
-    const passed = Number(line[1]);
-    const failed = Number((/(\d+)\s+failed/.exec(tail) || [0, 0])[1]);
-    // An erroring test is a broken test. Counting only "failed" would report a
-    // suite that cannot even import as perfectly healthy.
-    const errored = Number((/(\d+)\s+errors?/.exec(tail) || [0, 0])[1]);
+    const count = (re) => Number((re.exec(line[0]) || [0, 0])[1]);
+    const passed = count(/(\d+)\s+passed/);
+    const failed = count(/(\d+)\s+failed/);
+    // An erroring test is a broken test: a suite that cannot even import must
+    // not read as healthy.
+    const errored = count(/(\d+)\s+errors?/);
+    // Zero passed is a RESULT, not an absence. "3 failed in 0.12s" is what
+    // pytest prints when everything fails, and returning null for it showed
+    // the worst possible suite state as "no result yet".
+    if (!passed && !failed && !errored) return null;
     return { passed, failed: failed + errored, total: passed + failed + errored };
   },
 

@@ -137,7 +137,11 @@ test('an unknown parser yields null rather than throwing', () => {
 test('takes the LAST summary when a run prints several', () => {
   // A watch-mode or multi-project run prints one summary per project; the final
   // one is the total.
-  const out = ['# pass 3', '# fail 0', '# pass 10', '# fail 1'].join('\n');
+  // Each block now includes its `tests N` header, because that is what node
+  // actually prints and the parser anchors on it -- a summary without one is
+  // not output any reporter produces.
+  const out = ['# tests 3', '# pass 3', '# fail 0',
+               '# tests 11', '# pass 10', '# fail 1'].join('\n');
   assert.deepStrictEqual(parseResults('node-test', out), { passed: 10, failed: 1, total: 11 });
 });
 
@@ -206,7 +210,9 @@ test('parses the spec reporter, which is what node:test prints by default', () =
 test('parses output that is COLOURED, as every runner colours it', () => {
   const green = '\u001b[32m';
   const reset = '\u001b[0m';
-  const out = [green + 'ℹ pass 293' + reset, green + 'ℹ fail 0' + reset].join('\n');
+  const out = [green + 'ℹ tests 293' + reset,
+               green + 'ℹ pass 293' + reset,
+               green + 'ℹ fail 0' + reset].join('\n');
   assert.deepStrictEqual(parseResults('node-test', out), { passed: 293, failed: 0, total: 293 });
 });
 

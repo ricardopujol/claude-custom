@@ -97,9 +97,42 @@ function settleHealth(results, started) {
     ranAt: Date.now(),
     tookMs: Date.now() - started,
   };
-  broadcastControl({ type: 'health', health: healthState });
+  // A throw inside a 'close' listener is an UNCAUGHT EXCEPTION, not a
+  // rejection -- it would kill the host and the user's live session with it.
+  try { broadcastControl({ type: 'health', health: healthState }); } catch {}
   return healthState;
 }
+
+// A wall-clock ceiling. Without one, a suite that HANGS -- a watch script, a
+// runner prompting on stdin, a `pdb` breakpoint, cmd.exe's "Terminate batch
+// job (Y/N)?" -- leaves the bar pulsing forever AND wedges healthInFlight, so
+// every later click is a silent no-op. The host is spawned detached, so
+// reopening the window reattaches to the same stuck host: there would be no
+// way out from inside the product.
+const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Only the tail is ever parsed, and an unbounded `out +=` in the HOST is two
+// hazards at once: past V8's ~512MB string limit it throws RangeError inside a
+// 'data' listener, killing the host and the user's live session; and long
+// before that, growing a huge string forces major GC pauses in the one event
+// loop that must accept the hook helper's connection within 80ms.
+const HEALTH_OUTPUT_CAP = 64 * 1024;
+
+function killTree(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32') {
+    // With shell:true the child IS cmd.exe; killing it orphans npm/node
+    // underneath. /T takes the whole tree.
+    try {
+      require('child_process').spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'],
+        { windowsHide: true });
+      return;
+    } catch { /* fall through to the portable kill */ }
+  }
+  try { child.kill('SIGTERM'); } catch {}
+}
+
+let healthChild = null;
 
 function runHealth() {
   if (healthInFlight) return healthInFlight;
@@ -124,16 +157,58 @@ function runHealth() {
 
     const child = require('child_process').spawn(cmd, args, {
       cwd: CWD, env, windowsHide: true,
-      shell: process.platform === 'win32',      // npm is a .cmd shim on Windows
+      // stdin IGNORED, so an interactive runner reads EOF and exits instead of
+      // waiting forever for input nobody can type.
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Narrow: npm is a .cmd shim on Windows and needs a shell. python.exe is
+      // a real executable and does not -- and routing it through cmd.exe is
+      // what makes killing it require a tree kill.
+      shell: healthRunner.kind === 'npm' && process.platform === 'win32',
+    });
+    healthChild = child;
+
+    // Separate buffers per stream. One shared accumulator interleaves the two
+    // at arbitrary chunk boundaries, splicing a counter line in half ("i pa" +
+    // "npm WARN ..." + "ss 319") so a fully green run parses as null.
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');       // no split multi-byte characters
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', d => {
+      stdout += d;
+      if (stdout.length > HEALTH_OUTPUT_CAP) stdout = stdout.slice(-HEALTH_OUTPUT_CAP);
+    });
+    child.stderr.on('data', d => {
+      stderr += d;
+      if (stderr.length > HEALTH_OUTPUT_CAP) stderr = stderr.slice(-HEALTH_OUTPUT_CAP);
     });
 
-    let out = '';
-    const take = d => { out += d.toString(); };
-    child.stdout.on('data', take);
-    child.stderr.on('data', take);              // some runners summarise on stderr
+    // ONE settle per run. Node can emit both 'error' and 'close' for a single
+    // spawn failure, which broadcast two results with different timestamps.
+    let settled = false;
+    const done = (results) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      healthChild = null;
+      resolve(settleHealth(results, started));
+    };
 
-    child.on('error', () => resolve(settleHealth(null, started)));
-    child.on('close', () => resolve(settleHealth(parseResults(healthRunner.parser, out), started)));
+    const timer = setTimeout(() => {
+      console.log('[host] health run timed out after', HEALTH_TIMEOUT_MS, 'ms');
+      killTree(child);
+      done(null);                 // unknown, not zero: we never saw a result
+    }, HEALTH_TIMEOUT_MS);
+    if (timer.unref) timer.unref();
+
+    child.on('error', () => done(null));
+    child.on('close', () => {
+      // stdout first: some runners summarise on stderr, but a runner that
+      // writes to both must not have its summary preceded by warnings.
+      const parsed = parseResults(healthRunner.parser, stdout)
+        || parseResults(healthRunner.parser, stderr);
+      done(parsed);
+    });
   }).finally(() => { healthInFlight = null; });
 
   return healthInFlight;
@@ -172,6 +247,11 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
 // The agent list comes from the mood stack, so a finished turn can say how
 // many agents ran rather than just that something ended.
+// Tracks whether a cooldown list was last non-empty, so the falling edge is
+// broadcast too. Without it the panel is never told the list emptied and the
+// final row stays on screen.
+let cooldownsWere = 0;
+
 const attention = createAttention({
   project: path.basename(CWD),
   agents: () => mood.stack(),
@@ -355,8 +435,14 @@ const moodTimer = setInterval(() => {
   if (processes.list().length) {
     broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
   }
+  // The FALLING EDGE matters as much as the rising one. Broadcasting only a
+  // non-empty list means the panel is never told the last cooldown expired, so
+  // the final row stays on screen claiming an agent is still unavailable.
   const cooling = cooldowns.list();
-  if (cooling.length) broadcastControl({ type: 'cooldowns', cooldowns: cooling });
+  if (cooling.length || cooldownsWere) {
+    broadcastControl({ type: 'cooldowns', cooldowns: cooling });
+  }
+  cooldownsWere = cooling.length;
 }, 1000);
 moodTimer.unref();
 
@@ -422,7 +508,8 @@ wss.on('connection', (ws) => {
             return;
           }
           if (msg.type === 'health') {
-            runHealth();          // broadcasts on start and again on finish
+            // Caught: an unhandled rejection terminates Node by default.
+            runHealth().catch(() => {});   // broadcasts on start and on finish
             return;
           }
           if (msg.type === 'input') {
@@ -449,8 +536,18 @@ wss.on('connection', (ws) => {
 
 console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
 
-process.on('SIGINT', () => {
+// A test run outlives the host unless it is killed here. With shell:true the
+// child is cmd.exe, so an orphaned npm/node keeps running with no parent and
+// no window -- invisible, and still holding the repo's build output.
+function shutdown() {
   try { term.kill(); } catch {}
+  killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }
-  process.exit(0);
-});
+}
+
+// SIGINT is not how this host usually dies: main.js spawns it DETACHED so it
+// survives the window closing. SIGTERM and exit are the paths that actually
+// fire, and leaving them unhandled is what orphans the child.
+process.on('SIGINT', () => { shutdown(); process.exit(0); });
+process.on('SIGTERM', () => { shutdown(); process.exit(0); });
+process.on('exit', () => { killTree(healthChild); });

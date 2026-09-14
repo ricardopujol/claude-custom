@@ -91,3 +91,16 @@ test('soonest-to-expire first', () => {
   h.c.finished('b');
   assert.deepStrictEqual(h.c.list().map(c => c.agent), ['b', 'a']);
 });
+
+test('an agent named after a prototype member cannot create an immortal cooldown', () => {
+  // A bare `cooldowns[agent]` lookup of 'constructor' or 'toString' resolves to
+  // an inherited FUNCTION -- truthy, so it passed the guard; then
+  // `now() + duration` string-concatenates, `until` is stored as a string, and
+  // `until <= t` compares as NaN, which is never true. The entry could never
+  // expire and rendered "NaNm" forever. `agent` comes from the hook payload.
+  const { c } = harness();
+  for (const name of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+    c.finished(name);
+  }
+  assert.deepStrictEqual(c.list(), []);
+});

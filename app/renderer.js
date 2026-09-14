@@ -178,8 +178,11 @@ window.addEventListener('DOMContentLoaded', () => {
   } catch {}
   // A screenshot probe can pin the tab: the sidebar is the one surface the
   // headless checks cannot look at.
+  // Validated too. The guard above was applied to the STORED value and not
+  // to this one, so ?tab=fog reproduced the blank sidebar exactly -- and
+  // then persisted it, because setTab writes whatever it is given.
   const forced = new URLSearchParams(location.search).get('tab');
-  setTab(forced || saved);
+  setTab(forced && isKnownTab(forced) ? forced : saved);
 
   // Screenshot support only: type a value into the new-secret field and reveal
   // it, so the toggle can actually be LOOKED at. Never a real secret -- the
@@ -437,12 +440,19 @@ document.addEventListener('click', (e) => {
 let cooldownState = [];
 
 function renderCooldowns(list) {
-  if (Array.isArray(list)) cooldownState = list;
+  // Stamp the arrival time. Without it the first interval subtracts
+  // `now - (c._tick || now)` === 0, so an agent whose cooldown has already
+  // expired keeps displaying "1m" for another 15-30 seconds -- in a widget
+  // whose whole purpose is to be honest between broadcasts.
+  if (Array.isArray(list)) {
+    const at = Date.now();
+    cooldownState = list.map(c => ({ ...c, _tick: at }));
+  }
   const el = document.getElementById('cooldowns');
   if (!el) return;
   if (!cooldownState.length) { el.innerHTML = ''; return; }
 
-  el.innerHTML = '<h3>Cooling down</h3>' + cooldownState.map(c => {
+  const html = '<h3>Cooling down</h3>' + cooldownState.map(c => {
     const left = Math.max(0, c.remainingMs);
     const frac = c.durationMs ? Math.max(0, Math.min(1, left / c.durationMs)) : 0;
     const mins = Math.ceil(left / 60000);
@@ -450,6 +460,8 @@ function renderCooldowns(list) {
            `<span class="bar"><i style="width:${(frac * 100).toFixed(0)}%"></i></span>` +
            `<span class="left">${mins}m</span></div>`;
   }).join('');
+  // Rewriting identical HTML every 15s kills any tooltip open mid-hover.
+  if (el.innerHTML !== html) el.innerHTML = html;
 }
 
 // Counted down locally so the remaining time is honest between broadcasts;
