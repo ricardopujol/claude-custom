@@ -400,12 +400,24 @@ function renderRoster() {
 const usageEl = document.getElementById('usage');
 
 // Compact, because this sits in a header: 1.2M / 984k / 512.
+// NOTE: duplicated from host/milestones.js because the renderer has no module
+// system. Both copies round INSIDE the unit -- the naive version emitted
+// "1000k" for 999_950, longer than the number it abbreviates.
 function compact(n) {
-  if (!Number.isFinite(n)) return '—';
-  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(n);
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '—';
+  const units = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
+  for (let i = 0; i < units.length; i++) {
+    const [size, suffix] = units[i];
+    if (v < size) continue;
+    const scaled = Number((v / size).toFixed(1));
+    if (scaled >= 1000 && i > 0) {
+      const [bigger, biggerSuffix] = units[i - 1];
+      return String(Number((v / bigger).toFixed(1))) + biggerSuffix;
+    }
+    return String(scaled) + suffix;
+  }
+  return String(Math.round(v));
 }
 
 function renderUsage(usage) {
@@ -443,7 +455,12 @@ function milestoneHtml(m) {
   if (!m) return '';
   const reached = m.reached;
   const next = m.next;
-  const pct = Math.round((m.progress || 0) * 100);
+  // Clamped AND finite-checked. `width:NaN%` is an invalid declaration the
+  // browser drops, and .fill has no other width, so it took auto width and
+  // filled the whole track -- a broken value reading as "complete".
+  const raw = Number(m.progress);
+  const safe = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0;
+  const pct = Math.round(safe * 100);
 
   // The cache share travels with it, because it is most of the total: ~97M of
   // 119M on this project. A milestone celebrating a number that is 80% cache
@@ -463,16 +480,30 @@ function milestoneHtml(m) {
 
 // The flourish. An EVENT, not a value -- folding it into the usage payload
 // (which is re-sent every few seconds) would replay the celebration forever.
+let activeFlourish = null;
+
 function flourish(milestone) {
   if (!milestone) return;
+  // One at a time. Two are position:fixed at the same coordinates and
+  // composite into unreadable overlap; nothing caps how many can queue.
+  if (activeFlourish) {
+    clearTimeout(activeFlourish.show);
+    clearTimeout(activeFlourish.hide);
+    activeFlourish.el.remove();
+    activeFlourish = null;
+  }
   const el = document.createElement('div');
   el.className = 'flourish';
   el.innerHTML = `<span class="icon">${escapeHtml(milestone.icon)}</span>` +
                  `<span class="name">${escapeHtml(milestone.name)}</span>`;
   document.body.appendChild(el);
   // Long enough to notice, short enough not to sit over the terminal.
-  setTimeout(() => el.classList.add('go'), 50);
-  setTimeout(() => el.remove(), 4200);
+  const show = setTimeout(() => el.classList.add('go'), 50);
+  const hide = setTimeout(() => {
+    el.remove();
+    if (activeFlourish && activeFlourish.el === el) activeFlourish = null;
+  }, 4200);
+  activeFlourish = { el, show, hide };
 }
 
 function applyBackground(filePath) {

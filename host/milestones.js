@@ -21,7 +21,7 @@
 //
 // The top rung sits above where this project already stands (~1B), because a
 // ladder you have already climbed past has nothing left to say.
-const MILESTONES = [
+const MILESTONES = Object.freeze([
   { at: 10e3, name: 'First Sparks', icon: '✨' },
   { at: 100e3, name: 'Getting Warm', icon: '🔥' },
   { at: 1e6, name: 'Millionaire', icon: '🪙' },
@@ -33,12 +33,23 @@ const MILESTONES = [
   { at: 1e9, name: 'Billionaire', icon: '🌕' },
   { at: 5e9, name: 'Deep Space', icon: '🪐' },
   { at: 10e9, name: 'Legendary', icon: '🐉' },
-];
+].map(Object.freeze));
+
+// The demo milestone, named once. Two hardcoded copies (a positional index in
+// the host, a literal in the renderer) silently disagree the moment a rung is
+// inserted below them.
+const DEMO_MILESTONE = MILESTONES.find(m => m.name === 'Billionaire');
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
+// An unusably large total is ABOVE the ladder, not below it. `num` floors every
+// non-finite value to 0, which reported Infinity as "no milestone reached, 0%
+// toward First Sparks" -- degrading in the direction opposite to the truth.
+const isAboveLadder = (v) => Number(v) === Infinity;
+
 // The highest milestone reached, or null below the first rung.
 function milestoneFor(total) {
+  if (isAboveLadder(total)) return MILESTONES[MILESTONES.length - 1];
   const t = num(total);
   let found = null;
   for (const m of MILESTONES) {
@@ -56,9 +67,16 @@ function nextMilestone(total) {
 // Progress through the CURRENT segment: from the rung you are standing on to
 // the one above. Below the first rung the segment starts at zero.
 function progressTo(total) {
+  if (isAboveLadder(total)) return 1;
   const t = Math.max(0, num(total));
   const next = nextMilestone(t);
-  if (!next) return 1;                       // past the top rung, the bar is full
+  if (!next) {
+    // PAST THE TOP RUNG THE BAR KEEPS MOVING. Pinning it at 1 forever is the
+    // visual signature of a meter that is FULL -- the one shape "a counter,
+    // never a limit" rules out. Each further top-rung span is another lap.
+    const top = MILESTONES[MILESTONES.length - 1].at;
+    return ((t - top) % top) / top;
+  }
   const floor = milestoneFor(t) ? milestoneFor(t).at : 0;
   const span = next.at - floor;
   if (!(span > 0)) return 0;
@@ -90,11 +108,30 @@ function crossed(before, after) {
   return reached;
 }
 
+// Rounds INSIDE the unit, never across it. `(999950/1e3).toFixed(1)` is
+// "1000.0", so the naive version emitted "1000k" -- longer than the number it
+// abbreviates, and unrecognisable next to the "1M" the tooltip prints for the
+// rung one token away. Each unit is therefore chosen after rounding, not before.
+// A trillion rung exists so the promotion at the top of 'B' has somewhere to
+// go; without it 999_950_000_000 rendered as "1000B".
+const UNITS = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
+
+// Rounds INSIDE the unit, never across it. `(999950/1e3).toFixed(1)` is
+// "1000.0", so the naive version emitted "1000k" -- longer than the number it
+// abbreviates, and unrecognisable beside the "1M" the tooltip prints for a rung
+// one token away. When rounding carries, the unit is PROMOTED.
 const compact = (n) => {
   const v = num(n);
-  if (v >= 1e9) return (v / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-  if (v >= 1e6) return (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (v >= 1e3) return (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+  for (let i = 0; i < UNITS.length; i++) {
+    const [size, suffix] = UNITS[i];
+    if (v < size) continue;
+    const scaled = Number((v / size).toFixed(1));
+    if (scaled >= 1000 && i > 0) {
+      const [bigger, biggerSuffix] = UNITS[i - 1];
+      return String(Number((v / bigger).toFixed(1))) + biggerSuffix;
+    }
+    return String(scaled) + suffix;
+  }
   return String(Math.round(v));
 };
 
@@ -113,15 +150,21 @@ const compact = (n) => {
 function describeSpend(usage, { metered = false, usdPerMillion = null } = {}) {
   const u = usage || {};
   const total = num(u.total);
-  const fresh = num(u.input) + num(u.output);
   const cacheRead = num(u.cacheRead);
+  // Cache WRITES are newly processed tokens, and metered providers bill them at
+  // a PREMIUM -- they are the opposite of free cache traffic. Leaving them out
+  // of `fresh` while `total` included them left a silent gap: on this project's
+  // real proportions the label said "15k fresh" of 99M when 2.015M were billed
+  // as fresh, understating it 134x. fresh + cacheRead now partitions total.
+  const cacheWrite = num(u.cacheWrite);
+  const fresh = num(u.input) + num(u.output) + cacheWrite;
   const cacheShare = total > 0 ? cacheRead / total : 0;
 
-  // `Number(null)` is 0 and `Number.isFinite(0)` is true, so a null rate
-  // computed a confident "$0.00" -- exactly the invented figure this refuses to
-  // produce. The check has to be for an actual number.
-  const rate = typeof usdPerMillion === 'number' && Number.isFinite(usdPerMillion)
-    ? usdPerMillion : null;
+  // Number.isFinite does NOT coerce -- Number.isFinite(null) is false. The
+  // original bug was the `Number()` wrapper I put around the argument, which
+  // turned a missing rate into 0 and printed a confident "$0.00": exactly the
+  // invented figure this refuses to produce. No wrapper, no coercion.
+  const rate = Number.isFinite(usdPerMillion) ? usdPerMillion : null;
   const costUsd = metered && rate !== null ? (total / 1e6) * rate : null;
 
   const label = costUsd !== null
@@ -130,7 +173,7 @@ function describeSpend(usage, { metered = false, usdPerMillion = null } = {}) {
       ? `${compact(total)} tokens · ${compact(fresh)} fresh`
       : `${compact(total)} tokens`;
 
-  return { total, fresh, cacheRead, cacheShare, metered, costUsd, label };
+  return { total, fresh, cacheRead, cacheWrite, cacheShare, metered, costUsd, label };
 }
 
 module.exports = {

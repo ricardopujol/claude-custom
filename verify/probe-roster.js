@@ -32,7 +32,6 @@ const check = (label, ok, detail) => {
       CLAUDE_CUSTOM_CWD: REPO,
       CLAUDE_CUSTOM_SCREENSHOT: SHOT,
       CLAUDE_CUSTOM_SCREENSHOT_DELAY: '26000',
-      CLAUDE_CUSTOM_DEMO: '1',
       CLAUDE_CUSTOM_FLOURISH: process.env.CLAUDE_CUSTOM_FLOURISH || '',
       // Which side tab to photograph: the sidebar is the one surface the
       // headless checks cannot look at.
@@ -66,22 +65,6 @@ const check = (label, ok, detail) => {
       await sleep(400);
     }
   }
-
-  // Timed to land just BEFORE the screenshot: the flourish lives ~4s, so firing
-  // it right after the hooks meant it had already faded by the time the window
-  // was captured.
-  await sleep(8000);
-
-  // Fire a milestone flourish so the screenshot shows it. The host broadcasts
-  // to every client, so a second connection reaches the Electron window too.
-  await new Promise((resolve) => {
-    const probe = new WebSocket(`ws://127.0.0.1:${PORT}`);
-    probe.on('open', () => {
-      probe.send(JSON.stringify({ type: 'demo-milestone' }));
-      setTimeout(() => { try { probe.close(); } catch {} resolve(); }, 1200);
-    });
-    probe.on('error', resolve);
-  });
 
   await sleep(14000);
   const log2 = (() => { try { return fs.readFileSync(LOG, 'utf8'); } catch { return ''; } })();

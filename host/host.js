@@ -137,10 +137,31 @@ console.log('[host] background     :', path.basename(background.path), backgroun
 let sessionId = null;
 let lastUsage = null;
 
-// The previous PROJECT total, for detecting a milestone crossing. Starts null
-// rather than 0 on purpose: a first reading is not a crossing, and treating it
-// as 0 -> 900M would throw a party for work done weeks ago on every launch.
+// The previous PROJECT total, for detecting a crossing. Starts null rather than
+// 0 on purpose: a first reading is not a crossing, and treating it as 0 -> 900M
+// would throw a party for work done weeks ago on every launch.
 let lastProjectTotal = null;
+
+// The highest rung ANNOUNCED, which is what makes the announcement once-only.
+// `crossed()` compares two adjacent readings, so it refuses to celebrate while
+// a total falls -- but not on the way back up. Two ways that fires a spurious
+// party, both reachable without anything exotic:
+//
+//   - readUsage returns total 0 on ANY readdir failure (EBUSY/EPERM from an
+//     indexer or AV touching ~/.claude/projects), so the baseline resets to 0
+//     and the next good read looks like 0 -> 1.06B.
+//   - the project total legitimately jitters: a partially-written final line is
+//     skipped, and Claude Code expires old transcripts, so a dip back across a
+//     rung replays it.
+//
+// A high-water mark survives both by construction.
+let highestAnnounced = null;
+
+// A crossing that happened while nothing was attached. The pty deliberately
+// outlives the window, so a milestone reached during a detached session was
+// broadcast to an empty client set and lost forever -- the baseline had already
+// advanced past it.
+let pendingMilestone = null;
 
 // A counter, never a limit -- so this reports where you ARE and what is next,
 // and has no concept of anything running out.
@@ -172,12 +193,30 @@ function currentUsage() {
 // re-sent every few seconds would replay the celebration forever.
 function checkMilestone(usage) {
   const total = usage && usage.project ? usage.project.total : 0;
+  // The FIRST reading seeds where we already stand. Without it the high-water
+  // mark stays null through the opening reading, so the first dip-and-recover
+  // still announces a rung that was passed weeks ago.
+  if (lastProjectTotal === null) {
+    lastProjectTotal = total;
+    highestAnnounced = milestoneFor(total);
+    return;
+  }
+
   const hit = crossed(lastProjectTotal, total);
   lastProjectTotal = total;
-  if (hit) {
-    console.log('[host] milestone      :', hit.name, hit.icon);
-    broadcastControl({ type: 'milestone', milestone: hit, total });
+  if (!hit) return;
+  // Once per rung, per process. See highestAnnounced above.
+  if (highestAnnounced && highestAnnounced.at >= hit.at) return;
+  highestAnnounced = hit;
+
+  console.log('[host] milestone      :', hit.name, hit.icon);
+  const message = { type: 'milestone', milestone: hit, total };
+  if (clients.size === 0) {
+    // Held, not dropped. Delivered when a window next attaches.
+    pendingMilestone = message;
+    return;
   }
+  broadcastControl(message);
 }
 
 let hookBridge = null;
@@ -334,8 +373,15 @@ moodTimer.unref();
 // constantly and only the total is displayed.
 const usageTimer = setInterval(() => {
   const before = lastUsage && lastUsage.session.total;
+  const beforeProject = lastUsage && lastUsage.project.total;
   const usage = currentUsage();
-  if (usage.session.total !== before) broadcastControl({ type: 'usage', usage });
+  // Gated on EITHER total. The milestone payload is project-scoped, so gating
+  // only on the session figure let another window advance the project past a
+  // rung while this window's bar kept showing the old one -- the UI celebrating
+  // and denying the same event at once.
+  if (usage.session.total !== before || usage.project.total !== beforeProject) {
+    broadcastControl({ type: 'usage', usage });
+  }
   // Checked on every tick, not only when the session total moved: the PROJECT
   // total can advance because another window on the same folder did work.
   checkMilestone(usage);
@@ -376,6 +422,14 @@ wss.on('connection', (ws) => {
     provider,
     cooldowns: cooldowns.list(),
   });
+  // A milestone reached while nothing was attached is delivered now rather than
+  // lost: the pty outlives the window by design, so the crossing can easily
+  // happen with no observer.
+  if (pendingMilestone) {
+    try { ws.send(JSON.stringify(pendingMilestone)); } catch {}
+    pendingMilestone = null;
+  }
+
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
 
@@ -389,13 +443,6 @@ wss.on('connection', (ws) => {
           if (msg.type === 'resize') {
             term.resize(msg.cols, msg.rows);
             termState.resize(msg.cols, msg.rows);
-            return;
-          }
-          if (msg.type === 'demo-milestone' && process.env.CLAUDE_CUSTOM_DEMO) {
-            // Screenshot support only, and gated behind an env var: the
-            // flourish is the one surface a headless check cannot look at.
-            const { MILESTONES } = require('./milestones');
-            broadcastControl({ type: 'milestone', milestone: MILESTONES[8], total: 1e9 });
             return;
           }
           if (msg.type === 'input') {

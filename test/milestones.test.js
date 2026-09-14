@@ -94,9 +94,14 @@ test('progress is always a drawable fraction', () => {
   }
 });
 
-test('past the top rung progress is full, never undefined', () => {
+test('past the top rung the bar LAPS rather than pinning at full', () => {
+  // Changed deliberately. Pinned at exactly 1 forever is the visual signature
+  // of a meter that is FULL, which is the one shape "a counter, never a limit"
+  // rules out -- the only state where the display stops responding to work.
+  // Each further top-rung span is another lap.
   const top = MILESTONES[MILESTONES.length - 1];
-  assert.strictEqual(progressTo(top.at * 3), 1);
+  assert.strictEqual(progressTo(top.at * 3), 0);
+  assert.ok(progressTo(top.at * 3.5) > 0);
 });
 
 // --- the flourish ------------------------------------------------------------
@@ -171,8 +176,12 @@ test('fresh tokens are separated from cache reads', () => {
   // number badly misrepresents spend, so the split is not optional decoration.
   const usage = { input: 10, output: 5, cacheWrite: 2, cacheRead: 1000, total: 1017 };
   const s = describeSpend(usage, { metered: false });
-  assert.strictEqual(s.fresh, 15);
+  // 17, not 15: cache WRITES are newly processed tokens that metered providers
+  // bill at a premium. This fixture's own total proves it -- 10+5+1000 is 1015,
+  // and the missing 2 were cache writes the old assertion left unattributed.
+  assert.strictEqual(s.fresh, 17);
   assert.strictEqual(s.cacheRead, 1000);
+  assert.strictEqual(s.fresh + s.cacheRead, s.total);
 });
 
 test('the cache share is reported, since it is most of the total', () => {
