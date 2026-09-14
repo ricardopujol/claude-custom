@@ -106,14 +106,34 @@ const addInto = (target, acc) => {
 // starts on a line boundary rather than inside a half-written line.
 const defaultCache = new Map();
 
-async function parseLines(text, acc) {
+async function parseLines(text, acc, seen) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
     if (trimmed) {
       try {
         const obj = JSON.parse(trimmed);
-        addUsage(acc, obj && obj.message && obj.message.usage);
+        const message = obj && obj.message;
+        // ONE MESSAGE IS ONE API CALL WITH ONE USAGE FIGURE. Claude Code writes
+        // each content block of a message on its own line and repeats the
+        // identical usage on every one, so a turn with a thinking block and a
+        // tool call appears twice carrying the same numbers both times.
+        //
+        // Measured before the fix: 2,178 of 4,648 usage-bearing lines in this
+        // project were repeats, inflating the total by 44.3% -- 1.60B reported
+        // against a true 892M. Ricardo caught it by eye; no test did.
+        //
+        // An entry with NO id is always counted. Dropping those would trade a
+        // known 44% overcount for an unknown undercount.
+        const id = message && message.id;
+        if (id && seen) {
+          if (!seen.has(id)) {
+            seen.add(id);
+            addUsage(acc, message.usage);
+          }
+        } else {
+          addUsage(acc, message && message.usage);
+        }
       } catch {
         // A line that is complete but unparseable is not a partial write; it is
         // simply not ours. Either way it contributes nothing.
@@ -219,6 +239,11 @@ async function readFileUsage(file, cache, openFile) {
     const resume = grown && await prefixIntact(fh, cached);
     let pos = resume ? cached.offset : 0;
     const acc = resume ? { ...cached.acc } : zero();
+    // Which messages this file has already contributed. Cached alongside `acc`,
+    // because a resumed read starts mid-file and would otherwise treat the
+    // second block of an already-counted message as a fresh one. Reset on a
+    // full re-read, since `acc` is too.
+    const seen = new Set(resume && cached.seen ? cached.seen : []);
 
     // Bytes read past the last newline. They may be a line still being written,
     // or a complete record the writer never terminated -- see the tentative
@@ -249,7 +274,7 @@ async function readFileUsage(file, cache, openFile) {
         continue;
       }
 
-      await parseLines(chunk.subarray(0, end + 1).toString('utf8'), acc);
+      await parseLines(chunk.subarray(0, end + 1).toString('utf8'), acc, seen);
       carry = end + 1 < chunk.length ? Buffer.from(chunk.subarray(end + 1)) : null;
       await yieldToLoop();
     }
@@ -272,7 +297,10 @@ async function readFileUsage(file, cache, openFile) {
     // and a complete-but-unterminated one is re-read and counted once when the
     // writer eventually appends.
     const tail = zero();
-    if (carry && carry.length) await parseLines(carry.toString('utf8'), tail);
+    // A COPY of the set: the tail is reported but never cached, so marking its
+    // ids as counted would make that message vanish when its line completes and
+    // is read for real.
+    if (carry && carry.length) await parseLines(carry.toString('utf8'), tail, new Set(seen));
 
     const offset = pos - (carry ? carry.length : 0);
     // `pos`, not `stat.size`. The loop can exit early on a zero-byte read below
@@ -282,6 +310,7 @@ async function readFileUsage(file, cache, openFile) {
     // actually consumed makes that region look like ordinary growth instead.
     cache.set(file, {
       mtimeMs: stat.mtimeMs, size: pos, offset, acc: { ...acc }, tail: { ...tail },
+      seen: [...seen],
       fingerprint: await readFingerprint(fh, offset),
     });
     return { acc: plus(acc, tail), state: 'fresh' };

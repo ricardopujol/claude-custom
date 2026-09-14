@@ -686,3 +686,104 @@ test('a transcript deleted BETWEEN the listing and the read is not substituted',
   assert.strictEqual(r.absent, 0, 'nor is it absence -- the total is correct without it');
   assert.strictEqual(r.ok, true);
 });
+
+// --- one message, one usage ---------------------------------------------------
+// MEASURED on this project: 2,178 of 4,648 usage-bearing lines were the same
+// message counted again, inflating the headline by 44.3% -- 1.60B where the
+// truth is 892M. Ricardo spotted it by eye ("the numbers feel too crazy high")
+// before any test did.
+//
+// The cause: one assistant message is ONE API call with ONE usage figure, but
+// Claude Code writes each content block on its own JSONL line and repeats the
+// identical usage on every one. A message with a `thinking` block and a
+// `tool_use` block is two lines carrying `in=2 out=99 cw=49066 cr=51634` each.
+// Counting per line multiplies a turn by how many blocks it happened to have.
+
+const twoBlockMessage = (id, usage) => [
+  JSON.stringify({ type: 'assistant', message: { id, usage, content: [{ type: 'thinking' }] } }),
+  JSON.stringify({ type: 'assistant', message: { id, usage, content: [{ type: 'tool_use' }] } }),
+].join(NL) + NL;
+
+test('a message split across several lines is counted ONCE', async () => {
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), twoBlockMessage('msg_a', U(2, 99, 49066, 51634)));
+
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 2 + 99 + 49066 + 51634);
+});
+
+test('different messages are still counted separately', async () => {
+  // The guard against over-correcting into an undercount.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'),
+    twoBlockMessage('msg_a', U(10, 0)) + twoBlockMessage('msg_b', U(20, 0)));
+
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 30);
+});
+
+test('a five-block message is counted once, not five times', async () => {
+  const { root, dir } = project(CWD);
+  const usage = U(1, 1, 1, 97);
+  const lines = [];
+  for (const type of ['thinking', 'text', 'tool_use', 'tool_use', 'tool_use']) {
+    lines.push(JSON.stringify({ type: 'assistant', message: { id: 'msg_x', usage, content: [{ type }] } }));
+  }
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), lines.join(NL) + NL);
+
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 100);
+});
+
+test('deduplication SURVIVES an incremental resume', async () => {
+  // The hard half. The reader resumes from a byte offset and carries a cached
+  // accumulator, so the set of message ids already counted has to be cached
+  // alongside it -- otherwise the second block of a message that straddles two
+  // reads is counted as a fresh message.
+  const { root, dir } = project(CWD);
+  const f = path.join(dir, 's1.jsonl');
+  const usage = U(10, 0);
+
+  // First read sees only the first block of msg_a.
+  fs.writeFileSync(f, JSON.stringify({
+    type: 'assistant', message: { id: 'msg_a', usage, content: [{ type: 'thinking' }] } }) + NL);
+  let r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 10);
+
+  // Its second block arrives later, in a separate read.
+  fs.appendFileSync(f, JSON.stringify({
+    type: 'assistant', message: { id: 'msg_a', usage, content: [{ type: 'tool_use' }] } }) + NL);
+  r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 10, 'the second block of the same message was counted again');
+
+  // And a genuinely new message still lands.
+  fs.appendFileSync(f, JSON.stringify({
+    type: 'assistant', message: { id: 'msg_b', usage, content: [{ type: 'text' }] } }) + NL);
+  r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 20);
+});
+
+test('an entry with no message id is still counted', async () => {
+  // Defensive. Measured 0 such entries in this project, but an older transcript
+  // or another writer may omit the id, and dropping those would trade a 44%
+  // overcount for an unknown undercount.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'),
+    JSON.stringify({ type: 'assistant', message: { usage: U(7, 0) } }) + NL +
+    JSON.stringify({ type: 'assistant', message: { usage: U(3, 0) } }) + NL);
+
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root });
+  assert.strictEqual(r.session.total, 10, 'id-less entries must not collapse into one');
+});
+
+test('the same message id in DIFFERENT sessions is counted in each', async () => {
+  // Dedup is per transcript, not global: measured, no message id appears in
+  // more than one file, and two projects legitimately could. Deduplicating
+  // across files would silently drop real spend.
+  const { root, dir } = project(CWD);
+  fs.writeFileSync(path.join(dir, 'a.jsonl'), twoBlockMessage('msg_same', U(10, 0)));
+  fs.writeFileSync(path.join(dir, 'b.jsonl'), twoBlockMessage('msg_same', U(10, 0)));
+
+  const r = await readUsage({ cwd: CWD, sessionId: 'a', projectsDir: root });
+  assert.strictEqual(r.project.total, 20);
+});
