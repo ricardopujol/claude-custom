@@ -629,10 +629,57 @@ reopening this is a matter of satisfying them rather than re-running the work.
 
 **Not re-measured, and deliberately so:** sextant, quadrant, halfblock, shade
 and braille 8x4 are all still judged at 1.24x their labels. Re-shooting them is
-one command each now (`verify/shoot-full.js`), but there is no point: the
-technique that beat all of them at a verified 1:1 is the one just declined.
-Anyone reopening this must re-shoot before quoting a single number from the
-first report.
+one command each now (`verify/shoot-full.js`), but the technique that beat all
+of them at a verified 1:1 is the one just declined.
+
+**How far the DPR error reaches, bounded rather than hand-waved.** Naomi did not
+merely say "worse than I reported"; she bounded it from her own recorded
+observations. She viewed the label-34 column as **42 device px** and the
+label-24 column as **30 device px**. A true 34px display gives 34 -- which sits
+BETWEEN those two observations and nearer the one she called 24 (4 away) than
+the one she called 34 (8 away).
+
+So the correct reading of report 1 is that true-34 behaviour lies between its
+24px and 34px descriptions, closer to the 24px one. And of that 24px column she
+wrote: sword "degrades to a thin vertical stroke with a crossbar", bug "legs
+detach into loose specks... reads as a lumpy blob with dirt around it", spell
+"unambiguously a `+`". Only potion survived it.
+
+**Therefore "sextant 12x6 survives at 34px" -- the one finding that kept a glyph
+path alive -- most likely holds for POTION ALONE and fails for sword, spell and
+bug.** Which makes the closure better supported than it looked, not worse: the
+candidate being given up was weaker than the report that recommended it.
+
+**THE ONE COMBINATION NOBODY EVER TESTED**, recorded because it is the only
+thing that could reopen this on evidence rather than on taste:
+
+> **No solid-fill technique has ever been rendered above a 12x6 grid.** The
+> sheet stopped there for blocks. The contrast measurement then split the field
+> along a line nobody designed for -- `ascii accent` reached 6.23:1 on the panel
+> while `braille 16x8 accent` failed at 2.26:1 -- and the cause is structural:
+> braille dots are small and antialiased so they never reach full ink coverage,
+> while solid-fill cells do. That leaves braille 16x8 with the best shape and
+> failing contrast, and solid fills with good contrast and shape untested at
+> high grids.
+>
+> `sextant 16x8` would be 32x24 sub-cells against braille's 32x32 -- comparable
+> horizontal resolution, three-quarters the vertical, filling solidly. It could
+> plausibly match braille's shape AND keep block contrast, which is the one axis
+> braille loses on.
+>
+> If anyone reopens this, that is the experiment: `sextant` / `quadrant` /
+> `halfblock` at 12x6, 16x8 and 20x10, all four colour modes, with the contrast
+> rows. Explicitly NOT worth shooting: anything at 4x2, 6x3 or 8x4, or `shade`
+> at any grid -- `quadrant 4x2` was a featureless rectangle even at 1.24x.
+
+**A note on one contaminated row, resolved.** The fold line crossed
+`sword_ascii_6x3_duotone`. Re-judged clean after the fix: it renders as
+punctuation, verdict unchanged. Confirmed by its uncontaminated neighbours
+(`6x3_accent`, `6x3_truecolor`) showing identical character content. The
+contamination was a reporting hazard, not a judgement error -- the good version
+of that outcome, since the defect was real and worth fixing and happened to cost
+nothing.
+
 
 **What survives into the product:** the ART PLACEHOLDER RULE stands, and the
 emoji stay as data beside the thing they mark rather than baked into markup, so
