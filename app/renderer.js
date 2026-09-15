@@ -234,7 +234,12 @@ function setTab(tab) {
 document.addEventListener('click', (e) => {
   const button = e.target.closest('#side-tabs button');
   if (!button) return;
-  setTab(nextTab(activeTab, button.dataset.tab));
+  const next = nextTab(activeTab, button.dataset.tab);
+  setTab(next);
+  // The catalogue is a NETWORK call, so it is fetched when the panel is first
+  // opened rather than at launch. A session that never looks at models should
+  // never reach out.
+  if (next === 'models' && !catalogueMeta) requestModels(false);
 });
 
 document.getElementById('side-hint').addEventListener('click', () => {
@@ -242,6 +247,7 @@ document.getElementById('side-hint').addEventListener('click', () => {
 });
 
 window.addEventListener('DOMContentLoaded', () => {
+  wireModelPanel();
   // Restored per window, so a collapsed sidebar stays collapsed across a
   // restart rather than springing back every launch.
   let saved = DEFAULT_TAB;
@@ -525,6 +531,180 @@ function renderAgentStats(stats) {
   if (!stats || !Array.isArray(stats.agents)) return;
   agentStats = new Map(stats.agents.map(a => [a.agent, a]));
   renderRoster();
+}
+
+// --- model browser -----------------------------------------------------------
+// Every OpenRouter model, and up to three council seats.
+//
+// This panel's job is to be honest about three things the catalogue makes easy
+// to get wrong: prices are quoted PER TOKEN and read as $0.00 if shown raw; an
+// UNPRICED model is not a free one; and a model without tool support cannot
+// drive the main session at all -- picking one breaks Agent, the hooks and
+// structured output together, in a way that looks like the harness being broken
+// rather than the model being unsuitable.
+
+let catalogue = [];
+let catalogueMeta = null;
+let councilSeats = [];
+let seatMax = 3;
+let councilWarnings = [];
+
+const money = (perM) => {
+  if (perM === null || perM === undefined) return null;
+  if (perM === 0) return 'free';
+  // Never fewer than two significant figures. $0.60/M and $0.00025/M must not
+  // both render as $0.00, which is what would make the catalogue price-blind.
+  if (perM >= 1) return '$' + perM.toFixed(2);
+  if (perM >= 0.01) return '$' + perM.toFixed(3);
+  return '$' + perM.toPrecision(2);
+};
+
+const ctxLabel = (n) => (n >= 1000 ? Math.round(n / 1000) + 'k' : String(n || 0));
+
+function renderSeats() {
+  const list = document.getElementById('seat-list');
+  const count = document.getElementById('seat-count');
+  const warn = document.getElementById('seat-warnings');
+  if (!list || !count || !warn) return;
+
+  count.textContent = councilSeats.length + '/' + seatMax;
+  list.innerHTML = councilSeats.length
+    ? councilSeats.map(st =>
+        '<div class="seat"><span class="seat-name" title="' + escapeHtml(st.id) + '">' +
+        escapeHtml(st.name || st.id) + '</span>' +
+        '<span class="seat-provider">' + escapeHtml(st.provider || '') + '</span>' +
+        '<button data-unseat="' + escapeHtml(st.id) + '" title="Remove this seat">x</button></div>').join('')
+    : '<div class="none">no seats yet</div>';
+
+  warn.innerHTML = councilWarnings
+    .map(w => '<div class="seat-warn">' + escapeHtml(w) + '</div>').join('');
+}
+
+function renderProvenance() {
+  const el = document.getElementById('model-provenance');
+  if (!el || !catalogueMeta) return;
+  el.classList.toggle('stale', !!catalogueMeta.stale);
+
+  if (catalogueMeta.source === 'none') {
+    el.textContent = 'could not reach OpenRouter - ' + (catalogueMeta.error || 'no catalogue');
+    return;
+  }
+  const mins = catalogueMeta.fetchedAt
+    ? Math.max(0, Math.round((Date.now() - catalogueMeta.fetchedAt) / 60000))
+    : null;
+  const when = mins === null ? 'unknown age'
+    : mins < 1 ? 'just now'
+      : mins < 60 ? mins + ' min ago'
+        : Math.round(mins / 60) + ' h ago';
+  // Staleness is STATED, never implied. A month-old price shown as current is
+  // the failure here that actually costs money.
+  el.textContent = catalogueMeta.stale
+    ? 'PRICES MAY BE OUT OF DATE - cached ' + when + ', could not refresh (' +
+      (catalogueMeta.error || 'offline') + ')'
+    : catalogue.length + ' models, ' + when;
+}
+
+function renderModels() {
+  const el = document.getElementById('model-list');
+  if (!el) return;
+  const val = (id) => { const e = document.getElementById(id); return e ? e.value : ''; };
+  const target = val('model-target') || 'council';
+  const search = val('model-search') || '';
+  const sort = val('model-sort') || 'price';
+  const freeEl = document.getElementById('model-free');
+  const freeOnly = !!(freeEl && freeEl.checked);
+
+  let rows = catalogue;
+  // Only the SESSION target restricts by tools: a model that cannot call one
+  // can still hold an opinion, and excluding it would shrink the very
+  // diversity the council exists for.
+  if (target === 'session') rows = rows.filter(m => m.tools);
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter(m => m.id.toLowerCase().indexOf(q) !== -1 ||
+                            m.name.toLowerCase().indexOf(q) !== -1);
+  }
+  if (freeOnly) rows = rows.filter(m => m.free);
+
+  const byId = (a, b) => a.id.localeCompare(b.id);
+  rows = rows.slice().sort((a, b) => {
+    if (sort === 'context') return b.context - a.context || byId(a, b);
+    if (sort === 'price') {
+      // Unpriced sorts LAST in a cheapest-first list. Treating it as zero puts
+      // the models whose cost is unknown at the top of the cheap list, which is
+      // the one place they must never be.
+      if (a.priced !== b.priced) return a.priced ? -1 : 1;
+      if (!a.priced) return byId(a, b);
+      return (a.promptPerM - b.promptPerM) || (a.completionPerM - b.completionPerM) || byId(a, b);
+    }
+    return byId(a, b);
+  });
+
+  if (!rows.length) {
+    el.innerHTML = catalogue.length
+      ? '<div class="none">nothing matches that filter</div>'
+      : '<div class="none">no catalogue</div>';
+    return;
+  }
+
+  const seated = {};
+  for (const st of councilSeats) seated[st.id] = true;
+
+  // Capped: 445 rows of DOM per keystroke stutters, and nobody scrolls past
+  // 200. The line underneath says what is hidden rather than letting the list
+  // imply it is complete.
+  const shown = rows.slice(0, 200);
+  el.innerHTML = shown.map((m) => {
+    const price = m.priced ? money(m.promptPerM) + ' / ' + money(m.completionPerM) : 'price unknown';
+    const tip = m.name + ' -- ' + m.id + ' -- ' +
+      (m.tools ? 'supports tools' : 'NO tool support, cannot drive the main session');
+    return '<div class="model' + (seated[m.id] ? ' seated' : '') + '" data-model="' +
+      escapeHtml(m.id) + '" title="' + escapeHtml(tip) + '">' +
+      '<span class="m-id">' + escapeHtml(m.id) + '</span>' +
+      (m.tools ? '' : '<span class="m-notools">no tools</span>') +
+      '<span class="m-ctx">' + ctxLabel(m.context) + '</span>' +
+      '<span class="m-price' + (m.priced ? '' : ' unknown') + '">' + escapeHtml(price) + '</span>' +
+      '</div>';
+  }).join('') + (rows.length > shown.length
+    ? '<div class="none">' + (rows.length - shown.length) + ' more, narrow the search</div>'
+    : '');
+}
+
+function requestModels(force) {
+  try { ws.send(JSON.stringify({ type: 'models', force: !!force })); } catch (e) {}
+}
+
+function wireModelPanel() {
+  const ids = ['model-search', 'model-target', 'model-sort', 'model-free'];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', renderModels);
+  }
+  const list = document.getElementById('model-list');
+  if (list) {
+    list.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-model]');
+      if (!row) return;
+      const m = catalogue.find(x => x.id === row.dataset.model);
+      if (!m) return;
+      // Clicking a seated model unseats it, so one control does both and the
+      // list needs no second affordance.
+      const isSeated = councilSeats.some(st => st.id === m.id);
+      try {
+        ws.send(JSON.stringify(isSeated
+          ? { type: 'seat', action: 'remove', id: m.id }
+          : { type: 'seat', action: 'add', model: m }));
+      } catch (err) {}
+    });
+  }
+  const seats = document.getElementById('seat-list');
+  if (seats) {
+    seats.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-unseat]');
+      if (!b) return;
+      try { ws.send(JSON.stringify({ type: 'seat', action: 'remove', id: b.dataset.unseat })); } catch (err) {}
+    });
+  }
 }
 
 // --- project HP -------------------------------------------------------------
@@ -899,6 +1079,10 @@ function handleControl(msg) {
     // rather than flashing the roster without them.
     renderAgentStats(msg.agentStats);
     renderRoster();
+    if (Array.isArray(msg.seats)) councilSeats = msg.seats;
+    if (msg.maxSeats) seatMax = msg.maxSeats;
+    councilWarnings = [];
+    renderSeats();
     if (!msg.hooks) console.warn('[renderer] host reports no hook helper — moods will not update');
     return;
   }
@@ -960,6 +1144,29 @@ function handleControl(msg) {
   }
   if (msg.type === 'agentStats') {
     renderAgentStats(msg.stats);
+    return;
+  }
+  if (msg.type === 'models') {
+    catalogue = Array.isArray(msg.models) ? msg.models : [];
+    catalogueMeta = { source: msg.source, fetchedAt: msg.fetchedAt, stale: msg.stale, error: msg.error };
+    if (Array.isArray(msg.seats)) councilSeats = msg.seats;
+    if (Array.isArray(msg.warnings)) councilWarnings = msg.warnings;
+    if (msg.max) seatMax = msg.max;
+    renderSeats();
+    renderProvenance();
+    renderModels();
+    return;
+  }
+  if (msg.type === 'seats') {
+    councilSeats = Array.isArray(msg.seats) ? msg.seats : [];
+    councilWarnings = Array.isArray(msg.warnings) ? msg.warnings : [];
+    if (msg.max) seatMax = msg.max;
+    // A refusal is SHOWN, never swallowed. "Claude cannot take a seat" is the
+    // rule that makes the council mean anything, and a click that silently does
+    // nothing teaches the opposite.
+    if (msg.error) councilWarnings = [msg.error].concat(councilWarnings);
+    renderSeats();
+    renderModels();
     return;
   }
   if (msg.type === 'mode') {
