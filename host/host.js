@@ -37,6 +37,7 @@ const { createStore } = require('./store');
 const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
+const { validResizeDims, classifyFrame } = require('./control');
 const { createAttention } = require('./attention');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
@@ -811,12 +812,27 @@ wss.on('connection', (ws) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
       const text = raw.toString();
-      if (text.startsWith('{')) {
+      // `classifyFrame` only PARSES. Dispatch is a separate try below, on
+      // purpose: Miguel, code review 2026-09-14 -- a single try around both
+      // steps meant a THROWING handler (an unvalidated resize, reliably) was
+      // caught by the same catch that means "not control JSON", and the raw
+      // control-message text was typed into the pty as literal keystrokes.
+      // Reachable by any malformed control frame, into a session that may be
+      // running with permissions bypassed. A handler failure must be logged
+      // and dropped -- it must never become keystrokes.
+      const msg = classifyFrame(text);
+      if (msg) {
         try {
-          const msg = JSON.parse(text);
           if (msg.type === 'resize') {
-            term.resize(msg.cols, msg.rows);
-            termState.resize(msg.cols, msg.rows);
+            // Validated before EITHER target is touched, and applied to both
+            // or neither: node-pty throws on bad dims, @xterm/headless
+            // instead silently clamps to a minimum of 2, so an unvalidated
+            // resize can desync the two permanently -- a serialized 2-column
+            // screen would then be handed to every future attach.
+            if (validResizeDims(msg.cols, msg.rows)) {
+              term.resize(msg.cols, msg.rows);
+              termState.resize(msg.cols, msg.rows);
+            }
             return;
           }
           if (msg.type === 'health') {
@@ -891,9 +907,13 @@ wss.on('connection', (ws) => {
               });
             return;
           }
-        } catch {
-          // Not control JSON — fall through and treat as literal input.
+        } catch (err) {
+          // A handler that threw is not "not control JSON" -- see the note
+          // above `classifyFrame`. Log and drop; never fall through to
+          // term.write, or this exact text becomes literal keystrokes.
+          console.log('[host] control message failed:', msg.type, err.message);
         }
+        return;
       }
       term.write(text);
       return;
