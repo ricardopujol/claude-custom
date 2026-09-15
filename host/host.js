@@ -28,6 +28,9 @@ const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { loadCatalogue } = require('./openrouter');
+const { normalizeCatalogue } = require('./models');
+const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
@@ -453,6 +456,35 @@ function refreshAgentStats() {
   return agentStatsPending;
 }
 
+// The OpenRouter catalogue and the council seats.
+//
+// The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
+// which is why the browser works today and the council does not. Loaded lazily
+// on the first request rather than at boot: a session that never opens the
+// panel should not make a network call at all.
+const CATALOGUE_CACHE = path.join(HARNESS_DIR, 'state', 'openrouter-catalogue.json');
+let cataloguePending = null;
+
+function currentCatalogue({ force = false } = {}) {
+  if (cataloguePending && !force) return cataloguePending;
+  cataloguePending = loadCatalogue({ cacheFile: CATALOGUE_CACHE, force })
+    .then(r => ({ ...r, models: normalizeCatalogue(r.rows), rows: undefined }))
+    .finally(() => { cataloguePending = null; });
+  return cataloguePending;
+}
+
+// Seats persist, so a council survives a restart. Stored as the thin shape
+// seats.js produces -- id, name, provider -- never a whole catalogue row, which
+// would freeze stale pricing into a file someone later reads as current.
+function readSeats() {
+  const saved = store.read('council', { seats: [] });
+  return Array.isArray(saved.seats) ? saved.seats : [];
+}
+
+function seatPayload(seats) {
+  return { type: 'seats', seats, max: MAX_SEATS, warnings: seatWarnings(seats) };
+}
+
 let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
@@ -728,6 +760,10 @@ wss.on('connection', (ws) => {
     cooldowns: cooldowns.list(),
     health: healthState,
     agentStats: lastAgentStats,
+    // Seats travel with the handshake; the CATALOGUE does not. It is a network
+    // call, and a session that never opens the panel should not make one.
+    seats: readSeats(),
+    maxSeats: MAX_SEATS,
   });
   // The handshake above carries `lastUsage`, which is ABSENCE until the first
   // read lands (~340ms cold). Nothing corrected it: the boot broadcast fires
@@ -790,6 +826,51 @@ wss.on('connection', (ws) => {
           }
           if (msg.type === 'input') {
             term.write(msg.data);
+            return;
+          }
+          if (msg.type === 'models') {
+            // Asynchronous and yielding for the same reason the fog read is:
+            // the loop here also accepts the hook helper's named-pipe
+            // connection, and it gives up after 80ms.
+            currentCatalogue({ force: !!msg.force }).then(
+              (c) => ws.send(JSON.stringify({
+                type: 'models', models: c.models, source: c.source,
+                fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
+                seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
+              })),
+              (err) => {
+                // Tell the CLIENT, not only the log. A silent failure leaves
+                // the panel reading "loading..." forever, which looks like a
+                // slow host rather than a lost answer.
+                console.log('[host] catalogue failed:', err.message);
+                try {
+                  ws.send(JSON.stringify({
+                    type: 'models', models: [], source: 'none', stale: true,
+                    error: err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
+                  }));
+                } catch { /* the socket went away */ }
+              }
+            );
+            return;
+          }
+          if (msg.type === 'seat') {
+            // add / remove. The RESULT is broadcast rather than returned to the
+            // asking client alone: two windows on one project share a council,
+            // and one of them silently disagreeing about who is seated is worse
+            // than a redraw.
+            const before = readSeats();
+            let seats = before;
+            let error = null;
+            if (msg.action === 'remove') {
+              seats = removeSeat(before, msg.id);
+            } else {
+              const model = (msg.model && typeof msg.model === 'object') ? msg.model : null;
+              const r = addSeat(before, model);
+              seats = r.seats;
+              error = r.error;
+            }
+            if (seats !== before) store.write('council', { seats });
+            broadcastControl({ ...seatPayload(seats), error });
             return;
           }
           if (msg.type === 'fog') {

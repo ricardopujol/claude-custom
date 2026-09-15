@@ -345,6 +345,46 @@
     .agent .career-sep { opacity: 0.5; }
     .agent .career-warn { color: var(--accent); font-weight: 600; cursor: help; }
 
+    /* --- model browser ---------------------------------------------------- */
+    #models-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+    #council h3, #procs h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--dim); margin: 0 0 4px; font-weight: 600; }
+    #seat-list { display: flex; flex-direction: column; gap: 3px; }
+    .seat { display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
+    .seat .seat-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .seat .seat-provider { color: var(--dim); font-size: 10px; }
+    .seat button { background: none; border: none; color: var(--dim); cursor: pointer;
+      font-size: 13px; line-height: 1; padding: 0 2px; }
+    .seat button:hover { color: var(--bad); }
+    /* Warnings, not errors: each describes a council that WORKS and whose
+       answers are worth less than they look. Amber, never red. */
+    #seat-warnings { margin-top: 4px; display: flex; flex-direction: column; gap: 3px; }
+    .seat-warn { font-size: 10px; line-height: 1.35; color: var(--accent);
+      border-left: 2px solid var(--accent); padding-left: 6px; opacity: .9; }
+    #model-controls { display: flex; flex-direction: column; gap: 4px; }
+    #model-controls .row { display: flex; gap: 4px; }
+    #model-controls select, #model-search { background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; font: inherit; font-size: 11px; }
+    #model-controls select { flex: 1; }
+    #model-search { width: 100%; }
+    .check { font-size: 10px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+    #model-provenance { font-size: 10px; line-height: 1.3; }
+    /* Stale prices are called out in amber. A month-old price shown as current
+       is the failure here that actually costs money. */
+    #model-provenance.stale { color: var(--accent); }
+    #model-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 0; flex: 1; }
+    .model { display: flex; align-items: baseline; gap: 6px; padding: 3px 5px; border-radius: 4px;
+      font-size: 11px; cursor: pointer; border: 1px solid transparent; }
+    .model:hover { background: var(--panel); border-color: var(--border); }
+    .model.seated { border-color: var(--accent); background: var(--panel); }
+    .model .m-id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .model .m-price { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+    .model .m-ctx { color: var(--dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+    /* An UNPRICED model is not a free one, and must never read like one. */
+    .model .m-price.unknown { color: var(--accent); }
+    .model .m-notools { color: var(--bad); font-size: 10px; }
+
     /* State is carried by opacity and a ring, so it still reads when the
        portrait itself is a placeholder. */
     .agent[data-state="sleeping"] { opacity: .42; }
@@ -445,6 +485,7 @@
           <button data-tab="agents" title="Who is working, and on what">Agents</button>
           <button data-tab="vault" title="Local encrypted secrets">Vault</button>
           <button data-tab="fog" title="What this project has actually been read">Map</button>
+          <button data-tab="models" title="Browse every model OpenRouter offers, and seat the council">Models</button>
         </nav>
         <div class="panel" data-panel="agents">
           <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
@@ -470,6 +511,30 @@
             transcript in plaintext, permanently. Copy is for other apps.</p>
         </div>
         <!-- Fog of war. The DARK rows are the point: files nobody has opened. -->
+        <div class="panel" data-panel="models" id="models-body">
+          <div id="council">
+            <h3>Council seats <span class="dim" id="seat-count"></span></h3>
+            <div id="seat-list"><div class="none">no seats — the council needs models that fail differently</div></div>
+            <div id="seat-warnings"></div>
+          </div>
+          <div id="model-controls">
+            <input id="model-search" type="search" placeholder="search 445 models" autocomplete="off" />
+            <div class="row">
+              <select id="model-target" title="What the model is for. The main session needs tool support; the council does not.">
+                <option value="council">for the council</option>
+                <option value="session">for the main session</option>
+              </select>
+              <select id="model-sort" title="Order">
+                <option value="price">cheapest</option>
+                <option value="context">biggest context</option>
+                <option value="name">by name</option>
+              </select>
+            </div>
+            <label class="check"><input type="checkbox" id="model-free" /> free only</label>
+          </div>
+          <div id="model-provenance" class="dim"></div>
+          <div id="model-list"><div class="none">loading the catalogue…</div></div>
+        </div>
         <div class="panel" data-panel="fog" id="fog-body">
           <div id="fog-summary" class="fog-sum">reading the map…</div>
           <div id="fog-list"></div>
