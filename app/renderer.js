@@ -470,6 +470,10 @@ function faceHtml(portrait) {
 // Career stats per agent, keyed by agent type. Arrives with the handshake and
 // again whenever an agent finishes, so the figures move as work happens.
 let agentStats = new Map();
+// The WHOLE payload, kept beside the map because `ok` lives on the payload and
+// not on any row -- and `ok: false` means the figures below are a lower bound,
+// which the panel has to be able to say.
+let lastAgentStatsPayload = null;
 
 // Ricardo: tokens spent and time worked IN THE PROJECT, not in this window.
 // Compact because it sits beside a 40px portrait -- "47.1M / 30m" reads at a
@@ -482,33 +486,37 @@ function compactTokens(n) {
   return String(Math.round(n));
 }
 
-function compactMinutes(ms) {
-  const mins = Math.round((Number(ms) || 0) / 60000);
-  if (mins < 60) return mins + 'm';
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return m ? `${h}h${m}m` : `${h}h`;
-}
-
 function careerHtml(agent) {
+  // Every judgement about HOW to draw these figures lives in
+  // app/career-display.js so it can be tested. Vera, 2026-09-14: the host
+  // computes `ok` -- absence, not zero -- and this consumer used to read
+  // neither it nor `unresolved`, so a failed read drew pixel-identically to
+  // "this agent never ran here".
+  const d = careerDisplay(agentStats.get(agent), lastAgentStatsPayload);
+  if (!d.draw) return '';
   const st = agentStats.get(agent);
-  // An agent that has never finished a run has no career yet. Drawing "0 / 0m"
-  // would read as "did nothing", which is a different claim from "no record".
-  if (!st || !st.runs) return '';
-  const detail = `${st.runs} run${st.runs === 1 ? '' : 's'} in this project - ` +
-    `${st.tokens.toLocaleString()} tokens - ${Math.round(st.ms / 60000)} min worked` +
-    (st.resolved === false ? ' - identity unresolved, this is a label not an agent type' : '');
-  return `<div class="career" title="${detail}">` +
-    `<span class="career-tok">${compactTokens(st.tokens)}</span>` +
+  return `<div class="career" title="${escapeHtml(d.detail)}">` +
+    `<span class="career-tok">${d.prefix}${compactTokens(st.tokens)}</span>` +
     `<span class="career-sep">/</span>` +
-    `<span class="career-min">${compactMinutes(st.ms)}</span>` +
-    (st.resolved === false ? '<span class="career-warn" title="identity unresolved">?</span>' : '') +
+    `<span class="career-min">${d.minutesPrefix}${formatCareerMinutes(st.ms)}</span>` +
+    (d.unresolved ? '<span class="career-warn" title="identity unresolved">?</span>' : '') +
     `</div>`;
 }
 
 function renderRoster() {
   if (roster.size === 0) {
-    agentsEl.innerHTML = '<div class="empty">No agents yet — portraits light up when one runs.</div>';
+    // "No agents yet" is FALSE on a project with history. Vera, 2026-09-14:
+    // the careers are project-scoped (correctly) but the rows they hang on
+    // are session-scoped -- `roster` is populated only by hook events in THIS
+    // window's run -- so a freshly launched window claimed no agent had ever
+    // run here while 9 agents' careers sat in `agentStats` unshown. Whether
+    // history-only agents should get their own sleeping rows is a product
+    // question; asserting they do not exist is simply wrong either way.
+    const known = agentStats.size;
+    agentsEl.innerHTML = known
+      ? `<div class="empty">${known} agent${known === 1 ? ' has' : 's have'} run in this project — ` +
+        `portraits light up when one runs in this session.</div>`
+      : '<div class="empty">No agents yet — portraits light up when one runs.</div>';
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -530,6 +538,18 @@ function renderRoster() {
 
 function renderAgentStats(stats) {
   if (!stats || !Array.isArray(stats.agents)) return;
+  // A FAILED read must not blank a good one. Vera, 2026-09-14: `ok: false`
+  // arrives with `agents: []`, which passed the Array.isArray check and
+  // replaced every known career with nothing -- so one transient EPERM on a
+  // subagents directory (ordinary on Windows) wiped the whole panel until the
+  // next SubagentStop. usage.js reached the same conclusion one module over:
+  // stale-and-lagging beats absent.
+  if (stats.ok === false && stats.agents.length === 0 && agentStats.size > 0) {
+    lastAgentStatsPayload = { ...stats, agents: [...agentStats.values()] };
+    renderRoster();
+    return;
+  }
+  lastAgentStatsPayload = stats;
   agentStats = new Map(stats.agents.map(a => [a.agent, a]));
   renderRoster();
 }
