@@ -384,6 +384,15 @@
     /* An UNPRICED model is not a free one, and must never read like one. */
     .model .m-price.unknown { color: var(--accent); }
     .model .m-notools { color: var(--bad); font-size: 10px; }
+    /* Provider headings. The provider is also the unit the council cares about:
+       two models from one vendor share failure modes. */
+    .provider { display: flex; align-items: baseline; gap: 6px; font-size: 10px;
+      text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+      margin: 6px 0 1px; padding-bottom: 2px; border-bottom: 1px solid var(--border); }
+    .provider:first-child { margin-top: 0; }
+    .provider .p-name { flex: 1; font-weight: 600; }
+    .provider .p-count { opacity: .6; }
+    .model { padding-left: 10px; }
 
     /* State is carried by opacity and a ring, so it still reads when the
        portrait itself is a placeholder. */

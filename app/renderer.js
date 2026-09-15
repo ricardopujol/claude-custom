@@ -215,6 +215,12 @@ function setTab(tab) {
   }
 
   if (tab === 'fog') requestFog();
+  // Inside setTab, not in the click handler, because setTab is the ONE place
+  // every path into a panel goes through -- a click, a keyboard toggle, and the
+  // restore of a saved tab on launch. Hanging it off the click alone meant a
+  // window that reopened with the panel already showing never asked for
+  // anything and sat on "loading" forever.
+  if (tab === 'models' && !catalogueMeta) requestModels(false);
   if (tab === 'vault') {
     renderVault();
     setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -234,12 +240,7 @@ function setTab(tab) {
 document.addEventListener('click', (e) => {
   const button = e.target.closest('#side-tabs button');
   if (!button) return;
-  const next = nextTab(activeTab, button.dataset.tab);
-  setTab(next);
-  // The catalogue is a NETWORK call, so it is fetched when the panel is first
-  // opened rather than at launch. A session that never looks at models should
-  // never reach out.
-  if (next === 'models' && !catalogueMeta) requestModels(false);
+  setTab(nextTab(activeTab, button.dataset.tab));
 });
 
 document.getElementById('side-hint').addEventListener('click', () => {
@@ -614,6 +615,15 @@ function renderModels() {
   const freeEl = document.getElementById('model-free');
   const freeOnly = !!(freeEl && freeEl.checked);
 
+  // An empty list is ambiguous on its own -- "still loading", "nothing
+  // matched" and "the fetch failed" all render as nothing. Each is said.
+  if (!catalogue.length) {
+    el.innerHTML = catalogueMeta
+      ? '<div class="none">' + escapeHtml(catalogueMeta.error || 'no models returned') + '</div>'
+      : '<div class="none">loading the catalogue\u2026</div>';
+    return;
+  }
+
   let rows = catalogue;
   // Only the SESSION target restricts by tools: a model that cannot call one
   // can still hold an opinion, and excluding it would shrink the very
@@ -626,48 +636,74 @@ function renderModels() {
   }
   if (freeOnly) rows = rows.filter(m => m.free);
 
+  if (!rows.length) {
+    el.innerHTML = '<div class="none">nothing matches that filter</div>';
+    return;
+  }
+
   const byId = (a, b) => a.id.localeCompare(b.id);
-  rows = rows.slice().sort((a, b) => {
+  const within = (a, b) => {
     if (sort === 'context') return b.context - a.context || byId(a, b);
     if (sort === 'price') {
-      // Unpriced sorts LAST in a cheapest-first list. Treating it as zero puts
-      // the models whose cost is unknown at the top of the cheap list, which is
-      // the one place they must never be.
+      // Unpriced sorts LAST. Treating it as zero would put the models whose
+      // cost is unknown at the top of the cheap list, which is the one place
+      // they must never be.
       if (a.priced !== b.priced) return a.priced ? -1 : 1;
       if (!a.priced) return byId(a, b);
       return (a.promptPerM - b.promptPerM) || (a.completionPerM - b.completionPerM) || byId(a, b);
     }
     return byId(a, b);
-  });
+  };
 
-  if (!rows.length) {
-    el.innerHTML = catalogue.length
-      ? '<div class="none">nothing matches that filter</div>'
-      : '<div class="none">no catalogue</div>';
-    return;
+  // GROUPED BY PROVIDER. 445 flat rows is a wall; the provider is also the unit
+  // the council actually cares about, since two models from one vendor share
+  // failure modes. Groups are ordered by their best member under the chosen
+  // sort, so "cheapest" still puts the cheapest provider first rather than
+  // alphabetising them and burying it.
+  const groups = new Map();
+  for (const m of rows) {
+    const key = m.provider || 'other';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
   }
+  for (const list of groups.values()) list.sort(within);
+
+  const ordered = [...groups.entries()].sort((a, b) => within(a[1][0], b[1][0]));
 
   const seated = {};
   for (const st of councilSeats) seated[st.id] = true;
 
-  // Capped: 445 rows of DOM per keystroke stutters, and nobody scrolls past
-  // 200. The line underneath says what is hidden rather than letting the list
-  // imply it is complete.
-  const shown = rows.slice(0, 200);
-  el.innerHTML = shown.map((m) => {
-    const price = m.priced ? money(m.promptPerM) + ' / ' + money(m.completionPerM) : 'price unknown';
-    const tip = m.name + ' -- ' + m.id + ' -- ' +
-      (m.tools ? 'supports tools' : 'NO tool support, cannot drive the main session');
-    return '<div class="model' + (seated[m.id] ? ' seated' : '') + '" data-model="' +
-      escapeHtml(m.id) + '" title="' + escapeHtml(tip) + '">' +
-      '<span class="m-id">' + escapeHtml(m.id) + '</span>' +
-      (m.tools ? '' : '<span class="m-notools">no tools</span>') +
-      '<span class="m-ctx">' + ctxLabel(m.context) + '</span>' +
-      '<span class="m-price' + (m.priced ? '' : ' unknown') + '">' + escapeHtml(price) + '</span>' +
-      '</div>';
-  }).join('') + (rows.length > shown.length
-    ? '<div class="none">' + (rows.length - shown.length) + ' more, narrow the search</div>'
-    : '');
+  // Capped across the whole list, not per group: 445 rows of DOM per keystroke
+  // stutters. The line underneath says what is hidden rather than letting the
+  // list imply it is complete.
+  const LIMIT = 200;
+  let drawn = 0;
+  const out = [];
+  for (const [provider, list] of ordered) {
+    if (drawn >= LIMIT) break;
+    const take = list.slice(0, LIMIT - drawn);
+    drawn += take.length;
+    out.push('<div class="provider"><span class="p-name">' + escapeHtml(provider) +
+      '</span><span class="p-count">' + list.length + '</span></div>');
+    for (const m of take) {
+      const price = m.priced ? money(m.promptPerM) + ' / ' + money(m.completionPerM) : 'price unknown';
+      // The short name inside a provider group: the prefix is the heading.
+      const short = m.id.indexOf('/') > 0 ? m.id.slice(m.id.indexOf('/') + 1) : m.id;
+      const tip = m.name + ' -- ' + m.id + ' -- ' +
+        (m.tools ? 'supports tools' : 'NO tool support, cannot drive the main session');
+      out.push('<div class="model' + (seated[m.id] ? ' seated' : '') + '" data-model="' +
+        escapeHtml(m.id) + '" title="' + escapeHtml(tip) + '">' +
+        '<span class="m-id">' + escapeHtml(short) + '</span>' +
+        (m.tools ? '' : '<span class="m-notools">no tools</span>') +
+        '<span class="m-ctx">' + ctxLabel(m.context) + '</span>' +
+        '<span class="m-price' + (m.priced ? '' : ' unknown') + '">' + escapeHtml(price) + '</span>' +
+        '</div>');
+    }
+  }
+  if (rows.length > drawn) {
+    out.push('<div class="none">' + (rows.length - drawn) + ' more, narrow the search</div>');
+  }
+  el.innerHTML = out.join('');
 }
 
 function requestModels(force) {
