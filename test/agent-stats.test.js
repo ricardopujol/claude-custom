@@ -14,7 +14,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { readAgentStats, resolveAgent } = require('../host/agent-stats');
+const { readAgentStats, resolveAgent, identityTables, readTranscript } =
+  require('../host/agent-stats');
 const { projectDirName } = require('../host/project-dir');
 
 const NL = String.fromCharCode(10);
@@ -427,6 +428,73 @@ test('a CORRUPT meta.json is a failure, not the ordinary "no meta" case -- ok mu
 
   const r = await readAgentStats({ cwd: CWD, projectsDir: root });
   assert.strictEqual(r.ok, false, 'a corrupt meta must not report the roster complete');
+});
+
+test('readTranscript treats a VANISHED file as nothing, and an unreadable one as a failure', async () => {
+  // Miguel, merge-gate 2026-09-15: he deleted the ENOENT branch entirely and
+  // all 24 tests stayed green -- the mutant survived, so the "gone between
+  // the listing and the read IS the correct total" half of the split was
+  // pinned by nothing. These two assertions kill it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-rt-'));
+  assert.strictEqual(await readTranscript(path.join(dir, 'never-existed.jsonl')), null,
+    'a file that vanished contributes nothing, and that is correct -- not an error');
+
+  const asDir = path.join(dir, 'a-directory.jsonl');
+  fs.mkdirSync(asDir);
+  await assert.rejects(() => readTranscript(asDir), 'a file that EXISTS and cannot be read must throw');
+});
+
+test('identityTables reports unreadable transcripts instead of swallowing them', async () => {
+  // Dexter + Miguel, 2026-09-15: this was the one read site the first pass
+  // skipped, and it is the most expensive one. A top-level session transcript
+  // is read ONLY here, so its failure was invisible by construction -- and
+  // when it fails, every NAMED spawn recorded in it loses its identity and
+  // scatters under its label, while `ok` still reported the roster complete.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-id-'));
+  const asDir = path.join(dir, 's1.jsonl');
+  fs.mkdirSync(asDir);
+
+  const r = await identityTables([{ file: asDir, session: 's1' }]);
+  assert.strictEqual(r.errors, 1, 'an unreadable identity source must be counted');
+});
+
+test('identityTables does not count a transcript that simply vanished', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-id2-'));
+  const r = await identityTables([{ file: path.join(dir, 'gone.jsonl'), session: 's1' }]);
+  assert.strictEqual(r.errors, 0);
+});
+
+test('a meta that PARSES but is not an object is corruption, not an absent identity', async () => {
+  // Dexter, 2026-09-15: the ENOENT-vs-throw split only catches corruption
+  // that THROWS. `JSON.parse('null')` succeeds, so meta became null, the run
+  // was dropped by `if (!agent) continue`, and nothing counted it -- nine
+  // million tokens omitted from a roster reporting itself complete. Same for
+  // `0`, `""`, `[]`, or a schema-drifted object from another CLI version.
+  const { root, dir } = project();
+  session(dir, 's1', [{ id: 't1', type: 'code-reviewer' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'a1.meta.json'), 'null');
+  fs.writeFileSync(path.join(sd, 'a1.jsonl'), JSON.stringify(turn(0, U(9000000, 0))) + NL);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.ok, false, 'a meta file that exists but holds no identity is a failure');
+});
+
+test('the payload carries HOW MUCH could not be read, not just that something could not', async () => {
+  // Dexter F7 / Miguel I3: host/usage.js returns `{ ok, absent, stale,
+  // unreadable }` so its UI can say "3 transcripts could not be read — this
+  // is a lower bound". A bare boolean can never say how much is missing.
+  const { root, dir } = project();
+  session(dir, 's1', [{ id: 't1', type: 'code-reviewer' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'a1.meta.json'), '{');
+  fs.writeFileSync(path.join(sd, 'a1.jsonl'), JSON.stringify(turn(0, U(5, 0))) + NL);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.unreadable >= 1, `expected a count, got ${JSON.stringify(r.unreadable)}`);
 });
 
 test('a transcript that cannot be read (e.g. EISDIR) is a failure, not silence', async () => {
