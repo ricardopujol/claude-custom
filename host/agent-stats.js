@@ -79,6 +79,16 @@ function defaultProjectsDir() {
  */
 async function identityTables(files) {
   const byToolUse = new Map();
+  // name -> Map(session -> type | null). SESSION-SCOPED on purpose: Dexter,
+  // logic review 2026-09-14 -- a flat name->type map merges two agents'
+  // careers the moment a name is reused for a different type ANYWHERE in the
+  // project's history, and readdir order (not anything meaningful) decides
+  // which type wins. Worse, it can resolve an orphaned run -- its own parent
+  // session pruned -- to a completely unrelated agent's type while reporting
+  // `resolved: true`. A name only means what it meant WITHIN the session that
+  // established it. `null` marks a name reused for two different types within
+  // the SAME session too: refusing to resolve is strictly better than
+  // silently picking whichever spawn was parsed last.
   const byName = new Map();
 
   for (const entry of files) {
@@ -103,7 +113,15 @@ async function identityTables(files) {
               const input = block.input || {};
               if (!input.subagent_type) continue;
               if (block.id) byToolUse.set(block.id, input.subagent_type);
-              if (input.name) byName.set(input.name, input.subagent_type);
+              if (input.name) {
+                let bySession = byName.get(input.name);
+                if (!bySession) { bySession = new Map(); byName.set(input.name, bySession); }
+                const existing = bySession.get(entry.session);
+                bySession.set(
+                  entry.session,
+                  existing && existing !== input.subagent_type ? null : input.subagent_type,
+                );
+              }
             }
           }
         } catch { /* a partial final line is normal */ }
@@ -122,13 +140,19 @@ async function identityTables(files) {
  * resolved type from an unresolved label will happily draw them side by side as
  * if they were peers.
  */
-function resolveAgent(meta, tables) {
+function resolveAgent(meta, tables, session) {
   const label = (meta && meta.agentType) || null;
   if (meta && meta.toolUseId && tables.byToolUse.has(meta.toolUseId)) {
     return { agent: tables.byToolUse.get(meta.toolUseId), source: 'tool-use' };
   }
-  if (label && tables.byName.has(label)) {
-    return { agent: tables.byName.get(label), source: 'name' };
+  if (label) {
+    const bySession = tables.byName.get(label);
+    const resolved = bySession && bySession.get(session);
+    // `resolved` is falsy both when this session never used the name (an
+    // orphan whose parent session is gone) and when it used the name for two
+    // different types (a same-session collision) -- both cases must degrade
+    // to the unresolved label, never guess.
+    if (resolved) return { agent: resolved, source: 'name' };
   }
   return { agent: label, source: label ? 'unresolved' : 'unknown' };
 }
@@ -216,7 +240,7 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
       meta = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
     } catch { /* a transcript with no meta still has tokens worth counting */ }
 
-    const { agent, source } = resolveAgent(meta, tables);
+    const { agent, source } = resolveAgent(meta, tables, entry.session);
     if (!agent) continue;                 // nothing to file it under
     if (source === 'unresolved') unresolved++;
 

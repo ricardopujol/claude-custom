@@ -147,11 +147,63 @@ test('resolveAgent prefers the tool-use id over the name', () => {
   // stronger key -- it identifies THIS spawn rather than a label.
   const tables = {
     byToolUse: new Map([['toolu_1', 'logic-reviewer']]),
-    byName: new Map([['dexter', 'code-reviewer']]),
+    byName: new Map([['dexter', new Map([['s1', 'code-reviewer']])]]),
   };
-  const r = resolveAgent({ agentType: 'dexter', toolUseId: 'toolu_1' }, tables);
+  const r = resolveAgent({ agentType: 'dexter', toolUseId: 'toolu_1' }, tables, 's1');
   assert.strictEqual(r.agent, 'logic-reviewer');
   assert.strictEqual(r.source, 'tool-use');
+});
+
+// --- identity collisions across and within sessions ---------------------------
+// Dexter, logic review 2026-09-14: `byName` was one flat map over the whole
+// project's history, so a name reused for a different type merged two
+// distinct careers into one -- and worse, could resolve an orphaned run (its
+// own session pruned) to a completely unrelated agent's type while still
+// reporting `resolved: true`.
+
+test('a name reused across DIFFERENT sessions for different types does not merge their careers', async () => {
+  const { root, dir } = project();
+  session(dir, 's1', [{ id: 'toolu_1', type: 'code-reviewer', name: 'reviewer' }]);
+  session(dir, 's2', [{ id: 'toolu_2', type: 'logic-reviewer', name: 'reviewer' }]);
+  subagent(dir, 's1', 'a1', { agentType: 'reviewer', requestShape: 'background' }, [turn(0, U(100, 0))]);
+  subagent(dir, 's2', 'a2', { agentType: 'reviewer', requestShape: 'background' }, [turn(0, U(200, 0))]);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  const byAgent = Object.fromEntries(r.agents.map(a => [a.agent, a.tokens]));
+  assert.deepStrictEqual(byAgent, { 'code-reviewer': 100, 'logic-reviewer': 200 });
+});
+
+test('a name resolved in a DIFFERENT session does not resolve a run whose own session is gone', async () => {
+  // A named spawn elsewhere in the project happened to reuse this label for a
+  // different type. Without session scoping, resolveAgent returned that
+  // stranger's type AND marked the row resolved -- worse than the unresolved
+  // label the orphaned run would get standing on its own.
+  const { root, dir } = project();
+  session(dir, 's_named', [{ id: 'toolu_x', type: 'general-purpose', name: 'code-reviewer' }]);
+  // s_old's own session transcript is gone (pruned); only its subagent survives.
+  const sd = path.join(dir, 's_old', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'a9.meta.json'),
+    JSON.stringify({ agentType: 'code-reviewer', toolUseId: 'toolu_gone' }));
+  fs.writeFileSync(path.join(sd, 'a9.jsonl'), JSON.stringify(turn(0, U(5000000, 0))) + NL);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  const orphan = r.agents.find(a => a.tokens === 5000000);
+  assert.strictEqual(orphan.agent, 'code-reviewer', "kept as its own label, not the stranger's type");
+  assert.strictEqual(orphan.resolved, false, 'must be flagged unresolved, not silently resolved to general-purpose');
+});
+
+test('a name reused for two different types WITHIN one session resolves to neither', async () => {
+  const { root, dir } = project();
+  session(dir, 's1', [
+    { id: 'toolu_1', type: 'code-reviewer', name: 'dup' },
+    { id: 'toolu_2', type: 'logic-reviewer', name: 'dup' },
+  ]);
+  subagent(dir, 's1', 'a1', { agentType: 'dup', requestShape: 'background' }, [turn(0, U(9, 0))]);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.agents[0].agent, 'dup');
+  assert.strictEqual(r.agents[0].resolved, false);
 });
 
 // --- the numbers --------------------------------------------------------------
