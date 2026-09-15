@@ -76,6 +76,15 @@ function defaultProjectsDir() {
  * subagent transcripts included, because an agent can spawn an agent and the
  * inner `Agent` block then lives in the outer agent's transcript rather than in
  * the session's.
+ *
+ * Returns `{ byToolUse, byName }`:
+ *
+ *   byToolUse  Map(toolUseId -> subagent_type). Project-global, correctly:
+ *              `toolu_*` ids are unique, so there is nothing to scope.
+ *   byName     Map(name -> Map(session -> subagent_type | null)). SESSION-
+ *              SCOPED, and `null` marks a name that meant two different types
+ *              within one session. See the comment at the `bySession.set`
+ *              below for why both of those are load-bearing.
  */
 async function identityTables(files) {
   const byToolUse = new Map();
@@ -116,11 +125,21 @@ async function identityTables(files) {
               if (input.name) {
                 let bySession = byName.get(input.name);
                 if (!bySession) { bySession = new Map(); byName.set(input.name, bySession); }
-                const existing = bySession.get(entry.session);
-                bySession.set(
-                  entry.session,
-                  existing && existing !== input.subagent_type ? null : input.subagent_type,
-                );
+                // Tests PRESENCE, not truthiness. `null` is the collision
+                // marker and is itself falsy, so an `existing && ...` guard
+                // takes the else branch once poisoned and writes a concrete
+                // type back -- the marker survived exactly until the next
+                // spawn of that name. Miguel and Dexter both caught this at
+                // the 2026-09-15 merge gate: A, B, A resolved to A and
+                // reported `resolved: true`, which is the "silently picking
+                // whichever spawn was parsed last" this exists to prevent.
+                // Poisoning must be one-way: null !== any type, so once set
+                // it stays set.
+                if (!bySession.has(entry.session)) {
+                  bySession.set(entry.session, input.subagent_type);
+                } else if (bySession.get(entry.session) !== input.subagent_type) {
+                  bySession.set(entry.session, null);
+                }
               }
             }
           }
@@ -139,6 +158,18 @@ async function identityTables(files) {
  * GUESS -- a name we could not resolve -- and a caller that cannot tell a
  * resolved type from an unresolved label will happily draw them side by side as
  * if they were peers.
+ *
+ * @param meta    the run's `.meta.json`, or null if it had none
+ * @param tables  from `identityTables`: `{ byToolUse: Map(id -> type),
+ *                byName: Map(name -> Map(session -> type | null)) }`, where a
+ *                `null` marks a name that meant two different types in that
+ *                session and therefore resolves to neither
+ * @param session the session the RUN belongs to. Name resolution is scoped to
+ *                it: a name only means what it meant within the session that
+ *                established it. Omitting it is not an error and cannot cause a
+ *                wrong attribution -- every named run simply degrades to an
+ *                unresolved label, which is the safe direction but is also a
+ *                silent, project-wide downgrade, so callers must pass it.
  */
 function resolveAgent(meta, tables, session) {
   const label = (meta && meta.agentType) || null;

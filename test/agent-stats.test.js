@@ -154,6 +154,38 @@ test('resolveAgent prefers the tool-use id over the name', () => {
   assert.strictEqual(r.source, 'tool-use');
 });
 
+test('resolveAgent resolves by name within the session that established it', () => {
+  // Dexter, 2026-09-15: the fixture above only exercises the tool-use branch,
+  // so the NAME branch -- the one whose table shape changed -- was never
+  // touched by a unit test. It survived the change by luck, not by coverage.
+  const tables = {
+    byToolUse: new Map(),
+    byName: new Map([['dexter', new Map([['s1', 'logic-reviewer']])]]),
+  };
+  const hit = resolveAgent({ agentType: 'dexter' }, tables, 's1');
+  assert.strictEqual(hit.agent, 'logic-reviewer');
+  assert.strictEqual(hit.source, 'name');
+
+  // A DIFFERENT session must not borrow s1's meaning for that name.
+  const miss = resolveAgent({ agentType: 'dexter' }, tables, 's2');
+  assert.strictEqual(miss.agent, 'dexter');
+  assert.strictEqual(miss.source, 'unresolved');
+});
+
+test('resolveAgent degrades to an unresolved label when the session is not supplied', () => {
+  // Pins the direction of the degradation for a caller that forgets the third
+  // argument: an honest label, never a wrong attribution. Both reviewers
+  // flagged the positional signature as a silent trap, and this is the
+  // minimum defence -- the failure mode is now asserted rather than assumed.
+  const tables = {
+    byToolUse: new Map(),
+    byName: new Map([['dexter', new Map([['s1', 'logic-reviewer']])]]),
+  };
+  const r = resolveAgent({ agentType: 'dexter' }, tables);
+  assert.strictEqual(r.agent, 'dexter');
+  assert.strictEqual(r.source, 'unresolved');
+});
+
 // --- identity collisions across and within sessions ---------------------------
 // Dexter, logic review 2026-09-14: `byName` was one flat map over the whole
 // project's history, so a name reused for a different type merged two
@@ -203,6 +235,49 @@ test('a name reused for two different types WITHIN one session resolves to neith
 
   const r = await readAgentStats({ cwd: CWD, projectsDir: root });
   assert.strictEqual(r.agents[0].agent, 'dup');
+  assert.strictEqual(r.agents[0].resolved, false);
+});
+
+test('two named runs sharing one ambiguous name still share a row -- flagged, not split', async () => {
+  // Dexter, 2026-09-15: the HONEST limit of the session-scoping fix, pinned so
+  // nobody assumes more than it delivers. Cross-session merging is gone and
+  // the row no longer claims to be resolved -- but within one session, two
+  // background runs whose only identity is the same ambiguous name cannot be
+  // told apart, so they still aggregate. You cannot split what you cannot
+  // identify; the fix makes that visible rather than silent.
+  const { root, dir } = project();
+  session(dir, 's1', [
+    { id: 'toolu_1', type: 'code-reviewer', name: 'dup' },
+    { id: 'toolu_2', type: 'logic-reviewer', name: 'dup' },
+  ]);
+  subagent(dir, 's1', 'a1', { agentType: 'dup', requestShape: 'background' }, [turn(0, U(1000, 0))]);
+  subagent(dir, 's1', 'a2', { agentType: 'dup', requestShape: 'background' }, [turn(0, U(9000000, 0))]);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.agents.length, 1);
+  assert.strictEqual(r.agents[0].agent, 'dup');
+  assert.strictEqual(r.agents[0].runs, 2);
+  assert.strictEqual(r.agents[0].resolved, false, 'merged, but never presented as a clean identity');
+});
+
+test('a detected collision STAYS unresolved when the name is reused a third time', async () => {
+  // Miguel, merge-gate review 2026-09-15: the collision marker was not sticky.
+  // Written as `existing && existing !== type ? null : type`, a third spawn
+  // finds `existing === null`, takes the falsy branch, and overwrites the
+  // marker with a concrete type again -- so A, B, A resolves to A and reports
+  // `resolved: true`, which is exactly the "silently picking whichever spawn
+  // was parsed last" the fix promises not to do. Two spawns was the only case
+  // the original test covered.
+  const { root, dir } = project();
+  session(dir, 's1', [
+    { id: 'toolu_1', type: 'code-reviewer', name: 'dup' },
+    { id: 'toolu_2', type: 'logic-reviewer', name: 'dup' },
+    { id: 'toolu_3', type: 'code-reviewer', name: 'dup' },
+  ]);
+  subagent(dir, 's1', 'a1', { agentType: 'dup', requestShape: 'background' }, [turn(0, U(9, 0))]);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.agents[0].agent, 'dup', 'must stay a label, not resolve to the last-parsed type');
   assert.strictEqual(r.agents[0].resolved, false);
 });
 
