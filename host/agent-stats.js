@@ -192,8 +192,16 @@ async function readTranscript(file) {
   let raw;
   try {
     raw = await fsp.readFile(file, 'utf8');
-  } catch {
-    return null;
+  } catch (err) {
+    // ENOENT -- vanished between the listing and the read -- contributes
+    // nothing, and that IS the correct total. Anything else (EISDIR because
+    // `transcripts.js` enumerates by name and can list a directory; EPERM; a
+    // corrupt filesystem entry) is a failure the caller must count: the run's
+    // tokens are real and simply unread, not absent. Dexter, logic review
+    // 2026-09-14 -- a run vanishing here was previously indistinguishable
+    // from one that genuinely never happened.
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
   }
   const acc = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
   const stamps = [];
@@ -246,20 +254,30 @@ async function readTranscript(file) {
  * Career stats for every agent that has ever run in this project folder.
  *
  * Returns `{ ok, agents, unresolved }`, agents sorted by spend. `ok` is false
- * only when the project folder itself could not be read -- ABSENCE, not zero,
- * for the same reason host/usage.js draws that line.
+ * when the project folder itself could not be read, OR when a meta or
+ * transcript file that DOES exist could not be read or parsed -- ABSENCE, not
+ * zero, for the same reason host/usage.js draws that line. A missing meta
+ * file (ENOENT) is the ordinary case for a run whose identity was never
+ * recorded and does not count against `ok`; a meta or transcript that exists
+ * but is unreadable or corrupt does.
  */
 async function readAgentStats({ cwd, projectsDir } = {}) {
   const root = projectsDir || defaultProjectsDir();
   const dir = path.join(root, projectDirName(cwd));
 
-  const { files, errors } = await transcriptFiles(dir);
+  const { files, errors: enumErrors } = await transcriptFiles(dir);
   if (files === null) return { ok: false, agents: [], unresolved: 0 };
 
   const tables = await identityTables(files);
 
   const byAgent = new Map();
   let unresolved = 0;
+  // Read/parse failures on a file we KNOW exists (transcriptFiles listed it),
+  // as opposed to the ordinary absence of a meta sibling that was simply
+  // never written. Dexter, logic review 2026-09-14: previously uncounted, so
+  // `ok` could report the roster complete while runs worth millions of tokens
+  // were silently dropped.
+  let readErrors = 0;
 
   for (const entry of files) {
     if (!entry.subagent) continue;
@@ -269,14 +287,27 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
     let meta = null;
     try {
       meta = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
-    } catch { /* a transcript with no meta still has tokens worth counting */ }
+    } catch (err) {
+      // ENOENT -- no meta was ever written for this run -- is the ordinary
+      // case a caller relies on (a transcript with no identity still has
+      // tokens worth counting, filed as an unresolved label below). Anything
+      // else -- the file exists but is truncated, corrupt, or unreadable --
+      // is a failure: the run's true identity may be lost, not merely absent.
+      if (!err || err.code !== 'ENOENT') readErrors++;
+    }
 
     const { agent, source } = resolveAgent(meta, tables, entry.session);
     if (!agent) continue;                 // nothing to file it under
     if (source === 'unresolved') unresolved++;
 
-    const read = await readTranscript(entry.file);
-    if (!read) continue;
+    let read;
+    try {
+      read = await readTranscript(entry.file);
+    } catch {
+      readErrors++;                       // exists but could not be read: absence, not zero
+      continue;
+    }
+    if (!read) continue;                  // gone between listing and read: correctly nothing
 
     const row = byAgent.get(agent) || {
       agent, runs: 0, tokens: 0, ms: 0,
@@ -297,7 +328,7 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
   }
 
   const agents = [...byAgent.values()].sort((a, b) => b.tokens - a.tokens);
-  return { ok: errors === 0, agents, unresolved };
+  return { ok: enumErrors === 0 && readErrors === 0, agents, unresolved };
 }
 
 module.exports = { readAgentStats, resolveAgent, identityTables, SUBAGENTS, IDLE_GAP_MS };

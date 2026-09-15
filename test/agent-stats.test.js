@@ -409,6 +409,37 @@ test('a transcript with no meta still has its tokens counted somewhere or not at
 
   const r = await readAgentStats({ cwd: CWD, projectsDir: root });
   assert.deepStrictEqual(r.agents, []);
+  assert.strictEqual(r.ok, true, 'a missing meta file is the ordinary case, not a failure');
+});
+
+// --- swallowed read failures ---------------------------------------------------
+// Dexter, logic review 2026-09-14: every read/parse failure in this module was
+// swallowed with no counter watching it, so `ok` could report the roster
+// complete while millions of real tokens were silently absent.
+
+test('a CORRUPT meta.json is a failure, not the ordinary "no meta" case -- ok must say so', async () => {
+  const { root, dir } = project();
+  session(dir, 's1', [{ id: 't1', type: 'code-reviewer' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'a1.meta.json'), '{');   // truncated write, not absent
+  fs.writeFileSync(path.join(sd, 'a1.jsonl'), JSON.stringify(turn(0, U(5000000, 0))) + NL);
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.ok, false, 'a corrupt meta must not report the roster complete');
+});
+
+test('a transcript that cannot be read (e.g. EISDIR) is a failure, not silence', async () => {
+  const { root, dir } = project();
+  session(dir, 's1', [{ id: 't1', type: 'code-reviewer' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'a1.meta.json'),
+    JSON.stringify({ agentType: 'code-reviewer', toolUseId: 't1' }));
+  fs.mkdirSync(path.join(sd, 'a1.jsonl'));   // a directory where a transcript should be
+
+  const r = await readAgentStats({ cwd: CWD, projectsDir: root });
+  assert.strictEqual(r.ok, false, 'an unreadable transcript must not report the roster complete');
 });
 
 test('a career does not double-count a multi-block message', async () => {
