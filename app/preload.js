@@ -9,10 +9,24 @@
  * Deliberately one-way and one-purpose. contextIsolation stays on; nothing from
  * Node reaches page scripts.
  */
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('harness', {
   attention: (surfaces) => ipcRenderer.send('attention', surfaces),
+
+  // The real filesystem path behind a dropped File.
+  //
+  // `File.path` WAS REMOVED IN ELECTRON 32 -- this app is on 33 -- so the old
+  // one-liner every drag-and-drop snippet on the internet still shows returns
+  // undefined here, silently. `webUtils.getPathForFile` is the replacement and
+  // it only exists in the preload: with contextIsolation on, page scripts
+  // cannot reach it, which is the whole reason this crosses the bridge.
+  //
+  // Returns '' rather than throwing for anything that is not a real file (a
+  // dragged URL, a text selection), so the caller filters instead of crashing.
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
+  },
 
   // The secret store. Every call crosses into main, where the vault lives --
   // the window never holds the file, the key, or more than one secret at a

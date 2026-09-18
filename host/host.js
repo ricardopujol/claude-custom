@@ -38,6 +38,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
+const { planDrop } = require('./drop');
 const { createAttention } = require('./attention');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
@@ -360,6 +361,10 @@ const announcer = createAnnouncer();
 // broadcast to an empty client set and lost forever.
 let pendingMilestone = null;
 let pendingQuotaWarning = null;
+// Folders this session has already granted via /add-dir. In memory only: the
+// grant lives in the running `claude` process, so it dies with the process and
+// must not outlive it in a file that would re-grant on the next boot.
+const grantedDirs = [];
 
 // A counter, never a limit -- so this reports where you ARE and what is next,
 // and has no concept of anything running out.
@@ -486,6 +491,73 @@ function checkQuotaWarning(quota) {
     return;
   }
   broadcastControl(message);
+}
+
+// Files dropped on the window. Types their paths into the prompt and, for a
+// file outside the project, grants the session read access to its folder.
+//
+// THE GRANT GOES THROUGH THE CLI'S OWN `/add-dir`, not through the settings
+// file: the `claude` process is already running, it owns its own notion of
+// which directories are allowed, and editing settings underneath it would
+// either do nothing or fight it. Same "wrap the real CLI, never reimplement
+// it" bet the rest of this harness rests on. `/add-dir` was verified present
+// in the shipped binary before this was built.
+//
+// SEQUENCED, not fired in one write. Each /add-dir is a slash command that the
+// TUI must accept and execute; typing the file paths in the same breath would
+// race the command and land the paths inside its argument. So the grants go
+// first, one per tick, and the paths only after the last one.
+function handleDrop(msg, ws) {
+  const entries = Array.isArray(msg.entries) ? msg.entries : [];
+  if (!entries.length) return;
+
+  // The renderer's isDirectory is a HINT from a File object, which guesses.
+  // Stat it here, where the real filesystem is, and fall back to the hint only
+  // if the stat fails (a path that vanished between drop and read).
+  const stated = entries.map((e) => {
+    let isDirectory = !!e.isDirectory;
+    try { isDirectory = fs.statSync(e.path).isDirectory(); } catch { /* keep the hint */ }
+    return { path: e.path, isDirectory };
+  });
+
+  const plan = planDrop({
+    entries: stated,
+    cwd: CWD,
+    alreadyGranted: grantedDirs,
+    home: os.homedir(),
+  });
+
+  if (plan.refused.length) {
+    for (const r of plan.refused) console.log('[host] drop refused  :', r.dir, '-', r.why);
+  }
+
+  let delay = 0;
+  for (const dir of plan.dirsToAdd) {
+    grantedDirs.push(dir);
+    console.log('[host] drop grants   :', dir);
+    setTimeout(() => {
+      try { term.write('/add-dir ' + dir + '\r'); } catch (err) {
+        console.log('[host] add-dir failed:', err && err.message);
+      }
+    }, delay);
+    delay += 350;
+  }
+
+  if (plan.text) {
+    setTimeout(() => {
+      try { term.write(plan.text); } catch (err) {
+        console.log('[host] drop write failed:', err && err.message);
+      }
+    }, delay);
+  }
+
+  // Told to the CLIENT, not only the log. The user made a gesture; what it
+  // widened has to be visible to them, not buried in a host console they are
+  // not looking at.
+  const note = { granted: plan.dirsToAdd, refused: plan.refused, truncated: plan.truncated };
+  if (plan.dirsToAdd.length || plan.refused.length || plan.truncated) {
+    try { sendControl(ws, { type: 'dropped', note }); } catch { /* the client went away */ }
+  }
 }
 
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
@@ -913,7 +985,11 @@ wss.on('connection', (ws) => {
             termState.resize(msg.cols, msg.rows);
             return;
           }
-          if (msg.type === 'health') {
+          if (msg.type === 'drop') {
+      handleDrop(msg, ws);
+      return;
+    }
+    if (msg.type === 'health') {
             // Caught: an unhandled rejection terminates Node by default.
             runHealth().catch(() => {});   // broadcasts on start and on finish
             return;
