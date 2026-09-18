@@ -493,7 +493,14 @@ function careerHtml(agent) {
   // neither it nor `unresolved`, so a failed read drew pixel-identically to
   // "this agent never ran here".
   const d = careerDisplay(agentStats.get(agent), lastAgentStatsPayload);
-  if (!d.draw) return '';
+  if (!d.draw) {
+    // UNKNOWN and NONE both draw no figures -- but they are different claims,
+    // and the module computes a sentence saying which. Discarding it made them
+    // pixel-identical, which is the exact conflation this panel exists to end.
+    return d.note
+      ? `<div class="career career-unknown" title="${escapeHtml(d.note)}">—</div>`
+      : '';
+  }
   const st = agentStats.get(agent);
   return `<div class="career" title="${escapeHtml(d.detail)}">` +
     `<span class="career-tok">${d.prefix}${compactTokens(st.tokens)}</span>` +
@@ -505,18 +512,10 @@ function careerHtml(agent) {
 
 function renderRoster() {
   if (roster.size === 0) {
-    // "No agents yet" is FALSE on a project with history. Vera, 2026-09-14:
-    // the careers are project-scoped (correctly) but the rows they hang on
-    // are session-scoped -- `roster` is populated only by hook events in THIS
-    // window's run -- so a freshly launched window claimed no agent had ever
-    // run here while 9 agents' careers sat in `agentStats` unshown. Whether
-    // history-only agents should get their own sleeping rows is a product
-    // question; asserting they do not exist is simply wrong either way.
-    const known = agentStats.size;
-    agentsEl.innerHTML = known
-      ? `<div class="empty">${known} agent${known === 1 ? ' has' : 's have'} run in this project — ` +
-        `portraits light up when one runs in this session.</div>`
-      : '<div class="empty">No agents yet — portraits light up when one runs.</div>';
+    // Three different situations, not one sentence. "No agents yet" is a
+    // positive claim about history and must not be made on a read that failed.
+    agentsEl.innerHTML =
+      `<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`;
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -538,19 +537,12 @@ function renderRoster() {
 
 function renderAgentStats(stats) {
   if (!stats || !Array.isArray(stats.agents)) return;
-  // A FAILED read must not blank a good one. Vera, 2026-09-14: `ok: false`
-  // arrives with `agents: []`, which passed the Array.isArray check and
-  // replaced every known career with nothing -- so one transient EPERM on a
-  // subagents directory (ordinary on Windows) wiped the whole panel until the
-  // next SubagentStop. usage.js reached the same conclusion one module over:
-  // stale-and-lagging beats absent.
-  if (stats.ok === false && stats.agents.length === 0 && agentStats.size > 0) {
-    lastAgentStatsPayload = { ...stats, agents: [...agentStats.values()] };
-    renderRoster();
-    return;
-  }
+  // MERGED, not replaced. The decision lives in app/career-display.js so it can
+  // be tested; the first version guarded only the rare total-failure branch and
+  // let a PARTIAL failed read replace the map, silently deleting every agent
+  // whose transcripts lived in the directory that could not be read.
   lastAgentStatsPayload = stats;
-  agentStats = new Map(stats.agents.map(a => [a.agent, a]));
+  agentStats = mergeAgentStats(agentStats, stats);
   renderRoster();
 }
 

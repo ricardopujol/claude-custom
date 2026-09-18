@@ -118,22 +118,74 @@ function careerDisplay(row, stats) {
     state: readOk ? 'complete' : 'lower-bound',
     draw: true,
     prefix: readOk ? '' : AT_LEAST,
-    // Minutes are ALWAYS an estimate, however complete the read was.
-    minutesPrefix: ABOUT,
+    // Minutes are an estimate whenever there ARE minutes. An em dash is a
+    // non-claim, and "approximately unknown" qualifies nothing.
+    minutesPrefix: formatMinutes(row.ms) === UNKNOWN ? '' : ABOUT,
     unresolved,
     note: readOk ? null : 'a transcript could not be read — this is a lower bound',
     detail,
   };
 }
 
+
+/**
+ * Fold a new payload into the careers already on screen.
+ *
+ * A COMPLETE read is authoritative and may drop a row -- careers are cumulative
+ * so they never legitimately shrink, but a clean read is the one thing allowed
+ * to say an agent is gone. A FAILED read may not: `ok:false` means "some of
+ * this is missing", and replacing the map with a partial list silently deletes
+ * every agent whose transcripts happened to live in the unreadable directory.
+ *
+ * The first version guarded only `agents.length === 0`, which is the RARE
+ * branch (the whole project folder unreadable). The common one -- one locked
+ * transcript directory, which is what `ok` was invented for -- arrives with a
+ * non-empty partial list and walked straight past it.
+ */
+function mergeAgentStats(prevMap, stats) {
+  const incoming = new Map((stats && Array.isArray(stats.agents) ? stats.agents : [])
+    .map(a => [a.agent, a]));
+  if (!stats || stats.ok === false) {
+    // Keep what we knew; let anything fresher win.
+    return new Map([...(prevMap || new Map()), ...incoming]);
+  }
+  return incoming;
+}
+
+/**
+ * What to say when no agent is on the roster.
+ *
+ * Three different situations that the first version collapsed into one
+ * sentence: the read FAILED (we know nothing), the read succeeded and this
+ * project genuinely has no history, or the project has history and simply
+ * nothing has run in this window yet. Only the middle one may say "no agents".
+ */
+function rosterEmptyState(rosterSize, knownCareers, stats) {
+  if (rosterSize > 0) return '';
+  const readFailed = !!stats && stats.ok === false;
+  const known = knownCareers ? knownCareers.size : 0;
+
+  if (readFailed && known === 0) {
+    return 'The career read failed — this is unknown, not zero.';
+  }
+  if (known > 0) {
+    return `${known} agent${known === 1 ? ' has' : 's have'} run in this project — ` +
+           'portraits light up when one runs in this session.';
+  }
+  return 'No agents yet — portraits light up when one runs.';
+}
+
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all. Same shape as
 // app/usage-display.js.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { careerDisplay, formatMinutes, UNKNOWN, AT_LEAST, ABOUT, ESTIMATE_NOTE };
+  module.exports = { careerDisplay, formatMinutes, mergeAgentStats, rosterEmptyState,
+    UNKNOWN, AT_LEAST, ABOUT, ESTIMATE_NOTE };
 } else {
   root.careerDisplay = careerDisplay;
   root.formatCareerMinutes = formatMinutes;
+  root.mergeAgentStats = mergeAgentStats;
+  root.rosterEmptyState = rosterEmptyState;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);
