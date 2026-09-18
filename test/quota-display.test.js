@@ -9,7 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { quotaDisplay, formatCountdown, toneFor } = require('../app/quota-display');
+const { quotaDisplay, formatCountdown, toneFor, UNKNOWN } = require('../app/quota-display');
 
 const NOW = Date.parse('2026-09-15T16:00:00Z');
 const win = (over = {}) => ({
@@ -110,4 +110,43 @@ test('a percentage is never described as tokens or dollars', () => {
   // either would be the fabrication the display audit exists to catch.
   const d = quotaDisplay(ready([win()]), NOW);
   assert.ok(!/token|\$|dollar/i.test(d.meters[0].title), d.meters[0].title);
+});
+
+// --- boundaries, pinned literally (Stryker survivors + Dexter F7) ---------------
+
+test('real usage below half a percent is "<1%", not the one sentence this file bans', () => {
+  // Dexter, 2026-09-17: percent 0.4 drew "0% used" -- "a meter at 0% says you
+  // have used nothing. That is a CLAIM, and a false one." The twin module
+  // already solved this exact problem with "<1m" for the same reason.
+  const at = (p) => quotaDisplay(ready([win({ percent: p })]), NOW).meters[0].text;
+  assert.strictEqual(at(0.4), '<1%');
+  assert.strictEqual(at(0.01), '<1%');
+  assert.strictEqual(at(0), '0%', 'a genuine zero stays honest');
+});
+
+test('usage just short of the limit is ">99%", not a false 100%', () => {
+  const at = (p) => quotaDisplay(ready([win({ percent: p })]), NOW).meters[0].text;
+  assert.strictEqual(at(99.6), '>99%');
+  assert.strictEqual(at(100), '100%', 'actually full stays full');
+});
+
+test('a negative percent is unknown, not a confident measurement', () => {
+  const m = quotaDisplay(ready([win({ percent: -5 })]), NOW).meters[0];
+  assert.strictEqual(m.percent, null);
+  assert.strictEqual(m.text, UNKNOWN);
+  assert.strictEqual(m.tone, 'unknown');
+});
+
+test('the tone thresholds are pinned AT the boundary, not near it', () => {
+  // Stryker killed nothing here: `>=` mutated to `>` survived, because no test
+  // sat exactly on 80 or 95. These are the assertions a mutant demands.
+  assert.strictEqual(toneFor({ severity: 'normal', percent: 79.9 }), 'normal');
+  assert.strictEqual(toneFor({ severity: 'normal', percent: 80 }), 'warn');
+  assert.strictEqual(toneFor({ severity: 'normal', percent: 94.9 }), 'warn');
+  assert.strictEqual(toneFor({ severity: 'normal', percent: 95 }), 'critical');
+});
+
+test('a reset under a minute away is not "0m"', () => {
+  assert.strictEqual(formatCountdown('2026-09-15T16:00:59Z', NOW), '<1m');
+  assert.strictEqual(formatCountdown('2026-09-15T16:01:00Z', NOW), '1m');
 });

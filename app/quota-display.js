@@ -38,6 +38,12 @@ const UNKNOWN = '—';          // em dash
 // rather than an inline check waiting to be got wrong a third time.
 const finiteOrNull = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
+// A percentage the server could not possibly mean. Out of domain is UNKNOWN --
+// the module has that state -- not a number drawn confidently with a healthy
+// tone. (Over 100 IS drawn, clamped: a server reporting 140% is saying
+// something real about being over the limit.)
+const percentOrNull = v => { const n = finiteOrNull(v); return n === null || n < 0 ? null : n; };
+
 // Colour thresholds for a window the API calls "normal". The account's own
 // `severity` outranks these whenever it is anything else: a scoped window can
 // be throttled at a percentage that looks harmless from here, and the server
@@ -45,13 +51,19 @@ const finiteOrNull = v => (typeof v === 'number' && Number.isFinite(v) ? v : nul
 const WARN_AT = 80;
 const CRITICAL_AT = 95;
 
+function formatPercent(pct) {
+  if (pct > 0 && pct < 1) return '<1%';
+  if (pct > 99 && pct < 100) return '>99%';
+  return `${Math.round(pct)}%`;
+}
+
 function toneFor(w) {
   if (!w) return 'unknown';
   if (w.lockedReason) return 'critical';           // it has already stopped working
   const sev = String(w.severity || 'normal').toLowerCase();
   if (sev === 'critical' || sev === 'severe') return 'critical';
   if (sev === 'warning' || sev === 'warn') return 'warn';
-  const pct = finiteOrNull(w.percent);
+  const pct = percentOrNull(w.percent);
   if (pct === null) return 'unknown';
   if (pct >= CRITICAL_AT) return 'critical';
   if (pct >= WARN_AT) return 'warn';
@@ -72,6 +84,9 @@ function formatCountdown(resetsAt, now = Date.now()) {
   const ms = at - now;
   if (ms <= 0) return 'due';
   const mins = Math.floor(ms / 60000);
+  // "resets in 0m" is the same self-contradicting zero the sibling module
+  // refuses for minutes worked.
+  if (mins < 1) return '<1m';
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) {
@@ -104,10 +119,10 @@ function quotaDisplay(quota, now = Date.now()) {
   }
 
   const meters = quota.windows.map((w) => {
-    const pct = finiteOrNull(w.percent);
+    const pct = percentOrNull(w.percent);
     const countdown = formatCountdown(w.resetsAt, now);
     const parts = [
-      `${w.label}: ${pct === null ? 'unknown' : Math.round(pct) + '% used'}`,
+      `${w.label}: ${pct === null ? 'unknown' : formatPercent(pct) + ' used'}`,
       countdown === UNKNOWN ? 'reset time unknown' : (countdown === 'due' ? 'resetting now' : `resets in ${countdown}`),
     ];
     if (w.isActive) parts.push('currently the binding limit');
@@ -118,7 +133,11 @@ function quotaDisplay(quota, now = Date.now()) {
       percent: pct,
       // What goes in the bar's own text. An unknown percentage is an em dash,
       // never a zero.
-      text: pct === null ? UNKNOWN : `${Math.round(pct)}%`,
+      // `0%` claims "you have used nothing" and `100%` claims "you are out".
+      // Rounding 0.4 and 99.6 into them makes the meter say the two things this
+      // file exists to never say falsely. The twin module reached the same
+      // answer for `<1m`, on the same day, for the same reason.
+      text: pct === null ? UNKNOWN : formatPercent(pct),
       // How full to draw the bar. Clamped, because a server that ever reports
       // over 100 should overflow the meaning, not the layout.
       fill: pct === null ? 0 : Math.max(0, Math.min(100, pct)),
@@ -135,7 +154,7 @@ function quotaDisplay(quota, now = Date.now()) {
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { quotaDisplay, formatCountdown, toneFor, UNKNOWN, WARN_AT, CRITICAL_AT };
+  module.exports = { quotaDisplay, formatCountdown, formatPercent, toneFor, UNKNOWN, WARN_AT, CRITICAL_AT };
 } else {
   root.quotaDisplay = quotaDisplay;
   // The warning flourish needs the countdown too, and a second implementation
