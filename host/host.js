@@ -445,17 +445,20 @@ function checkMilestone(usage) {
 let lastAgentStats = { ok: false, agents: [], unresolved: 0 };
 let agentStatsPending = null;
 
-function refreshAgentStats() {
-  if (agentStatsPending) return agentStatsPending;
-  agentStatsPending = readAgentStats({ cwd: CWD })
+// COALESCED, but never at the cost of the last event. Vera and Miguel, 2026-09-14:
+// the previous `if (pending) return pending` handed a mid-flight read to a caller
+// whose event happened AFTER that read began -- so when two agents finished 50ms
+// apart, the second one's run was missing from the panel indefinitely, because
+// nothing else re-reads. This project's merge gate mandates two reviewers in
+// parallel, so that is the normal case here, not an edge case. See host/coalesce.js.
+const refreshAgentStats = createCoalescer(() =>
+  readAgentStats({ cwd: CWD })
     .then((stats) => { lastAgentStats = stats; return stats; })
     .catch((err) => {
       console.error('[host] agent stats failed:', err && err.message);
       return lastAgentStats;
     })
-    .finally(() => { agentStatsPending = null; });
-  return agentStatsPending;
-}
+);
 
 // The OpenRouter catalogue and the council seats.
 //
