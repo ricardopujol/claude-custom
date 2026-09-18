@@ -82,7 +82,14 @@ function labelFor(row) {
 function normalizeWindows(body) {
   const rows = body && Array.isArray(body.limits) ? body.limits : [];
   return rows.map((row) => ({
-    key: row.kind,
+    // The kind ALONE is not an identity. Two model-scoped weekly windows --
+    // which the response already anticipates, carrying `seven_day_opus` as a
+    // null waiting to be switched on -- would both be `weekly_scoped`, share
+    // one announcer ladder, and silence each other. The scope is the only field
+    // that tells them apart, so it belongs in the key.
+    key: row.scope && row.scope.model && row.scope.model.display_name
+      ? String(row.kind) + ':' + String(row.scope.model.display_name)
+      : String(row.kind),
     label: labelFor(row),
     // Strictly a number: `Number(null)` is 0, so a coercing check would turn
     // a window the API could not report into one reading 0% used.
@@ -190,24 +197,35 @@ function reason(err, fallback) {
  */
 function createQuotaAnnouncer() {
   // instanceKey -> highest threshold already announced for it.
-  let announced = new Map();
+  const announced = new Map();
 
   function check(windows) {
     if (!Array.isArray(windows)) return null;
-    const live = new Set();
     let hit = null;
+    let hitInstance = null;
 
     for (const w of windows) {
-      if (!w || !Number.isFinite(Number(w.percent))) continue;
-      const instance = `${w.key}@${w.resetsAt || 'no-reset'}`;
-      live.add(instance);
+      // STRICTLY a number. `Number('96')` is 96 and `Number(null)` is 0, and a
+      // value the normaliser classifies as unknown must not announce anything.
+      // This module bans that coercion by name three files over; it was using
+      // it here.
+      if (!w || typeof w.percent !== 'number' || !Number.isFinite(w.percent)) continue;
 
-      const reached = QUOTA_THRESHOLDS.filter(t => Number(w.percent) >= t).pop();
+      // A window with NO reset time gets no ladder entry at all. Keying it on a
+      // literal 'no-reset' collapsed every instance of that window onto one
+      // entry that could never expire -- which is precisely the milestones.js
+      // behaviour this function exists to escape, restored whenever the
+      // discriminator happens to be missing. Better to risk announcing twice
+      // than to go permanently silent.
+      const instance = w.resetsAt ? `${w.key}@${w.resetsAt}` : null;
+
+      const reached = QUOTA_THRESHOLDS.filter(t => w.percent >= t).pop();
       if (reached === undefined) continue;
 
-      const already = announced.get(instance);
-      if (already !== undefined && already >= reached) continue;
-      announced.set(instance, reached);
+      if (instance) {
+        const already = announced.get(instance);
+        if (already !== undefined && already >= reached) continue;
+      }
 
       // The HIGHEST crossing in this batch wins, so one long turn that jumps
       // two rungs announces the rung it actually reached.
@@ -216,16 +234,35 @@ function createQuotaAnnouncer() {
           key: w.key,
           label: w.label,
           threshold: reached,
-          percent: Number(w.percent),
+          percent: w.percent,
           resetsAt: w.resetsAt,
-          text: `${w.label} usage at ${Math.round(Number(w.percent))}%`,
+          text: `${w.label} usage at ${Math.round(w.percent)}%`,
         };
+        hitInstance = instance;
       }
     }
 
-    // Forget instances that are gone, so a long-lived host does not hold the
-    // ladder of every window it has ever seen.
-    for (const k of [...announced.keys()]) if (!live.has(k)) announced.delete(k);
+    // RECORDED ONLY FOR WHAT IS ACTUALLY ANNOUNCED. Writing the ladder inside
+    // the loop marked every crossing in the batch as announced and then
+    // returned one of them -- so two windows crossing in the same 60s poll
+    // meant the loser was recorded as told and never told, permanently. A
+    // crossing that loses this round must resurface on the next one.
+    if (hit && hitInstance) announced.set(hitInstance, hit.threshold);
+
+    // NOT PRUNED ON ABSENCE. A window missing from one batch -- a partial
+    // response, or `limits: []`, which readQuota reports as ok:true -- used to
+    // delete its ladder, so the next poll re-announced a rung already
+    // announced: absence rewriting memory. An entry is dropped only when that
+    // window reappears under a NEW reset time, which is the only evidence that
+    // the old instance is genuinely over.
+    for (const w of windows) {
+      if (!w || !w.resetsAt) continue;
+      const prefix = `${w.key}@`;
+      const live = `${w.key}@${w.resetsAt}`;
+      for (const k of [...announced.keys()]) {
+        if (k.startsWith(prefix) && k !== live) announced.delete(k);
+      }
+    }
 
     return hit;
   }

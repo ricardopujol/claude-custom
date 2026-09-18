@@ -89,8 +89,22 @@ app.on('ready', async () => {
       // mode that survives every check keyed on the probe's own output.
       const drawn = await win.webContents.executeJavaScript(
         `document.getElementById('quota').textContent.trim()`);
-      console.log(String(name).padEnd(10), String(img.getSize().width).padStart(5) + 'px',
-        String(fs.statSync(file).size).padStart(6) + 'B', '->', JSON.stringify(drawn).slice(0, 90));
+      // ACTUALLY ASSERTED. This block used to console.log and continue, so a
+      // completely blank header printed "" and the probe exited 0 having
+      // written a blank PNG -- a false green in a codebase whose whole culture
+      // is about false greens. Miguel, 2026-09-17.
+      if (!drawn) throw new Error(`case "${name}" rendered an EMPTY #quota`);
+      const meters = await win.webContents.executeJavaScript(
+        `document.querySelectorAll('#quota .meter').length`);
+      const want = payload && Array.isArray(payload.windows) ? payload.windows.length : 0;
+      // The assertion that earns the probe its existence: it is what catches
+      // "absent drew three bars at zero", the display lie the whole module is
+      // built to prevent and the one the unit tests cannot see.
+      if (payload && meters !== want) {
+        throw new Error(`case "${name}": ${meters} meters drawn, expected ${want}`);
+      }
+      console.log(String(name).padEnd(10), String(meters) + ' meters',
+        String(fs.statSync(file).size).padStart(6) + 'B', '->', JSON.stringify(drawn).slice(0, 80));
     }
     console.log('\nwrote', path.resolve(OUT_DIR));
   } catch (err) {
