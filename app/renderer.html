@@ -162,6 +162,11 @@
     #usage .val { color: var(--text); font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
     #usage .sub { opacity: .8; font-variant-numeric: tabular-nums; }
 
+    /* An UNKNOWN career: an em dash, dimmed, with the reason in the tooltip.
+       Not blank -- blank is what "this agent never ran here" looks like, and
+       the whole point is that those are different claims. */
+    .career-unknown { opacity: .45; font-variant-numeric: tabular-nums; cursor: help; }
+
     /* --- token milestones --------------------------------------------------
        A counter, never a limit. The bar FILLS toward the next milestone and has
        no empty/full state to be alarmed by: no red, no warning, nothing that
@@ -572,6 +577,7 @@
   <script src="./secret-mask.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
+  <script src="./career-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

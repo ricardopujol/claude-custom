@@ -466,6 +466,10 @@ function faceHtml(portrait) {
 // Career stats per agent, keyed by agent type. Arrives with the handshake and
 // again whenever an agent finishes, so the figures move as work happens.
 let agentStats = new Map();
+// The WHOLE payload, kept beside the map because `ok` lives on the payload and
+// not on any row -- and `ok: false` means the figures below are a lower bound,
+// which the panel has to be able to say.
+let lastAgentStatsPayload = null;
 
 // Ricardo: tokens spent and time worked IN THE PROJECT, not in this window.
 // Compact because it sits beside a 40px portrait -- "47.1M / 30m" reads at a
@@ -478,33 +482,36 @@ function compactTokens(n) {
   return String(Math.round(n));
 }
 
-function compactMinutes(ms) {
-  const mins = Math.round((Number(ms) || 0) / 60000);
-  if (mins < 60) return mins + 'm';
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return m ? `${h}h${m}m` : `${h}h`;
-}
-
 function careerHtml(agent) {
+  // Every judgement about HOW to draw these figures lives in
+  // app/career-display.js so it can be tested. Vera, 2026-09-14: the host
+  // computes `ok` -- absence, not zero -- and this consumer used to read
+  // neither it nor `unresolved`, so a failed read drew pixel-identically to
+  // "this agent never ran here".
+  const d = careerDisplay(agentStats.get(agent), lastAgentStatsPayload);
+  if (!d.draw) {
+    // UNKNOWN and NONE both draw no figures -- but they are different claims,
+    // and the module computes a sentence saying which. Discarding it made them
+    // pixel-identical, which is the exact conflation this panel exists to end.
+    return d.note
+      ? `<div class="career career-unknown" title="${escapeHtml(d.note)}">—</div>`
+      : '';
+  }
   const st = agentStats.get(agent);
-  // An agent that has never finished a run has no career yet. Drawing "0 / 0m"
-  // would read as "did nothing", which is a different claim from "no record".
-  if (!st || !st.runs) return '';
-  const detail = `${st.runs} run${st.runs === 1 ? '' : 's'} in this project - ` +
-    `${st.tokens.toLocaleString()} tokens - ${Math.round(st.ms / 60000)} min worked` +
-    (st.resolved === false ? ' - identity unresolved, this is a label not an agent type' : '');
-  return `<div class="career" title="${detail}">` +
-    `<span class="career-tok">${compactTokens(st.tokens)}</span>` +
+  return `<div class="career" title="${escapeHtml(d.detail)}">` +
+    `<span class="career-tok">${d.prefix}${compactTokens(st.tokens)}</span>` +
     `<span class="career-sep">/</span>` +
-    `<span class="career-min">${compactMinutes(st.ms)}</span>` +
-    (st.resolved === false ? '<span class="career-warn" title="identity unresolved">?</span>' : '') +
+    `<span class="career-min">${d.minutesPrefix}${formatCareerMinutes(st.ms)}</span>` +
+    (d.unresolved ? '<span class="career-warn" title="identity unresolved">?</span>' : '') +
     `</div>`;
 }
 
 function renderRoster() {
   if (roster.size === 0) {
-    agentsEl.innerHTML = '<div class="empty">No agents yet — portraits light up when one runs.</div>';
+    // Three different situations, not one sentence. "No agents yet" is a
+    // positive claim about history and must not be made on a read that failed.
+    agentsEl.innerHTML =
+      `<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`;
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -526,7 +533,12 @@ function renderRoster() {
 
 function renderAgentStats(stats) {
   if (!stats || !Array.isArray(stats.agents)) return;
-  agentStats = new Map(stats.agents.map(a => [a.agent, a]));
+  // MERGED, not replaced. The decision lives in app/career-display.js so it can
+  // be tested; the first version guarded only the rare total-failure branch and
+  // let a PARTIAL failed read replace the map, silently deleting every agent
+  // whose transcripts lived in the directory that could not be read.
+  lastAgentStatsPayload = stats;
+  agentStats = mergeAgentStats(agentStats, stats);
   renderRoster();
 }
 
