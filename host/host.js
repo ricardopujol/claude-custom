@@ -38,6 +38,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { validResizeDims, handleFrame } = require('./control');
+const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { createAttention } = require('./attention');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
@@ -359,6 +360,7 @@ const announcer = createAnnouncer();
 // outlives the window, so a milestone reached during a detached session was
 // broadcast to an empty client set and lost forever.
 let pendingMilestone = null;
+let pendingQuotaWarning = null;
 
 // A counter, never a limit -- so this reports where you ARE and what is next,
 // and has no concept of anything running out.
@@ -433,6 +435,55 @@ function checkMilestone(usage) {
   const listening = [...clients].some(ws => ws.readyState === ws.OPEN);
   if (!listening) {
     pendingMilestone = message;
+    return;
+  }
+  broadcastControl(message);
+}
+
+// How much of the Max plan is left. A NETWORK read, unlike everything else on
+// this page, so it is deliberately slow-polled and never on the critical path:
+// the account's own windows are 5 hours and 7 days, so a minute of staleness is
+// invisible, and a failed call must never hold the loop the hook bridge runs on.
+let lastQuota = null;
+let quotaPending = null;
+const quotaAnnouncer = createQuotaAnnouncer();
+
+function refreshQuota() {
+  if (quotaPending) return quotaPending;
+  quotaPending = readQuota({})
+    .then((q) => {
+      lastQuota = q;
+      checkQuotaWarning(q);
+      return q;
+    })
+    .catch((err) => {
+      // readQuota already turns every failure into an `absent` result, so
+      // reaching here means a bug rather than a network problem. Say so, and
+      // keep ABSENCE rather than a stale-but-confident figure.
+      console.log('[host] quota read threw:', err && err.message);
+      lastQuota = { ok: false, state: 'absent', windows: [], error: 'read failed' };
+      return lastQuota;
+    })
+    .finally(() => { quotaPending = null; });
+  return quotaPending;
+}
+
+// A window crossing a threshold is an EVENT, announced once per window
+// INSTANCE -- see host/quota.js for why the milestone announcer could not be
+// reused verbatim (quota percent resets; lifetime spend does not).
+function checkQuotaWarning(quota) {
+  if (!quota || quota.ok === false) return;      // absence announces nothing
+  const hit = quotaAnnouncer.check(quota.windows);
+  if (!hit) return;
+
+  console.log('[host] quota warning  :', hit.text);
+  const message = { type: 'quotaWarning', warning: hit };
+  // Held when nothing is attached, for the same reason a milestone is: the pty
+  // outlives the window, so the crossing can easily happen with no observer --
+  // and "you are at 95%" is worth more on attach than lost.
+  const listening = [...clients].some(ws => ws.readyState === ws.OPEN);
+  if (!listening) {
+    pendingQuotaWarning = message;
     return;
   }
   broadcastControl(message);
@@ -711,6 +762,26 @@ const usageTimer = setInterval(() => {
 }, 5000);
 usageTimer.unref();
 
+// Account limits, polled far slower than usage: this one is a NETWORK call, and
+// the windows it reports are 5 hours and 7 days, so a minute of staleness is
+// invisible while a tight loop would be a request per few seconds against
+// someone else's service for a number that barely moves. Broadcast only on a
+// CHANGE, so an idle session is silent on the wire.
+const QUOTA_POLL_MS = 60_000;
+const quotaTimer = setInterval(() => {
+  const before = JSON.stringify(lastQuota && lastQuota.windows);
+  refreshQuota().then((quota) => {
+    if (JSON.stringify(quota && quota.windows) !== before) {
+      broadcastControl({ type: 'quota', quota });
+    }
+  });
+}, QUOTA_POLL_MS);
+quotaTimer.unref();
+
+// The first reading immediately, for the same reason usage does: a header that
+// says "reading…" for a full minute reads as broken rather than as honest.
+refreshQuota().then((quota) => broadcastControl({ type: 'quota', quota }));
+
 // The first reading immediately rather than five seconds in. A cold read of
 // this project's transcripts is ~330ms, so waiting a full tick would show the
 // counter at "not read yet" for the whole of a window's first impression.
@@ -773,6 +844,9 @@ wss.on('connection', (ws) => {
     cooldowns: cooldowns.list(),
     health: healthState,
     agentStats: lastAgentStats,
+    // May still be null on a fast attach; the renderer draws "reading…" for
+    // that, never three bars at zero.
+    quota: lastQuota,
     // Seats travel with the handshake; the CATALOGUE does not. It is a network
     // call, and a session that never opens the panel should not make one.
     seats: readSeats(),
@@ -815,6 +889,26 @@ wss.on('connection', (ws) => {
       // holding it exists to prevent.
       pendingMilestone = null;
     } catch { /* keep it for the next client to attach */ }
+  }
+
+  // A quota threshold crossed while nothing was attached, delivered now for the
+  // same reason: "you are at 95% of your 5-hour window" is worth more late than
+  // never, and the pty runs on whether a window is open or not.
+  if (pendingQuotaWarning && ws.readyState === ws.OPEN) {
+    try {
+      ws.send(JSON.stringify(pendingQuotaWarning));
+      pendingQuotaWarning = null;      // cleared only on a SUCCESSFUL send
+    } catch { /* keep it for the next client to attach */ }
+  }
+
+  // A client that attached before the first quota read landed would otherwise
+  // sit on "reading…" until the next poll a minute later.
+  if (!lastQuota) {
+    refreshQuota()
+      .then((quota) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'quota', quota });
+      })
+      .catch(() => { /* the next poll will carry it */ });
   }
 
   const replay = termState.serialize();

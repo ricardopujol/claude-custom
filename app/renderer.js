@@ -897,6 +897,38 @@ function renderUsage(usage) {
     milestoneHtml(usage.milestone);
 }
 
+// --- plan quota ---------------------------------------------------------------
+// The fuel gauge, as opposed to the odometer beside it. Every judgement about
+// HOW to draw it lives in app/quota-display.js so it can be tested; this only
+// turns that decision into markup.
+const quotaEl = document.getElementById('quota');
+let lastQuotaPayload = null;
+
+function renderQuota(quota) {
+  if (quota !== undefined) lastQuotaPayload = quota;
+  const d = quotaDisplay(lastQuotaPayload);
+
+  if (d.state !== 'ready') {
+    // No bars. Three tracks sitting at zero would claim the plan is untouched,
+    // which is precisely what we do not know here.
+    quotaEl.innerHTML = `<span class="none" title="${escapeHtml(d.note || '')}">${escapeHtml(d.note || '')}</span>`;
+    return;
+  }
+
+  quotaEl.innerHTML = d.meters.map(m =>
+    `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}" title="${escapeHtml(m.title)}">` +
+      `<span class="lbl">${escapeHtml(m.label)}</span>` +
+      `<span class="track"><span class="fill" style="width:${m.fill}%"></span></span>` +
+      `<span class="pct">${escapeHtml(m.text)}</span>` +
+    `</span>`
+  ).join('');
+}
+
+// The countdown in every tooltip goes stale on its own, with no message from
+// the host -- so it is recomputed locally. Cheap: it re-renders from the last
+// payload and makes no request.
+setInterval(() => { if (lastQuotaPayload) renderQuota(); }, 30000);
+
 // A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
 // depletes an allowance, never goes red, and never warns. The same geometry
 // labelled "remaining" would read as a leash, and the harness has no business
@@ -1111,6 +1143,9 @@ function handleControl(msg) {
     applyBackground(msg.background);
     applyTheme(msg.theme);
     renderUsage(msg.usage);
+    // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
+    // and the host sends a `quota` message as soon as the read lands.
+    renderQuota(msg.quota || null);
     renderHealth(msg.health);
     renderCooldowns(msg.cooldowns);
     renderProcesses(msg.running);
@@ -1220,6 +1255,21 @@ function handleControl(msg) {
   if (msg.type === 'usage') {
     // Same reason as above: no `mode` on this message, so leave the badge alone.
     renderUsage(msg.usage);
+    return;
+  }
+  if (msg.type === 'quota') {
+    renderQuota(msg.quota);
+    return;
+  }
+  if (msg.type === 'quotaWarning') {
+    // An EVENT, not a value -- the meters already carry the number. This is the
+    // part that reaches you when you are not looking at the header, which is
+    // the whole point of routing it through the same surface a milestone uses.
+    const left = msg.warning.resetsAt ? formatQuotaCountdown(msg.warning.resetsAt) : null;
+    flourish({
+      icon: msg.warning.threshold >= 95 ? '🪫' : '🔋',
+      name: left && left !== '—' ? `${msg.warning.text} · ${left} left` : msg.warning.text,
+    });
     return;
   }
   if (msg.type === 'exit') {

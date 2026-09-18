@@ -162,6 +162,45 @@
     #usage .val { color: var(--text); font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
     #usage .sub { opacity: .8; font-variant-numeric: tabular-nums; }
 
+    /* --- plan quota --------------------------------------------------------
+       The OPPOSITE of the milestone bar beside it, and they must not be
+       confused: that one counts UP forever and can never run out, this one is
+       a fuel gauge for something that can. So this one has a full state, a
+       colour that changes as it fills, and a countdown to when it empties.
+
+       Percent only: the account reports no dollars and no token allowance on
+       this plan, so there is nothing else honest to draw. */
+    #quota {
+      display: flex; align-items: center; gap: 10px; flex: 0 0 auto; white-space: nowrap;
+      font-size: 11px; color: var(--dim);
+      -webkit-app-region: no-drag;
+    }
+    #quota .meter { display: flex; align-items: center; gap: 4px; }
+    #quota .meter .lbl {
+      text-transform: uppercase; letter-spacing: .07em; font-size: 9.5px; opacity: .75;
+    }
+    #quota .meter .track {
+      width: 34px; height: 5px; border-radius: 3px;
+      background: #262b38; overflow: hidden; border: 1px solid var(--border);
+    }
+    #quota .meter .fill { display: block; height: 100%; transition: width .6s ease, background .4s ease; }
+    #quota .meter .pct { font-variant-numeric: tabular-nums; font-size: 10.5px; opacity: .9; }
+    /* The binding window -- the one that will actually stop you first. */
+    #quota .meter.active .lbl { opacity: 1; color: var(--text); }
+    #quota .tone-normal   .fill { background: var(--ok); opacity: .8; }
+    #quota .tone-warn     .fill { background: var(--accent); }
+    #quota .tone-critical .fill { background: var(--bad); }
+    /* Unknown is NOT an empty bar: an empty bar here would read as "nothing
+       used", which is the one thing we specifically do not know. Hatched, the
+       same way the HP bar says unknown. */
+    #quota .tone-unknown .track {
+      background: repeating-linear-gradient(45deg, #262b38, #262b38 3px, #2f3545 3px, #2f3545 6px);
+    }
+    #quota .tone-unknown .fill { width: 0 !important; }
+    /* Absence draws NO bars at all, only why. Three bars at zero would be a
+       confident claim that the plan is untouched. */
+    #quota .none { opacity: .7; font-size: 10.5px; }
+
     /* An UNKNOWN career: an em dash, dimmed, with the reason in the tooltip.
        Not blank -- blank is what "this agent never ran here" looks like, and
        the whole point is that those are different claims. */
@@ -492,6 +531,7 @@
       <span id="hp" title="Project HP — click to run the test suite"></span>
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
+      <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
       <span class="hint" id="side-hint" title="Show or hide the side panel">panel <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
@@ -578,6 +618,7 @@
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
   <script src="./career-display.js"></script>
+  <script src="./quota-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>
