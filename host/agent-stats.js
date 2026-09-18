@@ -99,13 +99,25 @@ async function identityTables(files) {
   // the SAME session too: refusing to resolve is strictly better than
   // silently picking whichever spawn was parsed last.
   const byName = new Map();
+  // Dexter and Miguel, 2026-09-15: this was the one read site left swallowing
+  // its failures, and it is the most expensive one to lose. A TOP-LEVEL
+  // session transcript is read only here, so a failure was invisible by
+  // construction -- and when it fails, every NAMED spawn recorded in it loses
+  // its identity and scatters back under its label, which is the exact
+  // "one agent's career split across four strangers" this module exists to
+  // prevent. Losing identity is worse than losing a total: a total that is
+  // short looks short, a career filed under a stranger looks correct.
+  let errors = 0;
 
   for (const entry of files) {
     let raw;
     try {
       raw = await fsp.readFile(entry.file, 'utf8');
-    } catch {
-      continue;                      // one unreadable transcript is not fatal here
+    } catch (err) {
+      // Same split as readTranscript: vanished is nothing, unreadable is a
+      // failure.
+      if (!err || err.code !== 'ENOENT') errors++;
+      continue;
     }
     const lines = raw.split('\n');
     for (let i = 0; i < lines.length; i++) {
@@ -148,7 +160,7 @@ async function identityTables(files) {
       if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
     }
   }
-  return { byToolUse, byName };
+  return { byToolUse, byName, errors };
 }
 
 /**
@@ -192,8 +204,16 @@ async function readTranscript(file) {
   let raw;
   try {
     raw = await fsp.readFile(file, 'utf8');
-  } catch {
-    return null;
+  } catch (err) {
+    // ENOENT -- vanished between the listing and the read -- contributes
+    // nothing, and that IS the correct total. Anything else (EISDIR because
+    // `transcripts.js` enumerates by name and can list a directory; EPERM; a
+    // corrupt filesystem entry) is a failure the caller must count: the run's
+    // tokens are real and simply unread, not absent. Dexter, logic review
+    // 2026-09-14 -- a run vanishing here was previously indistinguishable
+    // from one that genuinely never happened.
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
   }
   const acc = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
   const stamps = [];
@@ -246,20 +266,36 @@ async function readTranscript(file) {
  * Career stats for every agent that has ever run in this project folder.
  *
  * Returns `{ ok, agents, unresolved }`, agents sorted by spend. `ok` is false
- * only when the project folder itself could not be read -- ABSENCE, not zero,
- * for the same reason host/usage.js draws that line.
+ * when the project folder itself could not be read, OR when a meta or
+ * transcript file that DOES exist could not be read or parsed -- ABSENCE, not
+ * zero, for the same reason host/usage.js draws that line. A missing meta
+ * file (ENOENT) is the ordinary case for a run whose identity was never
+ * recorded and does not count against `ok`; a meta or transcript that exists
+ * but is unreadable or corrupt does.
  */
 async function readAgentStats({ cwd, projectsDir } = {}) {
   const root = projectsDir || defaultProjectsDir();
   const dir = path.join(root, projectDirName(cwd));
 
-  const { files, errors } = await transcriptFiles(dir);
-  if (files === null) return { ok: false, agents: [], unresolved: 0 };
+  const { files, errors: enumErrors } = await transcriptFiles(dir);
+  if (files === null) {
+    // The project folder itself could not be read: every field an honest
+    // caller might sum must still be present, or a consumer reading
+    // `unreadable` gets `undefined` on the one path that matters most.
+    return { ok: false, agents: [], unresolved: 0, unreadable: 1,
+      enumErrors: 1, identityErrors: 0, readErrors: 0 };
+  }
 
   const tables = await identityTables(files);
 
   const byAgent = new Map();
   let unresolved = 0;
+  // Read/parse failures on a file we KNOW exists (transcriptFiles listed it),
+  // as opposed to the ordinary absence of a meta sibling that was simply
+  // never written. Dexter, logic review 2026-09-14: previously uncounted, so
+  // `ok` could report the roster complete while runs worth millions of tokens
+  // were silently dropped.
+  let readErrors = 0;
 
   for (const entry of files) {
     if (!entry.subagent) continue;
@@ -268,15 +304,45 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
     const metaPath = entry.file.replace(/\.jsonl$/, '.meta.json');
     let meta = null;
     try {
-      meta = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
-    } catch { /* a transcript with no meta still has tokens worth counting */ }
+      const parsed = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
+      // PARSING IS NOT UNDERSTANDING. `JSON.parse('null')` succeeds, and so do
+      // `0`, `""` and `[]` -- a truncated or schema-drifted meta can be
+      // perfectly valid JSON carrying no identity at all. Dexter, 2026-09-15:
+      // that fell through as `meta = null`, the run was dropped by the
+      // `if (!agent) continue` below, and NOTHING counted it. The file exists
+      // and holds no identity, which is corruption, not absence.
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        meta = parsed;
+      } else {
+        readErrors++;
+      }
+    } catch (err) {
+      // ENOENT -- no meta was ever written for this run -- is the ordinary
+      // case a caller relies on (a transcript with no identity still has
+      // tokens worth counting, filed as an unresolved label below). Anything
+      // else -- the file exists but is truncated, corrupt, or unreadable --
+      // is a failure: the run's true identity may be lost, not merely absent.
+      if (!err || err.code !== 'ENOENT') readErrors++;
+    }
 
     const { agent, source } = resolveAgent(meta, tables, entry.session);
     if (!agent) continue;                 // nothing to file it under
     if (source === 'unresolved') unresolved++;
 
-    const read = await readTranscript(entry.file);
-    if (!read) continue;
+    let read;
+    try {
+      read = await readTranscript(entry.file);
+    } catch (err) {
+      // BOUND and logged, not a bare catch. Dexter, 2026-09-15: swallowing the
+      // error silently means a future TypeError from inside the parse loop
+      // gets counted as a disk problem, for every transcript, forever, with
+      // `ok:false` and no message anywhere saying why.
+      readErrors++;                       // exists but could not be read: absence, not zero
+      console.error('[agent-stats] unreadable transcript:',
+        entry.file, err && (err.code || err.message));
+      continue;
+    }
+    if (!read) continue;                  // gone between listing and read: correctly nothing
 
     const row = byAgent.get(agent) || {
       agent, runs: 0, tokens: 0, ms: 0,
@@ -297,7 +363,30 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
   }
 
   const agents = [...byAgent.values()].sort((a, b) => b.tokens - a.tokens);
-  return { ok: errors === 0, agents, unresolved };
+  // COUNTS, not just a boolean. host/usage.js returns `{ ok, absent, stale,
+  // unreadable }` precisely so its UI can say "3 transcripts could not be read
+  // — this is a lower bound"; a bare `ok` can never say how much is missing,
+  // and "one corrupt meta" and "an entire session unreadable" are not the same
+  // news. Dexter F7 / Miguel I3, 2026-09-15.
+  const unreadable = enumErrors + tables.errors + readErrors;
+  return {
+    ok: unreadable === 0,
+    agents,
+    unresolved,
+    unreadable,
+    // Broken out because they fail differently: a directory we could not
+    // enumerate may hide whole runs, an identity source we could not read
+    // costs identities rather than totals, and a run-level failure costs one
+    // run. Same reason usage.js keeps `absent` and `stale` apart.
+    enumErrors,
+    identityErrors: tables.errors,
+    readErrors,
+  };
 }
 
-module.exports = { readAgentStats, resolveAgent, identityTables, SUBAGENTS, IDLE_GAP_MS };
+// readTranscript is exported for tests only: its ENOENT-vs-throw split is
+// the load-bearing half of this module's absence/zero distinction, and a
+// mutation of it was measured surviving the whole suite when it was private.
+module.exports = {
+  readAgentStats, resolveAgent, identityTables, readTranscript, SUBAGENTS, IDLE_GAP_MS,
+};
