@@ -28,9 +28,20 @@
 
 const crypto = require('crypto');
 
-// What the Electron renderer reports. It loads the page from file://, which
-// browsers surface as a null origin or omit entirely.
-const LOCAL_ORIGINS = Object.freeze(['file://', 'null', '']);
+// What the Electron renderer reports. MEASURED rather than assumed --
+// verify/probe-renderer-origin.js launches a real Electron window with this
+// app's own webPreferences (contextIsolation: true, nodeIntegration: false)
+// and reads the handshake off the wire: it sends exactly `Origin: file://`.
+//
+// THE STRING "null" IS DELIBERATELY NOT HERE. Miguel, code review 2026-09-14:
+// a document with an OPAQUE origin -- any `<iframe sandbox>` without
+// allow-same-origin -- serialises its origin as the literal string "null", so
+// accepting it let such a page clear the ORIGIN gate, the one this module
+// calls the one that closes the actual hole. The whole defence then fell back
+// to the token, which is weaker by nature. Two gates collapsed to one via an
+// HTML attribute. The renderer was measured not to need it, so refusing it
+// costs nothing.
+const LOCAL_ORIGINS = Object.freeze(['file://', '']);
 
 function timingSafeEqual(a, b) {
   const left = Buffer.from(String(a == null ? '' : a));
