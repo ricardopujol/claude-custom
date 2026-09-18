@@ -11,6 +11,14 @@
  * what makes renaming or re-skinning it a one-line change later.
  */
 
+/*
+ * WRAPPED IN AN IIFE for the reason app/usage-display.js is: the renderer loads
+ * these as plain <script> tags sharing one global scope, and `TABS`,
+ * `DEFAULT_TAB`, `known` and `nextTab` were all leaking into it. Enforced by
+ * test/renderer-scope.test.js.
+ */
+(function (root) {
+
 const TABS = [
   { id: 'agents', label: 'Agents', title: 'Who is working, and on what' },
   { id: 'vault', label: 'Vault', title: 'Local encrypted secrets' },
@@ -21,6 +29,7 @@ const TABS = [
 // Agents, because it is the panel that changes on its own: the roster reacts to
 // the session, the vault only reacts to you. Opening on the reactive one makes
 // the sidebar useful without being touched.
+
 const DEFAULT_TAB = 'agents';
 
 const known = id => TABS.some(t => t.id === id);
@@ -31,4 +40,6 @@ function nextTab(current, clicked) {
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { nextTab, TABS, DEFAULT_TAB, isKnownTab: known };
-else if (typeof window !== 'undefined') Object.assign(window, { nextTab, TABS, DEFAULT_TAB, isKnownTab: known });
+else Object.assign(root, { nextTab, TABS, DEFAULT_TAB, isKnownTab: known });
+
+})(typeof window !== 'undefined' ? window : globalThis);
