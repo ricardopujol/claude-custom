@@ -35,8 +35,10 @@ const APP = path.join(__dirname, '..', 'app');
 // Every global the renderer's scripts are permitted to define. Anything else
 // showing up here is a leak waiting to collide with the next file added.
 const ALLOWED_GLOBALS = new Set([
-  // app/side-tabs.js
-  'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab',
+  // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:
+  // renderer.js calls it as a bare global inside the xterm key handler,
+  // which is the only place that can stop the terminal eating Ctrl+B.
+  'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
   // app/secret-mask.js, app/attention-surface.js
   'createMask', 'surfacesFor',
   // the display modules
@@ -161,4 +163,43 @@ test('no two renderer scripts declare the same top-level name', () => {
 
   assert.deepStrictEqual(clashes, [],
     'these names are declared at top level in two scripts that share one scope');
+});
+
+test('every module function renderer.js calls is actually exported to it', () => {
+  // THE MIRROR OF THE LEAK TEST, and the gap that let this file pass while the
+  // app broke. The leak test asks what escapes a module; nothing asked what
+  // FAILS to escape one. Wrapping app/side-tabs.js in an IIFE while resolving
+  // the #26/#27 merge removed `isPanelToggle` from the global scope that
+  // renderer.js calls it from -- silently re-breaking Ctrl+B with the whole
+  // suite green, which is exactly how PR #27 found it the first time.
+  //
+  // So: any name a module declares AND renderer.js calls must be reachable
+  // after the modules load.
+  const ctx = makeContext();
+  const modules = rendererScripts().filter(f => f !== 'renderer.js');
+  const declared = new Map();                 // name -> the file that declares it
+  const DECL = /(?:^|\n)\s*(?:function|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  for (const file of modules) {
+    const src = fs.readFileSync(path.join(APP, file), 'utf8');
+    vm.runInContext(src, ctx, { filename: file });
+    let m;
+    while ((m = DECL.exec(src))) if (!declared.has(m[1])) declared.set(m[1], file);
+  }
+
+  // Names renderer.js declares itself are its own, and prove nothing here.
+  const renderer = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const ownDecls = new Set();
+  const OWN = /(?:^|\n)\s*(?:function|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  let d;
+  while ((d = OWN.exec(renderer))) ownDecls.add(d[1]);
+
+  const missing = [];
+  for (const [name, file] of declared) {
+    if (ownDecls.has(name)) continue;
+    if (!new RegExp('(?:^|[^\\w$.])' + name + '\\s*\\(').test(renderer)) continue;   // not called at all
+    if (!(name in ctx)) missing.push(name + ' (declared in ' + file + ')');
+  }
+  assert.deepStrictEqual(missing, [],
+    'renderer.js calls these as bare globals, but no module exports them -- ' +
+    'they are ReferenceErrors in the real window');
 });
