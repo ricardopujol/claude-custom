@@ -37,6 +37,7 @@ const { createStore } = require('./store');
 const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
+const { validResizeDims, handleFrame } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { createAttention } = require('./attention');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
@@ -812,6 +813,18 @@ wss.on('connection', (ws) => {
   clients.add(ws);
   console.log(`[host] client attached (${clients.size} total)`);
 
+  // Dexter, logic review 2026-09-15: a malformed WEBSOCKET frame (invalid
+  // UTF-8 in a text frame, RSV1 set, an invalid opcode) never reaches the
+  // 'message' handler below -- `ws`'s Receiver rejects it and emits 'error'
+  // on the socket instead. An EventEmitter emitting 'error' with no listener
+  // throws and, with no process-level handler either, takes the whole host
+  // down -- and the pty with it, defeating the detach/reattach property this
+  // host exists to provide. One malformed frame from any client that clears
+  // the gatekeeper, no control-message parsing involved at all.
+  ws.on('error', (err) => {
+    console.log('[host] client socket error:', err && err.message);
+  });
+
   // Attach handshake: everything the view needs to draw itself, then the
   // current screen. The view holds no session state of its own, so this is the
   // only place it learns the theme, the roster or what is on the terminal.
@@ -901,95 +914,121 @@ wss.on('connection', (ws) => {
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
 
+  // The actual side effects for each known control type. Kept as a plain
+  // function (not inline in the message handler) so `handleFrame` -- the
+  // classify/dispatch/fall-through SHAPE -- can be tested in host/control.js
+  // against a fake dispatch, per Miguel and Dexter's 2026-09-15 finding that
+  // the first version of this fix had no test for the property that actually
+  // mattered: a throwing dispatch must never reach literal input.
+  function dispatchControl(msg) {
+    if (msg.type === 'resize') {
+      // Validated before EITHER target is touched, and applied to both or
+      // neither: node-pty throws on bad dims, @xterm/headless instead
+      // silently clamps to a minimum of 2 columns, so an unvalidated resize
+      // can desync the two permanently -- a serialized 2-column screen would
+      // then be handed to every future attach.
+      if (validResizeDims(msg.cols, msg.rows)) {
+        term.resize(msg.cols, msg.rows);
+        termState.resize(msg.cols, msg.rows);
+      } else {
+        // Dexter, 2026-09-15: every other rejection path in this file logs;
+        // a rejected resize previously said nothing, leaving the client's own
+        // (already-resized) xterm silently disagreeing with the host.
+        console.log('[host] rejected resize:', msg.cols, msg.rows);
+      }
+      return;
+    }
+    if (msg.type === 'health') {
+      // Caught: an unhandled rejection terminates Node by default.
+      runHealth().catch(() => {});   // broadcasts on start and on finish
+      return;
+    }
+    if (msg.type === 'input') {
+      // Miguel, 2026-09-15: unvalidated, `term.write(undefined)` reaches
+      // node-pty's deferred write queue and can throw OUTSIDE this function's
+      // caller's try/catch if the pty is not yet ready -- an uncaught
+      // exception that kills the host and the session with it.
+      if (typeof msg.data === 'string') term.write(msg.data);
+      return;
+    }
+    if (msg.type === 'models') {
+      // Asynchronous and yielding for the same reason the fog read is: the
+      // loop here also accepts the hook helper's named-pipe connection, and
+      // it gives up after 80ms. `.then(ok).catch(err)`, not
+      // `.then(ok, err)` -- Dexter, 2026-09-15: the two-argument form does
+      // NOT catch a throw from `ok` itself, which would become an unhandled
+      // rejection.
+      currentCatalogue({ force: !!msg.force }).then(
+        (c) => ws.send(JSON.stringify({
+          type: 'models', models: c.models, source: c.source,
+          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
+          seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
+        }))
+      ).catch((err) => {
+        // Tell the CLIENT, not only the log. A silent failure leaves the
+        // panel reading "loading..." forever, which looks like a slow host
+        // rather than a lost answer.
+        console.log('[host] catalogue failed:', err && err.message);
+        try {
+          ws.send(JSON.stringify({
+            type: 'models', models: [], source: 'none', stale: true,
+            error: err && err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
+          }));
+        } catch { /* the socket went away */ }
+      });
+      return;
+    }
+    if (msg.type === 'seat') {
+      // add / remove. The RESULT is broadcast rather than returned to the
+      // asking client alone: two windows on one project share a council, and
+      // one of them silently disagreeing about who is seated is worse than a
+      // redraw.
+      const before = readSeats();
+      let seats = before;
+      let error = null;
+      if (msg.action === 'remove') {
+        seats = removeSeat(before, msg.id);
+      } else {
+        const model = (msg.model && typeof msg.model === 'object') ? msg.model : null;
+        const r = addSeat(before, model);
+        seats = r.seats;
+        error = r.error;
+      }
+      if (seats !== before) store.write('council', { seats });
+      broadcastControl({ ...seatPayload(seats), error });
+      return;
+    }
+    if (msg.type === 'fog') {
+      // Answered on demand, asynchronously, yielding as it goes -- the read
+      // must never hold the loop past the helper's 80ms connect timeout, or
+      // it drops the hook events this panel is drawn from.
+      currentFog().then(
+        fog => ws.send(JSON.stringify({ type: 'fog', ...fog }))
+      ).catch(err => {
+        // Tell the CLIENT, not just the log. A silent failure left the panel
+        // reading "reading the map..." forever, which looks like a slow host
+        // rather than a lost answer.
+        console.log('[host] fog read failed:', err && err.message);
+        try {
+          ws.send(JSON.stringify({ type: 'fog', files: [], explored: 0, total: 0,
+            status: { failed: true, error: err && err.message } }));
+        } catch { /* the client went away */ }
+      });
+      return;
+    }
+  }
+
   ws.on('message', (raw, isBinary) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
       const text = raw.toString();
-      if (text.startsWith('{')) {
-        try {
-          const msg = JSON.parse(text);
-          if (msg.type === 'resize') {
-            term.resize(msg.cols, msg.rows);
-            termState.resize(msg.cols, msg.rows);
-            return;
-          }
-          if (msg.type === 'health') {
-            // Caught: an unhandled rejection terminates Node by default.
-            runHealth().catch(() => {});   // broadcasts on start and on finish
-            return;
-          }
-          if (msg.type === 'input') {
-            term.write(msg.data);
-            return;
-          }
-          if (msg.type === 'models') {
-            // Asynchronous and yielding for the same reason the fog read is:
-            // the loop here also accepts the hook helper's named-pipe
-            // connection, and it gives up after 80ms.
-            currentCatalogue({ force: !!msg.force }).then(
-              (c) => ws.send(JSON.stringify({
-                type: 'models', models: c.models, source: c.source,
-                fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
-                seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
-              })),
-              (err) => {
-                // Tell the CLIENT, not only the log. A silent failure leaves
-                // the panel reading "loading..." forever, which looks like a
-                // slow host rather than a lost answer.
-                console.log('[host] catalogue failed:', err.message);
-                try {
-                  ws.send(JSON.stringify({
-                    type: 'models', models: [], source: 'none', stale: true,
-                    error: err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
-                  }));
-                } catch { /* the socket went away */ }
-              }
-            );
-            return;
-          }
-          if (msg.type === 'seat') {
-            // add / remove. The RESULT is broadcast rather than returned to the
-            // asking client alone: two windows on one project share a council,
-            // and one of them silently disagreeing about who is seated is worse
-            // than a redraw.
-            const before = readSeats();
-            let seats = before;
-            let error = null;
-            if (msg.action === 'remove') {
-              seats = removeSeat(before, msg.id);
-            } else {
-              const model = (msg.model && typeof msg.model === 'object') ? msg.model : null;
-              const r = addSeat(before, model);
-              seats = r.seats;
-              error = r.error;
-            }
-            if (seats !== before) store.write('council', { seats });
-            broadcastControl({ ...seatPayload(seats), error });
-            return;
-          }
-          if (msg.type === 'fog') {
-            // Answered on demand, asynchronously, yielding as it goes -- the
-            // read must never hold the loop past the helper's 80ms connect
-            // timeout, or it drops the hook events this panel is drawn from.
-            currentFog().then(
-              fog => ws.send(JSON.stringify({ type: 'fog', ...fog })),
-              err => {
-                // Tell the CLIENT, not just the log. A silent failure left the
-                // panel reading "reading the map..." forever, which looks like
-                // a slow host rather than a lost answer.
-                console.log('[host] fog read failed:', err.message);
-                try {
-                  ws.send(JSON.stringify({ type: 'fog', files: [], explored: 0, total: 0,
-                    status: { failed: true, error: err.message } }));
-                } catch { /* the client went away */ }
-              });
-            return;
-          }
-        } catch {
-          // Not control JSON — fall through and treat as literal input.
-        }
+      const { error, msg } = handleFrame(text, dispatchControl, (t) => term.write(t));
+      if (error) {
+        // A handler that threw is not "not control JSON" -- `handleFrame`
+        // guarantees this text was never passed to `term.write`. Log and
+        // drop.
+        console.log('[host] control message failed:', msg && msg.type, error && error.message);
       }
-      term.write(text);
       return;
     }
     term.write(raw.toString('utf8'));

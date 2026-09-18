@@ -34,6 +34,19 @@
  *   complete     everything was read this tick.
  */
 
+
+/*
+ * WRAPPED IN AN IIFE, and this file is why the pattern exists. It declared
+ * top-level `UNKNOWN`, `AT_LEAST` and `plural`, and the renderer loads these as
+ * plain <script> tags sharing ONE global scope -- so the NEXT file to want any
+ * of those names aborted on a SyntaxError and its panel silently never drew.
+ * That happened twice (career-display, quota-display); both defended themselves
+ * and the aggressor was left as-is. `plural` is the one that would have done it
+ * again: nobody writing a sixth module thinks twice about `const plural`.
+ * Enforced now by test/renderer-scope.test.js.
+ */
+(function (root) {
+
 const UNKNOWN = '—';          // em dash
 const AT_LEAST = '≥';         // >=
 
@@ -80,6 +93,8 @@ function usageDisplay(usage) {
 // app/attention-surface.js.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { usageDisplay, UNKNOWN, AT_LEAST };
-} else if (typeof window !== 'undefined') {
-  window.usageDisplay = usageDisplay;
+} else {
+  root.usageDisplay = usageDisplay;
 }
+
+})(typeof window !== 'undefined' ? window : globalThis);
