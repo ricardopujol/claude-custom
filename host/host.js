@@ -34,6 +34,7 @@ const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
+const { createBugVault } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
@@ -310,6 +311,12 @@ const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
+// One record per distinct bug CLASS, so a recurring defect category is a
+// visible count instead of a memory hand-carried between review rounds in PR
+// comments. Persisted through the shared store under `vault.json`, same as
+// every other feature -- this module invents no file format of its own.
+const bugVault = createBugVault({ store });
+const vaultPayload = () => ({ bugs: bugVault.list(), summary: bugVault.summary() });
 // The agent list comes from the mood stack, so a finished turn can say how
 // many agents ran rather than just that something ended.
 // Tracks whether a cooldown list was last non-empty, so the falling edge is
@@ -758,6 +765,7 @@ wss.on('connection', (ws) => {
     modes: MODES,
     provider,
     cooldowns: cooldowns.list(),
+    vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
     // Seats travel with the handshake; the CATALOGUE does not. It is a network
@@ -871,6 +879,20 @@ wss.on('connection', (ws) => {
             }
             if (seats !== before) store.write('council', { seats });
             broadcastControl({ ...seatPayload(seats), error });
+            return;
+          }
+          if (msg.type === 'bugvault') {
+            // Synchronous JSON, unlike fog's git walk -- answered inline, then
+            // broadcast, same as the seat protocol: two windows on one project
+            // share a vault, so one of them silently disagreeing about what is
+            // recorded is worse than a redraw.
+            let result = { ok: true };
+            if (msg.action === 'add') {
+              result = bugVault.add((msg.record && typeof msg.record === 'object') ? msg.record : {});
+            } else if (msg.action === 'setFixed') {
+              result = bugVault.setFixed(msg.id, msg.fixed === true);
+            }
+            broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
             return;
           }
           if (msg.type === 'fog') {

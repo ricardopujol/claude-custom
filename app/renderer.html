@@ -109,6 +109,30 @@
                  border-top: 1px solid var(--border); padding-top: 10px; }
     #vault-body .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
 
+    /* --- bug vault ----------------------------------------------------------
+       Grouping is the feature: the detection breakdown is what makes "found
+       by measurement, not by reading" a visible fact rather than a feeling. */
+    #bugvault-body { padding: 10px 12px; gap: 8px; overflow-y: auto; }
+    #bugvault-detection { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+    #bugvault-detection h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em;
+      color: var(--dim); font-weight: 600; margin: 0 0 2px; }
+    .det { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+    .det-label { flex: 1; color: var(--text); }
+    .det-count { color: var(--accent); font-variant-numeric: tabular-nums; }
+    #bugvault-list { display: flex; flex-direction: column; gap: 6px; }
+    .bug-row { border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+      background: rgba(255,255,255,.02); font-size: 11px; }
+    .bug-row.fixed { opacity: .55; }
+    .bug-head { display: flex; align-items: center; gap: 6px; }
+    .bug-icon { font-size: 13px; line-height: 1; }
+    .bug-cat { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bug-toggle { font-size: 10px; padding: 2px 6px; }
+    .bug-summary { margin-top: 3px; color: var(--text); }
+    .bug-detail { margin-top: 4px; display: flex; flex-direction: column; gap: 1px;
+      font-size: 10px; color: var(--dim); }
+    #bugvault-add { display: flex; flex-direction: column; gap: 6px;
+      border-top: 1px solid var(--border); padding-top: 10px; }
+
     /* --- project HP -------------------------------------------------------
        One bar, one meaning: pass rate. Clicking it runs the suite. */
     #hp {
@@ -493,6 +517,7 @@
         <nav id="side-tabs">
           <button data-tab="agents" title="Who is working, and on what">Agents</button>
           <button data-tab="vault" title="Local encrypted secrets">Vault</button>
+          <button data-tab="bugvault" title="Recurring defect classes, grouped by category and by how they were found">Bug vault</button>
           <button data-tab="fog" title="What this project has actually been read">Map</button>
           <button data-tab="models" title="Browse every model OpenRouter offers, and seat the council">Models</button>
         </nav>
@@ -518,6 +543,25 @@
           </form>
           <p class="warn">Pasting a secret into the session writes it to the
             transcript in plaintext, permanently. Copy is for other apps.</p>
+        </div>
+        <!-- Bug vault: one record per distinct bug CLASS, grouped so a
+             recurring category is a visible count rather than a memory
+             scattered across PR comments. Never touches the pty -- filing a
+             bug is not part of the conversation, unlike a skill invocation. -->
+        <div class="panel" data-panel="bugvault" id="bugvault-body">
+          <div id="bugvault-summary" class="fog-sum">reading the vault…</div>
+          <div id="bugvault-detection"></div>
+          <div id="bugvault-list"></div>
+          <form id="bugvault-add" autocomplete="off">
+            <input id="bugvault-category" placeholder="category — the bug CLASS, e.g. 'silent failure exit code'" autocomplete="off" required />
+            <input id="bugvault-summary-input" placeholder="one-line summary" autocomplete="off" required />
+            <input id="bugvault-where" placeholder="where found (optional)" autocomplete="off" />
+            <input id="bugvault-detected" placeholder="how it was detected (optional) — e.g. measurement, code review" autocomplete="off" />
+            <input id="bugvault-survived" placeholder="how long it survived (optional)" autocomplete="off" />
+            <input id="bugvault-caught" placeholder="what would have caught it sooner (optional)" autocomplete="off" />
+            <button type="submit">Record bug</button>
+          </form>
+          <div id="bugvault-error" class="err"></div>
         </div>
         <!-- Fog of war. The DARK rows are the point: files nobody has opened. -->
         <div class="panel" data-panel="models" id="models-body">
@@ -565,6 +609,7 @@
   <script src="./secret-mask.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
+  <script src="./bugvault-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>
