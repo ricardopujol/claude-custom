@@ -76,9 +76,28 @@ function defaultProjectsDir() {
  * subagent transcripts included, because an agent can spawn an agent and the
  * inner `Agent` block then lives in the outer agent's transcript rather than in
  * the session's.
+ *
+ * Returns `{ byToolUse, byName }`:
+ *
+ *   byToolUse  Map(toolUseId -> subagent_type). Project-global, correctly:
+ *              `toolu_*` ids are unique, so there is nothing to scope.
+ *   byName     Map(name -> Map(session -> subagent_type | null)). SESSION-
+ *              SCOPED, and `null` marks a name that meant two different types
+ *              within one session. See the comment at the `bySession.set`
+ *              below for why both of those are load-bearing.
  */
 async function identityTables(files) {
   const byToolUse = new Map();
+  // name -> Map(session -> type | null). SESSION-SCOPED on purpose: Dexter,
+  // logic review 2026-09-14 -- a flat name->type map merges two agents'
+  // careers the moment a name is reused for a different type ANYWHERE in the
+  // project's history, and readdir order (not anything meaningful) decides
+  // which type wins. Worse, it can resolve an orphaned run -- its own parent
+  // session pruned -- to a completely unrelated agent's type while reporting
+  // `resolved: true`. A name only means what it meant WITHIN the session that
+  // established it. `null` marks a name reused for two different types within
+  // the SAME session too: refusing to resolve is strictly better than
+  // silently picking whichever spawn was parsed last.
   const byName = new Map();
 
   for (const entry of files) {
@@ -103,7 +122,25 @@ async function identityTables(files) {
               const input = block.input || {};
               if (!input.subagent_type) continue;
               if (block.id) byToolUse.set(block.id, input.subagent_type);
-              if (input.name) byName.set(input.name, input.subagent_type);
+              if (input.name) {
+                let bySession = byName.get(input.name);
+                if (!bySession) { bySession = new Map(); byName.set(input.name, bySession); }
+                // Tests PRESENCE, not truthiness. `null` is the collision
+                // marker and is itself falsy, so an `existing && ...` guard
+                // takes the else branch once poisoned and writes a concrete
+                // type back -- the marker survived exactly until the next
+                // spawn of that name. Miguel and Dexter both caught this at
+                // the 2026-09-15 merge gate: A, B, A resolved to A and
+                // reported `resolved: true`, which is the "silently picking
+                // whichever spawn was parsed last" this exists to prevent.
+                // Poisoning must be one-way: null !== any type, so once set
+                // it stays set.
+                if (!bySession.has(entry.session)) {
+                  bySession.set(entry.session, input.subagent_type);
+                } else if (bySession.get(entry.session) !== input.subagent_type) {
+                  bySession.set(entry.session, null);
+                }
+              }
             }
           }
         } catch { /* a partial final line is normal */ }
@@ -121,14 +158,32 @@ async function identityTables(files) {
  * GUESS -- a name we could not resolve -- and a caller that cannot tell a
  * resolved type from an unresolved label will happily draw them side by side as
  * if they were peers.
+ *
+ * @param meta    the run's `.meta.json`, or null if it had none
+ * @param tables  from `identityTables`: `{ byToolUse: Map(id -> type),
+ *                byName: Map(name -> Map(session -> type | null)) }`, where a
+ *                `null` marks a name that meant two different types in that
+ *                session and therefore resolves to neither
+ * @param session the session the RUN belongs to. Name resolution is scoped to
+ *                it: a name only means what it meant within the session that
+ *                established it. Omitting it is not an error and cannot cause a
+ *                wrong attribution -- every named run simply degrades to an
+ *                unresolved label, which is the safe direction but is also a
+ *                silent, project-wide downgrade, so callers must pass it.
  */
-function resolveAgent(meta, tables) {
+function resolveAgent(meta, tables, session) {
   const label = (meta && meta.agentType) || null;
   if (meta && meta.toolUseId && tables.byToolUse.has(meta.toolUseId)) {
     return { agent: tables.byToolUse.get(meta.toolUseId), source: 'tool-use' };
   }
-  if (label && tables.byName.has(label)) {
-    return { agent: tables.byName.get(label), source: 'name' };
+  if (label) {
+    const bySession = tables.byName.get(label);
+    const resolved = bySession && bySession.get(session);
+    // `resolved` is falsy both when this session never used the name (an
+    // orphan whose parent session is gone) and when it used the name for two
+    // different types (a same-session collision) -- both cases must degrade
+    // to the unresolved label, never guess.
+    if (resolved) return { agent: resolved, source: 'name' };
   }
   return { agent: label, source: label ? 'unresolved' : 'unknown' };
 }
@@ -216,7 +271,7 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
       meta = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
     } catch { /* a transcript with no meta still has tokens worth counting */ }
 
-    const { agent, source } = resolveAgent(meta, tables);
+    const { agent, source } = resolveAgent(meta, tables, entry.session);
     if (!agent) continue;                 // nothing to file it under
     if (source === 'unresolved') unresolved++;
 
