@@ -17,7 +17,12 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
 
-const { planDrop, MAX_DROP_FILES } = require('../host/drop');
+const { planDrop, MAX_DROP_FILES, normSlashes } = require('../host/drop');
+
+// Grants are RESOLVED native paths now, because that is what gets typed into
+// /add-dir. Compare on the normalised key so these assertions say what they
+// mean on either platform.
+const keys = arr => arr.map(normSlashes);
 
 const CWD = 'C:/w/proj';
 const at = (p, isDirectory = false) => ({ path: p, isDirectory });
@@ -55,12 +60,12 @@ test('a file already inside the project grants NOTHING', () => {
 
 test('a file OUTSIDE the project grants its containing folder', () => {
   const plan = planDrop({ entries: [at('C:/Users/ricar/Desktop/spec.pdf')], cwd: CWD });
-  assert.deepStrictEqual(plan.dirsToAdd, ['C:/Users/ricar/Desktop']);
+  assert.deepStrictEqual(keys(plan.dirsToAdd), ['c:/users/ricar/desktop']);
 });
 
 test('a dropped FOLDER grants the folder itself, not its parent', () => {
   const plan = planDrop({ entries: [at('C:/data/corpus', true)], cwd: CWD });
-  assert.deepStrictEqual(plan.dirsToAdd, ['C:/data/corpus']);
+  assert.deepStrictEqual(keys(plan.dirsToAdd), ['c:/data/corpus']);
 });
 
 test('two files from one folder grant it once', () => {
@@ -68,7 +73,7 @@ test('two files from one folder grant it once', () => {
     entries: [at('C:/tmp/a.txt'), at('C:/tmp/b.txt')],
     cwd: CWD,
   });
-  assert.deepStrictEqual(plan.dirsToAdd, ['C:/tmp']);
+  assert.deepStrictEqual(keys(plan.dirsToAdd), ['c:/tmp']);
 });
 
 test('a folder already granted this session is not granted again', () => {

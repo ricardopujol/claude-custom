@@ -1389,14 +1389,15 @@ dropZone.addEventListener('drop', (e) => {
 function renderDropNote(note) {
   if (!note) return;
   const bits = [];
-  if (note.granted && note.granted.length) {
-    bits.push('granted read access to ' + note.granted.join(', '));
+  if (note.requested && note.requested.length) {
+    bits.push('requested read access to ' + note.requested.join(', '));
   }
   if (note.refused && note.refused.length) {
     bits.push(note.refused.map(r => 'refused ' + r.dir + ': ' + r.why).join(' · '));
   }
   if (note.truncated) bits.push(note.truncated + ' more file(s) not added');
   if (!bits.length) return;
+  if (note.unusable) bits.push(note.unusable + ' file(s) skipped: unsafe name');
   const denied = !!(note.refused && note.refused.length);
   flourish({ icon: denied ? '⛔' : '📁', name: bits.join(' · ') });
 }
