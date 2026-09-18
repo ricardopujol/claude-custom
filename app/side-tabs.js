@@ -11,6 +11,14 @@
  * what makes renaming or re-skinning it a one-line change later.
  */
 
+/*
+ * WRAPPED IN AN IIFE for the reason app/usage-display.js is: the renderer loads
+ * these as plain <script> tags sharing one global scope, and `TABS`,
+ * `DEFAULT_TAB`, `known` and `nextTab` were all leaking into it. Enforced by
+ * test/renderer-scope.test.js.
+ */
+(function (root) {
+
 const TABS = [
   { id: 'agents', label: 'Agents', title: 'Who is working, and on what' },
   { id: 'vault', label: 'Vault', title: 'Local encrypted secrets' },
@@ -21,6 +29,7 @@ const TABS = [
 // Agents, because it is the panel that changes on its own: the roster reacts to
 // the session, the vault only reacts to you. Opening on the reactive one makes
 // the sidebar useful without being touched.
+
 const DEFAULT_TAB = 'agents';
 
 const known = id => TABS.some(t => t.id === id);
@@ -55,5 +64,17 @@ function nextTab(current, clicked) {
   return current === clicked ? null : clicked; // clicking the active tab hides it
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { nextTab, isPanelToggle, TABS, DEFAULT_TAB, isKnownTab: known };
-else if (typeof window !== 'undefined') Object.assign(window, { nextTab, TABS, DEFAULT_TAB, isKnownTab: known });
+// isPanelToggle IS EXPORTED, and that is load-bearing rather than tidy.
+// app/renderer.js calls it as a bare global inside
+// term.attachCustomKeyEventHandler. Before the IIFE above, every top-level
+// function here was implicitly global, so the call worked without anyone
+// listing it. Wrapping the file removes that, and omitting it here would
+// re-break Ctrl+B in the real window exactly as PR #27 found it -- with the
+// full suite green, because renderer-scope.test.js checks what LEAKS out, not
+// what fails to get out. Found resolving the #26/#27 merge conflict.
+const API = { nextTab, isPanelToggle, TABS, DEFAULT_TAB, isKnownTab: known };
+
+if (typeof module !== 'undefined' && module.exports) module.exports = API;
+else Object.assign(root, API);
+
+})(typeof window !== 'undefined' ? window : globalThis);

@@ -1,0 +1,205 @@
+'use strict';
+/**
+ * The code as the BROWSER actually loads it.
+ *
+ * THE DEFECT CLASS THIS RETIRES. The renderer loads its scripts as plain
+ * `<script src>` tags, which share ONE global lexical scope. Two files each
+ * declaring `const UNKNOWN` is a `SyntaxError` that aborts the second file
+ * entirely -- and the aborted file's functions are then `undefined`, so the
+ * panel it draws silently never renders.
+ *
+ * **No unit test can see this.** Every other test in this repo `require()`s a
+ * module into its own scope, where there is nothing to collide with. It has
+ * now bitten twice: `app/career-display.js` and `app/quota-display.js` were
+ * both dead on arrival in the real renderer while 100% of their tests passed.
+ * `test/sources-parse.test.js` cannot see it either -- it runs `node --check`
+ * per file, in isolation, and a duplicate-`const` collision only exists when
+ * two scripts share one scope.
+ *
+ * So this test does the only thing that can catch it: parses the script list
+ * out of `app/renderer.html` and evaluates every one of them, IN ORDER, into a
+ * single shared `vm` context -- which is what Chromium does.
+ *
+ * The allow-list is deliberately an ALLOW-list. A new global is out of scope
+ * until someone opts it in, so the next file to leak a `plural` or an
+ * `escapeHtml` fails here rather than in six months in the product.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const APP = path.join(__dirname, '..', 'app');
+
+// Every global the renderer's scripts are permitted to define. Anything else
+// showing up here is a leak waiting to collide with the next file added.
+const ALLOWED_GLOBALS = new Set([
+  // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:
+  // renderer.js calls it as a bare global inside the xterm key handler,
+  // which is the only place that can stop the terminal eating Ctrl+B.
+  'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
+  // app/secret-mask.js, app/attention-surface.js
+  'createMask', 'surfacesFor',
+  // the display modules
+  'usageDisplay',
+  'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
+  'quotaDisplay', 'formatQuotaCountdown',
+]);
+
+// The scripts renderer.html loads from ./, in document order. node_modules
+// vendor scripts are skipped: they are not ours and xterm is not loadable
+// outside a DOM.
+function rendererScripts() {
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+  const out = [];
+  const re = /<script\s+src="\.\/([^"]+)"><\/script>/g;
+  let m;
+  while ((m = re.exec(html))) out.push(m[1]);
+  return out;
+}
+
+// A context with just enough browser to let these files reach their
+// `window` branch. None of them touches the DOM at load time -- if one starts
+// to, this test is the right place to find out.
+function makeContext() {
+  const ctx = { console };
+  ctx.window = ctx;
+  ctx.globalThis = ctx;
+  ctx.document = {
+    getElementById: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    createElement: () => ({ classList: { add() {}, remove() {} }, style: {}, remove() {} }),
+    body: { appendChild() {} },
+  };
+  return vm.createContext(ctx);
+}
+
+test('renderer.html actually lists the display modules it depends on', () => {
+  // The other half of the same failure: a module can be perfect, wrapped, and
+  // simply never loaded. `careerDisplay` is referenced in exactly one place in
+  // renderer.js, and nothing asserted the tag existed.
+  const scripts = rendererScripts();
+  assert.ok(scripts.includes('renderer.js'), 'the renderer itself must be loaded');
+  assert.ok(scripts.indexOf('renderer.js') === scripts.length - 1,
+    'renderer.js must load LAST -- it consumes what the others define');
+  for (const f of scripts) {
+    assert.ok(fs.existsSync(path.join(APP, f)), `renderer.html loads ${f}, which does not exist`);
+  }
+});
+
+test('every renderer script loads into ONE shared scope without colliding', () => {
+  // This is the test that fails when someone adds a fifth module declaring a
+  // name a fourth one already has.
+  const ctx = makeContext();
+  for (const file of rendererScripts()) {
+    if (file === 'renderer.js') continue;     // needs a real DOM; covered above
+    const src = fs.readFileSync(path.join(APP, file), 'utf8');
+    try {
+      vm.runInContext(src, ctx, { filename: file });
+    } catch (err) {
+      assert.fail(`${file} failed to load alongside the scripts before it: ${err.message}`);
+    }
+  }
+});
+
+test('no renderer script leaks a global outside the allow-list', () => {
+  const ctx = makeContext();
+  const before = new Set(Object.getOwnPropertyNames(ctx));
+  for (const file of rendererScripts()) {
+    if (file === 'renderer.js') continue;
+    vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
+  }
+  const leaked = Object.getOwnPropertyNames(ctx).filter(k => !before.has(k));
+  const unexpected = leaked.filter(k => !ALLOWED_GLOBALS.has(k));
+  assert.deepStrictEqual(unexpected, [],
+    'these globals are not on the allow-list and will collide with the next file that wants the name');
+});
+
+test('the display modules the renderer needs are actually defined after loading', () => {
+  // Reachability, not just absence of error. This is what `fix: the career
+  // display never loaded in the real renderer` owed and did not have.
+  const ctx = makeContext();
+  for (const file of rendererScripts()) {
+    if (file === 'renderer.js') continue;
+    vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
+  }
+  for (const fn of ['usageDisplay']) {
+    assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
+  }
+});
+
+test('no two renderer scripts declare the same top-level name', () => {
+  // The DYNAMIC check above proves a collision throws (verified: two scripts
+  // each declaring `const UNKNOWN` in one vm context raise "Identifier
+  // 'UNKNOWN' has already been declared"). But a top-level `const` is NOT an
+  // own property of the context, so the allow-list test cannot see lexical
+  // leaks at all -- it only catches `var` and assignment.
+  //
+  // This is the static half: it names the offender and the file, and it catches
+  // the collision BEFORE the two files are ever loaded together.
+  const declRe = /^(?:const|let|class|function)\s+([A-Za-z_$][\w$]*)/gm;
+  const owner = new Map();
+  const clashes = [];
+
+  for (const file of rendererScripts()) {
+    const src = fs.readFileSync(path.join(APP, file), 'utf8');
+    // A file wrapped in an IIFE declares NOTHING in the shared scope, however
+    // its declarations are indented -- and this codebase does not indent inside
+    // the wrapper. Skipping them is what keeps this check from crying wolf on
+    // the three display modules, which all legitimately declare `UNKNOWN`
+    // inside their own wrappers. A test that fires on safe code gets deleted,
+    // and then the real one is gone too.
+    if (/^\(function \(root\) \{/m.test(src)) continue;
+    const seen = new Set();
+    let m;
+    while ((m = declRe.exec(src))) seen.add(m[1]);
+    for (const name of seen) {
+      if (owner.has(name)) clashes.push(`${name}: ${owner.get(name)} and ${file}`);
+      else owner.set(name, file);
+    }
+  }
+
+  assert.deepStrictEqual(clashes, [],
+    'these names are declared at top level in two scripts that share one scope');
+});
+
+test('every module function renderer.js calls is actually exported to it', () => {
+  // THE MIRROR OF THE LEAK TEST, and the gap that let this file pass while the
+  // app broke. The leak test asks what escapes a module; nothing asked what
+  // FAILS to escape one. Wrapping app/side-tabs.js in an IIFE while resolving
+  // the #26/#27 merge removed `isPanelToggle` from the global scope that
+  // renderer.js calls it from -- silently re-breaking Ctrl+B with the whole
+  // suite green, which is exactly how PR #27 found it the first time.
+  //
+  // So: any name a module declares AND renderer.js calls must be reachable
+  // after the modules load.
+  const ctx = makeContext();
+  const modules = rendererScripts().filter(f => f !== 'renderer.js');
+  const declared = new Map();                 // name -> the file that declares it
+  const DECL = /(?:^|\n)\s*(?:function|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  for (const file of modules) {
+    const src = fs.readFileSync(path.join(APP, file), 'utf8');
+    vm.runInContext(src, ctx, { filename: file });
+    let m;
+    while ((m = DECL.exec(src))) if (!declared.has(m[1])) declared.set(m[1], file);
+  }
+
+  // Names renderer.js declares itself are its own, and prove nothing here.
+  const renderer = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const ownDecls = new Set();
+  const OWN = /(?:^|\n)\s*(?:function|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  let d;
+  while ((d = OWN.exec(renderer))) ownDecls.add(d[1]);
+
+  const missing = [];
+  for (const [name, file] of declared) {
+    if (ownDecls.has(name)) continue;
+    if (!new RegExp('(?:^|[^\\w$.])' + name + '\\s*\\(').test(renderer)) continue;   // not called at all
+    if (!(name in ctx)) missing.push(name + ' (declared in ' + file + ')');
+  }
+  assert.deepStrictEqual(missing, [],
+    'renderer.js calls these as bare globals, but no module exports them -- ' +
+    'they are ReferenceErrors in the real window');
+});
