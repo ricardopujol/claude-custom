@@ -34,7 +34,18 @@
  *                total is higher. Shown with a prefix rather than discarded:
  *                the partial is real, it is just not all of it.
  *   complete     everything was read.
+ *
+ * WRAPPED IN AN IIFE, and that is not style. The renderer loads these as plain
+ * <script> tags, which share ONE global scope -- so the top-level `UNKNOWN`
+ * and `AT_LEAST` here collided with the identical ones in
+ * app/usage-display.js and threw "Identifier 'UNKNOWN' has already been
+ * declared", which killed this whole file and left `careerDisplay` undefined.
+ * No unit test can see that: each test requires the module into its own
+ * scope, where there is nothing to collide with. It was found by rendering
+ * the real header in a real window while building the quota meters.
  */
+
+(function (root) {
 
 const UNKNOWN = '—';          // em dash
 const AT_LEAST = '≥';         // >=
@@ -120,7 +131,9 @@ function careerDisplay(row, stats) {
 // app/usage-display.js.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { careerDisplay, formatMinutes, UNKNOWN, AT_LEAST, ABOUT, ESTIMATE_NOTE };
-} else if (typeof window !== 'undefined') {
-  window.careerDisplay = careerDisplay;
-  window.formatCareerMinutes = formatMinutes;
+} else {
+  root.careerDisplay = careerDisplay;
+  root.formatCareerMinutes = formatMinutes;
 }
+
+})(typeof window !== 'undefined' ? window : globalThis);
