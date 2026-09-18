@@ -282,7 +282,14 @@
     /* Collapsed: the sidebar is gone entirely, terminal takes the room. The
        tab strip reappears with it, so the only way back is the header hint --
        which is why the hint is always visible. */
-    #roster.hidden { display: none; }
+    /* COLLAPSED, NOT GONE. The tab bar lives inside #roster, so `display:none`
+       on the whole aside hid the tabs too -- leaving nothing to click and no
+       way back, because the only other route (Ctrl+B) was being eaten by the
+       terminal. A collapsed panel now keeps its tab rail, so the way back is
+       always visible and one click away. */
+    #roster.hidden { width: auto; min-width: 0; }
+    #roster.hidden .panel { display: none; }
+    #roster.hidden #side-tabs { border-right: 1px solid var(--border); }
 
     #side-tabs {
       display: flex; flex: 0 0 auto;
