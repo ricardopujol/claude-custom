@@ -51,3 +51,30 @@ test('the tab ids are exactly the ones nextTab accepts', () => {
     assert.strictEqual(nextTab(null, tab.id), tab.id, tab.id);
   }
 });
+
+// --- the escape hatch from a collapsed sidebar ---------------------------------
+
+const { isPanelToggle } = require('../host/../app/side-tabs');
+
+test('Ctrl+B is recognised as the panel toggle', () => {
+  // It was not, in practice. `attachCustomKeyEventHandler` returned true for
+  // it, so xterm sent \x02 to the pty -- readline's backward-char -- and the
+  // document-level listener never saw the event because the terminal always
+  // has focus. Combined with a collapsed sidebar hiding its own tab bar, the
+  // panel became unreachable: no tabs to click, and the keybinding typed into
+  // the shell instead.
+  assert.strictEqual(isPanelToggle({ type: 'keydown', ctrlKey: true, code: 'KeyB' }), true);
+});
+
+test('the toggle does not fire on the modifier combinations that mean other things', () => {
+  assert.strictEqual(isPanelToggle({ type: 'keydown', ctrlKey: true, shiftKey: true, code: 'KeyB' }), false);
+  assert.strictEqual(isPanelToggle({ type: 'keydown', ctrlKey: true, altKey: true, code: 'KeyB' }), false);
+  assert.strictEqual(isPanelToggle({ type: 'keydown', code: 'KeyB' }), false, 'plain b must reach the terminal');
+  assert.strictEqual(isPanelToggle({ type: 'keyup', ctrlKey: true, code: 'KeyB' }), false);
+  assert.strictEqual(isPanelToggle({ type: 'keydown', ctrlKey: true, code: 'KeyC' }), false);
+});
+
+test('a null event is not a toggle', () => {
+  assert.strictEqual(isPanelToggle(null), false);
+  assert.strictEqual(isPanelToggle(undefined), false);
+});

@@ -109,13 +109,9 @@ document.addEventListener('keydown', (e) => {
     setTimeout(() => { fit.fit(); sendResize(); }, 0);
     e.preventDefault();
   }
-  // Ctrl+B shows or hides the whole side panel. The TAB is the real control;
-  // this is only the way back once the panel is collapsed and its tabs are
-  // gone with it.
-  if (e.ctrlKey && !e.shiftKey && e.code === 'KeyB') {
-    setTab(activeTab === null ? lastTab : null);
-    e.preventDefault();
-  }
+  // NOTE: Ctrl+B is handled inside term.attachCustomKeyEventHandler, not here.
+  // A document listener never receives it -- xterm's textarea has focus and
+  // consumes the key first. This comment is left as the signpost.
 });
 
 // --- fog of war ---
@@ -1289,6 +1285,17 @@ term.onBinary((data) => send(data));
 // Returning false stops xterm's default handling for that event.
 term.attachCustomKeyEventHandler((e) => {
   if (e.type !== 'keydown') return true;
+
+  // THE PANEL TOGGLE MUST BE DECIDED HERE, not in a document listener. xterm's
+  // textarea always holds focus, so a document-level handler never saw Ctrl+B
+  // -- the terminal consumed it and sent  to the pty, which readline reads
+  // as backward-char. The binding looked dead while quietly editing the command
+  // line. Returning false is what stops the terminal taking it.
+  if (isPanelToggle(e)) {
+    setTab(activeTab === null ? (lastTab || DEFAULT_TAB) : null);
+    e.preventDefault();
+    return false;
+  }
 
   const mods =
     (e.ctrlKey ? 'Ctrl+' : '') +
