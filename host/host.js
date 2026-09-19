@@ -39,6 +39,7 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { validResizeDims, handleFrame } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
+const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
@@ -361,6 +362,10 @@ const announcer = createAnnouncer();
 // broadcast to an empty client set and lost forever.
 let pendingMilestone = null;
 let pendingQuotaWarning = null;
+// Folders this session has already granted via /add-dir. In memory only: the
+// grant lives in the running `claude` process, so it dies with the process and
+// must not outlive it in a file that would re-grant on the next boot.
+const grantedDirs = [];
 
 // A counter, never a limit -- so this reports where you ARE and what is next,
 // and has no concept of anything running out.
@@ -487,6 +492,132 @@ function checkQuotaWarning(quota) {
     return;
   }
   broadcastControl(message);
+}
+
+// Files dropped on the window. Types their paths into the prompt and, for a
+// file outside the project, grants the session read access to its folder.
+//
+// THE GRANT GOES THROUGH THE CLI'S OWN `/add-dir`, not through the settings
+// file: the `claude` process is already running, it owns its own notion of
+// which directories are allowed, and editing settings underneath it would
+// either do nothing or fight it. Same "wrap the real CLI, never reimplement
+// it" bet the rest of this harness rests on. `/add-dir` was verified present
+// in the shipped binary before this was built.
+//
+// SEQUENCED, not fired in one write. Each /add-dir is a slash command that the
+// TUI must accept and execute; typing the file paths in the same breath would
+// race the command and land the paths inside its argument. So the grants go
+// first, one per tick, and the paths only after the last one.
+// One writer to the pty, one line at a time.
+//
+// The first version used a per-drop `setTimeout` chain at 350ms intervals, which
+// is an open-loop guess wearing a mechanism's clothes: two drops 100ms apart
+// interleaved, and 25 files from 25 folders put the prompt text 8.75 SECONDS
+// after the first grant, with every user keystroke landing in between. A fixed
+// delay is not a completion signal.
+//
+// This is not a completion signal either -- the honest fix watches the TUI's own
+// acknowledgement through term.onData -- but it is at least ONE ordering for the
+// whole host rather than one per gesture, and it makes the interleaving
+// impossible. The remaining risk is a slow TUI, which is recorded rather than
+// pretended away.
+const PTY_LINE_GAP_MS = 350;
+const CTRL_U = String.fromCharCode(21);      // clear the input line
+const ptyQueue = [];
+let ptyDraining = false;
+
+function enqueuePty(text) {
+  ptyQueue.push(text);
+  if (ptyDraining) return;
+  ptyDraining = true;
+  const step = () => {
+    const next = ptyQueue.shift();
+    if (next === undefined) { ptyDraining = false; return; }
+    try { term.write(next); } catch (err) {
+      console.log('[host] pty write failed:', err && err.message);
+    }
+    setTimeout(step, PTY_LINE_GAP_MS);
+  };
+  step();
+}
+
+function handleDrop(msg, ws) {
+  const entries = Array.isArray(msg.entries) ? msg.entries : [];
+  if (!entries.length) return;
+
+  // SLICED BEFORE STATTING. `statSync` is synchronous and this loop runs on the
+  // one event loop that must accept the hook helper's named-pipe connection
+  // inside 80ms; a client sending 10,000 entries would otherwise do 10,000
+  // blocking stats, and a single unreachable UNC path blocks for seconds.
+  const capped = entries.slice(0, MAX_DROP_FILES);
+
+  // REALPATH, not just stat. A symlink or junction defeats every refusal in
+  // planDrop, because the string it judges is innocent and the target is not:
+  // `mklink /J C:\tmp\notes.txt C:\Users\ricar` needs no elevation, and
+  // statSync FOLLOWS it, so the old code learned the type from the filesystem
+  // and then granted the link path -- which the CLI resolves back to the home
+  // directory this module swears it never grants. Dexter, 2026-09-17.
+  const resolved = capped.map((e) => {
+    const raw = typeof e.path === 'string' ? e.path : '';
+    let real = raw;
+    let isDirectory = !!e.isDirectory;      // the renderer's hint, a File guess
+    try {
+      real = fs.realpathSync.native(raw);
+      isDirectory = fs.statSync(real).isDirectory();
+    } catch { /* vanished or unreadable: judge the raw path, which fails closed */ }
+    return { path: real, isDirectory };
+  });
+
+  const plan = planDrop({
+    entries: resolved,
+    cwd: CWD,
+    alreadyGranted: grantedDirs,
+    home: os.homedir(),
+  });
+
+  for (const r of plan.refused) console.log('[host] drop refused  :', r.dir, '-', r.why);
+
+  // A SINGLE SERIALISED QUEUE, not a setTimeout chain per drop. Two drops
+  // 100ms apart used to interleave -- drop B's grant landing between drop A's
+  // grant and A's path text -- which is exactly the race the delay was meant to
+  // prevent. One writer, one line at a time, in order.
+  const granted = [];
+  for (const dir of plan.dirsToAdd) {
+    // QUOTED. `/add-dir C:\Users\ricar\Documents Backup` unquoted grants
+    // `...\Documents` -- a strict superset of what was dragged, on a path shape
+    // that is entirely ordinary on Windows. The module already had `quote()`
+    // for the prompt text and the grant path never called it. Dexter, 2026-09-17.
+    //
+    // LINE-CLEARED FIRST (Ctrl+U). Typed blind onto a prompt the user has
+    // already started, `/add-dir ...` does not begin with `/` any more -- so the
+    // CR submits their half-written message to the model and grants nothing.
+    enqueuePty(CTRL_U + '/add-dir ' + quote(dir) + '\r');
+    granted.push(dir);
+  }
+  if (plan.text) enqueuePty(plan.text);
+
+  // Recorded only for what we actually tried to write, and described as
+  // REQUESTED rather than granted: nothing here can confirm the CLI accepted
+  // the command, and telling the user their read scope widened when it did not
+  // corrodes trust exactly as fast as the reverse.
+  for (const dir of granted) {
+    grantedDirs.push(dir);
+    console.log('[host] drop requests :', dir);
+  }
+
+  const note = {
+    requested: granted,
+    refused: plan.refused,
+    truncated: plan.truncated + Math.max(0, entries.length - capped.length),
+    unusable: plan.unusable,
+  };
+  if (granted.length || plan.refused.length || note.truncated || note.unusable) {
+    // BROADCAST, not sent to one socket. Two windows can be attached to one
+    // host; the other one's user watches the session's read scope widen with no
+    // notice at all.
+    broadcastControl({ type: 'dropped', note });
+  }
+  void ws;
 }
 
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
@@ -936,6 +1067,17 @@ wss.on('connection', (ws) => {
         // (already-resized) xterm silently disagreeing with the host.
         console.log('[host] rejected resize:', msg.cols, msg.rows);
       }
+      return;
+    }
+    if (msg.type === 'drop') {
+      // Dispatched here rather than from the ws handler, which is where this
+      // branch originally put it: #18 landed in between and moved every
+      // control frame behind parseControlFrame's allow-list. A `drop` frame
+      // that is not on that list is not merely ignored -- it falls through to
+      // `term.write` and is TYPED, verbatim JSON and all, into a session
+      // running --dangerously-skip-permissions. That is the exact hole #18
+      // exists to close, and it would have reopened silently on merge.
+      handleDrop(msg, ws);
       return;
     }
     if (msg.type === 'health') {

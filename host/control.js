@@ -53,7 +53,7 @@ function validResizeDims(cols, rows) {
 // typed it. Classifying by IDENTITY (is this one of ours?) rather than by
 // SHAPE (does it look like it could be one of ours?) restores the old
 // fall-through for everything else.
-const CONTROL_TYPES = new Set(['resize', 'health', 'input', 'models', 'seat', 'fog']);
+const CONTROL_TYPES = new Set(['resize', 'health', 'input', 'models', 'seat', 'fog', 'drop']);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
 // control message. A frame is control JSON only if it parses AND carries a

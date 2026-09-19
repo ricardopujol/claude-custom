@@ -135,3 +135,47 @@ test('a dispatch that succeeds never writes the frame as literal input', () => {
   assert.strictEqual(result.handled, true);
   assert.strictEqual(result.error, undefined);
 });
+
+test('a drop frame is CONTROL, and is never typed into the session', () => {
+  // The #18/#24 merge, 2026-09-18. This branch predates #18 and dispatched
+  // `drop` from the raw ws handler; #18 moved every control frame behind
+  // CONTROL_TYPES. A type missing from that list does not get ignored -- it
+  // falls through to `term.write`, so the whole frame is TYPED, verbatim JSON
+  // and the user's own file paths with it, into a session running
+  // --dangerously-skip-permissions. Dropping a file would have typed its path
+  // at the prompt.
+  const written = [];
+  let dispatchedWith = null;
+  const text = '{"type":"drop","entries":[{"path":"C:\\\\w\\\\notes.txt"}]}';
+  const result = handleFrame(text, (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+
+  assert.strictEqual(result.handled, true, 'a drop frame must be handled as control');
+  assert.deepStrictEqual(written, [], 'a drop frame must NEVER reach the terminal');
+  assert.strictEqual(dispatchedWith.type, 'drop');
+  const BS = String.fromCharCode(92);          // one backslash, unambiguously
+  assert.strictEqual(dispatchedWith.entries[0].path, 'C:' + BS + 'w' + BS + 'notes.txt');
+});
+
+test('every type host.js dispatches is on the control allow-list', () => {
+  // The general form of the bug above, so the next feature to add a control
+  // frame cannot reproduce it. Any `msg.type === 'x'` branch in
+  // dispatchControl whose 'x' is not in CONTROL_TYPES is a frame that gets
+  // typed into the session instead of handled.
+  const fs = require('fs');
+  const path = require('path');
+  const host = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  const start = host.indexOf('function dispatchControl');
+  assert.ok(start !== -1, 'dispatchControl must exist for this check to mean anything');
+  const body = host.slice(start, host.indexOf('\n  }', start));
+
+  const dispatched = new Set();
+  const re = /msg\.type === '([^']+)'/g;
+  let m;
+  while ((m = re.exec(body))) dispatched.add(m[1]);
+  assert.ok(dispatched.size > 0, 'found no dispatched types -- the scan is broken, not the code');
+
+  const missing = [...dispatched].filter(t => !CONTROL_TYPES.has(t));
+  assert.deepStrictEqual(missing, [],
+    'host.js dispatches these types, but parseControlFrame does not recognise them, ' +
+    'so the frames are written to the pty as literal keystrokes instead');
+});

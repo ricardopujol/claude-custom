@@ -1257,6 +1257,10 @@ function handleControl(msg) {
     renderUsage(msg.usage);
     return;
   }
+  if (msg.type === 'dropped') {
+    renderDropNote(msg.note);
+    return;
+  }
   if (msg.type === 'quota') {
     renderQuota(msg.quota);
     return;
@@ -1342,6 +1346,69 @@ term.onData((data) => {
 
 // Bracketed-paste and other multi-byte writes.
 term.onBinary((data) => send(data));
+
+// --- drag and drop ------------------------------------------------------------
+// Dropping a file types its path into the prompt and, when the file lives
+// outside the project, asks the host to grant the session read access to its
+// folder. The DECISION about what may be granted is host-side and tested
+// (host/drop.js); this end only collects paths and reports what happened.
+//
+// Both listeners are required. Without preventDefault on dragover, Chromium
+// treats the window as a browser and NAVIGATES to the dropped file -- the whole
+// UI is replaced by a plain view of it and the only way back is restarting.
+const dropZone = document.getElementById('app') || document.body;
+
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  dropZone.classList.add('dropping');
+});
+for (const leave of ['dragleave', 'dragend']) {
+  dropZone.addEventListener(leave, () => dropZone.classList.remove('dropping'));
+}
+
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dropping');
+
+  const files = [...(e.dataTransfer.files || [])];
+  if (!files.length) return;
+
+  // `File.path` WAS REMOVED IN ELECTRON 32 and this app is on 33: it is
+  // undefined here, with no error and no warning, which is how every
+  // drag-and-drop snippet still on the internet fails silently. The path comes
+  // across the preload bridge via webUtils.getPathForFile instead.
+  const entries = files
+    .map(f => ({
+      path: (window.harness && window.harness.pathForFile) ? window.harness.pathForFile(f) : '',
+      // A dropped folder arrives as a File with no type and a size the OS makes
+      // up. Sent as a HINT only -- the host stats the path rather than trusting
+      // either field.
+      isDirectory: !f.type && !(f.size > 0),
+    }))
+    .filter(x => x.path);
+
+  if (!entries.length) return;
+  try { ws.send(JSON.stringify({ type: 'drop', entries })); } catch { /* not attached */ }
+});
+
+// What the drop did, said out loud. A gesture that silently widens what the
+// session may read is exactly the thing that should not be silent.
+function renderDropNote(note) {
+  if (!note) return;
+  const bits = [];
+  if (note.requested && note.requested.length) {
+    bits.push('requested read access to ' + note.requested.join(', '));
+  }
+  if (note.refused && note.refused.length) {
+    bits.push(note.refused.map(r => 'refused ' + r.dir + ': ' + r.why).join(' · '));
+  }
+  if (note.truncated) bits.push(note.truncated + ' more file(s) not added');
+  if (!bits.length) return;
+  if (note.unusable) bits.push(note.unusable + ' file(s) skipped: unsafe name');
+  const denied = !!(note.refused && note.refused.length);
+  flourish({ icon: denied ? '⛔' : '📁', name: bits.join(' · ') });
+}
 
 // --- key handling -----------------------------------------------------------
 // Returning false stops xterm's default handling for that event.
