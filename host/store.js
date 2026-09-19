@@ -21,6 +21,7 @@
  */
 
 const fs = require('fs');
+const { renameWithRetry } = require('./atomic-write');
 const path = require('path');
 
 // Names are used as filenames. They may come from feature code today and from
@@ -61,7 +62,13 @@ function createStore({ dir }) {
     // half.
     const temp = `${file}.tmp${process.pid}`;
     fs.writeFileSync(temp, JSON.stringify(value, null, 2));
-    fs.renameSync(temp, file);
+    // Retried, because on Windows the rename is the fragile half: EPERM /
+    // EACCES / EBUSY whenever anything holds a handle for a moment, and the
+    // antivirus scan of the file we just wrote routinely does. MEASURED here
+    // 2026-09-18. It still THROWS if the rename never succeeds -- a write
+    // reported as done while the file was never replaced would be worse than
+    // the failure it hides. See host/atomic-write.js.
+    renameWithRetry(temp, file);
     return value;
   }
 

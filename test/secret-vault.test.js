@@ -162,3 +162,57 @@ test('the file is written atomically', () => {
 test('the clipboard clear delay is long enough to paste and short enough to matter', () => {
   assert.ok(CLIPBOARD_CLEAR_MS >= 10000 && CLIPBOARD_CLEAR_MS <= 120000, String(CLIPBOARD_CLEAR_MS));
 });
+
+// --- the write itself, which Windows can refuse for a moment ------------------
+
+test('a transient EPERM on the rename does NOT lose the secret', () => {
+  // MEASURED, and this exact file: on 2026-09-18 a run of this suite failed
+  // with `EPERM: operation not permitted, rename '...\.secrets-46740-....tmp'
+  // -> '...\secrets.enc'`. Nothing was wrong with the file or the
+  // permissions -- on Windows a rename fails while any process holds a
+  // handle, and the antivirus scan of the file just written routinely does.
+  //
+  // Unretried, that is a secret the UI reported as saved and that is not on
+  // disk, which is the worst failure this module has: the user believes it is
+  // safe to discard the original.
+  const file = tmp();
+  const v = createVault({ file, crypto: fakeCrypto() });
+  const real = fs.renameSync;
+  let failures = 2;
+  fs.renameSync = (from, to) => {
+    if (failures-- > 0) {
+      const err = new Error('EPERM: operation not permitted, rename');
+      err.code = 'EPERM';
+      throw err;
+    }
+    return real(from, to);
+  };
+  let entry;
+  try {
+    entry = v.add({ label: 'token', secret: 'survives-eperm' });
+  } finally {
+    fs.renameSync = real;
+  }
+
+  const reopened = createVault({ file, crypto: fakeCrypto() });
+  assert.strictEqual(reopened.get(entry.id), 'survives-eperm',
+    'the secret must be on disk, not merely in memory');
+});
+
+test('a rename that never recovers FAILS the save rather than reporting success', () => {
+  // Fails closed, deliberately. Returning the entry while the file was never
+  // replaced would tell the user their secret is stored when it is not.
+  const v = createVault({ file: tmp(), crypto: fakeCrypto() });
+  const real = fs.renameSync;
+  fs.renameSync = () => {
+    const err = new Error('EPERM: operation not permitted, rename');
+    err.code = 'EPERM';
+    throw err;
+  };
+  try {
+    assert.throws(() => v.add({ label: 'token', secret: 'never-lands' }),
+      (err) => err.code === 'EPERM');
+  } finally {
+    fs.renameSync = real;
+  }
+});

@@ -26,6 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto_ = require('crypto');
+const { renameWithRetry } = require('../host/atomic-write');
 
 // Long enough to switch windows and paste; short enough that a key is not still
 // sitting on the clipboard an hour later.
@@ -65,7 +66,13 @@ function createVault({ file, crypto, onWrite } = {}) {
     const tmp = path.join(dir, `.secrets-${process.pid}-${Date.now()}.tmp`);
     if (onWrite) onWrite(tmp);
     fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    // Retried: on Windows the rename fails with EPERM / EACCES / EBUSY while
+    // anything holds a handle for a moment, and the antivirus scan of the
+    // file just written routinely does. MEASURED against this very file on
+    // 2026-09-18. It still THROWS if the rename never lands -- returning the
+    // entry while the file was never replaced would tell the user a secret is
+    // stored when it is not. See host/atomic-write.js.
+    renameWithRetry(tmp, file);
     if (onWrite) onWrite(file);
   }
 

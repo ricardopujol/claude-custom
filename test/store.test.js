@@ -96,3 +96,48 @@ test('exposes the path of a file for other processes to read', () => {
   const s = createStore({ dir });
   assert.strictEqual(s.pathOf('loadout'), path.join(dir, 'loadout.json'));
 });
+
+test('a transient EPERM on the rename does NOT lose the write', () => {
+  // MEASURED on this machine, 2026-09-18: a rename of a just-written temp
+  // file failed with EPERM mid test run, nothing wrong with the file or the
+  // permissions. On Windows any process holding a handle for a moment does
+  // that, and the antivirus scan of the file we just wrote routinely does.
+  // Unretried, a settings write simply threw.
+  const dir = tmp();
+  const s = createStore({ dir });
+  const real = fs.renameSync;
+  let failures = 2;
+  fs.renameSync = (from, to) => {
+    if (failures-- > 0) {
+      const err = new Error('EPERM: operation not permitted, rename');
+      err.code = 'EPERM';
+      throw err;
+    }
+    return real(from, to);
+  };
+  try {
+    s.write('loadout', { agents: { miguel: ['whetstone'] } });
+  } finally {
+    fs.renameSync = real;
+  }
+  assert.deepStrictEqual(createStore({ dir }).read('loadout', {}),
+    { agents: { miguel: ['whetstone'] } }, 'the write must survive a transient EPERM');
+});
+
+test('a rename that never recovers still FAILS the write, loudly', () => {
+  // Fails closed. A store write that reported success while the file on disk
+  // was never replaced is worse than the throw it replaces -- the caller
+  // would carry on believing the setting was saved.
+  const s = createStore({ dir: tmp() });
+  const real = fs.renameSync;
+  fs.renameSync = () => {
+    const err = new Error('EPERM: operation not permitted, rename');
+    err.code = 'EPERM';
+    throw err;
+  };
+  try {
+    assert.throws(() => s.write('loadout', { agents: {} }), (err) => err.code === 'EPERM');
+  } finally {
+    fs.renameSync = real;
+  }
+});
