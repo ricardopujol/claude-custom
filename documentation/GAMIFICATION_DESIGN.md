@@ -1,7 +1,36 @@
 # Gamification layer — design
 
-**Status:** Designed, not started. Decisions taken 2026-09-11.
+**Status:** **MOSTLY BUILT.** Decisions taken 2026-09-11; the header below said
+"Designed, not started" until 2026-09-17, by which point the shared foundation and
+eleven of the sixteen features were built, tested and wired into `host/host.js`.
+Corrected after a documentation audit (Dewey, 2026-09-14) found the drift.
 **Depends on:** the existing hook bridge, mood machine, theme registry and usage reader.
+**Canonical status lives in** `CLAUDECUSTOM_BUILD_LOG.md` — this table is a snapshot.
+
+### Build state — 2026-09-17
+
+| # | Feature | Status | Where it lives |
+|---|---------|--------|----------------|
+| — | State store | 🟢 Done | `host/store.js` |
+| — | Hook coverage | 🟢 Done | `host/hook-bridge.js` |
+| 1 | Item inventory | 🔵 Planned | — |
+| 2 | Token counter | 🟢 Done | `host/milestones.js`, `host/usage.js` |
+| 3 | Fog of war | 🟢 Done | `host/fog.js` |
+| 4 | Bug vault | 🔵 Planned | — |
+| 6 | Cooldowns | 🟢 Done | `host/cooldowns.js` |
+| 7 | Party view | 🟢 Done | `host/mood-machine.js`, `host/attention.js` |
+| 8 | Project HP | 🟢 Done | `host/health.js` |
+| 10 | Hazard level | 🟢 Done | `host/mode.js` |
+| 11 | Provider switch | 🟢 Done | `host/providers.js` |
+| 12 | Model council | 🟢 Done | `host/seats.js` |
+| 14 | Recent projects | 🟢 Done | `host/recent.js`, `host/background.js` |
+| 15 | Model browser | 🟢 Done | `host/models.js`, `host/openrouter.js` |
+| 16 | Secret clipboard | 🟢 Done | `app/secret-vault.js`, `app/secret-service.js`, `app/secret-mask.js` |
+| 17 | Skill tab | 🔵 Planned | — |
+| 18 | Career stats | 🟣 Testing | `host/agent-stats.js` (PRs #19–#21 open) |
+
+Not in this document, built since: **Max plan quota meters** (`host/quota.js`, PR #23)
+and **drag-and-drop files** (`host/drop.js`, PR #24).
 
 Ten ideas were proposed; **eight accepted**, two rejected (agent reputation — not
 interesting; quest log — don't care). Two more were added afterwards: provider

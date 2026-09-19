@@ -5,6 +5,25 @@ Remaining: forge (steps 4 & 6) and Remote Control confirmation.
 **Date:** 2026-09-11
 **Location:** `C:\Users\ricar\VibeCode\claude-custom`
 
+
+> **AMENDED 2026-09-17.** This document is the frozen original design and its body is
+> left as written. Two claims in it are now FALSE and are corrected here rather than
+> edited in place, so the record of what was believed on 2026-09-11 survives:
+>
+> 1. **The forge is further along than the status line says.** Steps 4 and 6 are not
+>    "remaining": `forge/README.md` records a real fixed-seed guidance sweep with
+>    measured per-image adherence, and generated portraits exist on disk for at least
+>    `code-reviewer` and `logic-reviewer` at
+>    `agent-creator/portraits/<agent>/{sleeping,working,happy,stressed}.png`, each with
+>    a `report.json`. Verified 2026-09-17: the host resolves all four states of
+>    `code-reviewer` to real files, not placeholders.
+> 2. **`claude-custom` IS a git repo** — see the "not a git repo" parenthetical under
+>    Theming. It has `develop` and `main`, a curated `.gitignore`, and an active PR
+>    workflow. The central-registry decision still stands on its own merits (several
+>    *target* folders genuinely aren't repos), but that parenthetical is wrong.
+>
+> Current build state is in `CLAUDECUSTOM_BUILD_LOG.md`, which is canonical.
+
 ---
 
 ## Goal

@@ -49,10 +49,27 @@ test('a page on localhost is refused too', () => {
 });
 
 test('the Electron renderer IS allowed', () => {
-  // It loads from file://, which browsers report as a null origin or omit.
+  // MEASURED, not assumed -- verify/probe-renderer-origin.js launches a real
+  // Electron window with this app's own webPreferences and reads the handshake
+  // off the wire. It sends exactly `Origin: file://`.
   for (const origin of LOCAL_ORIGINS) {
     assert.strictEqual(check({ origin, token: TOKEN }).ok, true, JSON.stringify(origin));
   }
+  assert.ok(LOCAL_ORIGINS.includes('file://'), 'the measured renderer origin must be allowed');
+});
+
+test('an OPAQUE origin is refused — the string "null" is not a local origin', () => {
+  // Miguel, code review 2026-09-14: any `<iframe sandbox>` without
+  // allow-same-origin serialises its origin as the literal string "null", so
+  // accepting it let such a page clear the ORIGIN gate -- the one this module
+  // calls "the one that closes the actual hole" -- leaving only the token,
+  // which the module itself describes as weaker by nature. The two-gate design
+  // collapsed to one via an HTML attribute.
+  //
+  // Safe to refuse because it was MEASURED: the real renderer sends
+  // `Origin: file://`, never "null" (verify/probe-renderer-origin.js).
+  assert.strictEqual(check({ origin: 'null', token: TOKEN }).ok, false);
+  assert.ok(!LOCAL_ORIGINS.includes('null'));
 });
 
 test('a missing Origin header is allowed only WITH the token', () => {
