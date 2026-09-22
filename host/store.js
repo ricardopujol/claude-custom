@@ -4,7 +4,14 @@
  *
  *   .harness/state/loadout.json    items equipped per agent
  *   .harness/state/vault.json      bug bestiary
- *   .harness/state/map.json        files seen, per project
+ *   .harness/state/map.json        DOES NOT EXIST. Grep it: the string appears
+ *                                  nowhere in this repo but on this line.
+ *                                  Nothing reads it, nothing writes it, the
+ *                                  file is never created. It described a
+ *                                  feature that was never built, and its
+ *                                  "per project" claim has since misled two
+ *                                  readers into believing this store scopes
+ *                                  anything by project. It does not.
  *   .harness/state/stats.json      counters, cooldowns, streaks
  *
  * ONE FILE PER CONCERN, not a single blob: a corrupt write then costs one
@@ -25,11 +32,19 @@
  *   different property, and the comment there may read as though it covers
  *   this. It does not.
  *
- *   STATE CROSSES PROJECTS. `map.json` is documented as per-project and is
- *   keyed accordingly, but `loadout.json`, `vault.json` and `stats.json` carry
- *   no project key. Equipping an item in project A changes it in project B,
- *   and the streaks and bestiary shown as A's include B's. The hook helper
- *   reads `loadout.json` directly, so it picks up whichever host wrote last.
+ *   STATE CROSSES PROJECTS. NOTHING here is scoped per project -- not
+ *   `loadout.json`, not `vault.json`, not `stats.json`. Equipping an item in
+ *   project A changes it in project B, and the streaks and bestiary shown as
+ *   A's include B's. The hook helper reads `loadout.json` directly, so it
+ *   picks up whichever host wrote last.
+ *
+ *   An earlier version of this very paragraph said `map.json` was "documented
+ *   as per-project and keyed accordingly", which was FALSE -- see the
+ *   correction on the file list above. I wrote that by trusting the header
+ *   rather than grepping for a caller, in a comment whose entire purpose was
+ *   to record what is and is not scoped. Miguel caught it reviewing PR #29,
+ *   and Dexter had independently built a recommendation on the same false
+ *   line. One stale comment, three readers misled.
  *
  * DELIBERATELY NOT FIXED in the multi-project change, and recorded here rather
  * than deferred quietly. Both are real; neither is silent corruption of
