@@ -89,21 +89,34 @@ function createVault({ file, crypto, onWrite } = {}) {
     // than a truncated one, which would be every secret gone instead of none.
     const tmp = path.join(dir, `.secrets-${process.pid}-${Date.now()}.tmp`);
     if (onWrite) onWrite(tmp);
-    fs.writeFileSync(tmp, JSON.stringify(candidate), { mode: 0o600 });
-    // Retried: on Windows the rename fails with EPERM / EACCES / EBUSY while
-    // anything holds a handle for a moment, and the antivirus scan of the
-    // file just written routinely does. MEASURED against this very file on
-    // 2026-09-18. It still THROWS if the rename never lands -- returning the
-    // entry while the file was never replaced would tell the user a secret is
-    // stored when it is not. See host/atomic-write.js.
+    // The WRITE is inside the try as well as the rename. Miguel, review of the
+    // fixed branch: wrapping only the rename left a writeFileSync failure --
+    // ENOSPC, a quota, a transient EACCES -- abandoning a partially written
+    // temp, which is the same leak Dexter's Finding 9 was about, through the
+    // other door.
     try {
+      fs.writeFileSync(tmp, JSON.stringify(candidate), { mode: 0o600 });
+      // Retried: on Windows the rename fails with EPERM / EACCES / EBUSY while
+      // anything holds a handle for a moment, and the antivirus scan of the
+      // file just written routinely does. MEASURED against this very file on
+      // 2026-09-18. It still THROWS if the rename never lands -- returning the
+      // entry while the file was never replaced would tell the user a secret
+      // is stored when it is not. See host/atomic-write.js.
       renameWithRetry(tmp, file);
     } catch (err) {
-      // Dexter, Finding 9. The temp name carries a millisecond, so it is unique
-      // per failure and nothing ever collects them. Each one holds the WHOLE
-      // vault, and only the `secret` field is encrypted -- so every abandoned
-      // temp is a readable copy of every label and note. Cleaned on the way
-      // out, and the original error is still what the caller sees.
+      // BEST EFFORT, and deliberately described as such. Each abandoned temp
+      // holds the WHOLE vault, and only the `secret` field is encrypted, so
+      // every one is a readable copy of every label and note -- with a
+      // millisecond in its name, so they accumulate.
+      //
+      // But this cleanup is most likely to fail under exactly the condition
+      // that triggers it: the rename failed because something holds a handle
+      // on the temp, and unlinkSync on a held handle fails the same way. So
+      // this reduces the leak, it does not close it, and claiming otherwise
+      // would be the kind of comment that stops the next person looking.
+      //
+      // What IS guaranteed is that a failed cleanup never replaces the error
+      // the caller needs to see.
       try { fs.unlinkSync(tmp); } catch { /* nothing more we can do about it */ }
       throw err;
     }

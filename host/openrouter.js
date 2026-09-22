@@ -114,8 +114,17 @@ async function writeCache(file, rows, now) {
     // must, rather than freezing the host's event loop the way Atomics.wait
     // would.
     await renameWithRetryAsync(tmp, file);
-  } catch {
-    // A cache that cannot be written is a slower panel, not a broken one.
+  } catch (err) {
+    // A cache that cannot be written is a slower panel, not a broken one --
+    // so this still degrades rather than throwing. But it SAYS SO now.
+    //
+    // Miguel, review of the fixed branch: the retry above removed the CAUSE
+    // and left the DETECTOR missing. An empty catch here means an exhausted
+    // write is indistinguishable from a working cache, which is precisely the
+    // hidden outage Dexter's Finding 5 was about -- every launch paying a
+    // network fetch, forever, with nothing anywhere reporting it. Degrading is
+    // right; degrading undetectably is the bug.
+    console.warn('[openrouter] could not write the catalogue cache:', err && err.message);
   }
 }
 

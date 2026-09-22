@@ -61,20 +61,25 @@ function createStore({ dir }) {
     // synchronous write. Rename is atomic, so a reader sees old or new, never
     // half.
     const temp = `${file}.tmp${process.pid}`;
-    fs.writeFileSync(temp, JSON.stringify(value, null, 2));
-    // Retried, because on Windows the rename is the fragile half: EPERM /
-    // EACCES / EBUSY whenever anything holds a handle for a moment, and the
-    // antivirus scan of the file we just wrote routinely does. MEASURED here
-    // 2026-09-18. It still THROWS if the rename never succeeds -- a write
-    // reported as done while the file was never replaced would be worse than
-    // the failure it hides. See host/atomic-write.js.
+    // The write is inside the try with the rename: wrapping only the rename
+    // left a failed writeFileSync abandoning a partial temp (Miguel).
     try {
+      fs.writeFileSync(temp, JSON.stringify(value, null, 2));
+      // Retried, because on Windows the rename is the fragile half: EPERM /
+      // EACCES / EBUSY whenever anything holds a handle for a moment, and the
+      // antivirus scan of the file we just wrote routinely does. MEASURED here
+      // 2026-09-18. It still THROWS if the rename never succeeds -- a write
+      // reported as done while the file was never replaced would be worse than
+      // the failure it hides. See host/atomic-write.js.
       renameWithRetry(temp, file);
     } catch (err) {
       // Dexter, Finding 9. Bounded -- one temp per (pid, name), overwritten by
       // the next write from this process -- but a stale .tmp beside a settings
-      // file reads as corruption to whoever finds it, and the caller still
-      // gets the original error.
+      // file reads as corruption to whoever finds it.
+      //
+      // BEST EFFORT: if the rename failed because something holds a handle,
+      // the unlink can fail for the same reason. A failed cleanup never
+      // replaces the error the caller needs to see.
       try { fs.unlinkSync(temp); } catch { /* nothing more we can do about it */ }
       throw err;
     }

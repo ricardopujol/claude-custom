@@ -258,10 +258,16 @@ test('async: the default sleep really waits, and does not block the loop', async
 // --- the invariants, enumerated exhaustively ---------------------------------
 // CLAUDE.md expects property-based tests for any module with an invariant worth
 // stating. There is no property library in devDependencies, and this input
-// space is small enough that adding one would buy less than enumerating it:
-// every (attempts, failure-pattern, code) combination below is checked, so
-// these are exhaustive rather than sampled. A generator would cover a subset of
-// the same space and miss the boundaries it did not happen to draw.
+// space is small enough that adding one would buy less than enumerating it.
+//
+// PRECISELY WHAT IS ENUMERATED, because the first version of this comment
+// overclaimed and Miguel caught it: every (attempts 1..8) x (k) x (code)
+// combination for HOMOGENEOUS sequences -- always-fail, or fail k times with
+// one code and then succeed. That is exhaustive over those three dimensions
+// and NOT over failure patterns generally. Mixed sequences are covered
+// separately and explicitly at the end of this file, because the one that
+// matters -- a transient code followed by a fatal one -- is the quarantine
+// scenario this module's own header documents, and nothing here reached it.
 
 const NON_TRANSIENT = ['ENOENT', 'ENOSPC', 'EROFS', 'EXDEV', 'EISDIR', 'EMFILE', 'EINVAL'];
 const ALL_TRANSIENT = ['EPERM', 'EACCES', 'EBUSY'];
@@ -343,5 +349,44 @@ test('INVARIANT: the error that escapes is always the LAST one seen', () => {
       () => renameWithRetry('a.tmp', 'b', { rename, sleep: () => {}, attempts }),
       new RegExp(`attempt ${attempts}$`),
       `attempts=${attempts} should surface attempt ${attempts}'s error`);
+  }
+});
+
+test('INVARIANT: a transient code followed by a NON-transient one stops at once', () => {
+  // Miguel, code review of the fixed branch, Importante 4. The invariants
+  // above are exhaustive over (attempts, k, code) for HOMOGENEOUS sequences --
+  // always-fail, or fail-k-times-with-one-code-then-succeed -- and the header
+  // overclaimed by calling that exhaustive over failure patterns. It is not.
+  //
+  // The missing pattern is not hypothetical: it is the one this module's own
+  // comment documents. The antivirus QUARANTINES the temp between the write
+  // and the rename, which is EPERM on attempt 1 and ENOENT on attempt 2. A
+  // mixed sequence was not covered anywhere in this file.
+  for (const first of ALL_TRANSIENT) {
+    for (const then of NON_TRANSIENT) {
+      const rename = flaky([first, then]);
+      const slept = [];
+      assert.throws(
+        () => renameWithRetry('a.tmp', 'b', { rename, sleep: ms => slept.push(ms) }),
+        new RegExp(then),
+        `${first} then ${then} must surface ${then}`);
+      assert.strictEqual(rename.calls.length, 2,
+        `${first} then ${then} must stop on the second attempt, not run to ATTEMPTS`);
+      assert.deepStrictEqual(slept, [20],
+        'exactly one wait: after the transient, never after the fatal one');
+    }
+  }
+});
+
+test('INVARIANT: a non-transient code mid-sequence stops there, however late', () => {
+  // The same shape deeper into the retry, since "it stops" and "it stops at
+  // the right attempt" are different claims.
+  for (let at = 1; at <= 4; at++) {
+    const codes = Array(at - 1).fill('EBUSY').concat('ENOSPC');
+    const rename = flaky(codes);
+    assert.throws(
+      () => renameWithRetry('a.tmp', 'b', { rename, sleep: () => {} }),
+      /ENOSPC/);
+    assert.strictEqual(rename.calls.length, at, `fatal at attempt ${at}`);
   }
 });

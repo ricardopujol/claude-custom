@@ -314,3 +314,60 @@ test('a permanently failed save leaves no temp file behind', () => {
   const leftovers = fs.readdirSync(dir).filter(f => f.endsWith('.tmp'));
   assert.deepStrictEqual(leftovers, [], `orphaned temp files: ${leftovers.join(', ')}`);
 });
+
+test('a temp is not left behind when the WRITE fails either, not just the rename', () => {
+  // Miguel, review of the fixed branch, Importante 1. The first cleanup only
+  // wrapped the rename, so a writeFileSync that threw -- ENOSPC, a quota, a
+  // transient EACCES -- left the partially written temp on disk holding every
+  // label and note in PLAINTEXT, with a millisecond in its name so they
+  // accumulate. The comment claimed the failure path was cleaned; it cleaned
+  // one of two.
+  const file = tmp();
+  const dir = path.dirname(file);
+  const v = createVault({ file, crypto: fakeCrypto() });
+
+  const realWrite = fs.writeFileSync;
+  fs.writeFileSync = (p, ...rest) => {
+    if (String(p).endsWith('.tmp')) {
+      // Write it, THEN fail -- the nastier ordering, and the realistic one for
+      // a disk filling up mid-write.
+      realWrite(p, ...rest);
+      const e = new Error('ENOSPC: no space left on device');
+      e.code = 'ENOSPC';
+      throw e;
+    }
+    return realWrite(p, ...rest);
+  };
+  try {
+    assert.throws(() => v.add({ label: 'partial', secret: 'S' }), /ENOSPC/);
+  } finally {
+    fs.writeFileSync = realWrite;
+  }
+
+  const leftovers = fs.readdirSync(dir).filter(f => f.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, [], `orphaned temp files: ${leftovers.join(', ')}`);
+});
+
+test('a cleanup that ITSELF fails does not mask the real error', () => {
+  // Miguel, Importante 2. The unlink is most likely to fail under exactly the
+  // condition that triggers it: the rename failed because something holds a
+  // handle on the temp, and unlinkSync on a held handle fails the same way on
+  // Windows. The previous test faked the rename while leaving a real,
+  // working unlink -- it asserted cleanup in the one state where cleanup is
+  // trivial, which is wiring rather than behaviour for the hard case.
+  //
+  // The cleanup is best-effort and cannot be made reliable here. What MUST
+  // hold is that its failure never replaces the error the caller needs to see.
+  const v = vault();
+  const realRename = fs.renameSync;
+  const realUnlink = fs.unlinkSync;
+  fs.renameSync = () => { const e = new Error('EPERM: rename'); e.code = 'EPERM'; throw e; };
+  fs.unlinkSync = () => { const e = new Error('EBUSY: unlink'); e.code = 'EBUSY'; throw e; };
+  try {
+    assert.throws(() => v.add({ label: 'x', secret: 'y' }), /EPERM: rename/,
+      'the rename failure is what the caller must hear about, not the cleanup failure');
+  } finally {
+    fs.renameSync = realRename;
+    fs.unlinkSync = realUnlink;
+  }
+});

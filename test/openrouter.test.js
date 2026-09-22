@@ -203,3 +203,23 @@ test('a transient EPERM on the cache rename does NOT lose the cache', async () =
   assert.strictEqual(second.source, 'cache');
   assert.strictEqual(second.rows.length, 3);
 });
+
+test('a cache write that never lands SAYS SO, instead of failing invisibly', () => {
+  // Miguel, review of the fixed branch, Importante 3. The retry removed the
+  // CAUSE but not the DETECTOR. If the retry exhausts, the catch still
+  // swallows, and we are back in exactly the situation Finding 5 described:
+  // a hidden outage indistinguishable from a working cache, every launch
+  // paying a network fetch with nothing reporting it.
+  //
+  // Degrading is correct here -- an unwritable cache really is just a slower
+  // panel. Degrading SILENTLY AND UNDETECTABLY is what produced the finding,
+  // and this codebase's stated rule is that absence must not read as success.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'host', 'openrouter.js'), 'utf8');
+  const start = src.indexOf('async function writeCache');
+  assert.ok(start !== -1, 'writeCache must exist for this check to mean anything');
+  const body = src.slice(start, src.indexOf('\n}', start));
+
+  const swallow = body.slice(body.indexOf('} catch'));
+  assert.match(swallow, /console\.(warn|log|error)/,
+    'an exhausted cache write must leave a trace, not vanish into an empty catch');
+});
