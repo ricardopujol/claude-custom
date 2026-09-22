@@ -254,3 +254,94 @@ test('async: the default sleep really waits, and does not block the loop', async
   assert.ok(took >= 18, `waited only ${took}ms -- the default async sleep is not real`);
   assert.ok(ticked, 'the event loop must have kept turning during the wait');
 });
+
+// --- the invariants, enumerated exhaustively ---------------------------------
+// CLAUDE.md expects property-based tests for any module with an invariant worth
+// stating. There is no property library in devDependencies, and this input
+// space is small enough that adding one would buy less than enumerating it:
+// every (attempts, failure-pattern, code) combination below is checked, so
+// these are exhaustive rather than sampled. A generator would cover a subset of
+// the same space and miss the boundaries it did not happen to draw.
+
+const NON_TRANSIENT = ['ENOENT', 'ENOSPC', 'EROFS', 'EXDEV', 'EISDIR', 'EMFILE', 'EINVAL'];
+const ALL_TRANSIENT = ['EPERM', 'EACCES', 'EBUSY'];
+
+test('INVARIANT: a non-transient code is never retried, at any attempts setting', () => {
+  for (const code of NON_TRANSIENT) {
+    for (let attempts = 1; attempts <= 8; attempts++) {
+      const rename = flaky([code]);
+      let slept = 0;
+      assert.throws(
+        () => renameWithRetry('a.tmp', 'b', { rename, sleep: () => { slept++; }, attempts }),
+        new RegExp(code),
+        `${code} at attempts=${attempts}`);
+      assert.strictEqual(rename.calls.length, 1, `${code} must not be retried`);
+      assert.strictEqual(slept, 0, `${code} must not sleep`);
+    }
+  }
+});
+
+test('INVARIANT: the rename is never called more than `attempts` times', () => {
+  for (const code of ALL_TRANSIENT) {
+    for (let attempts = 1; attempts <= 8; attempts++) {
+      // Always fails, so the loop runs to its bound every time.
+      const rename = flaky(Array(attempts + 5).fill(code));
+      assert.throws(
+        () => renameWithRetry('a.tmp', 'b', { rename, sleep: () => {}, attempts }),
+        new RegExp(code));
+      assert.strictEqual(rename.calls.length, attempts,
+        `${code} at attempts=${attempts} ran ${rename.calls.length} times`);
+    }
+  }
+});
+
+test('INVARIANT: success at attempt k costs exactly k calls and k-1 sleeps', () => {
+  for (const code of ALL_TRANSIENT) {
+    for (let attempts = 1; attempts <= 8; attempts++) {
+      for (let k = 1; k <= attempts; k++) {
+        const rename = flaky(Array(k - 1).fill(code));   // fails k-1 times, then works
+        const slept = [];
+        renameWithRetry('a.tmp', 'b', { rename, sleep: ms => slept.push(ms), attempts });
+        assert.strictEqual(rename.calls.length, k, `${code} k=${k}/${attempts}`);
+        assert.strictEqual(slept.length, k - 1, `${code} k=${k}/${attempts} slept wrong`);
+      }
+    }
+  }
+});
+
+test('INVARIANT: total sleep is bounded by the doubling schedule, never unbounded', () => {
+  // The bound that matters operationally: whatever the caller asks for, the
+  // wait is a prefix of 20,40,80,160,... and nothing ever waits longer than
+  // the sum of it. This is what makes "300ms of cover" a ceiling and not just
+  // a typical case.
+  for (let attempts = 1; attempts <= 8; attempts++) {
+    const rename = flaky(Array(attempts + 5).fill('EBUSY'));
+    const slept = [];
+    assert.throws(
+      () => renameWithRetry('a.tmp', 'b', { rename, sleep: ms => slept.push(ms), attempts }),
+      /EBUSY/);
+    const expected = [];
+    for (let i = 0; i < attempts - 1; i++) expected.push(20 * (2 ** i));
+    assert.deepStrictEqual(slept, expected, `schedule at attempts=${attempts}`);
+    const total = slept.reduce((a, b) => a + b, 0);
+    assert.strictEqual(total, attempts === 1 ? 0 : 20 * (2 ** (attempts - 1) - 1));
+  }
+});
+
+test('INVARIANT: the error that escapes is always the LAST one seen', () => {
+  // Not the first, and never a stale binding from an earlier pass. Distinct
+  // messages per attempt make a stale one unmistakable.
+  for (let attempts = 2; attempts <= 6; attempts++) {
+    let n = 0;
+    const rename = () => {
+      n++;
+      const e = new Error(`EPERM attempt ${n}`);
+      e.code = 'EPERM';
+      throw e;
+    };
+    assert.throws(
+      () => renameWithRetry('a.tmp', 'b', { rename, sleep: () => {}, attempts }),
+      new RegExp(`attempt ${attempts}$`),
+      `attempts=${attempts} should surface attempt ${attempts}'s error`);
+  }
+});
