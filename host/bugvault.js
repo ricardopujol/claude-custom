@@ -210,13 +210,36 @@ const SEED_BUGS = [
 function createBugVault({ store, now = Date.now } = {}) {
   if (!store) throw new Error('createBugVault: store is required');
 
+  /**
+   * Dexter F1. This used to read `store.read(KEY, null)` and treat null as
+   * first run -- but null is what that call returns for a corrupt file too, so
+   * a vault damaged by a partial write or a disk error was SEEDED OVER and the
+   * records were gone, with nothing said to the user.
+   *
+   * Seeding is the destructive branch, so it gets the narrow condition:
+   * `missing` and nothing else. Every other outcome returns an error and
+   * leaves the file exactly as it was, for a person to look at. This is the
+   * only store consumer whose contents cannot be regenerated, which is what
+   * makes "start fresh" the wrong default here and the right one everywhere
+   * else in store.js.
+   */
   function load() {
-    const data = store.read(STORE_KEY, null);
-    if (data && Array.isArray(data.bugs)) return data;
-    // First run (or a corrupt file, which store.js already defaults to null):
-    // seed with what this project has already earned. Written back immediately
-    // so the seed happens exactly once -- a later empty list (the user cleared
-    // it) is a valid `{ bugs: [] }` and is never reseeded.
+    const state = store.readState(STORE_KEY);
+
+    if (state.status === 'ok') {
+      if (state.value && Array.isArray(state.value.bugs)) return { bugs: state.value.bugs };
+      // Parsed, and not a vault. Still somebody's file: "the wrong shape" is
+      // not "nothing is there".
+      return { bugs: [], error: 'the vault file parsed but holds no bug list; it was left untouched' };
+    }
+
+    if (state.status !== 'missing') {
+      return { bugs: [], error: `the vault file is ${state.status} and was left untouched` };
+    }
+
+    // Nothing there. Seed with what this project has already earned, written
+    // back immediately so it happens exactly once -- a later empty list (the
+    // user cleared it) is a valid `{ bugs: [] }` and is never reseeded.
     const seeded = { bugs: SEED_BUGS.map(s => createRecord(s, { now }).record) };
     store.write(STORE_KEY, seeded);
     return seeded;
@@ -230,6 +253,9 @@ function createBugVault({ store, now = Date.now } = {}) {
     const result = createRecord(input, { now });
     if (!result.ok) return result;
     const data = load();
+    // Writing one record over a damaged vault finishes the destruction the
+    // seeding path was just stopped from doing.
+    if (data.error) return { ok: false, error: data.error };
     data.bugs = [...data.bugs, result.record];
     store.write(STORE_KEY, data);
     return { ok: true, record: result.record };
@@ -246,6 +272,7 @@ function createBugVault({ store, now = Date.now } = {}) {
       return { ok: false, error: `setFixed: fixed must be true or false, got ${JSON.stringify(fixed)}` };
     }
     const data = load();
+    if (data.error) return { ok: false, error: data.error };
     let found = null;
     data.bugs = data.bugs.map((b) => {
       if (!b || b.id !== id) return b;
@@ -265,8 +292,18 @@ function createBugVault({ store, now = Date.now } = {}) {
   }
 
   function summary() {
-    const bugs = list();
-    return { total: bugs.length, byCategory: groupByCategory(bugs), byDetection: detectionBreakdown(bugs) };
+    const data = load();
+    const bugs = data.bugs;
+    // The error travels with the numbers. An empty list on its own is a claim
+    // that the user has recorded nothing, which is a different statement from
+    // "the vault could not be read" -- the absence-reported-as-zero bug this
+    // project keeps catching, one panel over.
+    return {
+      total: bugs.length,
+      byCategory: groupByCategory(bugs),
+      byDetection: detectionBreakdown(bugs),
+      error: data.error || null,
+    };
   }
 
   return { list, add, setFixed, summary };

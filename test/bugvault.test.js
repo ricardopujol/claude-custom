@@ -16,8 +16,38 @@ const {
 function memStore(initial) {
   let data = initial;
   return {
+    // `readState` is what the vault reads through: it must distinguish "no
+    // file yet" from "a file that would not parse", because only the first
+    // authorises writing seed data over it. See store.js, Dexter F1.
+    readState: () => (data === undefined
+      ? { status: 'missing', value: null }
+      : { status: 'ok', value: data }),
     read: (_name, fallback) => (data === undefined ? fallback : data),
     write: (_name, value) => { data = value; },
+  };
+}
+
+// A store whose file is THERE but unusable. The distinction this whole
+// section exists for: nothing may be written over it.
+function brokenStore(status = 'corrupt') {
+  const writes = [];
+  return {
+    writes,
+    readState: () => ({ status, value: null }),
+    read: (_name, fallback) => fallback,
+    write: (_name, value) => { writes.push(value); },
+  };
+}
+
+// A store whose writes always fail, for the attach-handshake case.
+function throwingStore(initial) {
+  let data = initial;
+  return {
+    readState: () => (data === undefined
+      ? { status: 'missing', value: null }
+      : { status: 'ok', value: data }),
+    read: (_name, fallback) => (data === undefined ? fallback : data),
+    write: () => { throw new Error('EACCES: permission denied'); },
   };
 }
 
@@ -375,4 +405,92 @@ test('a setFixed frame with no fixed field is refused end to end, not silently r
 test('an unknown id is still refused before the flag is even considered', () => {
   const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1000 });
   assert.strictEqual(v.setFixed('nope', true).ok, false);
+});
+
+// --- an unreadable vault is never overwritten --------------------------------
+//
+// Dexter, PR #29 review, F1, and the finding that made this PR's data
+// different in kind from everything else in host/store.js.
+//
+// `load()` called `store.read(KEY, null)`, which returns null for BOTH "no
+// file" and "file exists and did not parse", and treated null as first run:
+// it wrote the six seed records over whatever was there. A vault damaged by a
+// partial write, a permissions blip or a disk error was silently replaced with
+// defaults, and the user was told nothing -- they saw a tidy list of six
+// example bugs where their own records used to be.
+//
+// The comment above that branch enumerated both cases and chose to treat them
+// alike, so this was a DECISION, not an oversight. The decision taken here is
+// REFUSE TO SEED: write defaults only when the store is certain nothing is
+// there, and surface the failure rather than papering over it. Seeding is the
+// destructive branch, so it gets the narrow condition.
+
+test('a vault that did not parse is NOT overwritten with seed data', () => {
+  const store = brokenStore('corrupt');
+  const v = createBugVault({ store, now: () => 1 });
+  v.list();
+  assert.deepStrictEqual(store.writes, [], 'nothing may be written over a corrupt vault');
+});
+
+test('a vault the OS would not hand over is NOT overwritten either', () => {
+  const store = brokenStore('unreadable');
+  const v = createBugVault({ store, now: () => 1 });
+  v.list();
+  assert.deepStrictEqual(store.writes, []);
+});
+
+test('an unreadable vault reports the failure instead of reporting zero bugs', () => {
+  // Absence reported as zero, one panel over. An empty list here is a claim
+  // that the user has recorded nothing, which is a different statement from
+  // "the vault could not be read".
+  const v = createBugVault({ store: brokenStore('corrupt'), now: () => 1 });
+  const s = v.summary();
+  assert.ok(s.error, 'the summary must carry the failure');
+  assert.match(s.error, /corrupt/i);
+});
+
+test('adding to an unreadable vault is refused, not written over the damaged file', () => {
+  // The sharpest edge: a single add against a corrupt vault would otherwise
+  // persist a ONE-record file over whatever was there, completing the
+  // destruction the seeding path was stopped from doing.
+  const store = brokenStore('corrupt');
+  const v = createBugVault({ store, now: () => 1 });
+  const r = v.add({ category: 'a', summary: 'x' });
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(store.writes, []);
+});
+
+test('marking a bug fixed in an unreadable vault is refused too', () => {
+  const store = brokenStore('corrupt');
+  const v = createBugVault({ store, now: () => 1 });
+  const r = v.setFixed('any-id', true);
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(store.writes, []);
+});
+
+test('a file that parsed but is not a vault is left alone as well', () => {
+  // `{"foo":1}` is valid JSON and is not a vault. It is still SOMEBODY'S file,
+  // and "ok but the wrong shape" is not "nothing is there".
+  const store = memStore({ foo: 1 });
+  let written = null;
+  const wrapped = { ...store, write: (n, v) => { written = v; return store.write(n, v); } };
+  const v = createBugVault({ store: wrapped, now: () => 1 });
+  v.list();
+  assert.strictEqual(written, null, 'a parsed-but-wrong-shape file must not be seeded over');
+});
+
+test('a genuinely absent vault IS still seeded -- the feature has to work', () => {
+  // The behaviour that must survive the fix. `missing` is the one status that
+  // authorises a write, and it is still authorised.
+  const store = memStore(undefined);
+  const v = createBugVault({ store, now: () => 1 });
+  assert.strictEqual(v.list().length, SEED_BUGS.length);
+});
+
+test('an emptied vault is never reseeded -- a valid empty list is a real answer', () => {
+  // Pins the original intent: the user clearing the vault must not be
+  // interpreted as first run on the next read.
+  const store = memStore({ bugs: [] });
+  const v = createBugVault({ store, now: () => 1 });
+  assert.deepStrictEqual(v.list(), []);
 });

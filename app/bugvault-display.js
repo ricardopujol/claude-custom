@@ -39,10 +39,23 @@ function bugVaultDisplay(payload) {
   if (!bugs) {
     // Either no message has arrived yet, or the host sent something that is
     // not a bug list at all. Both are "we do not know", not "there are none".
-    return { state: 'reading', total: 0, fixed: 0, unfixed: 0, rows: [], groups: [], detection: [] };
+    return { state: 'reading', total: 0, fixed: 0, unfixed: 0, rows: [], groups: [], detection: [], error: null };
   }
 
   const summary = (payload && payload.summary) || {};
+
+  // THE FOURTH STATE. Dexter F1: the vault now refuses to overwrite a file it
+  // could not read, and says why. Rendering that as `empty` would show "no
+  // bugs recorded yet -- add one below" over a damaged vault full of the
+  // user's records, and invite them to type into a store refusing every write.
+  // Unlike `reading`, this unknown does not resolve on its own; it needs a
+  // person to go and look at the file.
+  if (summary.error) {
+    return {
+      state: 'unreadable', total: 0, fixed: 0, unfixed: 0,
+      rows: [], groups: [], detection: [], error: summary.error,
+    };
+  }
   const groups = Array.isArray(summary.byCategory) ? summary.byCategory : [];
   const detection = (Array.isArray(summary.byDetection) ? summary.byDetection : [])
     .map(row => ({ ...row, label: row.detectedBy === null ? 'not recorded' : row.detectedBy }));
@@ -65,6 +78,7 @@ function bugVaultDisplay(payload) {
     rows,
     groups,
     detection,
+    error: null,
   };
 }
 

@@ -96,3 +96,84 @@ test('exposes the path of a file for other processes to read', () => {
   const s = createStore({ dir });
   assert.strictEqual(s.pathOf('loadout'), path.join(dir, 'loadout.json'));
 });
+
+// --- readState: missing is not corrupt ---------------------------------------
+//
+// Dexter, PR #29 review, F1. `read(name, fallback)` returns the fallback for
+// BOTH "no file" and "file exists and did not parse", which is right for every
+// consumer this store had when it was written: cooldowns, seats, counters --
+// all regenerable, all happy to start over.
+//
+// The bug vault is the first consumer holding records a user CANNOT
+// reconstruct, and it used the absent/corrupt fallback as its "first run"
+// signal: `read(KEY, null)` returning null meant seed, so a vault that failed
+// to parse once was overwritten with defaults and the evidence was gone.
+//
+// `read` keeps its defaulting behaviour -- it is correct, and everything else
+// depends on it. `readState` is the narrow addition for consumers that must
+// fail CLOSED: it reports WHY there is no value, so "there is nothing here"
+// and "something is here and I could not read it" stop being the same answer.
+
+test('readState reports a missing file as missing, with no value', () => {
+  const s = createStore({ dir: tmp() });
+  const r = s.readState('cooldowns');
+  assert.strictEqual(r.status, 'missing');
+  assert.strictEqual(r.value, null);
+});
+
+test('readState reports a corrupt file as corrupt, NOT as missing', () => {
+  // The whole point. These two were indistinguishable, and one of them means
+  // "it is safe to write defaults over this".
+  const dir = tmp();
+  const s = createStore({ dir });
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'cooldowns.json'), '{ not json');
+  const r = s.readState('cooldowns');
+  assert.strictEqual(r.status, 'corrupt');
+  assert.strictEqual(r.value, null);
+});
+
+test('readState returns the parsed value when the file is good', () => {
+  const s = createStore({ dir: tmp() });
+  s.write('cooldowns', { a: 1 });
+  assert.deepStrictEqual(s.readState('cooldowns'), { status: 'ok', value: { a: 1 } });
+});
+
+test('readState reports a file it cannot open as unreadable, distinct from both', () => {
+  // A directory where a file should be: not absent, not corrupt, not readable.
+  // Whatever the platform's errno, the one thing it must NOT report is
+  // "missing", because that is the status that authorises an overwrite.
+  const dir = tmp();
+  const s = createStore({ dir });
+  fs.mkdirSync(path.join(dir, 'cooldowns.json'), { recursive: true });
+  const r = s.readState('cooldowns');
+  assert.notStrictEqual(r.status, 'missing');
+  assert.notStrictEqual(r.status, 'ok');
+});
+
+test('readState still refuses a traversing name rather than reporting it as missing', () => {
+  // A path that escapes the store is a programming error and must surface.
+  // Reporting it as "missing" would invite the caller to seed defaults into
+  // whatever it names.
+  const s = createStore({ dir: tmp() });
+  assert.throws(() => s.readState('../escape'), /name/i);
+});
+
+test('read and readState cannot drift: read returns the fallback for every non-ok status', () => {
+  // read() is expressed in terms of readState so there is ONE decision about
+  // what counts as readable. This asserts the relationship, not a repeat of
+  // the cases above.
+  const dir = tmp();
+  const s = createStore({ dir });
+  fs.mkdirSync(dir, { recursive: true });
+
+  const sentinel = { sentinel: true };
+  assert.deepStrictEqual(s.read('cooldowns', sentinel), sentinel, 'missing');
+
+  fs.writeFileSync(path.join(dir, 'cooldowns.json'), 'garbage');
+  assert.deepStrictEqual(s.read('cooldowns', sentinel), sentinel, 'corrupt');
+  assert.strictEqual(s.readState('cooldowns').status, 'corrupt');
+
+  s.write('cooldowns', { real: 1 });
+  assert.deepStrictEqual(s.read('cooldowns', sentinel), { real: 1 }, 'ok');
+});

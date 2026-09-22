@@ -39,15 +39,49 @@ function createStore({ dir }) {
     return path.join(dir, `${name}.json`);
   };
 
-  function read(name, fallback) {
+  /**
+   * WHY there is no value, for the consumers that must fail closed.
+   *
+   * Dexter, PR #29 review, F1. `read` below answers "give me a value or a
+   * default", which is exactly right for everything this store was built for:
+   * cooldowns, counters, seats -- all regenerable, all happy to start over.
+   * The bug vault is the first consumer holding records a user CANNOT
+   * reconstruct, and it read a null as "first run, safe to seed". A vault that
+   * failed to parse once was therefore overwritten with defaults.
+   *
+   * Four statuses, and only ONE of them authorises writing over the file:
+   *
+   *   missing     nothing is there. Seeding is safe.
+   *   corrupt     something is there and it is not JSON. Do not overwrite it.
+   *   unreadable  something is there and the OS would not hand it over.
+   *   ok          the parsed value.
+   *
+   * `missing` is deliberately the narrow case -- ENOENT and nothing else --
+   * because it is the status that grants permission to destroy a file. Any
+   * errno nobody anticipated lands in `unreadable` and is refused.
+   */
+  function readState(name) {
+    const file = pathOf(name);          // throws on a traversing name, as it must
+    let text;
     try {
-      return JSON.parse(fs.readFileSync(pathOf(name), 'utf8'));
+      text = fs.readFileSync(file, 'utf8');
     } catch (err) {
-      // A traversal attempt is a programming error and must surface; a missing
-      // or corrupt file is normal and must not.
-      if (/unsafe name/.test(err.message)) throw err;
-      return fallback;
+      if (err.code === 'ENOENT') return { status: 'missing', value: null };
+      return { status: 'unreadable', value: null, error: err };
     }
+    try {
+      return { status: 'ok', value: JSON.parse(text) };
+    } catch (err) {
+      return { status: 'corrupt', value: null, error: err };
+    }
+  }
+
+  // Expressed in terms of readState so there is ONE decision about what counts
+  // as readable and the two cannot drift apart later. Behaviour is unchanged:
+  // a traversal still surfaces, anything else still defaults.
+  function read(name, fallback) {
+    const state = readState(name);
+    return state.status === 'ok' ? state.value : fallback;
   }
 
   function write(name, value) {
@@ -69,7 +103,7 @@ function createStore({ dir }) {
     return write(name, fn(read(name, fallback)));
   }
 
-  return { read, write, update, pathOf, dir };
+  return { read, readState, write, update, pathOf, dir };
 }
 
 module.exports = { createStore };

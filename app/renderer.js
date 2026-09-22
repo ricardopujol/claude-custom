@@ -213,10 +213,33 @@ function renderBugVault(payload) {
     return;
   }
 
-  summaryEl.innerHTML = d.state === 'empty'
-    ? 'no bugs recorded yet — add one below.'
-    : `<b>${d.total}</b> bug class${d.total === 1 ? '' : 'es'} recorded — ` +
+  // The vault is on disk and could not be read. Drawn as a WARNING, never as
+  // an empty list: the records are still there, the host is refusing to write
+  // over them, and the only thing that helps is a person opening the file.
+  if (d.state === 'unreadable') {
+    summaryEl.innerHTML = '<b class="vault-warn">the bug vault could not be read</b>';
+    detectEl.innerHTML = `<div class="vault-warn-detail">${escapeHtml(d.error || '')}` +
+      '<br>Nothing has been written over it. Open the file to see what is there.</div>';
+    listEl.innerHTML = '';
+    return;
+  }
+
+  if (d.state === 'empty') {
+    summaryEl.innerHTML = 'no bugs recorded yet — add one below.';
+  } else if (d.state === 'ready') {
+    summaryEl.innerHTML = `<b>${d.total}</b> bug class${d.total === 1 ? '' : 'es'} recorded — ` +
       `<b>${d.unfixed}</b> open, <b>${d.fixed}</b> fixed`;
+  } else {
+    // Named states only. This was a ternary whose else-branch caught
+    // EVERYTHING that was not `empty`, so a state added to the display module
+    // would have been drawn as a healthy count -- which is how `unreadable`
+    // would have rendered as "0 bug classes recorded" if it had slipped in
+    // without this branch. Same fail-open shape as the vault dispatcher in F4.
+    summaryEl.textContent = 'the vault is in a state this panel does not know how to draw.';
+    detectEl.innerHTML = '';
+    listEl.innerHTML = '';
+    return;
+  }
 
   // The breakdown that makes "found by measurement, none by reading" a fact
   // rather than a feeling -- the whole reason the design doc asks for this.
