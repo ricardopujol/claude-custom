@@ -310,3 +310,69 @@ test('a record that is not an object is refused by the validator, not coerced in
   assert.strictEqual(applyVaultAction(v, { action: 'add', record: 'category: a' }).ok, false);
   assert.strictEqual(applyVaultAction(v, { action: 'add' }).ok, false);
 });
+
+// --- setFixed and an absent flag ---------------------------------------------
+//
+// Dexter, PR #29 review, F5. `fixedAt: fixed === true ? now : null` fails
+// CLOSED for the flag -- nothing truthy-but-not-true can mark a bug fixed,
+// which was deliberate and is tested above. But the `null` on the other side
+// is unconditional, so `setFixed(id)` with no second argument silently
+// CLEARED a recorded fix date. It was reachable from the wire, because the
+// host handler passed `msg.fixed === true` and turned every absent flag into
+// an explicit false before the vault could see the difference.
+//
+// This is the project's own absence-is-not-zero rule pointed at a boolean:
+// "reopen this bug" and "you forgot to say" must not be the same instruction,
+// least of all in the one store holding records a user cannot retype.
+
+test('setFixed refuses an absent flag instead of treating it as "reopen"', () => {
+  const store = memStore({ bugs: [] });
+  const v = createBugVault({ store, now: () => 1000 });
+  const id = v.add({ category: 'a', summary: 'x' }).record.id;
+  v.setFixed(id, true);
+  const at = v.list()[0].fixedAt;
+  assert.ok(at, 'precondition: the bug is fixed and carries a date');
+
+  const r = v.setFixed(id);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /fixed/i);
+  assert.strictEqual(v.list()[0].fixedAt, at, 'the recorded date must survive a malformed call');
+  assert.strictEqual(v.list()[0].fixed, true);
+});
+
+test('setFixed refuses any non-boolean flag, not just undefined', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1000 });
+  const id = v.add({ category: 'a', summary: 'x' }).record.id;
+  for (const bad of [null, 0, 1, '', 'true', 'false', {}, []]) {
+    const r = v.setFixed(id, bad);
+    assert.strictEqual(r.ok, false, `setFixed(id, ${JSON.stringify(bad)}) must refuse`);
+  }
+  assert.strictEqual(v.list()[0].fixed, false);
+});
+
+test('an explicit false still reopens the bug and clears the date', () => {
+  // The behaviour the unconditional null was WRITTEN for, which must survive
+  // the fix: a reopened bug must not still claim a fix date from last round.
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1000 });
+  const id = v.add({ category: 'a', summary: 'x' }).record.id;
+  v.setFixed(id, true);
+  const r = v.setFixed(id, false);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(v.list()[0].fixed, false);
+  assert.strictEqual(v.list()[0].fixedAt, null);
+});
+
+test('a setFixed frame with no fixed field is refused end to end, not silently reopened', () => {
+  // The wire path, which is how this was reachable at all.
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1000 });
+  const id = v.add({ category: 'a', summary: 'x' }).record.id;
+  v.setFixed(id, true);
+  const r = applyVaultAction(v, { action: 'setFixed', id });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(v.list()[0].fixed, true, 'the bug must still be fixed');
+});
+
+test('an unknown id is still refused before the flag is even considered', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1000 });
+  assert.strictEqual(v.setFixed('nope', true).ok, false);
+});

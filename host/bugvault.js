@@ -236,16 +236,26 @@ function createBugVault({ store, now = Date.now } = {}) {
   }
 
   function setFixed(id, fixed) {
+    // Dexter F5. `fixedAt: fixed === true ? now : null` fails closed for the
+    // FLAG -- nothing truthy-but-not-true can mark a bug fixed -- but the
+    // `null` on the other side was unconditional, so `setFixed(id)` with no
+    // second argument silently cleared a recorded fix date. "Reopen this bug"
+    // and "you forgot to say" are different instructions, and this is the one
+    // store holding records nobody will retype.
+    if (fixed !== true && fixed !== false) {
+      return { ok: false, error: `setFixed: fixed must be true or false, got ${JSON.stringify(fixed)}` };
+    }
     const data = load();
     let found = null;
     data.bugs = data.bugs.map((b) => {
       if (!b || b.id !== id) return b;
       found = {
         ...b,
-        fixed: fixed === true,
-        // Cleared, not left standing, when reopened -- a bug marked unfixed
-        // must not still claim a fixedAt from a previous round.
-        fixedAt: fixed === true ? new Date(now()).toISOString() : null,
+        fixed,
+        // Cleared, not left standing, on an EXPLICIT reopen -- a bug marked
+        // unfixed must not still claim a fixedAt from a previous round. Only
+        // reachable with a real `false` now, never with an absent argument.
+        fixedAt: fixed ? new Date(now()).toISOString() : null,
       };
       return found;
     });
