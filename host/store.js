@@ -2,17 +2,33 @@
 /**
  * Persistent state for the harness features.
  *
- *   .harness/state/loadout.json    items equipped per agent
- *   .harness/state/vault.json      bug bestiary
- *   .harness/state/map.json        DOES NOT EXIST. Grep it: the string appears
- *                                  nowhere in this repo but on this line.
- *                                  Nothing reads it, nothing writes it, the
- *                                  file is never created. It described a
- *                                  feature that was never built, and its
- *                                  "per project" claim has since misled two
- *                                  readers into believing this store scopes
- *                                  anything by project. It does not.
- *   .harness/state/stats.json      counters, cooldowns, streaks
+ * WHAT THIS STORE ACTUALLY CONTAINS TODAY:
+ *
+ *   .harness/state/cooldowns.json  the only file this store writes.
+ *                                  host/cooldowns.js, STORE_KEY 'cooldowns'.
+ *
+ * THAT IS THE WHOLE LIST. The four entries that used to stand here --
+ * loadout.json, vault.json, map.json and stats.json -- named files that have
+ * NEVER BEEN WRITTEN. Verified by grepping for each store key across host/ and
+ * app/: 'loadout' 0 references, 'map' 0, 'stats' 0. The one real key,
+ * 'cooldowns', was not in the list at all, so the header named four files that
+ * do not exist and omitted the one that does.
+ *
+ * It was a roadmap written in the present tense, and it cost real time:
+ *
+ *   - `map.json`'s "files seen, per project" was cited as PRECEDENT for how to
+ *     scope a new feature, in a review, by someone reasoning carefully. There
+ *     is no precedent; nothing in this store is scoped by project.
+ *   - I repeated that claim in the paragraph below, which exists specifically
+ *     to record what is and is not scoped, having trusted this header instead
+ *     of grepping for a caller.
+ *   - Correcting it, I fixed only the one line I had been told about and left
+ *     the other three standing. Dexter re-grepped and found them.
+ *
+ * Three readers misled by one stale list, and the correction needed two
+ * passes. If you add a file here, add it when you write the code, not when you
+ * plan it -- and if you are about to cite a line in this block as evidence of
+ * how something works, grep for its key first.
  *
  * ONE FILE PER CONCERN, not a single blob: a corrupt write then costs one
  * feature instead of all of them, and the diffs stay readable.
@@ -32,19 +48,13 @@
  *   different property, and the comment there may read as though it covers
  *   this. It does not.
  *
- *   STATE CROSSES PROJECTS. NOTHING here is scoped per project -- not
- *   `loadout.json`, not `vault.json`, not `stats.json`. Equipping an item in
- *   project A changes it in project B, and the streaks and bestiary shown as
- *   A's include B's. The hook helper reads `loadout.json` directly, so it
- *   picks up whichever host wrote last.
+ *   STATE CROSSES PROJECTS. Nothing this store holds is scoped per project.
+ *   `cooldowns.json` is install-wide, so a cooldown started in project A is
+ *   still ticking in project B. Any future state added here inherits that
+ *   unless it is given a project key deliberately.
  *
- *   An earlier version of this very paragraph said `map.json` was "documented
- *   as per-project and keyed accordingly", which was FALSE -- see the
- *   correction on the file list above. I wrote that by trusting the header
- *   rather than grepping for a caller, in a comment whose entire purpose was
- *   to record what is and is not scoped. Miguel caught it reviewing PR #29,
- *   and Dexter had independently built a recommendation on the same false
- *   line. One stale comment, three readers misled.
+ *   An earlier version of this paragraph cited `map.json` as per-project
+ *   evidence. See the file list above for what that was worth.
  *
  * DELIBERATELY NOT FIXED in the multi-project change, and recorded here rather
  * than deferred quietly. Both are real; neither is silent corruption of
@@ -53,9 +63,13 @@
  * these numbers MEAN across projects (is a streak per-project or per-user?),
  * which is not a decision to make at 3am inside an unrelated PR. The scoping
  * question belongs to whoever owns the feature, not to the change that made it
- * visible. The hook helper reads `loadout.json` directly, which is what
- * lets equipped items keep working when the GUI is closed — the harness must
- * not become a requirement for a plain terminal session.
+ * visible.
+ *
+ * (The sentence that used to end this paragraph claimed the hook helper reads
+ * `loadout.json` directly, "which is what lets equipped items keep working
+ * when the GUI is closed". Grep helper/: zero references. It described the
+ * mechanism of a feature that was never built, in the present tense, as a
+ * justification -- the most persuasive form a false comment can take.)
  *
  * Every read defaults rather than throwing. All of this is regenerable
  * convenience state; none of it is worth an exception on a hot path, and a
