@@ -68,7 +68,16 @@ function createStore({ dir }) {
     // 2026-09-18. It still THROWS if the rename never succeeds -- a write
     // reported as done while the file was never replaced would be worse than
     // the failure it hides. See host/atomic-write.js.
-    renameWithRetry(temp, file);
+    try {
+      renameWithRetry(temp, file);
+    } catch (err) {
+      // Dexter, Finding 9. Bounded -- one temp per (pid, name), overwritten by
+      // the next write from this process -- but a stale .tmp beside a settings
+      // file reads as corruption to whoever finds it, and the caller still
+      // gets the original error.
+      try { fs.unlinkSync(temp); } catch { /* nothing more we can do about it */ }
+      throw err;
+    }
     return value;
   }
 

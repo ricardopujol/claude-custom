@@ -155,3 +155,51 @@ test('a fetch that returns junk is an error, not an empty catalogue', async () =
   assert.strictEqual(r.source, 'none');
   assert.match(r.error, /data array/);
 });
+
+// --- the cache write, which Windows can refuse for a moment -------------------
+
+test('a transient EPERM on the cache rename does NOT lose the cache', async () => {
+  // Dexter, logic review of PR #30, Finding 5. This is the THIRD
+  // write-to-temp-then-rename in the codebase, and the only one that was left
+  // unretried -- because unlike the other two it never threw. It is inside a
+  // try/catch that swallows, with a comment reasoning that a cache which
+  // cannot be written is a slower panel rather than a broken one.
+  //
+  // That reasoning is right for a write that fails OCCASIONALLY. What it hides
+  // is a write that never succeeds at all: on the machine this retry exists
+  // for, a handle is briefly held on every write, so every writeCache threw
+  // EPERM, was swallowed, and the catalogue cache was NEVER written. readCache
+  // then always returned null, every launch paid a full network fetch, and
+  // nothing anywhere reported it.
+  const file = tmp();
+  const fsp = require('fs/promises');
+  const realRename = fsp.rename;
+  let failures = 1;
+  let calls = 0;
+  fsp.rename = async (from, to) => {
+    calls++;
+    if (failures-- > 0) {
+      const err = new Error('EPERM: operation not permitted, rename');
+      err.code = 'EPERM';
+      throw err;
+    }
+    return realRename(from, to);
+  };
+  try {
+    await loadCatalogue({ cacheFile: file, now: 1000, fetchImpl: async () => rows(3) });
+  } finally {
+    fsp.rename = realRename;
+  }
+
+  assert.strictEqual(calls, 2, 'the cache rename must have been retried');
+  assert.ok(fs.existsSync(file), 'the cache must survive a transient EPERM');
+
+  // And it must be usable, not merely present: a cache file that exists but
+  // does not parse is the same slow panel with extra steps.
+  const second = await loadCatalogue({
+    cacheFile: file, now: 2000,
+    fetchImpl: async () => { throw new Error('network is down'); },
+  });
+  assert.strictEqual(second.source, 'cache');
+  assert.strictEqual(second.rows.length, 3);
+});

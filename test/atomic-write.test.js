@@ -90,12 +90,17 @@ test('the wait BACKS OFF, so five attempts cover more than an instant', () => {
   const rename = flaky(['EPERM', 'EPERM', 'EPERM', 'EPERM']);
   const slept = [];
   renameWithRetry('a.tmp', 'b', { rename, sleep: (ms) => slept.push(ms) });
-  assert.strictEqual(slept.length, 4);
-  for (let i = 1; i < slept.length; i++) {
-    assert.ok(slept[i] > slept[i - 1], `wait ${i} (${slept[i]}ms) must exceed ${slept[i - 1]}ms`);
-  }
-  const total = slept.reduce((a, b) => a + b, 0);
-  assert.ok(total >= 150, `only ${total}ms of cover is not worth the complexity`);
+  // EXACT, not a tolerance. Dexter, Finding 4: the previous assertion was
+  // `total >= 150`, and FIRST_WAIT_MS = 10 produces [10,20,40,80] = 150, which
+  // passes ON the boundary while halving the cover the module argues it needs.
+  // `wait *= 3` -> [20,60,180,540] passed too. Neither the starting wait nor
+  // the doubling factor was pinned by anything.
+  //
+  // And nothing else pins them either: StrykerJS has no numeric-literal
+  // mutator, so ATTEMPTS and FIRST_WAIT_MS generate ZERO mutants -- not a 0/0
+  // line, simply absent from the report. This one assertion is what a numeric
+  // mutant would have demanded if the tool could produce one.
+  assert.deepStrictEqual(slept, [20, 40, 80, 160]);
 });
 
 test('a rename that works first time never sleeps', () => {
@@ -141,4 +146,111 @@ test('the default sleep actually blocks, and does not spin the CPU', () => {
   const elapsed = Date.now() - t0;
   assert.ok(elapsed >= 35, `slept ${elapsed}ms, expected to block for about 40`);
   assert.ok(elapsed < 400, `slept ${elapsed}ms, which is not a 40ms sleep`);
+});
+
+test('a nonsense attempts count is REFUSED, not looped on forever', () => {
+  // Dexter, Finding 6. `for (let i = 1; ; i++)` with `i >= attempts` as the
+  // only exit never terminates for NaN: every comparison against NaN is false,
+  // `wait` doubles to Infinity after ~1070 passes, and Atomics.wait with an
+  // Infinity timeout blocks forever -- a synchronous, uninterruptible hang of
+  // the calling process, which for the vault is Electron's main process.
+  //
+  // NOTE ON HOW THIS WAS VERIFIED: this test could not be watched go red in
+  // process. With `sleep` injected as a no-op the pre-fix code is a synchronous
+  // infinite loop, which blocks the event loop so node:test's own timeout can
+  // never fire -- it hangs the runner rather than failing it. Its power was
+  // proven instead by running it against the unfixed function in a subprocess
+  // with a hard kill; see the commit message for the measurement.
+  const alwaysEPERM = () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
+  for (const attempts of [NaN, Infinity, 0, -1, 2.5, '5', null]) {
+    assert.throws(
+      () => renameWithRetry('a.tmp', 'b', { rename: alwaysEPERM, sleep: () => {}, attempts }),
+      /positive integer|EPERM/,
+      `attempts: ${String(attempts)} must not hang`,
+    );
+  }
+});
+
+// --- the ASYNC sibling, for callers that cannot block ------------------------
+// Dexter, Finding 5. host/openrouter.js:104 does the identical
+// write-to-temp-then-rename with `await fsp.rename`, inside a try/catch that
+// swallows everything. On the machine this whole module exists for -- where a
+// handle is held briefly on every write -- that rename throws EPERM, gets
+// swallowed, and the model catalogue cache is NEVER written. readCache then
+// always returns null, every launch pays a network fetch, and nothing reports
+// it, because the comment there says a cache that cannot be written is a
+// slower panel rather than a broken one.
+//
+// The feature is meant to degrade on a FAILED write. It instead never works at
+// all, and the graceful catch is exactly what hides that.
+
+const { renameWithRetryAsync } = require('../host/atomic-write');
+
+const flakyAsync = (codes) => {
+  const calls = [];
+  let i = 0;
+  const fn = async (from, to) => {
+    calls.push([from, to]);
+    const code = codes[i++];
+    if (code) { const e = new Error(`${code}: injected`); e.code = code; throw e; }
+  };
+  fn.calls = calls;
+  return fn;
+};
+
+test('async: a transient rename is retried and the write survives', async () => {
+  const rename = flakyAsync(['EPERM', 'EBUSY']);
+  await renameWithRetryAsync('a.tmp', 'b', { rename, sleep: async () => {} });
+  assert.strictEqual(rename.calls.length, 3);
+});
+
+test('async: a non-transient code is NOT retried', async () => {
+  const rename = flakyAsync(['ENOENT']);
+  await assert.rejects(
+    () => renameWithRetryAsync('a.tmp', 'b', { rename, sleep: async () => {} }),
+    /ENOENT/);
+  assert.strictEqual(rename.calls.length, 1, 'retrying a missing file buys nothing');
+});
+
+test('async: a rename that never recovers still REJECTS', async () => {
+  // Same fail-closed rule as the sync version. The caller may choose to
+  // swallow it -- openrouter does -- but that has to be the caller's decision,
+  // taken knowingly, not something this helper hides.
+  const rename = flakyAsync(['EPERM', 'EPERM', 'EPERM', 'EPERM', 'EPERM']);
+  await assert.rejects(
+    () => renameWithRetryAsync('a.tmp', 'b', { rename, sleep: async () => {}, attempts: 5 }),
+    /EPERM/);
+  assert.strictEqual(rename.calls.length, 5, 'bounded at ATTEMPTS, like the sync version');
+});
+
+test('async: the backoff schedule matches the synchronous one', async () => {
+  const rename = flakyAsync(['EPERM', 'EPERM', 'EPERM', 'EPERM']);
+  const slept = [];
+  await renameWithRetryAsync('a.tmp', 'b', {
+    rename, sleep: async (ms) => { slept.push(ms); },
+  });
+  assert.deepStrictEqual(slept, [20, 40, 80, 160]);
+});
+
+test('async: a nonsense attempts count is refused, not looped on', async () => {
+  const alwaysEPERM = async () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
+  for (const attempts of [NaN, Infinity, 0, -1]) {
+    await assert.rejects(
+      () => renameWithRetryAsync('a.tmp', 'b', { rename: alwaysEPERM, sleep: async () => {}, attempts }),
+      /positive integer/,
+      `attempts: ${String(attempts)}`);
+  }
+});
+
+test('async: the default sleep really waits, and does not block the loop', async () => {
+  // The whole reason for a separate async version: this caller CAN yield, so
+  // it must, rather than freezing the thread the way Atomics.wait does.
+  const rename = flakyAsync(['EPERM']);
+  let ticked = false;
+  setImmediate(() => { ticked = true; });
+  const t0 = Date.now();
+  await renameWithRetryAsync('a.tmp', 'b', { rename });
+  const took = Date.now() - t0;
+  assert.ok(took >= 18, `waited only ${took}ms -- the default async sleep is not real`);
+  assert.ok(ticked, 'the event loop must have kept turning during the wait');
 });

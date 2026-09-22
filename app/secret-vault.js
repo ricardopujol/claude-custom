@@ -58,21 +58,55 @@ function createVault({ file, crypto, onWrite } = {}) {
     }
   }
 
-  function persist() {
+  /**
+   * Write a CANDIDATE state, and only let memory agree with disk once it lands.
+   *
+   * Dexter, logic review 2026-09-21, Finding 1. Every mutation used to update
+   * `state` first and persist second, so a rename that never landed left the
+   * two disagreeing: `add` threw and reported the failure, while `list`, `get`,
+   * `reveal` and `copy` all went on serving a secret that was not on disk --
+   * until a restart took it away. That is precisely the harm this module's
+   * docstring names, the user believing it is safe to discard the original,
+   * and the retry only made it rarer.
+   *
+   * Worse, the divergence persisted: the NEXT successful write flushed it, so
+   * an operation the user had been told failed completed later, unannounced.
+   *
+   * Passing the candidate through means the failure path cannot leave anything
+   * behind to be committed by accident -- there is no partial state to roll
+   * back, because nothing was assigned in the first place.
+   */
+  function commit(nextEntries) {
+    const next = { ...state, entries: nextEntries };
+    persist(next);
+    state = next;
+  }
+
+  function persist(candidate = state) {
     const dir = path.dirname(file);
     fs.mkdirSync(dir, { recursive: true });
     // Write-and-rename: a crash mid-write leaves the old vault intact rather
     // than a truncated one, which would be every secret gone instead of none.
     const tmp = path.join(dir, `.secrets-${process.pid}-${Date.now()}.tmp`);
     if (onWrite) onWrite(tmp);
-    fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify(candidate), { mode: 0o600 });
     // Retried: on Windows the rename fails with EPERM / EACCES / EBUSY while
     // anything holds a handle for a moment, and the antivirus scan of the
     // file just written routinely does. MEASURED against this very file on
     // 2026-09-18. It still THROWS if the rename never lands -- returning the
     // entry while the file was never replaced would tell the user a secret is
     // stored when it is not. See host/atomic-write.js.
-    renameWithRetry(tmp, file);
+    try {
+      renameWithRetry(tmp, file);
+    } catch (err) {
+      // Dexter, Finding 9. The temp name carries a millisecond, so it is unique
+      // per failure and nothing ever collects them. Each one holds the WHOLE
+      // vault, and only the `secret` field is encrypted -- so every abandoned
+      // temp is a readable copy of every label and note. Cleaned on the way
+      // out, and the original error is still what the caller sees.
+      try { fs.unlinkSync(tmp); } catch { /* nothing more we can do about it */ }
+      throw err;
+    }
     if (onWrite) onWrite(file);
   }
 
@@ -99,8 +133,7 @@ function createVault({ file, crypto, onWrite } = {}) {
       secret: Buffer.from(crypto.encryptString(value)).toString('base64'),
       createdAt: Date.now(),
     };
-    state.entries.push(entry);
-    persist();
+    commit([...state.entries, entry]);
     return { id: entry.id, label: entry.label, note: entry.note, createdAt: entry.createdAt };
   }
 
@@ -128,9 +161,10 @@ function createVault({ file, crypto, onWrite } = {}) {
 
   function remove(id) {
     const before = state.entries.length;
-    state.entries = state.entries.filter(e => e.id !== id);
-    if (state.entries.length !== before) persist();
-    return before !== state.entries.length;
+    const next = state.entries.filter(e => e.id !== id);
+    if (next.length === before) return false;
+    commit(next);
+    return true;
   }
 
   return { add, list, get, remove, available, file };

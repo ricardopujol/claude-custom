@@ -23,19 +23,42 @@
  */
 
 // The codes that mean "someone is holding it, briefly". Deliberately a short
-// allow-list rather than "retry anything": ENOENT means the temp file is not
-// there, which is a real bug in the caller, and ENOSPC means the disk is
-// full. Neither improves in 10ms, and retrying turns a clear failure into a
-// slow one that looks like a hang.
+// allow-list rather than "retry anything".
+//
+// ENOENT means the temp file is not there when the rename runs. The obvious
+// cause is a caller bug -- but Dexter, Finding 7, named a second one that is
+// not: the antivirus this module exists because of can QUARANTINE the temp
+// between the write and the rename, which is the same adversary one step
+// further along. Fail-fast is still right either way, since no amount of
+// retrying conjures the payload back; the reason was the part that was wrong,
+// and someone reading `ENOENT: rename` in a bug report would have gone looking
+// in the caller for a fault that was never there.
+//
+// ENOSPC means the disk is full. Neither improves in 10ms, and retrying turns
+// a clear failure into a slow one that looks like a hang.
 const TRANSIENT = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
 const fs = require('fs');
+const fsp = require('fs/promises');
 
 // A SYNCHRONOUS sleep, because both callers are synchronous: a vault save
 // returns the saved entry, and a store write returns the written value.
 // setTimeout cannot be awaited from either, and a busy loop would burn a core
 // for the whole backoff on a machine already loaded enough to be holding the
-// handle. Atomics.wait blocks the thread and yields it.
+// handle. Atomics.wait yields the CPU instead of spinning.
+//
+// BUT IT IS STILL A FREEZE, not merely a yielded core, and the earlier wording
+// here obscured that (Dexter, Finding 2). It blocks the calling THREAD: for
+// app/secret-vault.js that is the Electron main process, so a retrying vault
+// save stops the message loop -- no IPC, no window events -- for up to 300ms.
+// Acceptable for a user-initiated save, and worth knowing before this helper
+// is reused anywhere hotter.
+//
+// That it works in that process at all is MEASURED, not assumed: see
+// verify/probe-atomic-sleep.js. Electron 33.4.11, process.type 'browser',
+// sleepSync(40) returned after 46ms. A unit test cannot answer this, because
+// [[CanBlock]] is a property of the isolate and node --test is the one agent
+// where it is already known to be true.
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -51,17 +74,91 @@ const FIRST_WAIT_MS = 20;
 function renameWithRetry(from, to, {
   rename = fs.renameSync, sleep = sleepSync, attempts = ATTEMPTS,
 } = {}) {
+  // Validated before the loop, so the loop is BOUNDED BY CONSTRUCTION rather
+  // than by a conditional inside it. Dexter, Finding 6: with `for (;;)` and
+  // `i >= attempts` as the only exit, `attempts: NaN` never terminates --
+  // every comparison against NaN is false, `wait` doubles to Infinity after
+  // ~1070 passes, and `Atomics.wait(..., Infinity)` then blocks forever. A
+  // synchronous, uninterruptible hang of whichever process called it, which
+  // for the vault is the Electron main process. Latent today, since no
+  // production caller passes `attempts` -- but it is part of an exported
+  // function's shape, and "no caller does that yet" is not a bound.
+  assertAttempts(attempts);
+
   let wait = FIRST_WAIT_MS;
-  for (let i = 1; ; i++) {
+  let last;
+  for (let i = 1; i <= attempts; i++) {
     try {
       rename(from, to);
       return;
     } catch (err) {
-      if (!TRANSIENT.has(err && err.code) || i >= attempts) throw err;
-      sleep(wait);
-      wait *= 2;
+      last = err;
+      // A non-transient code is hopeless: retrying cannot make a missing file
+      // appear or a full disk empty, and it would turn a clear failure slow.
+      if (!TRANSIENT.has(err && err.code)) throw err;
+      if (i < attempts) {
+        sleep(wait);
+        wait *= 2;
+      }
     }
+  }
+  throw last;                       // the error from the FINAL attempt
+}
+
+// The async sleep. A caller that can yield MUST yield: freezing the thread
+// with Atomics.wait is a cost the synchronous callers have no way around, not
+// something to spread to one that does.
+const sleepAsync = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+function assertAttempts(attempts) {
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error(
+      `renameWithRetry: attempts must be a positive integer, got ${String(attempts)}`);
   }
 }
 
-module.exports = { renameWithRetry, sleepSync, TRANSIENT, ATTEMPTS };
+/**
+ * The same retry, for callers that await.
+ *
+ * Dexter, Finding 5: `host/openrouter.js` does the identical
+ * write-to-temp-then-rename with `await fsp.rename`, inside a try/catch that
+ * swallows everything. On the machine this module exists for -- where a handle
+ * is briefly held on every write -- that rename throws EPERM, is swallowed,
+ * and the model catalogue cache is NEVER written. `readCache` then always
+ * returns null and every launch pays a network fetch, with nothing reporting
+ * it, because the catch there reasonably says an unwritable cache is a slower
+ * panel rather than a broken one.
+ *
+ * That reasoning is sound for a write that FAILS occasionally. It is what
+ * hides a write that never succeeds at all, which is the actual situation.
+ *
+ * Still rejects if the rename never lands. The caller may swallow that --
+ * openrouter does, deliberately -- but it has to be the caller's choice,
+ * taken knowingly, rather than something this helper decides for it.
+ */
+async function renameWithRetryAsync(from, to, {
+  rename = fsp.rename, sleep = sleepAsync, attempts = ATTEMPTS,
+} = {}) {
+  assertAttempts(attempts);
+
+  let wait = FIRST_WAIT_MS;
+  let last;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (err) {
+      last = err;
+      if (!TRANSIENT.has(err && err.code)) throw err;
+      if (i < attempts) {
+        await sleep(wait);
+        wait *= 2;
+      }
+    }
+  }
+  throw last;
+}
+
+module.exports = {
+  renameWithRetry, renameWithRetryAsync, sleepSync, sleepAsync, TRANSIENT, ATTEMPTS,
+};

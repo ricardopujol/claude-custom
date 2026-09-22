@@ -179,7 +179,9 @@ test('a transient EPERM on the rename does NOT lose the secret', () => {
   const v = createVault({ file, crypto: fakeCrypto() });
   const real = fs.renameSync;
   let failures = 2;
+  let calls = 0;
   fs.renameSync = (from, to) => {
+    calls++;
     if (failures-- > 0) {
       const err = new Error('EPERM: operation not permitted, rename');
       err.code = 'EPERM';
@@ -193,6 +195,11 @@ test('a transient EPERM on the rename does NOT lose the secret', () => {
   } finally {
     fs.renameSync = real;
   }
+  // Dexter, Finding 8: prove the retry RAN rather than that the data happened
+  // to survive. This test sees the patch only because `rename = fs.renameSync`
+  // is a default parameter re-evaluated per call; hoisting it to a module-level
+  // const would silently make this pass while testing nothing.
+  assert.strictEqual(calls, 3, 'the rename must have been retried, not merely succeeded');
 
   const reopened = createVault({ file, crypto: fakeCrypto() });
   assert.strictEqual(reopened.get(entry.id), 'survives-eperm',
@@ -215,4 +222,95 @@ test('a rename that never recovers FAILS the save rather than reporting success'
   } finally {
     fs.renameSync = real;
   }
+});
+
+// --- what the vault SHOWS must never be ahead of what is on disk -------------
+// Dexter, logic review of PR #30, Finding 1 (High). The retry made a failed
+// save rarer; it did not make a failed save honest. `add` pushed into
+// state.entries BEFORE persist(), so a permanent rename failure left the entry
+// live in memory: `add` reported failure and `list`/`get`/`reveal`/`copy` all
+// reported success, until a restart silently took the secret away. The harm
+// the module's own docstring names -- the user believing it is safe to discard
+// the original -- was still fully reachable.
+
+const alwaysFails = (code = 'EPERM') => {
+  const real = fs.renameSync;
+  fs.renameSync = () => { const e = new Error(`${code}: fake`); e.code = code; throw e; };
+  return () => { fs.renameSync = real; };
+};
+
+test('a secret whose save FAILED is not listed, revealed, or gettable', () => {
+  const v = vault();
+  const restore = alwaysFails();
+  try {
+    assert.throws(() => v.add({ label: 'aws', secret: 'AKIA-REAL' }), /EPERM/);
+    // The three read paths that all served the phantom entry before the fix.
+    assert.deepStrictEqual(v.list(), [], 'a save that did not land must not be listed');
+  } finally {
+    restore();
+  }
+});
+
+test('a FAILED save is not silently committed by the NEXT successful one', () => {
+  // The third-order effect, and the nastiest: the in-memory divergence
+  // persisted, so the next write flushed it. An operation the user was told
+  // had failed completed later, unannounced.
+  const file = tmp();
+  const v = createVault({ file, crypto: fakeCrypto() });
+
+  const restore = alwaysFails();
+  try {
+    assert.throws(() => v.add({ label: 'ghost', secret: 'SHOULD-NOT-PERSIST' }));
+  } finally {
+    restore();
+  }
+
+  v.add({ label: 'real', secret: 'KEEP-ME' });
+
+  const reopened = createVault({ file, crypto: fakeCrypto() });
+  assert.deepStrictEqual(reopened.list().map(e => e.label), ['real'],
+    'the failed save must not ride along on the next successful write');
+});
+
+test('a DELETE that failed to reach disk still shows the entry', () => {
+  // The mirror of the same defect: remove() filtered state.entries before
+  // persist(), so a failed delete told the user it failed and showed them it
+  // had succeeded -- a credential they believe is gone and is still on disk.
+  const file = tmp();
+  const v = createVault({ file, crypto: fakeCrypto() });
+  const entry = v.add({ label: 'keep', secret: 'STILL-HERE' });
+
+  const restore = alwaysFails();
+  try {
+    assert.throws(() => v.remove(entry.id), /EPERM/);
+  } finally {
+    restore();
+  }
+  assert.deepStrictEqual(v.list().map(e => e.label), ['keep'],
+    'a delete that did not land must not be shown as done');
+
+  const reopened = createVault({ file, crypto: fakeCrypto() });
+  assert.deepStrictEqual(reopened.list().map(e => e.label), ['keep']);
+});
+
+test('a permanently failed save leaves no temp file behind', () => {
+  // Dexter, Finding 9. The temp is named .secrets-<pid>-<Date.now()>.tmp, so
+  // it is unique per millisecond and every failure accumulates another one in
+  // .harness\ with nothing ever collecting them. They hold the WHOLE vault --
+  // and since only the `secret` field is encrypted, every label and note in
+  // those orphans is readable plaintext. A scattered copy of the data this
+  // module is otherwise careful about.
+  const file = tmp();
+  const dir = path.dirname(file);
+  const v = createVault({ file, crypto: fakeCrypto() });
+
+  const restore = alwaysFails();
+  try {
+    assert.throws(() => v.add({ label: 'leaky', secret: 'S' }));
+  } finally {
+    restore();
+  }
+
+  const leftovers = fs.readdirSync(dir).filter(f => f.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, [], `orphaned temp files: ${leftovers.join(', ')}`);
 });

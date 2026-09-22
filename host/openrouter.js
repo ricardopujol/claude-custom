@@ -26,6 +26,7 @@
 
 const https = require('https');
 const fsp = require('fs/promises');
+const { renameWithRetryAsync } = require('./atomic-write');
 const path = require('path');
 
 const CATALOGUE_URL = 'https://openrouter.ai/api/v1/models';
@@ -101,7 +102,18 @@ async function writeCache(file, rows, now) {
     // parses would be a truncated catalogue silently presented as the whole one.
     const tmp = `${file}.tmp`;
     await fsp.writeFile(tmp, JSON.stringify({ fetchedAt: now, rows }), 'utf8');
-    await fsp.rename(tmp, file);
+    // Retried. Dexter, Finding 5: this is the third write-and-rename in the
+    // codebase and was the only one left unretried, precisely BECAUSE it never
+    // threw -- the catch below swallows it. On the machine the retry exists
+    // for, a handle is briefly held on every write, so this rename failed
+    // every time and the cache was never written at all, with every launch
+    // silently paying a network fetch. A graceful catch around a write that
+    // never succeeds is not graceful degradation, it is a hidden outage.
+    //
+    // The ASYNC sibling, not renameWithRetry: this caller can yield, so it
+    // must, rather than freezing the host's event loop the way Atomics.wait
+    // would.
+    await renameWithRetryAsync(tmp, file);
   } catch {
     // A cache that cannot be written is a slower panel, not a broken one.
   }

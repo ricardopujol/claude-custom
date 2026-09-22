@@ -107,7 +107,9 @@ test('a transient EPERM on the rename does NOT lose the write', () => {
   const s = createStore({ dir });
   const real = fs.renameSync;
   let failures = 2;
+  const at = [];
   fs.renameSync = (from, to) => {
+    at.push(Date.now());
     if (failures-- > 0) {
       const err = new Error('EPERM: operation not permitted, rename');
       err.code = 'EPERM';
@@ -122,6 +124,28 @@ test('a transient EPERM on the rename does NOT lose the write', () => {
   }
   assert.deepStrictEqual(createStore({ dir }).read('loadout', {}),
     { agents: { miguel: ['whetstone'] } }, 'the write must survive a transient EPERM');
+
+  // Dexter, Finding 8: assert the retry actually RAN. This test worked only
+  // because `rename = fs.renameSync` is a default parameter, re-evaluated per
+  // call, so a patch applied after import is seen. Hoisting it to a
+  // module-level const -- a change that looks like a micro-optimisation --
+  // would make the real rename succeed first try and leave this test passing
+  // while exercising nothing.
+  assert.strictEqual(at.length, 3, 'the rename must have been retried, not merely succeeded');
+
+  // Dexter, Finding 3: and that it used a REAL sleep. Change the default in
+  // host/atomic-write.js from `sleep = sleepSync` to `sleep = () => {}` and
+  // every other test in the suite still passes -- the six unit tests inject
+  // their own sleep, and the happy-path tests never sleep at all. In
+  // production the retry would collapse into five syscalls inside a
+  // millisecond, far too fast to outlast the antivirus scan that produced the
+  // measured EPERM. The bug would return with the gate green.
+  //
+  // 40ms, not 60: the first two waits are 20ms and 40ms, and asserting the
+  // full 60 would make this sensitive to the schedule rather than to whether
+  // any real waiting happened.
+  assert.ok(at[2] - at[0] >= 40,
+    `attempts 1 to 3 spanned only ${at[2] - at[0]}ms -- the production sleep is not real`);
 });
 
 test('a rename that never recovers still FAILS the write, loudly', () => {
@@ -140,4 +164,22 @@ test('a rename that never recovers still FAILS the write, loudly', () => {
   } finally {
     fs.renameSync = real;
   }
+});
+
+test('a permanently failed write leaves no temp file behind', () => {
+  // Dexter, Finding 9. Bounded here rather than unbounded -- the temp is
+  // `${file}.tmp${pid}`, so a later write from the same process overwrites it
+  // -- but a stale temp beside a settings file still reads as corruption to
+  // anyone looking, and the cleanup is the same one line as in the vault.
+  const dir = tmp();
+  const s = createStore({ dir });
+  const real = fs.renameSync;
+  fs.renameSync = () => { const e = new Error('EPERM: fake'); e.code = 'EPERM'; throw e; };
+  try {
+    assert.throws(() => s.write('loadout', { agents: {} }), /EPERM/);
+  } finally {
+    fs.renameSync = real;
+  }
+  const leftovers = fs.readdirSync(dir).filter(f => f.includes('.tmp'));
+  assert.deepStrictEqual(leftovers, [], `orphaned temp files: ${leftovers.join(', ')}`);
 });
