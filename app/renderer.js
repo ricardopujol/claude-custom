@@ -202,12 +202,14 @@ function renderFog(fog) {
 function renderBugVault(payload) {
   const d = window.bugVaultDisplay(payload);
   const summaryEl = document.getElementById('bugvault-summary');
+  const groupsEl = document.getElementById('bugvault-groups');
   const detectEl = document.getElementById('bugvault-detection');
   const listEl = document.getElementById('bugvault-list');
-  if (!summaryEl || !detectEl || !listEl) return;
+  if (!summaryEl || !groupsEl || !detectEl || !listEl) return;
 
   if (d.state === 'reading') {
     summaryEl.textContent = 'reading the vault…';
+    groupsEl.innerHTML = '';
     detectEl.innerHTML = '';
     listEl.innerHTML = '';
     return;
@@ -218,6 +220,7 @@ function renderBugVault(payload) {
   // over them, and the only thing that helps is a person opening the file.
   if (d.state === 'unreadable') {
     summaryEl.innerHTML = '<b class="vault-warn">the bug vault could not be read</b>';
+    groupsEl.innerHTML = '';
     detectEl.innerHTML = `<div class="vault-warn-detail">${escapeHtml(d.error || '')}` +
       '<br>Nothing has been written over it. Open the file to see what is there.</div>';
     listEl.innerHTML = '';
@@ -236,10 +239,27 @@ function renderBugVault(payload) {
     // would have rendered as "0 bug classes recorded" if it had slipped in
     // without this branch. Same fail-open shape as the vault dispatcher in F4.
     summaryEl.textContent = 'the vault is in a state this panel does not know how to draw.';
+    groupsEl.innerHTML = '';
     detectEl.innerHTML = '';
     listEl.innerHTML = '';
     return;
   }
+
+  // RECURRING CLASSES, biggest first. The host ranked them (groupByCategory)
+  // and this draws that order verbatim -- re-sorting here would be the second,
+  // divergent copy of an algorithm the display module's header explicitly
+  // refuses to grow. The bar is proportional to the largest group, so one
+  // class pulling away from the rest is visible without reading the numbers,
+  // which is what "recurring" means in the PR title.
+  groupsEl.innerHTML = d.groups.length
+    ? '<h3>Recurring classes</h3>' + d.groups.map(g =>
+        `<div class="grp" title="${escapeHtml(g.category)}">` +
+        `<span class="grp-name">${escapeHtml(g.category)}</span>` +
+        `<span class="grp-bar" style="width:${g.bar}%"></span>` +
+        `<span class="grp-count">${g.total}</span>` +
+        (g.openLabel ? `<span class="grp-open">(${escapeHtml(g.openLabel)})</span>` : '') +
+        '</div>').join('')
+    : '';
 
   // The breakdown that makes "found by measurement, none by reading" a fact
   // rather than a feeling -- the whole reason the design doc asks for this.

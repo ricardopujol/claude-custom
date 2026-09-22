@@ -113,6 +113,19 @@
        Grouping is the feature: the detection breakdown is what makes "found
        by measurement, not by reading" a visible fact rather than a feeling. */
     #bugvault-body { padding: 10px 12px; gap: 8px; overflow-y: auto; }
+    /* The category grouping. Shares the detection block's type scale so the
+       two read as one summary rather than two widgets; the BAR is what makes
+       a recurring class visible at a glance, which is the feature. */
+    #bugvault-groups { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+    #bugvault-groups h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em;
+      color: var(--dim); font-weight: 600; margin: 0 0 2px; }
+    .grp { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+    .grp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: var(--text); }
+    .grp-bar { height: 3px; border-radius: 2px; background: var(--accent); opacity: .55;
+      flex: 0 0 auto; align-self: center; }
+    .grp-count { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .grp-open { color: var(--dim); font-variant-numeric: tabular-nums; }
     #bugvault-detection { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
     #bugvault-detection h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em;
       color: var(--dim); font-weight: 600; margin: 0 0 2px; }
@@ -620,6 +633,7 @@
              bug is not part of the conversation, unlike a skill invocation. -->
         <div class="panel" data-panel="bugvault" id="bugvault-body">
           <div id="bugvault-summary" class="fog-sum">reading the vault…</div>
+          <div id="bugvault-groups"></div>
           <div id="bugvault-detection"></div>
           <div id="bugvault-list"></div>
           <form id="bugvault-add" autocomplete="off">

@@ -56,7 +56,7 @@ function bugVaultDisplay(payload) {
       rows: [], groups: [], detection: [], error: summary.error,
     };
   }
-  const groups = Array.isArray(summary.byCategory) ? summary.byCategory : [];
+  const groups = formatGroups(summary.byCategory);
   const detection = (Array.isArray(summary.byDetection) ? summary.byDetection : [])
     .map(row => ({ ...row, label: row.detectedBy === null ? 'not recorded' : row.detectedBy }));
 
@@ -80,6 +80,46 @@ function bugVaultDisplay(payload) {
     detection,
     error: null,
   };
+}
+
+/**
+ * The category grouping, ready to draw.
+ *
+ * THE HOST RANKED THESE and that order is the feature: "six found by
+ * measurement, none by reading" only reads as a fact if the biggest class is
+ * not buried under insertion order. Nothing here re-sorts -- re-deriving the
+ * ranking in the browser would be the second, divergent copy of an algorithm
+ * this module's header explicitly refuses to grow.
+ *
+ * `bar` is a PERCENTAGE of the largest group, computed here rather than in
+ * renderer.js for the reason this whole module exists: a drawing decision
+ * inline in the renderer is a decision nothing can test, and the first version
+ * of this feature put it there. It is a percentage rather than a pixel count
+ * so the panel can be resized without the arithmetic moving back.
+ *
+ * A floor of 4 keeps a one-bug class visible as a bar rather than as nothing,
+ * which would read as a rendering fault rather than as a small number.
+ */
+function formatGroups(byCategory) {
+  const rows = Array.isArray(byCategory) ? byCategory.filter(g => g && typeof g === 'object') : [];
+  const widest = rows.reduce((m, g) => Math.max(m, num(g.total)), 0);
+  return rows.map(g => ({
+    category: typeof g.category === 'string' && g.category.trim() ? g.category : UNKNOWN,
+    total: num(g.total),
+    fixed: num(g.fixed),
+    unfixed: num(g.unfixed),
+    bar: widest > 0 ? Math.max(4, Math.round((num(g.total) / widest) * 100)) : 0,
+    // Drawn only when there are open ones: "0 open" on every closed class is
+    // noise that buries the line worth reading.
+    openLabel: num(g.unfixed) > 0 ? `${num(g.unfixed)} open` : null,
+  }));
+}
+
+// A count, or zero -- but only for a REAL number. `Number(null)` is 0, which
+// is the absence-reported-as-zero trap this codebase keeps paying for; a
+// missing total must not become a confident 0 that also sizes a bar.
+function num(v) {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
 /**
@@ -108,7 +148,7 @@ function formatBugRow(bug) {
 // renderer, which has no module system at all. Same shape as
 // app/usage-display.js and the other display modules.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { bugVaultDisplay, formatBugRow, UNKNOWN };
+  module.exports = { bugVaultDisplay, formatBugRow, formatGroups, UNKNOWN };
 } else {
   root.bugVaultDisplay = bugVaultDisplay;
   root.formatBugRow = formatBugRow;

@@ -60,9 +60,53 @@ test('every state returns a usable shape', () => {
 // --- category groups and the detection breakdown, passed through for display ---
 
 test('category groups from the host summary are carried through, most frequent first already', () => {
+  // This used to assert `d.groups` deep-equalled the raw `byCategory`, which
+  // pinned OBJECT IDENTITY rather than the property named in the title. The
+  // rows now carry presentation fields (see formatGroups), so identity is
+  // gone and was never the point: what must hold is that the host's ranking
+  // survives untouched and no count is invented.
   const byCategory = [{ category: 'a', total: 3, fixed: 1, unfixed: 2 }, { category: 'b', total: 1, fixed: 0, unfixed: 1 }];
   const d = bugVaultDisplay({ bugs: [bug()], summary: { total: 1, byCategory, byDetection: [] } });
-  assert.deepStrictEqual(d.groups, byCategory);
+  assert.deepStrictEqual(d.groups.map(g => g.category), ['a', 'b']);
+  assert.deepStrictEqual(d.groups.map(g => g.total), [3, 1]);
+  assert.deepStrictEqual(d.groups.map(g => g.unfixed), [2, 1]);
+});
+
+test('the bar is proportional to the biggest class, with a floor so one bug is still visible', () => {
+  const d = bugVaultDisplay({ bugs: [bug()], summary: { byCategory: [
+    { category: 'big', total: 10, fixed: 0, unfixed: 10 },
+    { category: 'half', total: 5, fixed: 0, unfixed: 5 },
+    { category: 'one', total: 1, fixed: 1, unfixed: 0 },
+  ] } });
+  assert.strictEqual(d.groups[0].bar, 100);
+  assert.strictEqual(d.groups[1].bar, 50);
+  assert.ok(d.groups[2].bar >= 4, 'a single-bug class must still draw a bar, not nothing');
+});
+
+test('a missing total does not become a confident zero that also sizes a bar', () => {
+  // `Number(null)` is 0 -- the absence-as-zero trap this codebase keeps
+  // paying for. A group with no usable total must not claim a share.
+  const d = bugVaultDisplay({ bugs: [bug()], summary: { byCategory: [
+    { category: 'real', total: 4, fixed: 0, unfixed: 4 },
+    { category: 'broken', total: null, fixed: null, unfixed: null },
+  ] } });
+  assert.strictEqual(d.groups[1].total, 0);
+  assert.strictEqual(d.groups[1].bar, 4);
+  assert.strictEqual(d.groups[1].openLabel, null);
+});
+
+test('the open-count label is absent, not "0 open", when a class is fully fixed', () => {
+  const d = bugVaultDisplay({ bugs: [bug()], summary: { byCategory: [
+    { category: 'done', total: 3, fixed: 3, unfixed: 0 },
+  ] } });
+  assert.strictEqual(d.groups[0].openLabel, null);
+});
+
+test('a group with no category name is labelled, not rendered blank', () => {
+  const d = bugVaultDisplay({ bugs: [bug()], summary: { byCategory: [
+    { category: '  ', total: 2, fixed: 0, unfixed: 2 },
+  ] } });
+  assert.strictEqual(d.groups[0].category, '—');
 });
 
 test('a detection method that was never recorded is labelled, not left as a raw null', () => {
@@ -199,4 +243,58 @@ test('every state this module can return is handled in renderer.js', () => {
   const unhandled = all.filter(st => !body.includes(`'${st}'`));
   assert.deepStrictEqual(unhandled, [],
     `renderBugVault does not mention these states the display module can return: ${unhandled.join(', ')}`);
+});
+
+// --- the grouping the panel computed and never drew --------------------------
+//
+// The PR is titled "recurring defect classes, grouped by category and
+// detection method". Detection was rendered; CATEGORY never was. `groups` is
+// computed on the host by groupByCategory, shipped over the wire in
+// `summary.byCategory`, passed through this module, unit-tested on both sides
+// -- and referenced nowhere in renderer.js.
+//
+// Everything about it worked except being on screen, which is the one part
+// no unit test was in a position to notice. Stripping it would have meant
+// deleting a working, tested function to match an accidental omission: fitting
+// the spec to the bug. It is drawn instead.
+
+test('the category groups reach the panel in the order the host ranked them', () => {
+  // That ordering IS the feature -- "six found by measurement, none by
+  // reading" only reads as a fact if the biggest class is not buried under
+  // insertion order. The host sorts; this module must not resort or reverse it.
+  const byCategory = [
+    { category: 'silent failure', total: 4, fixed: 3, unfixed: 1 },
+    { category: 'off by one', total: 1, fixed: 1, unfixed: 0 },
+  ];
+  const d = bugVaultDisplay({ bugs: [{ category: 'silent failure', summary: 'x' }], summary: { byCategory } });
+  assert.deepStrictEqual(d.groups.map(g => g.category), ['silent failure', 'off by one']);
+  assert.strictEqual(d.groups[0].total, 4);
+});
+
+test('an absent grouping is an empty list, not a thrown error', () => {
+  assert.deepStrictEqual(bugVaultDisplay({ bugs: [], summary: {} }).groups, []);
+  assert.deepStrictEqual(bugVaultDisplay({ bugs: [], summary: { byCategory: 'nonsense' } }).groups, []);
+});
+
+test('renderer.js actually draws the groups, not just the detection breakdown', () => {
+  // THE GAP THIS CLOSES, asserted against source rather than trusted. Every
+  // other test here could pass with `groups` going nowhere -- and did.
+  const fs = require('fs');
+  const path = require('path');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  const fn = renderer.slice(renderer.indexOf('function renderBugVault'));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  assert.match(body, /d\.groups/,
+    'renderBugVault must use d.groups -- the panel computes the grouping and the PR promises it');
+});
+
+test('the element the groups are drawn into exists in renderer.html', () => {
+  // The mirror of the side-tabs drift test: a render target that is not in the
+  // document silently draws nothing, and renderBugVault returns early when an
+  // element is missing, so the WHOLE panel would go blank rather than just the
+  // groups.
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  assert.match(html, /id="bugvault-groups"/);
 });
