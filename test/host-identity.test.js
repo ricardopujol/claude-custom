@@ -150,3 +150,44 @@ test('the REAL liveness check recognises this process and rejects a free pid', (
     process.kill = realKill;
   }
 });
+
+test('a host can publish its identity before .harness exists at all', () => {
+  // Mortimer Survivor 4, and THE ONE RUN WHERE THIS FIRES IS EVERY USER'S
+  // FIRST. `mkdirSync(..., {recursive:true})` -> `{}` survived because every
+  // test here calls tmp() first, so only `hosts/` is ever missing -- one
+  // level, which non-recursive mkdir handles. In production the path is
+  // `.harness/hosts`, and on a machine that has never run this, `.harness`
+  // does not exist either: non-recursive mkdir throws ENOENT and the host
+  // cannot publish its identity at all.
+  const dir = path.join(tmp(), 'harness-not-created-yet');   // two levels missing
+  writeIdentity({ dir, port: 7700, cwd: 'C:/proj', pid: 4242 });
+  assert.strictEqual(readIdentity({ dir, port: 7700, isAlive: ALIVE }).cwd, 'C:/proj');
+});
+
+test('an identity file holding a JSON scalar is ABSENT, not a crash', () => {
+  // Mortimer Survivor 5. The `!parsed || typeof parsed !== 'object'` guard was
+  // unreached: the tests cover truncated JSON (a parse error) and a valid
+  // object missing cwd, but never a valid JSON SCALAR. Without the guard, a
+  // file whose whole content is `null` makes `parsed.cwd` throw a TypeError
+  // OUT of readIdentity -- and app/main.js calls this BEFORE the window opens,
+  // so the failure is a dead launch rather than the graceful 'unidentified'
+  // this module's header promises.
+  //
+  // Only `null` actually crashes; 5, true and "C:/proj" reach `.cwd ===
+  // undefined` and return null anyway. They are here to document that, not to
+  // pad the case list.
+  const dir = tmp();
+  fs.mkdirSync(path.join(dir, 'hosts'), { recursive: true });
+  for (const junk of ['null', '5', 'true', '"C:/proj"', '[]']) {
+    fs.writeFileSync(path.join(dir, 'hosts', '7700.json'), junk, 'utf8');
+    assert.strictEqual(readIdentity({ dir, port: 7700, isAlive: ALIVE }), null, `content ${junk}`);
+  }
+
+  // Mortimer Survivor 6: a whitespace-only cwd. test/handshake.test.js tests
+  // exactly this at the decideAttach layer -- so the rule was asserted one
+  // level ABOVE where it is implemented, and nothing checked it here.
+  fs.writeFileSync(path.join(dir, 'hosts', '7700.json'),
+    JSON.stringify({ port: 7700, cwd: '   ', pid: 4242 }), 'utf8');
+  assert.strictEqual(readIdentity({ dir, port: 7700, isAlive: ALIVE }), null,
+    'a blank cwd is not an identity');
+});

@@ -75,4 +75,4 @@ async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS } = {}) {
   );
 }
 
-module.exports = { portForCwd, resolvePort, PORT_BASE, PORT_SPAN };
+module.exports = { portForCwd, resolvePort, PORT_BASE, PORT_SPAN, DEADLINE_MS };

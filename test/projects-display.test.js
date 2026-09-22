@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { projectsDisplay } = require('../app/projects-display');
+const { projectsDisplay, formatTokens } = require('../app/projects-display');
 
 const p = (over = {}) => ({
   path: 'C:/a/thing', name: 'thing', approximate: false,
@@ -101,4 +101,71 @@ test('an APPROXIMATE row is not offered as a destination, because it cannot open
 test('a known row is still openable', () => {
   const { rows } = projectsDisplay({ ok: true, projects: [p({ approximate: false })] });
   assert.strictEqual(rows[0].openable, true);
+});
+
+test('absence renders as NOTHING, and a measured zero still renders as zero', () => {
+  // MUTATION-DRIVEN, and the more instructive of the two Criticals. Mortimer:
+  // `known` -- this codebase's named `Number(null) === 0` trap turned into a
+  // function, and the rule this module's header is written around -- can be
+  // replaced with `v => true` and the whole suite passes.
+  //
+  // THE TEST FOR THIS EXACT RULE IS THE ONE THAT MISSED IT. The test above is
+  // called 'token counts are never invented for a project with none' and
+  // asserts `doesNotMatch(detail, /\b0\b/)`. With the guard gone,
+  // formatTokens(null) falls past both thresholds and returns the string
+  // "null tokens" -- which contains no digit 0, so the assertion passes. It
+  // checked that the character `0` was absent from the output rather than that
+  // the absence produced nothing: it pinned the SPELLING of the bug that was
+  // found once, not the rule.
+  //
+  // That is the coverage-is-a-liar pattern with an assertion standing in for
+  // the coverage, and it is the seventh time on these two branches that a
+  // test of mine claimed more than it checked.
+  for (const absent of [null, undefined, '', '1234', NaN, Infinity, -Infinity, {}, [], true]) {
+    assert.strictEqual(formatTokens(absent), null,
+      `formatTokens(${JSON.stringify(absent)}) must be null, not a rendered guess`);
+  }
+
+  // The pair is the whole point: "we have no usage for this project" and "this
+  // project has zero usage" are DIFFERENT CLAIMS and must not collapse.
+  assert.strictEqual(formatTokens(0), '0 tokens', 'a measured zero IS zero');
+
+  const row = projectsDisplay({ ok: true, projects: [p({ tokens: null, sessions: null })] }).rows[0];
+  assert.strictEqual(row.detail, '',
+    `absence must draw nothing, got ${JSON.stringify(row.detail)}`);
+});
+
+test('a healthy list explains nothing, and zero sessions is not worth drawing', () => {
+  // Mortimer Survivors 10 and 11. `note` is the panel's explanation field, and
+  // nothing asserted that a NORMAL list produces no note -- so every mutant
+  // that makes one appear survived. And the sessions bit is the same
+  // absence-vs-zero family as the tokens bit: a project with a real
+  // `sessions: 0` was rendering "0 sessions".
+  const { note } = projectsDisplay({ ok: true, projects: [p({ current: false })] });
+  assert.strictEqual(note, '', 'a healthy list explains nothing');
+
+  assert.strictEqual(
+    projectsDisplay({ ok: true, projects: [p({ tokens: 5, sessions: 0 })] }).rows[0].detail,
+    '5 tokens', 'zero sessions is not a bit worth drawing');
+  assert.strictEqual(
+    projectsDisplay({ ok: true, projects: [p({ tokens: null, sessions: '5' })] }).rows[0].detail,
+    '', 'a non-numeric session count is not a session count');
+});
+
+test('the row name, separator and pluralisation are exact', () => {
+  // Mortimer Survivor 12. The plural mutant survived because the earlier test
+  // used includes('1 session') && !includes('1 sessions') -- substring checks
+  // that a suffix injection slips straight through. Exact equality is what
+  // kills it. And `|| []` survived because every test passes a projects array;
+  // a payload with the key ABSENT was untested.
+  assert.strictEqual(
+    projectsDisplay({ ok: true, projects: [p({ name: 'thing' })] }).rows[0].name, 'thing');
+  assert.strictEqual(
+    projectsDisplay({ ok: true, projects: [p({ name: '' })] }).rows[0].name, 'C:/a/thing',
+    'a nameless row falls back to its path');
+  assert.strictEqual(
+    projectsDisplay({ ok: true, projects: [p({ tokens: 5, sessions: 1 })] }).rows[0].detail,
+    '5 tokens · 1 session', 'exact, because includes() let the plural mutant live');
+  assert.deepStrictEqual(projectsDisplay({ ok: true }).rows, [],
+    'a payload with no projects list draws no rows');
 });

@@ -73,6 +73,13 @@ test('the synthesized current project claims NO usage, rather than zero usage', 
   const out = pickerPayload({ recents: [], current: 'C:/brand/new' });
   assert.strictEqual(out.projects[0].tokens, null);
   assert.strictEqual(out.projects[0].sessions, null);
+
+  // Mortimer Survivor 9: and it must not claim to be APPROXIMATE. The current
+  // project's path came from the environment and is exact; marked approximate
+  // it gains the "recovered from the folder name" tooltip, which would be a
+  // false statement shown to the user -- and would make the row unopenable
+  // under Dexter's Finding 6 fix.
+  assert.strictEqual(out.projects[0].approximate, false);
 });
 
 test('the reader keeps ONE cache across calls, and asks for the limit it draws', () => {
@@ -125,4 +132,48 @@ test('the reader keeps ONE cache across calls, and asks for the limit it draws',
   // SYNCHRONOUS stall on the event loop that owes the hook helper 80ms.
   assert.strictEqual(seen[0].cache instanceof Map, false,
     'a Map here works only by accident; the two modules must agree on the type');
+});
+
+test('a picker with NO current project renders instead of throwing', () => {
+  // Mortimer Survivor 7. `typeof current === 'string'` -> `true` survived
+  // because every test here passes a current string -- and with the type guard
+  // gone, `current.trim()` on undefined throws. Not hypothetical: handshake.js's
+  // own header says main.js reads this from an environment variable and that
+  // "unset is an ordinary input, not a programming error". The sibling module
+  // treats absence as routine while this one was untested against it.
+  const out = pickerPayload({ recents: [recent('C:/a')] });      // no `current`
+  assert.strictEqual(out.ok, true);
+  assert.deepStrictEqual(out.projects.map(x => x.path), ['C:/a']);
+  assert.strictEqual(out.projects.some(x => x.current), false);
+  assert.deepStrictEqual(pickerPayload().projects, [], 'and no payload at all is not a crash');
+});
+
+test('the synthesized current row is named after its folder', () => {
+  // Mortimer Survivor 8, 8 mutants on one line: nothing anywhere read
+  // projects[].name, so the row's visible label could have been the boolean
+  // `true` and the suite would have been silent.
+  const B = String.fromCharCode(92);
+  const name = (current) => pickerPayload({ recents: [], current }).projects[0].name;
+  assert.strictEqual(name('C:/brand/new'), 'new');
+  assert.strictEqual(name(`C:${B}brand${B}new${B}${B}`), 'new', 'trailing separators are not the name');
+  // NOT 'C:/' -- Mortimer's prescribed assertion said it would be, and it is
+  // not. Stripping the trailing separator leaves 'C:', which is truthy, so the
+  // `|| current` fallback never fires. 'C:' is a reasonable label for a drive
+  // root, so this pins the real behaviour rather than bending the code to a
+  // prescription. His kills are reasoned, not executed, and he said as much.
+  assert.strictEqual(name('C:/'), 'C:', 'a drive root is named for the drive');
+
+  // Survivor 8's other half: a whitespace-only current must not be prepended
+  // as a project whose path is '   '.
+  assert.deepStrictEqual(
+    pickerPayload({ recents: [recent('C:/a')], current: '   ' }).projects.map(x => x.path),
+    ['C:/a'], 'a blank cwd is not a project');
+});
+
+test('PICKER_LIMIT is pinned to a literal, not to itself', () => {
+  // Same trap as PORT_SPAN, same reason (Mortimer). The cap test above asserts
+  // `projects.length === PICKER_LIMIT` with the constant on both sides, so it
+  // cannot fail when the constant moves -- and Stryker generates no mutant for
+  // a numeric literal, so nothing else was watching it either.
+  assert.strictEqual(PICKER_LIMIT, 12, 'changing how many projects are shown needs a reason');
 });

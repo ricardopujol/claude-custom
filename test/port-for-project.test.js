@@ -130,3 +130,86 @@ test('a deadline does not cut short a probe that is answering quickly', async ()
   const r = await resolvePort({ cwd: PROJ, occupantAt: () => null, deadlineMs: 150 });
   assert.strictEqual(r.action, 'spawn');
 });
+
+test('different projects do NOT all land on one port', () => {
+  // MUTATION-DRIVEN, and it is the worst gap in the branch. Mortimer's run:
+  // the hash loop can be deleted outright -- `for (let i = 0; false; i++)` --
+  // and ALL of the tests above still pass, because every one of them compares
+  // portForCwd(X) against portForCwd(X). They test STABILITY and never test
+  // DISTRIBUTION, and a function returning a constant satisfies stability
+  // perfectly. `assert.ok(Number.isInteger(a))` was the only assertion on the
+  // value itself, and 7700 is an integer.
+  //
+  // With the hash gone every project on the machine derives 7700. decideAttach
+  // then answers 'other-project' for all of them and resolvePort linear-probes
+  // from one point for every window ever opened -- which is exactly the hazard
+  // the test named 'a project with no path is an ERROR, not port 7700' exists
+  // to prevent. That test guards the ERROR path; nothing guarded the success
+  // path, where it would affect every project rather than only broken ones.
+  const ports = Array.from({ length: 200 }, (_, i) => portForCwd(`C:/VibeCode/project-${i}`));
+  const distinct = new Set(ports).size;
+  assert.ok(distinct > 50, `200 projects produced only ${distinct} distinct ports`);
+
+  // And it must actually use the whole range rather than clustering.
+  assert.ok(Math.min(...ports) < PORT_BASE + 25, 'the low end of the range is unused');
+  assert.ok(Math.max(...ports) > PORT_BASE + PORT_SPAN - 25, 'the high end of the range is unused');
+});
+
+test('a one-character difference in the path changes the port', () => {
+  // The other half of distribution: neighbouring paths must not collide
+  // systematically, or sibling projects in one folder all pile onto one port.
+  const a = portForCwd('C:/VibeCode/alpha');
+  const b = portForCwd('C:/VibeCode/alphb');
+  const c = portForCwd('C:/VibeCode/alpha2');
+  assert.ok(new Set([a, b, c]).size >= 2, 'near-identical paths collapsed to one port');
+});
+
+test('two projects with the same leaf folder do not share a port', () => {
+  // Mortimer Survivor 3: `h * 31` -> `h / 31` survives the distribution test,
+  // because after division `h` is dominated by the CURRENT character, so the
+  // port depends almost entirely on the path's last character. Identically
+  // named leaf folders across sibling projects are the common case, not the
+  // exotic one -- src/, app/, web/.
+  assert.notStrictEqual(
+    portForCwd('C:/VibeCode/alpha/src'), portForCwd('C:/VibeCode/bravo/src'),
+    'two projects with the same leaf folder must not share a port');
+  assert.notStrictEqual(
+    portForCwd('C:/VibeCode/one/app'), portForCwd('C:/VibeCode/two/app'));
+});
+
+test('the tuned constants are pinned to LITERALS, not to themselves', () => {
+  // Mortimer's sharpest observation, and it applies to my tests rather than to
+  // the code. StrykerJS has no numeric-literal mutator, so PORT_BASE,
+  // PORT_SPAN and DEADLINE_MS generate ZERO mutants -- absent from the report
+  // entirely. That alone would be survivable if the suite pinned them.
+  //
+  // IT DID NOT, AND COULD NOT: the assertions IMPORT the constants.
+  // `assert.strictEqual(seen.length, PORT_SPAN)` has the constant on both
+  // sides, so both move together and the assertion cannot fail when the value
+  // changes. Change PORT_SPAN to 50 and nothing in the branch went red -- the
+  // value was unpinned by the mutation score AND by the suite, which is the
+  // worst of both instruments agreeing on nothing.
+  //
+  // Literals here, deliberately. If someone changes the range this test fails
+  // and they must justify it, which is the entire point of a tuned constant.
+  assert.strictEqual(PORT_BASE, 7700, 'the derived range starts at 7700');
+  assert.strictEqual(PORT_SPAN, 100, 'and is 100 ports wide');
+
+  // The boundary those two define, asserted as a boundary rather than inferred.
+  const ports = Array.from({ length: 300 }, (_, i) => portForCwd(`C:/p/${i}`));
+  assert.ok(Math.min(...ports) >= 7700, 'nothing below the base');
+  assert.ok(Math.max(...ports) <= 7799, 'nothing at or above base + span');
+});
+
+test('the port-probe deadline is pinned, including the direction that reintroduces the hang', () => {
+  // Mortimer: DEADLINE_MS is invisible three ways at once -- not a mutable
+  // literal, not reachable as a default-parameter mutant, and never exercised
+  // at its real value, because both deadline tests inject deadlineMs: 150.
+  //
+  // Making it SMALLER is caught incidentally. Making it LARGER -- the
+  // direction that reintroduces Dexter's F12 forty-second blank screen -- was
+  // undetectable by anything in this branch.
+  const { DEADLINE_MS } = require('../host/port-for-project');
+  assert.strictEqual(DEADLINE_MS, 6000,
+    'a longer deadline is a longer blank screen; changing this needs a reason');
+});
