@@ -106,3 +106,32 @@ test('the unfixed Win32 cases are DOCUMENTED, not silently believed to work', ()
   assert.strictEqual(samePath('C:/proj.', 'C:/proj'), false, 'trailing dot: NOT handled');
   assert.strictEqual(samePath('C:/proj ', 'C:/proj'), false, 'trailing space: NOT handled');
 });
+
+test('deleting a separator must not merge two DIFFERENT projects', () => {
+  // MUTATION-DRIVEN, and it is the finding Mortimer first called equivalent
+  // and then corrected himself on after executing it against a 20-path corpus.
+  // The mutant replaces `.replace(/\/g, '/')` with `.replace(/\/g, '')` --
+  // deleting the separator rather than converting it -- and it disagreed with
+  // the original 24 times:
+  //
+  //   normalize('C:/a/b') -> 'c:/a/b'   under the mutant -> 'c:ab'
+  //   normalize('C:/ab')  -> 'c:/ab'    under the mutant -> 'c:ab'
+  //
+  // Two genuinely different projects comparing as one project: the exact
+  // silent-wrong-session failure this whole feature exists to remove, and the
+  // thing decideAttach is built to refuse.
+  //
+  // THE PROPERTY THIS PINS IS INJECTIVITY, and that is the lesson. His first
+  // reasoning was that both operands pass through the same transform, so
+  // equality is preserved -- true, and insufficient. Running both sides
+  // through one transform preserves equality for paths that ARE equal; it says
+  // nothing about paths that are NOT. Replacing a separator with another
+  // separator is injective; deleting it is not.
+  assert.strictEqual(samePath('C:/a/b', 'C:/ab'), false, 'a separator is not nothing');
+  assert.strictEqual(samePath('C:/x/y/z', 'C:/xyz'), false);
+
+  // UNC is where the collision is starkest: //server/share/proj and
+  // //server/shareproj both collapse to 'servershareproj'.
+  assert.strictEqual(samePath('//server/share/proj', '//server/shareproj'), false,
+    'and not on UNC either');
+});
