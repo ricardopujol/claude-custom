@@ -45,9 +45,25 @@ function portForCwd(cwd) {
  * Bounded by construction: exactly PORT_SPAN probes, then an error. An
  * unbounded probe here is a silent hang in the first command a new user runs.
  */
-async function resolvePort({ cwd, occupantAt } = {}) {
+// A wall-clock ceiling on the whole walk, not just a count of attempts.
+// Dexter F12: app/main.js probes with a 400ms socket timeout, so behind a
+// DROP-style firewall rule PORT_SPAN attempts is 40 SECONDS before the window
+// opens -- and the header promises a bound precisely so there is no hang. An
+// iteration count bounds the wrong axis. 6s is comfortably more than a healthy
+// resolve (microseconds) and far less than a user's patience with a blank
+// screen.
+const DEADLINE_MS = 6000;
+
+async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS } = {}) {
   const first = portForCwd(cwd);
+  const giveUpAt = Date.now() + deadlineMs;
   for (let i = 0; i < PORT_SPAN; i++) {
+    if (Date.now() > giveUpAt) {
+      throw new Error(
+        `resolvePort: probing for a free port took too long (>${deadlineMs}ms, ` +
+        `${i} of ${PORT_SPAN} ports tried) -- something is dropping connections on ` +
+        `${PORT_BASE}-${PORT_BASE + PORT_SPAN - 1}`);
+    }
     const port = PORT_BASE + ((first - PORT_BASE + i) % PORT_SPAN);
     // Awaited because the real probe opens a socket. A synchronous answer --
     // which is what every test injects -- passes through await unchanged.

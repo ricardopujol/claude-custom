@@ -103,3 +103,30 @@ test('stepping stays inside the declared range', async () => {
     assert.ok(p >= PORT_BASE && p < PORT_BASE + PORT_SPAN, `port ${p} outside the range`);
   }
 });
+
+test('resolvePort gives up on WALL CLOCK, not just on attempt count', async () => {
+  // Dexter, PR #31 Finding 12. The probe in app/main.js has a 400ms socket
+  // timeout, and resolvePort walks up to PORT_SPAN ports BEFORE createWindow is
+  // called. Behind a DROP-style firewall rule every probe times out, so the
+  // worst case is 100 x 400ms = 40 SECONDS with no window on screen, then
+  // app.exit(1) to a console a picker-launched user never sees -- it goes to
+  // .harness/launcher.log.
+  //
+  // "Bounded" was true and useless: the header promises a bound precisely so
+  // there is no hang, and 40s of blank screen is the hang. The iteration count
+  // bounds the wrong axis.
+  const slow = async () => { await new Promise(r => setTimeout(r, 30)); return { cwd: 'C:/other' }; };
+  const t0 = Date.now();
+  await assert.rejects(
+    () => resolvePort({ cwd: PROJ, occupantAt: slow, deadlineMs: 150 }),
+    /took too long|no free port/i);
+  const took = Date.now() - t0;
+  assert.ok(took < 1000, `gave up after ${took}ms, which is not a deadline`);
+});
+
+test('a deadline does not cut short a probe that is answering quickly', async () => {
+  // The bound must not become a new failure mode: a normal resolve is
+  // microseconds and must never trip it.
+  const r = await resolvePort({ cwd: PROJ, occupantAt: () => null, deadlineMs: 150 });
+  assert.strictEqual(r.action, 'spawn');
+});

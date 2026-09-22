@@ -51,9 +51,32 @@ test('token counts are never invented for a project with none', () => {
   assert.doesNotMatch(rows[0].detail, /\b0\b/);
 });
 
-test('a real token count IS shown', () => {
+test('a real token count IS shown, in the format the code actually emits', () => {
+  // Miguel: the previous assertion was /1\.2M|1234567|1,234,567/ -- a
+  // three-way alternation accepting two formats this code never produces. Not
+  // an overclaim, but a weak assertion by construction: it would pass after a
+  // rewrite that changed the output entirely.
   const { rows } = projectsDisplay({ ok: true, projects: [p({ tokens: 1234567 })] });
-  assert.match(rows[0].detail, /1\.2M|1234567|1,234,567/);
+  assert.strictEqual(rows[0].detail.startsWith('1.2M tokens'), true, rows[0].detail);
+});
+
+test('every token-format branch and both boundaries are pinned', () => {
+  // Miguel: only the M branch was exercised. The k branch, the bare branch and
+  // the 1e3/1e6 boundaries were all unasserted -- and this module is in
+  // stryker.conf.json's mutate list now, so every one of them would come back
+  // as a survivor. Cheaper to write than to read in a report.
+  const detail = (tokens) => projectsDisplay({ ok: true, projects: [p({ tokens })] }).rows[0].detail;
+  assert.ok(detail(999).startsWith('999 tokens'), detail(999));
+  assert.ok(detail(1000).startsWith('1k tokens'), 'the 1e3 boundary is k, not bare');
+  assert.ok(detail(999999).startsWith('1000k tokens'), detail(999999));
+  assert.ok(detail(1000000).startsWith('1.0M tokens'), 'the 1e6 boundary is M, not k');
+});
+
+test('one session is singular and two are plural', () => {
+  const detail = (sessions) =>
+    projectsDisplay({ ok: true, projects: [p({ tokens: 5, sessions })] }).rows[0].detail;
+  assert.ok(detail(1).includes('1 session') && !detail(1).includes('1 sessions'));
+  assert.ok(detail(2).includes('2 sessions'));
 });
 
 test('an APPROXIMATE row is not offered as a destination, because it cannot open', () => {

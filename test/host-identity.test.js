@@ -120,3 +120,33 @@ test('a failed identity write leaves no temp file behind', () => {
   const leftovers = fs.readdirSync(path.join(dir, 'hosts')).filter(f => f.includes('.tmp'));
   assert.deepStrictEqual(leftovers, [], `orphaned temps: ${leftovers.join(', ')}`);
 });
+
+test('the REAL liveness check recognises this process and rejects a free pid', () => {
+  // Miguel: every other test injects `isAlive`, so `defaultIsAlive` -- the one
+  // piece of this module with real OS semantics, and the thing the whole
+  // attach decision rests on -- was never exercised.
+  const { defaultIsAlive } = require('../host/host-identity');
+
+  assert.strictEqual(defaultIsAlive(process.pid), true, 'this process is alive');
+
+  // A pid that is almost certainly not in use. Not a guarantee, so the
+  // assertion is on the SHAPE of the answer for a pid we then confirm is
+  // absent, rather than on a number we hope is free.
+  const unlikely = 0x7ffffffe;
+  let reallyGone = false;
+  try { process.kill(unlikely, 0); } catch (e) { reallyGone = e.code === 'ESRCH'; }
+  if (reallyGone) {
+    assert.strictEqual(defaultIsAlive(unlikely), false, 'a dead pid must read as dead');
+  }
+
+  // EPERM means the process EXISTS and belongs to someone else, which is alive
+  // for our purposes -- the branch the module documents and nothing reached.
+  const epermThrower = () => { throw Object.assign(new Error('nope'), { code: 'EPERM' }); };
+  const realKill = process.kill;
+  process.kill = epermThrower;
+  try {
+    assert.strictEqual(defaultIsAlive(1234), true, "EPERM means alive, not absent");
+  } finally {
+    process.kill = realKill;
+  }
+});

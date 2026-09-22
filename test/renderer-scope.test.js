@@ -208,3 +208,28 @@ test('every module function renderer.js calls is actually exported to it', () =>
     'renderer.js calls these as bare globals, but no module exports them -- ' +
     'they are ReferenceErrors in the real window');
 });
+
+test('every element id renderer.js reaches for at TOP LEVEL exists in renderer.html', () => {
+  // Miguel, PR #31. `document.getElementById(x)` returning null at module top
+  // level is a TypeError that ABORTS ALL OF renderer.js -- terminal, panels,
+  // everything -- for a renamed id. Nothing could see it: the tests above
+  // deliberately skip renderer.js when loading the scripts, because it needs a
+  // real DOM.
+  //
+  // This is the mirror of the TABS-vs-markup drift guard in
+  // test/side-tabs.test.js, which was itself written after a panel turned out
+  // to be unreachable with the whole suite green. Same shape of gap, same
+  // shape of answer: compare the two artifacts that must agree.
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+
+  // Top level only: stop at the first line that is indented, i.e. inside
+  // something. Crude, and it is the region where a null actually kills the file.
+  const topLevel = js.split('\n').filter(l => !/^\s/.test(l)).join('\n');
+  const ids = [...topLevel.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(m => m[1]);
+  assert.ok(ids.length > 0, 'the scan must find something for this check to mean anything');
+
+  const missing = ids.filter(id => !html.includes(`id="${id}"`));
+  assert.deepStrictEqual(missing, [],
+    `renderer.js reaches for these ids at top level and renderer.html has none of them: ${missing.join(', ')}`);
+});

@@ -11,7 +11,34 @@
  * feature instead of all of them, and the diffs stay readable.
  *
  * The host owns every write. The GUI reads through the control protocol and
- * never writes. The hook helper reads `loadout.json` directly, which is what
+ * never writes.
+ *
+ * NO LONGER ONE HOST, AND THIS FILE HAS NOT CAUGHT UP. Dexter F3 / Miguel,
+ * PR #31. Until multi-project, one host at a time was the practical reality
+ * and "the host owns every write" was true. Two hosts is now the advertised
+ * feature, and `.harness/state` is install-wide, so:
+ *
+ *   LOST UPDATES. `update()` below is read-modify-write, which is not atomic
+ *   ACROSS PROCESSES. Two hosts each incrementing a counter both read 5 and
+ *   both write 6: two events occurred, the counter says one. The
+ *   write-and-rename in `write()` defends against a TORN file, which is a
+ *   different property, and the comment there may read as though it covers
+ *   this. It does not.
+ *
+ *   STATE CROSSES PROJECTS. `map.json` is documented as per-project and is
+ *   keyed accordingly, but `loadout.json`, `vault.json` and `stats.json` carry
+ *   no project key. Equipping an item in project A changes it in project B,
+ *   and the streaks and bestiary shown as A's include B's. The hook helper
+ *   reads `loadout.json` directly, so it picks up whichever host wrote last.
+ *
+ * DELIBERATELY NOT FIXED in the multi-project change, and recorded here rather
+ * than deferred quietly. Both are real; neither is silent corruption of
+ * anything durable -- this module's own framing is that all of it is
+ * regenerable convenience state -- and the fix is a design decision about what
+ * these numbers MEAN across projects (is a streak per-project or per-user?),
+ * which is not a decision to make at 3am inside an unrelated PR. The scoping
+ * question belongs to whoever owns the feature, not to the change that made it
+ * visible. The hook helper reads `loadout.json` directly, which is what
  * lets equipped items keep working when the GUI is closed — the harness must
  * not become a requirement for a plain terminal session.
  *
