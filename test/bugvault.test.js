@@ -578,3 +578,22 @@ test('a write that fails during setFixed leaves the caller knowing it failed', (
   const r = v2.setFixed(id, true);
   assert.strictEqual(r.ok, false);
 });
+
+test('a lock that cannot be taken is a refusal, not an exception', () => {
+  // The API must stay TOTAL. Dexter F2 established that, because payload() is
+  // called from the attach handshake where nothing catches -- and a lock that
+  // throws would walk straight back out through the same hole the F2 fix
+  // closed. Found by the concurrent test, where children under parallel load
+  // exceeded the lock deadline and crashed rather than reporting a failure.
+  const store = {
+    ...memStore({ bugs: [] }),
+    withLock: () => { throw new Error('could not take the lock on vault.json.lock'); },
+  };
+  const v = createBugVault({ store, now: () => 1 });
+  let r;
+  assert.doesNotThrow(() => { r = v.add({ category: 'a', summary: 'x' }); });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /lock/i);
+  assert.doesNotThrow(() => v.setFixed('id', true));
+  assert.doesNotThrow(() => v.payload());
+});

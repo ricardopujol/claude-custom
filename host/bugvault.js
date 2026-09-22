@@ -211,6 +211,36 @@ function createBugVault({ store, now = Date.now } = {}) {
   if (!store) throw new Error('createBugVault: store is required');
 
   /**
+   * Dexter F3B. add() and setFixed() are read-modify-write, and `write()`'s
+   * write-and-rename defends against a TORN file, which is a different
+   * property -- two hosts can each read the same vault, each append their own
+   * record, and each write a complete, valid, atomic file containing only
+   * their own. One record is simply gone, with no error anywhere.
+   *
+   * `.harness/state` is install-wide, so this is EVERY PAIR OF OPEN WINDOWS
+   * rather than two windows on one project -- accepting install-wide scope
+   * (which the seed data settles) makes the race more frequent, not less.
+   *
+   * A store with no `withLock` runs the work unlocked: the in-memory doubles
+   * in the tests have no files to lock, and a test double is not a second
+   * process. Real stores always have it.
+   */
+  const locked = (fn) => {
+    if (!store.withLock) return fn();
+    try {
+      return store.withLock(STORE_KEY, fn);
+    } catch (err) {
+      // A lock that could not be taken is a REFUSAL, not a crash. Dexter F2
+      // established that this module's API must be total, because the attach
+      // handshake calls it from a place with no catch above it -- and a
+      // throwing lock would have walked straight back through that hole. Found
+      // by test/bugvault-concurrent.test.js, where children under load
+      // exceeded the lock deadline and died instead of reporting a failure.
+      return { ok: false, error: `could not write the vault: ${err && err.message}` };
+    }
+  };
+
+  /**
    * Dexter F1. This used to read `store.read(KEY, null)` and treat null as
    * first run -- but null is what that call returns for a corrupt file too, so
    * a vault damaged by a partial write or a disk error was SEEDED OVER and the
@@ -261,7 +291,11 @@ function createBugVault({ store, now = Date.now } = {}) {
 
   function add(input) {
     const result = createRecord(input, { now });
-    if (!result.ok) return result;
+    if (!result.ok) return result;          // nothing to lock for a bad record
+    return locked(() => addLocked(result));
+  }
+
+  function addLocked(result) {
     const data = load();
     // Writing one record over a damaged vault finishes the destruction the
     // seeding path was just stopped from doing.
@@ -285,6 +319,10 @@ function createBugVault({ store, now = Date.now } = {}) {
     if (fixed !== true && fixed !== false) {
       return { ok: false, error: `setFixed: fixed must be true or false, got ${JSON.stringify(fixed)}` };
     }
+    return locked(() => setFixedLocked(id, fixed));
+  }
+
+  function setFixedLocked(id, fixed) {
     const data = load();
     if (data.error) return { ok: false, error: data.error };
     let found = null;
