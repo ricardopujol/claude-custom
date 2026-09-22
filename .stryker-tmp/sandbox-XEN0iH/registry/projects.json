@@ -1,6 +1,0 @@
-{
-  "_comment": "Maps a project path to a theme in themes/. Keys are matched case-insensitively and ignore slash direction. '*' is the fallback for unlisted projects; remove it to fall back to the built-in default instead.",
-
-  "C:/Users/ricar/VibeCode/claude-custom": "amber-warm",
-  "*": "cold-blue"
-}
