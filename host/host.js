@@ -47,8 +47,8 @@ const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { allowConnection, newToken } = require('./gatekeeper');
-
-const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
+const { portForCwd } = require('./port-for-project');
+const { writeIdentity, fileFor } = require('./host-identity');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -74,6 +74,12 @@ function resolveClaude() {
 
 const CLAUDE_BIN = resolveClaude();
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+
+// Derived from the project, so two projects can be open at once and reopening
+// a window finds the host it left running. An explicit CLAUDE_CUSTOM_PORT still
+// wins -- main.js sets it, having already resolved collisions by probing, and
+// the probe's answer must not be second-guessed here.
+const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || portForCwd(CWD);
 
 // The generated settings file contributes ONLY the harness's own hook matchers.
 // It does not union the user's hooks: those accumulate across settings layers
@@ -781,10 +787,21 @@ console.log('[host] pty pid       :', term.pid);
 //
 // NEVER passed through the pty. It travels host <-> client only.
 const TOKEN_FILE = path.join(HARNESS_DIR, 'session-token');
+// Per-port as well as shared, because more than one host can now be running.
+// The shared file is LAST-WRITER-WINS: a second project starting would
+// overwrite it, and the first project's window would then reattach with the
+// wrong token and be refused by the gatekeeper -- an auth failure whose cause
+// is another project entirely.
+//
+// The shared file is still written, and still first, because eleven probes in
+// verify/ read it by that exact path and they each run against a single host.
+// Additive rather than moved: this fixes the window without touching them.
+const PORT_TOKEN_FILE = path.join(HARNESS_DIR, 'hosts', `${PORT}.token`);
 const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN || newToken();
 try {
-  fs.mkdirSync(HARNESS_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(PORT_TOKEN_FILE), { recursive: true });
   fs.writeFileSync(TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
+  fs.writeFileSync(PORT_TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
 } catch (err) {
   console.log('[host] could not write the session token file:', err.message);
 }
@@ -1186,6 +1203,19 @@ wss.on('connection', (ws) => {
 
 console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
 
+// Published only now, after the socket is actually accepting. Writing it at
+// startup would advertise a host that is not yet listening, and a window that
+// believed it would attach to nothing.
+try {
+  console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD }));
+} catch (err) {
+  // A host that cannot publish still works for the window that spawned it; it
+  // just cannot be recognised later, so the next window steps to another port
+  // rather than reattaching. Degraded, not broken -- and said out loud, because
+  // "why did it open a second host" is otherwise unanswerable.
+  console.error('[host] could not publish identity:', err.message);
+}
+
 // A test run outlives the host unless it is killed here. With shell:true the
 // child is cmd.exe, so an orphaned npm/node keeps running with no parent and
 // no window -- invisible, and still holding the repo's build output.
@@ -1193,6 +1223,10 @@ function shutdown() {
   try { term.kill(); } catch {}
   killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }
+  // Best effort. The reader already treats a leftover file as absent once the
+  // pid is gone, so this is tidiness rather than correctness -- which is why it
+  // is safe to swallow, and why the pid check exists instead of relying on it.
+  try { fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); } catch {}
 }
 
 // SIGINT is not how this host usually dies: main.js spawns it DETACHED so it
