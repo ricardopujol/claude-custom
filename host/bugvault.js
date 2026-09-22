@@ -58,7 +58,7 @@ function makeId(now) {
  * thrown error has nowhere good to land on that path. Same shape as
  * `host/seats.js`'s `addSeat`.
  */
-function createRecord(input, { now = Date.now } = {}) {
+function createRecord(input, { now = Date.now, project = null } = {}) {
   const category = trimmedOrNull(input && input.category);
   const summary = trimmedOrNull(input && input.summary);
 
@@ -83,6 +83,17 @@ function createRecord(input, { now = Date.now } = {}) {
     fixed: (input && input.fixed) === true,
     foundAt: trimmedOrNull(input && input.foundAt) || new Date(t).toISOString(),
     fixedAt: null,
+    // WHERE THIS WAS FILED FROM, taken from the caller and never from the
+    // record body -- a client-supplied value would make this a claim, and the
+    // only reason to record it is that it is not one.
+    //
+    // The vault is install-wide (the seed data settles that: four of six come
+    // from another project, so this tracks one engineer's defect patterns
+    // across their work, not one codebase's). This field is what keeps a
+    // per-project VIEW cheap later. Install-wide with no attribution is the
+    // one version that cannot be reversed without data loss: once records from
+    // several projects are mixed, nothing can tell them apart again.
+    project: trimmedOrNull(project),
   };
   if (record.fixed) {
     record.fixedAt = trimmedOrNull(input && input.fixedAt) || new Date(t).toISOString();
@@ -207,7 +218,7 @@ const SEED_BUGS = [
  * its own -- the whole point of the shared store is that a corrupt vault costs
  * only this feature, and this module gets that for free by using it.
  */
-function createBugVault({ store, now = Date.now } = {}) {
+function createBugVault({ store, now = Date.now, project = null } = {}) {
   if (!store) throw new Error('createBugVault: store is required');
 
   /**
@@ -270,6 +281,10 @@ function createBugVault({ store, now = Date.now } = {}) {
     // Nothing there. Seed with what this project has already earned, written
     // back immediately so it happens exactly once -- a later empty list (the
     // user cleared it) is a valid `{ bugs: [] }` and is never reseeded.
+    // No `project` for the seeds, deliberately. They are real history from two
+    // different projects, recorded before this field existed; stamping them
+    // with whichever project happened to open the vault first would be
+    // inventing data. Null says "not recorded", which is the truth.
     const seeded = { bugs: SEED_BUGS.map(s => createRecord(s, { now }).record) };
     try {
       store.write(STORE_KEY, seeded);
@@ -290,7 +305,7 @@ function createBugVault({ store, now = Date.now } = {}) {
   }
 
   function add(input) {
-    const result = createRecord(input, { now });
+    const result = createRecord(input, { now, project });
     if (!result.ok) return result;          // nothing to lock for a bad record
     return locked(() => addLocked(result));
   }

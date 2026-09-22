@@ -318,7 +318,12 @@ const cooldowns = createCooldowns({ store });
 // visible count instead of a memory hand-carried between review rounds in PR
 // comments. Persisted through the shared store under `vault.json`, same as
 // every other feature -- this module invents no file format of its own.
-const bugVault = createBugVault({ store });
+// `project: CWD` stamps each record with where it was filed from. The vault
+// itself stays install-wide -- the seed data settles that, since four of its
+// six entries come from another project entirely -- but a record with no
+// attribution cannot be given one later, so the field goes in now while it is
+// one line rather than an archaeology problem.
+const bugVault = createBugVault({ store, project: CWD });
 // Dexter F2: this is called while building the `hello` frame inside
 // `wss.on('connection')`, which has NO catch above it -- unlike control-frame
 // dispatch, which `handleFrame` wraps. The host owns the pty, so a throw here

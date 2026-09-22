@@ -597,3 +597,67 @@ test('a lock that cannot be taken is a refusal, not an exception', () => {
   assert.doesNotThrow(() => v.setFixed('id', true));
   assert.doesNotThrow(() => v.payload());
 });
+
+// --- the project a record came from ------------------------------------------
+//
+// Dexter, PR #29 review, after withdrawing his own per-project finding.
+//
+// The scope question resolved to INSTALL-WIDE, and it resolved on evidence
+// neither review had looked at: four of the six seeds are from the forge
+// project, two from this one. Under a per-project vault the feature would ship
+// wrong out of the box, and the fix would be deleting two thirds of the seed
+// data the author deliberately chose. The seeds are the spec stated in data --
+// this tracks ONE ENGINEER'S recurring defect patterns across their work, not
+// one codebase's.
+//
+// So the store stays install-wide. What gets added is attribution, now rather
+// than later: install-wide with no project field is the one version of this
+// that cannot be reversed without data loss, because once real records from
+// several projects are mixed, nothing can tell them apart again. Later it is
+// archaeology; today it is one field.
+
+test('a record remembers which project it was filed from', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1, project: 'C:/work/thing' });
+  const r = v.add({ category: 'a', summary: 'x' });
+  assert.strictEqual(r.record.project, 'C:/work/thing');
+});
+
+test('no project configured records null, never a guess and never ""', () => {
+  // Absence is not a value. A vault opened outside a project must not claim
+  // the records belong to one -- the same rule as every optional field above.
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1 });
+  assert.strictEqual(v.add({ category: 'a', summary: 'x' }).record.project, null);
+});
+
+test('a blank or whitespace project normalizes to null', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1, project: '   ' });
+  assert.strictEqual(v.add({ category: 'a', summary: 'x' }).record.project, null);
+});
+
+test('the caller cannot spoof the project through the record body', () => {
+  // `project` is stamped from where the host is RUNNING, not from the frame.
+  // A client-supplied value would make the field a claim rather than a fact,
+  // and the whole point of recording it is that it is not a claim.
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1, project: 'real' });
+  const r = v.add({ category: 'a', summary: 'x', project: 'somewhere else' });
+  assert.strictEqual(r.record.project, 'real');
+});
+
+test('the seed records carry a null project, because they predate attribution', () => {
+  // They are real history from two different projects, recorded before this
+  // field existed. Stamping them with whichever project happened to open the
+  // vault first would be inventing data -- exactly what this codebase refuses
+  // to do everywhere else. Null says "not recorded", which is the truth.
+  const v = createBugVault({ store: memStore(undefined), now: () => 1, project: 'C:/work/thing' });
+  for (const bug of v.list()) {
+    assert.strictEqual(bug.project, null, JSON.stringify(bug.summary));
+  }
+});
+
+test('marking a bug fixed does not rewrite where it came from', () => {
+  const store = memStore({ bugs: [] });
+  const v = createBugVault({ store, now: () => 1, project: 'A' });
+  const id = v.add({ category: 'a', summary: 'x' }).record.id;
+  const v2 = createBugVault({ store, now: () => 1, project: 'B' });
+  assert.strictEqual(v2.setFixed(id, true).record.project, 'A');
+});
