@@ -241,7 +241,17 @@ function createBugVault({ store, now = Date.now } = {}) {
     // back immediately so it happens exactly once -- a later empty list (the
     // user cleared it) is a valid `{ bugs: [] }` and is never reseeded.
     const seeded = { bugs: SEED_BUGS.map(s => createRecord(s, { now }).record) };
-    store.write(STORE_KEY, seeded);
+    try {
+      store.write(STORE_KEY, seeded);
+    } catch (err) {
+      // Dexter F2. This write runs on the ATTACH path, and the handshake that
+      // calls it has no catch above it, so a throw here used to take the host
+      // and the pty with it. It reports EMPTY rather than handing back the
+      // seeds it holds in memory: PR #30's secret vault shipped exactly that
+      // lie -- serving records a failed write never stored -- and this is the
+      // same lie in a different panel.
+      return { bugs: [], error: `could not create the vault file: ${err && err.message}` };
+    }
     return seeded;
   }
 
@@ -257,7 +267,11 @@ function createBugVault({ store, now = Date.now } = {}) {
     // seeding path was just stopped from doing.
     if (data.error) return { ok: false, error: data.error };
     data.bugs = [...data.bugs, result.record];
-    store.write(STORE_KEY, data);
+    try {
+      store.write(STORE_KEY, data);
+    } catch (err) {
+      return { ok: false, error: `could not write the vault: ${err && err.message}` };
+    }
     return { ok: true, record: result.record };
   }
 
@@ -287,7 +301,11 @@ function createBugVault({ store, now = Date.now } = {}) {
       return found;
     });
     if (!found) return { ok: false, error: `no bug with id ${id}` };
-    store.write(STORE_KEY, data);
+    try {
+      store.write(STORE_KEY, data);
+    } catch (err) {
+      return { ok: false, error: `could not write the vault: ${err && err.message}` };
+    }
     return { ok: true, record: found };
   }
 
@@ -306,7 +324,37 @@ function createBugVault({ store, now = Date.now } = {}) {
     };
   }
 
-  return { list, add, setFixed, summary };
+  /**
+   * What the attach handshake sends. Dexter F2.
+   *
+   * TOTAL BY CONSTRUCTION -- this is the one call in the vault whose caller
+   * has no catch above it. `host.js` builds the `hello` frame inside
+   * `wss.on('connection')`, outside `handleFrame`'s try, and the host owns the
+   * pty; an exception escaping here kills the running Claude session. Because
+   * it is on the attach path, the failure shape is "every window you open
+   * kills the session", not "one feature is broken".
+   *
+   * Everything above already returns errors rather than raising them, so this
+   * catch should be unreachable. It is here anyway: the promise that a future
+   * store implementation never throws is not one this call can afford to
+   * depend on, and store.test.js already states the rule -- one feature's
+   * state must not be able to take the session down.
+   */
+  function payload() {
+    try {
+      return { bugs: list(), summary: summary() };
+    } catch (err) {
+      return {
+        bugs: [],
+        summary: {
+          total: 0, byCategory: [], byDetection: [],
+          error: `the vault could not be read: ${err && err.message}`,
+        },
+      };
+    }
+  }
+
+  return { list, add, setFixed, summary, payload };
 }
 
 /**

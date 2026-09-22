@@ -494,3 +494,87 @@ test('an emptied vault is never reseeded -- a valid empty list is a real answer'
   const v = createBugVault({ store, now: () => 1 });
   assert.deepStrictEqual(v.list(), []);
 });
+
+// --- a failing write must not take the session down --------------------------
+//
+// Dexter, PR #29 review, F2. `vault: vaultPayload()` is built inside the
+// `hello` frame in `wss.on('connection')` -- OUTSIDE `handleFrame`'s
+// try/catch, which only wraps control-frame dispatch. `vaultPayload` calls
+// `list()`, `list()` calls `load()`, and `load()` writes when it seeds. A
+// throw from mkdir/write/rename there is an unhandled exception in the
+// connection handler, and the host owns the pty, so it takes the running
+// Claude session with it.
+//
+// Because it is on the ATTACH path, the shape of the failure is "every window
+// you open kills the session" -- on a machine where the state directory has
+// gone read-only, the harness becomes unusable rather than degraded.
+//
+// store.test.js already states the rule this breaks: "One feature's state must
+// not be able to take the session down. Everything here is regenerable; none
+// of it is worth an exception on a hot path."
+
+test('a vault that cannot be created does not throw out of list()', () => {
+  const v = createBugVault({ store: throwingStore(undefined), now: () => 1 });
+  assert.doesNotThrow(() => v.list());
+});
+
+test('a vault that cannot be created reports empty WITH an error, not six phantom seeds', () => {
+  // PR #30's secret vault shipped the opposite of this: it updated memory
+  // before disk, so `list` served a secret that was not stored until a restart
+  // took it away. Six seed records shown as recorded, when the write that
+  // would have recorded them failed, is the same lie in a different panel.
+  const v = createBugVault({ store: throwingStore(undefined), now: () => 1 });
+  assert.deepStrictEqual(v.list(), []);
+  assert.match(v.summary().error, /could not/i);
+});
+
+test('payload() is total: it answers even when everything underneath fails', () => {
+  // What the attach handshake calls. It must be incapable of throwing,
+  // because its caller is the one place in the host with no catch above it.
+  const v = createBugVault({ store: throwingStore(undefined), now: () => 1 });
+  let p;
+  assert.doesNotThrow(() => { p = v.payload(); });
+  assert.ok(Array.isArray(p.bugs));
+  assert.ok(p.summary);
+});
+
+test('payload() survives a store that throws on READ as well as on write', () => {
+  // readState is supposed to classify errors rather than raise them, but the
+  // handshake must not depend on that promise being kept by every future
+  // store implementation.
+  const exploding = {
+    readState: () => { throw new Error('boom'); },
+    read: () => { throw new Error('boom'); },
+    write: () => { throw new Error('boom'); },
+  };
+  const v = createBugVault({ store: exploding, now: () => 1 });
+  let p;
+  assert.doesNotThrow(() => { p = v.payload(); });
+  assert.deepStrictEqual(p.bugs, []);
+  assert.ok(p.summary.error, 'the failure must be reported, not swallowed into an empty vault');
+});
+
+test('payload() carries the real vault when everything is working', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1 });
+  v.add({ category: 'a', summary: 'x', detectedBy: 'measurement' });
+  const p = v.payload();
+  assert.strictEqual(p.bugs.length, 1);
+  assert.strictEqual(p.summary.total, 1);
+  assert.strictEqual(p.summary.error, null);
+});
+
+test('a write that fails during add is reported as a failure, not as a success', () => {
+  const v = createBugVault({ store: throwingStore({ bugs: [] }), now: () => 1 });
+  const r = v.add({ category: 'a', summary: 'x' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /could not/i);
+});
+
+test('a write that fails during setFixed leaves the caller knowing it failed', () => {
+  const store = memStore({ bugs: [] });
+  const v = createBugVault({ store, now: () => 1 });
+  const id = v.add({ category: 'a', summary: 'x' }).record.id;
+  const v2 = createBugVault({ store: throwingStore({ bugs: store.read('x', {}).bugs }), now: () => 1 });
+  const r = v2.setFixed(id, true);
+  assert.strictEqual(r.ok, false);
+});

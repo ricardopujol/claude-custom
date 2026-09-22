@@ -319,7 +319,13 @@ const cooldowns = createCooldowns({ store });
 // comments. Persisted through the shared store under `vault.json`, same as
 // every other feature -- this module invents no file format of its own.
 const bugVault = createBugVault({ store });
-const vaultPayload = () => ({ bugs: bugVault.list(), summary: bugVault.summary() });
+// Dexter F2: this is called while building the `hello` frame inside
+// `wss.on('connection')`, which has NO catch above it -- unlike control-frame
+// dispatch, which `handleFrame` wraps. The host owns the pty, so a throw here
+// killed the running Claude session, and because it is on the attach path the
+// shape was "every window you open kills the session". `payload()` is total by
+// construction; see host/bugvault.js.
+const vaultPayload = () => bugVault.payload();
 // The agent list comes from the mood stack, so a finished turn can say how
 // many agents ran rather than just that something ended.
 // Tracks whether a cooldown list was last non-empty, so the falling edge is
