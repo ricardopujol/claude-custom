@@ -40,24 +40,24 @@ test('a project with no path is an ERROR, not port 7700', () => {
   }
 });
 
-test('a free derived port is where we start our own host', () => {
-  const r = resolvePort({ cwd: PROJ, occupantAt: () => null });
+test('a free derived port is where we start our own host', async () => {
+  const r = await resolvePort({ cwd: PROJ, occupantAt: () => null });
   assert.strictEqual(r.port, portForCwd(PROJ));
   assert.strictEqual(r.action, 'spawn');
 });
 
-test('our own host on the derived port is reattached to, not stepped past', () => {
-  const r = resolvePort({ cwd: PROJ, occupantAt: () => ({ cwd: PROJ }) });
+test('our own host on the derived port is reattached to, not stepped past', async () => {
+  const r = await resolvePort({ cwd: PROJ, occupantAt: () => ({ cwd: PROJ }) });
   assert.strictEqual(r.port, portForCwd(PROJ));
   assert.strictEqual(r.action, 'attach');
 });
 
-test('another project on our derived port makes us step, not refuse', () => {
+test('another project on our derived port makes us step, not refuse', async () => {
   // Two projects CAN hash to the same port -- 100 ports and no uniqueness
   // guarantee. That must be an invisible inconvenience, not a failure the user
   // has to understand, so the second project quietly takes the next free port.
   const base = portForCwd(PROJ);
-  const r = resolvePort({
+  const r = await resolvePort({
     cwd: PROJ,
     occupantAt: occupiedExcept([base + 1], { cwd: 'C:/some/other/project' }),
   });
@@ -65,12 +65,12 @@ test('another project on our derived port makes us step, not refuse', () => {
   assert.strictEqual(r.action, 'spawn');
 });
 
-test('an unidentified occupant is stepped past, never taken over', () => {
+test('an unidentified occupant is stepped past, never taken over', async () => {
   // Something is listening and would not say whose it is. Taking the port
   // anyway is the one thing we must not do -- that is the whole point of the
   // handshake -- so it is treated exactly like a stranger's project.
   const base = portForCwd(PROJ);
-  const r = resolvePort({
+  const r = await resolvePort({
     cwd: PROJ,
     occupantAt: occupiedExcept([base + 2], {}),
   });
@@ -78,21 +78,21 @@ test('an unidentified occupant is stepped past, never taken over', () => {
   assert.strictEqual(r.action, 'spawn');
 });
 
-test('a full range TERMINATES with an error instead of looping', () => {
+test('a full range TERMINATES with an error instead of looping', async () => {
   // The probe walks a bounded range. Without a bound this is an infinite loop
   // in the launcher -- a hang with no output, which is the worst possible
   // symptom for the first thing a user runs.
-  assert.throws(
+  await assert.rejects(
     () => resolvePort({ cwd: PROJ, occupantAt: () => ({ cwd: 'C:/occupied' }) }),
     /no free port/i,
   );
 });
 
-test('stepping stays inside the declared range', () => {
+test('stepping stays inside the declared range', async () => {
   // Wraps rather than walking off the end into whatever lives at 7800+.
   const seen = [];
   try {
-    resolvePort({
+    await resolvePort({
       cwd: PROJ,
       occupantAt: (port) => { seen.push(port); return { cwd: 'C:/occupied' }; },
     });

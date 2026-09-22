@@ -4,6 +4,9 @@
   "private": true,
   "description": "A visually customizable display head for Claude Code",
   "main": "app/main.js",
+  "bin": {
+    "claude-custom": "bin/claude-custom.js"
+  },
   "scripts": {
     "start": "electron .",
     "host": "node host/host.js",

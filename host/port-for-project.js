@@ -45,11 +45,13 @@ function portForCwd(cwd) {
  * Bounded by construction: exactly PORT_SPAN probes, then an error. An
  * unbounded probe here is a silent hang in the first command a new user runs.
  */
-function resolvePort({ cwd, occupantAt } = {}) {
+async function resolvePort({ cwd, occupantAt } = {}) {
   const first = portForCwd(cwd);
   for (let i = 0; i < PORT_SPAN; i++) {
     const port = PORT_BASE + ((first - PORT_BASE + i) % PORT_SPAN);
-    const { action } = decideAttach({ requestedCwd: cwd, occupant: occupantAt(port) });
+    // Awaited because the real probe opens a socket. A synchronous answer --
+    // which is what every test injects -- passes through await unchanged.
+    const { action } = decideAttach({ requestedCwd: cwd, occupant: await occupantAt(port) });
     if (action === 'spawn' || action === 'attach') return { port, action };
   }
   throw new Error(
