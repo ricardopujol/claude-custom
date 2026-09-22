@@ -112,14 +112,23 @@ function renameWithRetry(from, to, {
   rename = fs.renameSync, sleep = sleepSync, attempts = ATTEMPTS,
 } = {}) {
   // Validated before the loop, so the loop is BOUNDED BY CONSTRUCTION rather
-  // than by a conditional inside it. Dexter, Finding 6: with `for (;;)` and
-  // `i >= attempts` as the only exit, `attempts: NaN` never terminates --
-  // every comparison against NaN is false, `wait` doubles to Infinity after
-  // ~1070 passes, and `Atomics.wait(..., Infinity)` then blocks forever. A
-  // synchronous, uninterruptible hang of whichever process called it, which
-  // for the vault is the Electron main process. Latent today, since no
-  // production caller passes `attempts` -- but it is part of an exported
-  // function's shape, and "no caller does that yet" is not a bound.
+  // than by a conditional inside it.
+  //
+  // HISTORY (Dexter, Finding 6): with `for (;;)` and `i >= attempts` as the
+  // only exit, `attempts: NaN` never terminated -- every comparison against
+  // NaN is false, `wait` doubled to Infinity after ~1070 passes, and
+  // `Atomics.wait(..., Infinity)` then blocked forever. A synchronous,
+  // uninterruptible hang of whichever process called it, which for the vault
+  // is the Electron main process.
+  //
+  // WHAT THE GUARD ACTUALLY DOES NOW, which is not the same thing (Miguel):
+  // the new loop shape already handles NaN -- `1 <= NaN` is false, the body
+  // never runs -- but it would then `throw last`, which is `undefined`. So
+  // this check is LOAD-BEARING for `Infinity`, where `i <= Infinity` is
+  // forever true and the loop would still never end, and it is hygiene for
+  // everything else: it turns "throws undefined" into an error that says what
+  // went wrong. Keeping the old rationale here without this would have left a
+  // comment describing a hang the code can no longer have.
   assertAttempts(attempts);
 
   let wait = FIRST_WAIT_MS;
