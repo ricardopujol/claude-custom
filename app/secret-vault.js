@@ -82,7 +82,12 @@ function createVault({ file, crypto, onWrite } = {}) {
     state = next;
   }
 
-  function persist(candidate = state) {
+  // `candidate` is REQUIRED, deliberately. Miguel: a default of `state` is the
+  // dangerous one -- a future bare `persist()` would silently restore "write
+  // whatever memory currently holds", which is the exact mental model F1
+  // removed. A missing argument should crash here, loudly, in a test.
+  function persist(candidate) {
+    if (!candidate) throw new Error('persist: a candidate state is required');
     const dir = path.dirname(file);
     fs.mkdirSync(dir, { recursive: true });
     // Write-and-rename: a crash mid-write leaves the old vault intact rather

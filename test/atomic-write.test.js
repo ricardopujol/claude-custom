@@ -22,6 +22,14 @@ const assert = require('node:assert');
 
 const { renameWithRetry } = require('../host/atomic-write');
 
+// Shared by the sync and async validation tests, so the two cannot diverge.
+//
+// `undefined` is deliberately NOT here: it means "use the default", which is
+// the documented way to call this, and adding it to the list made the async
+// test fail -- correctly. The values below are the ones with no sensible
+// reading, every one of which used to produce an unbounded loop.
+const BAD_ATTEMPTS = [NaN, Infinity, -Infinity, 0, -1, 2.5, '5', null];
+
 // A rename that fails with `codes` in order, then succeeds. Records attempts.
 function flaky(codes) {
   const calls = [];
@@ -162,10 +170,10 @@ test('a nonsense attempts count is REFUSED, not looped on forever', () => {
   // proven instead by running it against the unfixed function in a subprocess
   // with a hard kill; see the commit message for the measurement.
   const alwaysEPERM = () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
-  for (const attempts of [NaN, Infinity, 0, -1, 2.5, '5', null]) {
+  for (const attempts of BAD_ATTEMPTS) {
     assert.throws(
       () => renameWithRetry('a.tmp', 'b', { rename: alwaysEPERM, sleep: () => {}, attempts }),
-      /positive integer|EPERM/,
+      /positive integer/,
       `attempts: ${String(attempts)} must not hang`,
     );
   }
@@ -234,7 +242,9 @@ test('async: the backoff schedule matches the synchronous one', async () => {
 
 test('async: a nonsense attempts count is refused, not looped on', async () => {
   const alwaysEPERM = async () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
-  for (const attempts of [NaN, Infinity, 0, -1]) {
+  // The SAME list as the sync version. Miguel: asymmetry between twins is
+  // exactly how twins drift, and this guard is literally shared code.
+  for (const attempts of BAD_ATTEMPTS) {
     await assert.rejects(
       () => renameWithRetryAsync('a.tmp', 'b', { rename: alwaysEPERM, sleep: async () => {}, attempts }),
       /positive integer/,

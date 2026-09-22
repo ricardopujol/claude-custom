@@ -63,6 +63,15 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+// The two things the sync and async versions must never disagree about, named
+// once. Miguel: shipping near-identical twins is fine -- that duplication is
+// control flow, the harmless kind -- but the transient predicate and the
+// backoff step appearing twice each is duplication of the POLICY, and that is
+// the kind that drifts. A change to either that updated only one copy would
+// stay invisible until someone hit the other path.
+const isTransient = err => TRANSIENT.has(err && err.code);
+const nextWait = prev => prev * 2;
+
 const ATTEMPTS = 5;
 
 // Doubling from 20ms: 20 + 40 + 80 + 160 = 300ms of cover across four waits.
@@ -95,10 +104,10 @@ function renameWithRetry(from, to, {
       last = err;
       // A non-transient code is hopeless: retrying cannot make a missing file
       // appear or a full disk empty, and it would turn a clear failure slow.
-      if (!TRANSIENT.has(err && err.code)) throw err;
+      if (!isTransient(err)) throw err;
       if (i < attempts) {
         sleep(wait);
-        wait *= 2;
+        wait = nextWait(wait);
       }
     }
   }
@@ -149,10 +158,10 @@ async function renameWithRetryAsync(from, to, {
       return;
     } catch (err) {
       last = err;
-      if (!TRANSIENT.has(err && err.code)) throw err;
+      if (!isTransient(err)) throw err;
       if (i < attempts) {
         await sleep(wait);
-        wait *= 2;
+        wait = nextWait(wait);
       }
     }
   }
@@ -160,5 +169,6 @@ async function renameWithRetryAsync(from, to, {
 }
 
 module.exports = {
-  renameWithRetry, renameWithRetryAsync, sleepSync, sleepAsync, TRANSIENT, ATTEMPTS,
+  renameWithRetry, renameWithRetryAsync, sleepSync, sleepAsync,
+  isTransient, nextWait, TRANSIENT, ATTEMPTS, FIRST_WAIT_MS,
 };

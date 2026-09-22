@@ -244,7 +244,12 @@ test('a secret whose save FAILED is not listed, revealed, or gettable', () => {
   const restore = alwaysFails();
   try {
     assert.throws(() => v.add({ label: 'aws', secret: 'AKIA-REAL' }), /EPERM/);
-    // The three read paths that all served the phantom entry before the fix.
+    // `list` is what the window renders, so it is the read path that matters
+    // most -- and the only one reachable here, because `get` and `reveal` need
+    // an id that `add` never returned. An earlier version of this comment
+    // claimed all three were asserted (Miguel); they are not, and the shape of
+    // the fix is what makes that safe: nothing is assigned to `state` at all,
+    // so there is no entry for any read path to find.
     assert.deepStrictEqual(v.list(), [], 'a save that did not land must not be listed');
   } finally {
     restore();
