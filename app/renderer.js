@@ -157,7 +157,17 @@ function renderProjects(msg) {
   const list = document.getElementById('projects-list');
   const note = document.getElementById('projects-note');
   // An error from the host is about THIS action failing, not about the history.
-  if (msg.error) { note.textContent = msg.error; return; }
+  // `display` is reset explicitly: a successful render with no note leaves the
+  // element at display:none, so writing into it would show the user NOTHING --
+  // the panel's one error surface, silent. It happened to work only because
+  // the click handler set display='' two lines before sending, i.e. correct by
+  // a side effect in a different function (Miguel). That is the failure class
+  // this whole PR is about, so it should not be load-bearing here.
+  if (msg.error) {
+    note.textContent = msg.error;
+    note.style.display = '';
+    return;
+  }
 
   const { rows, note: text } = projectsDisplay(msg);
   note.textContent = text;

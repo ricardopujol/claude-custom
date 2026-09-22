@@ -48,9 +48,13 @@ function rowFor(p) {
     path: p.path,
     name: p.name || p.path,
     current: !!p.current,
-    // The current project is listed so you can see where you are, but opening
-    // it would spawn a window onto the session you are already looking at.
-    openable: !p.current,
+    // NOT openable when current -- that would spawn a window onto the session
+    // you are already looking at -- and NOT openable when APPROXIMATE either
+    // (Dexter, Finding 6). An approximate row's `path` is the lossy
+    // ~/.claude/projects folder name, not a path: clicking it resolved that
+    // name against the CURRENT project and reported a folder that has never
+    // existed. A row that cannot open must not look like a button.
+    openable: !p.current && !p.approximate,
     approximate: !!p.approximate,
     detail: bits.join(' · '),
     title: p.approximate

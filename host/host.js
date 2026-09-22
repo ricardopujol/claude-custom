@@ -777,15 +777,42 @@ async function sendProjects(ws) {
  * folder that no longer exists.
  */
 function openProject(msg, ws) {
+  const asked = msg && msg.path;
+
+  // ABSOLUTE ONLY. Dexter, Finding 6: `resolveLaunchTarget` resolves against
+  // CWD, so a relative path silently anchors inside the CURRENT project. The
+  // picker was the thing sending relative paths -- an approximate row carries
+  // the lossy ~/.claude/projects folder name -- and if a folder with that
+  // literal name happened to exist here, it would have opened THAT with no
+  // warning. Every legitimate caller has an absolute path; refusing the rest
+  // costs nothing and closes the only unintended resolution either reviewer
+  // could find.
+  if (typeof asked !== 'string' || !path.isAbsolute(asked)) {
+    const why = `refusing a project path that is not absolute: ${JSON.stringify(asked)}`;
+    console.log('[host]', why);
+    ws.send(JSON.stringify({ type: 'projects', error: why }));
+    return;
+  }
+
   let target;
   try {
-    target = resolveLaunchTarget(msg && msg.path, { cwd: CWD });
+    target = resolveLaunchTarget(asked, { cwd: CWD });
   } catch (err) {
     console.log('[host] refusing to open:', err.message);
     ws.send(JSON.stringify({ type: 'projects', error: err.message }));
     return;
   }
-  if (samePath(target, CWD)) return;        // already here; opening again is a no-op
+
+  // ANSWERED, not silently dropped. Dexter, Finding 8: this used to be a bare
+  // `return`, so the panel sat on "opening a window…" forever -- the dead
+  // button with no feedback that the comment beside the click handler was
+  // written to prevent. Reachable whenever two ~/.claude/projects folders
+  // record the same cwd, which happens routinely via a junction or a second
+  // drive mapping.
+  if (samePath(target, CWD)) {
+    ws.send(JSON.stringify({ type: 'projects', error: 'that project is already open in this window' }));
+    return;
+  }
 
   console.log('[host] opening project:', target);
 
@@ -796,10 +823,11 @@ function openProject(msg, ws) {
   // child takes EPIPE the moment it writes after we go, which is the same trap
   // app/main.js records for the host's own log.
   let stdio = 'ignore';
+  let logFd = null;
   try {
     fs.mkdirSync(HARNESS_DIR, { recursive: true });
-    const fd = fs.openSync(path.join(HARNESS_DIR, 'launcher.log'), 'a');
-    stdio = ['ignore', fd, fd];
+    logFd = fs.openSync(path.join(HARNESS_DIR, 'launcher.log'), 'a');
+    stdio = ['ignore', logFd, logFd];
   } catch { /* a log we cannot open must not stop the window opening */ }
 
   const child = require('child_process').spawn(
@@ -813,6 +841,27 @@ function openProject(msg, ws) {
     // trap it documents.
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   });
+  // An 'error' event on an EventEmitter with NO listener THROWS (Miguel). That
+  // would kill the host -- and the user's live pty session with it -- because a
+  // window failed to spawn. This file already makes that argument twice, at
+  // killTree and at the health runner; the launcher spawn was the one that
+  // did not follow it.
+  child.on('error', (err) => {
+    console.error('[host] could not start the launcher:', err.message);
+    try {
+      ws.send(JSON.stringify({ type: 'projects', error: `could not open a window: ${err.message}` }));
+    } catch { /* the window may already be gone */ }
+  });
+
+  // Node does NOT close fds handed to `stdio` -- that is the caller's job.
+  // app/main.js has the same shape and pays it once per process; this pays it
+  // once per project-open, in a host designed to run for days (Miguel).
+  if (logFd !== null) {
+    const closeLog = () => { try { fs.closeSync(logFd); } catch {} };
+    child.once('spawn', closeLog);
+    child.once('error', closeLog);
+  }
+
   child.unref();
 }
 

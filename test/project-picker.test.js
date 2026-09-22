@@ -88,14 +88,41 @@ test('the reader keeps ONE cache across calls, and asks for the limit it draws',
   // That read is SYNCHRONOUS, and the host's event loop is what delivers hook
   // events -- the same reason host/renderer.js asks for the fog on demand and
   // frets about 175ms. Two seconds of it is a different order of problem.
+  // MIGUEL, PR #31: the previous version of this test asserted only that the
+  // same OBJECT was passed twice, using a stub that never read or wrote the
+  // cache -- so everything the measurements above promise was unverified by
+  // the assertions below them. That is the overclaim, and it is mine.
+  //
+  // This stub now behaves like host/recent.js does: it reads the cache, and
+  // writes to it on a miss. The assertion is then about CACHING rather than
+  // about argument identity, and it fails if the cache is not honoured.
   const seen = [];
-  const read = (opts) => { seen.push(opts); return []; };
+  let reads = 0;
+  const read = (opts) => {
+    seen.push(opts);
+    const key = 'transcript|1|2';
+    if (opts.cache && opts.cache[key]) return opts.cache[key];
+    reads++;                                  // a MISS: the expensive path
+    const rows = [{ path: 'C:/a', name: 'a' }];
+    if (opts.cache) opts.cache[key] = rows;
+    return rows;
+  };
   const reader = createProjectsReader({ read });
 
-  reader();
-  reader();
-  assert.strictEqual(seen.length, 2);
-  assert.ok(seen[0].cache, 'a cache must be passed at all');
-  assert.strictEqual(seen[0].cache, seen[1].cache, 'and it must be the SAME cache both times');
+  const first = reader();
+  const second = reader();
+  assert.strictEqual(seen.length, 2, 'both calls reach the reader');
+  assert.strictEqual(reads, 1, 'the SECOND call must be served from the cache, not re-read');
+  assert.deepStrictEqual(second, first, 'and must return the same rows');
+  assert.strictEqual(seen[0].cache, seen[1].cache, 'one cache, held across calls');
   assert.strictEqual(seen[0].limit, PICKER_LIMIT, 'reading more rows than are drawn is wasted work');
+
+  // The cache must be a PLAIN OBJECT, not a Map. host/recent.js indexes it with
+  // bracket syntax (`cache[key]`), and a Map accepts expando properties -- so a
+  // Map works while `map.size` stays 0 and `map.get(key)` is undefined. It
+  // functions entirely by accident, and the day someone tidies recent.js to
+  // .get()/.set() every lookup becomes a miss, silently restoring a 3.9s
+  // SYNCHRONOUS stall on the event loop that owes the hook helper 80ms.
+  assert.strictEqual(seen[0].cache instanceof Map, false,
+    'a Map here works only by accident; the two modules must agree on the type');
 });

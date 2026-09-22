@@ -23,7 +23,22 @@ const { readIdentity } = require('../host/host-identity');
 // CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone who names a
 // port means that port, and quietly moving them to another one would be the
 // same class of silent substitution this whole change removes.
-const EXPLICIT_PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || null;
+// PARSED STRICTLY. Dexter F10: `Number(x) || null` turns CLAUDE_CUSTOM_PORT=7742x
+// into NaN into null, and the port is then DERIVED with no message -- which is
+// the silent substitution the comment above says this whole change removes.
+// `=0` was swallowed the same way and `=0x1e1a` was accepted as 7706.
+function explicitPort() {
+  const raw = process.env.CLAUDE_CUSTOM_PORT;
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(`[main] CLAUDE_CUSTOM_PORT is not a port: ${JSON.stringify(raw)}`);
+    console.error('[main] refusing to guess -- unset it to derive the port from the project');
+    return { bad: raw };
+  }
+  return n;
+}
+const EXPLICIT_PORT = explicitPort();
 let PORT = null;
 
 // One secret, handed to both children. Main spawns the host AND owns the
@@ -86,6 +101,7 @@ async function occupantAt(port) {
 
 // Returns { port, action } or null when the user named a port we must not take.
 async function chooseHostPort() {
+  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
   if (EXPLICIT_PORT) {
     const decision = decideAttach({
       requestedCwd: PROJECT_CWD,

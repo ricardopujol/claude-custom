@@ -55,3 +55,27 @@ test('a real token count IS shown', () => {
   const { rows } = projectsDisplay({ ok: true, projects: [p({ tokens: 1234567 })] });
   assert.match(rows[0].detail, /1\.2M|1234567|1,234,567/);
 });
+
+test('an APPROXIMATE row is not offered as a destination, because it cannot open', () => {
+  // Dexter, PR #31 Finding 6. When a project's transcripts yield no cwd (all
+  // reads fail, or the only .jsonl is empty), recent.js falls back to the
+  // ~/.claude/projects FOLDER NAME and marks the row approximate. That name is
+  // not a path -- it is a lossy encoding, `C--Users-ricar-VibeCode-thing` --
+  // and it went straight into data-open, so clicking it sent
+  // {type:'open', path:'C--Users-…'}, which the host resolved against the
+  // CURRENT project and reported as "no such folder:
+  // C:\<current project>\C--Users-…", a path that has never existed anywhere.
+  //
+  // The row was also labelled as if it were real: named after the last
+  // dash-segment, with a tooltip saying "approximate -- recovered from the
+  // folder name", while `path` was not a recovered path at all.
+  const { rows } = projectsDisplay({ ok: true, projects: [p({ approximate: true })] });
+  assert.strictEqual(rows[0].openable, false,
+    'a row whose path is a guess must not be clickable');
+  assert.strictEqual(rows[0].approximate, true, 'but it must still be shown, and marked');
+});
+
+test('a known row is still openable', () => {
+  const { rows } = projectsDisplay({ ok: true, projects: [p({ approximate: false })] });
+  assert.strictEqual(rows[0].openable, true);
+});

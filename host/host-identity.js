@@ -44,10 +44,38 @@ function defaultIsAlive(pid) {
   }
 }
 
+/**
+ * WRITE-AND-RENAME, like host/store.js next door.
+ *
+ * Dexter, PR #31 Finding 7: this was a bare `fs.writeFileSync`, which
+ * truncates and then writes. A reader landing between those two gets a parse
+ * error, which this module reports as ABSENT -- and the caller's response to
+ * absence is not to wait, it is to step past the live host and spawn a
+ * DUPLICATE session for a project that already has one. Absence is honest
+ * about what we know; it is not harmless when that is what it causes.
+ *
+ * store.js has done this since it was written, with a comment citing this
+ * project's own zeroed-PNG incident, and CLAUDE.md names the trap outright:
+ * "Never open a file with 'w' before you are sure the write succeeds." This
+ * was the one file in the feature that skipped it.
+ *
+ * mode 0o600 matches the token files beside it. It is near-inert on Windows --
+ * Node honours only the read-only bit -- so the real protection is the ACL
+ * .harness/ inherits, and this documents intent rather than carrying weight.
+ */
 function writeIdentity({ dir, port, cwd, pid = process.pid } = {}) {
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ port, cwd, pid, startedAt: Date.now() }), 'utf8');
+  const tmp = `${file}.tmp${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ port, cwd, pid, startedAt: Date.now() }),
+      { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    // Best effort, and it can fail for the same reason the write did.
+    try { fs.unlinkSync(tmp); } catch { /* nothing more to do */ }
+    throw err;
+  }
   return file;
 }
 
@@ -60,7 +88,11 @@ function readIdentity({ dir, port, isAlive = defaultIsAlive } = {}) {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   if (typeof parsed.cwd !== 'string' || !parsed.cwd.trim()) return null;
-  if (!Number.isInteger(parsed.pid)) return null;
+  // `> 0`, not merely an integer. Dexter, Finding 9: Number.isInteger admits 0
+  // and negatives, and on POSIX `process.kill(-1, 0)` targets every process the
+  // caller may signal and SUCCEEDS -- so a file claiming pid -1 reads as alive
+  // and gets trusted for an attach decision.
+  if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return null;
   // The filename says one port and the contents another: something moved this
   // file, so nothing in it is worth trusting.
   if (Number(parsed.port) !== Number(port)) return null;

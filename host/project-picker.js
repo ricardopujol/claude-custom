@@ -70,7 +70,19 @@ function pickerPayload({ recents, current } = {}) {
  * two seconds is a different order of it.
  */
 function createProjectsReader({ read = listRecentProjects } = {}) {
-  const cache = new Map();
+  // A PLAIN OBJECT, not a Map. host/recent.js indexes this with bracket syntax
+  // (`cache[key]`), and a Map instance happily accepts expando properties -- so
+  // the Map this used to be worked while `map.size` stayed 0 and
+  // `map.get(key)` returned undefined. Nothing was ever IN the Map. It measured
+  // correctly and was correct by accident (Miguel, Dexter F13), and the day
+  // someone tidied recent.js to .get()/.set() every lookup would have become a
+  // miss -- silently restoring a 3.9s SYNCHRONOUS stall on the event loop that
+  // owes the hook helper a connection inside 80ms, with no test failing.
+  //
+  // Object.create(null) rather than {}: the keys are file paths, and a path
+  // named `__proto__` or `constructor` must be a cache entry, not a collision
+  // with Object.prototype.
+  const cache = Object.create(null);
   return () => read({ cache, limit: PICKER_LIMIT });
 }
 
