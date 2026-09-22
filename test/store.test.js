@@ -177,3 +177,79 @@ test('read and readState cannot drift: read returns the fallback for every non-o
   s.write('cooldowns', { real: 1 });
   assert.deepStrictEqual(s.read('cooldowns', sentinel), { real: 1 }, 'ok');
 });
+
+// --- the traversal guard, pinned at the anchor --------------------------------
+//
+// Mortimer, PR #29 mutation gate, R4. Severity: High.
+//
+// Dropping the `$` from /^[A-Za-z0-9_-]+$/ leaves the guard matching a PREFIX,
+// so `vault/../../secrets` is accepted and pathOf escapes the store directory
+// entirely. The existing traversal test uses only '../escape' and
+// '../../secrets' -- both start with a dot, which the character class rejects
+// anchored or not, so it proves the guard refuses names that are OBVIOUSLY bad
+// and says nothing about the anchor that makes it airtight.
+//
+// The same gap from the other side: mutating `!name || typeof name !== 'string'`
+// to `&&`, or the typeof test to `false`, lets a non-string through, because
+// `/.../.test(123)` coerces to "123" and matches.
+//
+// This is the second time this exact regex has been caught by mutation
+// testing in this repo -- PR #30 found the identical unanchored hole in the
+// same function. A guard that is right is not the same as a guard that is
+// held right.
+
+test('a name with a safe PREFIX and a traversal inside it is refused', () => {
+  const s = createStore({ dir: tmp() });
+  for (const bad of ['vault/../../secrets', 'vault/../escape', 'vault\..\escape',
+                     'vault.json', 'vault/sub', 'a b', 'vault\u0000x']) {
+    assert.throws(() => s.readState(bad), /name/i, `${JSON.stringify(bad)} must be refused`);
+    assert.throws(() => s.write(bad, {}), /name/i, `${JSON.stringify(bad)} must be refused`);
+  }
+});
+
+test('a name that is not a string at all is refused, not coerced', () => {
+  const s = createStore({ dir: tmp() });
+  for (const bad of [123, {}, [], null, undefined, true]) {
+    assert.throws(() => s.readState(bad), /name/i, `${JSON.stringify(bad)} must be refused`);
+  }
+});
+
+test('createStore without a dir says so, rather than failing later in path.join', () => {
+  // Mortimer: `if (!dir)` mutated away never throws, and the mistake then
+  // surfaces deep inside path.join with a message that names the syntax
+  // instead of the error.
+  assert.throws(() => createStore({}), /dir/i);
+  assert.throws(() => createStore({ dir: '' }), /dir/i);
+});
+
+// --- withLock, executed directly ---------------------------------------------
+//
+// Mortimer R3, store half. Deleting this function's entire body left 812 tests
+// green, because no test in the suite wired a real store to the vault. These
+// three are the direct coverage; test/bugvault.test.js closes the seam.
+
+test('withLock runs the work holding a real lock file, and releases it', () => {
+  const dir = tmp();
+  const s = createStore({ dir });
+  let heldDuring = null;
+  const got = s.withLock('vault', () => {
+    heldDuring = fs.existsSync(path.join(dir, 'vault.json.lock'));
+    return 'value';
+  });
+  assert.strictEqual(got, 'value', 'the work must run and its value come back');
+  assert.strictEqual(heldDuring, true, 'the lock must exist WHILE the work runs');
+  assert.strictEqual(fs.existsSync(path.join(dir, 'vault.json.lock')), false, 'and be gone after');
+});
+
+test('withLock refuses a traversing name before touching disk', () => {
+  assert.throws(() => createStore({ dir: tmp() }).withLock('../escape', () => {}), /name/i);
+});
+
+test('withLock creates the store directory, so the first ever write can take a lock', () => {
+  // The lock lives beside the file, and on a first run neither exists yet.
+  const dir = path.join(tmp(), 'not', 'yet');
+  let ran = false;
+  createStore({ dir }).withLock('vault', () => { ran = true; });
+  assert.strictEqual(ran, true);
+  assert.strictEqual(fs.existsSync(dir), true);
+});

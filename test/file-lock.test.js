@@ -144,7 +144,7 @@ test('an unusable pid is never PROBED -- and is not assumed dead either', () => 
   // an unusable pid meant "stale", which let a fresh lock be broken instantly:
   // `openSync(path, 'wx')` creates the file EMPTY and writes the pid a moment
   // later, so a competitor reading in that window sees no pid at all. With
-  // this test green, test/bugvault-concurrent.test.js measured 2 of 120
+  // this test green, verify/probe-vault-concurrency.js measured 2 of 120
   // records lost WITH the lock in place. "Cannot prove it is dead" is not
   // "assume it is dead".
   for (const pid of [0, -1, -12345, 1.5, NaN, null, undefined, 'x']) {

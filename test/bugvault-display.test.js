@@ -10,7 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { bugVaultDisplay, formatBugRow, UNKNOWN } = require('../app/bugvault-display');
+const { bugVaultDisplay, formatBugRow, STATES, UNKNOWN } = require('../app/bugvault-display');
 
 const bug = (over = {}) => ({
   id: 'bug_1', category: 'silent failure', summary: 'exit 0 masked a failure',
@@ -215,48 +215,50 @@ test('a payload that has not arrived is still "reading", not "unreadable"', () =
 });
 
 test('every state this module can return is handled in renderer.js', () => {
-  // THE DRIFT THIS PR ALMOST SHIPPED. Adding `unreadable` to the display
-  // module without a matching branch in renderer.js would have fallen through
-  // to the `ready` path and drawn "0 bug classes recorded -- 0 open, 0 fixed"
-  // over a damaged vault: the absence-as-zero bug, reintroduced by the fix FOR
-  // the absence-as-zero bug, with every unit test in this file still green
-  // because none of them render anything.
+  // THE DRIFT THIS PREVENTS. Adding a state to the display module without a
+  // matching branch in renderer.js draws a healthy count over a broken vault,
+  // with every unit test in this file still green because none of them render.
   //
-  // Same instrument as test/control.test.js's allow-list scan and store.js's
-  // header check: a cross-file claim asserted against source rather than
-  // trusted. It reads the states out of THIS module rather than listing them,
-  // so a fifth state is covered the day it is added.
+  // REWRITTEN after Mortimer, PR #29 mutation gate. The first version regexed
+  // THIS MODULE'S SOURCE TEXT for `state: '...'` -- asserting the spelling of
+  // the source rather than a property of the code. It could not survive
+  // Stryker's instrumentation (it failed on the UNMUTATED baseline and had to
+  // be skipped by name, costing two full runs), and it would equally not
+  // survive minification, a formatter switching to double quotes, or a state
+  // name moving into a constant. The states are exported as data now, so this
+  // reads a fact instead of scraping a file.
+  //
+  // Its one good property is kept: it fails loudly if the vocabulary comes
+  // back empty, rather than passing vacuously over nothing.
   const fs = require('fs');
   const path = require('path');
-  const APP = path.join(__dirname, '..', 'app');
-  const mod = fs.readFileSync(path.join(APP, 'bugvault-display.js'), 'utf8');
-  const renderer = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const all = Object.values(STATES);
+  assert.ok(all.length >= 4, `the state vocabulary must be populated; got ${JSON.stringify(all)}`);
 
-  const states = [...mod.matchAll(/state:\s*'([a-z]+)'/g)].map(m => m[1]);
-  const ternary = [...mod.matchAll(/state:\s*[^,]*\?\s*'([a-z]+)'\s*:\s*'([a-z]+)'/g)]
-    .flatMap(m => [m[1], m[2]]);
-  const all = [...new Set([...states, ...ternary])];
-  assert.ok(all.length >= 4, `the scan must find the states; found ${JSON.stringify(all)}`);
-
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
   const render = renderer.slice(renderer.indexOf('function renderBugVault'));
-  const body = render.slice(0, render.indexOf('\n}\n') + 1);
+  const NL = String.fromCharCode(10);
+  const body = render.slice(0, render.indexOf(NL + '}' + NL) + 1);
   const unhandled = all.filter(st => !body.includes(`'${st}'`));
   assert.deepStrictEqual(unhandled, [],
     `renderBugVault does not mention these states the display module can return: ${unhandled.join(', ')}`);
 });
 
-// --- the grouping the panel computed and never drew --------------------------
-//
-// The PR is titled "recurring defect classes, grouped by category and
-// detection method". Detection was rendered; CATEGORY never was. `groups` is
-// computed on the host by groupByCategory, shipped over the wire in
-// `summary.byCategory`, passed through this module, unit-tested on both sides
-// -- and referenced nowhere in renderer.js.
-//
-// Everything about it worked except being on screen, which is the one part
-// no unit test was in a position to notice. Stripping it would have meant
-// deleting a working, tested function to match an accidental omission: fitting
-// the spec to the bug. It is drawn instead.
+test('bugVaultDisplay only ever returns a state from the declared vocabulary', () => {
+  // The other direction, and what makes the check above meaningful: a state
+  // returned but never declared would be handled by neither.
+  const all = Object.values(STATES);
+  const payloads = [
+    undefined, null, {}, { bugs: 'nonsense' },
+    { bugs: [], summary: {} },
+    { bugs: [], summary: { error: 'boom' } },
+    { bugs: [{ category: 'a', summary: 'b' }], summary: {} },
+  ];
+  for (const p of payloads) {
+    const st = bugVaultDisplay(p).state;
+    assert.ok(all.includes(st), `${JSON.stringify(p)} produced undeclared state ${st}`);
+  }
+});
 
 test('the category groups reach the panel in the order the host ranked them', () => {
   // That ordering IS the feature -- "six found by measurement, none by
@@ -297,4 +299,79 @@ test('the element the groups are drawn into exists in renderer.html', () => {
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
   assert.match(html, /id="bugvault-groups"/);
+});
+
+// --- Mortimer, PR #29 mutation gate: the display survivors --------------------
+
+test('the not-yet-read state shows NOTHING, not three arrays of junk', () => {
+  // D1. The existing state test asserted only `Array.isArray(...)`, so the
+  // unknown state could hand the renderer arbitrary content and pass. The
+  // entire point of this state is that it shows nothing while it is unknown.
+  const d = bugVaultDisplay(undefined);
+  assert.deepStrictEqual([d.rows, d.groups, d.detection], [[], [], []]);
+  assert.strictEqual(d.total, 0);
+  assert.strictEqual(d.fixed, 0);
+  assert.strictEqual(d.unfixed, 0);
+  assert.strictEqual(d.error, null);
+});
+
+test('a malformed byDetection is an empty list, like a malformed byCategory', () => {
+  // D2. The symmetric guard was covered on one side only.
+  assert.deepStrictEqual(bugVaultDisplay({ bugs: [], summary: { byDetection: 'nonsense' } }).detection, []);
+  assert.deepStrictEqual(bugVaultDisplay({ bugs: [], summary: { byDetection: 42 } }).detection, []);
+});
+
+test('malformed ELEMENTS inside byCategory are dropped, not rendered or thrown on', () => {
+  // D3. The guard tests passed a malformed CONTAINER; nothing passed a
+  // malformed ELEMENT, so the `g && typeof g === 'object'` filter could be
+  // removed wholesale. With it gone a null group throws at num(g.total) and
+  // blanks the whole panel.
+  const d = bugVaultDisplay({ bugs: [], summary: { byCategory:
+    [null, 'x', 42, undefined, { category: 'real', total: 1, fixed: 0, unfixed: 1 }] } });
+  assert.strictEqual(d.groups.length, 1);
+  assert.strictEqual(d.groups[0].category, 'real');
+});
+
+test('a grouping where nothing has a usable total draws no bar, never a NaN width', () => {
+  // D4. `widest > 0` mutated to `>=` computes Math.round((0/0) * 100) = NaN,
+  // and the renderer emits `width: NaN%`. The existing test always included
+  // one group with a real total, so `widest` was never 0 -- the absence-as-zero
+  // trap's cousin, inside the function written to avoid it.
+  const d = bugVaultDisplay({ bugs: [], summary: { byCategory: [
+    { category: 'a', total: null, fixed: null, unfixed: null },
+    { category: 'b', total: undefined, fixed: 0, unfixed: 0 },
+  ] } });
+  assert.strictEqual(d.groups[0].bar, 0);
+  assert.ok(Number.isFinite(d.groups[0].bar), 'a width must always be a real number');
+});
+
+test('the open-count label is PRESENT when a class has open bugs', () => {
+  // D5. Only the absent case was tested, so forcing the label to null always
+  // made it vanish from every group with nothing noticing. Half a two-sided
+  // rule is not a rule.
+  const d = bugVaultDisplay({ bugs: [], summary: { byCategory: [
+    { category: 'a', total: 5, fixed: 3, unfixed: 2 },
+  ] } });
+  assert.strictEqual(d.groups[0].openLabel, '2 open');
+});
+
+test('a whitespace-only field renders as the dash, not as blank space', () => {
+  // D6. The placeholder test passed `null` only. Dropping `.trim()` leaves
+  // '   ' truthy, so a recorded-but-empty field renders as blank -- exactly
+  // the "a blank cell and a recorded-but-empty cell must not look alike" rule
+  // stated in the function's own comment, and tested nowhere.
+  const row = formatBugRow({ category: '   ', whereFound: '  ', detectedBy: '\t', survived: '\n' });
+  assert.strictEqual(row.category, UNKNOWN);
+  assert.strictEqual(row.whereFound, UNKNOWN);
+  assert.strictEqual(row.detectedBy, UNKNOWN);
+  assert.strictEqual(row.survived, UNKNOWN);
+});
+
+test('a record with no id reports null, not undefined', () => {
+  // The tolerance test asserted only `doesNotThrow`, so the id could become
+  // undefined -- which reaches the DOM as the string "undefined" in a
+  // data-id attribute and makes the toggle button address a row that is not
+  // there.
+  assert.strictEqual(formatBugRow({}).id, null);
+  assert.strictEqual(formatBugRow({ id: 42 }).id, null);
 });

@@ -245,7 +245,7 @@ function createBugVault({ store, now = Date.now, project = null } = {}) {
       // established that this module's API must be total, because the attach
       // handshake calls it from a place with no catch above it -- and a
       // throwing lock would have walked straight back through that hole. Found
-      // by test/bugvault-concurrent.test.js, where children under load
+      // by verify/probe-vault-concurrency.js, where children under load
       // exceeded the lock deadline and died instead of reporting a failure.
       return { ok: false, error: `could not write the vault: ${err && err.message}` };
     }

@@ -33,13 +33,32 @@
 
 const UNKNOWN = '—';   // em dash — same glyph and meaning as usage-display.js's
 
+/**
+ * Every state this module can return, as DATA rather than as four string
+ * literals scattered through a function.
+ *
+ * Mortimer, PR #29 mutation gate. The test that checks renderer.js handles
+ * them all used to regex the source text of this file for `state: '...'`,
+ * which asserts the SPELLING of the source rather than a property of the
+ * code -- it could not survive instrumentation (it failed on the unmutated
+ * baseline under Stryker and had to be skipped by name), nor minification,
+ * nor a formatter switching to double quotes, nor moving a name into a
+ * constant. Exported, the same check becomes a fact about the module.
+ */
+const STATES = Object.freeze({
+  READING: 'reading',       // nothing has arrived yet; it will resolve on its own
+  UNREADABLE: 'unreadable', // the vault is on disk and could not be read; needs a person
+  EMPTY: 'empty',           // a real, readable, empty vault
+  READY: 'ready',           // records to draw
+});
+
 function bugVaultDisplay(payload) {
   const bugs = payload && Array.isArray(payload.bugs) ? payload.bugs : null;
 
   if (!bugs) {
     // Either no message has arrived yet, or the host sent something that is
     // not a bug list at all. Both are "we do not know", not "there are none".
-    return { state: 'reading', total: 0, fixed: 0, unfixed: 0, rows: [], groups: [], detection: [], error: null };
+    return { state: STATES.READING, total: 0, fixed: 0, unfixed: 0, rows: [], groups: [], detection: [], error: null };
   }
 
   const summary = (payload && payload.summary) || {};
@@ -52,7 +71,7 @@ function bugVaultDisplay(payload) {
   // person to go and look at the file.
   if (summary.error) {
     return {
-      state: 'unreadable', total: 0, fixed: 0, unfixed: 0,
+      state: STATES.UNREADABLE, total: 0, fixed: 0, unfixed: 0,
       rows: [], groups: [], detection: [], error: summary.error,
     };
   }
@@ -71,7 +90,7 @@ function bugVaultDisplay(payload) {
     .map(formatBugRow);
 
   return {
-    state: bugs.length === 0 ? 'empty' : 'ready',
+    state: bugs.length === 0 ? STATES.EMPTY : STATES.READY,
     total: bugs.length,
     fixed: fixedCount,
     unfixed: unfixedCount,
@@ -148,7 +167,7 @@ function formatBugRow(bug) {
 // renderer, which has no module system at all. Same shape as
 // app/usage-display.js and the other display modules.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { bugVaultDisplay, formatBugRow, formatGroups, UNKNOWN };
+  module.exports = { bugVaultDisplay, formatBugRow, formatGroups, STATES, UNKNOWN };
 } else {
   root.bugVaultDisplay = bugVaultDisplay;
   root.formatBugRow = formatBugRow;

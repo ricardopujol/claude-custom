@@ -116,6 +116,13 @@ test('every renderer script loads into ONE shared scope without colliding', () =
   }
 });
 
+// NOTE FOR MUTATION RUNS: this test cannot pass under StrykerJS. Its
+// instrumentation adds stryNS_*/stryCov_*/stryMutAct_*/__stryker__ to the vm
+// context and the allow-list correctly refuses them, so it fails on the
+// UNMUTATED baseline and aborts the dry run. Deselect it by name; it kills no
+// mutant, because what it asserts is a property of the FILES rather than of
+// any expression a mutator can reach. CLAUDE.md records the same shape for
+// mutmut: a test whose subject is the repository, not a function.
 test('no renderer script leaks a global outside the allow-list', () => {
   const ctx = makeContext();
   const before = new Set(Object.getOwnPropertyNames(ctx));
@@ -137,7 +144,20 @@ test('the display modules the renderer needs are actually defined after loading'
     if (file === 'renderer.js') continue;
     vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
   }
-  for (const fn of ['usageDisplay']) {
+  // Mortimer, PR #29 mutation gate, D7: emptying the `else { root.X = ... }`
+  // branch in app/bugvault-display.js left every test green, with
+  // `window.bugVaultDisplay` never published -- the panel dead on arrival in
+  // the real renderer. That is the failure this repo has already paid for
+  // TWICE (career-display.js, quota-display.js) and that this very file exists
+  // to prevent; it did not prevent it here, because the list below named only
+  // `usageDisplay`, and the export check further down skips names reached
+  // through `window.` rather than as bare globals.
+  //
+  // Node's coverage confirmed it independently: app/bugvault-display.js lines
+  // 153-155 never executed.
+  //
+  // ANY module the renderer draws a panel from belongs on this list.
+  for (const fn of ['usageDisplay', 'bugVaultDisplay']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });

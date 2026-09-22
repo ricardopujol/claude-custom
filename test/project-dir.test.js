@@ -63,6 +63,12 @@ test('the result contains only characters Claude Code actually uses', () => {
   assert.ok(/^[A-Za-z0-9-]+$/.test(encoded), encoded);
 });
 
+// NOTE FOR MUTATION RUNS: this test asserts about the real filesystem, so it
+// fails inside any sandboxed copy of the tree -- StrykerJS's .stryker-tmp, and
+// mutmut's mutants/ for the same reason. It aborts the dry run and must be
+// deselected by name. It kills no mutant: its subject is this machine, not a
+// function. CLAUDE.md records this exact failure shape costing two full runs
+// on another project; it cost two here before Mortimer identified it.
 test('AGREES WITH THE REAL DIRECTORIES ON THIS MACHINE', () => {
   // The check that matters: every folder Claude Code has actually created must
   // be reproducible from some path. A unit test against my own assumption is

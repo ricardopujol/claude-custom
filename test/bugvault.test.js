@@ -8,6 +8,11 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const { createStore } = require('../host/store');
 
 const {
   createRecord, groupByCategory, detectionBreakdown, createBugVault, applyVaultAction, SEED_BUGS,
@@ -447,6 +452,15 @@ test('an unreadable vault reports the failure instead of reporting zero bugs', (
   const s = v.summary();
   assert.ok(s.error, 'the summary must carry the failure');
   assert.match(s.error, /corrupt/i);
+
+  // Mortimer R6: the error was asserted and the PAYLOAD beside it was not, so
+  // the panel could show fabricated bugs next to the warning. That is this
+  // module's own absence-as-zero rule inverted -- presence reported where
+  // there is none.
+  assert.deepStrictEqual(v.list(), []);
+  assert.strictEqual(s.total, 0);
+  assert.deepStrictEqual(s.byCategory, []);
+  assert.deepStrictEqual(s.byDetection, []);
 });
 
 test('adding to an unreadable vault is refused, not written over the damaged file', () => {
@@ -466,17 +480,38 @@ test('marking a bug fixed in an unreadable vault is refused too', () => {
   const r = v.setFixed('any-id', true);
   assert.strictEqual(r.ok, false);
   assert.deepStrictEqual(store.writes, []);
+
+  // Mortimer R11: dropping the `data.error` guard still refuses and still
+  // writes nothing -- a corrupt load yields an empty list, so nothing matches
+  // and it falls through to "no bug with id". Both old assertions held. What
+  // changed was only the REASON: the user is told the row is stale and invited
+  // to retry, instead of being sent to look at a damaged file. This is not the
+  // wording class; the CATEGORY of a refusal is the rule.
+  assert.match(r.error, /corrupt|untouched/i,
+    'it must refuse because the vault is unreadable, not because the id is unknown');
 });
 
 test('a file that parsed but is not a vault is left alone as well', () => {
   // `{"foo":1}` is valid JSON and is not a vault. It is still SOMEBODY'S file,
   // and "ok but the wrong shape" is not "nothing is there".
+  //
+  // Mortimer R5: this used to assert ONLY that nothing was written, so load()
+  // could return `{ bugs: undefined }` or a list of phantom records and still
+  // pass. Refusing to destroy the file is half the rule; reporting the right
+  // reason is the other half, and only the first half was tested. With the
+  // mutant, list() returned undefined and summary() threw on bugs.length --
+  // surfacing to the user as "Cannot read properties of undefined" instead of
+  // "the vault parsed but holds no bug list".
   const store = memStore({ foo: 1 });
   let written = null;
   const wrapped = { ...store, write: (n, v) => { written = v; return store.write(n, v); } };
   const v = createBugVault({ store: wrapped, now: () => 1 });
-  v.list();
+
+  assert.deepStrictEqual(v.list(), [], 'no phantom records from a file that is not a vault');
   assert.strictEqual(written, null, 'a parsed-but-wrong-shape file must not be seeded over');
+  const s = v.summary();
+  assert.match(s.error, /no bug list/i, 'the reason must be accurate, not generic');
+  assert.strictEqual(s.total, 0);
 });
 
 test('a genuinely absent vault IS still seeded -- the feature has to work', () => {
@@ -552,6 +587,11 @@ test('payload() survives a store that throws on READ as well as on write', () =>
   assert.doesNotThrow(() => { p = v.payload(); });
   assert.deepStrictEqual(p.bugs, []);
   assert.ok(p.summary.error, 'the failure must be reported, not swallowed into an empty vault');
+  // Mortimer R12: the shape beside the error was unasserted, so the failure
+  // payload could carry fabricated groups into the panel.
+  assert.strictEqual(p.summary.total, 0);
+  assert.deepStrictEqual(p.summary.byCategory, []);
+  assert.deepStrictEqual(p.summary.byDetection, []);
 });
 
 test('payload() carries the real vault when everything is working', () => {
@@ -660,4 +700,192 @@ test('marking a bug fixed does not rewrite where it came from', () => {
   const id = v.add({ category: 'a', summary: 'x' }).record.id;
   const v2 = createBugVault({ store, now: () => 1, project: 'B' });
   assert.strictEqual(v2.setFixed(id, true).record.project, 'A');
+});
+
+// --- the seam between the two modules ----------------------------------------
+//
+// Mortimer, PR #29 mutation gate, R3. Severity: Critical, and the one finding
+// he said he would not merge without.
+//
+// Every test above builds the vault on an in-memory double, and those doubles
+// have no `withLock` -- so `locked()` has run UNLOCKED in every single test in
+// this file. Every test in test/file-lock.test.js exercises the lock with no
+// vault attached. `store.withLock`, which is the entire F3B mechanism, was
+// executed by nothing: deleting its whole body left 812 tests passing, and
+// node's own coverage confirmed host/store.js:144-147 never ran.
+//
+// He found it by grepping: `createStore` appeared only in store.test.js,
+// `createBugVault` only here, and no test file mentioned both. Two modules
+// each tested carefully on their own, and the join between them tested by
+// nothing -- which is exactly where the only thing that matters lives.
+//
+// `STORE_KEY = 'vault' -> ""` surviving is the same root cause from the other
+// side: every double ignores the name it is given, so nothing noticed that the
+// vault would address the wrong file.
+
+const realDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vault-'));
+
+test('the vault round-trips through a REAL store, under the real lock', () => {
+  const dir = realDir();
+  const v = createBugVault({ store: createStore({ dir }), now: () => 1 });
+  assert.strictEqual(v.list().length, SEED_BUGS.length, 'seeded on first read');
+  assert.strictEqual(v.add({ category: 'a', summary: 'x' }).ok, true);
+
+  // By that NAME. A mutated STORE_KEY writes somewhere else and no double
+  // would ever notice.
+  assert.ok(fs.existsSync(path.join(dir, 'vault.json')), 'it must write vault.json');
+
+  const reopened = createBugVault({ store: createStore({ dir }), now: () => 1 });
+  assert.strictEqual(reopened.list().length, SEED_BUGS.length + 1,
+    'and the record must survive a new store, as it would a new process');
+  assert.ok(reopened.list().some(b => b.summary === 'x'));
+});
+
+test('a real vault leaves no lock file behind', () => {
+  // A leaked lock is a vault that refuses every write for the whole stale
+  // window, which reads to the user as the feature being broken.
+  const dir = realDir();
+  const v = createBugVault({ store: createStore({ dir }), now: () => 1 });
+  v.add({ category: 'a', summary: 'x' });
+  v.setFixed(v.list().find(b => b.summary === 'x').id, true);
+  assert.deepStrictEqual(fs.readdirSync(dir).filter(f => f.endsWith('.lock')), []);
+});
+
+test('marking fixed through a real store survives a reopen', () => {
+  const dir = realDir();
+  const v = createBugVault({ store: createStore({ dir }), now: () => 1000 });
+  const id = v.add({ category: 'a', summary: 'x' }).record.id;
+  assert.strictEqual(v.setFixed(id, true).ok, true);
+  const reopened = createBugVault({ store: createStore({ dir }), now: () => 1000 });
+  const row = reopened.list().find(b => b.id === id);
+  assert.strictEqual(row.fixed, true);
+  assert.ok(row.fixedAt, 'the recorded date must be on disk, not only in memory');
+});
+
+// --- the seed data, pinned to a literal --------------------------------------
+//
+// Mortimer R2. Severity: Critical (vacuous pass). `SEED_BUGS = []` and three
+// tests stayed green: the seeding test asserted `list().length ===
+// SEED_BUGS.length` (0 === 0), and two more looped over an empty array. Each
+// imported the very constant it was checking, so both sides moved together --
+// the tautological-constant trap.
+//
+// This is the feature's entire day-one content, and, per the scope decision
+// recorded on this branch, the evidence that settles whether the vault is
+// per-project or install-wide. It was pinned by nothing.
+
+test('the vault ships the earned seed history, not an empty list', () => {
+  // A LITERAL floor. It cannot move when the data moves, which is the whole
+  // point -- the number is allowed to grow, never to vanish.
+  assert.ok(SEED_BUGS.length >= 6, `expected the earned seeds, got ${SEED_BUGS.length}`);
+
+  const v = createBugVault({ store: memStore(undefined), now: () => 1 });
+  const bugs = v.list();
+  assert.ok(bugs.length >= 6);
+  assert.ok(bugs.every(b => b.category && b.summary), 'every seed must be a real record');
+
+  // Recorded as FIXED. Four mutants flipped these to false and nothing
+  // noticed: this is history that was already dealt with, and a vault opening
+  // with six phantom OPEN bugs would misreport the project on day one.
+  assert.ok(SEED_BUGS.every(s => s.fixed === true), 'the seeds are history, and history is fixed');
+  assert.ok(bugs.every(b => b.fixed === true));
+});
+
+// --- detection breakdown: the phantom bucket and the ordering ----------------
+//
+// Mortimer R7/R8. Both invisible to the existing tests because they all use
+// `rows.find(...)`, and a lookup cannot see an extra row or a wrong position.
+
+test('a vault where every bug has a method gets NO "not recorded" row', () => {
+  // R7. `if (unknown)` mutated to `true` always pushes the bucket, so every
+  // vault gains a `{ detectedBy: null, count: 0 }` row -- which the display
+  // renders as a "not recorded" line reading 0, on a vault where nothing is
+  // unrecorded. The absence/zero distinction this feature is built around,
+  // inverted: a zero drawn where there is nothing to draw.
+  assert.deepStrictEqual(
+    detectionBreakdown([{ detectedBy: 'measurement' }, { detectedBy: 'measurement' }]),
+    [{ detectedBy: 'measurement', count: 2 }]);
+});
+
+test('the unrecorded bucket is always LAST, however many there are', () => {
+  // R8. Emptying the `{ unknown++; continue; }` block lets the null key fall
+  // into the map instead of the counter. The COUNT still comes out right, so
+  // the existing test passes -- but the row is then sorted among the real
+  // methods, and `a.detectedBy.localeCompare` throws on the null key whenever
+  // two counts tie. The comment says "appended last"; nothing tested position.
+  const rows = detectionBreakdown([
+    { detectedBy: null }, { detectedBy: null }, { detectedBy: null },
+    { detectedBy: 'measurement' },
+  ]);
+  assert.strictEqual(rows[rows.length - 1].detectedBy, null);
+  assert.strictEqual(rows[0].detectedBy, 'measurement',
+    'a real method outranks the unknown bucket even with fewer bugs');
+});
+
+test('methods with equal counts sort alphabetically, not by insertion order', () => {
+  assert.deepStrictEqual(
+    detectionBreakdown([{ detectedBy: 'reading' }, { detectedBy: 'measurement' }])
+      .map(r => r.detectedBy), ['measurement', 'reading']);
+});
+
+test('detectionBreakdown tolerates a malformed list, like groupByCategory does', () => {
+  assert.deepStrictEqual(detectionBreakdown(null), []);
+  assert.deepStrictEqual(detectionBreakdown('nonsense'), []);
+});
+
+test('a non-string category is skipped rather than thrown on', () => {
+  // A truthy non-string reaches localeCompare and throws mid-render.
+  assert.deepStrictEqual(groupByCategory([{ category: 123 }, { category: {} }]), []);
+});
+
+// --- fields that were never asserted to survive the trip ---------------------
+
+test('every recorded field is trimmed and round-trips, including the two nobody checked', () => {
+  // Mortimer R9. createRecord could DROP `survived` and `wouldHaveCaught`
+  // entirely and every test passed. Note which two survived: `whereFound` and
+  // `detectedBy` are pinned by other tests, and precisely the two fields
+  // nothing asserted are the two that were free to vanish. "What would have
+  // caught it" is arguably the most valuable field in the feature.
+  const r = createRecord({
+    category: ' c ', summary: ' s ', whereFound: ' w ',
+    detectedBy: ' d ', survived: ' v ', wouldHaveCaught: ' g ',
+  });
+  assert.deepStrictEqual(
+    [r.record.category, r.record.summary, r.record.whereFound,
+     r.record.detectedBy, r.record.survived, r.record.wouldHaveCaught],
+    ['c', 's', 'w', 'd', 'v', 'g']);
+});
+
+test('a caller-supplied foundAt and fixedAt are honoured verbatim', () => {
+  // Mortimer R10. Every test let both default, so the override path -- the
+  // import and edit case -- was exercised by nothing.
+  const r = createRecord({
+    category: 'x', summary: 'y',
+    foundAt: '2020-01-01T00:00:00.000Z',
+    fixed: true, fixedAt: '2020-02-02T00:00:00.000Z',
+  }, { now: () => 999 });
+  assert.strictEqual(r.record.foundAt, '2020-01-01T00:00:00.000Z');
+  assert.strictEqual(r.record.fixedAt, '2020-02-02T00:00:00.000Z');
+});
+
+test('a blank foundAt falls back to now rather than being stored as blank', () => {
+  const r = createRecord({ category: 'x', summary: 'y', foundAt: '   ' }, { now: () => 0 });
+  assert.strictEqual(r.record.foundAt, new Date(0).toISOString());
+});
+
+test('ids sort in creation order, which is what the comment promises', () => {
+  // Mortimer: `seq++ -> seq--` keeps ids UNIQUE, so the uniqueness test passes
+  // while "sorts roughly by creation order" quietly stops being true.
+  const at = () => 1000;
+  const ids = [createRecord({ category: 'a', summary: '1' }, { now: at }).record.id,
+               createRecord({ category: 'a', summary: '2' }, { now: at }).record.id,
+               createRecord({ category: 'a', summary: '3' }, { now: at }).record.id];
+  assert.deepStrictEqual([...ids].sort(), ids, 'ids made at one instant must sort in creation order');
+});
+
+test('the seeded vault uses the injected clock, not the wall clock', () => {
+  // Mortimer: `createRecord(s, { now })` -> `createRecord(s, {})` and nothing
+  // noticed, so seed timestamps were untestable by construction.
+  const v = createBugVault({ store: memStore(undefined), now: () => 0 });
+  assert.ok(v.list().every(b => b.foundAt === new Date(0).toISOString()));
 });
