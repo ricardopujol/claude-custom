@@ -382,8 +382,18 @@ test('appending one line to a huge file costs EXACTLY one line plus two fingerpr
   await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, openFile });
   const coldBytes = drain(bytes);
   const fileSize = fs.statSync(f).size;
-  assert.ok(coldBytes >= fileSize,
-    `a cold read must read the whole file: ${coldBytes} of ${fileSize} bytes`);
+  // EXACT, not `>=`. Dexter, Finding G: `coldBytes >= fileSize` carries 64 bytes
+  // of slack it does not know it has -- a cold read that started at pos 64
+  // instead of 0 consumes fileSize-64 in the loop plus 64 in the fingerprint,
+  // totals exactly fileSize, and PASSES. The fingerprint read pays for the
+  // bytes that were skipped. Today only the totals assertion catches that,
+  // because the dropped first line has no id.
+  //
+  // The exact value is determined: on a cold cache `grown` is falsy so
+  // prefixIntact short-circuits and never reads, the loop consumes stat.size,
+  // and readFingerprint reads min(64, size).
+  assert.strictEqual(coldBytes, fileSize + FINGERPRINT_BYTES,
+    `a cold read must read the whole file exactly once: ${coldBytes} vs ${fileSize}`);
 
   const appended = line(U(3, 4));
   fs.appendFileSync(f, appended);
@@ -391,7 +401,17 @@ test('appending one line to a huge file costs EXACTLY one line plus two fingerpr
   const warmBytes = drain(bytes);
 
   assert.strictEqual(r.session.total, 20000 * 2 + 7);
-  assert.strictEqual(warmBytes, appended.length + 2 * FINGERPRINT_BYTES,
+  // Buffer.byteLength, NOT .length. Dexter, Finding H: `.length` is a count of
+  // UTF-16 units and this assertion's units are BYTES. It is correct today only
+  // because the fixture line happens to be ASCII -- and this very file already
+  // uses Buffer.byteLength at :152, in a test that exists precisely because a
+  // character offset and a byte offset are different numbers and confusing them
+  // corrupts the resume point. The file knew; the new measurement forgot.
+  //
+  // Put one emoji in the fixture and `.length` and the byte count diverge. As an
+  // EQUALITY this fails loudly rather than silently weakening, which is the only
+  // reason it is a Medium and not a High.
+  assert.strictEqual(warmBytes, Buffer.byteLength(appended) + 2 * FINGERPRINT_BYTES,
     `a resumed read must cost the appended line plus two fingerprint reads, not ${warmBytes}`);
 
   // A THIRD READ, because two cannot see the hazard Dexter found. A throw in
@@ -403,7 +423,7 @@ test('appending one line to a huge file costs EXACTLY one line plus two fingerpr
   const second = line(U(5, 6));
   fs.appendFileSync(f, second);
   const r3 = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, openFile });
-  assert.strictEqual(drain(bytes), second.length + 2 * FINGERPRINT_BYTES,
+  assert.strictEqual(drain(bytes), Buffer.byteLength(second) + 2 * FINGERPRINT_BYTES,
     'the second resumed read must be cheap too -- the fingerprint must persist');
   assert.strictEqual(r3.session.total, 20000 * 2 + 7 + 11);
 });
@@ -521,7 +541,8 @@ test('a genuine append still takes the fast path, so the guard is not just "alwa
   const warmBytes = drain(bytes);
 
   assert.strictEqual(r.session.total, 20000 * 2 + 7);
-  assert.strictEqual(warmBytes, appended.length + 2 * FINGERPRINT_BYTES,
+  // Buffer.byteLength, not .length -- see the twin above (Dexter, Finding H).
+  assert.strictEqual(warmBytes, Buffer.byteLength(appended) + 2 * FINGERPRINT_BYTES,
     `the fast path was lost: a resumed read cost ${warmBytes} bytes`);
 });
 

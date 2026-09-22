@@ -212,6 +212,17 @@ async function prefixIntact(fh, cached) {
  *   gone    vanished between the listing and the read, or is not a file. It
  *           contributes nothing, and that is the CORRECT total.
  *
+ * AMENDMENT, and it is spec drift introduced deliberately (Dexter, PR #32):
+ * `stale` above is described as "could not be OPENED" -- a lock, and the whole
+ * fresh/stale/absent design rests on that meaning, because a lock CLEARS. Since
+ * the read helpers now rethrow TypeError and ReferenceError instead of
+ * swallowing them, `stale` ALSO covers a programming error rethrown from a read
+ * helper. That does not clear: it lights `stale` on every tick, forever.
+ *
+ * Written down because the alternative is the next person reading a
+ * permanently-stale file as an antivirus lock and looking in the wrong place --
+ * which is exactly the hunt that produced this change.
+ *
  * The gone/absent split is the whole point, and stat() succeeding is exactly
  * the evidence that separates them: a lock cannot make a file disappear from
  * stat, and a deletion cannot be mistaken for one. Substituting for a vanished
