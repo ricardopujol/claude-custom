@@ -32,7 +32,11 @@ function assertSafeName(name) {
   }
 }
 
-function createStore({ dir }) {
+// `= {}` so that `createStore()` reaches the guard below and says what is
+// wrong, rather than dying on the destructure with "Cannot destructure
+// property 'dir' of 'undefined'" -- a message that names the syntax instead of
+// the mistake. Found by writing Mortimer's ST-C kill.
+function createStore({ dir } = {}) {
   if (!dir) throw new Error('createStore: dir is required');
 
   const pathOf = (name) => {

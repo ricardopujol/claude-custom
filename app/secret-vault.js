@@ -91,7 +91,14 @@ function createVault({ file, crypto, onWrite } = {}) {
   // `candidate` is REQUIRED, deliberately. Miguel: a default of `state` is the
   // dangerous one -- a future bare `persist()` would silently restore "write
   // whatever memory currently holds", which is the exact mental model F1
-  // removed. A missing argument should crash here, loudly, in a test.
+  // removed.
+  //
+  // This guard is UNREACHABLE through the public API and cannot be tested
+  // (Mortimer measured its mutant as equivalent for exactly that reason):
+  // `persist` is a closure with one caller, `commit`, which always passes a
+  // candidate. It is a tripwire for the next editor of this file, not a
+  // runtime check -- said plainly, because an earlier version of this comment
+  // asked for a test that cannot be written.
   function persist(candidate) {
     if (!candidate) throw new Error('persist: a candidate state is required');
     const dir = path.dirname(file);

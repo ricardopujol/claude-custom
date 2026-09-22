@@ -208,3 +208,30 @@ test('a permanently failed write leaves no temp file behind', () => {
   const leftovers = fs.readdirSync(dir).filter(f => f.includes('.tmp'));
   assert.deepStrictEqual(leftovers, [], `orphaned temp files: ${leftovers.join(', ')}`);
 });
+
+test('a name that is not a string at all is refused', () => {
+  // Mortimer ST-B, 3 mutants on one guard. Every existing test passes a
+  // string, so the `!name` and `typeof name !== 'string'` clauses were
+  // load-bearing for nothing that is tested.
+  //
+  // MEASURED: with name = 123 the original guard throws, and all three
+  // mutants let the write proceed against `123.json` -- the regex coerces the
+  // number to '123', which matches. This module's own comment says names
+  // "may come from feature code today and from config later", and a number
+  // out of a JSON config is exactly that case.
+  const s = createStore({ dir: tmp() });
+  for (const bad of [123, null, undefined, {}, [], true, '']) {
+    assert.throws(() => s.write(bad, { x: 1 }), /unsafe name/,
+      `write(${JSON.stringify(bad)})`);
+    assert.throws(() => s.read(bad, {}), /unsafe name/,
+      `read(${JSON.stringify(bad)})`);
+  }
+});
+
+test('createStore without a dir refuses immediately', () => {
+  // Mortimer ST-C. Without the guard the failure becomes a TypeError out of
+  // path.join(undefined, ...) later, in a different place, naming a different
+  // cause.
+  assert.throws(() => createStore({}), /dir is required/);
+  assert.throws(() => createStore(), /dir is required/);
+});

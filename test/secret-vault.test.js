@@ -455,3 +455,85 @@ test('get on an unknown id is null, not a throw', () => {
   // this with ids that can be stale after a removal in another window.
   assert.strictEqual(vault().get('nope'), null);
 });
+
+test('removing one entry leaves every other one untouched', () => {
+  // Mortimer SV-B, HIGH. The filter predicate `e => e.id !== id` had two
+  // surviving mutants (`() => undefined` and `false`), and EVERY existing
+  // remove test operated on a vault holding exactly ONE entry -- where
+  // "delete the one you asked for" and "delete everything" are
+  // indistinguishable.
+  //
+  // MEASURED: [{id:1},{id:2}].filter(() => undefined) returns []. Under either
+  // mutant, removing one secret commits an EMPTY vault -- every other
+  // credential gone -- and commit() persists it, so they are gone on restart
+  // too. In a module whose entire job is storing secrets.
+  const file = tmp();
+  const v = createVault({ file, crypto: fakeCrypto() });
+  const a = v.add({ label: 'keep-a', secret: 'A' });
+  const b = v.add({ label: 'drop-b', secret: 'B' });
+  const c = v.add({ label: 'keep-c', secret: 'C' });
+
+  assert.strictEqual(v.remove(b.id), true);
+  assert.deepStrictEqual(v.list().map(e => e.label), ['keep-a', 'keep-c']);
+  assert.strictEqual(v.get(a.id), 'A', 'the others must still decrypt');
+  assert.strictEqual(v.get(c.id), 'C');
+
+  const reopened = createVault({ file, crypto: fakeCrypto() });
+  assert.deepStrictEqual(reopened.list().map(e => e.label), ['keep-a', 'keep-c'],
+    'and the survivors must still be on disk');
+});
+
+test('an absent secret or label is refused, not stored as the string "undefined"', () => {
+  // Mortimer SV-C (HIGH) and SV-D. The existing tests pass '' and '  ', which
+  // take the NON-null branch of `secret == null ? '' : secret`, so the null
+  // branch was never exercised. Under the surviving mutants,
+  // `add({ label: 'k' })` stores the six-character string "undefined" as a
+  // real, encrypted, retrievable secret and reports success -- the user is
+  // told a credential is stored and what is stored is garbage.
+  for (const bad of [{ label: 'k' }, { label: 'k', secret: null }, { label: 'k', secret: undefined }]) {
+    assert.throws(() => vault().add(bad), /secret/i, JSON.stringify(bad));
+  }
+  for (const bad of [{ secret: 's' }, { label: null, secret: 's' }, { label: undefined, secret: 's' }]) {
+    assert.throws(() => vault().add(bad), /label/i, JSON.stringify(bad));
+  }
+});
+
+test('an unknown id is not removed, and is not written either', () => {
+  // Mortimer SV-F. The return value was unasserted, and the early return is
+  // what stops a pointless disk write -- so the onWrite spy is the half that
+  // makes the conditional load-bearing rather than decorative.
+  const writes = [];
+  const v = createVault({ file: tmp(), crypto: fakeCrypto(), onWrite: p => writes.push(p) });
+  const e = v.add({ label: 'one', secret: 's' });
+  const afterAdd = writes.length;
+
+  assert.strictEqual(v.remove('no-such-id'), false);
+  assert.strictEqual(writes.length, afterAdd, 'a no-op remove must not write to disk');
+
+  assert.strictEqual(v.remove(e.id), true);
+  assert.ok(writes.length > afterAdd, 'a real remove must write');
+  assert.strictEqual(v.remove(e.id), false, 'removing the same id twice reports false');
+});
+
+test('the committed file is announced exactly once per write', () => {
+  // Mortimer SV-H. The existing test asserts only that SOME notification was
+  // the temp path, so the post-rename onWrite(file) could vanish unnoticed --
+  // and that callback is how anything downstream learns the write landed.
+  const file = tmp();
+  const writes = [];
+  const v = createVault({ file, crypto: fakeCrypto(), onWrite: p => writes.push(p) });
+  v.add({ label: 'k', secret: 's' });
+  assert.strictEqual(writes.filter(w => w === file).length, 1,
+    'the committed file must be announced exactly once');
+  assert.strictEqual(writes.filter(w => w !== file).length, 1, 'and the temp exactly once');
+});
+
+test('notes are normalised: absent becomes empty, padded is trimmed', () => {
+  // Mortimer SV-I. Every existing test that supplies a note supplies a clean
+  // one, and none adds an entry WITHOUT a note and reads it back.
+  const v = vault();
+  v.add({ label: 'no-note', secret: 's' });
+  assert.strictEqual(v.list()[0].note, '', 'an absent note reads as empty, never undefined');
+  v.add({ label: 'padded', secret: 's', note: '   spaced out   ' });
+  assert.strictEqual(v.list()[1].note, 'spaced out');
+});
