@@ -48,6 +48,7 @@ const waitFor = async (fn, ms = 20000) => {
 };
 
 let failures = 0;
+let skipped = false;      // set when the hosts never started, so later checks are not answered wrongly
 const check = (label, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `  -- ${detail}` : ''}`);
   if (!ok) failures++;
@@ -83,9 +84,23 @@ async function main() {
     check('host A came up', upA, `port ${portA}`);
     check('host B came up', upB, `port ${portB}`);
     if (!upA || !upB) {
+      // NO BARE RETURN. Miguel, review of PR #31: this used to `return`, which
+      // left main() entirely -- skipping both the "N FAILED" summary and the
+      // process.exit at the bottom, so a totally failed probe exited 0. Worse,
+      // `finally` still ran, and its "a killed host stops claiming its port"
+      // check passed TRIVIALLY because no identity file had ever been written.
+      // So a total failure printed a PASS as its last line and reported
+      // success to whatever was watching.
+      //
+      // A vacuous pass, in the one file whose entire job is to be trusted, in
+      // a codebase whose founding rule is that absence must not read as
+      // success. `skipped` lets the remaining checks be skipped honestly
+      // instead of answered wrongly.
       console.log(`(host logs: ${path.join(os.tmpdir(), `cc-probe-${portA}.log`)} and ...${portB}.log)`);
-      return;
+      skipped = true;
     }
+
+    if (!skipped) {
 
     const identA = readIdentity({ dir: HARNESS_DIR, port: portA });
     const identB = readIdentity({ dir: HARNESS_DIR, port: portB });
@@ -111,18 +126,33 @@ async function main() {
     if (bothExist) {
       check('and the two tokens differ',
         fs.readFileSync(tokA, 'utf8') !== fs.readFileSync(tokB, 'utf8'));
+      }
     }
   } finally {
     for (const k of kids) { try { process.kill(k.pid); } catch {} }
     await new Promise(r => setTimeout(r, 800));
     // The identity file must not outlive the host as a live claim.
-    const goneA = !readIdentity({ dir: HARNESS_DIR, port: portA });
-    const goneB = !readIdentity({ dir: HARNESS_DIR, port: portB });
-    check('a killed host stops claiming its port', goneA && goneB);
+    // Only meaningful if the hosts came up at all. Asserting it after a failed
+    // start passes trivially -- nothing ever wrote an identity to stop
+    // claiming -- and that trivially-true PASS was the last line a failed run
+    // printed.
+    if (!skipped) {
+      const goneA = !readIdentity({ dir: HARNESS_DIR, port: portA });
+      const goneB = !readIdentity({ dir: HARNESS_DIR, port: portB });
+      check('a killed host stops claiming its port', goneA && goneB);
+    }
     try { fs.rmSync(a, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(b, { recursive: true, force: true }); } catch {}
   }
 
+  // A SKIPPED run is not a passing run. Saying "all checks passed" when the
+  // hosts never started is the same lie the bare `return` used to tell, just
+  // later in the function -- and the reason this probe could report success
+  // while measuring nothing.
+  if (skipped) {
+    console.log(`\n${failures} FAILED -- the hosts did not start, so the rest was never measured`);
+    process.exit(1);
+  }
   console.log(failures ? `\n${failures} FAILED` : '\nall checks passed');
   process.exit(failures ? 1 : 0);
 }

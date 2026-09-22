@@ -211,3 +211,50 @@ test('every event command is shell-safe, not just PreToolUse', () => {
     }
   }
 });
+
+test('two hosts get two settings FILES, so neither can redirect the other\'s hooks', () => {
+  // Miguel B1 / Dexter F2, both found independently. The settings file's only
+  // content is this host's hook matchers pointing at PIPE_NAME, which is
+  // derived per-pid -- so its CONTENTS are per-host while its NAME was fixed.
+  //
+  // This PR is what made that dangerous: one host at a time used to be the
+  // practical reality, and two is now the advertised feature. Within a single
+  // host the write and the pty spawn are ~550 lines of synchronous module init
+  // apart, so two hosts booting together interleave as:
+  //
+  //   A writes settings(pipe A)
+  //   B overwrites with settings(pipe B)
+  //   A's claude starts, reads the file, connects to B's pipe
+  //
+  // Project A's tool events then arrive at project B's bridge: B's roster,
+  // mood engine and toasts show A's activity, A's show nothing, and the bind
+  // failure is logged and swallowed. Right window, wrong project's data --
+  // exactly what the handshake removes, one layer down.
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
+
+  const a = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-A' }, 7701);
+  const b = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-B' }, 7702);
+
+  assert.notStrictEqual(a, b, 'two hosts must not share one settings file');
+  assert.ok(JSON.stringify(JSON.parse(fs.readFileSync(a, 'utf8'))).includes('PIPE-A'),
+    "host A's file must still name host A's pipe after host B has written");
+  assert.ok(JSON.stringify(JSON.parse(fs.readFileSync(b, 'utf8'))).includes('PIPE-B'));
+});
+
+test('the shared settings file is STILL written, because probes read it by that exact name', () => {
+  // Additive, exactly like the per-port token. verify/probe-hook-shell.js reads
+  // .harness/harness-settings.json by its literal path, and each probe runs
+  // against a single host -- so moving the file would fix the window and break
+  // the probes. Fixing one thing by breaking another is not a fix.
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
+
+  writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-A' }, 7701);
+  assert.ok(fs.existsSync(path.join(dir, 'harness-settings.json')),
+    'the fixed-name file must keep being written for the probes');
+});

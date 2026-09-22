@@ -42,9 +42,25 @@ function resolveLaunchTarget(arg, { cwd = process.cwd(), stat = fs.statSync } = 
  * appear to do nothing.
  */
 function launchEnv(env, target) {
-  const out = { ...env, CLAUDE_CUSTOM_CWD: target };
+  const out = {};
+  // WILDCARD, not a denylist. Dexter, Finding 4: the denylist named the two
+  // variables whose harm I had already been bitten by, and at least four more
+  // mattered -- CLAUDE_CUSTOM_TOKEN above all, which made every project opened
+  // through the picker share ONE session token, wiring together the control
+  // channels of the projects this feature exists to keep apart.
+  //
+  // host.js argues the opposite case for CLAUDE_CODE_*, choosing an explicit
+  // list over a wildcard, and is right to: that namespace carries the USER'S
+  // configuration, so stripping it wholesale would break things they set on
+  // purpose. CLAUDE_CUSTOM_* carries none of that. It is entirely this harness
+  // talking to itself, which makes it the one namespace where the wildcard is
+  // the correct shape -- and the only shape that also strips whatever is added
+  // to it next year by someone who never reads this function.
+  for (const [k, v] of Object.entries(env || {})) {
+    if (!k.startsWith('CLAUDE_CUSTOM_')) out[k] = v;
+  }
   delete out.ELECTRON_RUN_AS_NODE;
-  delete out.CLAUDE_CUSTOM_PORT;
+  out.CLAUDE_CUSTOM_CWD = target;
   return out;
 }
 
