@@ -200,3 +200,141 @@ function deadPid() {
   }
   throw new Error('could not find a dead pid to test with');
 }
+
+// --- liveness: every path must reach the deadline ----------------------------
+//
+// Mortimer, PR #29 mutation gate. Found on the UNMUTATED shipped code, not by
+// a mutant: `withFileLock` could spin forever.
+//
+// The stale-breaking branch ended in `continue`, which jumps the deadline
+// check below it. If readLock returned null (the path could not be read) AND
+// unlinkSync failed (the path could not be deleted), the loop went round
+// again, read null again, failed to unlink again, and never terminated. The
+// empty catch treated "somebody beat us to it" and "this cannot be removed"
+// as the same event, and only the first is safe to retry immediately.
+//
+// A HANG IS WORSE THAN THE THROW DEXTER F2 CLOSED. sleepSync uses
+// Atomics.wait, so the thread blocks; the host owns the pty, so the Claude
+// session goes with it. And this module's own header promises the opposite in
+// capitals: FAIL CLOSED, it throws and the work does not run.
+//
+// Realistic trigger on Windows: any lock file another process holds open
+// without share-delete -- an antivirus scanner, a backup agent, a crashed host
+// still holding the handle -- is both unreadable and undeletable.
+
+test('a lock path that can be neither read nor deleted fails closed instead of hanging', () => {
+  // A directory where the lock file should be: readFileSync throws EISDIR, so
+  // readLock returns null; unlinkSync refuses to remove a directory. Exactly
+  // the pair that used to loop.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.mkdirSync(lock, { recursive: true });
+
+  const started = Date.now();
+  let ran = false;
+  assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 200 }), /lock/i);
+  const waited = Date.now() - started;
+  assert.strictEqual(ran, false, 'the work must not run without the lock');
+  assert.ok(waited < 5000, `must give up, not spin -- still going after ${waited}ms`);
+});
+
+test('a deadline of 0 means try once and do not wait', () => {
+  // Mortimer: `Number.isFinite(opts.deadlineMs) ? opts.deadlineMs : DEADLINE_MS`
+  // is a ternary with a bare CALL as its test, which StrykerJS generates no
+  // mutant for -- so nothing in a mutation score can tell you this default is
+  // right. Swapping the isFinite check for a truthy one would silently turn 0
+  // into 3000. Asserted explicitly, because the tool cannot.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  const started = Date.now();
+  assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0 }), /lock/i);
+  assert.ok(Date.now() - started < 200, 'a zero deadline must not wait');
+});
+
+// --- the rules the tests were only accidentally enforcing --------------------
+//
+// Mortimer, PR #29 mutation gate, R1a/R1b/R1c. All three are LATENT: the
+// shipped code is correct and the suite could not tell.
+
+test('a holder we may not signal (EPERM) is ALIVE, not stale', () => {
+  // `kill` failing with EPERM means the process EXISTS and belongs to another
+  // user. Treating that as dead breaks a live lock -- the same failure class
+  // as the pid bug this module already shipped once. The comment on the catch
+  // names EPERM explicitly; nothing asserted it, because deadPid() only ever
+  // produces ESRCH.
+  const real = process.kill;
+  process.kill = () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
+  try {
+    assert.strictEqual(isStale({ pid: 4321, at: Date.now() }, Date.now()), false);
+  } finally {
+    process.kill = real;
+  }
+});
+
+test('an unusable pid never reaches process.kill at all', () => {
+  // THE RULE, not the outcome. The test above this one is titled "never
+  // PROBED" and asserted only the return value -- and `process.kill(0, 0)`
+  // does not throw on this machine, so narrowing the guard to `pid < 0` let
+  // pid 0 reach `kill`, return false, and keep that test green. Since
+  // `kill(0, …)` addresses the caller's whole PROCESS GROUP, "never probed" is
+  // the load-bearing half, and it was enforced by nothing but a coincidence of
+  // Windows semantics.
+  const real = process.kill;
+  const calls = [];
+  process.kill = (pid, sig) => { calls.push(pid); return real.call(process, pid, sig); };
+  try {
+    for (const pid of [0, -1, -12345, 1.5, NaN, null, undefined, 'x']) {
+      isStale({ pid, at: Date.now() }, Date.now());
+    }
+  } finally {
+    process.kill = real;
+  }
+  assert.deepStrictEqual(calls, [], `these unusable pids were signalled: ${calls.join(', ')}`);
+});
+
+test('the lock we hold names our pid, so a competitor can probe us', () => {
+  // The other half of the empty-file window. isStale's reaction to a pid-less
+  // lock is tested; that withFileLock ever WRITES a pid was not -- deleting
+  // the writeSync left every test green, with the lock permanently empty and
+  // every contended write degrading into a full deadline stall.
+  const lock = lockIn(tmpdir());
+  let seen = null;
+  withFileLock(lock, () => { seen = JSON.parse(fs.readFileSync(lock, 'utf8')); });
+  assert.strictEqual(seen.pid, process.pid);
+  assert.ok(Number.isFinite(seen.at), 'the lock must carry a usable age');
+});
+
+test('a genuine filesystem error surfaces at once, not as a lock timeout 3 seconds later', () => {
+  // Mortimer: `err.code !== 'EEXIST'` mutated to `false` swallows a real error
+  // into the retry loop, where it resurfaces as "could not take the lock" --
+  // a message that sends the reader looking for a competing process that does
+  // not exist. Only EEXIST means "somebody holds it".
+  const missing = path.join(tmpdir(), 'no-such-dir', 'thing.json.lock');
+  const started = Date.now();
+  assert.throws(() => withFileLock(missing, () => {}), (err) => err.code === 'ENOENT');
+  assert.ok(Date.now() - started < 500, 'it must not spend the deadline on it');
+});
+
+test('waiting sleeps rather than spinning -- the host owns the pty', () => {
+  // Mortimer: three mutants delete the sleep, turning the retry loop into a
+  // busy-wait that burns a core in the process running the terminal. The
+  // Atomics.wait comment exists to prevent exactly that and nothing asserted
+  // it. Counted by attempts rather than by CPU, which is the observable half.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...args) => {
+    if (String(args[0]) === lock) attempts++;
+    return realRead.apply(fs, args);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 150 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  // ~10 attempts at RETRY_MS=15 over 150ms. A busy-wait makes tens of thousands.
+  assert.ok(attempts > 0 && attempts < 50, `expected a paced retry, got ${attempts} attempts`);
+});

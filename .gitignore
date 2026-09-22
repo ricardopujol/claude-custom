@@ -34,3 +34,7 @@ __pycache__/
 documentation/*
 !documentation/README.md
 # --- end sync-docs (gitignore) ---
+
+# Stryker mutation-testing scratch
+.stryker-tmp/
+reports/

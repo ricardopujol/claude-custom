@@ -156,23 +156,43 @@ function withFileLock(lockPath, fn, opts = {}) {
       break;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;        // a real filesystem problem
-
-      const held = readLock(lockPath);
-      if (held === null || isStale(held, now())) {
-        // Break it and try again immediately. `unlinkSync` may lose a race
-        // with another waiter doing the same thing, which is fine: whoever
-        // wins the next `wx` open holds the lock, and the loser keeps waiting.
-        try { fs.unlinkSync(lockPath); } catch { /* somebody beat us to it */ }
-        continue;
-      }
-
-      if (now() >= giveUpAt) {
-        throw new Error(
-          `could not take the lock on ${lockPath} within ${deadlineMs}ms ` +
-          `(held by pid ${held.pid}); nothing was written`);
-      }
-      sleepSync(RETRY_MS);
     }
+
+    // Somebody holds it. Break it only if its holder is gone.
+    const held = readLock(lockPath);
+    let broke = false;
+    if (held === null || isStale(held, now())) {
+      try {
+        fs.unlinkSync(lockPath);
+        broke = true;
+      } catch (err) {
+        // ENOENT means another waiter removed it first, which is exactly the
+        // outcome we wanted and is safe to retry immediately. ANYTHING ELSE
+        // means the path is there and cannot be removed, and retrying that at
+        // full speed is how this loop used to spin forever.
+        broke = err.code === 'ENOENT';
+      }
+    }
+
+    // EVERY PATH REACHES HERE. Mortimer, PR #29 mutation gate: the breaking
+    // branch used to end in `continue`, which jumped this check. A lock path
+    // that could be neither read nor deleted -- a directory, or a file another
+    // process holds open without share-delete, which an antivirus scanner or a
+    // crashed host routinely does on Windows -- looped forever. `sleepSync`
+    // uses Atomics.wait, so the thread blocks; the host owns the pty; the
+    // Claude session dies with it. A hang is strictly worse than the throw
+    // Dexter F2 closed, and this module's own header promises the opposite in
+    // capitals.
+    if (now() >= giveUpAt) {
+      throw new Error(
+        `could not take the lock on ${lockPath} within ${deadlineMs}ms` +
+        `${held && held.pid ? ` (held by pid ${held.pid})` : ''}; nothing was written`);
+    }
+
+    // No wait after a successful break -- the lock is free and the next open
+    // should win it. Waiting only makes sense when somebody else still holds
+    // it, or when the path itself refuses to go away.
+    if (!broke) sleepSync(RETRY_MS);
   }
 
   try {
