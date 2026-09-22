@@ -146,34 +146,54 @@ async function parseLines(text, acc, seen) {
 // The bytes immediately before `offset`, or null when there are none. Read back
 // from the file rather than carried out of the parse loop: one small extra
 // read, and it cannot drift from what is actually on disk.
-async function readFingerprint(fh, offset, onRead) {
+async function readFingerprint(fh, offset) {
   const len = Math.min(FINGERPRINT_BYTES, offset);
   if (len <= 0) return null;
   const buf = Buffer.allocUnsafe(len);
+  // WRAPS THE OPERATION THAT CAN FAIL, not the function body. Miguel and
+  // Dexter, PR #32, independently: a bare `catch {` around the whole body
+  // cannot tell EBUSY from a ReferenceError, so a programming error anywhere
+  // in here is converted into a file-level I/O outcome and reported as normal
+  // operation.
+  //
+  // MEASURED, with a throw injected at this read: the module goes from 138
+  // bytes to 276,138 -- a 2000x full re-read, the exact per-tick regression
+  // this module exists to remove -- with ok:true, stale:0, absent:0. Not one
+  // signal moves. Worse, this one is PERMANENT: the failure stores
+  // `fingerprint: null`, and from the next tick `!cached.fingerprint` forces a
+  // full re-read forever, while every total stays exactly correct.
+  //
+  // Fail-closed on real I/O is unchanged: EBUSY, EPERM and EBADF arrive as
+  // SystemError and are still swallowed into `null`, which means re-read.
+  let bytesRead;
   try {
-    const { bytesRead } = await fh.read(buf, 0, len, offset - len);
-    if (onRead) onRead(bytesRead);
-    return bytesRead === len ? buf : null;
+    ({ bytesRead } = await fh.read(buf, 0, len, offset - len));
   } catch {
     return null;
   }
+  return bytesRead === len ? buf : null;
 }
 
 // Is the cached prefix still this file's prefix? Fails CLOSED: a missing or
 // unreadable fingerprint means re-read, never "assume it is fine". Being wrong
 // that way costs one full parse; being wrong the other way is a permanently
 // wrong total.
-async function prefixIntact(fh, cached, onRead) {
+async function prefixIntact(fh, cached) {
   if (!cached.fingerprint) return cached.offset === 0;
   const len = cached.fingerprint.length;
   const buf = Buffer.allocUnsafe(len);
+  // Same narrowing as readFingerprint, same reason. This one is LOUD rather
+  // than silent when it breaks -- a throw here forces a full re-read on the
+  // same tick, so a byte assertion catches it -- but it misdiagnoses: the
+  // failure reads as "the fast path was lost" and sends the reader into the
+  // resume logic when the fault is in their own code.
+  let bytesRead;
   try {
-    const { bytesRead } = await fh.read(buf, 0, len, cached.offset - len);
-    if (onRead) onRead(bytesRead);
-    return bytesRead === len && buf.equals(cached.fingerprint);
+    ({ bytesRead } = await fh.read(buf, 0, len, cached.offset - len));
   } catch {
     return false;
   }
+  return bytesRead === len && buf.equals(cached.fingerprint);
 }
 
 /**
@@ -198,14 +218,7 @@ async function prefixIntact(fh, cached, onRead) {
  * file would over-report, and an over-report can announce a rung early, after
  * which `highest` suppresses the genuine crossing forever.
  */
-// `onRead` is an instrumentation seam, not a feature: it reports how many BYTES
-// each read consumed. It exists because the test that guards this module's
-// entire reason for existing -- that a resumed read costs the appended line
-// rather than the whole file -- used to assert a wall-clock RATIO, and flaked
-// ("cold 18.7ms, after one append 11.6ms") for reasons that had nothing to do
-// with the property. Bytes are countable, deterministic, and a stronger claim:
-// they catch a re-read that happens to be fast, which a ratio lets through.
-async function readFileUsage(file, cache, openFile, onRead) {
+async function readFileUsage(file, cache, openFile) {
   let stat;
   try {
     stat = await fsp.stat(file);
@@ -245,7 +258,7 @@ async function readFileUsage(file, cache, openFile, onRead) {
     // is equally consistent with a rewrite that happens to be longer, and
     // resuming onto the stale accumulator poisons the total permanently.
     const grown = cached && stat.size > cached.size;
-    const resume = grown && await prefixIntact(fh, cached, onRead);
+    const resume = grown && await prefixIntact(fh, cached);
     let pos = resume ? cached.offset : 0;
     const acc = resume ? { ...cached.acc } : zero();
     // Which messages this file has already contributed. Cached alongside `acc`,
@@ -264,7 +277,6 @@ async function readFileUsage(file, cache, openFile, onRead) {
       const buf = Buffer.allocUnsafe(want);
       const { bytesRead } = await fh.read(buf, 0, want, pos);
       if (bytesRead <= 0) break;
-      if (onRead) onRead(bytesRead);
       pos += bytesRead;
 
       let chunk = bytesRead === buf.length ? buf : buf.subarray(0, bytesRead);
@@ -321,7 +333,7 @@ async function readFileUsage(file, cache, openFile, onRead) {
     cache.set(file, {
       mtimeMs: stat.mtimeMs, size: pos, offset, acc: { ...acc }, tail: { ...tail },
       seen: [...seen],
-      fingerprint: await readFingerprint(fh, offset, onRead),
+      fingerprint: await readFingerprint(fh, offset),
     });
     return { acc: plus(acc, tail), state: 'fresh' };
   } catch {
@@ -340,7 +352,7 @@ const withTotal = (acc, sessions) => ({
 });
 
 async function readUsage({
-  cwd, sessionId, projectsDir, cache = defaultCache, onRead,
+  cwd, sessionId, projectsDir, cache = defaultCache,
   // Injectable because a locked file is not reproducible portably, and leaving
   // the stale/absent split untested would put the most load-bearing logic here
   // in a region nothing measures.
@@ -381,7 +393,7 @@ async function readUsage({
   for (const entry of files) {
     live.add(entry.file);
     if (!entry.subagent) sessions++;
-    const { acc, state } = await readFileUsage(entry.file, cache, openFile, onRead);
+    const { acc, state } = await readFileUsage(entry.file, cache, openFile);
     if (state === 'stale') stale++;
     if (state === 'absent') absent++;
     if (!acc) continue;                 // absent or gone: nothing to add
@@ -427,4 +439,10 @@ async function readUsage({
   };
 }
 
-module.exports = { readUsage, projectDirName, defaultProjectsDir, EMPTY, READ_CHUNK, PARSE_BATCH };
+// FINGERPRINT_BYTES is exported for the same reason READ_CHUNK and PARSE_BATCH
+// are: so a test can assert the exact cost of a resumed read rather than
+// hardcoding 128 beside a comment that will drift from it.
+module.exports = {
+  readUsage, projectDirName, defaultProjectsDir, EMPTY,
+  READ_CHUNK, PARSE_BATCH, FINGERPRINT_BYTES,
+};
