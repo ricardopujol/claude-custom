@@ -424,3 +424,63 @@ test('the retry policy cannot be widened from outside this module', () => {
   assert.throws(() => renameWithRetry('a.tmp', 'b', { rename, sleep: () => {} }), /ENOENT/);
   assert.strictEqual(rename.calls.length, 1);
 });
+
+// --- mutation-driven kills ---------------------------------------------------
+// Mortimer's run on this branch: host/atomic-write.js scored 95.2% with three
+// survivors, and all three were real gaps rather than equivalent mutants.
+
+test('the published policy snapshot says exactly which codes are transient', () => {
+  // Survivor: ArrayDeclaration at the TRANSIENT_CODES line, mutated to `[]`.
+  // The existing test asserted it was an array and that pushing to it threw --
+  // both still true of an EMPTY array. Nothing asserted its CONTENTS, so the
+  // snapshot could have published nothing at all and no test would notice.
+  const mod = require('../host/atomic-write');
+  assert.deepStrictEqual([...mod.TRANSIENT_CODES].sort(), ['EACCES', 'EBUSY', 'EPERM']);
+  // And the snapshot must agree with the predicate it claims to describe --
+  // two sources of one truth are exactly what drifts.
+  for (const code of mod.TRANSIENT_CODES) {
+    assert.strictEqual(mod.isTransient({ code }), true, `${code} must be transient`);
+  }
+  assert.strictEqual(mod.isTransient({ code: 'ENOENT' }), false);
+});
+
+test('async INVARIANT: success at attempt k costs exactly k calls and k-1 sleeps', async () => {
+  // Survivors: ConditionalExpression -> `true` and `i < attempts` -> `i <=
+  // attempts`, BOTH on the async twin's inner sleep guard. The sync version
+  // has this invariant and the async one did not, so a mutant making the
+  // async version sleep after its FINAL attempt survived untouched.
+  //
+  // This is Miguel's "asymmetry between twins is how twins drift", caught by
+  // measurement rather than by reading: the two functions were reviewed as a
+  // pair, and the tests were not.
+  for (const code of ALL_TRANSIENT) {
+    for (let attempts = 1; attempts <= 6; attempts++) {
+      for (let k = 1; k <= attempts; k++) {
+        const rename = flakyAsync(Array(k - 1).fill(code));
+        const slept = [];
+        await renameWithRetryAsync('a.tmp', 'b', {
+          rename, sleep: async ms => { slept.push(ms); }, attempts,
+        });
+        assert.strictEqual(rename.calls.length, k, `${code} k=${k}/${attempts}`);
+        assert.strictEqual(slept.length, k - 1,
+          `${code} k=${k}/${attempts}: must not sleep after the last attempt`);
+      }
+    }
+  }
+});
+
+test('async INVARIANT: an exhausted retry never sleeps after its final attempt', async () => {
+  // The same guard from the failing side, which is where the mutant actually
+  // shows: with `i <= attempts` the loop sleeps once more than it should
+  // before giving up, adding a wait nobody asked for to every permanent
+  // failure.
+  for (let attempts = 1; attempts <= 6; attempts++) {
+    const rename = flakyAsync(Array(attempts + 3).fill('EBUSY'));
+    const slept = [];
+    await assert.rejects(() => renameWithRetryAsync('a.tmp', 'b', {
+      rename, sleep: async ms => { slept.push(ms); }, attempts,
+    }), /EBUSY/);
+    assert.strictEqual(slept.length, attempts - 1,
+      `attempts=${attempts}: ${slept.length} sleeps for ${attempts} attempts`);
+  }
+});

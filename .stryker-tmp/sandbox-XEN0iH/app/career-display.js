@@ -1,0 +1,192 @@
+// @ts-nocheck
+'use strict';
+/**
+ * How an agent's career figures should be DRAWN, given how well they are known.
+ *
+ * Extracted from renderer.js for the reason app/usage-display.js was, and to
+ * fix the same defect one panel over: a decision living inside a browser
+ * script is a decision nothing can test.
+ *
+ * THE DEFECT THIS EXISTS FOR. Vera (display-integrity-auditor), 2026-09-14,
+ * tracing every displayed value in the renderer back to its source:
+ * host/agent-stats.js computes `ok` and `unresolved` deliberately -- `ok` is
+ * ABSENCE, "some transcript could not be read, so the true figure is higher
+ * than this" -- and the only consumer that draws pixels read NEITHER. A failed
+ * read of the projects folder produced a blank career, pixel-identical to "this
+ * agent has never run here". The panel could not tell the user which it was,
+ * because it never knew.
+ *
+ * The same audit found minutes presented as a measurement when they are a
+ * bounded ESTIMATE: agent-stats.js caps every inter-turn gap at IDLE_GAP_MS,
+ * so an overnight wait contributes five minutes and so does a genuinely long
+ * tool call. Measured on this project at the time: 10 of one agent's 21
+ * displayed minutes were cap fill. The module's docstring is candid about it;
+ * the tooltip said "21 min worked" flat.
+ *
+ * Four states, mirroring usage-display.js, because a single "is it good"
+ * boolean cannot say the useful part:
+ *
+ *   unknown      the roster read failed and we have no row. A number here
+ *                would be invented; draw nothing.
+ *   none         the read succeeded and this agent genuinely has no runs.
+ *                Also draws nothing -- but it is a DIFFERENT nothing, and the
+ *                caller can say so.
+ *   lower-bound  we have figures AND something could not be read, so the true
+ *                total is higher. Shown with a prefix rather than discarded:
+ *                the partial is real, it is just not all of it.
+ *   complete     everything was read.
+ *
+ * WRAPPED IN AN IIFE, and that is not style. The renderer loads these as plain
+ * <script> tags, which share ONE global scope -- so the top-level `UNKNOWN`
+ * and `AT_LEAST` here collided with the identical ones in
+ * app/usage-display.js and threw "Identifier 'UNKNOWN' has already been
+ * declared", which killed this whole file and left `careerDisplay` undefined.
+ * No unit test can see that: each test requires the module into its own
+ * scope, where there is nothing to collide with. It was found by rendering
+ * the real header in a real window while building the quota meters.
+ */
+
+(function (root) {
+
+const UNKNOWN = '—';          // em dash
+const AT_LEAST = '≥';         // >=
+const ABOUT = '≈';            // approximately equal
+
+// Why every minutes figure is approximate, stated once so the tooltip and any
+// future surface cannot drift apart.
+const ESTIMATE_NOTE =
+  'estimated from transcript timestamps; gaps over 5 minutes counted as 5';
+
+/**
+ * Minutes as a string, where absence, a real zero, and a sub-minute run are
+ * three different answers.
+ *
+ * `0m` is reserved for a genuine zero (a single-entry transcript really has no
+ * measurable elapsed time). Real work under half a minute is `<1m`, because
+ * "981k / 0m" beside a nonzero token count reads as "spent tokens, did no
+ * work" -- false on its face. A missing or non-finite value is UNKNOWN rather
+ * than a confident zero.
+ */
+function formatMinutes(ms) {
+  // STRICTLY a number: `Number(null)` is 0 and `Number('')` is 0, so a
+  // coercing check turns "no value" into a confident "0m" -- the exact
+  // absence-reported-as-zero conflation this module exists to prevent.
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return UNKNOWN;
+  if (ms === 0) return '0m';
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return '<1m';
+  if (mins < 60) return mins + 'm';
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h}h${m}m` : `${h}h`;
+}
+
+/**
+ * @param row   the agent's row from `stats.agents`, or undefined if it has none
+ * @param stats the whole `{ ok, agents, unresolved }` payload from the host
+ */
+function careerDisplay(row, stats) {
+  const readOk = !stats || stats.ok !== false;
+  const hasRuns = !!(row && row.runs);
+
+  if (!hasRuns) {
+    // No figures to draw either way -- but WHICH nothing this is matters to
+    // the caller, and previously could not be asked.
+    return {
+      state: readOk ? 'none' : 'unknown',
+      draw: false,
+      prefix: '',
+      minutesPrefix: '',
+      unresolved: false,
+      note: readOk ? null : 'the career read failed — this is unknown, not zero',
+      detail: '',
+    };
+  }
+
+  const unresolved = row.resolved === false;
+  const runs = `${row.runs} run${row.runs === 1 ? '' : 's'} in this project`;
+  const tokens = `${Number(row.tokens || 0).toLocaleString()} tokens`;
+  const minutes = `${formatMinutes(row.ms)} worked (${ESTIMATE_NOTE})`;
+  const detail = [
+    runs,
+    tokens,
+    minutes,
+    unresolved ? 'identity unresolved, this is a label not an agent type' : null,
+    readOk ? null : 'a transcript could not be read — these figures are a lower bound',
+  ].filter(Boolean).join(' — ');
+
+  return {
+    state: readOk ? 'complete' : 'lower-bound',
+    draw: true,
+    prefix: readOk ? '' : AT_LEAST,
+    // Minutes are an estimate whenever there ARE minutes. An em dash is a
+    // non-claim, and "approximately unknown" qualifies nothing.
+    minutesPrefix: formatMinutes(row.ms) === UNKNOWN ? '' : ABOUT,
+    unresolved,
+    note: readOk ? null : 'a transcript could not be read — this is a lower bound',
+    detail,
+  };
+}
+
+
+/**
+ * Fold a new payload into the careers already on screen.
+ *
+ * A COMPLETE read is authoritative and may drop a row -- careers are cumulative
+ * so they never legitimately shrink, but a clean read is the one thing allowed
+ * to say an agent is gone. A FAILED read may not: `ok:false` means "some of
+ * this is missing", and replacing the map with a partial list silently deletes
+ * every agent whose transcripts happened to live in the unreadable directory.
+ *
+ * The first version guarded only `agents.length === 0`, which is the RARE
+ * branch (the whole project folder unreadable). The common one -- one locked
+ * transcript directory, which is what `ok` was invented for -- arrives with a
+ * non-empty partial list and walked straight past it.
+ */
+function mergeAgentStats(prevMap, stats) {
+  const incoming = new Map((stats && Array.isArray(stats.agents) ? stats.agents : [])
+    .map(a => [a.agent, a]));
+  if (!stats || stats.ok === false) {
+    // Keep what we knew; let anything fresher win.
+    return new Map([...(prevMap || new Map()), ...incoming]);
+  }
+  return incoming;
+}
+
+/**
+ * What to say when no agent is on the roster.
+ *
+ * Three different situations that the first version collapsed into one
+ * sentence: the read FAILED (we know nothing), the read succeeded and this
+ * project genuinely has no history, or the project has history and simply
+ * nothing has run in this window yet. Only the middle one may say "no agents".
+ */
+function rosterEmptyState(rosterSize, knownCareers, stats) {
+  if (rosterSize > 0) return '';
+  const readFailed = !!stats && stats.ok === false;
+  const known = knownCareers ? knownCareers.size : 0;
+
+  if (readFailed && known === 0) {
+    return 'The career read failed — this is unknown, not zero.';
+  }
+  if (known > 0) {
+    return `${known} agent${known === 1 ? ' has' : 's have'} run in this project — ` +
+           'portraits light up when one runs in this session.';
+  }
+  return 'No agents yet — portraits light up when one runs.';
+}
+
+// Loaded two ways: require() from tests, and a plain <script> tag in the
+// renderer, which has no module system at all. Same shape as
+// app/usage-display.js.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { careerDisplay, formatMinutes, mergeAgentStats, rosterEmptyState,
+    UNKNOWN, AT_LEAST, ABOUT, ESTIMATE_NOTE };
+} else {
+  root.careerDisplay = careerDisplay;
+  root.formatCareerMinutes = formatMinutes;
+  root.mergeAgentStats = mergeAgentStats;
+  root.rosterEmptyState = rosterEmptyState;
+}
+
+})(typeof window !== 'undefined' ? window : globalThis);

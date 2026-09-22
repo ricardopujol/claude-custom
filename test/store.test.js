@@ -87,6 +87,31 @@ test('a name that could escape the store directory is refused', () => {
   const s = createStore({ dir });
   assert.throws(() => s.write('../escape', { x: 1 }), /name/i);
   assert.throws(() => s.read('../../secrets', {}), /name/i);
+
+  // MUTATION-DRIVEN. Mortimer's run on this branch surfaced a surviving
+  // mutant that drops the `$` from `/^[A-Za-z0-9_-]+$/`, and the two cases
+  // above do NOT kill it: both start with '.', which the character class
+  // rejects with or without the end anchor. Unanchored, the regex matches a
+  // PREFIX, so any traversal beginning with a legal character walks straight
+  // out of the store directory. Measured:
+  //
+  //   '../escape'        anchored refuse   unanchored refuse
+  //   'a/../../evil'     anchored refuse   unanchored ACCEPT
+  //   'loadout/../../x'  anchored refuse   unanchored ACCEPT
+  //
+  // The guard was always correct; the test was not, and the gap was invisible
+  // because the obvious traversal string happens to be caught twice over.
+  assert.throws(() => s.write('a/../../evil', { x: 1 }), /name/i);
+  assert.throws(() => s.read('loadout/../../x', {}), /name/i);
+  assert.throws(() => s.write('ok/../x', { x: 1 }), /name/i);
+  // Backslash too: this is Windows, and path.join treats both as separators.
+  // Built from a char code rather than written literally -- a lone backslash
+  // in a heredoc has silently eaten a level three times on this project, and
+  // 'ok\..\x' is not a syntax error you can rely on catching it: here it
+  // happened to be, but '\U' or '\r' would have parsed fine as the WRONG
+  // string.
+  const BS = String.fromCharCode(92);
+  assert.throws(() => s.write(`ok${BS}..${BS}x`, { x: 1 }), /name/i);
 });
 
 test('exposes the path of a file for other processes to read', () => {

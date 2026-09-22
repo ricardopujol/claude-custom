@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/atomic-write.test.js test/store.test.js test/secret-vault.test.js test/openrouter.test.js"
+  },
+  "mutate": [
+    "host/quota.js",
+    "app/quota-display.js",
+    "host/atomic-write.js",
+    "host/store.js",
+    "app/secret-vault.js",
+    "host/openrouter.js"
+  ],
+  "reporters": [
+    "clear-text",
+    "progress"
+  ],
+  "coverageAnalysis": "off",
+  "timeoutMS": 20000,
+  "concurrency": 2
+}

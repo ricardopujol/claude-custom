@@ -379,3 +379,79 @@ test('a cleanup that ITSELF fails does not mask the real error', () => {
     fs.unlinkSync = realUnlink;
   }
 });
+
+// --- mutation-driven kills ---------------------------------------------------
+// Mortimer's run on this branch put app/secret-vault.js at 73.3% with 32
+// survivors. Most are error-MESSAGE mutants, which CLAUDE.md says to leave
+// unkilled -- asserting exact wording is brittle and tests nothing. These are
+// the ones that were behaviour rather than wording.
+
+test('createVault refuses to be built without a file or a cipher', () => {
+  // Survivors: both guard conditionals mutated to `false`. Nothing asserted
+  // that a vault with no file, or no cipher, refuses to exist -- so a future
+  // refactor could drop either guard and construct a vault that writes to
+  // `undefined` or stores plaintext.
+  assert.throws(() => createVault({ crypto: fakeCrypto() }), /file is required/);
+  assert.throws(() => createVault({ file: tmp() }), /crypto is required/);
+});
+
+test('a vault file of the wrong SHAPE is refused, not silently emptied', () => {
+  // Survivors: the `!parsed || !Array.isArray(parsed.entries)` guard, both as
+  // a conditional and with the operator flipped to `&&`. With `&&`, a file
+  // that parses to `null` or to `{}` would pass the guard -- and this module's
+  // whole stated rule is that it never replaces a vault it cannot read,
+  // because doing so deletes every secret to fix a display problem.
+  for (const bad of ['null', '{}', '[]', '{"entries":"nope"}', '{"entries":null}']) {
+    const file = tmp();
+    fs.writeFileSync(file, bad);
+    assert.throws(() => createVault({ file, crypto: fakeCrypto() }),
+      /unreadable, refusing to replace it/, `contents: ${bad}`);
+  }
+});
+
+test('the vault reports encryption as unavailable when the cipher says so', () => {
+  // Survivors: `available()` mutated to return a constant, and its catch
+  // emptied. Both matter: `add` fails closed on this, and a vault that
+  // wrongly reports encryption available is how a secret gets stored in
+  // plaintext while the user believes it is encrypted.
+  assert.strictEqual(vault({ crypto: fakeCrypto(false) }).available(), false);
+  assert.strictEqual(vault().available(), true);
+
+  // A cipher that THROWS is unavailable, not available. The catch is the
+  // fail-closed half and was mutated away without any test noticing.
+  const throwing = { ...fakeCrypto(), isEncryptionAvailable: () => { throw new Error('no dpapi'); } };
+  const v = createVault({ file: tmp(), crypto: throwing });
+  assert.strictEqual(v.available(), false);
+  assert.throws(() => v.add({ label: 'x', secret: 'y' }), /refusing to store a secret in plaintext/);
+});
+
+test('remove reports whether it actually removed anything', () => {
+  // Survivors: the `next.length === before` early return and the final
+  // `return true`, each mutated to a constant. The caller uses this to decide
+  // what to tell the user, so "removed" and "there was nothing to remove"
+  // collapsing into one answer is a wrong message either way round.
+  const v = vault();
+  const entry = v.add({ label: 'gone', secret: 's' });
+  assert.strictEqual(v.remove('no-such-id'), false, 'removing nothing must say so');
+  assert.strictEqual(v.list().length, 1, 'and must not have removed anything');
+  assert.strictEqual(v.remove(entry.id), true, 'removing something must say so');
+  assert.strictEqual(v.list().length, 0);
+});
+
+test('an entry with no createdAt lists as 0 rather than undefined', () => {
+  // Survivor: `e.createdAt || 0` with the operator flipped. The window sorts
+  // and formats on this, and `undefined` there renders as an invalid date
+  // rather than as "unknown".
+  const file = tmp();
+  fs.writeFileSync(file, JSON.stringify({ format: 1, entries: [
+    { id: 'a', label: 'old', note: '', secret: 'x' },
+  ] }));
+  const v = createVault({ file, crypto: fakeCrypto() });
+  assert.strictEqual(v.list()[0].createdAt, 0);
+});
+
+test('get on an unknown id is null, not a throw', () => {
+  // Survivor: the `if (!entry) return null` guard. The service layer calls
+  // this with ids that can be stale after a removal in another window.
+  assert.strictEqual(vault().get('nope'), null);
+});

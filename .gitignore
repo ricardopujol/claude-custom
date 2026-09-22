@@ -34,3 +34,7 @@ __pycache__/
 documentation/*
 !documentation/README.md
 # --- end sync-docs (gitignore) ---
+
+# Stryker mutation reports -- 7MB+ of JSON, regenerable with `npm run mutate`.
+# Kept on disk as the evidence for a gate result, never committed.
+reports/
