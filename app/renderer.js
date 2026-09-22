@@ -109,13 +109,9 @@ document.addEventListener('keydown', (e) => {
     setTimeout(() => { fit.fit(); sendResize(); }, 0);
     e.preventDefault();
   }
-  // Ctrl+B shows or hides the whole side panel. The TAB is the real control;
-  // this is only the way back once the panel is collapsed and its tabs are
-  // gone with it.
-  if (e.ctrlKey && !e.shiftKey && e.code === 'KeyB') {
-    setTab(activeTab === null ? lastTab : null);
-    e.preventDefault();
-  }
+  // NOTE: Ctrl+B is handled inside term.attachCustomKeyEventHandler, not here.
+  // A document listener never receives it -- xterm's textarea has focus and
+  // consumes the key first. This comment is left as the signpost.
 });
 
 // --- fog of war ---
@@ -551,6 +547,10 @@ function faceHtml(portrait) {
 // Career stats per agent, keyed by agent type. Arrives with the handshake and
 // again whenever an agent finishes, so the figures move as work happens.
 let agentStats = new Map();
+// The WHOLE payload, kept beside the map because `ok` lives on the payload and
+// not on any row -- and `ok: false` means the figures below are a lower bound,
+// which the panel has to be able to say.
+let lastAgentStatsPayload = null;
 
 // Ricardo: tokens spent and time worked IN THE PROJECT, not in this window.
 // Compact because it sits beside a 40px portrait -- "47.1M / 30m" reads at a
@@ -563,33 +563,36 @@ function compactTokens(n) {
   return String(Math.round(n));
 }
 
-function compactMinutes(ms) {
-  const mins = Math.round((Number(ms) || 0) / 60000);
-  if (mins < 60) return mins + 'm';
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return m ? `${h}h${m}m` : `${h}h`;
-}
-
 function careerHtml(agent) {
+  // Every judgement about HOW to draw these figures lives in
+  // app/career-display.js so it can be tested. Vera, 2026-09-14: the host
+  // computes `ok` -- absence, not zero -- and this consumer used to read
+  // neither it nor `unresolved`, so a failed read drew pixel-identically to
+  // "this agent never ran here".
+  const d = careerDisplay(agentStats.get(agent), lastAgentStatsPayload);
+  if (!d.draw) {
+    // UNKNOWN and NONE both draw no figures -- but they are different claims,
+    // and the module computes a sentence saying which. Discarding it made them
+    // pixel-identical, which is the exact conflation this panel exists to end.
+    return d.note
+      ? `<div class="career career-unknown" title="${escapeHtml(d.note)}">—</div>`
+      : '';
+  }
   const st = agentStats.get(agent);
-  // An agent that has never finished a run has no career yet. Drawing "0 / 0m"
-  // would read as "did nothing", which is a different claim from "no record".
-  if (!st || !st.runs) return '';
-  const detail = `${st.runs} run${st.runs === 1 ? '' : 's'} in this project - ` +
-    `${st.tokens.toLocaleString()} tokens - ${Math.round(st.ms / 60000)} min worked` +
-    (st.resolved === false ? ' - identity unresolved, this is a label not an agent type' : '');
-  return `<div class="career" title="${detail}">` +
-    `<span class="career-tok">${compactTokens(st.tokens)}</span>` +
+  return `<div class="career" title="${escapeHtml(d.detail)}">` +
+    `<span class="career-tok">${d.prefix}${compactTokens(st.tokens)}</span>` +
     `<span class="career-sep">/</span>` +
-    `<span class="career-min">${compactMinutes(st.ms)}</span>` +
-    (st.resolved === false ? '<span class="career-warn" title="identity unresolved">?</span>' : '') +
+    `<span class="career-min">${d.minutesPrefix}${formatCareerMinutes(st.ms)}</span>` +
+    (d.unresolved ? '<span class="career-warn" title="identity unresolved">?</span>' : '') +
     `</div>`;
 }
 
 function renderRoster() {
   if (roster.size === 0) {
-    agentsEl.innerHTML = '<div class="empty">No agents yet — portraits light up when one runs.</div>';
+    // Three different situations, not one sentence. "No agents yet" is a
+    // positive claim about history and must not be made on a read that failed.
+    agentsEl.innerHTML =
+      `<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`;
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -611,7 +614,12 @@ function renderRoster() {
 
 function renderAgentStats(stats) {
   if (!stats || !Array.isArray(stats.agents)) return;
-  agentStats = new Map(stats.agents.map(a => [a.agent, a]));
+  // MERGED, not replaced. The decision lives in app/career-display.js so it can
+  // be tested; the first version guarded only the rare total-failure branch and
+  // let a PARTIAL failed read replace the map, silently deleting every agent
+  // whose transcripts lived in the directory that could not be read.
+  lastAgentStatsPayload = stats;
+  agentStats = mergeAgentStats(agentStats, stats);
   renderRoster();
 }
 
@@ -970,6 +978,38 @@ function renderUsage(usage) {
     milestoneHtml(usage.milestone);
 }
 
+// --- plan quota ---------------------------------------------------------------
+// The fuel gauge, as opposed to the odometer beside it. Every judgement about
+// HOW to draw it lives in app/quota-display.js so it can be tested; this only
+// turns that decision into markup.
+const quotaEl = document.getElementById('quota');
+let lastQuotaPayload = null;
+
+function renderQuota(quota) {
+  if (quota !== undefined) lastQuotaPayload = quota;
+  const d = quotaDisplay(lastQuotaPayload);
+
+  if (d.state !== 'ready') {
+    // No bars. Three tracks sitting at zero would claim the plan is untouched,
+    // which is precisely what we do not know here.
+    quotaEl.innerHTML = `<span class="none" title="${escapeHtml(d.note || '')}">${escapeHtml(d.note || '')}</span>`;
+    return;
+  }
+
+  quotaEl.innerHTML = d.meters.map(m =>
+    `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}" title="${escapeHtml(m.title)}">` +
+      `<span class="lbl">${escapeHtml(m.label)}</span>` +
+      `<span class="track"><span class="fill" style="width:${m.fill}%"></span></span>` +
+      `<span class="pct">${escapeHtml(m.text)}</span>` +
+    `</span>`
+  ).join('');
+}
+
+// The countdown in every tooltip goes stale on its own, with no message from
+// the host -- so it is recomputed locally. Cheap: it re-renders from the last
+// payload and makes no request.
+setInterval(() => { if (lastQuotaPayload) renderQuota(); }, 30000);
+
 // A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
 // depletes an allowance, never goes red, and never warns. The same geometry
 // labelled "remaining" would read as a leash, and the harness has no business
@@ -1184,6 +1224,9 @@ function handleControl(msg) {
     applyBackground(msg.background);
     applyTheme(msg.theme);
     renderUsage(msg.usage);
+    // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
+    // and the host sends a `quota` message as soon as the read lands.
+    renderQuota(msg.quota || null);
     renderHealth(msg.health);
     renderCooldowns(msg.cooldowns);
     renderBugVault(msg.vault);
@@ -1304,6 +1347,25 @@ function handleControl(msg) {
     renderUsage(msg.usage);
     return;
   }
+  if (msg.type === 'dropped') {
+    renderDropNote(msg.note);
+    return;
+  }
+  if (msg.type === 'quota') {
+    renderQuota(msg.quota);
+    return;
+  }
+  if (msg.type === 'quotaWarning') {
+    // An EVENT, not a value -- the meters already carry the number. This is the
+    // part that reaches you when you are not looking at the header, which is
+    // the whole point of routing it through the same surface a milestone uses.
+    const left = msg.warning.resetsAt ? formatQuotaCountdown(msg.warning.resetsAt) : null;
+    flourish({
+      icon: msg.warning.threshold >= 95 ? '🪫' : '🔋',
+      name: left && left !== '—' ? `${msg.warning.text} · ${left} left` : msg.warning.text,
+    });
+    return;
+  }
   if (msg.type === 'exit') {
     term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
     return;
@@ -1375,10 +1437,84 @@ term.onData((data) => {
 // Bracketed-paste and other multi-byte writes.
 term.onBinary((data) => send(data));
 
+// --- drag and drop ------------------------------------------------------------
+// Dropping a file types its path into the prompt and, when the file lives
+// outside the project, asks the host to grant the session read access to its
+// folder. The DECISION about what may be granted is host-side and tested
+// (host/drop.js); this end only collects paths and reports what happened.
+//
+// Both listeners are required. Without preventDefault on dragover, Chromium
+// treats the window as a browser and NAVIGATES to the dropped file -- the whole
+// UI is replaced by a plain view of it and the only way back is restarting.
+const dropZone = document.getElementById('app') || document.body;
+
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  dropZone.classList.add('dropping');
+});
+for (const leave of ['dragleave', 'dragend']) {
+  dropZone.addEventListener(leave, () => dropZone.classList.remove('dropping'));
+}
+
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dropping');
+
+  const files = [...(e.dataTransfer.files || [])];
+  if (!files.length) return;
+
+  // `File.path` WAS REMOVED IN ELECTRON 32 and this app is on 33: it is
+  // undefined here, with no error and no warning, which is how every
+  // drag-and-drop snippet still on the internet fails silently. The path comes
+  // across the preload bridge via webUtils.getPathForFile instead.
+  const entries = files
+    .map(f => ({
+      path: (window.harness && window.harness.pathForFile) ? window.harness.pathForFile(f) : '',
+      // A dropped folder arrives as a File with no type and a size the OS makes
+      // up. Sent as a HINT only -- the host stats the path rather than trusting
+      // either field.
+      isDirectory: !f.type && !(f.size > 0),
+    }))
+    .filter(x => x.path);
+
+  if (!entries.length) return;
+  try { ws.send(JSON.stringify({ type: 'drop', entries })); } catch { /* not attached */ }
+});
+
+// What the drop did, said out loud. A gesture that silently widens what the
+// session may read is exactly the thing that should not be silent.
+function renderDropNote(note) {
+  if (!note) return;
+  const bits = [];
+  if (note.requested && note.requested.length) {
+    bits.push('requested read access to ' + note.requested.join(', '));
+  }
+  if (note.refused && note.refused.length) {
+    bits.push(note.refused.map(r => 'refused ' + r.dir + ': ' + r.why).join(' · '));
+  }
+  if (note.truncated) bits.push(note.truncated + ' more file(s) not added');
+  if (!bits.length) return;
+  if (note.unusable) bits.push(note.unusable + ' file(s) skipped: unsafe name');
+  const denied = !!(note.refused && note.refused.length);
+  flourish({ icon: denied ? '⛔' : '📁', name: bits.join(' · ') });
+}
+
 // --- key handling -----------------------------------------------------------
 // Returning false stops xterm's default handling for that event.
 term.attachCustomKeyEventHandler((e) => {
   if (e.type !== 'keydown') return true;
+
+  // THE PANEL TOGGLE MUST BE DECIDED HERE, not in a document listener. xterm's
+  // textarea always holds focus, so a document-level handler never saw Ctrl+B
+  // -- the terminal consumed it and sent  to the pty, which readline reads
+  // as backward-char. The binding looked dead while quietly editing the command
+  // line. Returning false is what stops the terminal taking it.
+  if (isPanelToggle(e)) {
+    setTab(activeTab === null ? (lastTab || DEFAULT_TAB) : null);
+    e.preventDefault();
+    return false;
+  }
 
   const mods =
     (e.ctrlKey ? 'Ctrl+' : '') +

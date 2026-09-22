@@ -38,6 +38,9 @@ const { createBugVault } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
+const { validResizeDims, handleFrame } = require('./control');
+const { readQuota, createQuotaAnnouncer } = require('./quota');
+const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
@@ -365,6 +368,11 @@ const announcer = createAnnouncer();
 // outlives the window, so a milestone reached during a detached session was
 // broadcast to an empty client set and lost forever.
 let pendingMilestone = null;
+let pendingQuotaWarning = null;
+// Folders this session has already granted via /add-dir. In memory only: the
+// grant lives in the running `claude` process, so it dies with the process and
+// must not outlive it in a file that would re-grant on the next boot.
+const grantedDirs = [];
 
 // A counter, never a limit -- so this reports where you ARE and what is next,
 // and has no concept of anything running out.
@@ -442,6 +450,181 @@ function checkMilestone(usage) {
     return;
   }
   broadcastControl(message);
+}
+
+// How much of the Max plan is left. A NETWORK read, unlike everything else on
+// this page, so it is deliberately slow-polled and never on the critical path:
+// the account's own windows are 5 hours and 7 days, so a minute of staleness is
+// invisible, and a failed call must never hold the loop the hook bridge runs on.
+let lastQuota = null;
+let quotaPending = null;
+const quotaAnnouncer = createQuotaAnnouncer();
+
+function refreshQuota() {
+  if (quotaPending) return quotaPending;
+  quotaPending = readQuota({})
+    .then((q) => {
+      lastQuota = q;
+      checkQuotaWarning(q);
+      return q;
+    })
+    .catch((err) => {
+      // readQuota already turns every failure into an `absent` result, so
+      // reaching here means a bug rather than a network problem. Say so, and
+      // keep ABSENCE rather than a stale-but-confident figure.
+      console.log('[host] quota read threw:', err && err.message);
+      lastQuota = { ok: false, state: 'absent', windows: [], error: 'read failed' };
+      return lastQuota;
+    })
+    .finally(() => { quotaPending = null; });
+  return quotaPending;
+}
+
+// A window crossing a threshold is an EVENT, announced once per window
+// INSTANCE -- see host/quota.js for why the milestone announcer could not be
+// reused verbatim (quota percent resets; lifetime spend does not).
+function checkQuotaWarning(quota) {
+  if (!quota || quota.ok === false) return;      // absence announces nothing
+  const hit = quotaAnnouncer.check(quota.windows);
+  if (!hit) return;
+
+  console.log('[host] quota warning  :', hit.text);
+  const message = { type: 'quotaWarning', warning: hit };
+  // Held when nothing is attached, for the same reason a milestone is: the pty
+  // outlives the window, so the crossing can easily happen with no observer --
+  // and "you are at 95%" is worth more on attach than lost.
+  const listening = [...clients].some(ws => ws.readyState === ws.OPEN);
+  if (!listening) {
+    pendingQuotaWarning = message;
+    return;
+  }
+  broadcastControl(message);
+}
+
+// Files dropped on the window. Types their paths into the prompt and, for a
+// file outside the project, grants the session read access to its folder.
+//
+// THE GRANT GOES THROUGH THE CLI'S OWN `/add-dir`, not through the settings
+// file: the `claude` process is already running, it owns its own notion of
+// which directories are allowed, and editing settings underneath it would
+// either do nothing or fight it. Same "wrap the real CLI, never reimplement
+// it" bet the rest of this harness rests on. `/add-dir` was verified present
+// in the shipped binary before this was built.
+//
+// SEQUENCED, not fired in one write. Each /add-dir is a slash command that the
+// TUI must accept and execute; typing the file paths in the same breath would
+// race the command and land the paths inside its argument. So the grants go
+// first, one per tick, and the paths only after the last one.
+// One writer to the pty, one line at a time.
+//
+// The first version used a per-drop `setTimeout` chain at 350ms intervals, which
+// is an open-loop guess wearing a mechanism's clothes: two drops 100ms apart
+// interleaved, and 25 files from 25 folders put the prompt text 8.75 SECONDS
+// after the first grant, with every user keystroke landing in between. A fixed
+// delay is not a completion signal.
+//
+// This is not a completion signal either -- the honest fix watches the TUI's own
+// acknowledgement through term.onData -- but it is at least ONE ordering for the
+// whole host rather than one per gesture, and it makes the interleaving
+// impossible. The remaining risk is a slow TUI, which is recorded rather than
+// pretended away.
+const PTY_LINE_GAP_MS = 350;
+const CTRL_U = String.fromCharCode(21);      // clear the input line
+const ptyQueue = [];
+let ptyDraining = false;
+
+function enqueuePty(text) {
+  ptyQueue.push(text);
+  if (ptyDraining) return;
+  ptyDraining = true;
+  const step = () => {
+    const next = ptyQueue.shift();
+    if (next === undefined) { ptyDraining = false; return; }
+    try { term.write(next); } catch (err) {
+      console.log('[host] pty write failed:', err && err.message);
+    }
+    setTimeout(step, PTY_LINE_GAP_MS);
+  };
+  step();
+}
+
+function handleDrop(msg, ws) {
+  const entries = Array.isArray(msg.entries) ? msg.entries : [];
+  if (!entries.length) return;
+
+  // SLICED BEFORE STATTING. `statSync` is synchronous and this loop runs on the
+  // one event loop that must accept the hook helper's named-pipe connection
+  // inside 80ms; a client sending 10,000 entries would otherwise do 10,000
+  // blocking stats, and a single unreachable UNC path blocks for seconds.
+  const capped = entries.slice(0, MAX_DROP_FILES);
+
+  // REALPATH, not just stat. A symlink or junction defeats every refusal in
+  // planDrop, because the string it judges is innocent and the target is not:
+  // `mklink /J C:\tmp\notes.txt C:\Users\ricar` needs no elevation, and
+  // statSync FOLLOWS it, so the old code learned the type from the filesystem
+  // and then granted the link path -- which the CLI resolves back to the home
+  // directory this module swears it never grants. Dexter, 2026-09-17.
+  const resolved = capped.map((e) => {
+    const raw = typeof e.path === 'string' ? e.path : '';
+    let real = raw;
+    let isDirectory = !!e.isDirectory;      // the renderer's hint, a File guess
+    try {
+      real = fs.realpathSync.native(raw);
+      isDirectory = fs.statSync(real).isDirectory();
+    } catch { /* vanished or unreadable: judge the raw path, which fails closed */ }
+    return { path: real, isDirectory };
+  });
+
+  const plan = planDrop({
+    entries: resolved,
+    cwd: CWD,
+    alreadyGranted: grantedDirs,
+    home: os.homedir(),
+  });
+
+  for (const r of plan.refused) console.log('[host] drop refused  :', r.dir, '-', r.why);
+
+  // A SINGLE SERIALISED QUEUE, not a setTimeout chain per drop. Two drops
+  // 100ms apart used to interleave -- drop B's grant landing between drop A's
+  // grant and A's path text -- which is exactly the race the delay was meant to
+  // prevent. One writer, one line at a time, in order.
+  const granted = [];
+  for (const dir of plan.dirsToAdd) {
+    // QUOTED. `/add-dir C:\Users\ricar\Documents Backup` unquoted grants
+    // `...\Documents` -- a strict superset of what was dragged, on a path shape
+    // that is entirely ordinary on Windows. The module already had `quote()`
+    // for the prompt text and the grant path never called it. Dexter, 2026-09-17.
+    //
+    // LINE-CLEARED FIRST (Ctrl+U). Typed blind onto a prompt the user has
+    // already started, `/add-dir ...` does not begin with `/` any more -- so the
+    // CR submits their half-written message to the model and grants nothing.
+    enqueuePty(CTRL_U + '/add-dir ' + quote(dir) + '\r');
+    granted.push(dir);
+  }
+  if (plan.text) enqueuePty(plan.text);
+
+  // Recorded only for what we actually tried to write, and described as
+  // REQUESTED rather than granted: nothing here can confirm the CLI accepted
+  // the command, and telling the user their read scope widened when it did not
+  // corrodes trust exactly as fast as the reverse.
+  for (const dir of granted) {
+    grantedDirs.push(dir);
+    console.log('[host] drop requests :', dir);
+  }
+
+  const note = {
+    requested: granted,
+    refused: plan.refused,
+    truncated: plan.truncated + Math.max(0, entries.length - capped.length),
+    unusable: plan.unusable,
+  };
+  if (granted.length || plan.refused.length || note.truncated || note.unusable) {
+    // BROADCAST, not sent to one socket. Two windows can be attached to one
+    // host; the other one's user watches the session's read scope widen with no
+    // notice at all.
+    broadcastControl({ type: 'dropped', note });
+  }
+  void ws;
 }
 
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
@@ -717,6 +900,26 @@ const usageTimer = setInterval(() => {
 }, 5000);
 usageTimer.unref();
 
+// Account limits, polled far slower than usage: this one is a NETWORK call, and
+// the windows it reports are 5 hours and 7 days, so a minute of staleness is
+// invisible while a tight loop would be a request per few seconds against
+// someone else's service for a number that barely moves. Broadcast only on a
+// CHANGE, so an idle session is silent on the wire.
+const QUOTA_POLL_MS = 60_000;
+const quotaTimer = setInterval(() => {
+  const before = JSON.stringify(lastQuota && lastQuota.windows);
+  refreshQuota().then((quota) => {
+    if (JSON.stringify(quota && quota.windows) !== before) {
+      broadcastControl({ type: 'quota', quota });
+    }
+  });
+}, QUOTA_POLL_MS);
+quotaTimer.unref();
+
+// The first reading immediately, for the same reason usage does: a header that
+// says "reading…" for a full minute reads as broken rather than as honest.
+refreshQuota().then((quota) => broadcastControl({ type: 'quota', quota }));
+
 // The first reading immediately rather than five seconds in. A cold read of
 // this project's transcripts is ~330ms, so waiting a full tick would show the
 // counter at "not read yet" for the whole of a window's first impression.
@@ -748,6 +951,18 @@ wss.on('connection', (ws) => {
   clients.add(ws);
   console.log(`[host] client attached (${clients.size} total)`);
 
+  // Dexter, logic review 2026-09-15: a malformed WEBSOCKET frame (invalid
+  // UTF-8 in a text frame, RSV1 set, an invalid opcode) never reaches the
+  // 'message' handler below -- `ws`'s Receiver rejects it and emits 'error'
+  // on the socket instead. An EventEmitter emitting 'error' with no listener
+  // throws and, with no process-level handler either, takes the whole host
+  // down -- and the pty with it, defeating the detach/reattach property this
+  // host exists to provide. One malformed frame from any client that clears
+  // the gatekeeper, no control-message parsing involved at all.
+  ws.on('error', (err) => {
+    console.log('[host] client socket error:', err && err.message);
+  });
+
   // Attach handshake: everything the view needs to draw itself, then the
   // current screen. The view holds no session state of its own, so this is the
   // only place it learns the theme, the roster or what is on the terminal.
@@ -768,6 +983,9 @@ wss.on('connection', (ws) => {
     vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
+    // May still be null on a fast attach; the renderer draws "reading…" for
+    // that, never three bars at zero.
+    quota: lastQuota,
     // Seats travel with the handshake; the CATALOGUE does not. It is a network
     // call, and a session that never opens the panel should not make one.
     seats: readSeats(),
@@ -812,112 +1030,179 @@ wss.on('connection', (ws) => {
     } catch { /* keep it for the next client to attach */ }
   }
 
+  // A quota threshold crossed while nothing was attached, delivered now for the
+  // same reason: "you are at 95% of your 5-hour window" is worth more late than
+  // never, and the pty runs on whether a window is open or not.
+  if (pendingQuotaWarning && ws.readyState === ws.OPEN) {
+    try {
+      ws.send(JSON.stringify(pendingQuotaWarning));
+      pendingQuotaWarning = null;      // cleared only on a SUCCESSFUL send
+    } catch { /* keep it for the next client to attach */ }
+  }
+
+  // A client that attached before the first quota read landed would otherwise
+  // sit on "reading…" until the next poll a minute later.
+  if (!lastQuota) {
+    refreshQuota()
+      .then((quota) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'quota', quota });
+      })
+      .catch(() => { /* the next poll will carry it */ });
+  }
+
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
+
+  // The actual side effects for each known control type. Kept as a plain
+  // function (not inline in the message handler) so `handleFrame` -- the
+  // classify/dispatch/fall-through SHAPE -- can be tested in host/control.js
+  // against a fake dispatch, per Miguel and Dexter's 2026-09-15 finding that
+  // the first version of this fix had no test for the property that actually
+  // mattered: a throwing dispatch must never reach literal input.
+  function dispatchControl(msg) {
+    if (msg.type === 'resize') {
+      // Validated before EITHER target is touched, and applied to both or
+      // neither: node-pty throws on bad dims, @xterm/headless instead
+      // silently clamps to a minimum of 2 columns, so an unvalidated resize
+      // can desync the two permanently -- a serialized 2-column screen would
+      // then be handed to every future attach.
+      if (validResizeDims(msg.cols, msg.rows)) {
+        term.resize(msg.cols, msg.rows);
+        termState.resize(msg.cols, msg.rows);
+      } else {
+        // Dexter, 2026-09-15: every other rejection path in this file logs;
+        // a rejected resize previously said nothing, leaving the client's own
+        // (already-resized) xterm silently disagreeing with the host.
+        console.log('[host] rejected resize:', msg.cols, msg.rows);
+      }
+      return;
+    }
+    if (msg.type === 'drop') {
+      // Dispatched here rather than from the ws handler, which is where this
+      // branch originally put it: #18 landed in between and moved every
+      // control frame behind parseControlFrame's allow-list. A `drop` frame
+      // that is not on that list is not merely ignored -- it falls through to
+      // `term.write` and is TYPED, verbatim JSON and all, into a session
+      // running --dangerously-skip-permissions. That is the exact hole #18
+      // exists to close, and it would have reopened silently on merge.
+      handleDrop(msg, ws);
+      return;
+    }
+    // RE-HOMED during the develop merge, and this is the second time this
+    // exact conflict has hidden this exact defect. This handler lived in the
+    // ws message handler's inline if-chain, which is the shape #18 replaced
+    // with parseControlFrame + dispatchControl. Taking develop's side of the
+    // conflict wholesale -- the obviously correct resolution, since that side
+    // IS the newer architecture -- silently deletes this branch's only
+    // feature, and a `bugvault` frame then falls through to `term.write` and
+    // is TYPED, verbatim JSON and all, into a session running
+    // --dangerously-skip-permissions. #24's `drop` handler was lost and
+    // recovered the same way.
+    if (msg.type === 'bugvault') {
+      // Synchronous JSON, unlike fog's git walk -- answered inline, then
+      // broadcast, same as the seat protocol: two windows on one project
+      // share a vault, so one of them silently disagreeing about what is
+      // recorded is worse than a redraw.
+      let result = { ok: true };
+      if (msg.action === 'add') {
+        result = bugVault.add((msg.record && typeof msg.record === 'object') ? msg.record : {});
+      } else if (msg.action === 'setFixed') {
+        result = bugVault.setFixed(msg.id, msg.fixed === true);
+      }
+      broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
+      return;
+    }
+    if (msg.type === 'health') {
+      // Caught: an unhandled rejection terminates Node by default.
+      runHealth().catch(() => {});   // broadcasts on start and on finish
+      return;
+    }
+    if (msg.type === 'input') {
+      // Miguel, 2026-09-15: unvalidated, `term.write(undefined)` reaches
+      // node-pty's deferred write queue and can throw OUTSIDE this function's
+      // caller's try/catch if the pty is not yet ready -- an uncaught
+      // exception that kills the host and the session with it.
+      if (typeof msg.data === 'string') term.write(msg.data);
+      return;
+    }
+    if (msg.type === 'models') {
+      // Asynchronous and yielding for the same reason the fog read is: the
+      // loop here also accepts the hook helper's named-pipe connection, and
+      // it gives up after 80ms. `.then(ok).catch(err)`, not
+      // `.then(ok, err)` -- Dexter, 2026-09-15: the two-argument form does
+      // NOT catch a throw from `ok` itself, which would become an unhandled
+      // rejection.
+      currentCatalogue({ force: !!msg.force }).then(
+        (c) => ws.send(JSON.stringify({
+          type: 'models', models: c.models, source: c.source,
+          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
+          seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
+        }))
+      ).catch((err) => {
+        // Tell the CLIENT, not only the log. A silent failure leaves the
+        // panel reading "loading..." forever, which looks like a slow host
+        // rather than a lost answer.
+        console.log('[host] catalogue failed:', err && err.message);
+        try {
+          ws.send(JSON.stringify({
+            type: 'models', models: [], source: 'none', stale: true,
+            error: err && err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
+          }));
+        } catch { /* the socket went away */ }
+      });
+      return;
+    }
+    if (msg.type === 'seat') {
+      // add / remove. The RESULT is broadcast rather than returned to the
+      // asking client alone: two windows on one project share a council, and
+      // one of them silently disagreeing about who is seated is worse than a
+      // redraw.
+      const before = readSeats();
+      let seats = before;
+      let error = null;
+      if (msg.action === 'remove') {
+        seats = removeSeat(before, msg.id);
+      } else {
+        const model = (msg.model && typeof msg.model === 'object') ? msg.model : null;
+        const r = addSeat(before, model);
+        seats = r.seats;
+        error = r.error;
+      }
+      if (seats !== before) store.write('council', { seats });
+      broadcastControl({ ...seatPayload(seats), error });
+      return;
+    }
+    if (msg.type === 'fog') {
+      // Answered on demand, asynchronously, yielding as it goes -- the read
+      // must never hold the loop past the helper's 80ms connect timeout, or
+      // it drops the hook events this panel is drawn from.
+      currentFog().then(
+        fog => ws.send(JSON.stringify({ type: 'fog', ...fog }))
+      ).catch(err => {
+        // Tell the CLIENT, not just the log. A silent failure left the panel
+        // reading "reading the map..." forever, which looks like a slow host
+        // rather than a lost answer.
+        console.log('[host] fog read failed:', err && err.message);
+        try {
+          ws.send(JSON.stringify({ type: 'fog', files: [], explored: 0, total: 0,
+            status: { failed: true, error: err && err.message } }));
+        } catch { /* the client went away */ }
+      });
+      return;
+    }
+  }
 
   ws.on('message', (raw, isBinary) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
       const text = raw.toString();
-      if (text.startsWith('{')) {
-        try {
-          const msg = JSON.parse(text);
-          if (msg.type === 'resize') {
-            term.resize(msg.cols, msg.rows);
-            termState.resize(msg.cols, msg.rows);
-            return;
-          }
-          if (msg.type === 'health') {
-            // Caught: an unhandled rejection terminates Node by default.
-            runHealth().catch(() => {});   // broadcasts on start and on finish
-            return;
-          }
-          if (msg.type === 'input') {
-            term.write(msg.data);
-            return;
-          }
-          if (msg.type === 'models') {
-            // Asynchronous and yielding for the same reason the fog read is:
-            // the loop here also accepts the hook helper's named-pipe
-            // connection, and it gives up after 80ms.
-            currentCatalogue({ force: !!msg.force }).then(
-              (c) => ws.send(JSON.stringify({
-                type: 'models', models: c.models, source: c.source,
-                fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
-                seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
-              })),
-              (err) => {
-                // Tell the CLIENT, not only the log. A silent failure leaves
-                // the panel reading "loading..." forever, which looks like a
-                // slow host rather than a lost answer.
-                console.log('[host] catalogue failed:', err.message);
-                try {
-                  ws.send(JSON.stringify({
-                    type: 'models', models: [], source: 'none', stale: true,
-                    error: err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
-                  }));
-                } catch { /* the socket went away */ }
-              }
-            );
-            return;
-          }
-          if (msg.type === 'seat') {
-            // add / remove. The RESULT is broadcast rather than returned to the
-            // asking client alone: two windows on one project share a council,
-            // and one of them silently disagreeing about who is seated is worse
-            // than a redraw.
-            const before = readSeats();
-            let seats = before;
-            let error = null;
-            if (msg.action === 'remove') {
-              seats = removeSeat(before, msg.id);
-            } else {
-              const model = (msg.model && typeof msg.model === 'object') ? msg.model : null;
-              const r = addSeat(before, model);
-              seats = r.seats;
-              error = r.error;
-            }
-            if (seats !== before) store.write('council', { seats });
-            broadcastControl({ ...seatPayload(seats), error });
-            return;
-          }
-          if (msg.type === 'bugvault') {
-            // Synchronous JSON, unlike fog's git walk -- answered inline, then
-            // broadcast, same as the seat protocol: two windows on one project
-            // share a vault, so one of them silently disagreeing about what is
-            // recorded is worse than a redraw.
-            let result = { ok: true };
-            if (msg.action === 'add') {
-              result = bugVault.add((msg.record && typeof msg.record === 'object') ? msg.record : {});
-            } else if (msg.action === 'setFixed') {
-              result = bugVault.setFixed(msg.id, msg.fixed === true);
-            }
-            broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
-            return;
-          }
-          if (msg.type === 'fog') {
-            // Answered on demand, asynchronously, yielding as it goes -- the
-            // read must never hold the loop past the helper's 80ms connect
-            // timeout, or it drops the hook events this panel is drawn from.
-            currentFog().then(
-              fog => ws.send(JSON.stringify({ type: 'fog', ...fog })),
-              err => {
-                // Tell the CLIENT, not just the log. A silent failure left the
-                // panel reading "reading the map..." forever, which looks like
-                // a slow host rather than a lost answer.
-                console.log('[host] fog read failed:', err.message);
-                try {
-                  ws.send(JSON.stringify({ type: 'fog', files: [], explored: 0, total: 0,
-                    status: { failed: true, error: err.message } }));
-                } catch { /* the client went away */ }
-              });
-            return;
-          }
-        } catch {
-          // Not control JSON — fall through and treat as literal input.
-        }
+      const { error, msg } = handleFrame(text, dispatchControl, (t) => term.write(t));
+      if (error) {
+        // A handler that threw is not "not control JSON" -- `handleFrame`
+        // guarantees this text was never passed to `term.write`. Log and
+        // drop.
+        console.log('[host] control message failed:', msg && msg.type, error && error.message);
       }
-      term.write(text);
       return;
     }
     term.write(raw.toString('utf8'));
