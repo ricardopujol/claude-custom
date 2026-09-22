@@ -10,7 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { bugVaultDisplay, formatBugRow, STATES, UNKNOWN } = require('../app/bugvault-display');
+const { bugVaultDisplay, formatBugRow, formatGroups, STATES, UNKNOWN } = require('../app/bugvault-display');
 
 const bug = (over = {}) => ({
   id: 'bug_1', category: 'silent failure', summary: 'exit 0 masked a failure',
@@ -205,6 +205,13 @@ test('an unreadable vault offers no rows, so nothing looks like a record that su
   const d = bugVaultDisplay({ bugs: [], summary: { error: 'unreadable' } });
   assert.deepStrictEqual(d.rows, []);
   assert.strictEqual(d.total, 0);
+  // Mortimer, re-run: `rows` and `total` were pinned here and `groups` and
+  // `detection` were not, so a damaged vault could still draw category bars
+  // and a detection breakdown beside its own error. Same shape as the refusal
+  // pattern in the host module -- the failure is asserted, the payload
+  // travelling with it is not.
+  assert.deepStrictEqual(d.groups, []);
+  assert.deepStrictEqual(d.detection, []);
 });
 
 test('a payload that has not arrived is still "reading", not "unreadable"', () => {
@@ -374,4 +381,42 @@ test('a record with no id reports null, not undefined', () => {
   // there.
   assert.strictEqual(formatBugRow({}).id, null);
   assert.strictEqual(formatBugRow({ id: 42 }).id, null);
+});
+
+test('sorting the rows does not reorder the caller\u2019s array', () => {
+  // Mortimer: `bugs.slice()` -> `bugs` makes the sort mutate the host's
+  // payload in place. Nothing owns that array here, and the next reader of it
+  // would silently see a different order than the host sent.
+  const payload = {
+    bugs: [{ id: 'a', fixed: true }, { id: 'b', fixed: false }, { id: 'c', fixed: true }],
+    summary: {},
+  };
+  const before = payload.bugs.map(b => b.id);
+  bugVaultDisplay(payload);
+  assert.deepStrictEqual(payload.bugs.map(b => b.id), before, 'the input must be left alone');
+});
+
+test('a null entry in the bug list does not throw in the sort comparator', () => {
+  // The count guard was tested; the comparator's own `b && b.fixed` was not.
+  const d = bugVaultDisplay({ bugs: [null, { id: 'a', fixed: true }, { id: 'b', fixed: false }], summary: {} });
+  assert.strictEqual(d.total, 3);
+  assert.strictEqual(d.rows.length, 3);
+});
+
+test('a non-string category in a group falls back to the dash', () => {
+  assert.strictEqual(formatGroups([{ category: 42, total: 1, fixed: 0, unfixed: 1 }])[0].category, UNKNOWN);
+  assert.strictEqual(formatGroups([{ category: null, total: 1, fixed: 0, unfixed: 1 }])[0].category, UNKNOWN);
+});
+
+test('NaN and Infinity in a group become 0, not a NaN bar', () => {
+  // Mortimer and I disagreed on filing this one, and he is right that it is
+  // NOT the wording class. It is an UNREACHABLE-INPUT guard: NaN and Infinity
+  // cannot cross the control socket, because JSON.stringify turns both into
+  // null and `num(null)` is already 0. The distinction matters because an
+  // unreachable-input mutant goes live the moment a second caller appears,
+  // and `formatGroups` is a public export of this module. One line, no
+  // brittleness, so it is cheaper to assert than to keep reasoning about.
+  assert.deepStrictEqual(
+    formatGroups([{ category: 'a', total: NaN, fixed: Infinity, unfixed: 0 }])[0],
+    { category: 'a', total: 0, fixed: 0, unfixed: 0, bar: 0, openLabel: null });
 });

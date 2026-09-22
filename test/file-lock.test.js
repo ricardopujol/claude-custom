@@ -338,3 +338,88 @@ test('waiting sleeps rather than spinning -- the host owns the pty', () => {
   // ~10 attempts at RETRY_MS=15 over 150ms. A busy-wait makes tens of thousands.
   assert.ok(attempts > 0 && attempts < 50, `expected a paced retry, got ${attempts} attempts`);
 });
+
+// --- the other half of the liveness fix --------------------------------------
+//
+// Mortimer, PR #29 mutation re-run, R13. The deadline check stops the HANG and
+// is fully pinned -- two of its mutants die as timeouts, which is the tool
+// recreating the original defect and these tests catching it. The `broke`
+// classification is the other half, and it was pinned by nothing: four mutants
+// on it, all surviving, verified by building each one and running this whole
+// file against it (25/25 passed every time).
+//
+// Why the two tests above cannot see it, both being otherwise correct:
+//   - the directory test asserts `waited < 5000`, and a busy-spin also gives
+//     up on time, so it passes;
+//   - the pacing test has exactly the right instrument, the attempt counter,
+//     but points it at a lock held by a LIVE pid -- isStale returns false, the
+//     breaking branch never runs, and `broke` is never assigned at all.
+//
+// Measured: `broke = true` spins 1763 attempts in 150ms and
+// `broke = err.code !== 'ENOENT'` spins 1421, where the shipped code does
+// about ten. A core burned inside the process that owns the pty, which is
+// precisely what the Atomics.wait comment exists to prevent.
+
+test('an undeletable lock path is PACED, not retried at full speed', () => {
+  const lock = lockIn(tmpdir());
+  fs.mkdirSync(lock, { recursive: true });      // unreadable AND undeletable
+
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 150 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.ok(attempts > 0 && attempts < 50, `expected a paced retry, got ${attempts} attempts`);
+});
+
+test('the deadline is INCLUSIVE: a frozen clock exactly at the deadline gives up', () => {
+  // Mortimer's own correction, and the sharper finding of the two. He first
+  // filed `now() >= giveUpAt -> >` as an EQUIVALENT mutant -- "differs only if
+  // the clock lands exactly on the deadline, costing one extra 15ms retry".
+  // It is not equivalent: it HANGS. `opts.now` is a supported injection seam,
+  // so with a frozen clock `now()` never advances past `giveUpAt` and `>` is
+  // never satisfied. The same liveness class as the bug this file just fixed,
+  // one character away.
+  //
+  // It also escaped the report: Stryker called it Killed, and running this
+  // suite against the built mutant passed 25/25 -- because the `deadlineMs: 0`
+  // test uses the REAL clock, which advances on the next retry and lets the
+  // mutant out. Only an injected clock can reach it, which is the same reason
+  // the STALE_MS boundaries above are asserted against an explicit `now`.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  assert.throws(
+    () => withFileLock(lock, () => {}, { deadlineMs: 0, now: () => 1000000 }), /lock/i);
+});
+
+test('a lock whose mtime cannot be read is broken, not treated as a tombstone', () => {
+  // Mortimer's second correction. He filed the `catch { return parsed; }` in
+  // readLock as "not producible deterministically"; it is producible with a
+  // statSync stub, exactly like the process.kill stub above, and the
+  // behaviours differ materially.
+  //
+  // Measured: the shipped code acquires in 1ms; the mutant burns the whole
+  // deadline and refuses. `readLock` returns null when it can learn nothing,
+  // so `held === null` breaks the lock. Returning `{ pid: null, at: null }`
+  // instead makes isStale call it not-stale forever -- the permanent tombstone
+  // the mtime fallback exists to prevent, per its own comment.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, 'not json at all');
+
+  const realStat = fs.statSync;
+  fs.statSync = (...a) => {
+    if (String(a[0]) === lock) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    return realStat.apply(fs, a);
+  };
+  try {
+    assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+  } finally {
+    fs.statSync = realStat;
+  }
+});

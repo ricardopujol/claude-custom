@@ -874,13 +874,20 @@ test('a blank foundAt falls back to now rather than being stored as blank', () =
 });
 
 test('ids sort in creation order, which is what the comment promises', () => {
-  // Mortimer: `seq++ -> seq--` keeps ids UNIQUE, so the uniqueness test passes
-  // while "sorts roughly by creation order" quietly stops being true.
+  // Mortimer, PR #29 re-run: THE FIRST VERSION OF THIS TEST DID NOT
+  // DISCRIMINATE ITS OWN MUTANT. `seq++ -> seq--` produces negative base-36
+  // suffixes (-1e, -1f, -1g) which still sort ascending lexicographically, so
+  // asserting `[...ids].sort()` equals `ids` passed against the mutant. The
+  // rule is that the per-process counter COUNTS UP; comparing it numerically
+  // is the only way to say that.
   const at = () => 1000;
   const ids = [createRecord({ category: 'a', summary: '1' }, { now: at }).record.id,
                createRecord({ category: 'a', summary: '2' }, { now: at }).record.id,
                createRecord({ category: 'a', summary: '3' }, { now: at }).record.id];
-  assert.deepStrictEqual([...ids].sort(), ids, 'ids made at one instant must sort in creation order');
+  const suffix = id => parseInt(id.split('_')[2], 36);
+  assert.ok(suffix(ids[0]) < suffix(ids[1]) && suffix(ids[1]) < suffix(ids[2]),
+    `the per-process counter must count UP, got ${ids.join(' ')}`);
+  assert.deepStrictEqual([...ids].sort(), ids, 'and ids made at one instant must sort in order');
 });
 
 test('the seeded vault uses the injected clock, not the wall clock', () => {
@@ -888,4 +895,24 @@ test('the seeded vault uses the injected clock, not the wall clock', () => {
   // noticed, so seed timestamps were untestable by construction.
   const v = createBugVault({ store: memStore(undefined), now: () => 0 });
   assert.ok(v.list().every(b => b.foundAt === new Date(0).toISOString()));
+});
+
+test('a group counts fixed and unfixed separately, with asymmetric numbers', () => {
+  // Mortimer: `!b.fixed` -> `b.fixed` was invisible because the existing test
+  // used a group with one fixed and one unfixed, where swapping them changes
+  // nothing. A symmetric fixture cannot detect a swap.
+  const bugs = [
+    { category: 'a', fixed: true }, { category: 'a', fixed: true },
+    { category: 'a', fixed: true }, { category: 'a', fixed: false },
+  ];
+  const [g] = groupByCategory(bugs);
+  assert.strictEqual(g.total, 4);
+  assert.strictEqual(g.fixed, 3);
+  assert.strictEqual(g.unfixed, 1);
+});
+
+test('a null entry in the list does not throw in either aggregation', () => {
+  assert.deepStrictEqual(detectionBreakdown([null, { detectedBy: 'm' }]),
+    [{ detectedBy: 'm', count: 1 }]);
+  assert.deepStrictEqual(groupByCategory([null, { category: 'a', fixed: false }]).length, 1);
 });
