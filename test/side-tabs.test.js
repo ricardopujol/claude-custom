@@ -78,3 +78,26 @@ test('a null event is not a toggle', () => {
   assert.strictEqual(isPanelToggle(null), false);
   assert.strictEqual(isPanelToggle(undefined), false);
 });
+
+test('every tab in TABS has a button in the real markup, and vice versa', () => {
+  // FOUND BY RENDERING, not by the suite. The tab strip in app/renderer.html is
+  // hardcoded HTML that duplicates TABS, and nothing checked the two against
+  // each other -- so adding 'projects' to TABS added a panel that was REACHABLE
+  // ONLY by CLAUDE_CUSTOM_SIDE_TAB. The full suite was green and the feature
+  // had no way in.
+  //
+  // The mirror of test/renderer-scope.test.js's lesson: that one checks what
+  // leaks OUT of a module, this checks that what the markup offers and what the
+  // data declares are the same set. Drift in either direction is a bug --
+  // a button with no tab blanks the sidebar, a tab with no button is unreachable.
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const nav = html.slice(html.indexOf('<nav id="side-tabs">'), html.indexOf('</nav>'));
+  assert.ok(nav.length > 20, 'the tab strip must be findable for this check to mean anything');
+
+  const inMarkup = [...nav.matchAll(/data-tab="([^"]+)"/g)].map(m => m[1]);
+  const declared = TABS.map(t => t.id);
+  assert.deepStrictEqual(inMarkup, declared,
+    'app/renderer.html\'s tab strip and side-tabs.js TABS have drifted apart');
+});

@@ -49,6 +49,9 @@ const { readFog } = require('./fog');
 const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
 const { writeIdentity, fileFor } = require('./host-identity');
+const { pickerPayload, createProjectsReader } = require('./project-picker');
+const { resolveLaunchTarget } = require('./launch-target');
+const { samePath } = require('./project-path');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -730,6 +733,69 @@ if (helperExists) {
     .catch(e => console.log('[host] hook bridge FAILED to bind:', e.message));
 }
 
+// --- the project picker ------------------------------------------------------
+
+/**
+ * The recent-projects list, for the sidebar's Projects panel.
+ *
+ * A FAILED read is reported as `ok:false` rather than as an empty list. "You
+ * have not opened anything yet" and "we could not read your history" are
+ * different facts, and an empty array tells them apart for nobody.
+ */
+// Holds its cache across calls. Without one, every open of the panel re-read
+// every transcript on the machine -- measured 2.0s, 3.0s, 3.9s and rising,
+// synchronously, on the event loop that delivers hook events. With it: 8ms.
+const readProjects = createProjectsReader();
+
+async function sendProjects(ws) {
+  let recents = null;                       // null means the read failed
+  try {
+    recents = readProjects();
+  } catch (err) {
+    console.log('[host] could not list recent projects:', err.message);
+  }
+  ws.send(JSON.stringify({ type: 'projects', ...pickerPayload({ recents, current: CWD }) }));
+}
+
+/**
+ * Open another project in its own window.
+ *
+ * Spawns the launcher rather than reusing this host: a host is bound to one
+ * project by construction -- it holds a pty already running `claude` in this
+ * cwd -- so "switch project" is a new host, not a mutation of this one. That
+ * also means the session you are looking at survives switching away from it,
+ * which is the same detach property the rest of this design rests on.
+ *
+ * The path is REVALIDATED here even though the picker only ever offers paths
+ * this host sent it. The control channel is token-gated, so this is not the
+ * last line of defence, but a stale list is enough on its own: a project
+ * deleted since the panel was drawn would otherwise spawn a window onto a
+ * folder that no longer exists.
+ */
+function openProject(msg, ws) {
+  let target;
+  try {
+    target = resolveLaunchTarget(msg && msg.path, { cwd: CWD });
+  } catch (err) {
+    console.log('[host] refusing to open:', err.message);
+    ws.send(JSON.stringify({ type: 'projects', error: err.message }));
+    return;
+  }
+  if (samePath(target, CWD)) return;        // already here; opening again is a no-op
+
+  console.log('[host] opening project:', target);
+  const child = require('child_process').spawn(
+    process.execPath,
+    [path.join(__dirname, '..', 'bin', 'claude-custom.js'), target], {
+    detached: true,
+    stdio: 'ignore',
+    // ELECTRON_RUN_AS_NODE is inherited and is exactly what we want here: the
+    // launcher is a node script, and this process's execPath is electron.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  child.unref();
+}
+
 console.log('[host] claude binary :', CLAUDE_BIN);
 console.log('[host] cwd           :', CWD);
 
@@ -1095,6 +1161,14 @@ wss.on('connection', (ws) => {
       // running --dangerously-skip-permissions. That is the exact hole #18
       // exists to close, and it would have reopened silently on merge.
       handleDrop(msg, ws);
+      return;
+    }
+    if (msg.type === 'projects') {
+      sendProjects(ws);
+      return;
+    }
+    if (msg.type === 'open') {
+      openProject(msg, ws);
       return;
     }
     if (msg.type === 'health') {

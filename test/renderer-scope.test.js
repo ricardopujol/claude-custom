@@ -45,6 +45,7 @@ const ALLOWED_GLOBALS = new Set([
   'usageDisplay',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
+  'projectsDisplay',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules
@@ -125,7 +126,11 @@ test('the display modules the renderer needs are actually defined after loading'
     if (file === 'renderer.js') continue;
     vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
   }
-  for (const fn of ['usageDisplay']) {
+  // Every display module the renderer calls, not just the first one anyone
+  // thought to list. `projectsDisplay` was added after the Projects panel drew
+  // nothing in a real window -- a one-name list cannot catch the next module,
+  // which is the same shape of gap as the career display's original bug.
+  for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });
