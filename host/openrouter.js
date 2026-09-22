@@ -84,10 +84,10 @@ async function readCache(file) {
   try {
     const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
     if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) return null;
-    // A missing or unusable timestamp is NULL, not 0. Zero only looks ancient
-    // because the epoch is far away, which makes the freshness rule depend on
-    // an accident of arithmetic rather than on saying what it means. Null is
-    // "we do not know when this was fetched", and that is never fresh.
+      // A missing or unusable timestamp is NULL, not 0. Zero only looks ancient
+      // because the epoch is far away, which makes the freshness rule depend on
+      // an accident of arithmetic rather than on saying what it means. Null is
+      // "we do not know when this was fetched", and that is never fresh.
     const stamp = Number(parsed.fetchedAt);
     return { rows: parsed.rows, fetchedAt: Number.isFinite(stamp) && stamp > 0 ? stamp : null };
   } catch {
@@ -101,32 +101,49 @@ async function writeCache(file, rows, now) {
     // Written via a temp file and renamed: a half-written cache that still
     // parses would be a truncated catalogue silently presented as the whole one.
     const tmp = `${file}.tmp`;
-    await fsp.writeFile(tmp, JSON.stringify({ fetchedAt: now, rows }), 'utf8');
-    // Retried. Dexter, Finding 5: this is the third write-and-rename in the
-    // codebase and was the only one left unretried, precisely BECAUSE it never
-    // threw -- the catch below swallows it. On the machine the retry exists
-    // for, a handle is briefly held on every write, so this rename failed
-    // every time and the cache was never written at all, with every launch
-    // silently paying a network fetch. A graceful catch around a write that
-    // never succeeds is not graceful degradation, it is a hidden outage.
-    //
-    // The ASYNC sibling, not renameWithRetry: this caller can yield, so it
-    // must, rather than freezing the host's event loop the way Atomics.wait
-    // would.
-    await renameWithRetryAsync(tmp, file);
+
+    // The temp is cleaned up on failure, like the other two write-and-rename
+    // sites. Miguel: the cleanup landed at two of three, and one site
+    // differing is how the next reader concludes the pattern is optional.
+    // Harmless here on its own -- the fixed `.tmp` name bounds it at one
+    // orphan and a model catalogue holds no secrets -- which is precisely why
+    // the reason to do it is consistency rather than risk.
+    try {
+      await fsp.writeFile(tmp, JSON.stringify({ fetchedAt: now, rows }), 'utf8');
+      // Retried. Dexter, Finding 5: this is the third write-and-rename in the
+      // codebase and was the only one left unretried, precisely BECAUSE it
+      // never threw -- the catch below swallowed it. On the machine the retry
+      // exists for, a handle is briefly held on every write, so this rename
+      // failed every time, the cache was never written at all, and every
+      // launch silently paid a network fetch.
+      //
+      // The ASYNC sibling, not renameWithRetry: this caller can yield, so it
+      // must, rather than freezing the event loop the way Atomics.wait does.
+      await renameWithRetryAsync(tmp, file);
+    } catch (err) {
+      try { await fsp.unlink(tmp); } catch { /* best effort, as elsewhere */ }
+      throw err;
+    }
   } catch (err) {
-    // A cache that cannot be written is a slower panel, not a broken one --
-    // so this still degrades rather than throwing. But it SAYS SO now.
+    // A cache that cannot be written is a slower panel, not a broken one, so
+    // this still degrades rather than throwing. But it SAYS SO now.
     //
-    // Miguel, review of the fixed branch: the retry above removed the CAUSE
-    // and left the DETECTOR missing. An empty catch here means an exhausted
-    // write is indistinguishable from a working cache, which is precisely the
-    // hidden outage Dexter's Finding 5 was about -- every launch paying a
-    // network fetch, forever, with nothing anywhere reporting it. Degrading is
-    // right; degrading undetectably is the bug.
+    // Miguel: the retry above removed the CAUSE and left the DETECTOR missing.
+    // An empty catch makes an exhausted write indistinguishable from a working
+    // cache -- the hidden outage Finding 5 was about, every launch paying a
+    // network fetch forever with nothing reporting it. Degrading is right;
+    // degrading undetectably is the bug.
+    //
+    // COST, worth knowing: writeCache is awaited on the network path, so on a
+    // machine where the rename fails PERMANENTLY every refresh now pays the
+    // full 300ms backoff before loadCatalogue resolves, where it previously
+    // paid none. Justified while the failure is transient -- that is the fix --
+    // and pure cost when it is permanent, which is a second reason this
+    // warning matters: 300ms of silence is worse than 0ms of silence.
     console.warn('[openrouter] could not write the catalogue cache:', err && err.message);
   }
 }
+
 
 /**
  * The catalogue, with its provenance.
@@ -155,15 +172,15 @@ async function loadCatalogue({ cacheFile, now = Date.now(), force = false, fetch
   } catch (err) {
     const message = (err && err.message) || String(err);
     if (cached) {
-      // Stale beats empty, but only if it SAYS it is stale. A month-old price
-      // shown as current is the failure that costs money.
+        // Stale beats empty, but only if it SAYS it is stale. A month-old price
+        // shown as current is the failure that costs money.
       return {
         rows: cached.rows, source: 'cache', fetchedAt: cached.fetchedAt,
         stale: true, error: message,
       };
     }
-    // Empty AND an error, never a bare empty list: "no models" and "could not
-    // ask" look identical on screen otherwise.
+      // Empty AND an error, never a bare empty list: "no models" and "could not
+      // ask" look identical on screen otherwise.
     return { rows: [], source: 'none', fetchedAt: 0, stale: true, error: message };
   }
 }

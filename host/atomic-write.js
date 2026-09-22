@@ -16,6 +16,16 @@
  *
  * Unretried that is a vault save, or a settings write, that simply throws.
  *
+ * WHO USES THIS, because the `host/` folder makes it look host-specific and it
+ * is not: app/secret-vault.js (Electron MAIN process), host/store.js (the host
+ * process) and host/openrouter.js (the catalogue cache, via the async twin).
+ * Shared infrastructure that happens to live here; worth moving one day, not
+ * worth moving in the change that found it.
+ *
+ * NOT SAFE IN A RENDERER as written: `sleepSync` needs SharedArrayBuffer,
+ * which a renderer does not get without cross-origin isolation. Both
+ * synchronous callers are main/host today.
+ *
  * WHAT THIS DOES NOT DO: swallow the failure. A save that cannot happen must
  * be reported, never reported as done -- the same rule the rest of this
  * codebase follows for absence. The retry buys the milliseconds the handle
@@ -36,7 +46,25 @@
 //
 // ENOSPC means the disk is full. Neither improves in 10ms, and retrying turns
 // a clear failure into a slow one that looks like a hang.
+// PRIVATE, and it stays private. Miguel: exported as a mutable Set, any
+// consumer could `TRANSIENT.add('ENOENT')` and turn a deliberate fail-fast
+// into five attempts against a file that will never exist -- changing this
+// module's policy from the outside, invisibly, with every test still passing.
+//
+// Object.freeze does NOT fix that, which is worth writing down because it is
+// the obvious fix and it silently does nothing: freezing a Set freezes its own
+// properties, not its internal data, so `.add()` still succeeds. Verified
+// rather than assumed -- `Object.freeze(new Set(['EPERM'])).add('ENOENT')`
+// returns a Set of size 2.
+//
+// So the container is not exported at all; `isTransient` is. A predicate
+// cannot be extended from the outside.
 const TRANSIENT = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+// A frozen snapshot for anyone who needs to SEE the policy (tests, reports)
+// without being able to change it. An array copy, so mutating it affects
+// nothing.
+const TRANSIENT_CODES = Object.freeze([...TRANSIENT]);
 
 const fs = require('fs');
 const fsp = require('fs/promises');
@@ -168,7 +196,10 @@ async function renameWithRetryAsync(from, to, {
   throw last;
 }
 
+// `sleepAsync` is deliberately NOT exported: nothing imports it, and an
+// unused export is surface that invites a second, divergent caller.
+// `sleepSync` is, because verify/probe-atomic-sleep.js measures it directly.
 module.exports = {
-  renameWithRetry, renameWithRetryAsync, sleepSync, sleepAsync,
-  isTransient, nextWait, TRANSIENT, ATTEMPTS, FIRST_WAIT_MS,
+  renameWithRetry, renameWithRetryAsync, sleepSync,
+  isTransient, nextWait, TRANSIENT_CODES, ATTEMPTS, FIRST_WAIT_MS,
 };

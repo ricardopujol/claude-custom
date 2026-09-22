@@ -400,3 +400,27 @@ test('INVARIANT: a non-transient code mid-sequence stops there, however late', (
     assert.strictEqual(rename.calls.length, at, `fatal at attempt ${at}`);
   }
 });
+
+test('the retry policy cannot be widened from outside this module', () => {
+  // Miguel: the transient set used to be exported as a live Set, so any
+  // consumer could TRANSIENT.add('ENOENT') and turn a deliberate fail-fast
+  // into five attempts against a file that will never exist -- a policy change
+  // from the outside, invisible, with every test still green.
+  //
+  // Object.freeze is the obvious fix and it SILENTLY DOES NOTHING: freezing a
+  // Set freezes its own properties, not its internal data. Measured, not
+  // assumed -- Object.freeze(new Set(['EPERM'])).add('ENOENT') gives size 2.
+  // So the container is private and only the predicate is exported.
+  const mod = require('../host/atomic-write');
+  assert.strictEqual(mod.TRANSIENT, undefined, 'the mutable Set must not be exported');
+
+  // The snapshot is a copy: mutating it must not reach the policy.
+  assert.ok(Array.isArray(mod.TRANSIENT_CODES));
+  assert.throws(() => mod.TRANSIENT_CODES.push('ENOENT'), TypeError);
+
+  // And the policy itself still refuses a non-transient code.
+  assert.strictEqual(mod.isTransient({ code: 'ENOENT' }), false);
+  const rename = flaky(['ENOENT']);
+  assert.throws(() => renameWithRetry('a.tmp', 'b', { rename, sleep: () => {} }), /ENOENT/);
+  assert.strictEqual(rename.calls.length, 1);
+});

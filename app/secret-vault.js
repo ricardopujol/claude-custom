@@ -75,6 +75,12 @@ function createVault({ file, crypto, onWrite } = {}) {
    * Passing the candidate through means the failure path cannot leave anything
    * behind to be committed by accident -- there is no partial state to roll
    * back, because nothing was assigned in the first place.
+   *
+   * WHAT THIS STILL DOES NOT SOLVE, named here so it is not rediscovered as a
+   * bug (Miguel): `commit` spreads the IN-MEMORY state, which may be stale if
+   * a second app instance wrote the vault since `load()`. Last writer wins
+   * across processes. Pre-existing and out of scope for the retry, but this is
+   * the exact line someone would be looking at when they hit it.
    */
   function commit(nextEntries) {
     const next = { ...state, entries: nextEntries };
@@ -100,6 +106,10 @@ function createVault({ file, crypto, onWrite } = {}) {
     // temp, which is the same leak Dexter's Finding 9 was about, through the
     // other door.
     try {
+      // 0o600 is near-inert on Windows -- Node honours only the read-only bit
+      // there -- so it is right on POSIX and documents intent, and the threat
+      // model must not lean on it on this machine (Miguel). DPAPI binding the
+      // ciphertext to the logged-in user is what actually carries the weight.
       fs.writeFileSync(tmp, JSON.stringify(candidate), { mode: 0o600 });
       // Retried: on Windows the rename fails with EPERM / EACCES / EBUSY while
       // anything holds a handle for a moment, and the antivirus scan of the
