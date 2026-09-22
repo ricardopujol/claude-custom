@@ -34,7 +34,7 @@ const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
-const { createBugVault } = require('./bugvault');
+const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
@@ -1103,12 +1103,13 @@ wss.on('connection', (ws) => {
       // broadcast, same as the seat protocol: two windows on one project
       // share a vault, so one of them silently disagreeing about what is
       // recorded is worse than a redraw.
-      let result = { ok: true };
-      if (msg.action === 'add') {
-        result = bugVault.add((msg.record && typeof msg.record === 'object') ? msg.record : {});
-      } else if (msg.action === 'setFixed') {
-        result = bugVault.setFixed(msg.id, msg.fixed === true);
-      }
+      // Routing lives in host/bugvault.js so it can be tested without a pty.
+      // Dexter F4: the if-chain that used to stand here initialised `result`
+      // to `{ ok: true }`, so an unrecognised action was broadcast as a
+      // SUCCESS -- fail-open, in the dispatcher. F5: it also passed
+      // `msg.fixed === true`, collapsing "explicitly false" and "absent" into
+      // the same value before the vault could tell them apart.
+      const result = applyVaultAction(bugVault, msg);
       broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
       return;
     }

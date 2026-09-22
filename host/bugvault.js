@@ -262,4 +262,34 @@ function createBugVault({ store, now = Date.now } = {}) {
   return { list, add, setFixed, summary };
 }
 
-module.exports = { createRecord, groupByCategory, detectionBreakdown, createBugVault, SEED_BUGS };
+/**
+ * Route one `bugvault` control frame to the vault. Dexter, PR #29 review, F4.
+ *
+ * THIS USED TO BE AN IF-CHAIN INSIDE host.js's `dispatchControl`, with
+ * `result` initialised to `{ ok: true }` and reassigned only by the branches
+ * that recognised the action. Any other action fell through untouched and was
+ * broadcast with `error: null` -- a success reply for work that never
+ * happened, in the one function whose whole job is deciding what is ours.
+ * Fail-open in a gatekeeper.
+ *
+ * It lives here for the reason every drawing decision lives in
+ * app/*-display.js: inline in host.js it cannot be tested without a live pty,
+ * and "what are this feature's actions?" is the vault's question anyway.
+ *
+ * The inputs are NOT pre-coerced. host.js used to pass
+ * `(msg.record && typeof msg.record === 'object') ? msg.record : {}`, which
+ * turns a malformed frame into an empty one and reports the validator's
+ * "category is required" instead of "that was not a record". `createRecord`
+ * already refuses a non-object; handing it the raw value keeps the refusal
+ * honest about what was wrong.
+ */
+function applyVaultAction(vault, msg) {
+  const action = msg && msg.action;
+  if (action === 'add') return vault.add(msg.record);
+  if (action === 'setFixed') return vault.setFixed(msg.id, msg.fixed);
+  return { ok: false, error: `unknown vault action ${JSON.stringify(action)}` };
+}
+
+module.exports = {
+  createRecord, groupByCategory, detectionBreakdown, createBugVault, applyVaultAction, SEED_BUGS,
+};

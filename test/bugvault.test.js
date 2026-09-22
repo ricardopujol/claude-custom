@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
-  createRecord, groupByCategory, detectionBreakdown, createBugVault, SEED_BUGS,
+  createRecord, groupByCategory, detectionBreakdown, createBugVault, applyVaultAction, SEED_BUGS,
 } = require('../host/bugvault');
 
 function memStore(initial) {
@@ -251,4 +251,62 @@ test('the seed data records category and detection method for every entry, since
     assert.ok(seed.category && seed.category.trim(), JSON.stringify(seed));
     assert.ok(seed.detectedBy && seed.detectedBy.trim(), JSON.stringify(seed));
   }
+});
+
+// --- applyVaultAction --------------------------------------------------------
+//
+// Dexter, PR #29 review, F4. The action routing used to live inline in
+// host.js's `dispatchControl`, where `result` was initialised to `{ ok: true }`
+// and only reassigned by the two branches that recognised the action. Anything
+// else fell straight through to a broadcast carrying `error: null` -- a
+// SUCCESS reply for work that never happened, inside the one function whose
+// entire job is knowing which frames are ours.
+//
+// It moved here for the same reason every drawing decision moved out of
+// renderer.js: a decision inline in host.js is a decision nothing can test
+// without a live pty. The vault module is also where the question "what are
+// this feature's actions?" actually belongs.
+
+test('an unknown vault action is refused, not answered with success', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1 });
+  const r = applyVaultAction(v, { action: 'delete', id: 'anything' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /unknown/i);
+});
+
+test('the refusal names the action it refused, so the log says which frame was wrong', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1 });
+  assert.match(applyVaultAction(v, { action: 'drop' }).error, /drop/);
+});
+
+test('a missing action is refused too -- absence is not a default action', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1 });
+  assert.strictEqual(applyVaultAction(v, {}).ok, false);
+  assert.strictEqual(applyVaultAction(v, null).ok, false);
+});
+
+test('an unknown action does not mutate the vault', () => {
+  // The broadcast that followed the old fall-through carried the CURRENT
+  // vault, so a client could not tell a no-op apart from a successful write.
+  const store = memStore({ bugs: [] });
+  const v = createBugVault({ store, now: () => 1 });
+  v.add({ category: 'a', summary: 'x' });
+  const before = JSON.stringify(v.list());
+  applyVaultAction(v, { action: 'nonsense' });
+  assert.strictEqual(JSON.stringify(v.list()), before);
+});
+
+test('the two real actions still route through', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1 });
+  const added = applyVaultAction(v, { action: 'add', record: { category: 'a', summary: 'x' } });
+  assert.strictEqual(added.ok, true);
+  const done = applyVaultAction(v, { action: 'setFixed', id: added.record.id, fixed: true });
+  assert.strictEqual(done.ok, true);
+  assert.strictEqual(v.list()[0].fixed, true);
+});
+
+test('a record that is not an object is refused by the validator, not coerced into one', () => {
+  const v = createBugVault({ store: memStore({ bugs: [] }), now: () => 1 });
+  assert.strictEqual(applyVaultAction(v, { action: 'add', record: 'category: a' }).ok, false);
+  assert.strictEqual(applyVaultAction(v, { action: 'add' }).ok, false);
 });
