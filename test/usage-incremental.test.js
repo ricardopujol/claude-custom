@@ -306,18 +306,44 @@ test('appending one line to a huge file costs about what one line costs', async 
   for (let i = 0; i < 20000; i++) many.push(line(U(1, 1)));
   fs.writeFileSync(f, many.join(''));
 
-  const cache = new Map();
-  const t0 = process.hrtime.bigint();
-  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
-  const cold = Number(process.hrtime.bigint() - t0) / 1e6;
+  // MEASURED IN BYTES, NOT MILLISECONDS.
+  //
+  // This test used to assert `grown < cold / 4` on wall clock, and it FLAKED:
+  // observed failing with "cold 18.7ms, after one append 11.6ms". Nothing was
+  // wrong with the cache. The cold read is simply fast enough in absolute
+  // terms that scheduler noise, a GC pause or a busy machine can put the warm
+  // read within a factor of four of it -- so the test failed for a reason that
+  // had nothing to do with the property it was named after.
+  //
+  // A wall-clock ratio was always a PROXY for the real claim, which is that a
+  // resumed read touches only the bytes that were appended. That is countable,
+  // deterministic, and immune to how loaded the machine is -- and it is a
+  // STRONGER assertion than the ratio ever was: it would catch a re-read that
+  // happened to be fast, which `< cold / 4` would have let through.
+  const bytes = [];
+  const onRead = (n) => bytes.push(n);
 
-  fs.appendFileSync(f, line(U(3, 4)));
-  const t1 = process.hrtime.bigint();
-  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
-  const grown = Number(process.hrtime.bigint() - t1) / 1e6;
+  const cache = new Map();
+  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, onRead });
+  const coldBytes = bytes.splice(0).reduce((a, b) => a + b, 0);
+  const fileSize = fs.statSync(f).size;
+  assert.ok(coldBytes >= fileSize,
+    `a cold read must read the whole file: ${coldBytes} of ${fileSize} bytes`);
+
+  const appended = line(U(3, 4));
+  fs.appendFileSync(f, appended);
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, onRead });
+  const warmBytes = bytes.splice(0).reduce((a, b) => a + b, 0);
 
   assert.strictEqual(r.session.total, 20000 * 2 + 7);
-  assert.ok(grown < cold / 4, `cold ${cold.toFixed(1)}ms, after one append ${grown.toFixed(1)}ms`);
+
+  // The whole design claim, stated exactly: the second read costs the appended
+  // line, not the 20,000 that preceded it. The allowance covers the fingerprint
+  // re-read that verifies the file was appended to rather than rewritten.
+  assert.ok(warmBytes < coldBytes / 100,
+    `a resumed read cost ${warmBytes} bytes against a cold ${coldBytes} -- it re-read the file`);
+  assert.ok(warmBytes >= appended.length,
+    `it must still read the appended ${appended.length} bytes, not ${warmBytes}`);
 });
 
 // --- the failure semantics, which milestones depend on ------------------------
