@@ -784,13 +784,29 @@ function openProject(msg, ws) {
   if (samePath(target, CWD)) return;        // already here; opening again is a no-op
 
   console.log('[host] opening project:', target);
+
+  // Logged to a FILE, not discarded and not piped. stdio:'ignore' is what made
+  // the first version of this unfixable from the outside: the launcher failed,
+  // the panel said "opening a window…", and nothing anywhere said why. A pipe
+  // would be worse than useless -- it belongs to this process, so the detached
+  // child takes EPIPE the moment it writes after we go, which is the same trap
+  // app/main.js records for the host's own log.
+  let stdio = 'ignore';
+  try {
+    fs.mkdirSync(HARNESS_DIR, { recursive: true });
+    const fd = fs.openSync(path.join(HARNESS_DIR, 'launcher.log'), 'a');
+    stdio = ['ignore', fd, fd];
+  } catch { /* a log we cannot open must not stop the window opening */ }
+
   const child = require('child_process').spawn(
     process.execPath,
     [path.join(__dirname, '..', 'bin', 'claude-custom.js'), target], {
     detached: true,
-    stdio: 'ignore',
-    // ELECTRON_RUN_AS_NODE is inherited and is exactly what we want here: the
-    // launcher is a node script, and this process's execPath is electron.
+    stdio,
+    // ELECTRON_RUN_AS_NODE is set ON PURPOSE and only for the launcher, which
+    // is a node script while this process's execPath is electron. The launcher
+    // strips it again before spawning the window -- see launchEnv, and the
+    // trap it documents.
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   });
   child.unref();

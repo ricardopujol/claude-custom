@@ -2,8 +2,20 @@
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
   "packageManager": "npm",
   "testRunner": "command",
-  "commandRunner": { "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js" },
-  "mutate": ["host/quota.js", "app/quota-display.js"],
+  "commandRunner": {
+    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/project-path.test.js test/handshake.test.js test/host-identity.test.js test/port-for-project.test.js test/launch-target.test.js test/project-picker.test.js test/projects-display.test.js"
+  },
+  "mutate": [
+    "host/quota.js",
+    "app/quota-display.js",
+    "host/project-path.js",
+    "host/handshake.js",
+    "host/host-identity.js",
+    "host/port-for-project.js",
+    "host/launch-target.js",
+    "host/project-picker.js",
+    "app/projects-display.js"
+  ],
   "reporters": ["clear-text", "progress"],
   "coverageAnalysis": "off",
   "timeoutMS": 20000,

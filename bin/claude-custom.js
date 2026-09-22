@@ -12,7 +12,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
-const { resolveLaunchTarget } = require('../host/launch-target');
+const { resolveLaunchTarget, launchEnv } = require('../host/launch-target');
 const { portForCwd } = require('../host/port-for-project');
 
 const INSTALL_DIR = path.join(__dirname, '..');
@@ -47,6 +47,6 @@ const electron = require(path.join(INSTALL_DIR, 'node_modules', 'electron'));
 
 const child = spawn(electron, [INSTALL_DIR], {
   stdio: 'inherit',
-  env: { ...process.env, CLAUDE_CUSTOM_CWD: target },
+  env: launchEnv(process.env, target),
 });
 child.on('exit', code => process.exit(code == null ? 1 : code));
