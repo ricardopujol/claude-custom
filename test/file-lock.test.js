@@ -378,24 +378,45 @@ test('an undeletable lock path is PACED, not retried at full speed', () => {
   assert.ok(attempts > 0 && attempts < 50, `expected a paced retry, got ${attempts} attempts`);
 });
 
-test('the deadline is INCLUSIVE: a frozen clock exactly at the deadline gives up', () => {
+test('a zero deadline gives up on the FIRST check -- the deadline is inclusive', () => {
   // Mortimer's own correction, and the sharper finding of the two. He first
   // filed `now() >= giveUpAt -> >` as an EQUIVALENT mutant -- "differs only if
   // the clock lands exactly on the deadline, costing one extra 15ms retry".
-  // It is not equivalent: it HANGS. `opts.now` is a supported injection seam,
-  // so with a frozen clock `now()` never advances past `giveUpAt` and `>` is
-  // never satisfied. The same liveness class as the bug this file just fixed,
-  // one character away.
+  // It is not equivalent: with an injected clock it never terminates. The same
+  // liveness class as the bug this file just fixed, one character away.
   //
   // It also escaped the report: Stryker called it Killed, and running this
   // suite against the built mutant passed 25/25 -- because the `deadlineMs: 0`
   // test uses the REAL clock, which advances on the next retry and lets the
-  // mutant out. Only an injected clock can reach it, which is the same reason
-  // the STALE_MS boundaries above are asserted against an explicit `now`.
+  // mutant out. Only an injected clock reaches it.
+  //
+  // BUT A FROZEN CLOCK IS THE WRONG INSTRUMENT, and he measured why: against
+  // the mutant it does not fail, it HANGS, and no per-test timeout can stop it
+  // -- the retry loop is fully synchronous and `sleepSync` uses Atomics.wait,
+  // so the thread never yields and node's test timer never gets a turn. `npm
+  // test` would hang forever instead of going red: a stuck CI job rather than
+  // a failing build, and Ctrl-C rather than a message locally. A suite that
+  // hangs is the one that gets a test deleted six months later.
+  //
+  // So the clock SITS ON the deadline for a few reads and then jumps well past
+  // it. Both versions terminate, and the attempt count says which check fired.
   const lock = lockIn(tmpdir());
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
-  assert.throws(
-    () => withFileLock(lock, () => {}, { deadlineMs: 0, now: () => 1000000 }), /lock/i);
+  let reads = 0;
+  const now = () => (reads++ < 8 ? 1000 : 9999999);
+
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0, now }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(attempts, 1, `a zero deadline must give up on the first check, took ${attempts}`);
 });
 
 test('a lock whose mtime cannot be read is broken, not treated as a tombstone', () => {
