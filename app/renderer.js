@@ -252,6 +252,130 @@ function renderFog(fog) {
   }
 }
 
+// --- bug vault ----------------------------------------------------------------
+// Pushed by the host in `hello` and again after every add/setFixed, never
+// pulled: the vault is a small JSON file, unlike fog's ~175ms git walk, so
+// there is no cost to defer by waiting for the tab to be opened.
+//
+// Every drawing decision lives in app/bugvault-display.js, not here -- same
+// reason usage and career figures were pulled out: a decision inline in this
+// file is a decision nothing can unit-test, and this project's CLAUDE.md
+// records two PRs rejected for exactly that.
+function renderBugVault(payload) {
+  const d = window.bugVaultDisplay(payload);
+  const summaryEl = document.getElementById('bugvault-summary');
+  const groupsEl = document.getElementById('bugvault-groups');
+  const detectEl = document.getElementById('bugvault-detection');
+  const listEl = document.getElementById('bugvault-list');
+  if (!summaryEl || !groupsEl || !detectEl || !listEl) return;
+
+  if (d.state === 'reading') {
+    summaryEl.textContent = 'reading the vault…';
+    groupsEl.innerHTML = '';
+    detectEl.innerHTML = '';
+    listEl.innerHTML = '';
+    return;
+  }
+
+  // The vault is on disk and could not be read. Drawn as a WARNING, never as
+  // an empty list: the records are still there, the host is refusing to write
+  // over them, and the only thing that helps is a person opening the file.
+  if (d.state === 'unreadable') {
+    summaryEl.innerHTML = '<b class="vault-warn">the bug vault could not be read</b>';
+    groupsEl.innerHTML = '';
+    detectEl.innerHTML = `<div class="vault-warn-detail">${escapeHtml(d.error || '')}` +
+      '<br>Nothing has been written over it. Open the file to see what is there.</div>';
+    listEl.innerHTML = '';
+    return;
+  }
+
+  if (d.state === 'empty') {
+    summaryEl.innerHTML = 'no bugs recorded yet — add one below.';
+  } else if (d.state === 'ready') {
+    summaryEl.innerHTML = `<b>${d.total}</b> bug class${d.total === 1 ? '' : 'es'} recorded — ` +
+      `<b>${d.unfixed}</b> open, <b>${d.fixed}</b> fixed`;
+  } else {
+    // Named states only. This was a ternary whose else-branch caught
+    // EVERYTHING that was not `empty`, so a state added to the display module
+    // would have been drawn as a healthy count -- which is how `unreadable`
+    // would have rendered as "0 bug classes recorded" if it had slipped in
+    // without this branch. Same fail-open shape as the vault dispatcher in F4.
+    summaryEl.textContent = 'the vault is in a state this panel does not know how to draw.';
+    groupsEl.innerHTML = '';
+    detectEl.innerHTML = '';
+    listEl.innerHTML = '';
+    return;
+  }
+
+  // RECURRING CLASSES, biggest first. The host ranked them (groupByCategory)
+  // and this draws that order verbatim -- re-sorting here would be the second,
+  // divergent copy of an algorithm the display module's header explicitly
+  // refuses to grow. The bar is proportional to the largest group, so one
+  // class pulling away from the rest is visible without reading the numbers,
+  // which is what "recurring" means in the PR title.
+  groupsEl.innerHTML = d.groups.length
+    ? '<h3>Recurring classes</h3>' + d.groups.map(g =>
+        `<div class="grp" title="${escapeHtml(g.category)}">` +
+        `<span class="grp-name">${escapeHtml(g.category)}</span>` +
+        `<span class="grp-bar" style="width:${g.bar}%"></span>` +
+        `<span class="grp-count">${g.total}</span>` +
+        (g.openLabel ? `<span class="grp-open">(${escapeHtml(g.openLabel)})</span>` : '') +
+        '</div>').join('')
+    : '';
+
+  // The breakdown that makes "found by measurement, none by reading" a fact
+  // rather than a feeling -- the whole reason the design doc asks for this.
+  detectEl.innerHTML = d.detection.length
+    ? '<h3>Found by</h3>' + d.detection.map(r =>
+        `<div class="det"><span class="det-label">${escapeHtml(r.label)}</span>` +
+        `<span class="det-count">${r.count}</span></div>`).join('')
+    : '';
+
+  listEl.innerHTML = d.rows.length ? d.rows.map(r => `
+    <div class="bug-row ${r.statusLabel}" data-id="${escapeHtml(r.id || '')}">
+      <div class="bug-head">
+        <span class="bug-icon">${r.icon}</span>
+        <span class="bug-cat" title="${escapeHtml(r.category)}">${escapeHtml(r.category)}</span>
+        <button class="bug-toggle" data-fixed="${r.statusLabel === 'fixed' ? '1' : '0'}">
+          ${r.statusLabel === 'fixed' ? 'reopen' : 'mark fixed'}</button>
+      </div>
+      <div class="bug-summary">${escapeHtml(r.summary)}</div>
+      <div class="bug-detail">
+        <span>where: ${escapeHtml(r.whereFound)}</span>
+        <span>found by: ${escapeHtml(r.detectedBy)}</span>
+        <span>survived: ${escapeHtml(r.survived)}</span>
+        <span>would have caught it sooner: ${escapeHtml(r.wouldHaveCaught)}</span>
+      </div>
+    </div>`).join('') : '<div class="none">no bugs recorded yet.</div>';
+}
+
+document.addEventListener('click', (e) => {
+  const button = e.target.closest('.bug-toggle');
+  if (!button) return;
+  const row = button.closest('.bug-row');
+  const id = row && row.dataset.id;
+  if (!id || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const fixed = button.dataset.fixed !== '1';   // toggling TO the opposite state
+  try { ws.send(JSON.stringify({ type: 'bugvault', action: 'setFixed', id, fixed })); } catch {}
+});
+
+document.getElementById('bugvault-add').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const val = (id) => document.getElementById(id).value.trim();
+  const record = {
+    category: val('bugvault-category'),
+    summary: val('bugvault-summary-input'),
+    whereFound: val('bugvault-where'),
+    detectedBy: val('bugvault-detected'),
+    survived: val('bugvault-survived'),
+    wouldHaveCaught: val('bugvault-caught'),
+  };
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({ type: 'bugvault', action: 'add', record })); } catch {}
+  }
+  e.target.reset();
+});
+
 // --- vault ------------------------------------------------------------------
 // An isolated panel. Nothing in it is ever written to the pty: the secret only
 // ever travels renderer -> main -> OS clipboard, and the host that owns the
@@ -1289,6 +1413,7 @@ function handleControl(msg) {
     renderQuota(msg.quota || null);
     renderHealth(msg.health);
     renderCooldowns(msg.cooldowns);
+    renderBugVault(msg.vault);
     renderProcesses(msg.running);
     if (msg.modes) modeTable = msg.modes;
     renderMode(msg.mode);
@@ -1360,6 +1485,14 @@ function handleControl(msg) {
   }
   if (msg.type === 'fog') {
     renderFog(msg);
+    return;
+  }
+  if (msg.type === 'bugvault') {
+    renderBugVault(msg);
+    // A refused add (missing category/summary) is SHOWN, never swallowed --
+    // same reasoning as the council seat refusal a few lines below.
+    const errEl = document.getElementById('bugvault-error');
+    if (errEl) errEl.textContent = msg.error || '';
     return;
   }
   if (msg.type === 'projects') {

@@ -34,6 +34,7 @@ const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
+const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
@@ -326,6 +327,23 @@ const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
+// One record per distinct bug CLASS, so a recurring defect category is a
+// visible count instead of a memory hand-carried between review rounds in PR
+// comments. Persisted through the shared store under `vault.json`, same as
+// every other feature -- this module invents no file format of its own.
+// `project: CWD` stamps each record with where it was filed from. The vault
+// itself stays install-wide -- the seed data settles that, since four of its
+// six entries come from another project entirely -- but a record with no
+// attribution cannot be given one later, so the field goes in now while it is
+// one line rather than an archaeology problem.
+const bugVault = createBugVault({ store, project: CWD });
+// Dexter F2: this is called while building the `hello` frame inside
+// `wss.on('connection')`, which has NO catch above it -- unlike control-frame
+// dispatch, which `handleFrame` wraps. The host owns the pty, so a throw here
+// killed the running Claude session, and because it is on the attach path the
+// shape was "every window you open kills the session". `payload()` is total by
+// construction; see host/bugvault.js.
+const vaultPayload = () => bugVault.payload();
 // The agent list comes from the mood stack, so a finished turn can say how
 // many agents ran rather than just that something ended.
 // Tracks whether a cooldown list was last non-empty, so the falling edge is
@@ -1125,6 +1143,7 @@ wss.on('connection', (ws) => {
     modes: MODES,
     provider,
     cooldowns: cooldowns.list(),
+    vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
     // May still be null on a fast attach; the renderer draws "reading…" for
@@ -1230,6 +1249,31 @@ wss.on('connection', (ws) => {
       // running --dangerously-skip-permissions. That is the exact hole #18
       // exists to close, and it would have reopened silently on merge.
       handleDrop(msg, ws);
+      return;
+    }
+    // RE-HOMED during the develop merge, and this is the second time this
+    // exact conflict has hidden this exact defect. This handler lived in the
+    // ws message handler's inline if-chain, which is the shape #18 replaced
+    // with parseControlFrame + dispatchControl. Taking develop's side of the
+    // conflict wholesale -- the obviously correct resolution, since that side
+    // IS the newer architecture -- silently deletes this branch's only
+    // feature, and a `bugvault` frame then falls through to `term.write` and
+    // is TYPED, verbatim JSON and all, into a session running
+    // --dangerously-skip-permissions. #24's `drop` handler was lost and
+    // recovered the same way.
+    if (msg.type === 'bugvault') {
+      // Synchronous JSON, unlike fog's git walk -- answered inline, then
+      // broadcast, same as the seat protocol: two windows on one project
+      // share a vault, so one of them silently disagreeing about what is
+      // recorded is worse than a redraw.
+      // Routing lives in host/bugvault.js so it can be tested without a pty.
+      // Dexter F4: the if-chain that used to stand here initialised `result`
+      // to `{ ok: true }`, so an unrecognised action was broadcast as a
+      // SUCCESS -- fail-open, in the dispatcher. F5: it also passed
+      // `msg.fixed === true`, collapsing "explicitly false" and "absent" into
+      // the same value before the vault could tell them apart.
+      const result = applyVaultAction(bugVault, msg);
+      broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
       return;
     }
     if (msg.type === 'projects') {

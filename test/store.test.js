@@ -122,6 +122,163 @@ test('exposes the path of a file for other processes to read', () => {
   assert.strictEqual(s.pathOf('loadout'), path.join(dir, 'loadout.json'));
 });
 
+// --- readState: missing is not corrupt ---------------------------------------
+//
+// Dexter, PR #29 review, F1. `read(name, fallback)` returns the fallback for
+// BOTH "no file" and "file exists and did not parse", which is right for every
+// consumer this store had when it was written: cooldowns, seats, counters --
+// all regenerable, all happy to start over.
+//
+// The bug vault is the first consumer holding records a user CANNOT
+// reconstruct, and it used the absent/corrupt fallback as its "first run"
+// signal: `read(KEY, null)` returning null meant seed, so a vault that failed
+// to parse once was overwritten with defaults and the evidence was gone.
+//
+// `read` keeps its defaulting behaviour -- it is correct, and everything else
+// depends on it. `readState` is the narrow addition for consumers that must
+// fail CLOSED: it reports WHY there is no value, so "there is nothing here"
+// and "something is here and I could not read it" stop being the same answer.
+
+test('readState reports a missing file as missing, with no value', () => {
+  const s = createStore({ dir: tmp() });
+  const r = s.readState('cooldowns');
+  assert.strictEqual(r.status, 'missing');
+  assert.strictEqual(r.value, null);
+});
+
+test('readState reports a corrupt file as corrupt, NOT as missing', () => {
+  // The whole point. These two were indistinguishable, and one of them means
+  // "it is safe to write defaults over this".
+  const dir = tmp();
+  const s = createStore({ dir });
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'cooldowns.json'), '{ not json');
+  const r = s.readState('cooldowns');
+  assert.strictEqual(r.status, 'corrupt');
+  assert.strictEqual(r.value, null);
+});
+
+test('readState returns the parsed value when the file is good', () => {
+  const s = createStore({ dir: tmp() });
+  s.write('cooldowns', { a: 1 });
+  assert.deepStrictEqual(s.readState('cooldowns'), { status: 'ok', value: { a: 1 } });
+});
+
+test('readState reports a file it cannot open as unreadable, distinct from both', () => {
+  // A directory where a file should be: not absent, not corrupt, not readable.
+  // Whatever the platform's errno, the one thing it must NOT report is
+  // "missing", because that is the status that authorises an overwrite.
+  const dir = tmp();
+  const s = createStore({ dir });
+  fs.mkdirSync(path.join(dir, 'cooldowns.json'), { recursive: true });
+  const r = s.readState('cooldowns');
+  assert.notStrictEqual(r.status, 'missing');
+  assert.notStrictEqual(r.status, 'ok');
+});
+
+test('readState still refuses a traversing name rather than reporting it as missing', () => {
+  // A path that escapes the store is a programming error and must surface.
+  // Reporting it as "missing" would invite the caller to seed defaults into
+  // whatever it names.
+  const s = createStore({ dir: tmp() });
+  assert.throws(() => s.readState('../escape'), /name/i);
+});
+
+test('read and readState cannot drift: read returns the fallback for every non-ok status', () => {
+  // read() is expressed in terms of readState so there is ONE decision about
+  // what counts as readable. This asserts the relationship, not a repeat of
+  // the cases above.
+  const dir = tmp();
+  const s = createStore({ dir });
+  fs.mkdirSync(dir, { recursive: true });
+
+  const sentinel = { sentinel: true };
+  assert.deepStrictEqual(s.read('cooldowns', sentinel), sentinel, 'missing');
+
+  fs.writeFileSync(path.join(dir, 'cooldowns.json'), 'garbage');
+  assert.deepStrictEqual(s.read('cooldowns', sentinel), sentinel, 'corrupt');
+  assert.strictEqual(s.readState('cooldowns').status, 'corrupt');
+
+  s.write('cooldowns', { real: 1 });
+  assert.deepStrictEqual(s.read('cooldowns', sentinel), { real: 1 }, 'ok');
+});
+
+// --- the traversal guard, pinned at the anchor --------------------------------
+//
+// Mortimer, PR #29 mutation gate, R4. Severity: High.
+//
+// Dropping the `$` from /^[A-Za-z0-9_-]+$/ leaves the guard matching a PREFIX,
+// so `vault/../../secrets` is accepted and pathOf escapes the store directory
+// entirely. The existing traversal test uses only '../escape' and
+// '../../secrets' -- both start with a dot, which the character class rejects
+// anchored or not, so it proves the guard refuses names that are OBVIOUSLY bad
+// and says nothing about the anchor that makes it airtight.
+//
+// The same gap from the other side: mutating `!name || typeof name !== 'string'`
+// to `&&`, or the typeof test to `false`, lets a non-string through, because
+// `/.../.test(123)` coerces to "123" and matches.
+//
+// This is the second time this exact regex has been caught by mutation
+// testing in this repo -- PR #30 found the identical unanchored hole in the
+// same function. A guard that is right is not the same as a guard that is
+// held right.
+
+test('a name with a safe PREFIX and a traversal inside it is refused', () => {
+  const s = createStore({ dir: tmp() });
+  for (const bad of ['vault/../../secrets', 'vault/../escape', 'vault\..\escape',
+                     'vault.json', 'vault/sub', 'a b', 'vault\u0000x']) {
+    assert.throws(() => s.readState(bad), /name/i, `${JSON.stringify(bad)} must be refused`);
+    assert.throws(() => s.write(bad, {}), /name/i, `${JSON.stringify(bad)} must be refused`);
+  }
+});
+
+test('a name that is not a string at all is refused, not coerced', () => {
+  const s = createStore({ dir: tmp() });
+  for (const bad of [123, {}, [], null, undefined, true]) {
+    assert.throws(() => s.readState(bad), /name/i, `${JSON.stringify(bad)} must be refused`);
+  }
+});
+
+test('createStore without a dir says so, rather than failing later in path.join', () => {
+  // Mortimer: `if (!dir)` mutated away never throws, and the mistake then
+  // surfaces deep inside path.join with a message that names the syntax
+  // instead of the error.
+  assert.throws(() => createStore({}), /dir/i);
+  assert.throws(() => createStore({ dir: '' }), /dir/i);
+});
+
+// --- withLock, executed directly ---------------------------------------------
+//
+// Mortimer R3, store half. Deleting this function's entire body left 812 tests
+// green, because no test in the suite wired a real store to the vault. These
+// three are the direct coverage; test/bugvault.test.js closes the seam.
+
+test('withLock runs the work holding a real lock file, and releases it', () => {
+  const dir = tmp();
+  const s = createStore({ dir });
+  let heldDuring = null;
+  const got = s.withLock('vault', () => {
+    heldDuring = fs.existsSync(path.join(dir, 'vault.json.lock'));
+    return 'value';
+  });
+  assert.strictEqual(got, 'value', 'the work must run and its value come back');
+  assert.strictEqual(heldDuring, true, 'the lock must exist WHILE the work runs');
+  assert.strictEqual(fs.existsSync(path.join(dir, 'vault.json.lock')), false, 'and be gone after');
+});
+
+test('withLock refuses a traversing name before touching disk', () => {
+  assert.throws(() => createStore({ dir: tmp() }).withLock('../escape', () => {}), /name/i);
+});
+
+test('withLock creates the store directory, so the first ever write can take a lock', () => {
+  // The lock lives beside the file, and on a first run neither exists yet.
+  const dir = path.join(tmp(), 'not', 'yet');
+  let ran = false;
+  createStore({ dir }).withLock('vault', () => { ran = true; });
+  assert.strictEqual(ran, true);
+  assert.strictEqual(fs.existsSync(dir), true);
+});
+
 test('every file the store header names has a real producer', () => {
   // Dexter, PR #29 review, Finding 16. host/store.js's header listed FOUR
   // files -- loadout.json, vault.json, map.json, stats.json -- and not one of

@@ -49,6 +49,18 @@ const ALLOWED_GLOBALS = new Set([
   'cacheWriteOf',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
+  // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
+  // IIFE-wrapped module, not leaks -- checked before allowlisting them, since
+  // "a name escaped into the shared scope" and "a module deliberately published
+  // a name" look identical from here and only one of them is a bug.
+  //
+  // renderer.js reaches `bugVaultDisplay` through `window.` rather than as a
+  // bare global, so unlike isPanelToggle above this entry is not load-bearing
+  // for reachability. `formatBugRow` is published to the browser scope and used
+  // by nothing there -- surface that invites a second, divergent caller. Left
+  // as the feature author wrote it and flagged rather than trimmed, because
+  // deleting someone else's export is not conflict resolution.
+  'bugVaultDisplay', 'formatBugRow',
   'projectsDisplay',
 ]);
 
@@ -109,6 +121,13 @@ test('every renderer script loads into ONE shared scope without colliding', () =
   }
 });
 
+// NOTE FOR MUTATION RUNS: this test cannot pass under StrykerJS. Its
+// instrumentation adds stryNS_*/stryCov_*/stryMutAct_*/__stryker__ to the vm
+// context and the allow-list correctly refuses them, so it fails on the
+// UNMUTATED baseline and aborts the dry run. Deselect it by name; it kills no
+// mutant, because what it asserts is a property of the FILES rather than of
+// any expression a mutator can reach. CLAUDE.md records the same shape for
+// mutmut: a test whose subject is the repository, not a function.
 test('no renderer script leaks a global outside the allow-list', () => {
   const ctx = makeContext();
   const before = new Set(Object.getOwnPropertyNames(ctx));
@@ -130,12 +149,28 @@ test('the display modules the renderer needs are actually defined after loading'
     if (file === 'renderer.js') continue;
     vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
   }
+  // Mortimer, PR #29 mutation gate, D7: emptying the `else { root.X = ... }`
+  // branch in app/bugvault-display.js left every test green, with
+  // `window.bugVaultDisplay` never published -- the panel dead on arrival in
+  // the real renderer. That is the failure this repo has already paid for
+  // TWICE (career-display.js, quota-display.js) and that this very file exists
+  // to prevent; it did not prevent it here, because the list below named only
+  // `usageDisplay`, and the export check further down skips names reached
+  // through `window.` rather than as bare globals.
+  //
+  // Node's coverage confirmed it independently: app/bugvault-display.js lines
+  // 153-155 never executed.
+  //
+  // ANY module the renderer draws a panel from belongs on this list.
   // Every display module the renderer calls, not just the first one anyone
-  // thought to list. `projectsDisplay` was added after the Projects panel drew
-  // nothing in a real window -- a one-name list cannot catch the next module,
-  // which is the same shape of gap as the career display's original bug.
+  // thought to list. Both sides of this merge learned that separately --
+  // develop added career/quota/projects after the Projects panel drew nothing
+  // in a real window, #29 added bugVaultDisplay after mutation testing showed
+  // its browser-export branch was executed by nothing. Same lesson, two
+  // branches, so the list is the UNION: taking either alone silently drops a
+  // module that has already been caught once.
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
-                    'rosterWidth', 'faceSize']) {
+                    'rosterWidth', 'faceSize', 'bugVaultDisplay']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });
