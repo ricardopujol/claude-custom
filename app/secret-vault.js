@@ -162,11 +162,29 @@ function createVault({ file, crypto, onWrite } = {}) {
     const value = String(secret == null ? '' : secret);
     if (!value) throw new Error('a secret is required');
 
-    // SCOPE. `project: null` means shared with every project. Anything else is
-    // the one project that may see it. Default is the project it was added
-    // from -- the inverse of how this started, where everything was global and
-    // nothing said so.
+    // SCOPE, and THE TWO NULLS. Dexter, PR #40, Finding 1.
+    //
+    // `normalizeProjectPath` returns null for two different things: "shared"
+    // and "I cannot use this input". Every reader below fails CLOSED on that
+    // null -- visibleFrom, get and remove all treat it as deny-unless-shared.
+    // This line used to read it as an INTENTION, so one value meant
+    // deny-everything in three places and grant-everyone here.
+    //
+    // Measured: add({ project: '   ', shared: false }) stored a secret
+    // readable from every project on the machine, with the box unticked. And
+    // it is reachable through the real wiring -- main.js takes PROJECT_CWD
+    // from CLAUDE_CUSTOM_CWD, and a single space is truthy.
+    //
+    // A scope that cannot be determined is not a scope. Refuse, the way
+    // available() already refuses to store plaintext when the cipher is gone:
+    // the one outcome that must never happen quietly is the user believing a
+    // secret is contained when it is not.
     const scope = shared === true ? null : normalizeProjectPath(project);
+    if (shared !== true && scope === null) {
+      throw new Error(
+        'refusing to store a secret with no scope: pass a usable project, ' +
+        'or mark it shared deliberately');
+    }
     const entry = {
       id: crypto_.randomUUID(),
       label: cleanLabel,
