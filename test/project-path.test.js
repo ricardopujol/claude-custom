@@ -160,8 +160,32 @@ test('a trailing separator does not produce an empty label', () => {
 test('a drive root has no folder name, so it names itself', () => {
   // `path.basename('C:\')` is '' -- an empty title is a window with no
   // identity at all, which is worse than the long form.
-  assert.ok(projectLabel('C:\\').length > 0);
-  assert.ok(projectLabel('C:/').length > 0);
+  //
+  // Miguel, PR #33, A11: this asserted `.length > 0`, which passes if the
+  // function returns 'x'. The rule the header states is that the window must
+  // still IDENTIFY the folder, so assert the value, not its spelling.
+  assert.strictEqual(projectLabel('C:\\'), 'C:\\');
+  assert.strictEqual(projectLabel('C:/'), 'C:/');
+  assert.strictEqual(projectLabel('/'), '/');
+});
+
+test('two different projects get two different labels -- the whole point of FF3', () => {
+  // The actual requirement, which nothing asserted. Under multi-project the
+  // title is the only thing telling two open windows apart, so labels that
+  // collide are the failure this feature exists to prevent.
+  const a = projectLabel('C:/Users/ricar/VibeCode/suno-pipeline');
+  const b = projectLabel('C:/Users/ricar/VibeCode/claude-custom');
+  assert.notStrictEqual(a, b);
+  assert.strictEqual(a, 'suno-pipeline');
+  assert.strictEqual(b, 'claude-custom');
+});
+
+test('the label does not depend on which platform runs the test', () => {
+  // A10: with the ambient `path`, a POSIX runner returns the whole string for
+  // a Windows path, so these tests passed only on Windows and the function
+  // silently behaved differently there.
+  assert.strictEqual(projectLabel('C:/a/b/deep-project'), 'deep-project');
+  assert.strictEqual(projectLabel('/home/ricar/work/deep-project'), 'deep-project');
 });
 
 test('an absent path falls back to the product name rather than to blank', () => {

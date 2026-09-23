@@ -184,6 +184,31 @@ function createWindow(spawnedHost) {
   // Attention raised from main, not from the page. The renderer's own
   // Notification is subject to page permission and can neither flash the
   // taskbar nor focus the window when clicked; this can do all three.
+  // FF4: a cue that survives until the window is LOOKED AT. The taskbar flash
+  // below stops at the OS's discretion and is invisible in alt-tab, which
+  // shows a title and a thumbnail and nothing else. A border is part of the
+  // thumbnail, so it is legible exactly where you decide which window to
+  // return to.
+  //
+  // DECLARED ABOVE ITS CALLER. Miguel, PR #33, A7: it used to sit 23 lines
+  // below the handler that calls it, safe only because that handler runs
+  // asynchronously -- one synchronous call away from a TDZ ReferenceError, and
+  // a reader had to prove the asynchrony to themselves to know it was fine.
+  //
+  // The state is kept here, not only in the page. A5: `webContents.send`
+  // before the renderer has registered its listener is dropped on the floor,
+  // and a reload while the cue is up would clear it permanently -- a cue that
+  // silently stops meaning anything is worse than no cue, because the next
+  // real one says nothing either.
+  let cueOn = false;
+  const setCue = (on) => {
+    cueOn = !!on;
+    if (!win.isDestroyed()) win.webContents.send('attention-cue', cueOn);
+  };
+  win.webContents.on('did-finish-load', () => {
+    if (cueOn && !win.isDestroyed()) win.webContents.send('attention-cue', true);
+  });
+
   ipcMain.on('attention', (event, surfaces) => {
     if (event.sender !== win.webContents || !surfaces) return;
     // Logged even when nothing is shown. "Suppressed because you are looking at
@@ -225,15 +250,6 @@ function createWindow(spawnedHost) {
     e.preventDefault();
     win.setTitle(projectLabel(PROJECT_CWD));
   });
-
-  // FF4: a cue that survives until the window is LOOKED AT. The taskbar flash
-  // below stops at the OS's discretion and is invisible in alt-tab, which
-  // shows a title and a thumbnail and nothing else. A border is part of the
-  // thumbnail, so it is legible in exactly the place you are looking when you
-  // are deciding which window to go back to.
-  const setCue = (on) => {
-    if (!win.isDestroyed()) win.webContents.send('attention-cue', on);
-  };
 
   win.on('focus', () => {
     win.flashFrame(false);

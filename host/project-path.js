@@ -85,7 +85,18 @@ function samePath(a, b) {
 function projectLabel(p) {
   if (typeof p !== 'string' || !p.trim()) return 'claude-custom';
   const trimmed = p.trim();
-  const base = path.basename(trimmed.replace(/[\/]+$/, ''));
+  // `win32` explicitly, not the ambient `path`. Miguel, PR #33, A10: on a
+  // POSIX runner `path.basename('C:\\Users\\x\\proj')` returns the whole string, so
+  // both this function and its five tests silently depended on which
+  // machine ran them. win32.basename treats / and \\ alike, so it is
+  // strictly the more permissive of the two and correct for a harness
+  // whose own header says Windows is where it runs.
+  //
+  // No trailing-separator strip: A9, measured -- basename already does it,
+  // and the class that was here (`[\\/]`) held only a forward slash, so it
+  // would not have stripped a backslash even if it had been needed. Dead
+  // code that read as load-bearing, credited in the doc comment above.
+  const base = path.win32.basename(trimmed);
   if (base) return base;
   // A drive root, a bare separator, or anything else basename cannot name.
   return trimmed;
