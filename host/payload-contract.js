@@ -21,10 +21,28 @@
 // Agent; older versions called it Task. This is the exact field that moved.
 const AGENT_TOOLS = ['Agent', 'Task'];
 
+// hooks.md's "common input fields" -- present on EVERY hooked event, not just
+// some of them, so these two are spread into every entry below rather than
+// listed once and hoped for. FF12 (2026-09-23): `effort.level` is the truth
+// source the top bar's pending /effort switch resolves against; permission_mode
+// is read only as a HANDSHAKE fallback (see host.js) -- the TUI scrape in
+// host/mode.js remains authoritative once it has drawn anything, by design.
+const COMMON_FIELDS = {
+  'effort.level': {
+    used: 'host.js -> tracks lastEffort and broadcasts {type:"effort"} on '
+        + 'change; app/top-bar-display.js resolves a pending /effort switch against it',
+  },
+  permission_mode: {
+    used: 'host.js -> hello handshake fallback for the mode badge, before the '
+        + 'TUI has drawn a status line for host/mode.js to scrape',
+  },
+};
+
 const CONTRACT = {
   SessionStart: {
     fields: {
       session_id: { used: 'host.js -> usage.js, to read this session\'s transcript for token spend' },
+      ...COMMON_FIELDS,
     },
   },
   PreToolUse: {
@@ -39,6 +57,7 @@ const CONTRACT = {
         used: 'processes.js, the label shown in the Running panel',
         onlyWhen: p => (p && p.tool_name) === 'Bash',
       },
+      ...COMMON_FIELDS,
     },
   },
   PostToolUse: {
@@ -46,6 +65,7 @@ const CONTRACT = {
     fields: {
       tool_name: { used: 'processes.js, to close the running entry this completes' },
       tool_response: { used: 'mood-machine.js isFailure(), which decides stressed vs happy' },
+      ...COMMON_FIELDS,
     },
   },
   SubagentStop: {
@@ -54,20 +74,20 @@ const CONTRACT = {
         used: 'mood-machine.js + cooldowns, to credit the agent that ACTUALLY '
             + 'finished rather than the top of the delegation stack',
       },
+      ...COMMON_FIELDS,
     },
     // Also arrives, unread for now, and worth knowing about:
-    //   permission_mode  -- authoritative hazard level, currently scraped from
-    //                       the TUI text instead. Every payload carries it.
     //   last_assistant_message -- what the agent concluded; would make the
     //                       "finished" notification say what it finished.
     //   agent_transcript_path  -- per-agent token spend, per agent.
   },
   Stop: {
-    fields: {},   // likewise: the turn ended, which is the whole message
+    fields: { ...COMMON_FIELDS },   // otherwise: the turn ended, which is the whole message
   },
   Notification: {
     fields: {
       message: { used: 'attention-summary.js, to say what is being asked for' },
+      ...COMMON_FIELDS,
     },
   },
 };

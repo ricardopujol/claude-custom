@@ -123,6 +123,21 @@ const seen = () => (log.match(/\[hook:full\] .*/g) || [])
     launches.length > 0 && launches.every(p => CONTRACT.PreToolUse.agentTools.includes(p.tool_name)),
     launches.map(p => `${p.tool_name}/${p.tool_input.subagent_type}`).join(', ') || 'no agent launch observed');
 
+  // FF12 (2026-09-23): effort.level and permission_mode are hooks.md "common
+  // input fields" -- MEASURED present on every hooked event, not derived from
+  // any fixture. Pinned by NAME here, not folded into the generic "carries
+  // every field" check above, so a rename of either shows up as its own line
+  // rather than a combined MISSING list someone has to go parse.
+  for (const [event, list] of byEvent) {
+    if (!CONTRACT[event]) continue;
+    check(`${event} carries effort.level on every observed payload`,
+      list.every(p => p.effort && typeof p.effort.level === 'string'),
+      list.map(p => p.effort && p.effort.level).join(', ') || 'no effort field observed');
+    check(`${event} carries permission_mode on every observed payload`,
+      list.every(p => typeof p.permission_mode === 'string'),
+      list.map(p => p.permission_mode).join(', ') || 'no permission_mode field observed');
+  }
+
   // Fields that arrive and are NOT in the contract. Not failures -- but this is
   // where an upstream addition worth using shows up. agent_type was found this
   // way, and it fixed a real misattribution bug.

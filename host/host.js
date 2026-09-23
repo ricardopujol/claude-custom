@@ -706,6 +706,21 @@ if (helperExists) {
         broadcastControl({ type: 'cooldowns', cooldowns: cooldowns.list() });
       }
     }
+    // `permission_mode` and `effort.level` are common to every hook payload
+    // (hooks.md). permission_mode is a handshake fallback only -- see its
+    // declaration above. effort IS broadcast, gated on a change, the same
+    // shape as every other polled/pushed value in this file.
+    if (ev.payload && typeof ev.payload.permission_mode === 'string') {
+      lastHookPermissionMode = ev.payload.permission_mode;
+    }
+    if (ev.payload && ev.payload.effort && typeof ev.payload.effort.level === 'string') {
+      const level = ev.payload.effort.level;
+      if (level !== lastEffort) {
+        lastEffort = level;
+        console.log('[host] effort         :', lastEffort);
+        broadcastControl({ type: 'effort', level: lastEffort });
+      }
+    }
     // Logged because the roster silently showed nothing when agents ran, and
     // there was no way to tell whether hooks were arriving at all.
     const what = ev.payload && (ev.payload.tool_input?.subagent_type || ev.payload.tool_name);
@@ -977,6 +992,21 @@ function refreshPermissionMode() {
   }
 }
 
+// `permission_mode` also arrives on every hook payload (hooks.md "common
+// input fields") -- kept only as a HANDSHAKE fallback for the window that
+// attaches before the TUI has drawn its first status line, when the scrape
+// above is still null. The scrape stays authoritative once it has anything:
+// FF12's brief is explicit that this must not replace it.
+let lastHookPermissionMode = null;
+
+// Effort is session-scoped (`/effort <level>`, never persisted) and, like
+// `permission_mode`, arrives on every hook payload as `effort.level`. This is
+// the truth source FF12's top-bar picker resolves a pending `/effort` switch
+// against -- see app/top-bar-display.js's pendingResolver. `null` until the
+// first hook event carries it, which the top bar renders as "—", never a
+// guessed default.
+let lastEffort = null;
+
 // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
 // Distinguishing by content would be wrong -- terminal output can contain
 // anything, including a leading '{'.
@@ -1121,9 +1151,15 @@ wss.on('connection', (ws) => {
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     running: processes.list(),
     party: mood.stack(),
-    mode: permissionMode,
+    // The scrape wins once it has anything; permission_mode off the hook
+    // payload only fills the gap before the TUI has drawn a status line at
+    // all -- see lastHookPermissionMode's declaration above.
+    mode: permissionMode || lastHookPermissionMode,
     modes: MODES,
     provider,
+    // FF12's top bar: null until the first hook payload carries effort.level,
+    // which the panel renders as "—" rather than a guessed default.
+    effort: lastEffort,
     cooldowns: cooldowns.list(),
     health: healthState,
     agentStats: lastAgentStats,
