@@ -144,16 +144,41 @@ test('persistence fails CLOSED: only an explicit choice is stored', () => {
   // live in renderer.js where nothing renders.
   const fs = require('fs');
   const path = require('path');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+
+  // Comments stripped FIRST. test/bridge-contract.test.js learned this the
+  // hard way and this test did not: prose describing the rule must not satisfy
+  // the detector for the rule, which is the trap store.js's header guard hit.
+  const NL = String.fromCharCode(10);
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '')
+                 .replace(new RegExp('^\\s*//[^' + NL + ']*', 'gm'), '');
 
   assert.ok(src.includes('function applyRosterWidth(px, { persist = false } = {})'),
     'the default must be false -- a load and a resize are not choices');
 
-  // Exactly one caller may opt in, and it is the drag.
-  const optIns = [...src.matchAll(/applyRosterWidth\([^)]*persist:\s*true/g)];
+  // COUNT THE OPT-INS, do not try to parse the call. Mortimer, PR #33 mutation
+  // gate: the first version matched `applyRosterWidth\([^)]*persist:\s*true`,
+  // and he measured that a second persisting site written as
+  //
+  //     applyRosterWidth(readStored(), { persist: true })
+  //
+  // matches ZERO times, because `[^)]*` cannot cross the inner `)`. So the
+  // assertion `optIns.length === 1` passed while two sites persisted -- which
+  // is precisely the load-path regression this test exists to prevent, waved
+  // through by the test written to catch it.
+  //
+  // It was also his answer to "find a test asserting the SPELLING rather than
+  // the rule": it pinned the shape of a call instead of the rule that only a
+  // deliberate choice is stored. Counting the opt-ins states the rule and
+  // cannot be evaded by nesting.
+  const optIns = [...src.matchAll(/persist:\s*true/g)];
   assert.strictEqual(optIns.length, 1,
-    `only the drag path may persist; found ${optIns.length} call sites opting in`);
-  const dragRegion = src.slice(src.indexOf('mousemove'), src.indexOf('mouseup') + 200);
-  assert.match(dragRegion, /persist:\s*true/,
-    'and the one that opts in must be the drag handler');
+    `exactly one call site may persist; found ${optIns.length}`);
+
+  // And it must be the drag. `mousemove` .. `mouseup` is the drag handler.
+  const dragStart = src.indexOf('mousemove');
+  const dragEnd = src.indexOf('mouseup');
+  assert.ok(dragStart !== -1 && dragEnd > dragStart, 'the drag handler must be findable');
+  assert.ok(optIns[0].index > dragStart && optIns[0].index < dragEnd + 400,
+    'the one call that persists must be the drag -- a human choosing a width');
 });
