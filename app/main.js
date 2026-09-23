@@ -276,6 +276,10 @@ function createWindow(spawnedHost) {
   // the session. Not in the renderer: the window would then hold the file and
   // every value in it.
   const secrets = createSecretService({
+    // The window's project. Secrets are scoped to it unless explicitly shared;
+    // the vault file itself is per-INSTALL, which is why the scope has to be
+    // enforced rather than implied by where the file lives.
+    project: PROJECT_CWD,
     vault: createVault({
       file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
       crypto: safeStorage,

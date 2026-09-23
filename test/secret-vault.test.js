@@ -537,3 +537,96 @@ test('notes are normalised: absent becomes empty, padded is trimmed', () => {
   v.add({ label: 'padded', secret: 's', note: '   spaced out   ' });
   assert.strictEqual(v.list()[1].note, 'spaced out');
 });
+
+// --- scope: which projects can see a secret ----------------------------------
+//
+// Ricardo asked for a "shared" option so vault secrets would be available in
+// other folders. The measurement inverted the request: the vault file is
+// `<install>/.harness/secrets.enc` (app/main.js), ONE PER INSTALL -- so every
+// secret already was visible in every project, and nothing said so.
+//
+// That is the direction that stings. A client credential added while working
+// on one project sat in the picker for every other project, including ones
+// belonging to somebody else.
+//
+// So the feature is the inverse of the request, which is what he agreed to:
+// project-scoped by DEFAULT, `shared` as an explicit opt-in.
+//
+// MIGRATION, stated because it is a silent-data decision: entries that predate
+// this have no `project` field, and they stay SHARED. Narrowing them would make
+// secrets vanish from projects where they are relied on -- a disappearance the
+// user cannot debug, to fix a problem they never saw. New entries are scoped.
+
+const A = 'C:/work/project-a';
+const B = 'C:/work/project-b';
+
+test('a secret added in a project is not visible from another one', () => {
+  const v = vault();
+  v.add({ label: 'a-only', secret: 's1', project: A });
+  assert.deepStrictEqual(v.list({ project: B }).map(e => e.label), []);
+  assert.deepStrictEqual(v.list({ project: A }).map(e => e.label), ['a-only']);
+});
+
+test('a SHARED secret is visible from every project', () => {
+  const v = vault();
+  v.add({ label: 'global', secret: 's', project: A, shared: true });
+  assert.deepStrictEqual(v.list({ project: B }).map(e => e.label), ['global']);
+  assert.deepStrictEqual(v.list({ project: A }).map(e => e.label), ['global']);
+});
+
+test('get() ENFORCES the scope -- an id from another project reveals nothing', () => {
+  // The security property, and the reason scope cannot live in `list` alone.
+  // The renderer asks by id; if `get` did not check, a window for project B
+  // could reveal project A's secret by guessing or replaying an id.
+  const v = vault();
+  const e = v.add({ label: 'a-only', secret: 'top-secret', project: A });
+  assert.strictEqual(v.get(e.id, { project: A }), 'top-secret');
+  assert.strictEqual(v.get(e.id, { project: B }), null);
+});
+
+test('a shared secret can be read from anywhere', () => {
+  const v = vault();
+  const e = v.add({ label: 'global', secret: 'everywhere', project: A, shared: true });
+  assert.strictEqual(v.get(e.id, { project: B }), 'everywhere');
+});
+
+test('remove() enforces the scope too', () => {
+  // Otherwise a window for B could delete A's secret without ever seeing it.
+  const v = vault();
+  const e = v.add({ label: 'a-only', secret: 's', project: A });
+  assert.strictEqual(v.remove(e.id, { project: B }), false);
+  assert.strictEqual(v.list({ project: A }).length, 1, 'it must still be there');
+  assert.strictEqual(v.remove(e.id, { project: A }), true);
+});
+
+test('EXISTING entries with no project stay shared', () => {
+  // The migration. These were written when every secret was global; narrowing
+  // them retroactively would make them vanish from projects that rely on them.
+  const file = tmp();
+  const v1 = createVault({ file, crypto: fakeCrypto() });
+  const e = v1.add({ label: 'legacy', secret: 'old' });      // no project given
+  const v2 = createVault({ file, crypto: fakeCrypto() });
+  assert.deepStrictEqual(v2.list({ project: B }).map(x => x.label), ['legacy']);
+  assert.strictEqual(v2.get(e.id, { project: B }), 'old');
+});
+
+test('the list says which entries are shared, so the scope is visible', () => {
+  // The whole defect was that the scope was invisible. A shared secret that
+  // does not announce itself is the same surprise in a new place.
+  const v = vault();
+  v.add({ label: 'local', secret: 's', project: A });
+  v.add({ label: 'global', secret: 's', project: A, shared: true });
+  const rows = v.list({ project: A });
+  assert.strictEqual(rows.find(r => r.label === 'local').shared, false);
+  assert.strictEqual(rows.find(r => r.label === 'global').shared, true);
+});
+
+test('asking with no project shows only shared entries, never everything', () => {
+  // Fail closed: an unknown project must not become a skeleton key. Before
+  // this, "no project" was the only mode and it meant "all of them".
+  const v = vault();
+  v.add({ label: 'local', secret: 's', project: A });
+  v.add({ label: 'global', secret: 's', project: A, shared: true });
+  assert.deepStrictEqual(v.list({}).map(e => e.label), ['global']);
+  assert.deepStrictEqual(v.list().map(e => e.label), ['global']);
+});

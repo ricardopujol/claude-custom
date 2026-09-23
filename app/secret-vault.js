@@ -25,6 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeProjectPath, samePath } = require('../host/project-path');
 const crypto_ = require('crypto');
 const { renameWithRetry } = require('../host/atomic-write');
 
@@ -149,7 +150,7 @@ function createVault({ file, crypto, onWrite } = {}) {
     try { return !!crypto.isEncryptionAvailable(); } catch { return false; }
   }
 
-  function add({ label, secret, note } = {}) {
+  function add({ label, secret, note, project, shared } = {}) {
     // Fail closed. Storing plaintext because the OS keyring is unavailable is
     // the one outcome that must never happen quietly: the user believes it is
     // encrypted, since that is the entire point of the feature.
@@ -161,30 +162,60 @@ function createVault({ file, crypto, onWrite } = {}) {
     const value = String(secret == null ? '' : secret);
     if (!value) throw new Error('a secret is required');
 
+    // SCOPE. `project: null` means shared with every project. Anything else is
+    // the one project that may see it. Default is the project it was added
+    // from -- the inverse of how this started, where everything was global and
+    // nothing said so.
+    const scope = shared === true ? null : normalizeProjectPath(project);
     const entry = {
       id: crypto_.randomUUID(),
       label: cleanLabel,
       note: String(note == null ? '' : note).trim(),
       secret: Buffer.from(crypto.encryptString(value)).toString('base64'),
       createdAt: Date.now(),
+      project: scope,
     };
     commit([...state.entries, entry]);
     return { id: entry.id, label: entry.label, note: entry.note, createdAt: entry.createdAt };
   }
 
   // What the window renders. The secret is not in it, by construction.
-  function list() {
-    return state.entries.map(e => ({
-      id: e.id,
-      label: e.label,
-      note: e.note || '',
-      createdAt: e.createdAt || 0,
-    }));
+  // Is this entry visible from `project`?
+  //
+  // An entry with NO `project` key predates scoping and is treated as shared.
+  // Narrowing those retroactively would make secrets vanish from projects that
+  // rely on them -- a disappearance the user cannot debug, to fix a problem
+  // they never saw.
+  //
+  // `project: null` is stored deliberately and means the same thing: shared.
+  function visibleFrom(entry, project) {
+    const scope = entry.project === undefined ? null : entry.project;
+    if (scope === null) return true;
+    return samePath(scope, project);
   }
 
-  function get(id) {
+  function list({ project } = {}) {
+    return state.entries
+      .filter(e => visibleFrom(e, project))
+      .map(e => ({
+        id: e.id,
+        label: e.label,
+        note: e.note || '',
+        createdAt: e.createdAt || 0,
+        // Said out loud. The original defect was that scope was INVISIBLE; a
+        // shared secret that does not announce itself is the same surprise in
+        // a new place.
+        shared: (e.project === undefined ? null : e.project) === null,
+      }));
+  }
+
+  // Scope is enforced HERE, not only in `list`. The renderer asks by id, so a
+  // window for one project could otherwise reveal another project's secret by
+  // replaying an id it should never have had.
+  function get(id, { project } = {}) {
     const entry = state.entries.find(e => e.id === id);
     if (!entry) return null;
+    if (!visibleFrom(entry, project)) return null;
     try {
       return crypto.decryptString(Buffer.from(entry.secret, 'base64'));
     } catch {
@@ -194,7 +225,11 @@ function createVault({ file, crypto, onWrite } = {}) {
     }
   }
 
-  function remove(id) {
+  function remove(id, { project } = {}) {
+    // Same enforcement as `get`: without it a window could delete a secret it
+    // is not allowed to see.
+    const target = state.entries.find(e => e.id === id);
+    if (!target || !visibleFrom(target, project)) return false;
     const before = state.entries.length;
     const next = state.entries.filter(e => e.id !== id);
     if (next.length === before) return false;
