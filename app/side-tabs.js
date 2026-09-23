@@ -46,7 +46,7 @@ const known = id => TABS.some(t => t.id === id);
  * Pure, and it lives here rather than inline in renderer.js because of how it
  * failed: the toggle was a `document` keydown listener, and xterm's textarea
  * always has focus, so the event was consumed by the terminal and Ctrl+B went
- * to the pty as  -- readline's backward-char. The keybinding appeared to
+ * to the pty as \x02 -- readline's backward-char. The keybinding appeared to
  * "not work" while silently editing the user's command line.
  *
  * That alone would be a nuisance. Combined with a collapsed sidebar -- which

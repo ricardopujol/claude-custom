@@ -1805,7 +1805,7 @@ term.attachCustomKeyEventHandler((e) => {
 
   // THE PANEL TOGGLE MUST BE DECIDED HERE, not in a document listener. xterm's
   // textarea always holds focus, so a document-level handler never saw Ctrl+B
-  // -- the terminal consumed it and sent  to the pty, which readline reads
+  // -- the terminal consumed it and sent \x02 to the pty, which readline reads
   // as backward-char. The binding looked dead while quietly editing the command
   // line. Returning false is what stops the terminal taking it.
   if (isPanelToggle(e)) {

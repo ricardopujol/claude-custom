@@ -141,7 +141,7 @@ test('PROSE IS NOT A STATUS LINE -- the regression this nearly shipped', () => {
 test('"plan mode only" does not read as "plan mode on"', () => {
   // PRE-EXISTING, and older than anything in this branch: /plan mode on/i
   // matches "plan mode ONLY", which the CLI prints itself in
-  // "start coding (plan mode only)". The trailing  fixes it, because n and
+  // "start coding (plan mode only)". The trailing \b fixes it, because n and
   // l are both word characters.
   assert.strictEqual(parsePermissionMode(['for approval and start coding (plan mode only)']), null);
   assert.strictEqual(parsePermissionMode(['plan mode on']), 'plan');
