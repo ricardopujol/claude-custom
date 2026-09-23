@@ -1194,6 +1194,98 @@ function renderParty(party) {
   ).join('');
 }
 
+// --- style: background image override (FF6) ---------------------------------
+// A container that GROWS. app/style-display.js keeps the section registry and
+// the pure view logic; this file only draws it and wires its interactions to
+// the websocket -- the same division of labour as every other display module.
+let styleState = { background: { source: null, setAt: null, error: null } };
+
+function renderStyleSection(section) {
+  const header = `<h3>${escapeHtml(section.title)}</h3>`;
+  if (section.id === 'background' && section.view) {
+    const v = section.view;
+    return (
+      `<section class="style-section" data-section="background">${header}` +
+      `<div class="style-current">${escapeHtml(v.description)}</div>` +
+      `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image here, or ` +
+      `<label class="style-browse">choose a file<input type="file" id="style-bg-file" ` +
+      `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden></label></div>` +
+      `<button type="button" id="style-bg-reset"${v.isOverride ? '' : ' disabled'}>Reset to generated</button>` +
+      (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
+      `</section>`
+    );
+  }
+  // A future section with no view function yet still gets its title drawn,
+  // rather than vanishing -- "say something rather than nothing", the same
+  // rule the fog and projects panels follow for a failed read.
+  return `<section class="style-section" data-section="${escapeHtml(section.id)}">${header}</section>`;
+}
+
+function renderStylePanel() {
+  const container = document.getElementById('style-sections');
+  if (!container) return;
+  container.innerHTML = styleDisplay(styleState).map(renderStyleSection).join('');
+  bindStyleSections();
+}
+
+// Bound fresh on every render, since the elements themselves are replaced by
+// the innerHTML assignment above.
+//
+// Listeners are attached DIRECTLY on the drop zone, never delegated to
+// `document`: the whole-window drag-and-drop handler further down is bound to
+// `#app`, an ANCESTOR of this panel, and the bubble phase runs target-first --
+// only a `stopPropagation()` called on a DESCENDANT's own listener fires early
+// enough to stop it. Without this, dropping a background image here would
+// ALSO be typed at the terminal prompt and, outside the project folder,
+// requested as an `/add-dir` grant -- exactly the drop-zone behaviour this
+// panel must not trigger for its own, unrelated kind of drop.
+function bindStyleSections() {
+  const zone = document.getElementById('style-bg-drop');
+  if (zone) {
+    zone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      zone.classList.add('dropping');
+    });
+    for (const leave of ['dragleave', 'dragend']) {
+      zone.addEventListener(leave, (e) => { e.stopPropagation(); zone.classList.remove('dropping'); });
+    }
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.remove('dropping');
+      requestStyleBackground([...(e.dataTransfer.files || [])]);
+    });
+  }
+
+  const fileInput = document.getElementById('style-bg-file');
+  if (fileInput) {
+    fileInput.addEventListener('change', () => {
+      requestStyleBackground([...(fileInput.files || [])]);
+      fileInput.value = '';      // so picking the SAME file twice still fires 'change'
+    });
+  }
+
+  const resetBtn = document.getElementById('style-bg-reset');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      try { ws.send(JSON.stringify({ type: 'style', action: 'reset-background' })); } catch { /* not attached */ }
+    });
+  }
+}
+
+// One image at a time. `webUtils.getPathForFile` across the preload bridge is
+// the only way to get a dropped/chosen file's real path -- `File.path` was
+// removed in Electron 32 -- and it returns '' for anything that is not a real
+// file, which is filtered here rather than sent to the host at all.
+function requestStyleBackground(files) {
+  if (!files.length) return;
+  const path = (window.harness && window.harness.pathForFile) ? window.harness.pathForFile(files[0]) : '';
+  if (!path) return;
+  try { ws.send(JSON.stringify({ type: 'style', action: 'set-background', path })); } catch { /* not attached */ }
+}
+
 function handleControl(msg) {
   if (msg.type === 'hello') {
     // The host sends `hello` immediately before replaying the current screen.
@@ -1204,6 +1296,12 @@ function handleControl(msg) {
     // Background first: applyTheme needs to know whether to make the terminal
     // translucent, and getting that order wrong leaves the art fully hidden.
     applyBackground(msg.background);
+    // `msg.background` is already resolved through host/style.js (override
+    // wins over generated); `msg.style` carries WHY, for the Style panel's
+    // "generated for this project" / "your image, set <when>" line.
+    styleState = { background: { source: (msg.style && msg.style.source) || 'generated',
+      setAt: (msg.style && msg.style.setAt) || null, error: null } };
+    renderStylePanel();
     applyTheme(msg.theme);
     renderUsage(msg.usage);
     // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
@@ -1326,6 +1424,20 @@ function handleControl(msg) {
   }
   if (msg.type === 'dropped') {
     renderDropNote(msg.note);
+    return;
+  }
+  if (msg.type === 'style') {
+    // A refusal (unsupported type, too large, no file) answers ONLY this
+    // action; the CURRENT background/source is left exactly as it was, the
+    // same "say what failed, do not repaint the world" rule renderProjects
+    // follows for its own error branch.
+    if (msg.error) {
+      styleState = { background: { ...styleState.background, error: msg.error } };
+    } else {
+      styleState = { background: { source: msg.source || 'generated', setAt: msg.setAt || null, error: null } };
+      applyBackground(msg.background);
+    }
+    renderStylePanel();
     return;
   }
   if (msg.type === 'quota') {

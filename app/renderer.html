@@ -453,6 +453,20 @@
     .proj.current .proj-name::after { content: ' — you are here'; opacity: 0.6; font-size: 10px; }
     .proj-approx .proj-name::after { content: ' ~'; opacity: 0.6; }
 
+    /* The Style tab -- a container that GROWS. One section today (background
+       image); app/style-display.js's STYLE_SECTIONS registry is what makes a
+       second one later a markup-free addition. */
+    #style-sections { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; flex: 1; min-height: 0; }
+    .style-section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; margin: 0 0 6px; }
+    .style-current { font-size: 11px; color: var(--dim); margin-bottom: 8px; }
+    .style-dropzone {
+      border: 1px dashed var(--border); border-radius: 6px; padding: 16px 10px;
+      text-align: center; font-size: 11px; color: var(--dim); margin-bottom: 8px;
+    }
+    .style-dropzone.dropping { border-color: var(--accent); color: var(--accent); }
+    .style-browse { color: var(--accent); cursor: pointer; text-decoration: underline; }
+    .style-error { color: var(--bad); font-size: 11px; margin-top: 6px; }
+
     .model:hover { background: var(--panel); border-color: var(--border); }
     .model.seated { border-color: var(--accent); background: var(--panel); }
     .model .m-id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
