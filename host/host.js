@@ -26,6 +26,7 @@ const { createTerminalState } = require('./terminal-state');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
+const { planPortraitUpload, applyPortraitUpload } = require('./portrait-upload');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { loadCatalogue } = require('./openrouter');
@@ -319,6 +320,13 @@ const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, 
 const PORTRAITS_DIR =
   process.env.CLAUDE_CUSTOM_PORTRAITS ||
   'C:\\Users\\ricar\\VibeCode\\agent-creator\\portraits';
+// FF7's other two tiers. UPLOADS_DIR is per-project (it lives beside the
+// other .harness state this project already keeps out of git); SHIPPED_DIR
+// is per-install -- app/assets/portrait-default.* does not exist on disk
+// today, deliberately, so most installs land on the text placeholder until
+// someone adds one.
+const UPLOADS_DIR = path.join(HARNESS_DIR, 'portraits');
+const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
 const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
@@ -352,7 +360,12 @@ try {
   console.log('[host] provider config invalid, using default:', err.message);
 }
 console.log('[host] provider      :', provider.label, provider.metered ? '(metered)' : '(subscription)');
-const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent, state, { portraitsDir: PORTRAITS_DIR }) });
+const describe = (agent, state) => ({
+  agent, state,
+  portrait: portraitFor(agent, state, {
+    portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
+  }),
+});
 
 // Generated once per project folder and reused by every context window on it.
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
@@ -631,6 +644,56 @@ function handleDrop(msg, ws) {
     broadcastControl({ type: 'dropped', note });
   }
   void ws;
+}
+
+// Dropping a file on an agent's face uploads a portrait for its CURRENT
+// state: {type:'portrait', action:'set', agent, state, path}. The decision
+// (extension, size, path safety) and the copy itself both live in
+// host/portrait-upload.js, tested in isolation; this is only the wiring.
+//
+// BROADCAST, like the drop note above and the seat result below it in
+// dispatchControl -- two windows on one project share a roster, and one of
+// them silently disagreeing about whose upload just landed, or why one was
+// refused, is worse than a redraw.
+function handlePortraitUpload(msg) {
+  const agent = msg && msg.agent;
+  const state = msg && msg.state;
+  const source = msg && msg.path;
+  const reply = (ok, reason) => broadcastControl({ type: 'portrait', ok, agent, state, reason: reason || null });
+
+  if (!msg || msg.action !== 'set') {
+    reply(false, `unsupported portrait action: ${msg && msg.action}`);
+    return;
+  }
+
+  let size;
+  try {
+    size = fs.statSync(source).size;
+  } catch (err) {
+    reply(false, `could not read the dropped file: ${err && err.message}`);
+    return;
+  }
+
+  const plan = planPortraitUpload({ source, agent, state, uploadsDir: UPLOADS_DIR, size });
+  if (!plan.ok) {
+    console.log('[host] portrait upload refused:', agent, state, '-', plan.reason);
+    reply(false, plan.reason);
+    return;
+  }
+
+  try {
+    applyPortraitUpload({ source, dest: plan.dest });
+  } catch (err) {
+    console.log('[host] portrait upload copy failed:', agent, state, '-', err && err.message);
+    reply(false, `copy failed: ${err && err.message}`);
+    return;
+  }
+
+  reply(true);
+  // Re-describe rather than assuming the tier that now applies -- describe()
+  // re-reads the real filesystem, so a stale idea of "the upload obviously
+  // won" can never disagree with what portraitFor actually resolves.
+  broadcastControl({ type: 'mood', ...describe(agent, state) });
 }
 
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
@@ -1298,6 +1361,10 @@ wss.on('connection', (ws) => {
       }
       if (seats !== before) store.write('council', { seats });
       broadcastControl({ ...seatPayload(seats), error });
+      return;
+    }
+    if (msg.type === 'portrait') {
+      handlePortraitUpload(msg);
       return;
     }
     if (msg.type === 'fog') {
