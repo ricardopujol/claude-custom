@@ -109,27 +109,44 @@ test('both modes that run tools without asking are flagged risky', () => {
 // one skull, for a session running with no guardrails at all. The display
 // understates autonomy, which is the one direction it must never fail in.
 
-test('every indicator the CLI actually prints is recognised', () => {
-  // Taken verbatim from the binary's own table, without the " on" this module
-  // used to demand.
-  assert.strictEqual(parsePermissionMode(['⏵⏵ accept edits']), 'accept edits');
-  assert.strictEqual(parsePermissionMode(['⏵⏵ auto mode']), 'auto');
-  assert.strictEqual(parsePermissionMode(['⏵⏵ bypass permissions']), 'bypass');
-  assert.strictEqual(parsePermissionMode(["⏵⏵ don't ask"]), 'dont ask');
-  assert.strictEqual(parsePermissionMode(['⏸ manual mode']), 'manual');
-  assert.strictEqual(parsePermissionMode(['⏸ plan mode']), 'plan');
+test('every indicator the CLI actually prints is recognised, ON A STATUS LINE', () => {
+  // Taken verbatim from the binary's table. The glyph matters: these strings
+  // are ordinary English and must only be trusted where the CLI marked them.
+  const G = String.fromCharCode(0x23F5);
+  const P = String.fromCharCode(0x23F8);
+  assert.strictEqual(parsePermissionMode([G + G + ' accept edits']), 'accept edits');
+  assert.strictEqual(parsePermissionMode([G + G + ' auto mode']), 'auto');
+  assert.strictEqual(parsePermissionMode([G + G + ' bypass permissions']), 'bypass');
+  assert.strictEqual(parsePermissionMode([G + G + " don't ask"]), 'dont ask');
+  assert.strictEqual(parsePermissionMode([P + ' manual mode']), 'manual');
+  assert.strictEqual(parsePermissionMode([P + ' plan mode']), 'plan');
 });
 
-test('the older " on" spelling still parses, so a version change cannot blind it', () => {
-  // The binary also carries `{label:"accept edits on"}`, `{label:"plan mode on"}`
-  // and `{label:"auto mode on"}` for a different surface. Accepting both costs
-  // nothing and means a UI revision does not silently return us to reporting a
-  // stale mode.
-  assert.strictEqual(parsePermissionMode(['accept edits on']), 'accept edits');
-  assert.strictEqual(parsePermissionMode(['plan mode on']), 'plan');
-  assert.strictEqual(parsePermissionMode(['auto mode on']), 'auto');
-  assert.strictEqual(parsePermissionMode(['bypass permissions on']), 'bypass');
+test('PROSE IS NOT A STATUS LINE -- the regression this nearly shipped', () => {
+  // Ricardo reported that the skulls and the name DO track shift+tab
+  // correctly. That observation is what caught this: my first version dropped
+  // the trailing " on" from every pattern, which made the CLI's OWN HELP TEXT
+  // parse as a mode change.
+  //
+  // parsePermissionMode is handed `termState.lines()` -- the entire screen --
+  // so anything Claude prints is a candidate. A mode display driven by prose
+  // is worse than one that misses a mode: it would flicker between modes as
+  // the conversation scrolled.
+  const help = 'Hit shift+tab to cycle between manual mode, auto-accept edit mode, and plan mode';
+  assert.strictEqual(parsePermissionMode([help]), null);
+  assert.strictEqual(parsePermissionMode(['I will use plan mode for this']), null);
+  assert.strictEqual(parsePermissionMode(['switching to bypass permissions shortly']), null);
 });
+
+test('"plan mode only" does not read as "plan mode on"', () => {
+  // PRE-EXISTING, and older than anything in this branch: /plan mode on/i
+  // matches "plan mode ONLY", which the CLI prints itself in
+  // "start coding (plan mode only)". The trailing  fixes it, because n and
+  // l are both word characters.
+  assert.strictEqual(parsePermissionMode(['for approval and start coding (plan mode only)']), null);
+  assert.strictEqual(parsePermissionMode(['plan mode on']), 'plan');
+});
+
 
 test('an unrecognised mode is NULL, never the previous answer', () => {
   // The rule that makes the whole thing safe. "I do not know" must not be
@@ -141,7 +158,10 @@ test('an unrecognised mode is NULL, never the previous answer', () => {
 });
 
 test('a later line wins, because the status line is redrawn low on the screen', () => {
-  assert.strictEqual(parsePermissionMode(['plan mode', 'bypass permissions']), 'bypass');
+  const G = String.fromCharCode(0x23F5);
+  const P = String.fromCharCode(0x23F8);
+  assert.strictEqual(
+    parsePermissionMode([P + ' plan mode', G + G + ' bypass permissions']), 'bypass');
 });
 
 test("don't ask is known, and is treated as risky", () => {

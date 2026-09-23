@@ -59,7 +59,33 @@ const MODES = {
 
 // Order matters: "bypass permissions on" also contains no other mode name, but
 // matching longest-first avoids any future overlap surprising us.
-const PATTERNS = [
+// The CLI's status bar prefixes the mode with one of its own glyphs -- U+23F5
+// (a play triangle, doubled for the auto-ish modes) or U+23F8 (pause). Nothing
+// in ordinary prose carries them, which is what makes them a safe anchor.
+const STATUS_GLYPH = /[⏵⏸]/;
+
+// PRECISE FORMS FIRST. These carry a trailing " on" and appear only in the
+// status bar, so they may be matched anywhere on the line.
+// The trailing \b is load-bearing and PREDATES this change being needed:
+// without it `/plan mode on/i` matches "plan mode ONLY", which the CLI itself
+// prints ("start coding (plan mode only)"). A word boundary after "on" does
+// not match "only", because n and l are both word characters.
+const LABELS = [
+  ['bypass', /bypass permissions on\b/i],
+  ['accept edits', /accept edits on\b/i],
+  ['auto', /auto mode on\b/i],
+  ['manual', /manual mode on\b/i],
+  ['plan', /plan mode on\b/i],
+];
+
+// The binary's own `indicator` strings, which have NO " on" -- and which
+// `manual`, `bypass` and `don't ask` are the only rendering of. These are
+// ordinary English and appear in prose, in Claude's own output, and in the
+// CLI's help text ("cycle between manual mode, auto-accept edit mode, and plan
+// mode"), so they are matched ONLY on a line carrying a status glyph.
+//
+// Longest-first, so "bypass permissions" cannot be shadowed by a shorter one.
+const INDICATORS = [
   ['bypass', /bypass permissions/i],
   ['dont ask', /don.t ask/i],
   ['accept edits', /accept edits/i],
@@ -73,8 +99,14 @@ function parsePermissionMode(lines) {
   // so a later occurrence is the current one.
   let found = null;
   for (const line of lines || []) {
-    for (const [name, re] of PATTERNS) {
+    for (const [name, re] of LABELS) {
       if (re.test(line)) found = name;
+    }
+    // The loose forms are only trusted on a line the CLI marked as its status.
+    if (STATUS_GLYPH.test(line)) {
+      for (const [name, re] of INDICATORS) {
+        if (re.test(line)) { found = name; break; }
+      }
     }
   }
   return found;
