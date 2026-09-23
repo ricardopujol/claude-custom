@@ -334,3 +334,70 @@ test('the emitted-class guard catches a rule that can never match', () => {
   assert.strictEqual(check('.sec .scope { color: red; }', ['sec', 'scope']), true,
     'and the corrected rule must be accepted');
 });
+
+test('a failed delete is surfaced, not swallowed by a re-render', () => {
+  // Dexter, PR #40, F6, asserted against source because renderer.js needs a real
+  // DOM -- the same instrument as the channel and bridge checks above.
+  //
+  // The call used to be `await remove(id); renderVault();` with the result
+  // dropped, so a `commit` throw (the Windows EPERM/EBUSY rename path measured
+  // on 2026-09-18) silently redrew the panel with the entry still present. The x
+  // appears to do nothing, so the user clicks again.
+  //
+  // Miguel raised it: scoping gave `{ok:false}` a SECOND meaning. It used to
+  // mean only "already gone" -- benign, and defensible to discard. It now also
+  // means "not yours", and both answered by redrawing a row that is still there.
+  const renderer = strip(read('renderer.js'));
+
+  const at = renderer.indexOf("secrets.remove(id)");
+  assert.ok(at > 0, 'the vault list must still delete by id');
+  // Backwards too: the assignment sits BEFORE the call, and slicing only forward
+  // reported the captured result as discarded. My own guard, wrong in the
+  // alarming direction rather than the silent one, which is the better half of
+  // the two but still wrong.
+  const after = renderer.slice(Math.max(0, at - 120), at + 600);
+
+  assert.match(after, /const\s+res\s*=|res\s*=\s*await/,
+    'the result of remove must be captured, not discarded');
+  assert.match(after, /res\.ok\s*!==\s*true|!res\.ok|res\.ok\s*===\s*false/,
+    'and it must be checked');
+  assert.match(after, /aria-live|role="alert"/,
+    'a delete that did not happen must be announced, not only drawn');
+});
+
+test('the melt confirmation puts Cancel before the destructive button', () => {
+  // Miguel, PR #42, A7. Tab order used to be input -> Open -> "Melt it, I lost
+  // the key" -> Cancel, so the irreversible action sat two tabs and a space from
+  // the password field, ahead of the safe one.
+  //
+  // Source-asserted because the order is a property of the emitted markup.
+  const renderer = strip(read('renderer.js'));
+  const cancel = renderer.indexOf('data-lock="melt-cancel"');
+  const confirm = renderer.indexOf('data-lock="melt-confirm"');
+  assert.ok(cancel > 0 && confirm > 0, 'both melt buttons must exist');
+  assert.ok(cancel < confirm,
+    'Cancel must come FIRST in the markup, so tab order reaches it before melt');
+
+  assert.match(renderer, /data-autofocus/,
+    'and something must take focus after the redraw -- innerHTML destroys it');
+  assert.match(renderer, /aria-describedby="melt-warning"/,
+    'the destructive button must point at the warning that states the cost');
+});
+
+test('every password field in the lock panel has a real label', () => {
+  // Miguel A7: all three had a placeholder only, which is a WCAG 3.3.2 failure
+  // on the field holding a vault key. Placeholders are not labels -- they vanish
+  // on input and are not reliably announced.
+  const renderer = strip(read('renderer.js'));
+  const html = read('renderer.html');
+
+  const passwordInputs = [...renderer.matchAll(/<input[^>]*type="password"[^>]*>/g)];
+  assert.ok(passwordInputs.length > 0, 'the scan must find the key field');
+
+  // Built through one helper, so the label travels with every use. Asserting the
+  // helper exists AND that no password input is emitted outside it.
+  assert.match(renderer, /class="sr-only" for="vault-key"/,
+    'the key field must carry a label element');
+  assert.ok(html.includes('.sr-only'),
+    'and renderer.html must style it as visually hidden rather than dropping it');
+});

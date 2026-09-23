@@ -418,19 +418,118 @@ test('no source file contains a stray control character', () => {
   }
   assert.ok(files.length > 20, `the scan must find the source to mean anything (${files.length})`);
 
-  // Tab, newline and carriage return are the only control characters source
-  // should hold. Everything else below 0x20 arrived by accident.
+  // THE WALK IS NOT RECURSIVE, so assert that it does not need to be. Miguel:
+  // there is no subdirectory under these four today, so this is a fuse rather
+  // than a bug -- the day `app/panels/` appears the scan narrows silently while
+  // `files.length > 20` keeps passing. Same idiom as the computed-getElementById
+  // check above: state the thing the scan assumes instead of assuming it.
+  //
+  // The tracked-source test below is the other half: it compares this population
+  // against `git ls-files`, so a missed subdirectory fails there too.
+  for (const d of dirs) {
+    const dir = path.join(__dirname, '..', d);
+    if (!fs.existsSync(dir)) continue;
+    const subdirs = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => `${d}/${e.name}`);
+    assert.deepStrictEqual(subdirs, [],
+      `this scan is not recursive: ${subdirs.join(', ')} would be skipped silently`);
+  }
+
+  // WHAT COUNTS AS A STRAY CHARACTER, and the comment used to claim a wider
+  // class than the check covered. Miguel's second gap: the justification is
+  // "renders as nothing in most editors and in git diff", and that is equally
+  // true of DEL, a non-breaking space, a zero-width space and a BOM stranded
+  // mid-file -- a UTF-8 BOM at the head of a .js being the realistic one. Either
+  // narrow the claim or widen the check; widened, because every one of these
+  // arrives the same way and is invisible the same way.
+  //
+  // Tab, newline and carriage return are the only ones source should hold.
+  const NAMED = { 0x7f: 'DEL', 0xa0: 'NO-BREAK SPACE', 0x200b: 'ZERO WIDTH SPACE',
+                  0x200c: 'ZERO WIDTH NON-JOINER', 0x200d: 'ZERO WIDTH JOINER',
+                  0xfeff: 'BOM / ZERO WIDTH NO-BREAK SPACE' };
+  const stray = (c) => (c < 0x20 && c !== 9 && c !== 10 && c !== 13) || c in NAMED;
+
   const offenders = [];
   for (const f of files) {
     const src = fs.readFileSync(f, 'utf8');
     for (let i = 0; i < src.length; i++) {
       const c = src.charCodeAt(i);
-      if (c < 0x20 && c !== 9 && c !== 10 && c !== 13) {
-        offenders.push(`${path.basename(f)} byte ${i}: 0x${c.toString(16).padStart(2, '0')}`);
-        break;
-      }
+      if (!stray(c)) continue;
+      const what = NAMED[c] ? ` (${NAMED[c]})` : ' (C0 control)';
+      offenders.push(`${path.basename(f)} byte ${i}: 0x${c.toString(16).padStart(2, '0')}${what}`);
+      break;
     }
   }
   assert.deepStrictEqual(offenders, [],
-    `control characters in source -- almost certainly a mangled backslash escape: ${offenders.join('; ')}`);
+    `invisible characters in source -- usually a mangled backslash escape: ${offenders.join('; ')}`);
+
+  // The scope is a CHOICE, said out loud because heredoc mangling hits .md and
+  // .ps1 just as hard. Limited to source the suite and the product actually
+  // execute, where a mangled escape changes behaviour rather than prose.
+  assert.deepStrictEqual(dirs, ['app', 'test', 'host', 'bin'],
+    'if a new source directory appears it belongs in this scan');
+});
+
+test('the source the suite scans is exactly the source git tracks', () => {
+  // THE GAP BOTH REVIEWERS LANDED ON, and it was live when they found it.
+  //
+  // `app/secret-vault-mutant.js` sat untracked in `app/` for hours: a 419-line
+  // near-copy of the vault with `deriveKey` replaced by `Buffer.alloc(32, 7)` --
+  // one constant key on every machine, for any password -- and the comment above
+  // it still swearing there is scrypt. A reviewer's hand-mutation artifact, left
+  // in the product directory, one `git add -A` from a commit that downgrades the
+  // vault's cryptography while reading as if it strengthened it. The name
+  // autocompletes next to the real file.
+  //
+  // WORSE, AND THIS IS WHY THE CHECK BELONGS HERE: the control-character guard
+  // above walks `app/` with readdirSync, so its population depended on untracked
+  // state. It was scanning a file that does not exist in a clean checkout. "the
+  // suite scans the source" had quietly become "the suite scans whatever is on
+  // this disk", which is a claim about somebody's scratch space.
+  //
+  // NOT solved by gitignoring it -- that makes it MORE invisible, which is the
+  // wrong direction in a repo whose recurring defect is verification failing
+  // quietly in the safe-looking direction. Solved by making the two populations
+  // agree, so an untracked .js in a scanned directory is a red test.
+  const { execFileSync } = require('child_process');
+  const root = path.join(__dirname, '..');
+
+  let tracked;
+  try {
+    tracked = execFileSync('git', ['ls-files', 'app', 'test', 'host', 'bin'],
+      { cwd: root, encoding: 'utf8' });
+  } catch {
+    // No git available (a tarball, a sandbox). Skipping is right here -- the
+    // check is about repository hygiene and there is no repository to ask.
+    return;
+  }
+
+  const want = new Set(tracked.split(/\r?\n/)
+    .filter(f => /\.(js|html|json)$/.test(f))
+    .map(f => f.replace(/\//g, path.sep)));
+  assert.ok(want.size > 20, `git must report the source (${want.size})`);
+
+  const have = new Set();
+  for (const d of ['app', 'test', 'host', 'bin']) {
+    const dir = path.join(root, d);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (/\.(js|html|json)$/.test(f)) have.add(path.join(d, f));
+    }
+  }
+
+  const untracked = [...have].filter(f => !want.has(f));
+  assert.deepStrictEqual(untracked, [],
+    'these files are in a scanned product directory but not tracked by git -- '
+    + 'move scratch work out of app/test/host/bin rather than gitignoring it: '
+    + untracked.join(', '));
+
+  // And the other direction: a tracked file the walk MISSES. This is the fuse
+  // Miguel named -- `readdirSync` is not recursive, and the day `app/panels/`
+  // appears the guard narrows silently while `files.length > 20` keeps passing.
+  const missed = [...want].filter(f => !have.has(f));
+  assert.deepStrictEqual(missed, [],
+    'git tracks these and the non-recursive walk cannot see them -- '
+    + 'the scan has silently narrowed: ' + missed.join(', '));
 });

@@ -750,7 +750,19 @@ async function renderVault() {
     <div class="sec" data-id="${escapeHtml(e.id)}">
       <div class="row">
         <span class="label" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
-        ${e.shared ? '<span class="scope" title="visible from every project on this machine">shared</span>' : ''}
+        ${/* Miguel, PR #40, part 4. Narrowing legacy entries retroactively was the
+              right call -- a secret vanishing from a project that relies on it is a
+              disappearance the user cannot debug. But shipping a ONE-WAY DOOR WITH NO
+              SIGN is not: today someone sees `shared` on an old secret, wants it
+              scoped, and has no path, with nothing telling them one exists. It does:
+              delete it and add it again here.
+              Closed with a string rather than a feature. No new IPC, no new surface,
+              no new security question -- and a scope toggle does NOT belong in that
+              branch, because re-scoping is a renderer-driven privilege change and
+              would undo the one thing the branch got right: that the window does not
+              choose the scope. */ ''}
+        ${e.shared ? '<span class="scope" title="visible from every project on this machine'
+          + ' — to scope it to this project, delete it and add it again here">shared</span>' : ''}
         <button data-act="copy">Copy</button>
         <button data-act="reveal">Show</button>
         <button data-act="remove" title="delete permanently">×</button>
@@ -793,8 +805,33 @@ document.addEventListener('click', async (e) => {
   if (act === 'remove') {
     // No confirm dialog: an Electron modal blocks the whole window, and this
     // is a two-click action on a labelled card rather than a destructive sweep.
-    await window.harness.secrets.remove(id);
-    renderVault();
+    //
+    // THE RESULT IS READ. Dexter, PR #40, F6. This used to be
+    // `await remove(id); renderVault();` with the result dropped, so when
+    // `commit` threw -- the Windows EPERM/EBUSY rename path that
+    // host/atomic-write.js exists for, measured against this file on
+    // 2026-09-18 -- the window silently re-rendered with the entry still there.
+    // The x appears to do nothing, so the user clicks it again.
+    //
+    // Miguel's addition raises it: scoping gave `{ok:false}` a SECOND meaning.
+    // It used to mean only "already gone", which is benign and defensible to
+    // discard. It now also means "not yours to delete", and the renderer
+    // answered both by redrawing a row that is still there. Unreachable from
+    // today's UI because every card came from a scoped `list` -- and
+    // "unreachable from today's UI" is exactly the guarantee a second window or
+    // a future keyboard shortcut erases.
+    const res = await window.harness.secrets.remove(id);
+    await renderVault();
+    if (!res || res.ok !== true) {
+      const list = document.getElementById('vault-list');
+      const why = (res && res.error) ? res.error
+        : 'that secret was not deleted — it may already be gone, or not belong to this project';
+      if (list) {
+        list.innerHTML =
+          `<div class="err" role="alert" aria-live="assertive">${escapeHtml(why)}</div>`
+          + list.innerHTML;
+      }
+    }
   }
 });
 
