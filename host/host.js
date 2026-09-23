@@ -32,6 +32,7 @@ const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
+const { setBackground, resetBackground, resolveStyle } = require('./style');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { parsePermissionMode, MODES } = require('./mode');
@@ -358,6 +359,12 @@ const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent,
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
 const background = backgroundFor(CWD, { dir: BACKGROUNDS_DIR });
 console.log('[host] background     :', path.basename(background.path), background.created ? '(new)' : '(existing)');
+
+// FF6: a per-project override lives here, keyed by normalised project path in
+// the 'style' store key -- see host/style.js. Falls back to the generated
+// background above whenever there is none, or the recorded copy no longer
+// resolves inside this directory.
+const STYLE_DIR = process.env.CLAUDE_CUSTOM_STYLE_DIR || path.join(HARNESS_DIR, 'style');
 
 // The session id arrives on the SessionStart hook. Until it does, only the
 // project total is knowable -- readUsage handles that rather than blocking.
@@ -1111,12 +1118,18 @@ wss.on('connection', (ws) => {
   // Attach handshake: everything the view needs to draw itself, then the
   // current screen. The view holds no session state of its own, so this is the
   // only place it learns the theme, the roster or what is on the terminal.
+  // `background` used to be `background.path` unconditionally -- resolved
+  // through style.js instead, so a per-project override (FF6) wins over the
+  // generated art without the Style panel needing a second round trip just to
+  // learn what is already showing.
+  const styleResolved = resolveStyle(store, CWD, background.path, { styleDir: STYLE_DIR });
   sendControl(ws, {
     type: 'hello',
     cwd: CWD,
     theme,
     hooks: helperExists,
-    background: background.path,
+    background: styleResolved.background,
+    style: { source: styleResolved.source, setAt: styleResolved.setAt || null },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     running: processes.list(),
@@ -1316,6 +1329,36 @@ wss.on('connection', (ws) => {
             status: { failed: true, error: err && err.message } }));
         } catch { /* the client went away */ }
       });
+      return;
+    }
+    if (msg.type === 'style') {
+      // set-background / reset-background. A refusal answers ONLY the asking
+      // client -- it is that action failing, not a state change anyone else
+      // needs to hear about, the same distinction host/host.js already draws
+      // for the project picker's 'open' errors. A successful change IS
+      // broadcast: two windows can attach to one host and one of them silently
+      // disagreeing about what is showing is worse than a redraw.
+      if (msg.action === 'set-background') {
+        const asked = msg && msg.path;
+        if (typeof asked !== 'string' || !asked.trim()) {
+          ws.send(JSON.stringify({ type: 'style', error: 'no file was given' }));
+          return;
+        }
+        const r = setBackground({ source: asked, cwd: CWD, dir: STYLE_DIR, store });
+        if (!r.ok) {
+          console.log('[host] style refused :', r.reason);
+          ws.send(JSON.stringify({ type: 'style', error: r.reason }));
+          return;
+        }
+        broadcastControl({ type: 'style', background: r.dest, source: 'override', setAt: r.setAt });
+        return;
+      }
+      if (msg.action === 'reset-background') {
+        resetBackground({ cwd: CWD, dir: STYLE_DIR, store });
+        const resolved = resolveStyle(store, CWD, background.path, { styleDir: STYLE_DIR });
+        broadcastControl({ type: 'style', background: resolved.background, source: resolved.source, setAt: resolved.setAt || null });
+        return;
+      }
       return;
     }
   }

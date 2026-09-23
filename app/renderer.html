@@ -574,6 +574,7 @@
           <button data-tab="fog" title="What this project has actually been read">Map</button>
           <button data-tab="models" title="Browse every model OpenRouter offers, and seat the council">Models</button>
           <button data-tab="projects" title="Switch to another project, each in its own window">Projects</button>
+          <button data-tab="style" title="How the harness looks">Style</button>
         </nav>
         <div class="panel" data-panel="agents">
           <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
@@ -631,6 +632,12 @@
           <div id="projects-note" class="dim">reading your projects…</div>
           <div id="projects-list"></div>
         </div>
+        <!-- A container that GROWS: one section today (background image), more
+             later. app/style-display.js renders one entry per STYLE_SECTIONS,
+             so adding a section is a one-element array change, not a new panel. -->
+        <div class="panel" data-panel="style" id="style-body">
+          <div id="style-sections"></div>
+        </div>
       </aside>
       <aside id="diag">
         <h2>Key diagnostics</h2>
@@ -651,6 +658,7 @@
   <script src="./career-display.js"></script>
   <script src="./quota-display.js"></script>
   <script src="./projects-display.js"></script>
+  <script src="./style-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

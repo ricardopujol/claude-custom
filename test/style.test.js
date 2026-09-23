@@ -235,6 +235,9 @@ test('setBackground records the override under the NORMALISED project key', () =
   assert.ok(state[key], 'the entry must be keyed by the normalised project path');
   assert.strictEqual(state[key].background.file, r.dest);
   assert.ok(typeof state[key].background.setAt === 'string' && state[key].background.setAt.length > 0);
+  // Returned to the caller too, so host.js can broadcast it without a second
+  // read of the store it just wrote.
+  assert.strictEqual(r.setAt, state[key].background.setAt);
 });
 
 test('a copy failure is reported, cleans up the temp file, and never reaches the store', () => {
