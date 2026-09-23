@@ -21,6 +21,29 @@
  * ~/.claude/projects/<project>/<session>.jsonl in plaintext, permanently. This
  * makes a secret easy to REACH; it cannot make pasting one into a session safe.
  * That is a property of the transcript, not of this file.
+ *
+ * A SECOND LIMIT, AND THE LOCK DOES NOT CLOSE IT: labels and notes are stored
+ * in CLEARTEXT. Only `secret` is ever encrypted. So the lock protects VALUES,
+ * and the inventory -- what exists, and what each one is for -- is readable from
+ * `secrets.enc` in Notepad by anyone at an unlocked Windows session.
+ *
+ * That matters more than it looks, because this module says elsewhere, correctly,
+ * that A LABEL IS A SECRET: "client-x prod database" names the client and tells
+ * you there is a production database, without revealing one character of the
+ * value. And the lock's whole threat model, in Ricardo's words, is "in case he
+ * has to leave his computer and someone could enter the vault" -- which is
+ * exactly a person at the machine with the session open.
+ *
+ * Miguel raised this as PR #42 B2(a) and he is right. Wrapping `label` and
+ * `note` under the session key is the correct fix, `rewrapAll` is the place, and
+ * the "decrypt storm" the original comment feared is N unwraps of a few KB once
+ * per render -- nothing. It is NOT done here only because it changes the on-disk
+ * format of every entry rather than just the `lock` record, and a data-format
+ * migration deserves its own branch and its own test for the half-migrated file.
+ *
+ * Written down rather than left implicit, because the failure mode Miguel named
+ * is the code claiming one thing while the disk does another. Until that branch
+ * lands, the honest statement is: the lock hides your secrets, not your list.
  */
 
 const fs = require('fs');

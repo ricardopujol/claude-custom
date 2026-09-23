@@ -76,10 +76,22 @@ test('setting a key for the first time closes the vault to anyone without it', (
   assert.deepStrictEqual(open(file).lockState(), { hasKey: true, locked: true, count: 1 });
 });
 
-test('while locked, nothing is readable -- not even the labels', () => {
+test('while locked, the API returns nothing -- not even the labels', () => {
   // A label IS a secret. "client-x prod database" tells a passerby who the
   // client is and that there is a production database, without revealing one
   // character of the value.
+  //
+  // RENAMED, because the old title was "nothing is readable" and this test only
+  // ever checked `list()` and `get()`. Miguel, PR #42, B2(a): labels and notes
+  // are stored in CLEARTEXT, so they are readable straight out of secrets.enc in
+  // Notepad -- by exactly the person this feature exists to stop. The title
+  // asserted a property of the FILE while the body asserted a property of the
+  // API, which is the same defect the reviewers kept finding in my tests, in the
+  // one place it was load-bearing for the threat model.
+  //
+  // The API guarantee below is real and worth keeping. The file-level one is not
+  // true yet, is named as a limit in secret-vault.js's header, and needs its own
+  // branch because it changes the on-disk format of every entry.
   const file = tmp();
   const v0 = open(file);
   const e = v0.add({ label: 'client-x prod db', secret: 's', shared: true });
@@ -88,6 +100,32 @@ test('while locked, nothing is readable -- not even the labels', () => {
   const v = open(file);
   assert.deepStrictEqual(v.list(ANY), []);
   assert.strictEqual(v.get(e.id, ANY), null);
+});
+
+test('the cleartext label limit is DOCUMENTED, since it is not yet fixed', () => {
+  // A deliberately uncomfortable test. It asserts the CURRENT, wrong-ish
+  // behaviour -- and it exists so that the day someone wraps labels, this fails
+  // and points them at the header paragraph that needs deleting.
+  //
+  // Better than a TODO: a TODO cannot tell you when it stopped being true.
+  const file = tmp();
+  const v0 = open(file);
+  v0.add({ label: 'client-x prod db', secret: 's', note: 'renewal in March', shared: true });
+  v0.setKey(KEY);
+
+  const raw = fs.readFileSync(file, 'utf8');
+  assert.ok(raw.includes('client-x prod db'),
+    'if this fails, labels are now encrypted -- delete the B2(a) limit from '
+    + 'secret-vault.js\'s header and rename this test');
+  assert.ok(raw.includes('renewal in March'), 'same for notes');
+
+  // And the part that IS guaranteed: the value never appears.
+  assert.ok(!raw.includes('"s"') || !raw.includes('secret":"s"'),
+    'the VALUE must not be recoverable from the file');
+
+  const header = fs.readFileSync(path.join(__dirname, '..', 'app', 'secret-vault.js'), 'utf8');
+  assert.match(header, /A SECOND LIMIT, AND THE LOCK DOES NOT CLOSE IT/,
+    'the limit must be stated in the module, not only known here');
 });
 
 test('the ciphertext on disk is unreadable without the key', () => {
