@@ -24,6 +24,7 @@ const TABS = [
   { id: 'vault', label: 'Vault', title: 'Local encrypted secrets' },
   { id: 'fog', label: 'Map', title: 'What this project has actually been read' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
+  { id: 'projects', label: 'Projects', title: 'Switch to another project, each in its own window' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

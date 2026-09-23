@@ -122,6 +122,60 @@ test('exposes the path of a file for other processes to read', () => {
   assert.strictEqual(s.pathOf('loadout'), path.join(dir, 'loadout.json'));
 });
 
+test('every file the store header names has a real producer', () => {
+  // Dexter, PR #29 review, Finding 16. host/store.js's header listed FOUR
+  // files -- loadout.json, vault.json, map.json, stats.json -- and not one of
+  // them had ever been written. The only key this store actually uses,
+  // 'cooldowns', was absent from the list. It was a roadmap written in the
+  // present tense.
+  //
+  // The cost was not cosmetic. `map.json — files seen, per project` was cited
+  // as PRECEDENT in a code review for how to scope a new feature's state;
+  // there is no precedent, because nothing here is scoped by project. I then
+  // repeated the claim in a comment whose whole job was to record what is and
+  // is not scoped, and when I corrected it I fixed only the line I had been
+  // told about and left the other three. Three readers, one stale list, two
+  // passes to fix.
+  //
+  // This is the same instrument as test/control.test.js's allow-list scan: a
+  // cross-file claim asserted against source rather than trusted. A header may
+  // describe plans, but it must not describe them in the same voice as the
+  // things that exist.
+  const fs = require('fs');
+  const path = require('path');
+  const HOST = path.join(__dirname, '..', 'host');
+  const APP = path.join(__dirname, '..', 'app');
+  const src = fs.readFileSync(path.join(HOST, 'store.js'), 'utf8');
+  const header = src.slice(0, src.indexOf('*/'));
+
+  // Filenames the header presents as things this store contains.
+  const named = [...header.matchAll(/\.harness\/state\/([A-Za-z0-9_-]+)\.json/g)]
+    .map(m => m[1]);
+  assert.ok(named.length > 0, 'the scan must find something for this check to mean anything');
+
+  // A PRODUCER, NOT A MENTION. The first version of this test looked for the
+  // quoted key anywhere under host/ or app/ -- and passed against a header full
+  // of phantoms, because the very comment explaining that 'loadout', 'map' and
+  // 'stats' have no references CONTAINS those quoted strings, inside store.js,
+  // which the scan concatenated as code. The documentation of the bug satisfied
+  // the detector for the bug. Verified: re-adding the loadout.json line to the
+  // header left this test green.
+  //
+  // So strip comments, and require a real call shape rather than an appearance.
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const read = (dir) => fs.readdirSync(dir)
+    .filter(f => f.endsWith('.js'))
+    .map(f => strip(fs.readFileSync(path.join(dir, f), 'utf8')))
+    .join('\n');
+  const code = read(HOST) + '\n' + read(APP);
+
+  const producer = (key) => new RegExp(
+    `(?:STORE_KEY\\s*=\\s*|\\.(?:read|write|update|pathOf)\\s*\\(\\s*)['"]${key}['"]`).test(code);
+  const phantom = named.filter(key => !producer(key));
+  assert.deepStrictEqual(phantom, [],
+    `the header names these state files and nothing reads or writes them: ${phantom.join(', ')}`);
+});
+
 test('a transient EPERM on the rename does NOT lose the write', () => {
   // MEASURED on this machine, 2026-09-18: a rename of a just-written temp
   // file failed with EPERM mid test run, nothing wrong with the file or the

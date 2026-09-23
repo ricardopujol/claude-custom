@@ -47,8 +47,11 @@ const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { allowConnection, newToken } = require('./gatekeeper');
-
-const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
+const { portForCwd } = require('./port-for-project');
+const { writeIdentity, fileFor } = require('./host-identity');
+const { pickerPayload, createProjectsReader } = require('./project-picker');
+const { resolveLaunchTarget } = require('./launch-target');
+const { samePath } = require('./project-path');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -74,6 +77,12 @@ function resolveClaude() {
 
 const CLAUDE_BIN = resolveClaude();
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+
+// Derived from the project, so two projects can be open at once and reopening
+// a window finds the host it left running. An explicit CLAUDE_CUSTOM_PORT still
+// wins -- main.js sets it, having already resolved collisions by probing, and
+// the probe's answer must not be second-guessed here.
+const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || portForCwd(CWD);
 
 // The generated settings file contributes ONLY the harness's own hook matchers.
 // It does not union the user's hooks: those accumulate across settings layers
@@ -282,10 +291,14 @@ async function currentFog() {
   return fog;
 }
 
+// PORT-KEYED. The contents name this host's own pipe, so the filename has to
+// be this host's too -- otherwise a second host starting during this one's
+// module init redirects our claude's hooks into its bridge. See the header of
+// writeHarnessSettings; the shared copy is still written for the probes.
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
   pipeName: PIPE_NAME,
-});
+}, PORT);
 
 // Attached only once the native helper exists (step 2). Wiring hooks to a
 // missing binary would fire on every Task and Bash call and invoke nothing.
@@ -724,6 +737,134 @@ if (helperExists) {
     .catch(e => console.log('[host] hook bridge FAILED to bind:', e.message));
 }
 
+// --- the project picker ------------------------------------------------------
+
+/**
+ * The recent-projects list, for the sidebar's Projects panel.
+ *
+ * A FAILED read is reported as `ok:false` rather than as an empty list. "You
+ * have not opened anything yet" and "we could not read your history" are
+ * different facts, and an empty array tells them apart for nobody.
+ */
+// Holds its cache across calls. Without one, every open of the panel re-read
+// every transcript on the machine -- measured 2.0s, 3.0s, 3.9s and rising,
+// synchronously, on the event loop that delivers hook events. With it: 8ms.
+const readProjects = createProjectsReader();
+
+async function sendProjects(ws) {
+  let recents = null;                       // null means the read failed
+  try {
+    recents = readProjects();
+  } catch (err) {
+    console.log('[host] could not list recent projects:', err.message);
+  }
+  ws.send(JSON.stringify({ type: 'projects', ...pickerPayload({ recents, current: CWD }) }));
+}
+
+/**
+ * Open another project in its own window.
+ *
+ * Spawns the launcher rather than reusing this host: a host is bound to one
+ * project by construction -- it holds a pty already running `claude` in this
+ * cwd -- so "switch project" is a new host, not a mutation of this one. That
+ * also means the session you are looking at survives switching away from it,
+ * which is the same detach property the rest of this design rests on.
+ *
+ * The path is REVALIDATED here even though the picker only ever offers paths
+ * this host sent it. The control channel is token-gated, so this is not the
+ * last line of defence, but a stale list is enough on its own: a project
+ * deleted since the panel was drawn would otherwise spawn a window onto a
+ * folder that no longer exists.
+ */
+function openProject(msg, ws) {
+  const asked = msg && msg.path;
+
+  // ABSOLUTE ONLY. Dexter, Finding 6: `resolveLaunchTarget` resolves against
+  // CWD, so a relative path silently anchors inside the CURRENT project. The
+  // picker was the thing sending relative paths -- an approximate row carries
+  // the lossy ~/.claude/projects folder name -- and if a folder with that
+  // literal name happened to exist here, it would have opened THAT with no
+  // warning. Every legitimate caller has an absolute path; refusing the rest
+  // costs nothing and closes the only unintended resolution either reviewer
+  // could find.
+  if (typeof asked !== 'string' || !path.isAbsolute(asked)) {
+    const why = `refusing a project path that is not absolute: ${JSON.stringify(asked)}`;
+    console.log('[host]', why);
+    ws.send(JSON.stringify({ type: 'projects', error: why }));
+    return;
+  }
+
+  let target;
+  try {
+    target = resolveLaunchTarget(asked, { cwd: CWD });
+  } catch (err) {
+    console.log('[host] refusing to open:', err.message);
+    ws.send(JSON.stringify({ type: 'projects', error: err.message }));
+    return;
+  }
+
+  // ANSWERED, not silently dropped. Dexter, Finding 8: this used to be a bare
+  // `return`, so the panel sat on "opening a window…" forever -- the dead
+  // button with no feedback that the comment beside the click handler was
+  // written to prevent. Reachable whenever two ~/.claude/projects folders
+  // record the same cwd, which happens routinely via a junction or a second
+  // drive mapping.
+  if (samePath(target, CWD)) {
+    ws.send(JSON.stringify({ type: 'projects', error: 'that project is already open in this window' }));
+    return;
+  }
+
+  console.log('[host] opening project:', target);
+
+  // Logged to a FILE, not discarded and not piped. stdio:'ignore' is what made
+  // the first version of this unfixable from the outside: the launcher failed,
+  // the panel said "opening a window…", and nothing anywhere said why. A pipe
+  // would be worse than useless -- it belongs to this process, so the detached
+  // child takes EPIPE the moment it writes after we go, which is the same trap
+  // app/main.js records for the host's own log.
+  let stdio = 'ignore';
+  let logFd = null;
+  try {
+    fs.mkdirSync(HARNESS_DIR, { recursive: true });
+    logFd = fs.openSync(path.join(HARNESS_DIR, 'launcher.log'), 'a');
+    stdio = ['ignore', logFd, logFd];
+  } catch { /* a log we cannot open must not stop the window opening */ }
+
+  const child = require('child_process').spawn(
+    process.execPath,
+    [path.join(__dirname, '..', 'bin', 'claude-custom.js'), target], {
+    detached: true,
+    stdio,
+    // ELECTRON_RUN_AS_NODE is set ON PURPOSE and only for the launcher, which
+    // is a node script while this process's execPath is electron. The launcher
+    // strips it again before spawning the window -- see launchEnv, and the
+    // trap it documents.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  // An 'error' event on an EventEmitter with NO listener THROWS (Miguel). That
+  // would kill the host -- and the user's live pty session with it -- because a
+  // window failed to spawn. This file already makes that argument twice, at
+  // killTree and at the health runner; the launcher spawn was the one that
+  // did not follow it.
+  child.on('error', (err) => {
+    console.error('[host] could not start the launcher:', err.message);
+    try {
+      ws.send(JSON.stringify({ type: 'projects', error: `could not open a window: ${err.message}` }));
+    } catch { /* the window may already be gone */ }
+  });
+
+  // Node does NOT close fds handed to `stdio` -- that is the caller's job.
+  // app/main.js has the same shape and pays it once per process; this pays it
+  // once per project-open, in a host designed to run for days (Miguel).
+  if (logFd !== null) {
+    const closeLog = () => { try { fs.closeSync(logFd); } catch {} };
+    child.once('spawn', closeLog);
+    child.once('error', closeLog);
+  }
+
+  child.unref();
+}
+
 console.log('[host] claude binary :', CLAUDE_BIN);
 console.log('[host] cwd           :', CWD);
 
@@ -781,10 +922,21 @@ console.log('[host] pty pid       :', term.pid);
 //
 // NEVER passed through the pty. It travels host <-> client only.
 const TOKEN_FILE = path.join(HARNESS_DIR, 'session-token');
+// Per-port as well as shared, because more than one host can now be running.
+// The shared file is LAST-WRITER-WINS: a second project starting would
+// overwrite it, and the first project's window would then reattach with the
+// wrong token and be refused by the gatekeeper -- an auth failure whose cause
+// is another project entirely.
+//
+// The shared file is still written, and still first, because eleven probes in
+// verify/ read it by that exact path and they each run against a single host.
+// Additive rather than moved: this fixes the window without touching them.
+const PORT_TOKEN_FILE = path.join(HARNESS_DIR, 'hosts', `${PORT}.token`);
 const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN || newToken();
 try {
-  fs.mkdirSync(HARNESS_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(PORT_TOKEN_FILE), { recursive: true });
   fs.writeFileSync(TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
+  fs.writeFileSync(PORT_TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
 } catch (err) {
   console.log('[host] could not write the session token file:', err.message);
 }
@@ -1080,6 +1232,14 @@ wss.on('connection', (ws) => {
       handleDrop(msg, ws);
       return;
     }
+    if (msg.type === 'projects') {
+      sendProjects(ws);
+      return;
+    }
+    if (msg.type === 'open') {
+      openProject(msg, ws);
+      return;
+    }
     if (msg.type === 'health') {
       // Caught: an unhandled rejection terminates Node by default.
       runHealth().catch(() => {});   // broadcasts on start and on finish
@@ -1184,15 +1344,86 @@ wss.on('connection', (ws) => {
   });
 });
 
-console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
+/**
+ * The identity file is published from the 'listening' EVENT, and that ordering
+ * is the whole fix for Dexter's Finding 1 (Critical).
+ *
+ * `new WebSocketServer({port})` binds ASYNCHRONOUSLY and does not throw. The
+ * previous version published in the same synchronous tick as the constructor,
+ * under a comment claiming it happened "after the socket is actually
+ * accepting" -- which was simply false, and was the reassurance that would
+ * have stopped the next reader checking.
+ *
+ * What that cost: two windows opening one project at once (a double-click on a
+ * picker row is enough) both saw the port free and both spawned. The LOSER
+ * wrote its token files over the winner's, spawned a real claude, published
+ * its own pid as the identity for that port -- and only then died on
+ * EADDRINUSE. `shutdown()` runs on SIGINT/SIGTERM only, so nothing repaired
+ * it. The port was then held by the live winner while the identity named a
+ * dead pid, so every later launch read it, decided 'unidentified', and STEPPED
+ * PAST the live host to spawn an empty session. Silently, and forever: a
+ * Remote Control session in that host could never be reached from the GUI
+ * again. The recovery path reintroduced the exact failure class this feature
+ * exists to remove.
+ */
+let boundPort = null;                 // set only once the bind has succeeded
+
+wss.on('listening', () => {
+  boundPort = PORT;
+  console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
+  try {
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD }));
+  } catch (err) {
+    // A host that cannot publish still works for the window that spawned it;
+    // it just cannot be recognised later, so the next window steps to another
+    // port rather than reattaching. Degraded, not broken -- and said out loud,
+    // because "why did it open a second host" is otherwise unanswerable.
+    console.error('[host] could not publish identity:', err.message);
+  }
+});
+
+/**
+ * A bind that fails must not take the winner's files with it.
+ *
+ * Without this listener an 'error' event has no handler, which in Node THROWS
+ * -- an uncaught exception, mid-startup, AFTER this process has already
+ * overwritten the token files and spawned a real claude.
+ *
+ * `shutdown()` is called explicitly because the crash path never ran it: it is
+ * wired to SIGINT/SIGTERM only, so the pty this process started would have
+ * been orphaned -- a permission-bypassed claude with no host and no window.
+ *
+ * `boundPort` is what stops the cure being worse than the disease. shutdown()
+ * unlinks the identity file for PORT, and this process never owned PORT --
+ * unlinking it here would leave the host that DID bind unidentifiable, which
+ * is the same defect approached from the other side.
+ */
+wss.on('error', (err) => {
+  const ours = boundPort === PORT;
+  console.error(`[host] could not listen on ${PORT}: ${err && err.code || err}` +
+    (ours ? '' : ' (another host owns this port; leaving its files alone)'));
+  shutdown({ removeIdentity: ours });
+  process.exit(1);
+});
 
 // A test run outlives the host unless it is killed here. With shell:true the
 // child is cmd.exe, so an orphaned npm/node keeps running with no parent and
 // no window -- invisible, and still holding the repo's build output.
-function shutdown() {
+// `removeIdentity` defaults TRUE because the normal exit paths (SIGINT,
+// SIGTERM) are this host tidying up after itself. It is false in exactly one
+// case: a bind that failed, where this process never owned the port and the
+// file belongs to whoever did. Deleting it there would make the LIVE host
+// unidentifiable -- Finding 1 from the other direction.
+function shutdown({ removeIdentity = true } = {}) {
   try { term.kill(); } catch {}
   killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }
+  // Best effort. The reader already treats a leftover file as absent once the
+  // pid is gone, so this is tidiness rather than correctness -- which is why it
+  // is safe to swallow, and why the pid check exists instead of relying on it.
+  if (removeIdentity) {
+    try { fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); } catch {}
+  }
 }
 
 // SIGINT is not how this host usually dies: main.js spawns it DETACHED so it

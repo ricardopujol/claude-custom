@@ -132,6 +132,68 @@ function requestFog() {
   try { ws.send(JSON.stringify({ type: 'fog' })); } catch {}
 }
 
+// --- the project picker ------------------------------------------------------
+// Asked for on demand for the same reason the fog is: the host reads every
+// transcript under ~/.claude/projects to answer, and the host's event loop is
+// what delivers hook events.
+function requestProjects() {
+  // Logged either way, for the reason the attention path logs a suppressed
+  // toast: "we never asked" and "the answer never came" are the same silence in
+  // the panel, and telling them apart is what this line buys.
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.log('[renderer] projects: socket not open, deferring to ws.onopen');
+    return;
+  }
+  try {
+    ws.send(JSON.stringify({ type: 'projects' }));
+    console.log('[renderer] projects: asked');
+  } catch (e) {
+    console.warn('[renderer] projects: send failed:', e.message);
+  }
+}
+
+function renderProjects(msg) {
+  console.log('[renderer] projects: received', (msg.projects || []).length, 'ok=' + msg.ok);
+  const list = document.getElementById('projects-list');
+  const note = document.getElementById('projects-note');
+  // An error from the host is about THIS action failing, not about the history.
+  // `display` is reset explicitly: a successful render with no note leaves the
+  // element at display:none, so writing into it would show the user NOTHING --
+  // the panel's one error surface, silent. It happened to work only because
+  // the click handler set display='' two lines before sending, i.e. correct by
+  // a side effect in a different function (Miguel). That is the failure class
+  // this whole PR is about, so it should not be load-bearing here.
+  if (msg.error) {
+    note.textContent = msg.error;
+    note.style.display = '';
+    return;
+  }
+
+  const { rows, note: text } = projectsDisplay(msg);
+  note.textContent = text;
+  note.style.display = text ? '' : 'none';
+
+  list.innerHTML = rows.map(r =>
+    `<div class="proj${r.current ? ' current' : ''}` +
+    `${r.openable ? ' proj-open' : ''}${r.approximate ? ' proj-approx' : ''}"` +
+    `${r.openable ? ` data-open="${escapeHtml(r.path)}"` : ''}` +
+    ` title="${escapeHtml(r.title)}">` +
+    `<div class="proj-name">${escapeHtml(r.name)}</div>` +
+    (r.detail ? `<div class="proj-detail">${escapeHtml(r.detail)}</div>` : '') +
+    '</div>').join('');
+}
+
+// Delegated, so rows re-rendered later stay clickable without rebinding.
+document.getElementById('projects-list').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-open]');
+  if (!row || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'open', path: row.dataset.open })); } catch {}
+  // Said out loud: the new window is a separate process that takes a moment to
+  // appear, and a click with no feedback reads as a dead button.
+  document.getElementById('projects-note').textContent = 'opening a window…';
+  document.getElementById('projects-note').style.display = '';
+});
+
 function renderFog(fog) {
   const list = document.getElementById('fog-list');
   const summary = document.getElementById('fog-summary');
@@ -211,6 +273,7 @@ function setTab(tab) {
   }
 
   if (tab === 'fog') requestFog();
+  if (tab === 'projects') requestProjects();
   // Inside setTab, not in the click handler, because setTab is the ONE place
   // every path into a panel goes through -- a click, a keyboard toggle, and the
   // restore of a saved tab on launch. Hanging it off the click alone meant a
@@ -1221,6 +1284,10 @@ function handleControl(msg) {
     renderFog(msg);
     return;
   }
+  if (msg.type === 'projects') {
+    renderProjects(msg);
+    return;
+  }
   if (msg.type === 'agentStats') {
     renderAgentStats(msg.stats);
     return;
@@ -1300,6 +1367,7 @@ function connect() {
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
     if (activeTab === 'fog') requestFog();
+    if (activeTab === 'projects') requestProjects();
   };
 
   // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.

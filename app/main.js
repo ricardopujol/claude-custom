@@ -15,7 +15,31 @@ const net = require('net');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
+const { resolvePort } = require('../host/port-for-project');
+const { decideAttach } = require('../host/handshake');
+const { readIdentity } = require('../host/host-identity');
+
+// Resolved in whenReady, because choosing it needs to probe. An explicit
+// CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone who names a
+// port means that port, and quietly moving them to another one would be the
+// same class of silent substitution this whole change removes.
+// PARSED STRICTLY. Dexter F10: `Number(x) || null` turns CLAUDE_CUSTOM_PORT=7742x
+// into NaN into null, and the port is then DERIVED with no message -- which is
+// the silent substitution the comment above says this whole change removes.
+// `=0` was swallowed the same way and `=0x1e1a` was accepted as 7706.
+function explicitPort() {
+  const raw = process.env.CLAUDE_CUSTOM_PORT;
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(`[main] CLAUDE_CUSTOM_PORT is not a port: ${JSON.stringify(raw)}`);
+    console.error('[main] refusing to guess -- unset it to derive the port from the project');
+    return { bad: raw };
+  }
+  return n;
+}
+const EXPLICIT_PORT = explicitPort();
+let PORT = null;
 
 // One secret, handed to both children. Main spawns the host AND owns the
 // window, so it is the only place that can give them the same value without
@@ -26,7 +50,14 @@ const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN
   || require('crypto').randomBytes(24).toString('hex');
 
+// The token of the host on THIS port, preferred over the shared file, which is
+// last-writer-wins once a second project is open. Falling back to the shared
+// one keeps a host started before this change reattachable.
 function tokenForRunningHost() {
+  try {
+    return fs.readFileSync(
+      path.join(__dirname, '..', '.harness', 'hosts', `${PORT}.token`), 'utf8').trim();
+  } catch { /* fall through to the shared file */ }
   try {
     return fs.readFileSync(path.join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
   } catch {
@@ -47,6 +78,44 @@ function isHostListening(port) {
     sock.once('timeout', () => done(false));
     sock.once('error', () => done(false));
   });
+}
+
+const HARNESS_DIR = path.join(__dirname, '..', '.harness');
+
+/**
+ * Who, if anyone, is on this port?
+ *
+ *   null   nothing is listening
+ *   {cwd}  our host, and it says which project it serves
+ *   {}     something IS listening and could not be identified
+ *
+ * The third case is the one that matters and the reason the socket is probed at
+ * all rather than trusting the identity file alone: a file can be stale while a
+ * stranger holds the port, and "listening but unidentified" must stay
+ * distinguishable from "free".
+ */
+async function occupantAt(port) {
+  if (!(await isHostListening(port))) return null;
+  return readIdentity({ dir: HARNESS_DIR, port }) || {};
+}
+
+// Returns { port, action } or null when the user named a port we must not take.
+async function chooseHostPort() {
+  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (EXPLICIT_PORT) {
+    const decision = decideAttach({
+      requestedCwd: PROJECT_CWD,
+      occupant: await occupantAt(EXPLICIT_PORT),
+    });
+    if (decision.action === 'refuse') {
+      console.error(`[main] refusing port ${EXPLICIT_PORT}: ${decision.reason}` +
+        (decision.occupiedBy ? ` (serving ${decision.occupiedBy})` : ''));
+      console.error('[main] unset CLAUDE_CUSTOM_PORT to let the port be derived from the project');
+      return null;
+    }
+    return { port: EXPLICIT_PORT, action: decision.action };
+  }
+  return resolvePort({ cwd: PROJECT_CWD, occupantAt });
 }
 
 function spawnHost() {
@@ -205,15 +274,33 @@ function createWindow(spawnedHost) {
 }
 
 app.whenReady().then(async () => {
+  console.log('[main] project       :', PROJECT_CWD);
+
+  let chosen;
+  try {
+    chosen = await chooseHostPort();
+  } catch (err) {
+    // The derived range is full. Nothing sensible is left to do, and opening a
+    // window anyway would show a terminal wired to nothing.
+    console.error('[main]', err.message);
+    app.exit(1);
+    return;
+  }
+  if (!chosen) { app.exit(1); return; }
+
+  PORT = chosen.port;
   let spawnedHost = false;
-  if (!(await isHostListening(PORT))) {
-    console.log('[main] no host on port', PORT, '— spawning one');
+  if (chosen.action === 'spawn') {
+    console.log('[main] no host for this project on', PORT, '— spawning one');
     spawnHost();
     spawnedHost = true;
     const up = await waitForHost(PORT);
     if (!up) console.error('[main] host did not come up in time');
   } else {
-    console.log('[main] host already listening on', PORT, '— reattaching');
+    // Verified as THIS project's host, not merely "something is listening".
+    // That check is the whole point: before it, opening project B while
+    // project A's detached host was alive silently attached the window to A.
+    console.log('[main] reattaching to this project\'s host on', PORT);
   }
 
   const win = createWindow(spawnedHost);
