@@ -14,6 +14,32 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('harness', {
   attention: (surfaces) => ipcRenderer.send('attention', surfaces),
 
+  // FF4. Main raises and clears the finished-task cue, because only main knows
+  // whether the window is focused -- the page cannot tell "you are looking at
+  // me" from "I am merely visible". One boolean, one direction.
+  // IDEMPOTENT. Miguel, PR #33, A4: this is the bridge's first `ipcRenderer.on`
+  // and therefore sets the convention for the next one. Two calls used to
+  // register two listeners and ten would trip Node's MaxListeners warning.
+  // Replacing rather than accumulating is right for a cue with exactly one
+  // owner; it also returns a disposer, so a future caller with two has a way
+  // out that is not "reload the window".
+  //
+  // (No leak on reload: the preload re-executes in a fresh context and the old
+  // ipcRenderer listeners die with the old one. The reload problem was the
+  // cue being LOST, which main now restores on did-finish-load.)
+  onAttentionCue: (fn) => (ipcRenderer.removeAllListeners('attention-cue'), ipcRenderer.on('attention-cue',
+    (_e, on) => {
+      // LOGGED, not swallowed. Miguel, A3: the old comment claimed this kept
+      // a bad listener from killing the bridge, which it cannot -- the bridge
+      // is established at load and a throwing listener cannot un-expose it.
+      // What the catch actually buys is that one throwing listener does not
+      // abort emit()'s loop over the others, and there is exactly one. So the
+      // comment claimed a protection the code does not provide against a
+      // failure that cannot happen, while the empty block delivered a real
+      // cost: a renderer bug in the cue became invisible.
+      try { fn(!!on); } catch (err) { console.error('[preload] attention-cue listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('attention-cue')),
+
   // The real filesystem path behind a dropped File.
   //
   // `File.path` WAS REMOVED IN ELECTRON 32 -- this app is on 33 -- so the old

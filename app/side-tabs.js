@@ -28,6 +28,7 @@ const TABS = [
   { id: 'bugvault', label: 'Bug vault', title: 'Recurring defect classes, grouped by category and by how they were found' },
   { id: 'fog', label: 'Map', title: 'What this project has actually been read' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
+  { id: 'projects', label: 'Projects', title: 'Switch to another project, each in its own window' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

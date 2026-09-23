@@ -150,12 +150,28 @@ async function readFingerprint(fh, offset) {
   const len = Math.min(FINGERPRINT_BYTES, offset);
   if (len <= 0) return null;
   const buf = Buffer.allocUnsafe(len);
+  // WRAPS THE OPERATION THAT CAN FAIL, not the function body. Miguel and
+  // Dexter, PR #32, independently: a bare `catch {` around the whole body
+  // cannot tell EBUSY from a ReferenceError, so a programming error anywhere
+  // in here is converted into a file-level I/O outcome and reported as normal
+  // operation.
+  //
+  // MEASURED, with a throw injected at this read: the module goes from 138
+  // bytes to 276,138 -- a 2000x full re-read, the exact per-tick regression
+  // this module exists to remove -- with ok:true, stale:0, absent:0. Not one
+  // signal moves. Worse, this one is PERMANENT: the failure stores
+  // `fingerprint: null`, and from the next tick `!cached.fingerprint` forces a
+  // full re-read forever, while every total stays exactly correct.
+  //
+  // Fail-closed on real I/O is unchanged: EBUSY, EPERM and EBADF arrive as
+  // SystemError and are still swallowed into `null`, which means re-read.
+  let bytesRead;
   try {
-    const { bytesRead } = await fh.read(buf, 0, len, offset - len);
-    return bytesRead === len ? buf : null;
+    ({ bytesRead } = await fh.read(buf, 0, len, offset - len));
   } catch {
     return null;
   }
+  return bytesRead === len ? buf : null;
 }
 
 // Is the cached prefix still this file's prefix? Fails CLOSED: a missing or
@@ -166,12 +182,18 @@ async function prefixIntact(fh, cached) {
   if (!cached.fingerprint) return cached.offset === 0;
   const len = cached.fingerprint.length;
   const buf = Buffer.allocUnsafe(len);
+  // Same narrowing as readFingerprint, same reason. This one is LOUD rather
+  // than silent when it breaks -- a throw here forces a full re-read on the
+  // same tick, so a byte assertion catches it -- but it misdiagnoses: the
+  // failure reads as "the fast path was lost" and sends the reader into the
+  // resume logic when the fault is in their own code.
+  let bytesRead;
   try {
-    const { bytesRead } = await fh.read(buf, 0, len, cached.offset - len);
-    return bytesRead === len && buf.equals(cached.fingerprint);
+    ({ bytesRead } = await fh.read(buf, 0, len, cached.offset - len));
   } catch {
     return false;
   }
+  return bytesRead === len && buf.equals(cached.fingerprint);
 }
 
 /**
@@ -189,6 +211,17 @@ async function prefixIntact(fh, cached) {
  *           that must not be trusted as a baseline.
  *   gone    vanished between the listing and the read, or is not a file. It
  *           contributes nothing, and that is the CORRECT total.
+ *
+ * AMENDMENT, and it is spec drift introduced deliberately (Dexter, PR #32):
+ * `stale` above is described as "could not be OPENED" -- a lock, and the whole
+ * fresh/stale/absent design rests on that meaning, because a lock CLEARS. Since
+ * the read helpers now rethrow TypeError and ReferenceError instead of
+ * swallowing them, `stale` ALSO covers a programming error rethrown from a read
+ * helper. That does not clear: it lights `stale` on every tick, forever.
+ *
+ * Written down because the alternative is the next person reading a
+ * permanently-stale file as an antivirus lock and looking in the wrong place --
+ * which is exactly the hunt that produced this change.
  *
  * The gone/absent split is the whole point, and stat() succeeding is exactly
  * the evidence that separates them: a lock cannot make a file disappear from
@@ -417,4 +450,10 @@ async function readUsage({
   };
 }
 
-module.exports = { readUsage, projectDirName, defaultProjectsDir, EMPTY, READ_CHUNK, PARSE_BATCH };
+// FINGERPRINT_BYTES is exported for the same reason READ_CHUNK and PARSE_BATCH
+// are: so a test can assert the exact cost of a resumed read rather than
+// hardcoding 128 beside a comment that will drift from it.
+module.exports = {
+  readUsage, projectDirName, defaultProjectsDir, EMPTY,
+  READ_CHUNK, PARSE_BATCH, FINGERPRINT_BYTES,
+};

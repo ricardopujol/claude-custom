@@ -14,8 +14,33 @@ const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const { projectLabel } = require('../host/project-path');
 
-const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
+const { resolvePort } = require('../host/port-for-project');
+const { decideAttach } = require('../host/handshake');
+const { readIdentity } = require('../host/host-identity');
+
+// Resolved in whenReady, because choosing it needs to probe. An explicit
+// CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone who names a
+// port means that port, and quietly moving them to another one would be the
+// same class of silent substitution this whole change removes.
+// PARSED STRICTLY. Dexter F10: `Number(x) || null` turns CLAUDE_CUSTOM_PORT=7742x
+// into NaN into null, and the port is then DERIVED with no message -- which is
+// the silent substitution the comment above says this whole change removes.
+// `=0` was swallowed the same way and `=0x1e1a` was accepted as 7706.
+function explicitPort() {
+  const raw = process.env.CLAUDE_CUSTOM_PORT;
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(`[main] CLAUDE_CUSTOM_PORT is not a port: ${JSON.stringify(raw)}`);
+    console.error('[main] refusing to guess -- unset it to derive the port from the project');
+    return { bad: raw };
+  }
+  return n;
+}
+const EXPLICIT_PORT = explicitPort();
+let PORT = null;
 
 // One secret, handed to both children. Main spawns the host AND owns the
 // window, so it is the only place that can give them the same value without
@@ -26,7 +51,14 @@ const PORT = Number(process.env.CLAUDE_CUSTOM_PORT) || 7681;
 const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN
   || require('crypto').randomBytes(24).toString('hex');
 
+// The token of the host on THIS port, preferred over the shared file, which is
+// last-writer-wins once a second project is open. Falling back to the shared
+// one keeps a host started before this change reattachable.
 function tokenForRunningHost() {
+  try {
+    return fs.readFileSync(
+      path.join(__dirname, '..', '.harness', 'hosts', `${PORT}.token`), 'utf8').trim();
+  } catch { /* fall through to the shared file */ }
   try {
     return fs.readFileSync(path.join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
   } catch {
@@ -47,6 +79,44 @@ function isHostListening(port) {
     sock.once('timeout', () => done(false));
     sock.once('error', () => done(false));
   });
+}
+
+const HARNESS_DIR = path.join(__dirname, '..', '.harness');
+
+/**
+ * Who, if anyone, is on this port?
+ *
+ *   null   nothing is listening
+ *   {cwd}  our host, and it says which project it serves
+ *   {}     something IS listening and could not be identified
+ *
+ * The third case is the one that matters and the reason the socket is probed at
+ * all rather than trusting the identity file alone: a file can be stale while a
+ * stranger holds the port, and "listening but unidentified" must stay
+ * distinguishable from "free".
+ */
+async function occupantAt(port) {
+  if (!(await isHostListening(port))) return null;
+  return readIdentity({ dir: HARNESS_DIR, port }) || {};
+}
+
+// Returns { port, action } or null when the user named a port we must not take.
+async function chooseHostPort() {
+  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (EXPLICIT_PORT) {
+    const decision = decideAttach({
+      requestedCwd: PROJECT_CWD,
+      occupant: await occupantAt(EXPLICIT_PORT),
+    });
+    if (decision.action === 'refuse') {
+      console.error(`[main] refusing port ${EXPLICIT_PORT}: ${decision.reason}` +
+        (decision.occupiedBy ? ` (serving ${decision.occupiedBy})` : ''));
+      console.error('[main] unset CLAUDE_CUSTOM_PORT to let the port be derived from the project');
+      return null;
+    }
+    return { port: EXPLICIT_PORT, action: decision.action };
+  }
+  return resolvePort({ cwd: PROJECT_CWD, occupantAt });
 }
 
 function spawnHost() {
@@ -92,7 +162,7 @@ function createWindow(spawnedHost) {
     width: 1200,
     height: 800,
     backgroundColor: '#11131a',
-    title: 'claude-custom — spike/terminal-fidelity',
+    title: projectLabel(PROJECT_CWD),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -114,12 +184,52 @@ function createWindow(spawnedHost) {
   // Attention raised from main, not from the page. The renderer's own
   // Notification is subject to page permission and can neither flash the
   // taskbar nor focus the window when clicked; this can do all three.
+  // FF4: a cue that survives until the window is LOOKED AT. The taskbar flash
+  // below stops at the OS's discretion and is invisible in alt-tab, which
+  // shows a title and a thumbnail and nothing else. A border is part of the
+  // thumbnail, so it is legible exactly where you decide which window to
+  // return to.
+  //
+  // DECLARED ABOVE ITS CALLER. Miguel, PR #33, A7: it used to sit 23 lines
+  // below the handler that calls it, safe only because that handler runs
+  // asynchronously -- one synchronous call away from a TDZ ReferenceError, and
+  // a reader had to prove the asynchrony to themselves to know it was fine.
+  //
+  // The state is kept here, not only in the page. A5: `webContents.send`
+  // before the renderer has registered its listener is dropped on the floor,
+  // and a reload while the cue is up would clear it permanently -- a cue that
+  // silently stops meaning anything is worse than no cue, because the next
+  // real one says nothing either.
+  let cueOn = false;
+
+  // FOCUS IS TRACKED, NOT ASKED FOR. Naomi, PR #33, measured in a real window:
+  // `win.isFocused()` returns TRUE while the window is minimized, so the cue
+  // and the taskbar flash were both skipped and nothing logged -- a dropped
+  // cue is indistinguishable from no task having finished. 2 of 13 trials,
+  // and it still failed 5 seconds after minimizing, so it is not a race that
+  // settles.
+  //
+  // The EVENTS fired reliably in every one of her runs; it is the
+  // point-in-time query that lies. So the events are the source of truth.
+  let focused = win.isFocused();
+  win.on('focus', () => { focused = true; });
+  win.on('blur', () => { focused = false; });
+  win.on('minimize', () => { focused = false; });
+  win.on('restore', () => { focused = win.isFocused(); });
+  const setCue = (on) => {
+    cueOn = !!on;
+    if (!win.isDestroyed()) win.webContents.send('attention-cue', cueOn);
+  };
+  win.webContents.on('did-finish-load', () => {
+    if (cueOn && !win.isDestroyed()) win.webContents.send('attention-cue', true);
+  });
+
   ipcMain.on('attention', (event, surfaces) => {
     if (event.sender !== win.webContents || !surfaces) return;
     // Logged even when nothing is shown. "Suppressed because you are looking at
     // it" and "never arrived" are the same silence otherwise, and telling those
     // two apart is what took two wrong diagnoses to learn.
-    if (!surfaces.toast) console.log('[main] attention: suppressed (window focused)');
+    if (!surfaces.toast) console.log(`[main] attention: suppressed (focused=${focused})`);
     if (surfaces.toast && Notification.isSupported()) {
       const n = new Notification({
         title: String(surfaces.toast.title || 'claude-custom'),
@@ -135,7 +245,11 @@ function createWindow(spawnedHost) {
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
-    if (surfaces.flashTaskbar && !win.isFocused()) win.flashFrame(true);
+    if (surfaces.flashTaskbar && !focused) win.flashFrame(true);
+    // Raised for ANY unfocused attention, not only urgent ones: "a task
+    // finished while you were elsewhere" is precisely the case this is for,
+    // and it costs nothing when you are already looking at the window.
+    if (!focused) setCue(true);
     if (surfaces.toast) {
       console.log(`[main] attention: ${surfaces.toast.title}` +
         ` (silent=${surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);
@@ -143,7 +257,19 @@ function createWindow(spawnedHost) {
     if (surfaces.toast) console.log(`[main] attention body: ${surfaces.toast.body}`);
   });
 
-  win.on('focus', () => win.flashFrame(false));
+  // FF3: the page sets its own <title>, and a page title WINS over the one
+  // given to BrowserWindow. Without this the window silently reverts to
+  // whatever renderer.html says the moment it loads, which is how it kept
+  // announcing a spike branch long after that branch was gone.
+  win.on('page-title-updated', (e) => {
+    e.preventDefault();
+    win.setTitle(projectLabel(PROJECT_CWD));
+  });
+
+  win.on('focus', () => {
+    win.flashFrame(false);
+    setCue(false);            // looked at: the cue has done its job
+  });
 
   // The secret store lives HERE, in main. Not in the host: the host owns the
   // pty, so keeping secrets out of it means no wiring mistake can put one into
@@ -205,15 +331,33 @@ function createWindow(spawnedHost) {
 }
 
 app.whenReady().then(async () => {
+  console.log('[main] project       :', PROJECT_CWD);
+
+  let chosen;
+  try {
+    chosen = await chooseHostPort();
+  } catch (err) {
+    // The derived range is full. Nothing sensible is left to do, and opening a
+    // window anyway would show a terminal wired to nothing.
+    console.error('[main]', err.message);
+    app.exit(1);
+    return;
+  }
+  if (!chosen) { app.exit(1); return; }
+
+  PORT = chosen.port;
   let spawnedHost = false;
-  if (!(await isHostListening(PORT))) {
-    console.log('[main] no host on port', PORT, '— spawning one');
+  if (chosen.action === 'spawn') {
+    console.log('[main] no host for this project on', PORT, '— spawning one');
     spawnHost();
     spawnedHost = true;
     const up = await waitForHost(PORT);
     if (!up) console.error('[main] host did not come up in time');
   } else {
-    console.log('[main] host already listening on', PORT, '— reattaching');
+    // Verified as THIS project's host, not merely "something is listening".
+    // That check is the whole point: before it, opening project B while
+    // project A's detached host was alive silently attached the window to A.
+    console.log('[main] reattaching to this project\'s host on', PORT);
   }
 
   const win = createWindow(spawnedHost);

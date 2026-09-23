@@ -7,7 +7,10 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { usageDisplay, UNKNOWN, AT_LEAST } = require('../app/usage-display');
+const { usageDisplay, spendOf, cacheWriteOf, cacheReadOf, UNKNOWN, AT_LEAST } = require('../app/usage-display');
+const { describeSpend } = require('../host/milestones');
+// The real producer of `total`, so the accounting test cannot drift from it.
+const withTotalOf = (u) => u.input + u.output + u.cacheWrite + u.cacheRead;
 
 const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sessions: 0 };
 const real = { input: 10, output: 20, cacheWrite: 0, cacheRead: 0, total: 30, sessions: 3 };
@@ -101,4 +104,128 @@ test('missing counters do not render as NaN', () => {
   // them. "NaN transcripts could not be read" is worse than saying nothing.
   const d = usageDisplay({ ok: false, project: real, session: real });
   assert.ok(!/NaN/.test(d.note), d.note);
+});
+
+// --- what the headline number actually means ---------------------------------
+//
+// FF1, from the first real use of the harness on another project. Ricardo:
+// "I'm still pretty sure that the token count is just too crazily high, there
+// must be something wrong there." He was right, and the measurement is worse
+// than the suspicion.
+//
+// `host/usage.js` computes `total = input + output + cacheWrite + cacheRead`,
+// and the renderer drew that as the headline. Measured on this repo:
+//
+//   input            9,924
+//   output       2,933,346
+//   cacheWrite  32,325,149
+//   cacheRead 1,720,653,994   <- 98.0% of the headline
+//   ------------------------
+//   displayed 1,755,922,413
+//   input+output 2,943,270    <- 0.17% of what was displayed
+//
+// Not an arithmetic error. A CATEGORY error: `cache_read_input_tokens` is the
+// same context counted again on every single turn, and it is billed at roughly
+// a tenth of input. Summing four non-commensurable quantities produces a
+// figure dominated entirely by the one that is re-counted, so the number read
+// as ~600x the work actually done.
+//
+// The honest split already existed in renderer.js as `fresh = input + output`,
+// shown in small text in brackets. This promotes it and demotes the rest --
+// and it lives here rather than in renderer.js because which number is the
+// headline is a DRAWING DECISION, and a decision inline in renderer.js is one
+// nothing can test.
+
+test('the headline is what was actually spent, not the cache re-read every turn', () => {
+  // cacheWrite IS spend: cache_creation_input_tokens are tokens processed for
+  // the first time, billed at ~1.25x base input -- the most expensive category
+  // after output. Dexter, PR #33 review, Finding 1.
+  const s = { input: 1000, output: 2000, cacheWrite: 50000, cacheRead: 9000000 };
+  assert.strictEqual(spendOf(s), 3000);
+  // cacheWrite is NOT folded in -- Ricardo's call: "I only care about Input
+  // and output tokens." It is drawn beside the headline instead of hidden,
+  // because it is genuinely billed (Dexter, F1).
+  assert.strictEqual(cacheWriteOf(s), 50000);
+});
+
+test('the three figures account for every token in the payload', () => {
+  // THE PROPERTY THAT MATTERS, and the one the original 1.76B headline broke.
+  // It was not wrong because it was large; it was wrong because it summed
+  // non-commensurable things into one number. Three separate figures are fine
+  // as long as nothing billed is invisible -- which is exactly what went wrong
+  // when `spendOf` briefly dropped cacheWrite and 32.3M tokens appeared
+  // nowhere on screen at all.
+  //
+  // Asserted against the PRODUCER rather than a formula repeated here: adding
+  // a fifth category to host/usage.js must break this test, not slip past it.
+  const real = { input: 9924, output: 2933346, cacheWrite: 32325149, cacheRead: 1720653994 };
+  const produced = withTotalOf(real);
+  assert.strictEqual(spendOf(real) + cacheWriteOf(real) + cacheReadOf(real), produced,
+    'every token host/usage.js counts must appear in one of the three figures drawn');
+});
+
+test('spendOf plus cacheWriteOf equals what describeSpend calls fresh', () => {
+  // host/milestones.js:207 settled that freshly-processed tokens are
+  // `input + output + cacheWrite`. The headline no longer shows that sum --
+  // Ricardo asked for input and output alone -- but the two figures together
+  // must still equal it, or the split has quietly changed the meaning of
+  // "fresh" rather than merely how it is presented.
+  const cases = [
+    { input: 9924, output: 2933346, cacheWrite: 32325149, cacheRead: 1720653994 },
+    { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    { input: 1, output: 2, cacheWrite: 3, cacheRead: 4 },
+  ];
+  for (const c of cases) {
+    assert.strictEqual(spendOf(c) + cacheWriteOf(c), describeSpend({ ...c, total: 0 }).fresh,
+      JSON.stringify(c));
+  }
+});
+
+
+test('cache reads are reported separately, not folded into the headline', () => {
+  const s = { input: 1000, output: 2000, cacheWrite: 50000, cacheRead: 9000000 };
+  assert.strictEqual(cacheReadOf(s), 9000000);
+});
+
+test('a missing field is 0, never NaN and never a confident guess', () => {
+  // `Number(null)` is 0 and `Number(undefined)` is NaN -- the absence-as-zero
+  // trap this codebase keeps paying for, and its NaN twin. A headline reading
+  // "NaN" is worse than one reading nothing.
+  assert.strictEqual(spendOf({}), 0);
+  assert.strictEqual(spendOf(null), 0);
+  assert.strictEqual(spendOf({ input: null, output: undefined }), 0);
+  assert.strictEqual(cacheReadOf({}), 0);
+  assert.strictEqual(cacheReadOf(null), 0);
+});
+
+test('a string that looks like a number is not counted', () => {
+  // The payload crosses a socket. A stringy "1000" must not become 1000 by
+  // coercion -- same rule as the strict typeof guards elsewhere in this file.
+  assert.strictEqual(spendOf({ input: '1000', output: 5 }), 5);
+});
+
+test('the real proportions from this project survive the split', () => {
+  // The measured numbers above, asserted as a regression: if these two figures
+  // are ever summed back together, this fails with the actual ratio in the
+  // message rather than with an abstract complaint.
+  const real = { input: 9924, output: 2933346, cacheWrite: 32325149, cacheRead: 1720653994 };
+  assert.strictEqual(spendOf(real), 2943270);
+  assert.ok(spendOf(real) / withTotalOf(real) < 0.01,
+    `the headline is ${(100 * spendOf(real) / withTotalOf(real)).toFixed(2)}% of all traffic`);
+});
+
+// Mortimer, PR #33 mutation gate, Survivor 6 -- the ONLY real gap in this
+// module, and it is the one its own header names. Verified red against the
+// mutant that drops the isFinite half of count()'s guard.
+test('KILL: a non-finite counter is 0, never NaN or Infinity on the headline', () => {
+  // `count()` guards with `typeof v === "number" && Number.isFinite(v)`. The
+  // typeof half is tested (the stringy "1000" case); the isFinite half is not,
+  // so the guard against a NaN headline -- the exact failure this module's
+  // header says it exists to prevent -- is unasserted.
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    assert.strictEqual(spendOf({ input: bad, output: 5 }), 5, `input ${bad}`);
+    assert.strictEqual(spendOf({ input: 5, output: bad }), 5, `output ${bad}`);
+    assert.strictEqual(cacheWriteOf({ cacheWrite: bad }), 0, `cacheWrite ${bad}`);
+    assert.strictEqual(cacheReadOf({ cacheRead: bad }), 0, `cacheRead ${bad}`);
+  }
 });

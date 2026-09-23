@@ -35,6 +35,9 @@ documentation/*
 !documentation/README.md
 # --- end sync-docs (gitignore) ---
 
-# Stryker mutation-testing scratch
-.stryker-tmp/
+# Stryker mutation reports -- 7MB+ of JSON, regenerable with `npm run mutate`.
+# Kept on disk as the evidence for a gate result, never committed.
 reports/
+
+# Stryker sandbox -- a full copy of the repo, recreated on every run.
+.stryker-tmp/

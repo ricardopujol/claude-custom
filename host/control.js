@@ -54,7 +54,13 @@ function validResizeDims(cols, rows) {
 // SHAPE (does it look like it could be one of ours?) restores the old
 // fall-through for everything else.
 const CONTROL_TYPES = new Set([
-  'resize', 'health', 'input', 'models', 'seat', 'fog', 'drop', 'bugvault',
+  'resize', 'health', 'input', 'models', 'seat', 'fog', 'drop',
+  // Both sides of this merge added a type. Taking either alone makes the
+  // other's frames fall through to `term.write` -- verbatim JSON typed into
+  // a session running --dangerously-skip-permissions. That has happened
+  // twice in this repo already (#24's `drop`, #29's `bugvault`), both times
+  // by resolving this exact list in favour of one side.
+  'bugvault', 'projects', 'open',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
