@@ -31,7 +31,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { createVault } = require('../app/secret-vault');
+const { createVault, SCRYPT, SALT_BYTES, IV_BYTES, TAG_BYTES,
+        TEMP_PREFIX, TEMP_SUFFIX, validLockRecord } = require('../app/secret-vault');
+
+// Cheap derivation for the suite. The real cost is ~200ms by design, and these
+// tests unlock dozens of times; the REAL parameters are pinned by their own
+// test below, and every vault writes what it used into its own lock record, so
+// a cheap test vault stays openable and cannot be mistaken for a real one.
+const FAST = { N: 1024, r: 8, p: 1, keylen: 32, maxmem: 32 * 1024 * 1024 };
 
 const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lock-')), 'secrets.enc');
 
@@ -49,12 +56,12 @@ const fakeCrypto = () => ({
   },
 });
 
-const open = (file) => createVault({ file, crypto: fakeCrypto() });
+const open = (file) => createVault({ file, crypto: fakeCrypto(), scrypt: FAST });
 const KEY = 'correct horse battery staple';
 const ANY = { project: 'C:/any' };
 
 test('a new vault is OPEN and has no key', () => {
-  assert.deepStrictEqual(open(tmp()).lockState(), { hasKey: false, locked: false });
+  assert.deepStrictEqual(open(tmp()).lockState(), { hasKey: false, locked: false, count: 0 });
 });
 
 test('setting a key for the first time closes the vault to anyone without it', () => {
@@ -62,11 +69,11 @@ test('setting a key for the first time closes the vault to anyone without it', (
   const v = open(file);
   v.add({ label: 'k', secret: 'sensitive', shared: true });
   v.setKey(KEY);
-  assert.deepStrictEqual(v.lockState(), { hasKey: true, locked: false },
+  assert.deepStrictEqual(v.lockState(), { hasKey: true, locked: false, count: 1 },
     'setting a key leaves it open -- you just set it, you are still here');
 
   // A fresh handle is what a restart looks like: the derived key is gone.
-  assert.deepStrictEqual(open(file).lockState(), { hasKey: true, locked: true });
+  assert.deepStrictEqual(open(file).lockState(), { hasKey: true, locked: true, count: 1 });
 });
 
 test('while locked, nothing is readable -- not even the labels', () => {
@@ -108,8 +115,8 @@ test('the right key opens it, and it stays open', () => {
   v0.setKey(KEY);
 
   const v = open(file);
-  assert.strictEqual(v.unlock(KEY), true);
-  assert.deepStrictEqual(v.lockState(), { hasKey: true, locked: false });
+  assert.strictEqual(v.unlock(KEY).ok, true);
+  assert.deepStrictEqual(v.lockState(), { hasKey: true, locked: false, count: 1 });
   assert.strictEqual(v.get(e.id, ANY), 'sensitive');
   assert.strictEqual(v.list(ANY).length, 1, 'and stays open');
 });
@@ -123,9 +130,9 @@ test('a wrong key opens nothing, and does not damage the vault', () => {
   v0.setKey(KEY);
 
   const v = open(file);
-  assert.strictEqual(v.unlock('wrong'), false);
+  assert.strictEqual(v.unlock('wrong').ok, false);
   assert.strictEqual(v.lockState().locked, true);
-  assert.strictEqual(v.unlock(KEY), true, 'the real key still works afterwards');
+  assert.strictEqual(v.unlock(KEY).ok, true, 'the real key still works afterwards');
 });
 
 test('locking again closes it WITHOUT needing the key', () => {
@@ -156,7 +163,7 @@ test('destroying the key leaves the vault permanently open, secrets intact', () 
   const e = v.add({ label: 'k', secret: 'sensitive', shared: true });
   v.setKey(KEY);
   v.removeKey();
-  assert.deepStrictEqual(v.lockState(), { hasKey: false, locked: false });
+  assert.deepStrictEqual(v.lockState(), { hasKey: false, locked: false, count: 1 });
   assert.strictEqual(v.get(e.id, ANY), 'sensitive');
 
   const reopened = open(file);
@@ -172,8 +179,8 @@ test('replacing the key re-wraps the secrets under the new one', () => {
   v.setKey('a different key');
 
   const reopened = open(file);
-  assert.strictEqual(reopened.unlock(KEY), false, 'the old key must stop working');
-  assert.strictEqual(reopened.unlock('a different key'), true);
+  assert.strictEqual(reopened.unlock(KEY).ok, false, 'the old key must stop working');
+  assert.strictEqual(reopened.unlock('a different key').ok, true);
   assert.strictEqual(reopened.get(e.id, ANY), 'sensitive');
 });
 
@@ -201,7 +208,7 @@ test('melt destroys everything and leaves a working, open vault', () => {
   const v = open(file);
   assert.strictEqual(v.lockState().locked, true, 'precondition: locked out');
   v.melt();
-  assert.deepStrictEqual(v.lockState(), { hasKey: false, locked: false });
+  assert.deepStrictEqual(v.lockState(), { hasKey: false, locked: false, count: 0 });
   assert.deepStrictEqual(v.list(ANY), []);
 
   const e = v.add({ label: 'fresh', secret: 'new', shared: true });

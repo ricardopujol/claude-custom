@@ -301,8 +301,13 @@ function createWindow(spawnedHost) {
 
   // The lock. Same `fromWindow` gate as everything above it: a handler that
   // answers anyone is not a boundary.
+  // `hasKey: true` as well as `locked: true`, and `count: null`. An unauthorized
+  // sender must get the shape that draws as LOCKED and reveals nothing --
+  // `hasKey: false` with `locked: true` was already safe, but it says "locked
+  // vault with no key", which is not a state that exists. Now this default and
+  // the service's (secret-service.js, Dexter F6 / Miguel A2) are the same object.
   ipcMain.handle('secrets:lockState', (e) =>
-    (fromWindow(e) ? secrets.lockState() : { hasKey: false, locked: true }));
+    (fromWindow(e) ? secrets.lockState() : { hasKey: true, locked: true, count: null }));
   ipcMain.handle('secrets:setKey', (e, key) =>
     (fromWindow(e) ? secrets.setKey(key) : { ok: false }));
   ipcMain.handle('secrets:unlock', (e, key) =>

@@ -34,11 +34,33 @@
 // click through the confirmation that matters.
 function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } = {}) {
   const s = state && typeof state === 'object' ? state : {};
+
   // Absence is LOCKED, never open. A lock panel that guesses "probably fine"
   // while the answer is still in flight is the one direction this must not
   // fail: it would offer to reveal a vault it knows nothing about.
+  //
+  // THE OLD VERSION DID NOT IMPLEMENT THAT, and its test did not notice.
+  // Miguel, PR #42, B1. It read:
+  //
+  //     const locked = s.locked === true || s.hasKey === undefined;
+  //
+  // which says "absence of `hasKey` is locked" -- so anything malformed in
+  // `locked` drew the vault OPEN. Measured: `{hasKey:true}`,
+  // `{hasKey:true, locked:null}` and `{hasKey:true, locked:'yes'}` all rendered
+  // `open-with-key` with the label list showing. The third is the one that
+  // stings: `'yes'` is truthy and any reader would take it for "closed".
+  //
+  // And the test named `AN UNKNOWN STATE IS LOCKED, never open` enumerated six
+  // shapes that ALL omitted `hasKey` -- so it pinned the implementation's
+  // spelling rather than the rule in its own title, and stayed green with the
+  // hole wide open. Same defect this project keeps finding: a test asserting how
+  // a thing is written instead of what it must do.
+  //
+  // So now only a COMPLETE, BOOLEAN state opens the panel. Everything else is
+  // locked, including shapes nobody has thought of yet.
+  const known = s.hasKey === true || s.hasKey === false;
   const hasKey = s.hasKey === true;
-  const locked = s.locked === true || s.hasKey === undefined;
+  const locked = !known || s.locked !== false;
 
   if (locked) {
     return {

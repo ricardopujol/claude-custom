@@ -42,11 +42,18 @@ function service(overrides = {}) {
     // observe a call cannot test it; the lock has six more calls that would
     // have had the same hole.
     lockState: () => { seen.lockState.push(true); return lockStateValue; },
-    setKey: (k) => { seen.setKey.push(k); return true; },
-    unlock: (k) => { seen.unlock.push(k); return k === 'right'; },
+    // The REAL contract, not a boolean. After PR #42's review these report
+    // rather than return a bare true: `unlock` distinguishes a wrong key from a
+    // damaged header (Dexter F1), `setKey`/`removeKey` carry the entries a rekey
+    // could not move (F3), and `melt` carries the copies it could not delete
+    // (F2). A fake still returning booleans would let the service quietly drop
+    // every one of those and stay green -- which is the same hole as Miguel's B1
+    // on #40, one layer up.
+    setKey: (k) => { seen.setKey.push(k); return { ok: true, failed: [] }; },
+    unlock: (k) => { seen.unlock.push(k); return k === 'right' ? { ok: true } : { ok: false, wrongKey: true }; },
     lock: () => { seen.lock.push(true); return true; },
-    removeKey: () => { seen.removeKey.push(true); return true; },
-    melt: () => { seen.melt.push(true); return true; },
+    removeKey: () => { seen.removeKey.push(true); return { ok: true, failed: [] }; },
+    melt: () => { seen.melt.push(true); return { ok: true, leftovers: [] }; },
     remove: (id, opts) => {
       seen.remove.push(opts);
       return store.delete(id);
@@ -245,9 +252,29 @@ test('a wrong key is reported as ok:false, not as a thrown failure', () => {
   // A wrong key is an ORDINARY event. If it arrived as an exception the panel
   // could not tell "you typed it wrong" from "the vault is broken", and would
   // have to guess -- which in this panel means guessing about a lock.
+  //
+  // And this test's own rationale is what Dexter quoted back at me in F1: the
+  // caller STILL could not tell those apart, because the vault collapsed a
+  // damaged header and a wrong password into one `false`. The service now
+  // carries the distinction through, so the assertion names it.
   const h = service();
-  assert.deepStrictEqual(h.svc.unlock('wrong'), { ok: false });
+  assert.deepStrictEqual(h.svc.unlock('wrong'), { ok: false, wrongKey: true });
   assert.deepStrictEqual(h.svc.unlock('right'), { ok: true });
+});
+
+test('a DAMAGED lock header does not reach the user as a wrong key', () => {
+  // Dexter F1, at the service boundary. This is the one that decides whether
+  // the panel tells someone to melt: "wrong key" means try again, and a damaged
+  // header means the secrets are probably still recoverable and melting them
+  // would be the mistake.
+  const h = service({
+    vault: { unlock: () => ({ ok: false, damaged: true, error: 'checksum mismatch' }) },
+  });
+  const res = h.svc.unlock('the right key, as it happens');
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.damaged, true);
+  assert.notStrictEqual(res.wrongKey, true);
+  assert.match(res.error, /checksum/);
 });
 
 test('a throwing vault becomes a reportable error, never an unhandled rejection', () => {
@@ -255,7 +282,18 @@ test('a throwing vault becomes a reportable error, never an unhandled rejection'
   // which in a lock panel reads as "the button does nothing".
   const h = service({ vault: { lockState: () => { throw new Error('boom'); },
                                setKey: () => { throw new Error('disk full'); } } });
-  assert.deepStrictEqual(h.svc.lockState(), { hasKey: false, locked: false });
+
+  // FAILS CLOSED. Dexter F6 / Miguel A2, and this assertion is the finding:
+  // I had written `{ hasKey: false, locked: false }` here, which PINNED the
+  // fail-open default as correct -- so anyone fixing the service would have been
+  // stopped by this test. `{locked: false}` is not a neutral guess, it is the
+  // most permissive of the four states: fed to vaultLockDisplay it draws
+  // "no key set, anyone at this machine can read the vault", over a vault whose
+  // state we just failed to read.
+  //
+  // A vault that cannot answer is closed.
+  assert.deepStrictEqual(h.svc.lockState(), { hasKey: true, locked: true, count: null });
+
   const res = h.svc.setKey('k');
   assert.strictEqual(res.ok, false);
   assert.match(res.error, /disk full/);

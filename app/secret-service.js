@@ -50,20 +50,49 @@ function createSecretService({
   // The PASSWORD crosses the bridge inward, which is unavoidable -- the user
   // types it in the window. Nothing ever crosses back out: the derived key
   // stays in the vault's closure, in main.
+  // FAILS CLOSED. Dexter F6 / Miguel A2, found independently.
+  //
+  // This used to answer `{hasKey: false, locked: false}` -- which is not merely
+  // a guess, it is the MOST PERMISSIVE of the four states. Fed to
+  // `vaultLockDisplay` it yields `open-no-key`, `showList: true`, and the note
+  // "no key set, anyone at this machine can read the vault", about a vault whose
+  // state we just failed to determine.
+  //
+  // `app/main.js` already answers an unauthorized sender `{hasKey: true,
+  // locked: true}`. Two layers of one path had opposite doctrines, and the inner
+  // one was the permissive one. Now they agree.
+  //
+  // Neither reviewer could construct a live throw today, and both said so:
+  // `vault.lockState()` is a pure read over a `state` that is always an object.
+  // It goes live the moment it grows anything that can throw -- the cross-process
+  // staleness re-read contemplated in secret-vault.js, for one.
   function lockState() {
-    try { return vault.lockState(); } catch { return { hasKey: false, locked: false }; }
+    try { return vault.lockState(); }
+    catch { return { hasKey: true, locked: true, count: null }; }
   }
 
   function setKey(key) {
-    try { vault.setKey(key); return { ok: true }; }
+    // `failed` carries the entries a rekey could not carry (Dexter F3). It must
+    // reach the window: those are secrets that survived but did not move, and
+    // the user is the only one who can decide what to do about them.
+    try { const r = vault.setKey(key); return { ok: true, failed: (r && r.failed) || [] }; }
     catch (err) { return { ok: false, error: err.message }; }
   }
 
   function unlock(key) {
     // Deliberately not an exception path: a wrong key is an ordinary event, not
     // a failure, and the caller needs to tell the two apart.
-    try { return { ok: vault.unlock(key) === true }; }
-    catch (err) { return { ok: false, error: err.message }; }
+    //
+    // THREE OUTCOMES now, not two (Dexter F1). A damaged lock header must not
+    // reach the user as "wrong key", because the only other thing the panel
+    // offers is melt -- and melting a vault whose header is damaged destroys
+    // secrets that are still wrapped under a key the user may well have.
+    try {
+      const r = vault.unlock(key);
+      if (r && r.ok) return { ok: true };
+      if (r && r.damaged) return { ok: false, damaged: true, error: r.error };
+      return { ok: false, wrongKey: true };
+    } catch (err) { return { ok: false, error: err.message }; }
   }
 
   function lock() {
@@ -72,12 +101,16 @@ function createSecretService({
   }
 
   function removeKey() {
-    try { return { ok: vault.removeKey() === true }; }
+    try { const r = vault.removeKey(); return { ok: !!(r && r.ok), failed: (r && r.failed) || [] }; }
     catch (err) { return { ok: false, error: err.message }; }
   }
 
   function melt() {
-    try { return { ok: vault.melt() === true }; }
+    // `leftovers` are copies melt could not delete (Dexter F2). Reported rather
+    // than swallowed: the vault IS gone so melt succeeded, but the promise the
+    // user was shown -- no backup, no recovery -- is not true until those are
+    // gone too, and only they can remove them.
+    try { const r = vault.melt(); return { ok: !!(r && r.ok), leftovers: (r && r.leftovers) || [] }; }
     catch (err) { return { ok: false, error: err.message }; }
   }
 

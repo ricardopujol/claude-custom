@@ -130,7 +130,17 @@
     .secret-field button { flex: 0 0 auto; font-size: 11px; padding: 6px 8px; }
     #vault-secret[type="text"] { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
     #vault-lock { display: flex; flex-direction: column; gap: 6px; }
-    #vault-lock .locked-note { font-size: 11px; color: var(--accent); }
+    /* `lock-note`, not `locked-note`: the same element carries the "unlocked"
+       text in open-with-key, so the old name lied on the one screen where the
+       state is the whole point (Miguel, PR #42, minors). */
+    #vault-lock .lock-note { font-size: 11px; color: var(--accent); }
+    /* A label that is present for a screen reader and absent on screen. The
+       three password fields had placeholders only, which is a WCAG 3.3.2
+       failure on a field holding a vault key (Miguel A7). */
+    #vault-lock .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
     #vault-lock .lock-row { display: flex; gap: 6px; align-items: center; }
     #vault-lock input { flex: 1; min-width: 0; }
     /* Melt is destructive and irreversible, so it does not look like the rest.
