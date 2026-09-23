@@ -14,6 +14,11 @@
       --accent: #d08c4a;
       --ok: #5fb07a;
       --bad: #cc5f5f;
+      /* FF12: the model's persistent colour cue. Defaults to the same value
+         as --accent so an unresolved model (no sessionModel yet) changes
+         nothing about how the header already looks -- see
+         app/top-bar-display.js's cueColour(null, theme). */
+      --model-accent: #d08c4a;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -362,7 +367,12 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #side-tabs button:hover { color: var(--text); }
-    #side-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+    /* FF12: the active-tab underline carries the model's colour cue, not the
+       theme's own --accent -- one of the two surfaces (with the xterm
+       cursor) Ricardo approved for the persistent per-model tint. Untinted,
+       --model-accent is byte-equal to --accent, so this is a no-op look
+       until a model is known. */
+    #side-tabs button.on { color: var(--model-accent); border-bottom-color: var(--model-accent); }
 
     /* Only the selected panel is in the layout at all -- a hidden panel that
        still occupies space is the usual way a tab strip goes wrong. */
@@ -484,6 +494,40 @@
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
 
+    /* --- top bar: model / effort ---------------------------------------------
+       FF12. Model and effort are CONTROLS, not labels -- clicking either opens
+       a small picker that types the matching /model or /effort command into
+       the pty, exactly as a human would (see app/renderer.js requestModel /
+       requestEffort). The tint is app/top-bar-display.js's cueColour: fixed
+       per model family, so it means the same thing in every themed project;
+       untinted (no model known yet) it is byte-equal to the theme's own
+       --accent, so the panel changes nothing about the header until PR-A's
+       sessionModel lands. */
+    #top-bar { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag;
+               position: relative; }
+    .tb-chip { background: var(--chrome); color: var(--text); border: 1px solid var(--model-accent);
+               border-radius: 999px; padding: 2px 9px; font-size: 10.5px; line-height: 1.5;
+               cursor: pointer; font: inherit; }
+    .tb-chip:hover { background: color-mix(in srgb, var(--model-accent) 14%, var(--chrome)); }
+    /* Pending never claims success -- see app/top-bar-display.js's
+       pendingResolver. It only ever LOOKS unsettled until the truth (or the
+       timeout) says otherwise. */
+    .tb-chip.pending { opacity: .68; animation: pulse 1.2s ease-in-out infinite; }
+    .tb-menu { position: absolute; top: 26px; z-index: 30; display: flex; flex-direction: column;
+               gap: 2px; background: var(--chrome); border: 1px solid var(--border);
+               border-radius: 8px; padding: 5px; min-width: 128px;
+               box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+    .tb-menu[hidden] { display: none; }
+    .tb-menu button { background: transparent; border: none; color: var(--text); text-align: left;
+                      padding: 4px 7px; border-radius: 5px; cursor: pointer; font-size: 11px; }
+    .tb-menu button:hover { background: var(--bg); color: var(--model-accent); }
+    .tb-menu .custom { display: flex; gap: 3px; margin-top: 2px; padding-top: 4px;
+                        border-top: 1px solid var(--border); }
+    .tb-menu .custom input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+                              border: 1px solid var(--border); border-radius: 4px;
+                              padding: 2px 5px; font-size: 11px; }
+    .tb-menu .custom button { border: 1px solid var(--border); }
+
     /* --- permission mode ---------------------------------------------------
        Five modes, measured by cycling shift+tab. Bypass is flagged because
        "running with permissions bypassed" should be impossible to forget. */
@@ -555,6 +599,30 @@
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
       <span id="hp" title="Project HP — click to run the test suite"></span>
+      <!-- FF12: model + effort, the two things that change how the NEXT turn
+           behaves. Working directory is FF3 (window title); spend/quota are
+           status, not controls, and stay in #usage/#quota below. -->
+      <span id="top-bar">
+        <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
+        <div id="tb-model-menu" class="tb-menu" hidden>
+          <button type="button" data-model="opus">opus</button>
+          <button type="button" data-model="sonnet">sonnet</button>
+          <button type="button" data-model="haiku">haiku</button>
+          <div class="custom">
+            <input id="tb-model-custom" type="text" placeholder="full model id…" autocomplete="off" />
+            <button type="button" id="tb-model-custom-go">Go</button>
+          </div>
+        </div>
+        <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
+        <div id="tb-effort-menu" class="tb-menu" hidden>
+          <button type="button" data-effort="low">low</button>
+          <button type="button" data-effort="medium">medium</button>
+          <button type="button" data-effort="high">high</button>
+          <button type="button" data-effort="xhigh">xhigh</button>
+          <button type="button" data-effort="max">max</button>
+          <button type="button" data-effort="auto">auto</button>
+        </div>
+      </span>
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
@@ -651,6 +719,7 @@
   <script src="./career-display.js"></script>
   <script src="./quota-display.js"></script>
   <script src="./projects-display.js"></script>
+  <script src="./top-bar-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>
