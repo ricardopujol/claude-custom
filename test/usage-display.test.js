@@ -213,3 +213,19 @@ test('the real proportions from this project survive the split', () => {
   assert.ok(spendOf(real) / withTotalOf(real) < 0.01,
     `the headline is ${(100 * spendOf(real) / withTotalOf(real)).toFixed(2)}% of all traffic`);
 });
+
+// Mortimer, PR #33 mutation gate, Survivor 6 -- the ONLY real gap in this
+// module, and it is the one its own header names. Verified red against the
+// mutant that drops the isFinite half of count()'s guard.
+test('KILL: a non-finite counter is 0, never NaN or Infinity on the headline', () => {
+  // `count()` guards with `typeof v === "number" && Number.isFinite(v)`. The
+  // typeof half is tested (the stringy "1000" case); the isFinite half is not,
+  // so the guard against a NaN headline -- the exact failure this module's
+  // header says it exists to prevent -- is unasserted.
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    assert.strictEqual(spendOf({ input: bad, output: 5 }), 5, `input ${bad}`);
+    assert.strictEqual(spendOf({ input: 5, output: bad }), 5, `output ${bad}`);
+    assert.strictEqual(cacheWriteOf({ cacheWrite: bad }), 0, `cacheWrite ${bad}`);
+    assert.strictEqual(cacheReadOf({ cacheRead: bad }), 0, `cacheRead ${bad}`);
+  }
+});

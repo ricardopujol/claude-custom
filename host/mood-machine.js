@@ -263,6 +263,18 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       if (a.flashUntil) {
         if (t > a.flashUntil) {
           a.flashUntil = 0;
+          // THE `WORKING` SIDE IS UNREACHABLE TODAY, and that is measured, not
+          // suspected. Mortimer instrumented this line across a differential
+          // fuzz: reached 8,038 times, `running(agent)` true ZERO times --
+          // because `flashUntil` is only ever set when the agent is NOT
+          // running, and PreToolUse zeroes it before pushing.
+          //
+          // Kept deliberately. It is correct defence against exactly the class
+          // that produced Finding 3 (a sibling finishing sleeping a running
+          // agent), and the invariant that makes it dead is one line of code
+          // away from not holding. Recorded so that nobody later "simplifies"
+          // it to `SLEEPING` having checked only that the tests still pass --
+          // they will, because no test can reach it.
           setState(agent, a, running(agent) ? WORKING : SLEEPING);
         }
         continue;
