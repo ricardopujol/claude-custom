@@ -197,7 +197,6 @@ function createVault({ file, crypto, onWrite } = {}) {
     return { id: entry.id, label: entry.label, note: entry.note, createdAt: entry.createdAt };
   }
 
-  // What the window renders. The secret is not in it, by construction.
   // Is this entry visible from `project`?
   //
   // An entry with NO `project` key predates scoping and is treated as shared.
@@ -206,8 +205,18 @@ function createVault({ file, crypto, onWrite } = {}) {
   // they never saw.
   //
   // `project: null` is stored deliberately and means the same thing: shared.
+  // ONE definition of the rule, deliberately. Miguel, PR #40, A4: this line and
+  // the `shared` flag in `list` both carried `e.project === undefined ? null :
+  // e.project`, written out twice. One decides VISIBILITY, the other decides
+  // what the marker SAYS -- so if they ever drifted, the marker would lie about
+  // exactly the thing it exists to announce. That is this branch's founding
+  // defect, reintroduced by copy-paste.
+  function scopeOf(entry) {
+    return entry.project === undefined ? null : entry.project;
+  }
+
   function visibleFrom(entry, project) {
-    const scope = entry.project === undefined ? null : entry.project;
+    const scope = scopeOf(entry);
     if (scope === null) return true;
     return samePath(scope, project);
   }
@@ -223,7 +232,7 @@ function createVault({ file, crypto, onWrite } = {}) {
         // Said out loud. The original defect was that scope was INVISIBLE; a
         // shared secret that does not announce itself is the same surprise in
         // a new place.
-        shared: (e.project === undefined ? null : e.project) === null,
+        shared: scopeOf(e) === null,
       }));
   }
 
@@ -248,10 +257,23 @@ function createVault({ file, crypto, onWrite } = {}) {
     // is not allowed to see.
     const target = state.entries.find(e => e.id === id);
     if (!target || !visibleFrom(target, project)) return false;
-    const before = state.entries.length;
-    const next = state.entries.filter(e => e.id !== id);
-    if (next.length === before) return false;
-    commit(next);
+
+    // FILTER BY IDENTITY, NOT BY ID. Dexter, PR #40, F5: `filter(e => e.id !== id)`
+    // authorized ONE entry and deleted EVERY entry carrying that id. With two
+    // entries sharing an id under different projects, a window scoped to the
+    // first passes the guard above and destroys the second -- a secret it was
+    // never allowed to see, with `remove` returning true and nothing raised.
+    //
+    // Duplicate ids cannot arise through this API (`randomUUID` at add-time),
+    // so this is not reachable today. It needs a hand-edited vault, a restored
+    // `secrets.enc` from another install, or a future sync feature -- which is
+    // exactly the sort of thing this file will grow. Identity is correct
+    // however the duplicate arrived, and costs nothing.
+    //
+    // The old `before`/`next.length` equality check went with it: `target` was
+    // found by id, so the filter always removed at least one and the guard was
+    // unreachable. Dead code that reads as load-bearing (Miguel, suggestions).
+    commit(state.entries.filter(e => e !== target));
     return true;
   }
 
