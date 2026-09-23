@@ -51,6 +51,9 @@ const path = require('path');
 const { normalizeProjectPath, samePath } = require('../host/project-path');
 const crypto_ = require('crypto');
 const { renameWithRetry } = require('../host/atomic-write');
+// Already in this repo, with staleness, a deadline and its own tests. Dexter
+// pointed at it for G1 rather than letting me invent a second mechanism.
+const { withFileLock } = require('../host/file-lock');
 
 // Long enough to switch windows and paste; short enough that a key is not still
 // sitting on the clipboard an hour later.
@@ -90,19 +93,6 @@ const TAG_BYTES = 16;
 const CHECK_PLAINTEXT = 'claude-custom vault';
 
 /**
- * The lock header is damaged -- as distinct from "the password is wrong".
- *
- * Dexter, PR #42, F1, the finding he said to fix first. `unlock` used one catch
- * over derivation, unwrap and comparison, so a truncated verifier or a missing
- * salt returned exactly what a wrong password returns: `false`. The user is then
- * told "that key does not open this vault" while holding the correct key, and
- * the only other thing the panel offers is melt -- which permanently destroys
- * secrets that were still wrapped under a recoverable key.
- *
- * Distinguishing the two is the whole point. A wrong password means try again;
- * a damaged header means DO NOT MELT, because the data is probably still there.
- */
-/**
  * A checksum over the lock record, so damage is detectable WITHOUT the password.
  *
  * This is the part of F1 that shape-checking alone cannot reach, and finding out
@@ -131,6 +121,19 @@ function lockFingerprint(lock) {
     .digest('base64');
 }
 
+/**
+ * The lock header is damaged -- as distinct from "the password is wrong".
+ *
+ * Dexter, PR #42, F1, the finding he said to fix first. `unlock` used one catch
+ * over derivation, unwrap and comparison, so a truncated verifier or a missing
+ * salt returned exactly what a wrong password returns: `false`. The user is then
+ * told "that key does not open this vault" while holding the correct key, and
+ * the only other thing the panel offers is melt -- which permanently destroys
+ * secrets that were still wrapped under a recoverable key.
+ *
+ * Distinguishing the two is the whole point. A wrong password means try again;
+ * a damaged header means DO NOT MELT, because the data is probably still there.
+ */
 class LockHeaderDamaged extends Error {
   constructor(why) {
     super(`the vault's lock header is damaged (${why}) -- this is NOT a wrong key, `
@@ -176,6 +179,19 @@ function validLockRecord(lock) {
     for (const k of ['N', 'r', 'p', 'keylen']) {
       if (!Number.isInteger(s[k]) || s[k] <= 0) return false;
     }
+    // EXACTLY 32, not merely positive. Dexter, PR #42, G5. `aes-256-gcm` is
+    // hardcoded in both `wrap` and `unwrap`, so nothing in this module can use
+    // another length -- but `keylen: 16` passed the old check, produced a 16-byte
+    // key, and `createDecipheriv` then threw a plain `Invalid key length` Error.
+    // `unwrap`'s catch treats anything that is not LockHeaderDamaged as a bad
+    // guess, so the CORRECT password came back `wrongKey`. That is F1's harm on
+    // a narrower input, and it is the one structural collapse that survived the
+    // split. Pinned here rather than by widening the catch, because the catch's
+    // default is right for the auth tag and only wrong for structure.
+    if (s.keylen !== 32) return false;
+    // A power of two, which scrypt requires of N anyway; a non-power-of-two
+    // reaches scryptSync and throws, which lands in the same wrong branch.
+    if ((s.N & (s.N - 1)) !== 0) return false;
   }
   return true;
 }
@@ -322,6 +338,15 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
   }
 
   function requireOpen(what) {
+    // A DAMAGED FILE REFUSES WRITES, which is the half of the old throw-at-load
+    // behaviour worth keeping (Dexter G3). Writing over a file we could not read
+    // would delete every secret in it to fix a display problem. What changed is
+    // that the refusal now happens per-operation, so the panel still opens and
+    // can say so -- and `melt` is deliberately not routed through here.
+    if (state.damaged) {
+      throw new Error(`the vault file is damaged, so ${what} is refused: ${state.damaged}`
+        + ' -- melting is the only action that can proceed, and it destroys everything');
+    }
     if (isLocked()) throw new Error(`the vault is locked: ${what} needs it open`);
   }
 
@@ -334,7 +359,81 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
   // the owner. What it buys is the difference between "All 6 secrets in it are
   // destroyed permanently" and "Everything in it is destroyed permanently" --
   // and the second is the sentence this module was written to avoid.
+  /**
+   * Pick up what another window did, if anything. Dexter, PR #42, G4.
+   *
+   * THE FINDING THIS FIXES IS THE WORST OF THE FOUR, because it defeats the
+   * stated threat model in the workflow PR #41 makes intended. `load()` ran once
+   * per handle and the read paths never consulted the file again, so:
+   *
+   *   window B: setKey(K).  Disk now has `lock` and wrapped entries.
+   *   window A: still holds `lock: undefined`, `sessionKey: undefined`, and its
+   *             own UNWRAPPED copies of every entry. So A's panel says
+   *             "no key set -- anyone at this machine can read the vault",
+   *             A.list() returns every label, A.get(id) returns every SECRET
+   *             with no key at all, and A.lock() returns false because
+   *             `hasKey()` is false in A's memory -- the user cannot lock it
+   *             even deliberately.
+   *
+   * Then they walk away from the machine, which is the entire scenario the
+   * feature exists for.
+   *
+   * Called from `lockState`, which the panel already invokes on every render, so
+   * this costs one stat-sized read per render and no new plumbing.
+   *
+   * THE RELOAD RULE, spelled out because getting it wrong is G1's other half:
+   * after reloading, if the new state has a `lock` and we hold no key, this
+   * window is now locked OUT. If we do hold a key, KEEP it but re-verify against
+   * the NEW `lock.check` -- B may have REPLACED the key rather than set a first
+   * one, and a stale Buffer that no longer decrypts anything is worse than being
+   * locked, because every read silently returns null.
+   */
+  function refreshIfMoved() {
+    let onDisk;
+    try { onDisk = currentGen(); } catch { return; }
+    if (onDisk === loadedGen) return;
+
+    const held = sessionKey;
+    const next = load();
+    state = next;
+    loadedGen = next.gen;
+
+    if (next.damaged) { sessionKey = null; return; }
+
+    if (next.lock === undefined) {
+      // The other window destroyed the key. Everything is safeStorage-only now,
+      // so this window is legitimately open.
+      sessionKey = undefined;
+      return;
+    }
+
+    if (!(held instanceof Buffer)) {
+      sessionKey = null;                   // a key exists and we do not have it
+      return;
+    }
+
+    // We held a key. Is it still THE key?
+    try {
+      const proof = unwrap(next.lock.check, held).toString('utf8');
+      sessionKey = proof === CHECK_PLAINTEXT ? held : null;
+    } catch {
+      sessionKey = null;                   // replaced, or the record moved
+    }
+  }
+
   function lockState() {
+    refreshIfMoved();
+    // A DAMAGED VAULT REPORTS ITSELF, AND REPORTS LOCKED. Dexter G3: this is
+    // what makes the panel reachable at all on a file we cannot read -- and
+    // `damaged` is what stops the panel offering "unlock" as the remedy for
+    // something no password can fix, while keeping melt available.
+    //
+    // `count: null`, not 0. We do not know how many secrets the file holds, and
+    // `Number(null)` being 0 is this project's signature defect -- a melt warning
+    // reading "All 0 secrets" would tell the user the action is free.
+    if (state.damaged) {
+      return { hasKey: true, locked: true, damaged: state.damaged, count: null };
+    }
     return { hasKey: hasKey(), locked: isLocked(), count: state.entries.length };
   }
 
@@ -383,6 +482,15 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
    * read.
    */
   function unlock(password) {
+    // DAMAGED FIRST, before anything else. A damaged load leaves `state.lock`
+    // undefined and `state.entries` empty, so `hasKey()` is false -- and the
+    // guard below would have returned `{ok: true}`, reporting a SUCCESSFUL
+    // unlock of a vault nobody can read. Caught by the two tests written for
+    // G3 and G5 immediately after the load change, which is the argument for
+    // writing them at the same time as the fix.
+    if (state.damaged) {
+      return { ok: false, damaged: true, error: new LockHeaderDamaged(state.damaged).message };
+    }
     if (!hasKey()) return { ok: true };          // nothing to open
     if (!isLocked()) return { ok: true };        // already open
 
@@ -429,11 +537,41 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
     }
 
     sessionKey = candidate;
+
+    // MIGRATION, and it is the difference between F1 being fixed for Ricardo and
+    // fixed only for vaults created after today. Dexter, PR #42, G2.
+    //
+    // `fp` is written by `setKey` and nowhere else, and `setKey` requires the
+    // vault OPEN -- so a locked vault written before the checksum existed could
+    // never acquire it, and `delete j.lock.fp` restored F1 in full on exactly the
+    // vault that matters. Every vault on disk today looks like that.
+    //
+    // Here is the one place that can fix it without asking the user for anything:
+    // we hold the derived key AND have just proven the record intact by
+    // decrypting its own verifier. So the digest is computable and provably
+    // correct right now.
+    //
+    // BEST EFFORT, deliberately. A successful unlock must never become a failure
+    // because a migration write did not land -- and it legitimately may not: the
+    // generation check refuses a write from a handle another window has moved
+    // past. Failing quietly here costs the user nothing; failing loudly would
+    // cost them the unlock they just earned.
+    if (state.lock.fp === undefined) {
+      try {
+        const lock = { ...state.lock };
+        lock.fp = lockFingerprint(lock);
+        const nextState = { ...state, lock };
+        persist(nextState);
+        state = nextState;
+      } catch { /* the unlock stands regardless */ }
+    }
+
     return { ok: true };
   }
 
   /** Close an open vault. Deliberately does NOT need the key. */
   function lock() {
+    if (state.damaged) return true;              // already as closed as it gets
     if (!hasKey()) return false;
     sessionKey = null;                          // stepping away must be one click
     return true;
@@ -467,13 +605,25 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
     // This is melt's declared purpose in its own docstring: the way back from a
     // FORGOTTEN key. An open vault never needs it -- destroy the key instead and
     // keep the secrets.
-    if (!isLocked()) {
+    // REFRESH FIRST, so the guard below judges reality rather than what this
+    // window last saw. Dexter G6: a stale window whose vault was locked by
+    // ANOTHER window still believed itself open, so melt refused with "the vault
+    // is open, destroy the key instead" -- advice that window cannot follow,
+    // about a key it does not have. The panic button, refused on a technicality.
+    refreshIfMoved();
+
+    // A damaged file is melt's other legitimate case: nothing can open it, so
+    // "destroy the key instead" is not available (Dexter G3).
+    if (!state.damaged && !isLocked()) {
       throw new Error('melt is for a forgotten key: the vault is open, '
         + 'so destroy the key instead and keep the secrets');
     }
 
     const nextState = { format: FORMAT, entries: [] };
-    persist(nextState);
+    // `force`: melt is the one write that cannot lose anything (Dexter G6). It
+    // discards the whole vault, so a concurrent window's work is not at risk,
+    // and it is the documented way out of a file we cannot even read.
+    persist(nextState, { force: true });
     state = nextState;
     sessionKey = undefined;
 
@@ -546,9 +696,35 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
       if (!validLockRecord(parsed.lock)) throw new Error('lock record is malformed');
       return parsed;
     } catch (err) {
-      // Never overwrite what cannot be read: replacing it with an empty vault
-      // would delete every secret in it to fix a display problem.
-      throw new Error(`secret vault at ${file} is unreadable, refusing to replace it: ${err.message}`);
+      // DAMAGED, NOT FATAL. Dexter, PR #42, G3, and this is a fix for my own fix.
+      //
+      // This used to throw, which meant `createVault` threw, and `main.js` does
+      // not wrap it -- so a malformed lock record meant NO WINDOW OPENED AT ALL.
+      // The user got no panel, no damage message, and no melt button. The most
+      // damaged vault had the fewest options: zero. And the entire
+      // `LockHeaderDamaged` machinery built for F1 -- whose whole purpose is
+      // telling someone "do not melt, your secrets are probably recoverable" --
+      // was unreachable, because the app died before it could speak.
+      //
+      // Note the direction my F4 fix moved things: F4's original bug was "opens
+      // silently as unprotected", a confidentiality failure. My fix turned it
+      // into "the harness will not start", an availability failure with no
+      // recovery path. That is not obviously the better trade, and it is not one
+      // I chose deliberately.
+      //
+      // Refusing to WRITE over a file we cannot read is still right, and still
+      // enforced -- `add`, `setKey`, `removeKey` and `lock` all refuse on a
+      // damaged state. What is wrong is refusing to CONSTRUCT, because that is
+      // what costs the user the panel.
+      //
+      // `melt` is the deliberate exception. It is the documented way back from
+      // an unopenable vault, it overwrites the file rather than reading it, and
+      // there is nothing in an unreadable file for it to preserve.
+      return {
+        format: FORMAT,
+        entries: [],
+        damaged: `${err.message} (in ${file})`,
+      };
     }
   }
 
@@ -593,8 +769,38 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
   // candidate. It is a tripwire for the next editor of this file, not a
   // runtime check -- said plainly, because an earlier version of this comment
   // asked for a test that cannot be written.
-  function persist(candidate) {
+  function persist(candidate, opts = {}) {
     if (!candidate) throw new Error('persist: a candidate state is required');
+
+    // HELD UNDER AN EXCLUSIVE LOCK. Dexter, PR #42, G1, which is a defect in my
+    // own F9 fix rather than a survivor of the original.
+    //
+    // The generation token alone is CHECK-THEN-ACT, and the gap between the check
+    // and the rename is not small: it contains a `writeFileSync` plus up to 300ms
+    // of `sleepSync` on the Windows EPERM retry path this repo measured on
+    // 2026-09-18. His interleaving, and it reproduces F9's harm exactly:
+    //
+    //   A: currentGen() passes at G0. writes tmpA. rename hits EPERM, sleeps.
+    //   B: currentGen() still reads G0 -- A has not renamed. setKey(K) lands.
+    //   A: retry succeeds, replacing the file with A's stale content:
+    //      no `lock` field, every entry unwrapped. BOTH report success.
+    //
+    // So the token shrank the window from "the whole session" to "one write" --
+    // a real improvement, and not a fix, because the maximal harm sits inside it.
+    //
+    // `host/file-lock.js` already existed in this repo, with staleness, a
+    // deadline and its own tests, built for exactly this. Wrapping
+    // read-check-write-rename in it makes the gen token correct defence-in-depth
+    // instead of the whole mechanism.
+    //
+    // THE RESIDUAL, stated rather than implied: a process that dies holding the
+    // lock leaves a lockfile behind, which is why that module has STALE_MS and
+    // breaks a lock older than it. A crash therefore costs a delay, not a
+    // permanent tombstone over the vault.
+    return withFileLock(`${file}.lock`, () => persistLocked(candidate, opts));
+  }
+
+  function persistLocked(candidate, opts = {}) {
     const dir = path.dirname(file);
     fs.mkdirSync(dir, { recursive: true });
     // Write-and-rename: a crash mid-write leaves the old vault intact rather
@@ -627,10 +833,17 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
     // another instance wrote in between and this write would erase their work.
     // Refuse, and say what to do -- the caller cannot merge two vaults and
     // neither can we.
-    const onDisk = currentGen();
+    // `force` is melt, and only melt. Dexter G6: melt routes through here, so a
+    // stale window could not melt -- the panic button refused with a message
+    // about reopening a panel. melt discards everything, so there is nothing of
+    // the other window's work to protect, and it is the one write with no merge
+    // problem. It is also the documented way out of an unopenable vault, so it
+    // must not be gated on reading that vault successfully.
+    const onDisk = opts.force ? loadedGen : currentGen();
     if (onDisk !== loadedGen) {
-      throw new Error('another window changed the vault since this one read it; '
-        + 'reopen the secrets panel to pick up the change, then try again');
+      throw new Error('another window changed the vault since this one read it. '
+        + 'Close and reopen this window to pick up the change, then try again '
+        + '-- reopening the secrets panel alone will not do it.');
     }
     candidate.gen = crypto_.randomBytes(8).toString('hex');
 
@@ -758,6 +971,12 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
   }
 
   function list({ project } = {}) {
+    // EVERY read path, not just lockState. Dexter's G4 counterexample asserts on
+    // `list()` and `get()` directly, and it is right to: the panel calling
+    // lockState() first is a convention, not a guarantee, and a window that
+    // reports itself locked while still serving secrets is the same defect one
+    // call deeper.
+    refreshIfMoved();
     // A LABEL IS A SECRET. "client-x prod database" tells a passerby who the
     // client is and that there is a production database, without revealing
     // one character of the value. A locked vault shows nothing.
@@ -780,6 +999,12 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
   // window for one project could otherwise reveal another project's secret by
   // replaying an id it should never have had.
   function get(id, { project } = {}) {
+    // EVERY read path, not just lockState. Dexter's G4 counterexample asserts on
+    // `list()` and `get()` directly, and it is right to: the panel calling
+    // lockState() first is a convention, not a guarantee, and a window that
+    // reports itself locked while still serving secrets is the same defect one
+    // call deeper.
+    refreshIfMoved();
     if (isLocked()) return null;
     const entry = state.entries.find(e => e.id === id);
     if (!entry) return null;
@@ -797,6 +1022,12 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
   }
 
   function remove(id, { project } = {}) {
+    // EVERY read path, not just lockState. Dexter's G4 counterexample asserts on
+    // `list()` and `get()` directly, and it is right to: the panel calling
+    // lockState() first is a convention, not a guarantee, and a window that
+    // reports itself locked while still serving secrets is the same defect one
+    // call deeper.
+    refreshIfMoved();
     // Deleting what you cannot see is the same harm as reading it, one step on.
     if (isLocked()) return false;
     // Same enforcement as `get`: without it a window could delete a secret it

@@ -255,17 +255,19 @@ test('melt destroys everything and leaves a working, open vault', () => {
     'and the old ciphertext must not be left lying in the file');
 });
 
-test('two different keys derive two different wrappings of one secret', () => {
-  // Guards against a derivation that ignores the password -- which would pass
-  // every test above, because every one of them uses a single key at a time.
-  const a = tmp();
-  const b = tmp();
-  for (const [file, key] of [[a, 'key-one'], [b, 'key-two']]) {
-    const v = open(file);
-    v.add({ label: 'k', secret: 'identical', shared: true });
-    v.setKey(key);
-  }
-  const ca = JSON.parse(fs.readFileSync(a, 'utf8')).entries[0].secret;
-  const cb = JSON.parse(fs.readFileSync(b, 'utf8')).entries[0].secret;
-  assert.notStrictEqual(ca, cb, 'the password must actually participate');
-});
+// DELETED: 'two different keys derive two different wrappings of one secret'.
+//
+// Miguel, PR #42, A6, and he had to tell me twice. It asserted that two vaults
+// with different passwords hold different ciphertexts -- but the IV is random per
+// wrap, so two wraps of the SAME secret under the SAME key also differ. He proved
+// it by replacing `deriveKey` with `Buffer.alloc(32, 7)`, ignoring the password
+// entirely, and the test stayed green. Its comment promised a guarantee it did
+// not give, which is worse than no test: it tells the next reader the derivation
+// is pinned when it is not.
+//
+// I reported this as "replaced by the real assertion" and it was not. I wrote the
+// replacement in test/secret-vault-lock-findings.test.js -- 'a derivation that
+// IGNORES the password cannot pass', which asserts `unlock('a key never set')`
+// is refused -- and left this one sitting here. Adding a test does not remove
+// one, and he re-read the commit and found it still present. Deleted now, with
+// the pointer, so the next reader does not go looking for a test that moved.

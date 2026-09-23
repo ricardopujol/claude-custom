@@ -155,9 +155,28 @@ test('a corrupt file does not destroy what is still readable', () => {
 
 test('a file that is not JSON at all is refused, not overwritten', () => {
   // Silently replacing an unreadable vault would delete every secret in it.
+  //
+  // THE PROPERTY IS UNCHANGED; THE MECHANISM MOVED. Dexter, PR #42, G3. This
+  // used to assert that `createVault` THROWS, which is the spelling rather than
+  // the rule -- and the spelling turned out to be wrong: `app/main.js` does not
+  // wrap the constructor, so an unreadable vault meant no window opened at all.
+  // The panel that would have explained it, and the melt button that is the only
+  // way out, were both unreachable because the app died first.
+  //
+  // So a damaged file now LOADS, reports itself damaged and locked, and refuses
+  // every write. Not overwriting is still guaranteed -- it is asserted below
+  // against the bytes on disk, which is a stronger check than the throw was.
   const file = tmp();
   fs.writeFileSync(file, 'this is not json');
-  assert.throws(() => createVault({ file, crypto: fakeCrypto() }), /unreadable|parse/i);
+
+  const v = createVault({ file, crypto: fakeCrypto() });
+  assert.ok(v.lockState().damaged, 'it must announce the damage');
+  assert.strictEqual(v.lockState().locked, true, 'and fail closed');
+
+  assert.throws(() => v.add({ label: 'k', secret: 's' }), /damaged/i,
+    'and refuse the write that would destroy what is in there');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), 'this is not json',
+    'THE PROPERTY: the bytes on disk are untouched');
 });
 
 test('removing an entry removes the secret with it', () => {
@@ -448,11 +467,26 @@ test('a vault file of the wrong SHAPE is refused, not silently emptied', () => {
   // that parses to `null` or to `{}` would pass the guard -- and this module's
   // whole stated rule is that it never replaces a vault it cannot read,
   // because doing so deletes every secret to fix a display problem.
+  //
+  // Same move as the not-JSON test above (Dexter G3): the guard is unchanged and
+  // the mutants it kills are unchanged, but "refused" now means "loads as
+  // damaged and refuses to write" rather than "throws at construction", because
+  // throwing at construction cost the user the whole window.
+  //
+  // The mutation-driven part still holds. Flip the guard to `&&` and a file
+  // parsing to `null` or `{}` sails through; the assertions below fail, because
+  // such a file must be damaged rather than treated as an empty vault.
   for (const bad of ['null', '{}', '[]', '{"entries":"nope"}', '{"entries":null}']) {
     const file = tmp();
     fs.writeFileSync(file, bad);
-    assert.throws(() => createVault({ file, crypto: fakeCrypto() }),
-      /unreadable, refusing to replace it/, `contents: ${bad}`);
+
+    const v = createVault({ file, crypto: fakeCrypto() });
+    assert.ok(v.lockState().damaged, `contents: ${bad} must be damaged`);
+    assert.strictEqual(v.lockState().locked, true, `contents: ${bad} must fail closed`);
+    assert.throws(() => v.add({ label: 'k', secret: 's' }), /damaged/i,
+      `contents: ${bad} must refuse writes`);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), bad,
+      `contents: ${bad} must be left on disk untouched`);
   }
 });
 

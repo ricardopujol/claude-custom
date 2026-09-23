@@ -89,15 +89,69 @@ test('a MISSING SALT is refused at load, not reported as a wrong key', () => {
   // TypeError inside deriveKey, and the single catch turned it into `false` --
   // the same answer as a wrong password, from an unrelated cause.
   //
-  // Refusing the FILE is a stronger answer than reporting damage at unlock: a
-  // malformed lock record means the vault is damaged, and refusing to load it is
-  // what stops the next setKey from re-wrapping on top of it (F4).
+  // REWRITTEN for Dexter G3. I first made this refuse the FILE by throwing out
+  // of `load()`, and asserted the throw here. That was wrong in a way the test
+  // then locked in: `createVault` throws, `main.js` does not wrap it, so a
+  // malformed lock record meant NO WINDOW OPENED AT ALL -- no panel, no damage
+  // message, no melt. The most damaged vault got the fewest options.
+  //
+  // The contract now: construct succeeds, the vault reports itself damaged and
+  // locked, reads return nothing, writes are refused, and melt works.
   const { file } = lockedVault();
   const j = readVault(file);
   delete j.lock.salt;
   writeVault(file, j);
 
-  assert.throws(() => open(file), /unreadable|malformed/i);
+  const v = open(file);                                  // must NOT throw
+  const st = v.lockState();
+  assert.strictEqual(st.locked, true, 'a damaged vault is locked');
+  assert.ok(st.damaged, 'and says so, or the panel cannot explain itself');
+  assert.strictEqual(st.count, null,
+    'the count is UNKNOWN, not 0 -- "all 0 secrets" would read as safe');
+
+  assert.deepStrictEqual(v.list(ANY), [], 'reads return nothing');
+  assert.throws(() => v.add({ label: 'x', secret: 'y', shared: true }), /damaged/i,
+    'writing over a file we cannot read would delete what is in it');
+  assert.throws(() => v.setKey('anything'), /damaged/i);
+
+  // And the way out still works.
+  assert.strictEqual(v.melt().ok, true, 'melt is the documented recovery, and must work');
+  assert.deepStrictEqual(open(file).lockState(), { hasKey: false, locked: false, count: 0 });
+});
+
+test('a damaged vault can still be MELTED, which is the only way out', () => {
+  // Dexter G3's recommended test, stated on its own because it is the property
+  // that makes the whole damaged path worth having. An unreadable file cannot be
+  // unlocked by any password, so "destroy the key instead" is not available --
+  // melt is it, and melt must not be gated on reading the file it overwrites.
+  const file = tmp();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'this is not JSON at all {{{');
+
+  const v = open(file);
+  assert.ok(v.lockState().damaged, 'an unparseable file is damaged, not empty');
+  assert.strictEqual(v.melt().ok, true);
+  assert.deepStrictEqual(open(file).lockState(), { hasKey: false, locked: false, count: 0 });
+});
+
+test('the damaged branch in unlock is LIVE, not dead code', () => {
+  // Dexter G3, second half. When `load()` threw on every malformed record,
+  // `unlock`'s `if (!validLockRecord(state.lock))` could never fire -- a branch
+  // returning a `damaged` result no caller could observe. The Mortimer category:
+  // a branch with no observable effect because the path cannot trigger.
+  //
+  // Now that a damaged file loads, unlock is reachable on one, and its answer
+  // must be `damaged` rather than `wrongKey` -- otherwise the panel offers melt
+  // as the remedy for a file no password can open, which is F1's harm again.
+  const { file } = lockedVault();
+  const j = readVault(file);
+  j.lock.scrypt = null;                     // present, malformed
+  writeVault(file, j);
+
+  const res = open(file).unlock(KEY);
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.damaged, true);
+  assert.notStrictEqual(res.wrongKey, true);
 });
 
 test('a WRONG key is still reported as a wrong key, and nothing else', () => {
@@ -307,14 +361,61 @@ test('a MALFORMED lock record is refused, never read as "no key"', () => {
       check: Buffer.alloc(64).toString('base64'), scrypt: { N: 0, r: 8, p: 1, keylen: 32 } },
   ];
 
+  // REWRITTEN for G3: refused means "treated as damaged", not "throws at
+  // construction". The property that matters is unchanged and is the one F4 was
+  // about -- a malformed record must never read as "no key set", because that
+  // announced the vault unprotected, listed every label while the entries were
+  // still wrapped, and double-wrapped them all on the next setKey.
   for (const bad of shapes) {
     const { file } = lockedVault('client-x prod database');
     const j = readVault(file);
     j.lock = bad;
     writeVault(file, j);
-    assert.throws(() => open(file), /unreadable|malformed/i,
-      `lock: ${JSON.stringify(bad)} must be refused, not read as an open vault`);
+
+    const st = open(file).lockState();
+    assert.strictEqual(st.locked, true,
+      `lock: ${JSON.stringify(bad)} must read as locked, never as an open vault`);
+    assert.ok(st.damaged, `lock: ${JSON.stringify(bad)} must report damage`);
+    assert.deepStrictEqual(open(file).list({ project: 'C:/any' }), [],
+      'and must not list a single label');
   }
+});
+
+test('the keylen a malformed record can ask for is pinned to 32', () => {
+  // Dexter, PR #42, G5, the one structural collapse that survived the F1 split.
+  //
+  // `validLockRecord` accepted any positive integer for keylen. `keylen: 16`
+  // produced a 16-byte key, `createDecipheriv('aes-256-gcm', key16, iv)` threw a
+  // plain `Invalid key length` Error, and `unwrap`'s catch treats anything that
+  // is not LockHeaderDamaged as a bad guess -- so the CORRECT password came back
+  // `wrongKey`. F1's harm on a narrower input.
+  //
+  // Pinned in the validator rather than by widening the catch: `aes-256-gcm` is
+  // hardcoded in wrap and unwrap, so no other length is usable, and the catch's
+  // default is right for the auth tag.
+  const { file } = lockedVault();
+  const j = readVault(file);
+  j.lock.scrypt = { ...j.lock.scrypt, keylen: 16 };
+  j.lock.fp = require('crypto').createHash('sha256')
+    .update(`${j.lock.salt}|${j.lock.check}|${JSON.stringify(j.lock.scrypt)}`)
+    .digest('base64');
+  writeVault(file, j);
+
+  const res = open(file).unlock(KEY);
+  assert.strictEqual(res.ok, false);
+  assert.notStrictEqual(res.wrongKey, true,
+    'a key length the cipher cannot use is DAMAGE, not a wrong password');
+  assert.strictEqual(res.damaged, true);
+
+  // And N must be a power of two, or scryptSync throws into the same wrong branch.
+  const f2 = lockedVault().file;
+  const k = readVault(f2);
+  k.lock.scrypt = { ...k.lock.scrypt, N: 1000 };
+  k.lock.fp = require('crypto').createHash('sha256')
+    .update(`${k.lock.salt}|${k.lock.check}|${JSON.stringify(k.lock.scrypt)}`)
+    .digest('base64');
+  writeVault(f2, k);
+  assert.strictEqual(open(f2).unlock(KEY).damaged, true);
 });
 
 test('a lock record with NO key at all is still a legitimate vault', () => {
