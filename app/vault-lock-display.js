@@ -62,6 +62,46 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
   const hasKey = s.hasKey === true;
   const locked = !known || s.locked !== false;
 
+  // FIVE STATES, and the fifth exists because my own G3 fix created the need for
+  // it without supplying it. Dexter, PR #42, H1.
+  //
+  // G3 made a damaged vault LOAD and report `damaged` instead of taking the
+  // window down with it. This function then dropped that field on the floor, so
+  // the panel drew the ordinary locked state: a password field, an Open button,
+  // and "Forgot the key…". The user is invited to guess at a file where no
+  // password can possibly work, and the damage message only arrives AFTER a
+  // failed attempt -- whereupon the panel invites another.
+  //
+  // Then the only other button is melt. Someone who types two guesses and clicks
+  // it is doing exactly what F1 was written to prevent.
+  //
+  // And the comment in secret-vault.js claimed this already worked -- "`damaged`
+  // is what stops the panel offering unlock" -- which was false. Same shape as
+  // F8: a comment asserting a safety property the code does not implement, which
+  // stops the next reader checking. Fixed the same way, by making the code true.
+  if (typeof s.damaged === 'string' && s.damaged) {
+    return {
+      state: confirmingMelt ? 'confirm-melt-damaged' : 'damaged',
+      note: `this vault file cannot be read: ${s.damaged}. No password will open `
+        + 'it — the file itself is damaged, not the key.',
+      damaged: s.damaged,
+      // NOT offered. The whole point: a password cannot fix a malformed file, and
+      // a field that accepts one says otherwise.
+      canUnlock: false,
+      canMelt: true,
+      // A DIFFERENT WARNING, because this is the one case where the data may
+      // still be there. The count is unknown by construction -- the file could
+      // not be parsed -- so there is no number to give, and inventing one would
+      // be this project's absence-as-zero defect in the worst possible place.
+      meltWarning: 'Your secrets may still be RECOVERABLE: the entries are '
+        + 'probably intact and only the lock header is damaged. Melting gives you '
+        + 'a working empty vault and moves the damaged file aside rather than '
+        + 'deleting it, so a copy remains — but this harness will not read it '
+        + 'again. If those secrets matter, copy the file somewhere safe first.',
+      showList: false,
+    };
+  }
+
   if (locked) {
     return {
       state: confirmingMelt ? 'confirm-melt' : 'locked',

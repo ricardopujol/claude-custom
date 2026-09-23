@@ -110,7 +110,15 @@ function createSecretService({
     // than swallowed: the vault IS gone so melt succeeded, but the promise the
     // user was shown -- no backup, no recovery -- is not true until those are
     // gone too, and only they can remove them.
-    try { const r = vault.melt(); return { ok: !!(r && r.ok), leftovers: (r && r.leftovers) || [] }; }
+    // `preserved` is the damaged file moved aside (Dexter H2). It MUST reach the
+    // window: a copy of possibly-recoverable secrets that nobody can find is the
+    // same as no copy.
+    try {
+      const r = vault.melt();
+      if (r && r.ok === false) return { ok: false, error: r.error };
+      return { ok: !!(r && r.ok), leftovers: (r && r.leftovers) || [],
+               preserved: (r && r.preserved) || null };
+    }
     catch (err) { return { ok: false, error: err.message }; }
   }
 

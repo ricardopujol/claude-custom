@@ -562,6 +562,25 @@ async function renderVaultLock() {
     `<label class="sr-only" for="vault-key">${escapeHtml(labelText)}</label>` +
     `<input id="vault-key" type="password" placeholder="${escapeHtml(ph)}" autocomplete="${ac}" />`;
 
+  // THE DAMAGED PANEL, which offers no password field at all. Dexter H1: the
+  // ordinary locked panel invited the user to guess at a file where no password
+  // can work, and then offered melt as the only alternative.
+  if (d.state === 'damaged' || d.state === 'confirm-melt-damaged') {
+    el.innerHTML =
+      `<div class="melt-warn" role="alert" aria-live="polite">${escapeHtml(d.note)}</div>` +
+      (d.state === 'confirm-melt-damaged'
+        ? `<div class="melt-warn" id="melt-warning">${escapeHtml(d.meltWarning)}</div>` +
+          '<div class="lock-row">' +
+            '<button data-lock="melt-cancel" data-autofocus="1">Cancel</button>' +
+            '<button class="melt" data-lock="melt-confirm" aria-describedby="melt-warning">' +
+              'Start a new empty vault</button>' +
+          '</div>'
+        : '<div class="lock-row">'
+          + '<button class="melt" data-lock="melt-ask">Start over with an empty vault…</button>'
+          + '</div>');
+    return d;
+  }
+
   if (d.state === 'locked' || d.state === 'confirm-melt') {
     el.innerHTML = note +
       '<div class="lock-row">' +
@@ -671,6 +690,15 @@ async function runLockAction(act) {
       notes.push('these secrets could not be re-keyed and are unreadable, '
         + 'delete and re-add them: '
         + res.failed.map(f => f.label || f.id).join(', '));
+    }
+    if (res.preserved) {
+      // Dexter H2: the damaged vault was moved aside rather than destroyed,
+      // because the app had just told this user their secrets might be
+      // recoverable. Naming the path is the whole point -- a copy they cannot
+      // find is the same as no copy.
+      notes.push('your old vault could not be read, so it was MOVED ASIDE rather '
+        + `than deleted: ${res.preserved} — if those secrets matter, copy that `
+        + 'file somewhere safe. This harness will not read it again.');
     }
     if (Array.isArray(res.leftovers) && res.leftovers.length) {
       // Dexter F2: copies melt could not remove. The promise shown to the user

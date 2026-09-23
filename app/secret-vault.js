@@ -619,10 +619,55 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
         + 'so destroy the key instead and keep the secrets');
     }
 
+    // A DAMAGED FILE IS MOVED ASIDE, NOT OVERWRITTEN. Dexter, PR #42, H2, and it
+    // is the sharpest contradiction either review has found in my work.
+    //
+    // On a damaged vault the app tells the user, in the words of
+    // LockHeaderDamaged, that "melting would destroy secrets that may still be
+    // recoverable" -- and then `requireOpen` refuses every other action with
+    // "melting is the only action that can proceed". So the app states the data
+    // may be recoverable, offers exactly one button, and that button destroyed
+    // it. The advice and the only available action contradicted each other, and
+    // the action won.
+    //
+    // NOT A REGRESSION OF F2, and the distinction is the whole design. F2 is
+    // about a vault the user COULD read and CHOSE to destroy -- there, leaving a
+    // copy makes "no backup and no recovery" a lie, and the sweep is right. A
+    // damaged vault is the opposite premise: the user was told the data may
+    // survive and given no alternative. Destroying it there is not honouring a
+    // choice, it is removing one.
+    //
+    // The two do not collide because `sweepTemps` anchors on TEMP_PREFIX and
+    // TEMP_SUFFIX, and this name matches neither -- so F2's sweep cannot delete
+    // what this preserves.
+    let preserved = null;
+    if (state.damaged) {
+      const aside = `${file}.damaged-${Date.now()}`;
+      try {
+        fs.renameSync(file, aside);
+        preserved = aside;
+      } catch {
+        // Could not move it: better to leave the unreadable file exactly where
+        // it is than to overwrite data we just told the user might be saved.
+        // The vault stays damaged, which is honest, and the user can act on the
+        // path themselves.
+        return {
+          ok: false,
+          error: 'could not move the damaged vault aside, so it was left '
+            + `untouched rather than destroyed: ${file}`,
+        };
+      }
+    }
+
     const nextState = { format: FORMAT, entries: [] };
     // `force`: melt is the one write that cannot lose anything (Dexter G6). It
     // discards the whole vault, so a concurrent window's work is not at risk,
     // and it is the documented way out of a file we cannot even read.
+    //
+    // Load-bearing rather than a convenience, as he pointed out: on a damaged
+    // file `currentGen()` returns a Symbol that can never equal `loadedGen`, so
+    // without `force` melt would be refused forever on exactly the file melt
+    // exists for.
     persist(nextState, { force: true });
     state = nextState;
     sessionKey = undefined;
@@ -649,7 +694,10 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // melt look like it failed, because the main file IS gone and re-melting
     // will not help. The user needs to be told which file to delete by hand.
     const leftovers = sweepTemps();
-    return { ok: true, leftovers };
+    // `preserved` names the file we moved aside, so the panel can tell the user
+    // where their possibly-recoverable secrets went. A copy nobody can find is
+    // the same as no copy.
+    return { ok: true, leftovers, preserved };
   }
 
   // Every temp `persist` could have abandoned, matching the name it builds.
