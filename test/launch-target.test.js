@@ -140,3 +140,19 @@ test('a variable added to the namespace LATER is stripped without anyone remembe
   const out = launchEnv({ CLAUDE_CUSTOM_INVENTED_TOMORROW: 'boom' }, 'C:/p');
   assert.strictEqual('CLAUDE_CUSTOM_INVENTED_TOMORROW' in out, false);
 });
+
+test('CLAUDE_CUSTOM_NEW does not leak into a project opened from the picker', () => {
+  // The newest member of the namespace, and the exact class Dexter's Finding 4
+  // was about: a CLAUDE_CUSTOM_* variable surviving into another project's
+  // session. Here it would mean clicking a project in the picker silently
+  // spawned a SECOND session of it instead of reattaching -- a duplicate the
+  // user never asked for, every time.
+  //
+  // The wildcard already handles it; that function's own comment anticipates
+  // "whatever is added to it next year by someone who never reads this
+  // function". This asserts the anticipation actually held, because a wildcard
+  // nobody tests is a promise rather than a guarantee.
+  const env = launchEnv({ CLAUDE_CUSTOM_NEW: '1', PATH: '/usr/bin' }, 'C:/work/other');
+  assert.strictEqual(env.CLAUDE_CUSTOM_NEW, undefined);
+  assert.strictEqual(env.PATH, '/usr/bin', 'and unrelated variables still pass through');
+});

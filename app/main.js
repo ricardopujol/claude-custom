@@ -116,7 +116,13 @@ async function chooseHostPort() {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: PROJECT_CWD, occupantAt });
+  // `--new` on the launcher asks for a SECOND session in this folder rather
+  // than a reattach to the one already running. Read from the environment
+  // because the launcher is a separate process; an absent or empty value means
+  // the ordinary reattach, which is the behaviour that must never change by
+  // accident.
+  const fresh = process.env.CLAUDE_CUSTOM_NEW === '1';
+  return resolvePort({ cwd: PROJECT_CWD, occupantAt, fresh });
 }
 
 function spawnHost() {

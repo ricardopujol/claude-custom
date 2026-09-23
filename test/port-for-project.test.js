@@ -213,3 +213,72 @@ test('the port-probe deadline is pinned, including the direction that reintroduc
   assert.strictEqual(DEADLINE_MS, 6000,
     'a longer deadline is a longer blank screen; changing this needs a reason');
 });
+
+// --- a second, independent session in the same folder ------------------------
+//
+// Ricardo: "be able to open another context window in the same folder."
+//
+// Today the port is DERIVED from the path, so a second window on one folder
+// lands on the same port, `decideAttach` says `attach`, and it joins the
+// running session. That is the detachable-session property working exactly as
+// designed and must not change -- it is what lets you close a window and come
+// back to the session you left.
+//
+// A second INDEPENDENT session is the other intent, and the difference is one
+// rule: accept only a FREE port, never an occupied one, even when the occupant
+// is us. `CLAUDE_CUSTOM_PORT` already allowed this by hand; this makes it a
+// first-class request rather than a trick.
+
+test('fresh: true walks past our own running session to a free port', () => {
+  const cwd = 'C:/work/proj';
+  const mine = portForCwd(cwd);
+  // Our own host is on the derived port. Default behaviour attaches to it.
+  const occupantAt = (port) => (port === mine ? { cwd } : null);
+
+  return resolvePort({ cwd, occupantAt }).then(async (attached) => {
+    assert.deepStrictEqual(attached, { port: mine, action: 'attach' },
+      'precondition: without `fresh`, a second window still joins the session');
+
+    const spawned = await resolvePort({ cwd, occupantAt, fresh: true });
+    assert.strictEqual(spawned.action, 'spawn', 'fresh must never attach');
+    assert.notStrictEqual(spawned.port, mine, 'and must not land on the occupied port');
+  });
+});
+
+test('fresh: true steps past SEVERAL sessions of the same project', () => {
+  // Third window, fourth window. Each one has to walk past every session
+  // already running for this folder, not just the first.
+  const cwd = 'C:/work/proj';
+  const first = portForCwd(cwd);
+  const taken = new Set([first, first + 1, first + 2]);
+  const occupantAt = (port) => (taken.has(port) ? { cwd } : null);
+
+  return resolvePort({ cwd, occupantAt, fresh: true }).then((r) => {
+    assert.strictEqual(r.action, 'spawn');
+    assert.strictEqual(taken.has(r.port), false, 'it must find a genuinely free port');
+  });
+});
+
+test('fresh: true still refuses to take a port held by ANOTHER project', () => {
+  // The containment that matters: wanting a new session is not permission to
+  // evict somebody else's. `decideAttach` already refuses; this asserts that
+  // `fresh` does not accidentally widen it into "take any port at all".
+  const cwd = 'C:/work/proj';
+  const mine = portForCwd(cwd);
+  const occupantAt = (port) => (port === mine ? { cwd: 'C:/work/SOMEONE-ELSE' } : null);
+
+  return resolvePort({ cwd, occupantAt, fresh: true }).then((r) => {
+    assert.strictEqual(r.action, 'spawn');
+    assert.notStrictEqual(r.port, mine);
+  });
+});
+
+test('without fresh, nothing changes -- reopening still finds the session it left', () => {
+  // The property this whole module exists for. A regression here is the
+  // feature disappearing, so it is asserted alongside the new one rather than
+  // trusted to stay true.
+  const cwd = 'C:/work/proj';
+  const mine = portForCwd(cwd);
+  return resolvePort({ cwd, occupantAt: (p) => (p === mine ? { cwd } : null) })
+    .then(r => assert.deepStrictEqual(r, { port: mine, action: 'attach' }));
+});

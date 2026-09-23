@@ -38,7 +38,12 @@ function portForCwd(cwd) {
  * The port this project should actually use, and what to do when we get there.
  *
  * Walks from the derived port through the range, taking the first port that is
- * either free or already serving THIS project. A refusal of any kind -- another
+ * either free or already serving THIS project -- which is what makes closing a
+ * window and reopening it return to the session you left.
+ *
+ * With `fresh: true` it takes only a FREE port, walking past this project's own
+ * running sessions. That is the difference between "reopen my session" and
+ * "give me another window on this folder", and both are things a user wants. A refusal of any kind -- another
  * project, or an occupant that would not identify itself -- steps to the next
  * one, because both mean "not ours" and neither is the user's problem to solve.
  *
@@ -54,7 +59,7 @@ function portForCwd(cwd) {
 // screen.
 const DEADLINE_MS = 6000;
 
-async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS } = {}) {
+async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS, fresh = false } = {}) {
   const first = portForCwd(cwd);
   const giveUpAt = Date.now() + deadlineMs;
   for (let i = 0; i < PORT_SPAN; i++) {
@@ -68,7 +73,16 @@ async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS } = {}) {
     // Awaited because the real probe opens a socket. A synchronous answer --
     // which is what every test injects -- passes through await unchanged.
     const { action } = decideAttach({ requestedCwd: cwd, occupant: await occupantAt(port) });
-    if (action === 'spawn' || action === 'attach') return { port, action };
+
+    // `fresh` means "a SECOND session in this folder", so an occupied port is
+    // never acceptable -- not even one serving this same project, which is
+    // exactly the case the default is built to accept. One rule, one word.
+    //
+    // It does NOT widen anything: a port held by another project still refuses
+    // and still steps, because wanting a new session is not permission to
+    // evict somebody else's.
+    if (action === 'spawn') return { port, action };
+    if (!fresh && action === 'attach') return { port, action };
   }
   throw new Error(
     `resolvePort: no free port for ${cwd} in ${PORT_BASE}-${PORT_BASE + PORT_SPAN - 1}`,
