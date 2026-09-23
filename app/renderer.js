@@ -534,6 +534,16 @@ let agentStats = new Map();
 // which the panel has to be able to say.
 let lastAgentStatsPayload = null;
 
+// The live delegation stack, exactly as `hello`/`processes` carry it, kept so
+// renderRoster can turn it into a per-agent running count (app/agent-card-display.js
+// `instanceCounts`) without a third module re-deriving it from mood.js.
+let latestParty = [];
+// The model each agent actually used, read from its own transcript -- see
+// host/session-model.js. `{model:null,...}` on a fresh session before
+// SessionStart's read has landed, which app/agent-card-display.js's
+// `modelLine` draws as "not read yet", never a guess.
+let sessionModel = { session: { model: null, at: null }, agents: {}, errors: 0 };
+
 // Ricardo: tokens spent and time worked IN THE PROJECT, not in this window.
 // Compact because it sits beside a 40px portrait -- "47.1M / 30m" reads at a
 // glance, the tooltip carries the exact figures.
@@ -569,6 +579,22 @@ function careerHtml(agent) {
     `</div>`;
 }
 
+// The model line under the state (FF10) and the ×N badge beside the name for
+// concurrent instances of one agent (FF8). Both judgements live in
+// app/agent-card-display.js so they can be tested; this is only the drawing.
+function agentModelHtml(agent) {
+  const entry = sessionModel && sessionModel.agents ? sessionModel.agents[agent] : undefined;
+  const m = modelLine(entry);
+  return `<div class="agent-model" title="${escapeHtml(m.title)}">${escapeHtml(m.text)}</div>`;
+}
+
+function countBadgeHtml(agent, counts) {
+  // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
+  // concurrent run is news.
+  const n = counts.get(agent) || 0;
+  return n >= 2 ? `<span class="agent-count" title="${n} running now">×${n}</span>` : '';
+}
+
 function renderRoster() {
   if (roster.size === 0) {
     // Three different situations, not one sentence. "No agents yet" is a
@@ -582,12 +608,15 @@ function renderRoster() {
   const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };
   const rows = [...roster.values()].sort((a, b) =>
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
+  const counts = instanceCounts(latestParty);
 
   agentsEl.innerHTML = rows.map(r =>
     `<div class="agent" data-state="${r.state}">` +
       `<div class="face">${faceHtml(r.portrait)}</div>` +
-      `<div class="meta"><div class="name" title="${r.agent}">${r.agent}</div>` +
+      `<div class="meta"><div class="name" title="${r.agent}">${r.agent}` +
+        countBadgeHtml(r.agent, counts) + `</div>` +
       `<div class="state">${r.state}</div>` +
+      agentModelHtml(r.agent) +
       careerHtml(r.agent) +
       `</div>` +
     `</div>`
@@ -1214,11 +1243,13 @@ function handleControl(msg) {
     renderProcesses(msg.running);
     if (msg.modes) modeTable = msg.modes;
     renderMode(msg.mode);
+    latestParty = msg.party || [];
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
-    // Before renderRoster, so the first paint already carries the careers
-    // rather than flashing the roster without them.
+    // Before renderRoster, so the first paint already carries the careers and
+    // the models rather than flashing the roster without them.
+    if (msg.sessionModel) sessionModel = msg.sessionModel;
     renderAgentStats(msg.agentStats);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -1238,7 +1269,16 @@ function handleControl(msg) {
     // `mode`, so calling renderMode(undefined) here hid the badge a second after
     // `hello` had correctly set it -- the host was right the whole time.
     renderProcesses(msg.running);
+    latestParty = msg.party || [];
     renderParty(msg.party);
+    // The ×N badge is derived from `party`, which just changed; the roster map
+    // itself may not have, so nothing else here would repaint it.
+    renderRoster();
+    return;
+  }
+  if (msg.type === 'sessionModel') {
+    sessionModel = { session: msg.session, agents: msg.agents || {}, errors: msg.errors };
+    renderRoster();
     return;
   }
   if (msg.type === 'attention') {
