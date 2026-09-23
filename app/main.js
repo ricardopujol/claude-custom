@@ -14,6 +14,7 @@ const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
@@ -161,7 +162,7 @@ function createWindow(spawnedHost) {
     width: 1200,
     height: 800,
     backgroundColor: '#11131a',
-    title: 'claude-custom — spike/terminal-fidelity',
+    title: projectLabel(PROJECT_CWD),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -183,12 +184,52 @@ function createWindow(spawnedHost) {
   // Attention raised from main, not from the page. The renderer's own
   // Notification is subject to page permission and can neither flash the
   // taskbar nor focus the window when clicked; this can do all three.
+  // FF4: a cue that survives until the window is LOOKED AT. The taskbar flash
+  // below stops at the OS's discretion and is invisible in alt-tab, which
+  // shows a title and a thumbnail and nothing else. A border is part of the
+  // thumbnail, so it is legible exactly where you decide which window to
+  // return to.
+  //
+  // DECLARED ABOVE ITS CALLER. Miguel, PR #33, A7: it used to sit 23 lines
+  // below the handler that calls it, safe only because that handler runs
+  // asynchronously -- one synchronous call away from a TDZ ReferenceError, and
+  // a reader had to prove the asynchrony to themselves to know it was fine.
+  //
+  // The state is kept here, not only in the page. A5: `webContents.send`
+  // before the renderer has registered its listener is dropped on the floor,
+  // and a reload while the cue is up would clear it permanently -- a cue that
+  // silently stops meaning anything is worse than no cue, because the next
+  // real one says nothing either.
+  let cueOn = false;
+
+  // FOCUS IS TRACKED, NOT ASKED FOR. Naomi, PR #33, measured in a real window:
+  // `win.isFocused()` returns TRUE while the window is minimized, so the cue
+  // and the taskbar flash were both skipped and nothing logged -- a dropped
+  // cue is indistinguishable from no task having finished. 2 of 13 trials,
+  // and it still failed 5 seconds after minimizing, so it is not a race that
+  // settles.
+  //
+  // The EVENTS fired reliably in every one of her runs; it is the
+  // point-in-time query that lies. So the events are the source of truth.
+  let focused = win.isFocused();
+  win.on('focus', () => { focused = true; });
+  win.on('blur', () => { focused = false; });
+  win.on('minimize', () => { focused = false; });
+  win.on('restore', () => { focused = win.isFocused(); });
+  const setCue = (on) => {
+    cueOn = !!on;
+    if (!win.isDestroyed()) win.webContents.send('attention-cue', cueOn);
+  };
+  win.webContents.on('did-finish-load', () => {
+    if (cueOn && !win.isDestroyed()) win.webContents.send('attention-cue', true);
+  });
+
   ipcMain.on('attention', (event, surfaces) => {
     if (event.sender !== win.webContents || !surfaces) return;
     // Logged even when nothing is shown. "Suppressed because you are looking at
     // it" and "never arrived" are the same silence otherwise, and telling those
     // two apart is what took two wrong diagnoses to learn.
-    if (!surfaces.toast) console.log('[main] attention: suppressed (window focused)');
+    if (!surfaces.toast) console.log(`[main] attention: suppressed (focused=${focused})`);
     if (surfaces.toast && Notification.isSupported()) {
       const n = new Notification({
         title: String(surfaces.toast.title || 'claude-custom'),
@@ -204,7 +245,11 @@ function createWindow(spawnedHost) {
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
-    if (surfaces.flashTaskbar && !win.isFocused()) win.flashFrame(true);
+    if (surfaces.flashTaskbar && !focused) win.flashFrame(true);
+    // Raised for ANY unfocused attention, not only urgent ones: "a task
+    // finished while you were elsewhere" is precisely the case this is for,
+    // and it costs nothing when you are already looking at the window.
+    if (!focused) setCue(true);
     if (surfaces.toast) {
       console.log(`[main] attention: ${surfaces.toast.title}` +
         ` (silent=${surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);
@@ -212,7 +257,19 @@ function createWindow(spawnedHost) {
     if (surfaces.toast) console.log(`[main] attention body: ${surfaces.toast.body}`);
   });
 
-  win.on('focus', () => win.flashFrame(false));
+  // FF3: the page sets its own <title>, and a page title WINS over the one
+  // given to BrowserWindow. Without this the window silently reverts to
+  // whatever renderer.html says the moment it loads, which is how it kept
+  // announcing a spike branch long after that branch was gone.
+  win.on('page-title-updated', (e) => {
+    e.preventDefault();
+    win.setTitle(projectLabel(PROJECT_CWD));
+  });
+
+  win.on('focus', () => {
+    win.flashFrame(false);
+    setCue(false);            // looked at: the cue has done its job
+  });
 
   // The secret store lives HERE, in main. Not in the host: the host owns the
   // pty, so keeping secrets out of it means no wiring mistake can put one into

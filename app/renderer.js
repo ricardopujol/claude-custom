@@ -932,7 +932,20 @@ function renderUsage(usage) {
   // built -- so "fresh" (input + output) is shown alongside it. A single
   // headline number here would read as runaway spend when almost all of it is
   // cheap cache traffic.
-  const fresh = s => s.input + s.output;
+  // FF1: the headline is what was SPENT. `total` also carries cacheWrite and
+  // cacheRead, and cacheRead alone was 98% of it -- the same context counted
+  // again every turn, which made the number track turns rather than work. Both
+  // helpers live in app/usage-display.js, where they can be tested.
+  const spend = s => window.spendOf(s);
+  const written = s => window.cacheWriteOf(s);
+  const cached = s => window.cacheReadOf(s);
+  // The full four-way breakdown lives HERE, which is what lets the visible row
+  // stay short. Naomi measured FF1's first version adding 285px to a header
+  // that already overflowed by 60 at the app's own default 1200x800 window --
+  // clipped, not ellipsized, so the tail simply vanished along with both
+  // keyboard hints. Cache READ is the figure Ricardo explicitly does not want
+  // ("the inflated number should disappear"), so it is the one that moves to
+  // the tooltip; cache WRITE stays visible because it is genuinely billed.
   const detail = s =>
     `in ${s.input.toLocaleString()} - out ${s.output.toLocaleString()} - ` +
     `cache write ${s.cacheWrite.toLocaleString()} - cache read ${s.cacheRead.toLocaleString()}`;
@@ -946,13 +959,13 @@ function renderUsage(usage) {
   usageEl.innerHTML =
     `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
       `<span class="lbl">session</span>` +
-      `<span class="val">${num(session.total)}</span>` +
-      `<span class="sub">${sub(`(${compact(fresh(session))} fresh)`)}</span>` +
+      `<span class="val">${num(spend(session))}</span>` +
+      `<span class="sub">${sub(`+${compact(written(session))} cache`)}</span>` +
     `</span>` +
     `<span class="grp" title="${title(`Every session on this folder - ${detail(project)}`)}">` +
       `<span class="lbl">project</span>` +
-      `<span class="val">${num(project.total)}</span>` +
-      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'}`)}</span>` +
+      `<span class="val">${num(spend(project))}</span>` +
+      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'} · +${compact(written(project))} cache`)}</span>` +
     `</span>` +
     // Said out loud, not only in a tooltip. A status nobody can see is the
     // defect this whole change exists to fix.
@@ -1013,9 +1026,24 @@ function milestoneHtml(m) {
   const share = m.spend && m.spend.cacheShare
     ? ` · ${Math.round(m.spend.cacheShare * 100)}% cache`
     : '';
+  // NAMES ITS OWN SUBJECT. Dexter, PR #33, Finding 2: this badge is computed
+  // from `usage.project.total` -- ALL token traffic, cache reads included --
+  // while the headline beside it, in this same element, now shows spend only.
+  // On real figures those are 1.76B and 35.3M: one line appearing to
+  // contradict itself by 50x. Two numbers measuring different things is fine;
+  // two numbers measuring different things while looking like one number is
+  // the displayed-value-that-does-not-describe-its-subject defect this
+  // codebase is built around avoiding.
+  //
+  // Saying what it counts is the honest fix available tonight. Re-keying the
+  // ladder to spend is the REAL fix and is a product decision -- its top rung
+  // is 10 billion, which only makes sense against the inflated figure, so
+  // recalibrating would move this project down two full rungs. That belongs to
+  // Ricardo, not to a review round, and is recorded in the build log.
   const title = (reached ? `${reached.name} reached. ` : '')
     + (next ? `${compact(next.at)} for ${next.name}.` : 'Top of the ladder.')
-    + share;
+    + share
+    + ' · counts ALL tokens including cache reads, unlike the spend figure beside it.';
 
   return `<span class="grp milestone" title="${escapeHtml(title)}">` +
            `<span class="icon">${escapeHtml(reached ? reached.icon : '·')}</span>` +
@@ -1097,29 +1125,79 @@ function renderProcesses(running) {
 // portrait scales with the panel, so "wider" actually buys bigger faces rather
 // than just more whitespace -- which matters because at 34px an expression is a
 // few pixels of mouth and unreadable.
-const ROSTER_MIN = 120;
-const ROSTER_MAX = 420;
+// --- roster width -----------------------------------------------------------
+// The POLICY lives in app/roster-width.js, where it can be tested: the three
+// tuned numbers (min, floor, share) and the clamp were inline here, which is
+// what FF1 and FF3 were moved out for and what FF5 failed to do. Miguel, A1.
 const rosterEl = document.getElementById('roster');
 
-function applyRosterWidth(px) {
-  const w = Math.max(ROSTER_MIN, Math.min(ROSTER_MAX, Math.round(px)));
+// `persist` defaults to FALSE, so a width is only stored when the user
+// actually chose one. Miguel's R5 was that persisting the CLAMPED result let
+// the first shrink overwrite the choice forever; my fix for it defaulted this
+// to true and closed only the resize path.
+//
+// Naomi then measured the load path in a real window -- the one that runs on
+// EVERY launch:
+//
+//   stored 762 (chosen at 1400px), window opens at 800px
+//     -> applied 432, stored 432    the choice is destroyed
+//   window grows back to 1400px
+//     -> still 432                  it never comes back
+//
+// And it needs no second monitor: the app's own default window is 1200x800,
+// cap 660, so any stored width above 660 died on the next ordinary launch.
+//
+// Defaulting to false is what makes that class of mistake harmless. Forgetting
+// the flag now loses persistence, which is invisible and recoverable;
+// remembering it wrongly destroyed the only copy of the user's choice. One
+// call site opts in, and it is the one where a human dragged something.
+function applyRosterWidth(px, { persist = false } = {}) {
+  const w = window.rosterWidth(px, window.innerWidth);
   const root = document.documentElement.style;
   root.setProperty('--roster-w', w + 'px');
-  // Faces grow with the panel, capped so they stay a portrait and not a poster.
-  // Tuned so the default 180px panel gives a ~41px face with room for the name,
-  // and widening actually buys a bigger portrait. The first formula produced
-  // 73px faces at the default width and truncated every agent name.
-  root.setProperty('--face', Math.round(Math.max(28, Math.min(150, 28 + (w - 120) * 0.22))) + 'px');
-  try { localStorage.setItem('rosterWidth', String(w)); } catch {}
+  root.setProperty('--face', window.faceSize(w) + 'px');
+  if (persist) { try { localStorage.setItem('rosterWidth', String(w)); } catch {} }
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
   return w;
 }
 
+// RE-CLAMP WHEN THE WINDOW CHANGES SIZE. Miguel, A1: there was no resize
+// listener in this file at all, so a width stored on a large monitor stayed
+// applied on a small one and the panel ended up wider than the window,
+// covering the terminal the harness exists to show. The flat 420 cap was at
+// least bounded; making the cap proportional without this made it unbounded
+// on a shrinking window.
+//
+// Reading the stored value rather than the applied one, so that widening the
+// window restores the width the user actually chose instead of leaving it
+// pinned at whatever the smallest screen allowed.
+// Re-clamp on resize, WITHOUT persisting -- see applyRosterWidth. Coalesced
+// to one frame: a window drag fires `resize` continuously, and each one wrote
+// storage and scheduled a pty resize, which is what let R5's ratchet run
+// frame by frame rather than once (Miguel, A18).
+//
+// The stored value is read with a strict typeof rather than `Number(...)`:
+// `Number(null)` is 0 and `Number.isFinite(0)` is true, so a coercing read of
+// an absent key survives only on the `> 0` check -- the trap that heads this
+// project's own list, and one this branch fixed elsewhere (A17).
+let resizePending = false;
+window.addEventListener('resize', () => {
+  if (resizePending) return;
+  resizePending = true;
+  requestAnimationFrame(() => {
+    resizePending = false;
+    let stored = null;
+    try { stored = localStorage.getItem('rosterWidth'); } catch {}
+    const want = typeof stored === 'string' && stored.trim() !== '' ? Number(stored) : NaN;
+    applyRosterWidth(Number.isFinite(want) && want > 0 ? want : rosterEl.offsetWidth);
+  });
+});
+
 (function initRosterResize() {
   let stored = 180;
   try { stored = Number(localStorage.getItem('rosterWidth')) || 180; } catch {}
-  applyRosterWidth(stored);
+  applyRosterWidth(stored);          // a load is not a choice: never persists
 
   const grip = document.getElementById('roster-grip');
   if (!grip) return;
@@ -1133,7 +1211,7 @@ function applyRosterWidth(px) {
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
     // Measured from the right edge, because the panel is right-anchored.
-    applyRosterWidth(window.innerWidth - e.clientX);
+    applyRosterWidth(window.innerWidth - e.clientX, { persist: true });   // the one real choice
   });
   window.addEventListener('mouseup', () => {
     if (!dragging) return;
@@ -1530,3 +1608,13 @@ const ro = new ResizeObserver(() => {
 ro.observe(document.getElementById('termwrap'));
 
 connect();
+
+// FF4: the finished-task cue. Main decides WHEN (it is the only side that
+// knows about focus); the page decides what it looks like. A class on <body>
+// rather than a widget, so it is impossible to scroll past and it shows up in
+// the alt-tab thumbnail, which is where the decision to come back is made.
+if (window.harness && window.harness.onAttentionCue) {
+  window.harness.onAttentionCue((on) => {
+    document.body.classList.toggle('attention-cue', on);
+  });
+}

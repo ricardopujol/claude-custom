@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { samePath } = require('../host/project-path');
+const { samePath, projectLabel } = require('../host/project-path');
 
 // Written with the Write tool, never a shell heredoc. A quoted heredoc ate one
 // backslash level three separate times on this project, and here it is
@@ -134,4 +134,66 @@ test('deleting a separator must not merge two DIFFERENT projects', () => {
   // //server/shareproj both collapse to 'servershareproj'.
   assert.strictEqual(samePath('//server/share/proj', '//server/shareproj'), false,
     'and not on UNC either');
+});
+
+// --- what to call the window -------------------------------------------------
+//
+// FF3, from the first real use on another project. The window was titled
+// `claude-custom — spike/terminal-fidelity`, hardcoded at app/main.js:164 and
+// still naming a spike branch. With multi-project (#31) two windows can be open
+// at once, so the title is the only thing that tells them apart -- in the
+// taskbar, in alt-tab, and in a thumbnail.
+//
+// A pure helper because the interesting cases are all path edge cases, and
+// none of them are reachable from a test if this logic lives in main.js.
+
+test('the label is the folder name, which is what tells two windows apart', () => {
+  assert.strictEqual(projectLabel('C:/Users/ricar/VibeCode/suno-pipeline'), 'suno-pipeline');
+  assert.strictEqual(projectLabel('C:\\Users\\ricar\\VibeCode\\claude-custom'), 'claude-custom');
+});
+
+test('a trailing separator does not produce an empty label', () => {
+  assert.strictEqual(projectLabel('C:/Users/ricar/VibeCode/suno-pipeline/'), 'suno-pipeline');
+  assert.strictEqual(projectLabel('C:\\Users\\ricar\\VibeCode\\suno-pipeline\\'), 'suno-pipeline');
+});
+
+test('a drive root has no folder name, so it names itself', () => {
+  // `path.basename('C:\')` is '' -- an empty title is a window with no
+  // identity at all, which is worse than the long form.
+  //
+  // Miguel, PR #33, A11: this asserted `.length > 0`, which passes if the
+  // function returns 'x'. The rule the header states is that the window must
+  // still IDENTIFY the folder, so assert the value, not its spelling.
+  assert.strictEqual(projectLabel('C:\\'), 'C:\\');
+  assert.strictEqual(projectLabel('C:/'), 'C:/');
+  assert.strictEqual(projectLabel('/'), '/');
+});
+
+test('two different projects get two different labels -- the whole point of FF3', () => {
+  // The actual requirement, which nothing asserted. Under multi-project the
+  // title is the only thing telling two open windows apart, so labels that
+  // collide are the failure this feature exists to prevent.
+  const a = projectLabel('C:/Users/ricar/VibeCode/suno-pipeline');
+  const b = projectLabel('C:/Users/ricar/VibeCode/claude-custom');
+  assert.notStrictEqual(a, b);
+  assert.strictEqual(a, 'suno-pipeline');
+  assert.strictEqual(b, 'claude-custom');
+});
+
+test('the label does not depend on which platform runs the test', () => {
+  // A10: with the ambient `path`, a POSIX runner returns the whole string for
+  // a Windows path, so these tests passed only on Windows and the function
+  // silently behaved differently there.
+  assert.strictEqual(projectLabel('C:/a/b/deep-project'), 'deep-project');
+  assert.strictEqual(projectLabel('/home/ricar/work/deep-project'), 'deep-project');
+});
+
+test('an absent path falls back to the product name rather than to blank', () => {
+  for (const bad of [null, undefined, '', '   ', 42, {}]) {
+    assert.strictEqual(projectLabel(bad), 'claude-custom', JSON.stringify(bad));
+  }
+});
+
+test('a UNC share keeps a usable name', () => {
+  assert.strictEqual(projectLabel('\\\\server\\share\\project'), 'project');
 });

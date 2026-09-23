@@ -3,7 +3,7 @@
   "packageManager": "npm",
   "testRunner": "command",
   "commandRunner": {
-    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/atomic-write.test.js test/store.test.js test/secret-vault.test.js test/openrouter.test.js test/project-path.test.js test/handshake.test.js test/host-identity.test.js test/port-for-project.test.js test/launch-target.test.js test/project-picker.test.js test/projects-display.test.js"
+    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/atomic-write.test.js test/store.test.js test/secret-vault.test.js test/openrouter.test.js test/project-path.test.js test/handshake.test.js test/host-identity.test.js test/port-for-project.test.js test/launch-target.test.js test/project-picker.test.js test/projects-display.test.js test/usage-display.test.js test/roster-width.test.js test/mood-machine.test.js test/bridge-contract.test.js test/agent-tool-name.test.js"
   },
   "mutate": [
     "host/quota.js",
@@ -18,7 +18,10 @@
     "host/port-for-project.js",
     "host/launch-target.js",
     "host/project-picker.js",
-    "app/projects-display.js"
+    "app/projects-display.js",
+    "app/usage-display.js",
+    "app/roster-width.js",
+    "host/mood-machine.js"
   ],
   "reporters": [
     "clear-text",
