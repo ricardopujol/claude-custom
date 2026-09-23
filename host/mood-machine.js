@@ -196,6 +196,25 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       if (!agent) return;
       const a = ensure(agent);
       a.lastActivity = now();
+
+      // ONE INSTANCE FINISHING IS NOT THE AGENT FINISHING.
+      //
+      // The card is DERIVED from whether any invocation of this name remains,
+      // rather than set by whichever event spoke last. Flashing here while a
+      // sibling is still working would celebrate a completion that has not
+      // happened, and the flash then hands over to the sleep path -- which is
+      // exactly the route Finding 3 took to put a running agent to sleep.
+      //
+      // Deriving it in ONE place is the structural half of the fix. The
+      // name/invocation split produced four bugs in a single review (F3, F4,
+      // F5, F7) plus Vera's ×N badge on PR #34, every one of them a site that
+      // read the stack and drew its own conclusion. There is now one
+      // conclusion.
+      if (running(agent)) {
+        setState(agent, a, a.errors > 0 ? STRESSED : WORKING);
+        return;
+      }
+
       a.flashUntil = now() + flashMs;
       setState(agent, a, a.errors > 0 ? STRESSED : HAPPY);
       return;

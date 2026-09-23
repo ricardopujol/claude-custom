@@ -389,7 +389,14 @@ test('F3: a second instance still running is NOT slept when the first one finish
 
   h.advance(4_000);
   h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'code-reviewer' } });
-  assert.strictEqual(h.m.stateOf('code-reviewer'), 'happy', 'the finished instance flashes');
+  // It does NOT flash: the card belongs to the NAME, and the name has not
+  // finished. Flashing here would celebrate a completion that has not happened
+  // and then hand over to the sleep path, which is the exact route this bug
+  // took. The original version of this test asserted 'happy' here, written
+  // before the completion rule existed; deriving the card from remaining
+  // invocations makes the stronger statement.
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'working',
+    'a sibling finishing must not flash-and-sleep a name that is still running');
   assert.deepStrictEqual(h.m.stack(), ['code-reviewer'], 'one instance is still running');
 
   h.advance(9_000);   // past flashMs
@@ -548,4 +555,89 @@ test('the SHIPPED invocation cap is pinned, not just the injected one', () => {
   m.tick();
   assert.strictEqual(m.stateOf('x'), 'sleeping',
     'the shipped cap must reap an invocation that has run for an hour');
+});
+
+// --- per-invocation state: closing the class, not patching it ---------------
+//
+// Ricardo's call, 2026-09-23, on whether to keep patching symptoms or fix the
+// structure: "your call, do what you think is best."
+//
+// Fixing the structure. One review produced FOUR bugs from this single split --
+// a sibling finishing put a running instance to sleep (F3), a second instance
+// wiped the first's error count (F4), a parent was reaped while its child
+// worked (F5), and the chain-refresh fix for F5 disabled the reaper entirely
+// (F7). Vera independently found a fifth on PR #34: the ×N badge asserting
+// "running now" from the same stack. Each patch is a guard someone can forget;
+// the structure is what stops a sixth.
+//
+// The rule: RUN-SCOPED facts live on the invocation (when it started, what it
+// has broken, what it keeps retrying). NAME-SCOPED facts stay on the card
+// (which face is showing). A card's state is DERIVED from its invocations
+// rather than trampled by whichever one spoke last.
+
+test('a failure is not cleared by a sibling finishing cleanly', () => {
+  // I first wrote this asserting `working`, on the theory that per-INVOCATION
+  // error counts were the right structure. They are not, and the failing test
+  // is what showed it: errors are name-scoped on purpose, because SubagentStop
+  // does not say WHICH instance stopped -- `lastIndexOf` is a guess, as Dexter
+  // noted. Attributing a failure to a specific run we cannot identify would
+  // let a real failure vanish whenever the guess went the other way.
+  //
+  // So the conservative rule holds: a name that has recorded a failure keeps
+  // showing it until every instance of it has finished. Never hide a failure
+  // to make the state tidier.
+  const h = harness({ flashMs: 8_000 });
+  const start = () => h.m.handle({
+    event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'miguel' } } });
+
+  start();
+  h.advance(1_000);
+  h.post('Bash', { x: 1 }, { exit_code: 1 });     // one run fails
+  h.advance(1_000);
+  start();                                         // a second instance starts
+  h.advance(1_000);
+  h.post('Bash', { x: 2 }, { exit_code: 0 });      // and succeeds
+
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'miguel' } });
+  assert.strictEqual(h.m.stateOf('miguel'), 'stressed',
+    'the recorded failure survives a sibling finishing cleanly');
+  assert.deepStrictEqual(h.m.stack(), ['miguel'], 'and one instance is still running');
+
+  // It must not flash-and-sleep either: the agent has not finished.
+  h.advance(20_000);
+  assert.notStrictEqual(h.m.stateOf('miguel'), 'sleeping',
+    'a still-running agent must not sleep because a sibling finished');
+});
+
+test('each instance carries its own lifetime', () => {
+  // The property `startedAt` needs in order to mean anything: two runs of one
+  // name started an hour apart are two ages, not one.
+  const h = harness({ maxInvocationMs: 900_000, stallMs: 600_000 });
+  const start = () => h.m.handle({
+    event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'dup' } } });
+
+  start();
+  for (let i = 0; i < 8; i++) { h.advance(100_000); h.post('Bash', { i }, { exit_code: 0 }); }
+  start();                                         // a fresh second instance
+  h.advance(200_000);                              // instance 1 crosses its cap
+  h.m.tick();
+
+  assert.deepStrictEqual(h.m.stack(), ['dup'], 'the old instance is reaped, the young one is not');
+  assert.strictEqual(h.m.stateOf('dup'), 'working',
+    'and the card stays working, because an instance is still running');
+});
+
+test('the card is derived from its invocations, not from whoever spoke last', () => {
+  // The general statement. With three running and one finishing, the card must
+  // reflect the two that remain.
+  const h = harness({ flashMs: 8_000 });
+  const start = () => h.m.handle({
+    event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'many' } } });
+  start(); h.advance(100); start(); h.advance(100); start();
+  assert.strictEqual(h.m.stack().filter(n => n === 'many').length, 3);
+
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'many' } });
+  h.advance(20_000);                               // past the flash
+  assert.strictEqual(h.m.stateOf('many'), 'working');
+  assert.strictEqual(h.m.stack().filter(n => n === 'many').length, 2);
 });
