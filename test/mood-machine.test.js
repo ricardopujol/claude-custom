@@ -357,3 +357,96 @@ test('the idle clock applies only to an agent that is awake and NOT running', ()
   assert.strictEqual(h.m.stateOf('a'), 'sleeping',
     'it sleeps on the FLASH timer, not on either silence clock');
 });
+
+// --- `agents` is keyed by NAME, `stack` by INVOCATION ------------------------
+//
+// Dexter, PR #33 review, Findings 3-5. His framing, which is the useful part:
+// these are not three bugs, they are three symptoms of ONE disagreement. The
+// mood record is per agent NAME; the running stack is per INVOCATION; and the
+// two diverge the moment the same name is launched twice in parallel, which is
+// routine. Fixing any one of them alone leaves the others live and looking
+// unrelated.
+
+test('F3: a second instance still running is NOT slept when the first one finishes', () => {
+  // THE WORST FINDING OF THE REVIEW: Ricardo's original symptom -- "it appears
+  // as sleeping sometimes even though its running" -- survived the fix written
+  // for it. The flash branch in tick() `continue`s BEFORE the stack check is
+  // reached, so `stack.includes(agent)` never got a vote on any entry carrying
+  // a flashUntil. I added the guard at one site and never asked which paths
+  // reach it.
+  //
+  // Measured on the broken code:
+  //   two instances  -> stack: ["code-reviewer","code-reviewer"]
+  //   one stops      -> happy | stack: ["code-reviewer"]
+  //   after flash    -> sleeping   <- instance 2 is demonstrably running
+  const h = harness({ flashMs: 8_000, stallMs: 1_800_000, idleMs: 90_000 });
+  const start = () => h.m.handle({
+    event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'code-reviewer' } } });
+
+  start();
+  h.advance(1_000); start();
+  assert.deepStrictEqual(h.m.stack(), ['code-reviewer', 'code-reviewer']);
+
+  h.advance(4_000);
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'code-reviewer' } });
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'happy', 'the finished instance flashes');
+  assert.deepStrictEqual(h.m.stack(), ['code-reviewer'], 'one instance is still running');
+
+  h.advance(9_000);   // past flashMs
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'working',
+    'a name still on the stack is still running and must not be slept by a sibling finishing');
+});
+
+test('F3 inverse: the LAST instance finishing does still sleep after its flash', () => {
+  // Dexter supplied this one, and it is the half I would have skipped. Without
+  // it the fix above can be over-applied into "a flashing agent never sleeps",
+  // which breaks the ordinary single-instance case that worked all along.
+  const h = harness({ flashMs: 8_000, stallMs: 1_800_000, idleMs: 90_000 });
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'solo' } } });
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'solo' } });
+  assert.deepStrictEqual(h.m.stack(), []);
+  h.advance(9_000);
+  assert.strictEqual(h.m.stateOf('solo'), 'sleeping');
+});
+
+test('F4: a second instance does not wipe the first instance\u2019s error count', () => {
+  // `PreToolUse` reset `errors = 0` for "a fresh run starts clean" -- but
+  // `ensure()` returns the record for the NAME, so launching a parallel
+  // instance cleared the failure the first one had already recorded, and its
+  // SubagentStop then reported a happy face for a run that failed.
+  const h = harness({ flashMs: 8_000 });
+  const start = () => h.m.handle({
+    event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'miguel' } } });
+
+  start();
+  h.advance(1_000);
+  h.post('Bash', { command: 'x' }, { exit_code: 1 });
+  assert.strictEqual(h.m.stateOf('miguel'), 'stressed', 'precondition: the failure registered');
+
+  h.advance(1_000); start();            // a parallel second instance
+  h.advance(1_000);
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'miguel' } });
+  assert.strictEqual(h.m.stateOf('miguel'), 'stressed',
+    'a run that failed must not report a happy face because a sibling started');
+});
+
+test('F5: a parent agent is not reaped while its child is doing the work', () => {
+  // Only `current()` -- the innermost agent -- had its clock advanced, so a
+  // delegating parent sat silent while its child worked and was reaped as
+  // stalled. A live tool call anywhere means the whole delegation chain is
+  // alive, so activity advances every agent on the stack.
+  const h = harness({ stallMs: 600_000, idleMs: 90_000 });
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'paris' } } });
+  h.advance(1_000);
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'worker' } } });
+  assert.deepStrictEqual(h.m.stack(), ['paris', 'worker']);
+
+  // The child works steadily for well past the parent's stall window.
+  for (let i = 0; i < 10; i++) {
+    h.advance(100_000);
+    h.post('Bash', { command: 'step' + i }, { exit_code: 0 });
+  }
+  assert.strictEqual(h.m.stateOf('worker'), 'working');
+  assert.strictEqual(h.m.stateOf('paris'), 'working',
+    'the parent delegated; it is not stalled, it is waiting on its child');
+});

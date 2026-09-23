@@ -97,9 +97,16 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       const agent = p.tool_input && p.tool_input.subagent_type;
       if (!agent) return;                     // nothing identifiable to light up
       const a = ensure(agent);
-      a.errors = 0;                           // a fresh run starts clean
-      a.repeats = 0;
-      a.lastSignature = null;
+      // "A fresh run starts clean" -- but only if it IS a fresh run. Dexter,
+      // Finding 4: `ensure` returns the record for the NAME, so launching a
+      // parallel second instance wiped the error the first one had already
+      // recorded, and that instance's SubagentStop then showed a happy face
+      // for a run that failed. Same name/invocation disagreement as F3.
+      if (!stack.includes(agent)) {
+        a.errors = 0;
+        a.repeats = 0;
+        a.lastSignature = null;
+      }
       a.flashUntil = 0;
       a.lastActivity = now();
       stack.push(agent);
@@ -111,6 +118,22 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       const agent = current();
       if (!agent) return;                     // no running agent to attribute to
       const a = ensure(agent);
+
+      // THE WHOLE CHAIN IS ALIVE, not just its innermost link. Dexter, PR #33,
+      // Finding 5: only `current()` had its clock advanced, so a delegating
+      // parent sat silent while its child did the work and was reaped as
+      // stalled. A parent that delegated is not stalled -- it is waiting, which
+      // is the correct thing for it to be doing and is the normal shape of
+      // every multi-agent run in this project.
+      //
+      // The MOOD is still attributed to `current()` alone, deliberately: a
+      // Bash failure belongs to the agent that ran it, which is the property
+      // `stack` was built for in the first place. Only the liveness clock is
+      // shared.
+      for (const name of stack) {
+        const entry = agents.get(name);
+        if (entry) entry.lastActivity = now();
+      }
       a.lastActivity = now();
 
       if (isFailure(p.tool_response)) {
@@ -162,10 +185,22 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       if (a.state === SLEEPING) continue;
 
       // A finished agent holds its happy/stressed flash, then sleeps.
+      //
+      // UNLESS IT IS STILL RUNNING. Dexter, PR #33, Finding 3 -- and this is
+      // the finding that mattered most, because Ricardo's original symptom
+      // ("it appears as sleeping sometimes even though its running") SURVIVED
+      // the fix written for it. This branch `continue`d before the stack check
+      // below was ever reached, so `stack.includes` got no vote on any entry
+      // carrying a flashUntil. Two parallel instances of one agent, the first
+      // finishes, the flash expires, and the second -- demonstrably on the
+      // stack -- was put to sleep and stayed there.
+      //
+      // The root is that `agents` is keyed by NAME and `stack` by INVOCATION,
+      // so the two disagree the moment a name is launched twice.
       if (a.flashUntil) {
         if (t > a.flashUntil) {
           a.flashUntil = 0;
-          setState(agent, a, SLEEPING);
+          setState(agent, a, stack.includes(agent) ? WORKING : SLEEPING);
         }
         continue;
       }
