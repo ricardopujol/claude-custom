@@ -270,12 +270,90 @@ test('an agent that has finished still sleeps', () => {
   assert.strictEqual(h.m.stateOf('paris'), 'sleeping');
 });
 
-test('a plain agent with no running invocation still sleeps on silence', () => {
-  // The reaper still reaps. Only a STARTED agent is protected, so an agent
-  // that was merely mentioned does not stay awake forever.
-  const h = harness({ idleMs: 90_000 });
+test('a STALL-REAPED agent stays reaped when an unrelated tool call arrives', () => {
+  // Miguel, PR #33 review, R1. Severity: blocker, and a REGRESSION my own FF2
+  // fix introduced -- it made the failure permanent rather than temporary.
+  //
+  // tick() set the state to SLEEPING and left the agent on `stack`. It was
+  // therefore still `current()`, so the very next PostToolUse from anywhere
+  // attributed to it and revived it to WORKING -- and, being still on the
+  // stack, onto the THIRTY MINUTE clock, with every tool call resetting
+  // lastActivity. In an active session a crashed subagent would never sleep
+  // again. Before FF2 it woke too, but fell asleep ninety seconds later.
+  //
+  // Measured before the fix:
+  //   after stall reap     -> sleeping | stack: ["ghost"]
+  //   after any tool call  -> working  | stack: ["ghost"]
+  //   200s later           -> working
+  const h = harness({ idleMs: 90_000, stallMs: 600_000 });
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'ghost' } } });
+  h.advance(700_000);
+  assert.strictEqual(h.m.stateOf('ghost'), 'sleeping', 'precondition: the stall reap fired');
+  assert.deepStrictEqual(h.m.stack(), [],
+    'a reaped agent must leave the stack, or it is still `current()`');
+
   h.post('Bash', { command: 'ls' }, { exit_code: 0 });
-  h.advance(200_000);
-  const anyAwake = h.m.roster().some(r => r.state !== 'sleeping');
-  assert.strictEqual(anyAwake, false, 'nothing that is not running may stay awake');
+  assert.strictEqual(h.m.stateOf('ghost'), 'sleeping',
+    'an unrelated tool call must not resurrect an agent presumed dead');
+});
+
+test('every instance of a reaped agent leaves the stack, not just the last', () => {
+  // The mood record is keyed by agent NAME, so declaring that name stalled
+  // declares all of its live invocations stalled. Splicing one occurrence
+  // would leave the record sleeping while the name is still `current()` --
+  // the same revival R1 describes, one instance further along.
+  const h = harness({ idleMs: 90_000, stallMs: 600_000 });
+  for (let i = 0; i < 3; i++) {
+    h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'ghost' } } });
+  }
+  assert.strictEqual(h.m.stack().filter(a => a === 'ghost').length, 3);
+  h.advance(700_000);
+  assert.deepStrictEqual(h.m.stack(), []);
+  h.post('Bash', { command: 'ls' }, { exit_code: 0 });
+  assert.strictEqual(h.m.stateOf('ghost'), 'sleeping');
+});
+
+test('the SHIPPED stall timeout is pinned, not just the injected one', () => {
+  // Miguel, R3. Every other FF2 test injects `stallMs`, and host.js:325 calls
+  // createMoodMachine() with no options at all -- so `STALL_MS` could be
+  // changed from 30 minutes to 30 SECONDS and all 847 tests still passed,
+  // shipping FF2's original bug back under a different number.
+  //
+  // My own test comment named this trap ("StrykerJS generates no mutants for
+  // numeric literals") and then did not close it. Naming a blind spot is not
+  // covering it.
+  let now = 1_000_000;
+  const m = createMoodMachine({ now: () => now });          // defaults only
+  m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'paris' } } });
+
+  now += 10 * 60_000;  m.tick();
+  assert.strictEqual(m.stateOf('paris'), 'working',
+    'ten minutes of thinking must not read as asleep on the shipped default');
+
+  now += 25 * 60_000;  m.tick();
+  assert.strictEqual(m.stateOf('paris'), 'sleeping',
+    'but the shipped default must still reap a stalled agent');
+});
+
+test('the idle clock applies only to an agent that is awake and NOT running', () => {
+  // Measured while fixing R1, and worth stating because it is not obvious:
+  // no path currently produces that combination. PreToolUse pushes onto the
+  // stack; PostToolUse attributes to `current()`, which reads from the stack;
+  // SubagentStop pops and hands over to the flash, which sleeps on its own
+  // timer. So every awake, non-flashing agent is ON the stack, and the idle
+  // branch is unreachable today.
+  //
+  // It is kept rather than deleted because it is the correct rule for an
+  // agent in that state, and removing it would silently make the next path
+  // that creates one immortal. This test says plainly which of the two clocks
+  // is live, so nobody reads the pair as a working split.
+  const h = harness({ idleMs: 90_000, stallMs: 600_000, flashMs: 8_000 });
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'a' } } });
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'a' } });
+  assert.deepStrictEqual(h.m.stack(), [], 'a finished agent is off the stack');
+  assert.strictEqual(h.m.stateOf('a'), 'happy');
+
+  h.advance(20_000);   // less than idleMs and far less than stallMs
+  assert.strictEqual(h.m.stateOf('a'), 'sleeping',
+    'it sleeps on the FLASH timer, not on either silence clock');
 });

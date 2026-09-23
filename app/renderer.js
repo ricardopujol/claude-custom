@@ -1117,33 +1117,38 @@ function renderProcesses(running) {
 // portrait scales with the panel, so "wider" actually buys bigger faces rather
 // than just more whitespace -- which matters because at 34px an expression is a
 // few pixels of mouth and unreadable.
-const ROSTER_MIN = 120;
-// FF5. This was a flat 420px, and that cap is what made the Map tab unusable:
-// its rows are project-relative paths, already ellipsized from the LEFT so the
-// filename survives (`direction: rtl` on .fog-row .name), and at 420px a
-// moderately nested path still loses everything but the last word or two.
-// Ricardo hit the cap and could not read the files.
-//
-// A fixed pixel cap also means the panel gets relatively NARROWER the bigger
-// the monitor, which is backwards. Proportional to the window, with the old
-// value as a floor so nothing gets worse on a small screen.
-const rosterMax = () => Math.max(420, Math.round(window.innerWidth * 0.55));
+// --- roster width -----------------------------------------------------------
+// The POLICY lives in app/roster-width.js, where it can be tested: the three
+// tuned numbers (min, floor, share) and the clamp were inline here, which is
+// what FF1 and FF3 were moved out for and what FF5 failed to do. Miguel, A1.
 const rosterEl = document.getElementById('roster');
 
 function applyRosterWidth(px) {
-  const w = Math.max(ROSTER_MIN, Math.min(rosterMax(), Math.round(px)));
+  const w = window.rosterWidth(px, window.innerWidth);
   const root = document.documentElement.style;
   root.setProperty('--roster-w', w + 'px');
-  // Faces grow with the panel, capped so they stay a portrait and not a poster.
-  // Tuned so the default 180px panel gives a ~41px face with room for the name,
-  // and widening actually buys a bigger portrait. The first formula produced
-  // 73px faces at the default width and truncated every agent name.
-  root.setProperty('--face', Math.round(Math.max(28, Math.min(150, 28 + (w - 120) * 0.22))) + 'px');
+  root.setProperty('--face', window.faceSize(w) + 'px');
   try { localStorage.setItem('rosterWidth', String(w)); } catch {}
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
   return w;
 }
+
+// RE-CLAMP WHEN THE WINDOW CHANGES SIZE. Miguel, A1: there was no resize
+// listener in this file at all, so a width stored on a large monitor stayed
+// applied on a small one and the panel ended up wider than the window,
+// covering the terminal the harness exists to show. The flat 420 cap was at
+// least bounded; making the cap proportional without this made it unbounded
+// on a shrinking window.
+//
+// Reading the stored value rather than the applied one, so that widening the
+// window restores the width the user actually chose instead of leaving it
+// pinned at whatever the smallest screen allowed.
+window.addEventListener('resize', () => {
+  let want = null;
+  try { want = Number(localStorage.getItem('rosterWidth')); } catch {}
+  applyRosterWidth(Number.isFinite(want) && want > 0 ? want : rosterEl.offsetWidth);
+});
 
 (function initRosterResize() {
   let stored = 180;

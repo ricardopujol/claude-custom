@@ -182,12 +182,43 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       // The timeout is still here and still earns its place: it reaps an agent
       // whose SubagentStop never arrived, so a crashed subagent does not stay
       // "working" forever. It just no longer outranks direct evidence of life.
+      //
+      // NOTE, measured: the `idleMs` side of this is currently UNREACHABLE.
+      // PreToolUse pushes onto the stack, PostToolUse attributes to
+      // `current()` which reads the stack, and SubagentStop pops and hands to
+      // the flash timer -- so every awake, non-flashing agent is on the stack.
+      // It is kept because it is the right rule for an agent that is awake and
+      // not running, and deleting it would make the next path that creates one
+      // immortal. test/mood-machine.test.js says which clock is live.
       // A RUNNING agent is judged on the stall clock, not the idle clock.
       // `stack` holds every agent that started and has not emitted
       // SubagentStop, which is the definition of running, and the machine has
       // maintained it all along for delegation attribution.
-      const limit = stack.includes(agent) ? stallMs : idleMs;
-      if (t - a.lastActivity > limit) setState(agent, a, SLEEPING);
+      const running = stack.includes(agent);
+      const limit = running ? stallMs : idleMs;
+      if (t - a.lastActivity <= limit) continue;
+
+      // A STALLED RUNNING AGENT IS PRESUMED DEAD, SO IT LEAVES THE STACK.
+      //
+      // Miguel, PR #33 review, R1. The first version of this fix set the state
+      // and left the agent on the stack -- so it was still `current()`, the
+      // next PostToolUse from anywhere attributed to it and revived it to
+      // WORKING, and because it was STILL on the stack it came back onto the
+      // thirty-minute clock with every tool call resetting lastActivity. A
+      // crashed subagent then never slept again for the rest of the session.
+      // Before FF2 it woke too, but fell asleep ninety seconds later: the fix
+      // for a temporary wrong state had made it permanent.
+      //
+      // EVERY occurrence, not the last one. The mood record is keyed by agent
+      // NAME, so declaring that name stalled declares all of its live
+      // invocations stalled; leaving one behind leaves the name `current()`
+      // and reproduces the revival one instance further along.
+      if (running) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (stack[i] === agent) stack.splice(i, 1);
+        }
+      }
+      setState(agent, a, SLEEPING);
     }
   }
 

@@ -43,6 +43,9 @@ const ALLOWED_GLOBALS = new Set([
   'createMask', 'surfacesFor',
   // the display modules
   'usageDisplay', 'spendOf', 'cacheReadOf',
+  // app/roster-width.js -- the panel width POLICY, moved out of renderer.js
+  // (Miguel, PR #33, A1) so its three tuned numbers can be asserted.
+  'rosterWidth', 'rosterMax', 'faceSize',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
   'projectsDisplay',
@@ -130,7 +133,8 @@ test('the display modules the renderer needs are actually defined after loading'
   // thought to list. `projectsDisplay` was added after the Projects panel drew
   // nothing in a real window -- a one-name list cannot catch the next module,
   // which is the same shape of gap as the career display's original bug.
-  for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay']) {
+  for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
+                    'rosterWidth', 'faceSize']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });
