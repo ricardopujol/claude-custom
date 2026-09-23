@@ -28,6 +28,8 @@ const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { readSessionModel, defaultProjectsDir } = require('./session-model');
+const { projectDirName } = require('./project-dir');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
@@ -652,6 +654,30 @@ function refreshAgentStats() {
   return agentStatsPending;
 }
 
+// The model each agent ACTUALLY used, read from its own transcript -- never
+// the Agent tool_input's REQUESTED model, which is a different fact. See
+// host/session-model.js. Recomputed on SessionStart (the session id just
+// became known) and on SubagentStop (a subagent's transcript just landed).
+let lastSessionModel = { session: { model: null, at: null }, agents: {}, errors: 0 };
+let sessionModelPending = null;
+
+function refreshSessionModel() {
+  if (!sessionId) return Promise.resolve(lastSessionModel);   // nothing to key the read on yet
+  if (sessionModelPending) return sessionModelPending;
+  sessionModelPending = readSessionModel({
+    projectsDir: defaultProjectsDir(),
+    projectDir: projectDirName(CWD),
+    sessionId,
+  })
+    .then((m) => { lastSessionModel = m; return m; })
+    .catch((err) => {
+      console.error('[host] session model read failed:', err && err.message);
+      return lastSessionModel;
+    })
+    .finally(() => { sessionModelPending = null; });
+  return sessionModelPending;
+}
+
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
@@ -688,12 +714,24 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      // Broadcast only on a CHANGE -- same reason quota.js does: a payload
+      // that reads identically to what clients already have is not news.
+      const beforeModel = JSON.stringify(lastSessionModel);
+      refreshSessionModel()
+        .then((m) => { if (JSON.stringify(m) !== beforeModel) broadcastControl({ type: 'sessionModel', ...m }); })
+        .catch(() => { /* the next SubagentStop will carry it */ });
     }
     if (ev.event === 'SubagentStop') {
       // The transcript is on disk by the time this fires, so its tokens and
       // timestamps are already there to read.
       refreshAgentStats()
         .then((stats) => broadcastControl({ type: 'agentStats', stats }))
+        .catch(() => { /* the next finish will carry it */ });
+      // Same reasoning: the subagent's own transcript, including its true
+      // model, is on disk by the time this fires.
+      const beforeModel = JSON.stringify(lastSessionModel);
+      refreshSessionModel()
+        .then((m) => { if (JSON.stringify(m) !== beforeModel) broadcastControl({ type: 'sessionModel', ...m }); })
         .catch(() => { /* the next finish will carry it */ });
       // agent_type when the payload carries it; the top of the stack only as a
       // fallback. Cooldowns applied to the wrong agent are worse than none.
@@ -1127,6 +1165,9 @@ wss.on('connection', (ws) => {
     cooldowns: cooldowns.list(),
     health: healthState,
     agentStats: lastAgentStats,
+    // May still be `{model:null,...}` on a fast attach, before SessionStart's
+    // read lands -- the renderer draws "—" for that, never a guessed model.
+    sessionModel: lastSessionModel,
     // May still be null on a fast attach; the renderer draws "reading…" for
     // that, never three bars at zero.
     quota: lastQuota,
