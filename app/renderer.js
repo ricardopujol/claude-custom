@@ -1731,6 +1731,115 @@ window.addEventListener('focus', () => {
   document.title = 'claude-custom';
 });
 
+// --- top bar: model / effort -------------------------------------------------
+// FF12. Model and effort are CONTROLS, not labels: clicking either opens a
+// small picker, and choosing an option types the matching slash command into
+// the pty via the `{type:'input'}` control message -- exactly as a human
+// would (see host/control.js's `input` branch). The panel then shows a
+// PENDING state until the truth arrives and NEVER flips optimistically --
+// app/top-bar-display.js's pendingResolver only reaches "applied" from a
+// matching truth message, never from the timeout alone.
+const tbModelEl = document.getElementById('tb-model');
+const tbEffortEl = document.getElementById('tb-effort');
+const tbModelMenu = document.getElementById('tb-model-menu');
+const tbEffortMenu = document.getElementById('tb-effort-menu');
+const tbModelCustom = document.getElementById('tb-model-custom');
+
+// `currentModel` stays null until PR-A's `sessionModel` broadcast lands (or
+// `hello.sessionModel`, once that PR merges) -- absence, not a guess, and the
+// top bar renders it as "—" the same way every other reading… state in this
+// file does. `currentTheme` is cached only so a model change can recompute
+// the accent alone, without waiting for the next `hello`.
+let currentModel = null;
+let currentEffort = null;
+let currentTheme = null;
+let pendingModel = null;    // { kind:'model', value, startedAt } | null
+let pendingEffort = null;
+
+function renderTopBar() {
+  const state = topBarState({
+    model: currentModel, effort: currentEffort,
+    pendingModel, pendingEffort, theme: currentTheme,
+  });
+  topBarDisplay({ modelEl: tbModelEl, effortEl: tbEffortEl }, state);
+  applyModelAccent(state.model.family, currentTheme);
+}
+
+// The colour cue lives on a CSS var so the header chips and the active
+// side-tab underline pick it up for free; xterm's cursor is separate JS state
+// (`term.options.theme`) and needs telling directly. Untinted (no family
+// known), the cursor is left exactly as the theme itself configured it --
+// "untinted" means unmodified, not "coincidentally equal to the accent".
+function applyModelAccent(family, theme) {
+  const accent = cueColour(family, theme);
+  document.documentElement.style.setProperty('--model-accent', accent);
+  const themeCursor = theme && theme.terminal && theme.terminal.cursor;
+  const cursor = family ? accent : (themeCursor || accent);
+  term.options.theme = { ...term.options.theme, cursor };
+}
+
+// A switch that never hears back (refused, unrecognised, or a
+// model-switch-blocked confirmation nobody answers) must still resolve to
+// something rather than pulse forever. Scheduled once per request; a stale
+// timer firing after the pending it was for already cleared is a no-op.
+function schedulePendingTimeout(kind) {
+  setTimeout(() => {
+    const pending = kind === 'model' ? pendingModel : pendingEffort;
+    if (!pending) return;
+    const res = pendingResolver(pending,
+      { type: 'timeout', kind, now: Date.now(), timeoutMs: PENDING_TIMEOUT_MS });
+    if (res.pending === null) {
+      if (kind === 'model') pendingModel = null; else pendingEffort = null;
+      renderTopBar();
+    }
+  }, PENDING_TIMEOUT_MS + 250);
+}
+
+function requestModel(choice) {
+  const value = String(choice || '').trim();
+  if (!value) return;
+  pendingModel = { kind: 'model', value, startedAt: Date.now() };
+  renderTopBar();
+  schedulePendingTimeout('model');
+  try { ws.send(JSON.stringify({ type: 'input', data: `/model ${value}\r` })); } catch (err) {}
+}
+
+function requestEffort(choice) {
+  const value = String(choice || '').trim();
+  if (!value) return;
+  pendingEffort = { kind: 'effort', value, startedAt: Date.now() };
+  renderTopBar();
+  schedulePendingTimeout('effort');
+  try { ws.send(JSON.stringify({ type: 'input', data: `/effort ${value}\r` })); } catch (err) {}
+}
+
+function toggleMenu(menu, otherMenu) {
+  if (!menu) return;
+  const opening = menu.hidden;
+  if (otherMenu) otherMenu.hidden = true;
+  menu.hidden = !opening;
+}
+
+if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu, tbEffortMenu));
+if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMenu, tbModelMenu));
+if (tbModelMenu) {
+  tbModelMenu.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-model]');
+    if (row) { requestModel(row.dataset.model); tbModelMenu.hidden = true; return; }
+    if (e.target.id === 'tb-model-custom-go' && tbModelCustom) {
+      requestModel(tbModelCustom.value);
+      tbModelCustom.value = '';
+      tbModelMenu.hidden = true;
+    }
+  });
+}
+if (tbEffortMenu) {
+  tbEffortMenu.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-effort]');
+    if (row) { requestEffort(row.dataset.effort); tbEffortMenu.hidden = true; }
+  });
+}
+
 // --- permission mode --------------------------------------------------------
 const modeEl = document.getElementById('mode');
 let modeTable = {};
@@ -2059,6 +2168,20 @@ function handleControl(msg) {
     if (msg.modes) modeTable = msg.modes;
     renderMode(msg.mode);
     latestParty = msg.party || [];
+    // FF12. `effort` is null until the first hook payload has carried it --
+    // rendered as "—", never a guessed default. `sessionModel` is PR-A's
+    // contract; until that PR merges, `msg.sessionModel` is absent and the
+    // model chip correctly stays "—" too. A reattach clears any pending
+    // switch a PREVIOUS window started -- this handshake IS the current
+    // truth, and holding onto a stale "switching…" across it would be the
+    // "flips back to pending on its own" bug the timeout logic exists to avoid.
+    currentTheme = msg.theme || currentTheme;
+    currentEffort = typeof msg.effort === 'string' ? msg.effort : null;
+    currentModel = (msg.sessionModel && typeof msg.sessionModel.model === 'string')
+      ? msg.sessionModel.model : null;
+    pendingModel = null;
+    pendingEffort = null;
+    renderTopBar();
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
@@ -2180,6 +2303,39 @@ function handleControl(msg) {
   }
   if (msg.type === 'mode') {
     renderMode(msg.mode);
+    return;
+  }
+  if (msg.type === 'effort') {
+    // The truth source a pending /effort switch resolves against. No alias
+    // table for effort levels -- the six choices ARE their own /effort
+    // argument, so a case-insensitive exact match is the whole rule.
+    currentEffort = typeof msg.level === 'string' ? msg.level : null;
+    if (pendingEffort) {
+      const matches = !!currentEffort &&
+        currentEffort.toLowerCase() === String(pendingEffort.value).toLowerCase();
+      const res = pendingResolver(pendingEffort, { type: 'truth', kind: 'effort', matches });
+      pendingEffort = res.pending;
+    }
+    renderTopBar();
+    return;
+  }
+  if (msg.type === 'sessionModel') {
+    // PR-A's contract: `{ type:'sessionModel', session:{ model, at }, ... }`,
+    // `model: null` for unknown. A match is family equivalence (an alias like
+    // "sonnet" resolves to a full id like "claude-sonnet-4-5-...") OR an exact
+    // case-insensitive match, which covers a free-typed full id.
+    const model = msg.session && typeof msg.session.model === 'string' ? msg.session.model : null;
+    currentModel = model;
+    if (pendingModel) {
+      const requested = String(pendingModel.value);
+      const matches = !!model && (
+        (modelFamily(model) !== null && modelFamily(model) === modelFamily(requested))
+        || model.toLowerCase() === requested.toLowerCase()
+      );
+      const res = pendingResolver(pendingModel, { type: 'truth', kind: 'model', matches });
+      pendingModel = res.pending;
+    }
+    renderTopBar();
     return;
   }
   if (msg.type === 'usage') {
