@@ -124,3 +124,36 @@ test('a resize does not destroy the width the user chose', () => {
   assert.strictEqual(rosterWidth(chosen, 3440), chosen,
     'and re-widening must recover the chosen width, not the clamped one');
 });
+
+test('persistence fails CLOSED: only an explicit choice is stored', () => {
+  // Naomi, PR #33, measured in a real window. My R5 fix defaulted `persist` to
+  // true and closed only the resize path, leaving the LOAD path -- which runs
+  // on every launch:
+  //
+  //   stored 762 (chosen at 1400px); window opens at 800px
+  //     -> applied 432, stored 432   the choice is destroyed
+  //   window grows back to 1400px
+  //     -> still 432                 it never comes back
+  //
+  // And it needed no second monitor: the app's default window is 1200x800,
+  // cap 660, so any stored width above 660 died on the next ordinary launch.
+  //
+  // The renderer half is a default flipped to false, so forgetting the flag
+  // now loses persistence (invisible, recoverable) instead of destroying the
+  // only copy of a choice. This asserts the SOURCE, because the call sites
+  // live in renderer.js where nothing renders.
+  const fs = require('fs');
+  const path = require('path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+
+  assert.ok(src.includes('function applyRosterWidth(px, { persist = false } = {})'),
+    'the default must be false -- a load and a resize are not choices');
+
+  // Exactly one caller may opt in, and it is the drag.
+  const optIns = [...src.matchAll(/applyRosterWidth\([^)]*persist:\s*true/g)];
+  assert.strictEqual(optIns.length, 1,
+    `only the drag path may persist; found ${optIns.length} call sites opting in`);
+  const dragRegion = src.slice(src.indexOf('mousemove'), src.indexOf('mouseup') + 200);
+  assert.match(dragRegion, /persist:\s*true/,
+    'and the one that opts in must be the drag handler');
+});

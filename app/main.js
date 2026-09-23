@@ -201,6 +201,21 @@ function createWindow(spawnedHost) {
   // silently stops meaning anything is worse than no cue, because the next
   // real one says nothing either.
   let cueOn = false;
+
+  // FOCUS IS TRACKED, NOT ASKED FOR. Naomi, PR #33, measured in a real window:
+  // `win.isFocused()` returns TRUE while the window is minimized, so the cue
+  // and the taskbar flash were both skipped and nothing logged -- a dropped
+  // cue is indistinguishable from no task having finished. 2 of 13 trials,
+  // and it still failed 5 seconds after minimizing, so it is not a race that
+  // settles.
+  //
+  // The EVENTS fired reliably in every one of her runs; it is the
+  // point-in-time query that lies. So the events are the source of truth.
+  let focused = win.isFocused();
+  win.on('focus', () => { focused = true; });
+  win.on('blur', () => { focused = false; });
+  win.on('minimize', () => { focused = false; });
+  win.on('restore', () => { focused = win.isFocused(); });
   const setCue = (on) => {
     cueOn = !!on;
     if (!win.isDestroyed()) win.webContents.send('attention-cue', cueOn);
@@ -214,7 +229,7 @@ function createWindow(spawnedHost) {
     // Logged even when nothing is shown. "Suppressed because you are looking at
     // it" and "never arrived" are the same silence otherwise, and telling those
     // two apart is what took two wrong diagnoses to learn.
-    if (!surfaces.toast) console.log('[main] attention: suppressed (window focused)');
+    if (!surfaces.toast) console.log(`[main] attention: suppressed (focused=${focused})`);
     if (surfaces.toast && Notification.isSupported()) {
       const n = new Notification({
         title: String(surfaces.toast.title || 'claude-custom'),
@@ -230,11 +245,11 @@ function createWindow(spawnedHost) {
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
-    if (surfaces.flashTaskbar && !win.isFocused()) win.flashFrame(true);
+    if (surfaces.flashTaskbar && !focused) win.flashFrame(true);
     // Raised for ANY unfocused attention, not only urgent ones: "a task
     // finished while you were elsewhere" is precisely the case this is for,
     // and it costs nothing when you are already looking at the window.
-    if (!win.isFocused()) setCue(true);
+    if (!focused) setCue(true);
     if (surfaces.toast) {
       console.log(`[main] attention: ${surfaces.toast.title}` +
         ` (silent=${surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);

@@ -939,6 +939,13 @@ function renderUsage(usage) {
   const spend = s => window.spendOf(s);
   const written = s => window.cacheWriteOf(s);
   const cached = s => window.cacheReadOf(s);
+  // The full four-way breakdown lives HERE, which is what lets the visible row
+  // stay short. Naomi measured FF1's first version adding 285px to a header
+  // that already overflowed by 60 at the app's own default 1200x800 window --
+  // clipped, not ellipsized, so the tail simply vanished along with both
+  // keyboard hints. Cache READ is the figure Ricardo explicitly does not want
+  // ("the inflated number should disappear"), so it is the one that moves to
+  // the tooltip; cache WRITE stays visible because it is genuinely billed.
   const detail = s =>
     `in ${s.input.toLocaleString()} - out ${s.output.toLocaleString()} - ` +
     `cache write ${s.cacheWrite.toLocaleString()} - cache read ${s.cacheRead.toLocaleString()}`;
@@ -953,12 +960,12 @@ function renderUsage(usage) {
     `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
       `<span class="lbl">session</span>` +
       `<span class="val">${num(spend(session))}</span>` +
-      `<span class="sub">${sub(`+${compact(written(session))} cache write · +${compact(cached(session))} cache read`)}</span>` +
+      `<span class="sub">${sub(`+${compact(written(session))} cache`)}</span>` +
     `</span>` +
     `<span class="grp" title="${title(`Every session on this folder - ${detail(project)}`)}">` +
       `<span class="lbl">project</span>` +
       `<span class="val">${num(spend(project))}</span>` +
-      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'} · +${compact(written(project))} cache write · +${compact(cached(project))} cache read`)}</span>` +
+      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'} · +${compact(written(project))} cache`)}</span>` +
     `</span>` +
     // Said out loud, not only in a tooltip. A status nobody can see is the
     // defect this whole change exists to fix.
@@ -1124,16 +1131,27 @@ function renderProcesses(running) {
 // what FF1 and FF3 were moved out for and what FF5 failed to do. Miguel, A1.
 const rosterEl = document.getElementById('roster');
 
-// `persist` is the whole of Miguel's R5. The DESIRED width and the APPLIED
-// width are two different facts and cannot share one home: persisting the
-// clamped result meant the first shrink overwrote the user's choice forever.
-// Measured: drag to 1892 on a 3440px monitor, undock to 1366 -> stored 751,
-// re-dock -> still 751. The comment promised the opposite.
+// `persist` defaults to FALSE, so a width is only stored when the user
+// actually chose one. Miguel's R5 was that persisting the CLAMPED result let
+// the first shrink overwrite the choice forever; my fix for it defaulted this
+// to true and closed only the resize path.
 //
-// So the drag path persists and the resize path does not, which makes
-// `rosterWidth(stored, innerWidth)` on every resize give exactly the
-// behaviour the comment describes, for free.
-function applyRosterWidth(px, { persist = true } = {}) {
+// Naomi then measured the load path in a real window -- the one that runs on
+// EVERY launch:
+//
+//   stored 762 (chosen at 1400px), window opens at 800px
+//     -> applied 432, stored 432    the choice is destroyed
+//   window grows back to 1400px
+//     -> still 432                  it never comes back
+//
+// And it needs no second monitor: the app's own default window is 1200x800,
+// cap 660, so any stored width above 660 died on the next ordinary launch.
+//
+// Defaulting to false is what makes that class of mistake harmless. Forgetting
+// the flag now loses persistence, which is invisible and recoverable;
+// remembering it wrongly destroyed the only copy of the user's choice. One
+// call site opts in, and it is the one where a human dragged something.
+function applyRosterWidth(px, { persist = false } = {}) {
   const w = window.rosterWidth(px, window.innerWidth);
   const root = document.documentElement.style;
   root.setProperty('--roster-w', w + 'px');
@@ -1172,15 +1190,14 @@ window.addEventListener('resize', () => {
     let stored = null;
     try { stored = localStorage.getItem('rosterWidth'); } catch {}
     const want = typeof stored === 'string' && stored.trim() !== '' ? Number(stored) : NaN;
-    applyRosterWidth(Number.isFinite(want) && want > 0 ? want : rosterEl.offsetWidth,
-                     { persist: false });
+    applyRosterWidth(Number.isFinite(want) && want > 0 ? want : rosterEl.offsetWidth);
   });
 });
 
 (function initRosterResize() {
   let stored = 180;
   try { stored = Number(localStorage.getItem('rosterWidth')) || 180; } catch {}
-  applyRosterWidth(stored);
+  applyRosterWidth(stored);          // a load is not a choice: never persists
 
   const grip = document.getElementById('roster-grip');
   if (!grip) return;
@@ -1194,7 +1211,7 @@ window.addEventListener('resize', () => {
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
     // Measured from the right edge, because the panel is right-anchored.
-    applyRosterWidth(window.innerWidth - e.clientX);
+    applyRosterWidth(window.innerWidth - e.clientX, { persist: true });   // the one real choice
   });
   window.addEventListener('mouseup', () => {
     if (!dragging) return;
