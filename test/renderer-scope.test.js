@@ -329,9 +329,45 @@ test('EVERY element id renderer.js reaches for exists in renderer.html, at any d
     'a computed getElementById argument cannot be checked statically -- ' +
     'if one is added deliberately, exempt it here by name and say why');
 
-  const missing = [...new Set(ids)].filter(id => !html.includes(`id="${id}"`));
+  // TWO legitimate sources of an element, not one. The static markup is the
+  // obvious one; the other is markup renderer.js builds itself and assigns
+  // through innerHTML -- the vault lock panel's key field is created that way,
+  // because which field exists depends on which of the four lock states is
+  // showing. Those elements are real and reachable, and a guard that knows only
+  // about renderer.html calls them missing.
+  //
+  // Caught by this guard on its first run against the lock panel. Worth keeping
+  // as a comment rather than a silent widening, because the first instinct on a
+  // red guard is to trust the guard.
+  //
+  // THIS IS NOT the substring trap Miguel warned about, and the difference is
+  // worth stating precisely, because the two look alike. His trap was that
+  // searching renderer.js for `vault-shared` is satisfied by the
+  // `getElementById('vault-shared')` call itself -- the check is true exactly
+  // when the bug is present. Here the pattern matched is the ATTRIBUTE form,
+  // `id="x"`, which a getElementById call cannot produce. Only markup makes it,
+  // and markup is the thing being looked for.
+  const emitted = (id) => new RegExp(`id=["']${id}["']`).test(js);
+  const missing = [...new Set(ids)]
+    .filter(id => !html.includes(`id="${id}"`) && !emitted(id));
   assert.deepStrictEqual(missing, [],
-    `renderer.js reaches for these ids and renderer.html has none of them: ${missing.join(', ')}`);
+    `renderer.js reaches for these ids and neither renderer.html nor renderer.js ` +
+    `creates them: ${missing.join(', ')}`);
+});
+
+test('the emitted-id escape hatch cannot be opened by a getElementById call alone', () => {
+  // The guard above accepts an id that renderer.js emits as markup. That escape
+  // hatch is exactly where Miguel's substring trap would get back in, so this
+  // pins the distinction instead of trusting the comment.
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const emitted = (id, src) => new RegExp(`id=["']${id}["']`).test(src);
+
+  assert.strictEqual(emitted('made-up-id', `document.getElementById('made-up-id')`), false,
+    'a getElementById call must NOT count as creating the element');
+  assert.strictEqual(emitted('made-up-id', `'<input id="made-up-id" />'`), true,
+    'markup that creates it must count');
+  assert.strictEqual(emitted('vault-key', js), true,
+    'precondition: the lock panel still builds its key field in renderer.js');
 });
 
 test('the deep-id guard actually catches a renamed id', () => {
