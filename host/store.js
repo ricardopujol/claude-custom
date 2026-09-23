@@ -77,6 +77,7 @@
  */
 
 const fs = require('fs');
+const { renameWithRetry } = require('./atomic-write');
 const path = require('path');
 
 // Names are used as filenames. They may come from feature code today and from
@@ -87,7 +88,11 @@ function assertSafeName(name) {
   }
 }
 
-function createStore({ dir }) {
+// `= {}` so that `createStore()` reaches the guard below and says what is
+// wrong, rather than dying on the destructure with "Cannot destructure
+// property 'dir' of 'undefined'" -- a message that names the syntax instead of
+// the mistake. Found by writing Mortimer's ST-C kill.
+function createStore({ dir } = {}) {
   if (!dir) throw new Error('createStore: dir is required');
 
   const pathOf = (name) => {
@@ -116,8 +121,28 @@ function createStore({ dir }) {
     // synchronous write. Rename is atomic, so a reader sees old or new, never
     // half.
     const temp = `${file}.tmp${process.pid}`;
-    fs.writeFileSync(temp, JSON.stringify(value, null, 2));
-    fs.renameSync(temp, file);
+    // The write is inside the try with the rename: wrapping only the rename
+    // left a failed writeFileSync abandoning a partial temp (Miguel).
+    try {
+      fs.writeFileSync(temp, JSON.stringify(value, null, 2));
+      // Retried, because on Windows the rename is the fragile half: EPERM /
+      // EACCES / EBUSY whenever anything holds a handle for a moment, and the
+      // antivirus scan of the file we just wrote routinely does. MEASURED here
+      // 2026-09-18. It still THROWS if the rename never succeeds -- a write
+      // reported as done while the file was never replaced would be worse than
+      // the failure it hides. See host/atomic-write.js.
+      renameWithRetry(temp, file);
+    } catch (err) {
+      // Dexter, Finding 9. Bounded -- one temp per (pid, name), overwritten by
+      // the next write from this process -- but a stale .tmp beside a settings
+      // file reads as corruption to whoever finds it.
+      //
+      // BEST EFFORT: if the rename failed because something holds a handle,
+      // the unlink can fail for the same reason. A failed cleanup never
+      // replaces the error the caller needs to see.
+      try { fs.unlinkSync(temp); } catch { /* nothing more we can do about it */ }
+      throw err;
+    }
     return value;
   }
 
