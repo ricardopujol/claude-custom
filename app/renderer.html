@@ -16,6 +16,27 @@
       --bad: #cc5f5f;
     }
     * { box-sizing: border-box; }
+    /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
+       than a badge in a panel: it cannot be scrolled past, it does not compete
+       with anything for space, and it is part of the alt-tab thumbnail, which
+       is where you actually decide which window to return to. Cleared by main
+       the moment the window is focused. */
+    body.attention-cue::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      border: 3px solid #e0674f;
+      pointer-events: none;       /* a cue must never eat a click */
+      z-index: 9999;
+      animation: cue-breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes cue-breathe {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .45; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body.attention-cue::after { animation: none; }
+    }
     html, body {
       margin: 0; height: 100%;
       background: var(--bg); color: var(--text);

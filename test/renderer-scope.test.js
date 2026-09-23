@@ -42,7 +42,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/secret-mask.js, app/attention-surface.js
   'createMask', 'surfacesFor',
   // the display modules
-  'usageDisplay',
+  'usageDisplay', 'spendOf', 'cacheReadOf',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
   'projectsDisplay',

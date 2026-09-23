@@ -14,6 +14,7 @@ const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
@@ -161,7 +162,7 @@ function createWindow(spawnedHost) {
     width: 1200,
     height: 800,
     backgroundColor: '#11131a',
-    title: 'claude-custom — spike/terminal-fidelity',
+    title: projectLabel(PROJECT_CWD),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -205,6 +206,10 @@ function createWindow(spawnedHost) {
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
     if (surfaces.flashTaskbar && !win.isFocused()) win.flashFrame(true);
+    // Raised for ANY unfocused attention, not only urgent ones: "a task
+    // finished while you were elsewhere" is precisely the case this is for,
+    // and it costs nothing when you are already looking at the window.
+    if (!win.isFocused()) setCue(true);
     if (surfaces.toast) {
       console.log(`[main] attention: ${surfaces.toast.title}` +
         ` (silent=${surfaces.toast.silent}, flash=${!!surfaces.flashTaskbar})`);
@@ -212,7 +217,28 @@ function createWindow(spawnedHost) {
     if (surfaces.toast) console.log(`[main] attention body: ${surfaces.toast.body}`);
   });
 
-  win.on('focus', () => win.flashFrame(false));
+  // FF3: the page sets its own <title>, and a page title WINS over the one
+  // given to BrowserWindow. Without this the window silently reverts to
+  // whatever renderer.html says the moment it loads, which is how it kept
+  // announcing a spike branch long after that branch was gone.
+  win.on('page-title-updated', (e) => {
+    e.preventDefault();
+    win.setTitle(projectLabel(PROJECT_CWD));
+  });
+
+  // FF4: a cue that survives until the window is LOOKED AT. The taskbar flash
+  // below stops at the OS's discretion and is invisible in alt-tab, which
+  // shows a title and a thumbnail and nothing else. A border is part of the
+  // thumbnail, so it is legible in exactly the place you are looking when you
+  // are deciding which window to go back to.
+  const setCue = (on) => {
+    if (!win.isDestroyed()) win.webContents.send('attention-cue', on);
+  };
+
+  win.on('focus', () => {
+    win.flashFrame(false);
+    setCue(false);            // looked at: the cue has done its job
+  });
 
   // The secret store lives HERE, in main. Not in the host: the host owns the
   // pty, so keeping secrets out of it means no wiring mistake can put one into

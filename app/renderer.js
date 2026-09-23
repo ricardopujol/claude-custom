@@ -932,7 +932,12 @@ function renderUsage(usage) {
   // built -- so "fresh" (input + output) is shown alongside it. A single
   // headline number here would read as runaway spend when almost all of it is
   // cheap cache traffic.
-  const fresh = s => s.input + s.output;
+  // FF1: the headline is what was SPENT. `total` also carries cacheWrite and
+  // cacheRead, and cacheRead alone was 98% of it -- the same context counted
+  // again every turn, which made the number track turns rather than work. Both
+  // helpers live in app/usage-display.js, where they can be tested.
+  const spend = s => window.spendOf(s);
+  const cached = s => window.cacheReadOf(s);
   const detail = s =>
     `in ${s.input.toLocaleString()} - out ${s.output.toLocaleString()} - ` +
     `cache write ${s.cacheWrite.toLocaleString()} - cache read ${s.cacheRead.toLocaleString()}`;
@@ -946,13 +951,13 @@ function renderUsage(usage) {
   usageEl.innerHTML =
     `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
       `<span class="lbl">session</span>` +
-      `<span class="val">${num(session.total)}</span>` +
-      `<span class="sub">${sub(`(${compact(fresh(session))} fresh)`)}</span>` +
+      `<span class="val">${num(spend(session))}</span>` +
+      `<span class="sub">${sub(`(+${compact(cached(session))} cached)`)}</span>` +
     `</span>` +
     `<span class="grp" title="${title(`Every session on this folder - ${detail(project)}`)}">` +
       `<span class="lbl">project</span>` +
-      `<span class="val">${num(project.total)}</span>` +
-      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'}`)}</span>` +
+      `<span class="val">${num(spend(project))}</span>` +
+      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'}, +${compact(cached(project))} cached`)}</span>` +
     `</span>` +
     // Said out loud, not only in a tooltip. A status nobody can see is the
     // defect this whole change exists to fix.
@@ -1098,11 +1103,20 @@ function renderProcesses(running) {
 // than just more whitespace -- which matters because at 34px an expression is a
 // few pixels of mouth and unreadable.
 const ROSTER_MIN = 120;
-const ROSTER_MAX = 420;
+// FF5. This was a flat 420px, and that cap is what made the Map tab unusable:
+// its rows are project-relative paths, already ellipsized from the LEFT so the
+// filename survives (`direction: rtl` on .fog-row .name), and at 420px a
+// moderately nested path still loses everything but the last word or two.
+// Ricardo hit the cap and could not read the files.
+//
+// A fixed pixel cap also means the panel gets relatively NARROWER the bigger
+// the monitor, which is backwards. Proportional to the window, with the old
+// value as a floor so nothing gets worse on a small screen.
+const rosterMax = () => Math.max(420, Math.round(window.innerWidth * 0.55));
 const rosterEl = document.getElementById('roster');
 
 function applyRosterWidth(px) {
-  const w = Math.max(ROSTER_MIN, Math.min(ROSTER_MAX, Math.round(px)));
+  const w = Math.max(ROSTER_MIN, Math.min(rosterMax(), Math.round(px)));
   const root = document.documentElement.style;
   root.setProperty('--roster-w', w + 'px');
   // Faces grow with the panel, capped so they stay a portrait and not a poster.
@@ -1530,3 +1544,13 @@ const ro = new ResizeObserver(() => {
 ro.observe(document.getElementById('termwrap'));
 
 connect();
+
+// FF4: the finished-task cue. Main decides WHEN (it is the only side that
+// knows about focus); the page decides what it looks like. A class on <body>
+// rather than a widget, so it is impossible to scroll past and it shows up in
+// the alt-tab thumbnail, which is where the decision to come back is made.
+if (window.harness && window.harness.onAttentionCue) {
+  window.harness.onAttentionCue((on) => {
+    document.body.classList.toggle('attention-cue', on);
+  });
+}

@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { samePath } = require('../host/project-path');
+const { samePath, projectLabel } = require('../host/project-path');
 
 // Written with the Write tool, never a shell heredoc. A quoted heredoc ate one
 // backslash level three separate times on this project, and here it is
@@ -134,4 +134,42 @@ test('deleting a separator must not merge two DIFFERENT projects', () => {
   // //server/shareproj both collapse to 'servershareproj'.
   assert.strictEqual(samePath('//server/share/proj', '//server/shareproj'), false,
     'and not on UNC either');
+});
+
+// --- what to call the window -------------------------------------------------
+//
+// FF3, from the first real use on another project. The window was titled
+// `claude-custom — spike/terminal-fidelity`, hardcoded at app/main.js:164 and
+// still naming a spike branch. With multi-project (#31) two windows can be open
+// at once, so the title is the only thing that tells them apart -- in the
+// taskbar, in alt-tab, and in a thumbnail.
+//
+// A pure helper because the interesting cases are all path edge cases, and
+// none of them are reachable from a test if this logic lives in main.js.
+
+test('the label is the folder name, which is what tells two windows apart', () => {
+  assert.strictEqual(projectLabel('C:/Users/ricar/VibeCode/suno-pipeline'), 'suno-pipeline');
+  assert.strictEqual(projectLabel('C:\\Users\\ricar\\VibeCode\\claude-custom'), 'claude-custom');
+});
+
+test('a trailing separator does not produce an empty label', () => {
+  assert.strictEqual(projectLabel('C:/Users/ricar/VibeCode/suno-pipeline/'), 'suno-pipeline');
+  assert.strictEqual(projectLabel('C:\\Users\\ricar\\VibeCode\\suno-pipeline\\'), 'suno-pipeline');
+});
+
+test('a drive root has no folder name, so it names itself', () => {
+  // `path.basename('C:\')` is '' -- an empty title is a window with no
+  // identity at all, which is worse than the long form.
+  assert.ok(projectLabel('C:\\').length > 0);
+  assert.ok(projectLabel('C:/').length > 0);
+});
+
+test('an absent path falls back to the product name rather than to blank', () => {
+  for (const bad of [null, undefined, '', '   ', 42, {}]) {
+    assert.strictEqual(projectLabel(bad), 'claude-custom', JSON.stringify(bad));
+  }
+});
+
+test('a UNC share keeps a usable name', () => {
+  assert.strictEqual(projectLabel('\\\\server\\share\\project'), 'project');
 });

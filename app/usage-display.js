@@ -52,6 +52,44 @@ const AT_LEAST = '≥';         // >=
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/**
+ * WHAT THE HEADLINE NUMBER MEANS. FF1, from the first real use of this harness
+ * on another project.
+ *
+ * `host/usage.js` sums four quantities into one `total`:
+ * `input + output + cacheWrite + cacheRead`. Measured on this repo, that total
+ * was 1,755,922,413 -- of which cacheRead alone was 1,720,653,994, or 98.0%.
+ * Actual input+output was 2,943,270: **0.17% of what was displayed**.
+ *
+ * That is not an arithmetic error, it is a CATEGORY error.
+ * `cache_read_input_tokens` is the same context counted again on every single
+ * turn, and it is billed at roughly a tenth of input. Summing four
+ * non-commensurable quantities yields a figure dominated entirely by the one
+ * that is re-counted -- so the headline tracked how many TURNS had been taken,
+ * not how much work had been done, and read about 600x too large.
+ *
+ * Two functions rather than one "fixed total", because there is no honest
+ * single number here: what you spent and what was re-read from cache are
+ * different things and belong on screen as different things.
+ *
+ * Strict `typeof`, not `Number()`: `Number(null)` is 0 and `Number(undefined)`
+ * is NaN, and this payload crosses a socket where a field can be missing or
+ * stringy. A confident zero and a NaN headline are the two failure modes this
+ * codebase keeps paying for.
+ */
+const count = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+// What was actually spent: tokens that were read or written for the first time.
+function spendOf(s) {
+  return count(s && s.input) + count(s && s.output);
+}
+
+// The same context, re-read every turn. Kept visible because it is a real cost
+// and a real efficiency signal -- just not the headline.
+function cacheReadOf(s) {
+  return count(s && s.cacheRead);
+}
+
 function usageDisplay(usage) {
   if (!usage || !usage.project) {
     return { state: 'reading', placeholder: UNKNOWN, prefix: '', note: 'reading transcripts…' };
@@ -92,9 +130,11 @@ function usageDisplay(usage) {
 // renderer, which has no module system at all. Same shape as
 // app/attention-surface.js.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { usageDisplay, UNKNOWN, AT_LEAST };
+  module.exports = { usageDisplay, spendOf, cacheReadOf, UNKNOWN, AT_LEAST };
 } else {
   root.usageDisplay = usageDisplay;
+  root.spendOf = spendOf;
+  root.cacheReadOf = cacheReadOf;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

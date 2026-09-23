@@ -12,7 +12,7 @@
  *   same tool x3 running    -> stressed
  *   SubagentStop, err == 0  -> happy    (flash) -> sleeping
  *   SubagentStop, err > 0   -> stressed (flash) -> sleeping
- *   idle > idleMs           -> sleeping
+ *   idle > idleMs           -> sleeping  (only if NOT still running -- FF2)
  *
  * Time is injected and transitions are applied by `tick()`, so the host owns
  * scheduling and the machine stays testable without wall-clock waits.
@@ -39,7 +39,22 @@ function isFailure(response) {
   return Number(code) !== 0;
 }
 
-function createMoodMachine({ now = Date.now, idleMs = 90_000, flashMs = 8_000 } = {}) {
+// How long a RUNNING agent may be silent before we conclude it died rather
+// than that it is thinking. FF2.
+//
+// Two thresholds, because there are two different questions. `idleMs` asks
+// "has this agent been quiet long enough to look idle?" -- fine for an agent
+// with no live invocation. A running agent needs the other question: "has it
+// been quiet so long that SubagentStop can only have been lost?" Ninety
+// seconds answers the first and badly misanswers the second; agents routinely
+// think for minutes without emitting a hook.
+//
+// It is still a guess, because hooks are the only liveness signal there is.
+// Set where it is: long enough that no real turn reaches it, short enough that
+// a crashed subagent does not read as working for the rest of the session.
+const STALL_MS = 30 * 60_000;
+
+function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS, flashMs = 8_000 } = {}) {
   const machine = new EventEmitter();
 
   // agent -> { state, errors, lastActivity, flashUntil, lastSignature, repeats }
@@ -155,7 +170,24 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
         continue;
       }
 
-      if (t - a.lastActivity > idleMs) setState(agent, a, SLEEPING);
+      // FF2: SILENCE IS NOT ABSENCE OF LIFE. `lastActivity` only advances on
+      // hook events, so an agent thinking for longer than idleMs -- or inside
+      // one long tool call -- emits nothing and used to be declared asleep
+      // while it was demonstrably running. Observed on Paris in real use.
+      //
+      // `stack` holds every agent that has started and not yet emitted
+      // SubagentStop, which IS the definition of running, and the machine has
+      // maintained it all along for delegation attribution.
+      //
+      // The timeout is still here and still earns its place: it reaps an agent
+      // whose SubagentStop never arrived, so a crashed subagent does not stay
+      // "working" forever. It just no longer outranks direct evidence of life.
+      // A RUNNING agent is judged on the stall clock, not the idle clock.
+      // `stack` holds every agent that started and has not emitted
+      // SubagentStop, which is the definition of running, and the machine has
+      // maintained it all along for delegation attribution.
+      const limit = stack.includes(agent) ? stallMs : idleMs;
+      if (t - a.lastActivity > limit) setState(agent, a, SLEEPING);
     }
   }
 
@@ -170,4 +202,4 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
   return machine;
 }
 
-module.exports = { createMoodMachine, SLEEPING, WORKING, HAPPY, STRESSED };
+module.exports = { createMoodMachine, STALL_MS, SLEEPING, WORKING, HAPPY, STRESSED };

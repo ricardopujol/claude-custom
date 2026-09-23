@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { usageDisplay, UNKNOWN, AT_LEAST } = require('../app/usage-display');
+const { usageDisplay, spendOf, cacheReadOf, UNKNOWN, AT_LEAST } = require('../app/usage-display');
 
 const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sessions: 0 };
 const real = { input: 10, output: 20, cacheWrite: 0, cacheRead: 0, total: 30, sessions: 3 };
@@ -101,4 +101,72 @@ test('missing counters do not render as NaN', () => {
   // them. "NaN transcripts could not be read" is worse than saying nothing.
   const d = usageDisplay({ ok: false, project: real, session: real });
   assert.ok(!/NaN/.test(d.note), d.note);
+});
+
+// --- what the headline number actually means ---------------------------------
+//
+// FF1, from the first real use of the harness on another project. Ricardo:
+// "I'm still pretty sure that the token count is just too crazily high, there
+// must be something wrong there." He was right, and the measurement is worse
+// than the suspicion.
+//
+// `host/usage.js` computes `total = input + output + cacheWrite + cacheRead`,
+// and the renderer drew that as the headline. Measured on this repo:
+//
+//   input            9,924
+//   output       2,933,346
+//   cacheWrite  32,325,149
+//   cacheRead 1,720,653,994   <- 98.0% of the headline
+//   ------------------------
+//   displayed 1,755,922,413
+//   input+output 2,943,270    <- 0.17% of what was displayed
+//
+// Not an arithmetic error. A CATEGORY error: `cache_read_input_tokens` is the
+// same context counted again on every single turn, and it is billed at roughly
+// a tenth of input. Summing four non-commensurable quantities produces a
+// figure dominated entirely by the one that is re-counted, so the number read
+// as ~600x the work actually done.
+//
+// The honest split already existed in renderer.js as `fresh = input + output`,
+// shown in small text in brackets. This promotes it and demotes the rest --
+// and it lives here rather than in renderer.js because which number is the
+// headline is a DRAWING DECISION, and a decision inline in renderer.js is one
+// nothing can test.
+
+test('the headline is what was actually spent, not the cache re-read every turn', () => {
+  const s = { input: 1000, output: 2000, cacheWrite: 50000, cacheRead: 9000000 };
+  assert.strictEqual(spendOf(s), 3000);
+});
+
+test('cache reads are reported separately, not folded into the headline', () => {
+  const s = { input: 1000, output: 2000, cacheWrite: 50000, cacheRead: 9000000 };
+  assert.strictEqual(cacheReadOf(s), 9000000);
+});
+
+test('a missing field is 0, never NaN and never a confident guess', () => {
+  // `Number(null)` is 0 and `Number(undefined)` is NaN -- the absence-as-zero
+  // trap this codebase keeps paying for, and its NaN twin. A headline reading
+  // "NaN" is worse than one reading nothing.
+  assert.strictEqual(spendOf({}), 0);
+  assert.strictEqual(spendOf(null), 0);
+  assert.strictEqual(spendOf({ input: null, output: undefined }), 0);
+  assert.strictEqual(cacheReadOf({}), 0);
+  assert.strictEqual(cacheReadOf(null), 0);
+});
+
+test('a string that looks like a number is not counted', () => {
+  // The payload crosses a socket. A stringy "1000" must not become 1000 by
+  // coercion -- same rule as the strict typeof guards elsewhere in this file.
+  assert.strictEqual(spendOf({ input: '1000', output: 5 }), 5);
+});
+
+test('the real proportions from this project survive the split', () => {
+  // The measured numbers above, asserted as a regression: if these two figures
+  // are ever summed back together, this fails with the actual ratio in the
+  // message rather than with an abstract complaint.
+  const real = { input: 9924, output: 2933346, cacheWrite: 32325149, cacheRead: 1720653994 };
+  assert.strictEqual(spendOf(real), 2943270);
+  const inflated = spendOf(real) + real.cacheWrite + real.cacheRead;
+  assert.ok(spendOf(real) / inflated < 0.01,
+    `the old headline was ${(100 * spendOf(real) / inflated).toFixed(2)}% real work`);
 });

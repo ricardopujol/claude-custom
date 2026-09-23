@@ -68,4 +68,27 @@ function samePath(a, b) {
   return x === y;
 }
 
-module.exports = { samePath, normalizeProjectPath };
+/**
+ * What to call a window showing this project. FF3.
+ *
+ * The window was titled `claude-custom — spike/terminal-fidelity`, hardcoded,
+ * and still naming a spike branch. Once multi-project means two windows can be
+ * open at once, the title is the ONLY thing distinguishing them in the taskbar,
+ * in alt-tab, and in a thumbnail.
+ *
+ * Pure, and here rather than in main.js, because every interesting case is a
+ * path edge case and none of them are reachable from a test inside main.js.
+ * `path.basename` returns '' for a drive root and for a bare separator, and an
+ * empty title is a window with no identity at all — worse than the long form
+ * it replaces.
+ */
+function projectLabel(p) {
+  if (typeof p !== 'string' || !p.trim()) return 'claude-custom';
+  const trimmed = p.trim();
+  const base = path.basename(trimmed.replace(/[\/]+$/, ''));
+  if (base) return base;
+  // A drive root, a bare separator, or anything else basename cannot name.
+  return trimmed;
+}
+
+module.exports = { samePath, normalizeProjectPath, projectLabel };

@@ -14,6 +14,12 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('harness', {
   attention: (surfaces) => ipcRenderer.send('attention', surfaces),
 
+  // FF4. Main raises and clears the finished-task cue, because only main knows
+  // whether the window is focused -- the page cannot tell "you are looking at
+  // me" from "I am merely visible". One boolean, one direction.
+  onAttentionCue: (fn) => ipcRenderer.on('attention-cue',
+    (_e, on) => { try { fn(!!on); } catch { /* a bad listener must not kill the bridge */ } }),
+
   // The real filesystem path behind a dropped File.
   //
   // `File.path` WAS REMOVED IN ELECTRON 32 -- this app is on 33 -- so the old

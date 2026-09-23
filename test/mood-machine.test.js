@@ -86,13 +86,28 @@ test('SubagentStop after an error flashes stressed, then sleeps', () => {
   assert.strictEqual(h.m.stateOf('code-reviewer'), 'sleeping');
 });
 
-test('a working agent falls asleep after the idle timeout', () => {
-  const h = harness({ idleMs: 90000 });
+test('a RUNNING agent is judged on the stall clock, not the idle clock', () => {
+  // FF2 changed this test's premise, deliberately. It used to assert that a
+  // working agent sleeps after idleMs -- which is exactly the behaviour
+  // Ricardo reported as wrong, having watched Paris go to sleep while it was
+  // plainly running. An agent that has started and not stopped is running, and
+  // ninety seconds of silence is an ordinary amount of thinking.
+  //
+  // What survives is the reaping, on the longer clock: a SubagentStop that
+  // never arrives must not leave an agent "working" for the rest of the
+  // session. Both boundaries are asserted here because STALL_MS is a
+  // module-scope constant, and StrykerJS generates no mutants for numeric
+  // literals -- the score cannot see this threshold at all.
+  const h = harness({ idleMs: 90000, stallMs: 600000 });
   h.pre('Task', AGENT);
-  h.advance(89999);
+  h.advance(300000);              // five minutes of silence, still running
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'working',
+    'thinking for minutes is normal and must not read as asleep');
+  h.advance(299999);              // one millisecond short of the stall limit
   assert.strictEqual(h.m.stateOf('code-reviewer'), 'working');
-  h.advance(2);
-  assert.strictEqual(h.m.stateOf('code-reviewer'), 'sleeping');
+  h.advance(2);                   // past it: SubagentStop can only be lost
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'sleeping',
+    'a stalled agent must still be reaped, or a crash reads as work forever');
 });
 
 test('activity resets the idle countdown', () => {
@@ -212,4 +227,55 @@ test('exposes the live delegation stack, innermost last', () => {
 
 test('the stack is empty when nothing is delegating', () => {
   assert.deepStrictEqual(harness().m.stack(), []);
+});
+
+// --- a running agent is not asleep -------------------------------------------
+//
+// FF2, from the first real use of the harness on another project. Ricardo, on
+// Paris: "it appears as working most of the time it's running, it also appears
+// as sleeping sometimes even though its running."
+//
+// `tick()` sent any agent quiet for longer than idleMs (90s) to SLEEPING, and
+// `lastActivity` only advances on hook events. An agent thinking for more than
+// ninety seconds, or inside one long tool call, emits nothing at all -- so the
+// machine declared a working agent asleep on the strength of SILENCE.
+//
+// That is this project's absence-is-not-zero rule wearing a different hat:
+// "no recent event" is not "not running", and the machine already knows the
+// difference. `stack` holds every agent that has started and not yet emitted
+// SubagentStop -- which is the definition of running.
+//
+// The timeout still exists and still matters: it is what reaps an agent whose
+// SubagentStop never arrived, so a crashed subagent does not stay "working"
+// forever. It just no longer outranks direct evidence of life.
+
+test('an agent that is still running does not fall asleep while it thinks', () => {
+  const h = harness({ idleMs: 90_000, stallMs: 30 * 60_000 });
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'paris' } } });
+  assert.strictEqual(h.m.stateOf('paris'), 'working');
+
+  h.advance(10 * 60_000);          // ten minutes of thinking: no hooks at all
+  assert.strictEqual(h.m.stateOf('paris'), 'working',
+    'a started agent with no SubagentStop is running, whatever the hooks say');
+});
+
+test('an agent that has finished still sleeps', () => {
+  // The behaviour that must survive: SubagentStop takes it off the stack, the
+  // happy flash plays, and then it sleeps.
+  const h = harness({ idleMs: 90_000, flashMs: 8_000 });
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'paris' } } });
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'paris' } });
+  assert.strictEqual(h.m.stateOf('paris'), 'happy');
+  h.advance(20_000);
+  assert.strictEqual(h.m.stateOf('paris'), 'sleeping');
+});
+
+test('a plain agent with no running invocation still sleeps on silence', () => {
+  // The reaper still reaps. Only a STARTED agent is protected, so an agent
+  // that was merely mentioned does not stay awake forever.
+  const h = harness({ idleMs: 90_000 });
+  h.post('Bash', { command: 'ls' }, { exit_code: 0 });
+  h.advance(200_000);
+  const anyAwake = h.m.roster().some(r => r.state !== 'sleeping');
+  assert.strictEqual(anyAwake, false, 'nothing that is not running may stay awake');
 });
