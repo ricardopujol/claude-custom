@@ -235,3 +235,78 @@ test('the damaged state reaches the renderer, and draws no password field', () =
   assert.ok(renderer.includes('res.preserved'),
     'the renderer must tell the user where the preserved file went');
 });
+
+// ---------------------------------------------------------------------------
+// The invariant itself, rather than one example of it
+// ---------------------------------------------------------------------------
+
+test('createVault CONSTRUCTS for any bytes on disk, and says healthy or damaged', () => {
+  // Miguel, PR #40 re-read, the residual he called gate item 5 -- and he is right
+  // that this was asserted BY EXAMPLE, for the single input 'this is not json'.
+  //
+  // The invariant moved when G3 moved it: `app/main.js` still does not wrap
+  // `createVault`, so the guarantee that a window always opens now lives inside
+  // `load()`. That makes "constructs for any bytes" a RULE the launch path
+  // depends on, and `load()` has several places it can throw from. Dexter's
+  // `delete j.lock.fp` was one more shape; there will be others.
+  //
+  // The UTF-8 BOM is his suggestion and the sharpest of them: it is the same
+  // character class as the control-character guard in renderer-scope.test.js, on
+  // the other side of the boundary -- source there, DATA here.
+  const BOM = String.fromCharCode(0xfeff);
+  const shapes = [
+    ['empty file', ''],
+    ['whitespace only', '   \n\t '],
+    ['not JSON', 'this is not json'],
+    ['JSON null', 'null'],
+    ['JSON true', 'true'],
+    ['JSON number', '42'],
+    ['JSON string', '"a string"'],
+    ['JSON array', '[]'],
+    ['object with no entries', '{}'],
+    ['entries not an array', '{"entries":"nope"}'],
+    ['entries null', '{"entries":null}'],
+    ['truncated JSON', '{"format":1,"entries":[{"id":"a"'],
+    ['lock present but zero', '{"entries":[],"lock":0}'],
+    ['lock missing salt', '{"entries":[],"lock":{"check":"AAAA"}}'],
+    ['BOM before valid JSON', BOM + '{"format":1,"entries":[]}'],
+    ['BOM before garbage', BOM + 'not json either'],
+    ['binary garbage', Buffer.from([0, 1, 2, 255, 254, 13, 10, 0]).toString('binary')],
+    ['deeply nested', '{"entries":[],"lock":' + '['.repeat(200) + ']'.repeat(200) + '}'],
+  ];
+
+  for (const [name, bytes] of shapes) {
+    const file = tmp();
+    // Written and compared as BUFFERS. My first version wrote with the default
+    // utf8 encoding and read back with 'binary', so the BOM went out as three
+    // bytes and came back as three characters -- the assertion failed on the
+    // encoding round-trip, not on the file being touched. A test that reports a
+    // product defect it did not find is as bad as one that misses a real one.
+    const raw = Buffer.from(bytes, 'binary');
+    fs.writeFileSync(file, raw);
+
+    let v;
+    assert.doesNotThrow(() => { v = open(file); },
+      `createVault must construct for ${name} -- main.js does not wrap it, so a `
+      + 'throw here means no window opens at all');
+
+    const st = v.lockState();
+    // Healthy or damaged, never a third thing, and never a silent empty vault
+    // over bytes we could not read.
+    const healthy = st.damaged === undefined;
+    if (healthy) {
+      // Only a genuinely readable vault may report healthy. The BOM case is the
+      // interesting one: if JSON.parse accepts it, an empty vault is the right
+      // answer; if it does not, damaged is.
+      assert.deepStrictEqual(st, { hasKey: false, locked: false, count: 0 },
+        `${name} reported healthy, so it must be a readable empty vault`);
+    } else {
+      assert.strictEqual(st.locked, true, `${name}: damaged must fail closed`);
+      assert.strictEqual(st.count, null, `${name}: an unknown count is null, never 0`);
+      assert.throws(() => v.add({ label: 'k', secret: 's', shared: true }), /damaged/i,
+        `${name}: writes must be refused`);
+      assert.ok(fs.readFileSync(file).equals(raw),
+        `${name}: THE PROPERTY -- the bytes on disk are untouched`);
+    }
+  }
+});

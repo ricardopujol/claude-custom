@@ -543,7 +543,12 @@ async function renderVaultLock() {
   // Compared on the drawn state rather than the raw object so that a re-render
   // of the SAME state -- which is what typing in the filter causes -- does not
   // cancel a confirmation the user is in the middle of reading.
-  const stamp = `${d.state === 'confirm-melt' ? 'locked' : d.state}`;
+  // FROM THE DISPLAY, not recomputed here. Dexter I1: this line used to collapse
+  // 'confirm-melt' -> 'locked' itself, which meant the renderer had to know the
+  // display's state vocabulary -- and when a fifth state arrived with its own
+  // confirmation, this did not know about it, so arming melt on a damaged vault
+  // disarmed itself in the same tick and the vault had no working action at all.
+  const stamp = d.stamp || d.state;
   if (lastLockState !== null && stamp !== lastLockState && confirmingMelt) {
     confirmingMelt = false;
     lastLockState = stamp;

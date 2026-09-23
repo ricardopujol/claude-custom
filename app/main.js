@@ -280,6 +280,22 @@ function createWindow(spawnedHost) {
     // the vault file itself is per-INSTALL, which is why the scope has to be
     // enforced rather than implied by where the file lives.
     project: PROJECT_CWD,
+    // DELIBERATELY NOT WRAPPED IN try/catch, and that rests on an invariant:
+    // `createVault` CONSTRUCTS FOR ANY BYTES ON DISK, reporting the vault as
+    // healthy or damaged rather than throwing.
+    //
+    // Miguel asked for this line, and the history is why. When `load()` threw on
+    // a malformed lock record, this call took the whole window down with it --
+    // no panel, no damage message, no melt button (Dexter G3). Wrapping it here
+    // would have been worse: a window whose vault panel is silently dead is the
+    // class this repo has already paid for four times (careerDisplay,
+    // quotaDisplay, isPanelToggle, `.vault-row`). So the throw was removed
+    // instead of the crash being caught.
+    //
+    // The invariant is pinned as a RULE, not by example, in
+    // test/vault-damaged-path.test.js -- eighteen adversarial byte shapes
+    // including a UTF-8 BOM. If you add a throw to `load()`, that test fails and
+    // this comment is what it means.
     vault: createVault({
       file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
       crypto: safeStorage,

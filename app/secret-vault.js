@@ -224,11 +224,32 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
   // outright, so this can only ever see a well-formed record or nothing -- but
   // the truthiness test was the actual mechanism of Dexter's F4, and leaving it
   // here would mean the fix depended entirely on a check one screen away.
-  let sessionKey = state.lock !== undefined ? null : undefined;
+  // `state.damaged` FIRST. Dexter, PR #42, H4. A damaged load returns no `lock`,
+  // so this evaluated to `undefined` -- "no key has ever been set, the vault is
+  // open" -- while `lockState()` reported `locked: true` from the damaged branch.
+  // The vault reported a state its own predicate disagreed with.
+  //
+  // He could not turn it into a leak, and said so: `list`/`get` pass the
+  // `isLocked()` check and then read `state.entries`, which a damaged load sets
+  // to `[]`, so they return nothing BY LUCK rather than by rule. That is the
+  // reason to fix it anyway -- "damaged implies locked" was a property of five
+  // separate call sites, and the sixth one added would not know to check.
+  let sessionKey = (state.damaged || state.lock !== undefined) ? null : undefined;
 
   // The generation token this handle last saw on disk (F9). `undefined` when the
   // file does not exist yet, which is a legitimate starting point.
-  let loadedGen = state.gen;
+  // A DAMAGED STATE GETS A GENERATION NOTHING CAN MATCH. Dexter, PR #42, H3.
+  //
+  // Every vault written before the `gen` field has none, and `load()`'s damaged
+  // branch produces none either -- so `refreshIfMoved` compared `undefined` to
+  // `undefined`, took its early return, and NEVER RELOADED. A user who reads the
+  // damage message, opens secrets.enc and repairs the lock record by hand -- which
+  // is exactly what that message steers them toward -- would see the panel report
+  // damaged forever, with melt still the only offer. H2's harm by a second route.
+  //
+  // A fresh Symbol can never equal anything read from disk, so a damaged vault
+  // re-reads on every check and heals the moment the file becomes readable.
+  let loadedGen = state.damaged ? Symbol('damaged') : state.gen;
 
   // Read ONLY the token, and tolerate everything: a file that has gone missing,
   // become unreadable or stopped being JSON must not turn an ordinary write into
@@ -396,7 +417,9 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     const held = sessionKey;
     const next = load();
     state = next;
-    loadedGen = next.gen;
+    // H3 again: re-establishing `undefined` here would re-break the self-healing
+    // on the very next call.
+    loadedGen = next.damaged ? Symbol('damaged') : next.gen;
 
     if (next.damaged) { sessionKey = null; return; }
 
@@ -693,7 +716,15 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // Reported rather than thrown: a leftover we could not remove must not make
     // melt look like it failed, because the main file IS gone and re-melting
     // will not help. The user needs to be told which file to delete by hand.
-    const leftovers = sweepTemps();
+    // INSIDE THE LOCK. Dexter, PR #42, H5. `persist` takes and RELEASES the lock,
+    // so this ran unlocked -- and it matches on the temp name, so it could unlink
+    // a concurrent window's freshly written temp between that window's
+    // `writeFileSync` and its `renameWithRetry`. The victim then gets `ENOENT:
+    // rename`, which `host/atomic-write.js` treats as non-transient and whose
+    // header explicitly steers the next reader toward "a caller bug" -- into the
+    // wrong file entirely. No data is lost; the diagnosis is what breaks.
+    const leftovers = withFileLock(`${file}.lock`, sweepTemps,
+      Number.isFinite(lockDeadlineMs) ? { deadlineMs: lockDeadlineMs } : {});
     // `preserved` names the file we moved aside, so the panel can tell the user
     // where their possibly-recoverable secrets went. A copy nobody can find is
     // the same as no copy.
@@ -853,6 +884,30 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
       Number.isFinite(lockDeadlineMs) ? { deadlineMs: lockDeadlineMs } : {});
   }
 
+  /**
+   * MUST NOT BE CALLED FROM INSIDE ITSELF. Dexter, PR #42, H6 and I3, recorded as
+   * a tripwire rather than fixed because there is no live path today.
+   *
+   * `withFileLock` has no owner check -- correctly, for its original callers --
+   * so a nested `persist` on the same lockfile gets `EEXIST`, `isStale` calls
+   * `process.kill(ownPid, 0)` on its own live pid, correctly declines to break
+   * it, and the call throws at the deadline. A bounded ~3s stall with an error
+   * naming the wrong cause, not a hang.
+   *
+   * The door is `onWrite`, which fires INSIDE the critical section at both call
+   * sites. Production passes none (app/main.js supplies only `file` and
+   * `crypto`), but G1's own test drives exactly that door -- `onWrite` performing
+   * another handle's `setKey` is a second lock attempt from inside the first,
+   * which is why that suite waited out the deadline. The injectable deadline made
+   * it cheap; it did not make it safe.
+   *
+   * `unlock`'s migration write is NOT such a path: Dexter enumerated every call
+   * inside this function and `onWrite` is the only one that can re-enter.
+   *
+   * So: if `refreshIfMoved` ever gains a write -- a `gen` repair, an `fp`
+   * migration on reload, both natural extensions of what is already here -- every
+   * mutator would nest. Add an owner check to withFileLock before doing that.
+   */
   function persistLocked(candidate, opts = {}) {
     const dir = path.dirname(file);
     fs.mkdirSync(dir, { recursive: true });

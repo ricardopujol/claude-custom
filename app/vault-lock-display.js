@@ -32,6 +32,34 @@
 // Only shown when the vault holds nothing to lose. Melting an empty vault is
 // not a decision worth a confirmation, and offering one teaches the user to
 // click through the confirmation that matters.
+/**
+ * THE STAMP, and why it is the display's job rather than the renderer's.
+ *
+ * Dexter, PR #42, I1, which is a defect in my own H1 fix and had made the
+ * damaged vault unusable again.
+ *
+ * `renderVaultLock` resets an armed melt confirmation when the drawn state
+ * changes (F8), and it collapsed `'confirm-melt'` to `'locked'` itself -- so the
+ * renderer had to know the display's state vocabulary. When H1 added a FIFTH
+ * state with its own confirmation, `'confirm-melt-damaged'` stamped as itself,
+ * arming it looked like a state change to the guard protecting it, and the reset
+ * disarmed it in the same tick. Deterministically, on every click:
+ *
+ *   click "Start over with an empty vault..." -> confirmingMelt = true
+ *     -> stamp becomes 'confirm-melt-damaged' != 'damaged'
+ *     -> the F8 reset fires, confirmingMelt = false, re-render
+ *     -> the unconfirmed panel again. The button appears to do nothing.
+ *
+ * And since `requireOpen` refuses add/setKey/removeKey on a damaged vault,
+ * `unlock` returns damaged, and `lock()` does nothing, a damaged vault had NO
+ * WORKING ACTION AT ALL -- exactly the harm G3 was raised to fix, reconstituted
+ * one layer up.
+ *
+ * So the collapse moves here, because this module is the only thing that knows
+ * which states are confirmations of which. A sixth state cannot reintroduce the
+ * bug by forgetting to tell the renderer, and there is a test asserting the rule
+ * over EVERY state rather than restating the pairs.
+ */
 function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } = {}) {
   const s = state && typeof state === 'object' ? state : {};
 
@@ -82,6 +110,7 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
   if (typeof s.damaged === 'string' && s.damaged) {
     return {
       state: confirmingMelt ? 'confirm-melt-damaged' : 'damaged',
+      stamp: 'damaged',
       note: `this vault file cannot be read: ${s.damaged}. No password will open `
         + 'it — the file itself is damaged, not the key.',
       damaged: s.damaged,
@@ -105,6 +134,7 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
   if (locked) {
     return {
       state: confirmingMelt ? 'confirm-melt' : 'locked',
+      stamp: 'locked',
       note: 'the vault is locked',
       // The count is shown only when known, and only to make the cost of melt
       // concrete. "lose 6 secrets" is a decision; "lose all secrets" is a
@@ -123,6 +153,7 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
   if (!hasKey) {
     return {
       state: 'open-no-key',
+      stamp: 'open-no-key',
       note: 'no key set — anyone at this machine can read the vault',
       canSetKey: true,
       showList: true,
@@ -131,6 +162,7 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
 
   return {
     state: 'open-with-key',
+    stamp: 'open-with-key',
     note: 'unlocked — it will lock again when the harness restarts',
     canLock: true,
     canSetKey: true,        // replacing a key is setting one, while open
