@@ -64,5 +64,14 @@ contextBridge.exposeInMainWorld('harness', {
     remove: (id) => ipcRenderer.invoke('secrets:remove', id),
     reveal: (id) => ipcRenderer.invoke('secrets:reveal', id),
     copy: (id) => ipcRenderer.invoke('secrets:copy', id),
+
+    // The lock. The password travels INWARD only -- the user types it here and
+    // main derives from it. Nothing about the key ever comes back out.
+    lockState: () => ipcRenderer.invoke('secrets:lockState'),
+    setKey: (key) => ipcRenderer.invoke('secrets:setKey', key),
+    unlock: (key) => ipcRenderer.invoke('secrets:unlock', key),
+    lock: () => ipcRenderer.invoke('secrets:lock'),
+    removeKey: () => ipcRenderer.invoke('secrets:removeKey'),
+    melt: () => ipcRenderer.invoke('secrets:melt'),
   },
 });

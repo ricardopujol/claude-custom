@@ -19,7 +19,9 @@ function service(overrides = {}) {
   // OBSERVED -- and stripping `project` from all five vault calls left the
   // whole suite green. Measured: 1068 pass, 0 fail, with the containment
   // boundary deleted. A fake that cannot see an argument cannot test it.
-  const seen = { list: [], add: [], get: [], remove: [] };
+  const seen = { list: [], add: [], get: [], remove: [],
+                 lockState: [], setKey: [], unlock: [], lock: [], removeKey: [], melt: [] };
+  let lockStateValue = { hasKey: false, locked: false };
   const vault = {
     available: () => true,
     list: (opts) => {
@@ -36,6 +38,15 @@ function service(overrides = {}) {
       seen.get.push(opts);
       return store.get(id) ? store.get(id).secret : null;
     },
+    // The lock, recorded the same way. Miguel's B1 was that a fake which cannot
+    // observe a call cannot test it; the lock has six more calls that would
+    // have had the same hole.
+    lockState: () => { seen.lockState.push(true); return lockStateValue; },
+    setKey: (k) => { seen.setKey.push(k); return true; },
+    unlock: (k) => { seen.unlock.push(k); return k === 'right'; },
+    lock: () => { seen.lock.push(true); return true; },
+    removeKey: () => { seen.removeKey.push(true); return true; },
+    melt: () => { seen.melt.push(true); return true; },
     remove: (id, opts) => {
       seen.remove.push(opts);
       return store.delete(id);
@@ -205,4 +216,47 @@ test('the shared flag reaches the vault, and is not invented by the service', ()
   assert.strictEqual(h.seen.add.at(-1).shared, true);
   h.svc.add({ label: 'l', secret: 's' });
   assert.notStrictEqual(h.seen.add.at(-1).shared, true, 'absent must not become shared');
+});
+
+// --- the lock reaches the vault ---------------------------------------------
+//
+// Miguel, PR #40, B1, applied before it can happen again: six new methods that
+// the service only forwards. Forwarding is exactly the kind of code that can
+// be deleted with a green suite when nothing observes the call.
+
+test('every lock operation reaches the vault', () => {
+  const h = service();
+  h.svc.lockState();
+  h.svc.setKey('k');
+  h.svc.unlock('right');
+  h.svc.lock();
+  h.svc.removeKey();
+  h.svc.melt();
+
+  assert.strictEqual(h.seen.lockState.length, 1);
+  assert.deepStrictEqual(h.seen.setKey, ['k'], 'the key must arrive verbatim');
+  assert.deepStrictEqual(h.seen.unlock, ['right']);
+  assert.strictEqual(h.seen.lock.length, 1);
+  assert.strictEqual(h.seen.removeKey.length, 1);
+  assert.strictEqual(h.seen.melt.length, 1);
+});
+
+test('a wrong key is reported as ok:false, not as a thrown failure', () => {
+  // A wrong key is an ORDINARY event. If it arrived as an exception the panel
+  // could not tell "you typed it wrong" from "the vault is broken", and would
+  // have to guess -- which in this panel means guessing about a lock.
+  const h = service();
+  assert.deepStrictEqual(h.svc.unlock('wrong'), { ok: false });
+  assert.deepStrictEqual(h.svc.unlock('right'), { ok: true });
+});
+
+test('a throwing vault becomes a reportable error, never an unhandled rejection', () => {
+  // Across the bridge an unhandled rejection shows the user nothing at all,
+  // which in a lock panel reads as "the button does nothing".
+  const h = service({ vault: { lockState: () => { throw new Error('boom'); },
+                               setKey: () => { throw new Error('disk full'); } } });
+  assert.deepStrictEqual(h.svc.lockState(), { hasKey: false, locked: false });
+  const res = h.svc.setKey('k');
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /disk full/);
 });

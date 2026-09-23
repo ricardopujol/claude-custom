@@ -46,6 +46,8 @@ const ALLOWED_GLOBALS = new Set([
   // app/roster-width.js -- the panel width POLICY, moved out of renderer.js
   // (Miguel, PR #33, A1) so its three tuned numbers can be asserted.
   'rosterWidth', 'rosterMax', 'faceSize',
+  // app/vault-lock-display.js -- the lock panel's four states
+  'vaultLockDisplay',
   'cacheWriteOf',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
@@ -170,7 +172,8 @@ test('the display modules the renderer needs are actually defined after loading'
   // branches, so the list is the UNION: taking either alone silently drops a
   // module that has already been caught once.
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
-                    'rosterWidth', 'faceSize', 'bugVaultDisplay']) {
+                    'rosterWidth', 'faceSize', 'bugVaultDisplay',
+                    'vaultLockDisplay']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });

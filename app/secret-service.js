@@ -40,6 +40,47 @@ function createSecretService({
   let pendingClear = null;
   let lastCopied = null;
 
+  // --- the lock ---------------------------------------------------------------
+  //
+  // Thin on purpose: every decision lives in the vault, where it is tested. The
+  // service's whole job here is to be the one place that catches a throw and
+  // turns it into something the renderer can render, because an unhandled
+  // rejection across the bridge shows the user nothing at all.
+  //
+  // The PASSWORD crosses the bridge inward, which is unavoidable -- the user
+  // types it in the window. Nothing ever crosses back out: the derived key
+  // stays in the vault's closure, in main.
+  function lockState() {
+    try { return vault.lockState(); } catch { return { hasKey: false, locked: false }; }
+  }
+
+  function setKey(key) {
+    try { vault.setKey(key); return { ok: true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  }
+
+  function unlock(key) {
+    // Deliberately not an exception path: a wrong key is an ordinary event, not
+    // a failure, and the caller needs to tell the two apart.
+    try { return { ok: vault.unlock(key) === true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  }
+
+  function lock() {
+    try { return { ok: vault.lock() === true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  }
+
+  function removeKey() {
+    try { return { ok: vault.removeKey() === true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  }
+
+  function melt() {
+    try { return { ok: vault.melt() === true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  }
+
   function available() {
     try { return !!vault.available(); } catch { return false; }
   }
@@ -103,7 +144,8 @@ function createSecretService({
     return { ok: true, clearsInMs: clearAfterMs };
   }
 
-  return { available, list, add, remove, reveal, copy };
+  return { available, list, add, remove, reveal, copy,
+    lockState, setKey, unlock, lock, removeKey, melt };
 }
 
 module.exports = { createSecretService };

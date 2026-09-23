@@ -299,6 +299,18 @@ function createWindow(spawnedHost) {
   ipcMain.handle('secrets:reveal', (e, id) => (fromWindow(e) ? secrets.reveal(id) : { ok: false }));
   ipcMain.handle('secrets:copy', (e, id) => (fromWindow(e) ? secrets.copy(id) : { ok: false }));
 
+  // The lock. Same `fromWindow` gate as everything above it: a handler that
+  // answers anyone is not a boundary.
+  ipcMain.handle('secrets:lockState', (e) =>
+    (fromWindow(e) ? secrets.lockState() : { hasKey: false, locked: true }));
+  ipcMain.handle('secrets:setKey', (e, key) =>
+    (fromWindow(e) ? secrets.setKey(key) : { ok: false }));
+  ipcMain.handle('secrets:unlock', (e, key) =>
+    (fromWindow(e) ? secrets.unlock(key) : { ok: false }));
+  ipcMain.handle('secrets:lock', (e) => (fromWindow(e) ? secrets.lock() : { ok: false }));
+  ipcMain.handle('secrets:removeKey', (e) => (fromWindow(e) ? secrets.removeKey() : { ok: false }));
+  ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
+
   // Headless verification of the secret store. The unit tests inject a fake
   // cipher, so they say nothing about whether DPAPI actually works here; this
   // exercises the real safeStorage and the real OS clipboard. It prints only

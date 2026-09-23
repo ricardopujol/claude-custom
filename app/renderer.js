@@ -497,6 +497,101 @@ function hideRevealed() {
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// --- the vault lock ----------------------------------------------------------
+// Every decision lives in app/vault-lock-display.js; this draws what it says.
+// The melt confirmation is held HERE and reset on every state change, so an
+// armed confirmation cannot survive a lock, an unlock or a re-render and fire
+// against a vault the user is no longer looking at.
+let confirmingMelt = false;
+
+async function renderVaultLock() {
+  const el = document.getElementById('vault-lock');
+  if (!el || !window.harness || !window.harness.secrets.lockState) return null;
+
+  const state = await window.harness.secrets.lockState();
+  const entries = state && state.locked === false ? await window.harness.secrets.list('') : [];
+  const d = window.vaultLockDisplay(state, {
+    confirmingMelt,
+    entryCount: state && state.locked ? null : entries.length,
+  });
+
+  const note = `<div class="locked-note">${escapeHtml(d.note)}</div>`;
+
+  if (d.state === 'locked' || d.state === 'confirm-melt') {
+    el.innerHTML = note +
+      '<div class="lock-row">' +
+        '<input id="vault-key" type="password" placeholder="key" autocomplete="off" />' +
+        '<button data-lock="unlock">Open</button>' +
+      '</div>' +
+      (d.state === 'confirm-melt'
+        ? `<div class="melt-warn">${escapeHtml(d.meltWarning)}</div>` +
+          '<div class="lock-row">' +
+            '<button class="melt" data-lock="melt-confirm">Melt it, I lost the key</button>' +
+            '<button data-lock="melt-cancel">Cancel</button>' +
+          '</div>'
+        : '<div class="lock-row"><button class="melt" data-lock="melt-ask">Forgot the key…</button></div>');
+    return d;
+  }
+
+  if (d.state === 'open-no-key') {
+    el.innerHTML = `<div class="keyless">${escapeHtml(d.note)}</div>` +
+      '<div class="lock-row">' +
+        '<input id="vault-key" type="password" placeholder="set a key" autocomplete="new-password" />' +
+        '<button data-lock="set">Close with a key</button>' +
+      '</div>';
+    return d;
+  }
+
+  el.innerHTML = note +
+    '<div class="lock-row">' +
+      '<button data-lock="lock">Lock</button>' +
+      '<input id="vault-key" type="password" placeholder="new key" autocomplete="new-password" />' +
+      '<button data-lock="set">Replace</button>' +
+      '<button data-lock="remove">Remove key</button>' +
+    '</div>';
+  return d;
+}
+
+// Delegated, so the controls survive every re-render without rebinding.
+document.addEventListener('click', async (e) => {
+  const button = e.target.closest('#vault-lock button');
+  if (!button) return;
+  const act = button.dataset.lock;
+  const keyEl = document.getElementById('vault-key');
+  const key = keyEl ? keyEl.value : '';
+
+  // Armed only by the ask, and cleared by anything else. A confirmation that
+  // outlives the click that raised it is a confirmation nobody gave.
+  if (act === 'melt-ask') { confirmingMelt = true; await renderVaultLock(); return; }
+  if (act === 'melt-cancel') { confirmingMelt = false; await renderVaultLock(); return; }
+  confirmingMelt = false;
+
+  let res = { ok: true };
+  if (act === 'unlock') res = await window.harness.secrets.unlock(key);
+  else if (act === 'set') res = await window.harness.secrets.setKey(key);
+  else if (act === 'lock') res = await window.harness.secrets.lock();
+  else if (act === 'remove') res = await window.harness.secrets.removeKey();
+  else if (act === 'melt-confirm') res = await window.harness.secrets.melt();
+
+  // The key is cleared whatever happened. A password left in a field is a
+  // password on screen, and a failed unlock is the case most likely to leave
+  // one there.
+  if (keyEl) keyEl.value = '';
+
+  const d = await renderVaultLock();
+  if (!res || res.ok !== true) {
+    const el = document.getElementById('vault-lock');
+    const why = (res && res.error) ? res.error
+      : (act === 'unlock' ? 'that key does not open this vault' : 'that did not work');
+    if (el) el.innerHTML = `<div class="melt-warn">${escapeHtml(why)}</div>` + el.innerHTML;
+  }
+  if (d && d.showList) renderVault();
+  else {
+    const list = document.getElementById('vault-list');
+    if (list) list.innerHTML = '';
+  }
+});
+
 async function renderVault() {
   const list = document.getElementById('vault-list');
   if (!window.harness || !window.harness.secrets) {
@@ -509,6 +604,11 @@ async function renderVault() {
     return;
   }
   const query = document.getElementById('vault-search').value;
+  // The lock is drawn first and decides whether there is a list at all. Asking
+  // main rather than trusting a local flag: the window is not the authority on
+  // whether the vault is open.
+  const lockInfo = await renderVaultLock();
+  if (lockInfo && lockInfo.showList === false) { list.innerHTML = ''; return; }
   const entries = await window.harness.secrets.list(query);
   if (!entries.length) {
     list.innerHTML = `<div class="none">${query ? 'nothing matches that label.'
