@@ -161,10 +161,11 @@ function setBackground({ source, cwd, dir, store, fsImpl = fs } = {}) {
 
   const key = normalize(cwd);
   const state = readState(store);
-  state[key] = { background: { file: plan.dest, setAt: new Date().toISOString() } };
+  const setAt = new Date().toISOString();
+  state[key] = { background: { file: plan.dest, setAt } };
   store.write(STORE_KEY, state);
 
-  return { ok: true, dest: plan.dest, source: 'override' };
+  return { ok: true, dest: plan.dest, source: 'override', setAt };
 }
 
 /**
