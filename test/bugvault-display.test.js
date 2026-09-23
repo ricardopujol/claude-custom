@@ -12,6 +12,17 @@ const assert = require('node:assert');
 
 const { bugVaultDisplay, formatBugRow, formatGroups, STATES, UNKNOWN } = require('../app/bugvault-display');
 
+// A function's body, from its `function` line to the first closing brace at
+// column zero -- independent of line endings, because Git hands these files
+// out as CRLF and every one of these guards reads raw source.
+function bodyOf(src) {
+  const CR = String.fromCharCode(13);
+  const NL = String.fromCharCode(10);
+  const norm = src.split(CR + NL).join(NL);
+  const end = norm.indexOf(NL + '}' + NL);
+  return end === -1 ? norm : norm.slice(0, end + 1);
+}
+
 const bug = (over = {}) => ({
   id: 'bug_1', category: 'silent failure', summary: 'exit 0 masked a failure',
   whereFound: 'tune.py', detectedBy: 'measurement', survived: 'one run',
@@ -244,8 +255,14 @@ test('every state this module can return is handled in renderer.js', () => {
 
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
   const render = renderer.slice(renderer.indexOf('function renderBugVault'));
-  const NL = String.fromCharCode(10);
-  const body = render.slice(0, render.indexOf(NL + '}' + NL) + 1);
+  // NORMALISED FIRST. This slice looked for a newline-brace-newline sequence
+  // spelled with LF, and Git checks these files out as CRLF -- so on any fresh
+  // checkout it matched nothing, returned -1, and
+  // sliced a ZERO-LENGTH body -- which then "contained" no state and failed.
+  // It passed for me only because the files in my working tree had been
+  // rewritten with LF. A guard whose result depends on line endings is
+  // asserting a spelling again, one layer lower than the last four.
+  const body = bodyOf(render);
   const unhandled = all.filter(st => !body.includes(`'${st}'`));
   assert.deepStrictEqual(unhandled, [],
     `renderBugVault does not mention these states the display module can return: ${unhandled.join(', ')}`);
@@ -292,7 +309,7 @@ test('renderer.js actually draws the groups, not just the detection breakdown', 
   const path = require('path');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
   const fn = renderer.slice(renderer.indexOf('function renderBugVault'));
-  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  const body = bodyOf(fn);
   assert.match(body, /d\.groups/,
     'renderBugVault must use d.groups -- the panel computes the grouping and the PR promises it');
 });
