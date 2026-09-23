@@ -55,6 +55,7 @@ function validResizeDims(cols, rows) {
 // fall-through for everything else.
 const CONTROL_TYPES = new Set([
   'resize', 'health', 'input', 'models', 'seat', 'fog', 'drop', 'projects', 'open',
+  'portrait',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
