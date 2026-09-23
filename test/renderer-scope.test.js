@@ -46,6 +46,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/roster-width.js -- the panel width POLICY, moved out of renderer.js
   // (Miguel, PR #33, A1) so its three tuned numbers can be asserted.
   'rosterWidth', 'rosterMax', 'faceSize',
+  'cacheWriteOf',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
   'projectsDisplay',

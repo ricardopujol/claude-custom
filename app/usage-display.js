@@ -81,24 +81,30 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
  */
 const count = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
-// What was actually spent: tokens processed for the FIRST time.
+// WHAT RICARDO ASKED TO SEE: input and output, and nothing else.
 //
-// cacheWrite belongs here and its omission was a real defect (Dexter, PR #33,
-// Finding 1). `cache_creation_input_tokens` are freshly processed input, billed
-// at roughly 1.25x the base rate -- the most expensive category after output,
-// and the opposite of free cache traffic.
+// His call, 2026-09-23: "the inflated number should disappear, I only care
+// about Input and output tokens." So this is the headline, and it is the
+// smallest of the three figures by a long way.
 //
-// host/milestones.js:207 had ALREADY settled this, with a comment recording
-// that leaving cacheWrite out understated this project 134x and that
-// `fresh + cacheRead` partitions `total`. The first version of this function
-// copied a stale local helper in renderer.js instead, so two functions in one
-// repo computed one concept and disagreed by 32.3 million tokens -- and
-// cacheWrite then appeared nowhere on screen at all, headline or sub-line.
+// Dexter's Finding 1 still stands and is why `cacheWriteOf` exists below
+// rather than this simply dropping the category: `cache_creation_input_tokens`
+// ARE freshly processed input, billed at roughly 1.25x base, and
+// host/milestones.js:207 settled that independently after omitting them
+// understated this project 134x. Hiding them would re-introduce the defect he
+// and I just fixed. They are not in the headline; they are drawn beside it.
 //
-// test/usage-display.test.js asserts AGREEMENT with describeSpend rather than
-// repeating the formula, because repeating it is exactly how the two drifted.
+// The three together account for every token in the payload, so nothing is
+// billed and invisible -- which is the property that made the original 1.76B
+// figure wrong, not its size.
 function spendOf(s) {
-  return count(s && s.input) + count(s && s.output) + count(s && s.cacheWrite);
+  return count(s && s.input) + count(s && s.output);
+}
+
+// Freshly processed input, billed at a premium. Beside the headline, never
+// inside it and never dropped.
+function cacheWriteOf(s) {
+  return count(s && s.cacheWrite);
 }
 
 // The same context, re-read every turn. Kept visible because it is a real cost
@@ -147,10 +153,11 @@ function usageDisplay(usage) {
 // renderer, which has no module system at all. Same shape as
 // app/attention-surface.js.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { usageDisplay, spendOf, cacheReadOf, UNKNOWN, AT_LEAST };
+  module.exports = { usageDisplay, spendOf, cacheWriteOf, cacheReadOf, UNKNOWN, AT_LEAST };
 } else {
   root.usageDisplay = usageDisplay;
   root.spendOf = spendOf;
+  root.cacheWriteOf = cacheWriteOf;
   root.cacheReadOf = cacheReadOf;
 }
 

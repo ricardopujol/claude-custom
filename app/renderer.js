@@ -937,6 +937,7 @@ function renderUsage(usage) {
   // again every turn, which made the number track turns rather than work. Both
   // helpers live in app/usage-display.js, where they can be tested.
   const spend = s => window.spendOf(s);
+  const written = s => window.cacheWriteOf(s);
   const cached = s => window.cacheReadOf(s);
   const detail = s =>
     `in ${s.input.toLocaleString()} - out ${s.output.toLocaleString()} - ` +
@@ -952,12 +953,12 @@ function renderUsage(usage) {
     `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
       `<span class="lbl">session</span>` +
       `<span class="val">${num(spend(session))}</span>` +
-      `<span class="sub">${sub(`(+${compact(cached(session))} cached)`)}</span>` +
+      `<span class="sub">${sub(`+${compact(written(session))} cache write · +${compact(cached(session))} cache read`)}</span>` +
     `</span>` +
     `<span class="grp" title="${title(`Every session on this folder - ${detail(project)}`)}">` +
       `<span class="lbl">project</span>` +
       `<span class="val">${num(spend(project))}</span>` +
-      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'}, +${compact(cached(project))} cached`)}</span>` +
+      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'} · +${compact(written(project))} cache write · +${compact(cached(project))} cache read`)}</span>` +
     `</span>` +
     // Said out loud, not only in a tooltip. A status nobody can see is the
     // defect this whole change exists to fix.
