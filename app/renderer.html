@@ -391,7 +391,9 @@
       color: #0e1017;
       border: 1px solid rgba(255,255,255,.10);
     }
-    .agent .face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* FF7: img and video share one rule -- a <video> portrait must fill the
+       same square an <img> does, not report its own intrinsic size. */
+    .agent .face .face-media { width: 100%; height: 100%; object-fit: cover; display: block; }
     .agent .meta { min-width: 0; }
     .agent .name {
       font-size: clamp(10.5px, calc(var(--face, 34px) * .3), 15px); font-weight: 600;

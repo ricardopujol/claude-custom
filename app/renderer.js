@@ -515,14 +515,33 @@ function applyTheme(theme) {
 const agentsEl = document.getElementById('agents');
 const roster = new Map();
 
+// FF7: a portrait can now come from three tiers, and a display that can't say
+// WHICH one answered is this project's signature defect (absence read as a
+// confident answer). Every result from host/portraits.js carries `tier`; this
+// is only the wording for it.
+const PORTRAIT_TIER_TITLE = {
+  uploaded: 'your upload',
+  forge: 'generated',
+  shipped: 'default picture',
+  text: 'no picture yet',
+};
+
 function faceHtml(portrait) {
-  if (portrait && portrait.kind === 'file') {
-    return `<img src="file:///${portrait.path.replace(/\\/g, '/')}" alt="" />`;
+  const p = portrait || { kind: 'placeholder', tier: 'text', initials: '??', hue: 210 };
+  const title = PORTRAIT_TIER_TITLE[p.tier] || '';
+  if (p.kind === 'file') {
+    const src = `file:///${p.path.replace(/\\/g, '/')}`;
+    // Ricardo, 2026-09-22: the four states stay in the data model, and he will
+    // upload GIFs and video, not only stills -- `media` (set by
+    // host/portraits.js from the uploaded file's own extension) decides the
+    // tag, never the file extension re-sniffed here.
+    return p.media === 'video'
+      ? `<video class="face-media" src="${src}" title="${title}" autoplay loop muted playsinline></video>`
+      : `<img class="face-media" src="${src}" alt="" title="${title}" />`;
   }
-  const p = portrait || { initials: '??', hue: 210 };
   // Placeholder: stable per-agent hue so an agent stays recognisable until a
-  // generated portrait exists for it.
-  return `<span style="width:100%;height:100%;display:flex;align-items:center;` +
+  // portrait exists for it, at any tier.
+  return `<span class="face-media face-placeholder" title="${title}" style="width:100%;height:100%;display:flex;align-items:center;` +
          `justify-content:center;background:hsl(${p.hue} 42% 62%)">${p.initials}</span>`;
 }
 
@@ -584,8 +603,8 @@ function renderRoster() {
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
 
   agentsEl.innerHTML = rows.map(r =>
-    `<div class="agent" data-state="${r.state}">` +
-      `<div class="face">${faceHtml(r.portrait)}</div>` +
+    `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}">` +
+      `<div class="face" data-tier="${(r.portrait && r.portrait.tier) || 'text'}">${faceHtml(r.portrait)}</div>` +
       `<div class="meta"><div class="name" title="${r.agent}">${r.agent}</div>` +
       `<div class="state">${r.state}</div>` +
       careerHtml(r.agent) +
@@ -1328,6 +1347,16 @@ function handleControl(msg) {
     renderDropNote(msg.note);
     return;
   }
+  if (msg.type === 'portrait') {
+    // The mood message that follows a successful upload redraws the face
+    // itself; this is only the "was it accepted, and if not, why" the drop
+    // note pattern above already established for granting a directory.
+    flourish({ icon: msg.ok ? '🖼️' : '⛔',
+      name: msg.ok
+        ? `portrait set for ${msg.agent} (${msg.state})`
+        : `portrait refused for ${msg.agent}: ${msg.reason || 'unknown reason'}` });
+    return;
+  }
   if (msg.type === 'quota') {
     renderQuota(msg.quota);
     return;
@@ -1438,6 +1467,25 @@ for (const leave of ['dragleave', 'dragend']) {
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropZone.classList.remove('dropping');
+
+  // Dropping ONTO an agent's face is a portrait upload, not a path-into-the-
+  // prompt drop -- checked first and returned early, because `.face` sits
+  // inside `#agents` sits inside this same dropZone, and letting both fire
+  // would both upload the file AND type its path into the session.
+  const face = e.target.closest && e.target.closest('.face');
+  const row = face && face.closest('.agent');
+  if (face && row) {
+    const file = (e.dataTransfer.files || [])[0];
+    const agent = row.dataset.agent;
+    const state = row.dataset.state;
+    const p = file && window.harness && window.harness.pathForFile
+      ? window.harness.pathForFile(file) : '';
+    if (p && agent && state) {
+      try { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent, state, path: p })); }
+      catch { /* not attached */ }
+    }
+    return;
+  }
 
   const files = [...(e.dataTransfer.files || [])];
   if (!files.length) return;
