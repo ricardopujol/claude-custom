@@ -8,6 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { usageDisplay, spendOf, cacheReadOf, UNKNOWN, AT_LEAST } = require('../app/usage-display');
+const { describeSpend } = require('../host/milestones');
 
 const EMPTY = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, sessions: 0 };
 const real = { input: 10, output: 20, cacheWrite: 0, cacheRead: 0, total: 30, sessions: 3 };
@@ -134,8 +135,45 @@ test('missing counters do not render as NaN', () => {
 // nothing can test.
 
 test('the headline is what was actually spent, not the cache re-read every turn', () => {
+  // cacheWrite IS spend: cache_creation_input_tokens are tokens processed for
+  // the first time, billed at ~1.25x base input -- the most expensive category
+  // after output. Dexter, PR #33 review, Finding 1.
   const s = { input: 1000, output: 2000, cacheWrite: 50000, cacheRead: 9000000 };
-  assert.strictEqual(spendOf(s), 3000);
+  assert.strictEqual(spendOf(s), 53000);
+});
+
+test('spendOf AGREES with describeSpend.fresh -- one concept, one value', () => {
+  // THE FINDING, AND THE INSTRUMENT FOR IT. The first version of spendOf was
+  // `input + output`, copied from a local helper in renderer.js. But
+  // host/milestones.js:207 had already settled this question the other way --
+  // `fresh = input + output + cacheWrite` -- with a comment recording that
+  // leaving cacheWrite out understated this project's real proportions 134x,
+  // and stating that `fresh + cacheRead` partitions `total`.
+  //
+  // So two functions in one repo computed the same concept from the same
+  // object and disagreed by 32.3 MILLION tokens, and the stale one was the one
+  // I copied. This asserts AGREEMENT rather than re-asserting the arithmetic in
+  // a second place: re-stating the formula here would let the two drift apart
+  // again the moment either changes, which is how they diverged the first time.
+  const cases = [
+    { input: 9924, output: 2933346, cacheWrite: 32325149, cacheRead: 1720653994 },
+    { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    { input: 1, output: 2, cacheWrite: 3, cacheRead: 4 },
+    { input: 500, output: 0, cacheWrite: 0, cacheRead: 999 },
+  ];
+  for (const c of cases) {
+    assert.strictEqual(spendOf(c), describeSpend({ ...c, total: 0 }).fresh, JSON.stringify(c));
+  }
+});
+
+test('spend and cache reads PARTITION the total -- nothing is invisible', () => {
+  // The property the old headline broke: cacheWrite appeared in neither the
+  // headline nor the `(+X cached)` sub-line, so 32.3M billed tokens were on
+  // screen nowhere at all, only in a hover tooltip.
+  const real = { input: 9924, output: 2933346, cacheWrite: 32325149, cacheRead: 1720653994 };
+  const total = real.input + real.output + real.cacheWrite + real.cacheRead;
+  assert.strictEqual(spendOf(real) + cacheReadOf(real), total,
+    'every token in the payload must be accounted for by the two figures drawn');
 });
 
 test('cache reads are reported separately, not folded into the headline', () => {
@@ -165,8 +203,8 @@ test('the real proportions from this project survive the split', () => {
   // are ever summed back together, this fails with the actual ratio in the
   // message rather than with an abstract complaint.
   const real = { input: 9924, output: 2933346, cacheWrite: 32325149, cacheRead: 1720653994 };
-  assert.strictEqual(spendOf(real), 2943270);
-  const inflated = spendOf(real) + real.cacheWrite + real.cacheRead;
-  assert.ok(spendOf(real) / inflated < 0.01,
-    `the old headline was ${(100 * spendOf(real) / inflated).toFixed(2)}% real work`);
+  assert.strictEqual(spendOf(real), 35268419);
+  const total = spendOf(real) + real.cacheRead;
+  assert.ok(spendOf(real) / total < 0.05,
+    `cache reads still dominate: the headline is ${(100 * spendOf(real) / total).toFixed(2)}% of traffic`);
 });

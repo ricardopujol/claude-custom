@@ -1018,9 +1018,24 @@ function milestoneHtml(m) {
   const share = m.spend && m.spend.cacheShare
     ? ` · ${Math.round(m.spend.cacheShare * 100)}% cache`
     : '';
+  // NAMES ITS OWN SUBJECT. Dexter, PR #33, Finding 2: this badge is computed
+  // from `usage.project.total` -- ALL token traffic, cache reads included --
+  // while the headline beside it, in this same element, now shows spend only.
+  // On real figures those are 1.76B and 35.3M: one line appearing to
+  // contradict itself by 50x. Two numbers measuring different things is fine;
+  // two numbers measuring different things while looking like one number is
+  // the displayed-value-that-does-not-describe-its-subject defect this
+  // codebase is built around avoiding.
+  //
+  // Saying what it counts is the honest fix available tonight. Re-keying the
+  // ladder to spend is the REAL fix and is a product decision -- its top rung
+  // is 10 billion, which only makes sense against the inflated figure, so
+  // recalibrating would move this project down two full rungs. That belongs to
+  // Ricardo, not to a review round, and is recorded in the build log.
   const title = (reached ? `${reached.name} reached. ` : '')
     + (next ? `${compact(next.at)} for ${next.name}.` : 'Top of the ladder.')
-    + share;
+    + share
+    + ' · counts ALL tokens including cache reads, unlike the spend figure beside it.';
 
   return `<span class="grp milestone" title="${escapeHtml(title)}">` +
            `<span class="icon">${escapeHtml(reached ? reached.icon : '·')}</span>` +

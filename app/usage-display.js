@@ -70,7 +70,9 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
  *
  * Two functions rather than one "fixed total", because there is no honest
  * single number here: what you spent and what was re-read from cache are
- * different things and belong on screen as different things.
+ * different things and belong on screen as different things. Together they
+ * PARTITION the payload -- `spendOf + cacheReadOf === total` -- so nothing is
+ * billed and invisible.
  *
  * Strict `typeof`, not `Number()`: `Number(null)` is 0 and `Number(undefined)`
  * is NaN, and this payload crosses a socket where a field can be missing or
@@ -79,9 +81,24 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
  */
 const count = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
-// What was actually spent: tokens that were read or written for the first time.
+// What was actually spent: tokens processed for the FIRST time.
+//
+// cacheWrite belongs here and its omission was a real defect (Dexter, PR #33,
+// Finding 1). `cache_creation_input_tokens` are freshly processed input, billed
+// at roughly 1.25x the base rate -- the most expensive category after output,
+// and the opposite of free cache traffic.
+//
+// host/milestones.js:207 had ALREADY settled this, with a comment recording
+// that leaving cacheWrite out understated this project 134x and that
+// `fresh + cacheRead` partitions `total`. The first version of this function
+// copied a stale local helper in renderer.js instead, so two functions in one
+// repo computed one concept and disagreed by 32.3 million tokens -- and
+// cacheWrite then appeared nowhere on screen at all, headline or sub-line.
+//
+// test/usage-display.test.js asserts AGREEMENT with describeSpend rather than
+// repeating the formula, because repeating it is exactly how the two drifted.
 function spendOf(s) {
-  return count(s && s.input) + count(s && s.output);
+  return count(s && s.input) + count(s && s.output) + count(s && s.cacheWrite);
 }
 
 // The same context, re-read every turn. Kept visible because it is a real cost
