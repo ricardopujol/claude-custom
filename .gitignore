@@ -15,6 +15,8 @@ forge/outputs/
 # .NET build artefacts for the hook helper
 helper/bin/
 helper/obj/
+verify/native-updated-input-helper/bin/
+verify/native-updated-input-helper/obj/
 
 # Per-project background art (regenerable, deterministic from path)
 backgrounds/
