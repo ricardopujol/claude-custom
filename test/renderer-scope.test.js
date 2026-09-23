@@ -42,9 +42,14 @@ const ALLOWED_GLOBALS = new Set([
   // app/secret-mask.js, app/attention-surface.js
   'createMask', 'surfacesFor',
   // the display modules
-  'usageDisplay',
+  'usageDisplay', 'spendOf', 'cacheReadOf',
+  // app/roster-width.js -- the panel width POLICY, moved out of renderer.js
+  // (Miguel, PR #33, A1) so its three tuned numbers can be asserted.
+  'rosterWidth', 'rosterMax', 'faceSize',
+  'cacheWriteOf',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
+  'projectsDisplay',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules
@@ -125,7 +130,12 @@ test('the display modules the renderer needs are actually defined after loading'
     if (file === 'renderer.js') continue;
     vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
   }
-  for (const fn of ['usageDisplay']) {
+  // Every display module the renderer calls, not just the first one anyone
+  // thought to list. `projectsDisplay` was added after the Projects panel drew
+  // nothing in a real window -- a one-name list cannot catch the next module,
+  // which is the same shape of gap as the career display's original bug.
+  for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
+                    'rosterWidth', 'faceSize']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });
@@ -202,4 +212,29 @@ test('every module function renderer.js calls is actually exported to it', () =>
   assert.deepStrictEqual(missing, [],
     'renderer.js calls these as bare globals, but no module exports them -- ' +
     'they are ReferenceErrors in the real window');
+});
+
+test('every element id renderer.js reaches for at TOP LEVEL exists in renderer.html', () => {
+  // Miguel, PR #31. `document.getElementById(x)` returning null at module top
+  // level is a TypeError that ABORTS ALL OF renderer.js -- terminal, panels,
+  // everything -- for a renamed id. Nothing could see it: the tests above
+  // deliberately skip renderer.js when loading the scripts, because it needs a
+  // real DOM.
+  //
+  // This is the mirror of the TABS-vs-markup drift guard in
+  // test/side-tabs.test.js, which was itself written after a panel turned out
+  // to be unreachable with the whole suite green. Same shape of gap, same
+  // shape of answer: compare the two artifacts that must agree.
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+
+  // Top level only: stop at the first line that is indented, i.e. inside
+  // something. Crude, and it is the region where a null actually kills the file.
+  const topLevel = js.split('\n').filter(l => !/^\s/.test(l)).join('\n');
+  const ids = [...topLevel.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(m => m[1]);
+  assert.ok(ids.length > 0, 'the scan must find something for this check to mean anything');
+
+  const missing = ids.filter(id => !html.includes(`id="${id}"`));
+  assert.deepStrictEqual(missing, [],
+    `renderer.js reaches for these ids at top level and renderer.html has none of them: ${missing.join(', ')}`);
 });

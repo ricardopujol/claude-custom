@@ -81,12 +81,40 @@ function buildHarnessSettings({ helperPath, pipeName } = {}) {
   };
 }
 
-function writeHarnessSettings(dir, opts) {
+/**
+ * Writes the harness's settings file and returns the path claude should be
+ * given.
+ *
+ * `port` makes it PER-HOST, and that is a correctness fix rather than tidiness
+ * (Miguel B1 / Dexter F2, found independently). This file's only content is
+ * the hook matchers pointing at `pipeName`, which is derived per-pid -- so its
+ * contents were per-host while its name was fixed. One host at a time used to
+ * be the practical reality; this release makes two the advertised feature, and
+ * the write happens ~550 lines of module init before the pty spawns. Two hosts
+ * booting together therefore interleave, and project A's claude reads project
+ * B's pipe name: A's tool events arrive at B's bridge, B's panels show A's
+ * activity, A's show nothing, and the bind failure is logged and swallowed.
+ *
+ * ADDITIVE, for the same reason the per-port session token was: the shared
+ * `harness-settings.json` is still written, first and unchanged, because
+ * verify/probe-hook-shell.js reads it at that literal path and each probe runs
+ * against a single host. Moving it would fix the window and break the probes.
+ *
+ * With no `port` the behaviour is exactly as before, so every existing caller
+ * and every probe keeps working untouched.
+ */
+function writeHarnessSettings(dir, opts, port) {
   const settings = buildHarnessSettings(opts);
+  const body = JSON.stringify(settings, null, 2);
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, 'harness-settings.json');
-  fs.writeFileSync(file, JSON.stringify(settings, null, 2));
-  return file;
+
+  const shared = path.join(dir, 'harness-settings.json');
+  fs.writeFileSync(shared, body);
+  if (port == null) return shared;
+
+  const own = path.join(dir, `harness-settings-${port}.json`);
+  fs.writeFileSync(own, body);
+  return own;
 }
 
 /**

@@ -2,7 +2,10 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>claude-custom — spike</title>
+  <!-- Replaced at runtime by the project folder (FF3). This is only what
+       shows before the window exists; main.js preventDefaults
+       page-title-updated so the page can never take it back. -->
+  <title>claude-custom</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <style>
     :root {
@@ -16,6 +19,27 @@
       --bad: #cc5f5f;
     }
     * { box-sizing: border-box; }
+    /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
+       than a badge in a panel: it cannot be scrolled past, it does not compete
+       with anything for space, and it is part of the alt-tab thumbnail, which
+       is where you actually decide which window to return to. Cleared by main
+       the moment the window is focused. */
+    body.attention-cue::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      border: 3px solid #e0674f;
+      pointer-events: none;       /* a cue must never eat a click */
+      z-index: 9999;
+      animation: cue-breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes cue-breathe {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .45; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body.attention-cue::after { animation: none; }
+    }
     html, body {
       margin: 0; height: 100%;
       background: var(--bg); color: var(--text);
@@ -440,6 +464,19 @@
     #model-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 0; flex: 1; }
     .model { display: flex; align-items: baseline; gap: 6px; padding: 3px 5px; border-radius: 4px;
       font-size: 11px; cursor: pointer; border: 1px solid transparent; }
+    /* The project picker. A row is only clickable when it is somewhere else to
+       go -- the current project is listed so you can see where you are, and
+       deliberately does not look like a button. */
+    .proj { padding: 6px 8px; border: 1px solid transparent; border-radius: 4px;
+            margin-bottom: 3px; }
+    .proj-open { cursor: pointer; }
+    .proj-open:hover { background: var(--panel); border-color: var(--border); }
+    .proj-name { font-size: 12px; }
+    .proj-detail { font-size: 10px; opacity: 0.6; }
+    .proj.current { border-color: var(--accent); }
+    .proj.current .proj-name::after { content: ' — you are here'; opacity: 0.6; font-size: 10px; }
+    .proj-approx .proj-name::after { content: ' ~'; opacity: 0.6; }
+
     .model:hover { background: var(--panel); border-color: var(--border); }
     .model.seated { border-color: var(--accent); background: var(--panel); }
     .model .m-id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -560,6 +597,7 @@
           <button data-tab="vault" title="Local encrypted secrets">Vault</button>
           <button data-tab="fog" title="What this project has actually been read">Map</button>
           <button data-tab="models" title="Browse every model OpenRouter offers, and seat the council">Models</button>
+          <button data-tab="projects" title="Switch to another project, each in its own window">Projects</button>
         </nav>
         <div class="panel" data-panel="agents">
           <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
@@ -613,6 +651,10 @@
           <div id="fog-summary" class="fog-sum">reading the map…</div>
           <div id="fog-list"></div>
         </div>
+        <div class="panel" data-panel="projects" id="projects-body">
+          <div id="projects-note" class="dim">reading your projects…</div>
+          <div id="projects-list"></div>
+        </div>
       </aside>
       <aside id="diag">
         <h2>Key diagnostics</h2>
@@ -630,8 +672,10 @@
   <script src="./secret-mask.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
+  <script src="./roster-width.js"></script>
   <script src="./career-display.js"></script>
   <script src="./quota-display.js"></script>
+  <script src="./projects-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>
