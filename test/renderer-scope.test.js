@@ -46,6 +46,8 @@ const ALLOWED_GLOBALS = new Set([
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   'quotaDisplay', 'formatQuotaCountdown',
   'projectsDisplay',
+  // app/style-display.js
+  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules
@@ -130,7 +132,7 @@ test('the display modules the renderer needs are actually defined after loading'
   // thought to list. `projectsDisplay` was added after the Projects panel drew
   // nothing in a real window -- a one-name list cannot catch the next module,
   // which is the same shape of gap as the career display's original bug.
-  for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay']) {
+  for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay', 'styleDisplay']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });
