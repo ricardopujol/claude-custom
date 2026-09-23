@@ -1123,12 +1123,21 @@ function renderProcesses(running) {
 // what FF1 and FF3 were moved out for and what FF5 failed to do. Miguel, A1.
 const rosterEl = document.getElementById('roster');
 
-function applyRosterWidth(px) {
+// `persist` is the whole of Miguel's R5. The DESIRED width and the APPLIED
+// width are two different facts and cannot share one home: persisting the
+// clamped result meant the first shrink overwrote the user's choice forever.
+// Measured: drag to 1892 on a 3440px monitor, undock to 1366 -> stored 751,
+// re-dock -> still 751. The comment promised the opposite.
+//
+// So the drag path persists and the resize path does not, which makes
+// `rosterWidth(stored, innerWidth)` on every resize give exactly the
+// behaviour the comment describes, for free.
+function applyRosterWidth(px, { persist = true } = {}) {
   const w = window.rosterWidth(px, window.innerWidth);
   const root = document.documentElement.style;
   root.setProperty('--roster-w', w + 'px');
   root.setProperty('--face', window.faceSize(w) + 'px');
-  try { localStorage.setItem('rosterWidth', String(w)); } catch {}
+  if (persist) { try { localStorage.setItem('rosterWidth', String(w)); } catch {} }
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
   return w;
@@ -1144,10 +1153,27 @@ function applyRosterWidth(px) {
 // Reading the stored value rather than the applied one, so that widening the
 // window restores the width the user actually chose instead of leaving it
 // pinned at whatever the smallest screen allowed.
+// Re-clamp on resize, WITHOUT persisting -- see applyRosterWidth. Coalesced
+// to one frame: a window drag fires `resize` continuously, and each one wrote
+// storage and scheduled a pty resize, which is what let R5's ratchet run
+// frame by frame rather than once (Miguel, A18).
+//
+// The stored value is read with a strict typeof rather than `Number(...)`:
+// `Number(null)` is 0 and `Number.isFinite(0)` is true, so a coercing read of
+// an absent key survives only on the `> 0` check -- the trap that heads this
+// project's own list, and one this branch fixed elsewhere (A17).
+let resizePending = false;
 window.addEventListener('resize', () => {
-  let want = null;
-  try { want = Number(localStorage.getItem('rosterWidth')); } catch {}
-  applyRosterWidth(Number.isFinite(want) && want > 0 ? want : rosterEl.offsetWidth);
+  if (resizePending) return;
+  resizePending = true;
+  requestAnimationFrame(() => {
+    resizePending = false;
+    let stored = null;
+    try { stored = localStorage.getItem('rosterWidth'); } catch {}
+    const want = typeof stored === 'string' && stored.trim() !== '' ? Number(stored) : NaN;
+    applyRosterWidth(Number.isFinite(want) && want > 0 ? want : rosterEl.offsetWidth,
+                     { persist: false });
+  });
 });
 
 (function initRosterResize() {

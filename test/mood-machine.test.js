@@ -450,3 +450,102 @@ test('F5: a parent agent is not reaped while its child is doing the work', () =>
   assert.strictEqual(h.m.stateOf('paris'), 'working',
     'the parent delegated; it is not stalled, it is waiting on its child');
 });
+
+// --- an invocation has a lifetime, and nothing refreshes it ------------------
+//
+// Dexter, PR #33 review, Finding 7 and his warning about my own Finding 5 fix.
+// He was right and the fix I had already landed was unsafe:
+//
+//   "once every stack member's clock is refreshed by any session activity,
+//    `t - lastActivity > stallMs` can only fire when the ENTIRE session has
+//    been silent for 30 minutes... fix #3 makes never-firing the normal case."
+//
+// Measured on the shipped code before this commit: agent `a` spawns `b`, `a`'s
+// SubagentStop is lost, `b` works for 2,000,000ms. `a` stayed `working` the
+// whole time and never left the stack. The stall reap Miguel had just made
+// EFFECTIVE was now never FIRED. Two correct-looking fixes, composing into no
+// reaper at all -- which is the shape this project's own history keeps
+// producing and which neither fix's tests could see alone.
+//
+// `host/usage.js:14-21` records SubagentStop being dropped 31 times in 35
+// events, so a stranded entry is the normal case, not an exotic one.
+//
+// THE FIX IS DEXTER'S: one refreshable clock cannot answer two questions.
+// `lastActivity` answers "is it thinking" and must be refreshable for the
+// whole chain. `startedAt` answers "how long has this invocation existed" and
+// nothing may refresh it. An invocation gets an absolute cap.
+
+test('a stranded parent is reaped even while its child keeps working', () => {
+  // `a` works, its SubagentStop is LOST, then `b` starts and keeps the session
+  // busy. Before this fix `a` stayed `working` indefinitely, because the
+  // chain-wide lastActivity refresh meant its silence clock could never fire.
+  //
+  // The two must be separated in TIME for this to isolate anything: agents
+  // started a second apart both cross the cap at the same moment, so the first
+  // version of this test proved nothing about which clock reaped which.
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 900_000 });
+  const start = n => h.m.handle({
+    event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: n } } });
+
+  start('a');
+  for (let i = 0; i < 8; i++) {          // a works normally for 800s
+    h.advance(100_000);
+    h.post('Bash', { i }, { exit_code: 0 });
+  }
+  start('b');                            // a's stop is lost; b takes over
+
+  for (let i = 0; i < 2; i++) {          // b works; a crosses its cap meanwhile
+    h.advance(100_000);
+    h.post('Bash', { i }, { exit_code: 0 });
+  }
+
+  assert.strictEqual(h.m.stateOf('b'), 'working', 'the live agent must keep working');
+  assert.strictEqual(h.m.stateOf('a'), 'sleeping',
+    'a stranded invocation is reaped on its own lifetime, whatever else is busy');
+  assert.deepStrictEqual(h.m.stack(), ['b'], 'and must leave the stack');
+});
+
+test('a LIVE parent is not reaped by the cap while the chain is short-lived', () => {
+  // The inverse, so the cap cannot be over-applied into "every orchestration
+  // dies at 15 minutes". F5's case must still hold: a parent whose child is
+  // working is waiting, not stalled.
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 900_000 });
+  const start = n => h.m.handle({
+    event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: n } } });
+
+  start('paris');
+  h.advance(60_000);
+  start('worker');
+  for (let i = 0; i < 5; i++) {          // 500s total, well inside the cap
+    h.advance(100_000);
+    h.post('Bash', { i }, { exit_code: 0 });
+  }
+  assert.strictEqual(h.m.stateOf('paris'), 'working',
+    'a parent delegating inside the cap is waiting, not stalled');
+});
+
+test('startedAt is never refreshed by activity', () => {
+  // The property the whole fix rests on. If anything refreshes it, the cap
+  // becomes another silence clock and the reaper stops firing again.
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 900_000 });
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'solo' } } });
+  for (let i = 0; i < 12; i++) {         // continuous work past the cap
+    h.advance(100_000);
+    h.post('Bash', { i }, { exit_code: 0 });
+  }
+  assert.strictEqual(h.m.stateOf('solo'), 'sleeping',
+    'an invocation older than the cap is reaped even while it is emitting');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('the SHIPPED invocation cap is pinned, not just the injected one', () => {
+  // R3's lesson, applied to the new constant in the same commit rather than
+  // after the next review. host.js constructs the machine with no options.
+  let now = 1_000_000;
+  const m = createMoodMachine({ now: () => now });
+  m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_input: { subagent_type: 'x' } } });
+  now += 60 * 60_000;                    // an hour
+  m.tick();
+  assert.strictEqual(m.stateOf('x'), 'sleeping',
+    'the shipped cap must reap an invocation that has run for an hour');
+});

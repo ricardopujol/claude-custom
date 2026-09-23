@@ -84,3 +84,43 @@ test('the face grows with the panel and stays a portrait', () => {
   assert.strictEqual(faceSize(99999), 150, 'capped: a portrait, not a poster');
   assert.strictEqual(faceSize(NaN), 28);
 });
+
+test('the roster may take slightly more than half the window, and never two thirds', () => {
+  // Miguel, PR #33, R6. Every other assertion about ROSTER_SHARE is written
+  // AGAINST ROSTER_SHARE, so it is true for every value of the constant.
+  // Measured sabotage: 0.60, 0.75, 0.90 and 0.99 all passed nine tests, with
+  // the roster permitted 99% of the window and the terminal reduced to a
+  // sliver -- precisely what the constant exists to prevent.
+  //
+  // That is R3's lesson one file over: the module header named the correct
+  // instrument ("explicit boundaries are the only instrument") and then wrote
+  // self-referential assertions, which are not boundaries.
+  //
+  // This pins the RULE rather than the digits. `assert.strictEqual(SHARE, 0.55)`
+  // would pin the number without pinning the point, and would have to be
+  // edited by anyone changing it -- which is how a constant gets changed and
+  // its reason does not.
+  assert.ok(ROSTER_SHARE > 0.5,
+    'the roster is allowed slightly more than half, so a portrait and a full name fit');
+  assert.ok(ROSTER_SHARE <= 0.66,
+    'but never two thirds -- the terminal is the thing the harness exists to show');
+
+  // And behaviourally, on a real laptop width, so the bound is not only arithmetic.
+  const laptop = 1366;
+  assert.ok(rosterMax(laptop) > laptop / 2);
+  assert.ok(rosterMax(laptop) < laptop * 0.67,
+    `the terminal must keep a third of a ${laptop}px window, got ${laptop - rosterMax(laptop)}px`);
+});
+
+test('a resize does not destroy the width the user chose', () => {
+  // R5's round trip, asserted on the policy the renderer applies. The renderer
+  // half (persist only from the drag path) is what makes this reachable; this
+  // pins that the CLAMP itself is non-destructive -- re-widening recovers the
+  // original request rather than the clamped one.
+  const chosen = 1892;
+  assert.strictEqual(rosterWidth(chosen, 3440), chosen);
+  const onSmall = rosterWidth(chosen, 1366);
+  assert.ok(onSmall < chosen, 'it must clamp on the smaller window');
+  assert.strictEqual(rosterWidth(chosen, 3440), chosen,
+    'and re-widening must recover the chosen width, not the clamped one');
+});

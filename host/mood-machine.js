@@ -54,14 +54,36 @@ function isFailure(response) {
 // a crashed subagent does not read as working for the rest of the session.
 const STALL_MS = 30 * 60_000;
 
-function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS, flashMs = 8_000 } = {}) {
+// The longest ONE INVOCATION may live before it is presumed stranded.
+//
+// Dexter, PR #33, Finding 7. `lastActivity` is refreshable -- it has to be, or
+// a thinking agent reads as asleep (FF2), and F5 widened that refresh to the
+// whole delegation chain because a parent whose child is working is waiting,
+// not stalled. But once every stack member is refreshed by any session
+// activity, a silence clock can only fire when the WHOLE SESSION goes quiet,
+// so a stranded entry -- one whose SubagentStop was dropped, which
+// host/usage.js records happening 31 times in 35 events -- never reaps at all.
+//
+// One refreshable clock cannot answer two questions. `lastActivity` answers
+// "is it thinking". `startedAt` answers "how long has this invocation
+// existed", and NOTHING refreshes it.
+const MAX_INVOCATION_MS = 45 * 60_000;
+
+function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS,
+                            maxInvocationMs = MAX_INVOCATION_MS, flashMs = 8_000 } = {}) {
   const machine = new EventEmitter();
 
   // agent -> { state, errors, lastActivity, flashUntil, lastSignature, repeats }
   const agents = new Map();
   // Innermost-first stack of running agents, so a Bash failure is attributed to
   // the agent that actually ran it rather than to whoever started first.
+  // Entries are invocations -- `{ name, startedAt }` -- because the same agent
+  // can be running twice and the two have different lifetimes. `stack()`
+  // still returns bare names, so every consumer (host.js's `party`) is
+  // unchanged.
   const stack = [];
+  const names = () => stack.map(e => e.name);
+  const running = (name) => stack.some(e => e.name === name);
 
   function ensure(agent) {
     let a = agents.get(agent);
@@ -79,7 +101,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   }
 
   function current() {
-    return stack.length ? stack[stack.length - 1] : null;
+    return stack.length ? stack[stack.length - 1].name : null;
   }
 
 // The tool that launches a subagent. Claude Code calls it "Agent"; older
@@ -102,14 +124,14 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       // parallel second instance wiped the error the first one had already
       // recorded, and that instance's SubagentStop then showed a happy face
       // for a run that failed. Same name/invocation disagreement as F3.
-      if (!stack.includes(agent)) {
+      if (!running(agent)) {
         a.errors = 0;
         a.repeats = 0;
         a.lastSignature = null;
       }
       a.flashUntil = 0;
       a.lastActivity = now();
-      stack.push(agent);
+      stack.push({ name: agent, startedAt: now() });
       setState(agent, a, WORKING);
       return;
     }
@@ -130,8 +152,8 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       // Bash failure belongs to the agent that ran it, which is the property
       // `stack` was built for in the first place. Only the liveness clock is
       // shared.
-      for (const name of stack) {
-        const entry = agents.get(name);
+      for (const inv of stack) {
+        const entry = agents.get(inv.name);
         if (entry) entry.lastActivity = now();
       }
       a.lastActivity = now();
@@ -163,12 +185,13 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       const named = p.agent_type;
       let agent;
       if (named) {
-        const at = stack.lastIndexOf(named);
+        const at = stack.map(e => e.name).lastIndexOf(named);
         if (at === -1) return;              // never started here; not ours to end
         stack.splice(at, 1);
         agent = named;
       } else {
-        agent = stack.pop();                // older versions send no agent_type
+        const popped = stack.pop();         // older versions send no agent_type
+        agent = popped && popped.name;
       }
       if (!agent) return;
       const a = ensure(agent);
@@ -181,6 +204,27 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
 
   function tick() {
     const t = now();
+
+    // STRANDED INVOCATIONS FIRST, on their own unrefreshable clock. Dexter F7:
+    // without this the chain-wide `lastActivity` refresh means a silence clock
+    // only fires when the entire session is quiet, so a dropped SubagentStop
+    // leaves an entry on the stack forever -- and it takes the reap Miguel
+    // just made effective with it.
+    const stranded = new Set();
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (t - stack[i].startedAt > maxInvocationMs) stranded.add(stack.splice(i, 1)[0].name);
+    }
+    // Slept immediately, and only when the NAME has no invocation left: the
+    // same agent may be running twice and one instance outliving the cap says
+    // nothing about the other.
+    for (const name of stranded) {
+      if (running(name)) continue;
+      const a = agents.get(name);
+      if (a && a.state !== SLEEPING) {
+        a.flashUntil = 0;
+        setState(name, a, SLEEPING);
+      }
+    }
     for (const [agent, a] of agents) {
       if (a.state === SLEEPING) continue;
 
@@ -200,7 +244,7 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       if (a.flashUntil) {
         if (t > a.flashUntil) {
           a.flashUntil = 0;
-          setState(agent, a, stack.includes(agent) ? WORKING : SLEEPING);
+          setState(agent, a, running(agent) ? WORKING : SLEEPING);
         }
         continue;
       }
@@ -229,8 +273,8 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       // `stack` holds every agent that started and has not emitted
       // SubagentStop, which is the definition of running, and the machine has
       // maintained it all along for delegation attribution.
-      const running = stack.includes(agent);
-      const limit = running ? stallMs : idleMs;
+      const isRunning = running(agent);
+      const limit = isRunning ? stallMs : idleMs;
       if (t - a.lastActivity <= limit) continue;
 
       // A STALLED RUNNING AGENT IS PRESUMED DEAD, SO IT LEAVES THE STACK.
@@ -248,9 +292,9 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       // NAME, so declaring that name stalled declares all of its live
       // invocations stalled; leaving one behind leaves the name `current()`
       // and reproduces the revival one instance further along.
-      if (running) {
+      if (isRunning) {
         for (let i = stack.length - 1; i >= 0; i--) {
-          if (stack[i] === agent) stack.splice(i, 1);
+          if (stack[i].name === agent) stack.splice(i, 1);
         }
       }
       setState(agent, a, SLEEPING);
@@ -262,7 +306,9 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
   machine.stateOf = agent => (agents.get(agent) || { state: SLEEPING }).state;
   // Live delegation chain, outermost first. Already maintained to attribute a
   // failure to the innermost running agent; exposing it is free.
-  machine.stack = () => [...stack];
+  // Bare NAMES, unchanged for every consumer -- host.js draws this as `party`.
+  // The invocation objects are internal; only their lifetimes are.
+  machine.stack = () => names();
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state }));
 
   return machine;

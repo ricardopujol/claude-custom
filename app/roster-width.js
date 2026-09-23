@@ -25,8 +25,21 @@
  *               truncates; narrower is not a smaller panel, it is a broken one.
  *   FLOOR 420   the old flat cap, kept as a lower bound on the cap so nothing
  *               gets worse on a small screen than it was before FF5.
- *   SHARE 0.55  of the window. Past this the terminal — the thing the harness
- *               exists to show — stops being the larger half.
+ *   SHARE 0.55  of the window.
+ *
+ * MIGUEL, PR #33, R6 CAUGHT THE STATED REASON BEING WRONG. This used to read
+ * "past this the terminal stops being the larger half" -- but at 0.55 the
+ * roster is 55% and the terminal 45%, so the terminal has ALREADY stopped
+ * being the larger half at exactly this value. The boundary that sentence
+ * describes is 0.5.
+ *
+ * The number is deliberate and the reason was not. 0.55 exists so that a
+ * roster dragged to its limit can show a readable portrait and a full agent
+ * name on a laptop screen, which 0.5 does not quite manage at 1366px -- and
+ * the terminal is still usable at 45% because it is the thing being READ,
+ * while the roster is the thing being SCANNED. The rule, stated so a test can
+ * hold it: the roster may take slightly more than half, and never two thirds.
+ * That upper bound is what the assertion pins.
  *
  * None of the three was asserted anywhere before this module existed, and
  * StrykerJS generates no mutants for numeric literals, so no mutation score
