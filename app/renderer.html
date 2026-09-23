@@ -133,8 +133,11 @@
       color: var(--dim); cursor: pointer; }
     #vault-shared-row input { margin: 0; }
     /* A shared secret must announce itself in the list. The original defect
-       was a scope nobody could see. */
-    .vault-row .scope { font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+       was a scope nobody could see -- and this selector named a class that does
+       not exist (`.vault-row`); the rows are `.sec`. Miguel, PR #40, A1: the
+       marker rendered completely unstyled, which is the same invisibility in a
+       new place. Caught by reading the markup, because nothing here renders. */
+    #vault-list .sec .scope { font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
       color: var(--accent); opacity: .8; margin-left: 6px; }
     #vault-add { display: flex; flex-direction: column; gap: 6px;
                  border-top: 1px solid var(--border); padding-top: 10px; }
