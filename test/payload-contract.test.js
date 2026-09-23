@@ -25,11 +25,20 @@ test('every event the settings file hooks is in the contract', () => {
   }
 });
 
+// FF12 (2026-09-23): effort.level and permission_mode are hooks.md "common
+// input fields" -- present on every real hooked event -- so every fixture in
+// this file that claims `ok: true` must carry them too. This is exactly the
+// file's own warning about fixtures supplying the shape they expect: a
+// fixture missing a field every real payload has is not a passing case, it is
+// a stale one.
+const COMMON = { effort: { level: 'high' }, permission_mode: 'bypass' };
+
 test('a payload carrying every required field passes', () => {
   const ok = checkPayload('PreToolUse', {
     hook_event_name: 'PreToolUse',
     tool_name: 'Agent',
     tool_input: { subagent_type: 'code-reviewer' },
+    ...COMMON,
   });
   assert.deepStrictEqual(ok.missing, []);
   assert.strictEqual(ok.ok, true);
@@ -49,8 +58,17 @@ test('a field the host reads only for SOME tools is not reported missing', () =>
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
     tool_input: { command: 'echo hi' },
+    ...COMMON,
   });
   assert.strictEqual(res.ok, true, JSON.stringify(res.missing));
+});
+
+test('effort.level and permission_mode are required on every event, since every real payload carries them', () => {
+  for (const event of Object.keys(CONTRACT)) {
+    const spec = CONTRACT[event];
+    assert.ok(spec.fields['effort.level'], `${event} is missing effort.level from the contract`);
+    assert.ok(spec.fields.permission_mode, `${event} is missing permission_mode from the contract`);
+  }
 });
 
 test('an unknown event is reported rather than silently passing', () => {
@@ -82,6 +100,7 @@ test('nested fields are addressed by path', () => {
     tool_name: 'Agent',
     tool_input: { subagent_type: 'x' },
     tool_response: {},
+    ...COMMON,
   });
   assert.strictEqual(res.ok, true, JSON.stringify(res.missing));
 });
