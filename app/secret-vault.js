@@ -196,7 +196,7 @@ function validLockRecord(lock) {
   return true;
 }
 
-function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
+function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } = {}) {
   if (!file) throw new Error('createVault: file is required');
   if (!crypto) throw new Error('createVault: crypto is required');
 
@@ -797,7 +797,12 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT } = {}) {
     // lock leaves a lockfile behind, which is why that module has STALE_MS and
     // breaks a lock older than it. A crash therefore costs a delay, not a
     // permanent tombstone over the vault.
-    return withFileLock(`${file}.lock`, () => persistLocked(candidate, opts));
+    // The deadline is injectable for the same reason `scrypt` is: the default is
+    // 3s, and a test that deliberately collides two handles waits it out. One
+    // such test is fine; under a mutation run, where every mutant re-runs the
+    // whole command, 3s becomes 3s x N. Production always takes the default.
+    return withFileLock(`${file}.lock`, () => persistLocked(candidate, opts),
+      Number.isFinite(lockDeadlineMs) ? { deadlineMs: lockDeadlineMs } : {});
   }
 
   function persistLocked(candidate, opts = {}) {

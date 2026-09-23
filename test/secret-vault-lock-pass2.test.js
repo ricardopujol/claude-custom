@@ -44,7 +44,10 @@ const fakeCrypto = () => ({
 
 // Cheap derivation; the real parameters are pinned in the sibling suite.
 const FAST = { N: 1024, r: 8, p: 1, keylen: 32, maxmem: 32 * 1024 * 1024 };
-const open = (file) => createVault({ file, crypto: fakeCrypto(), scrypt: FAST });
+// A short lock deadline as well as cheap derivation. The G1 test deliberately
+// collides two handles, and the default 3s deadline is a real wait -- fine once,
+// ruinous under a mutation run where every mutant re-runs the whole command.
+const open = (file) => createVault({ file, crypto: fakeCrypto(), scrypt: FAST, lockDeadlineMs: 120 });
 const KEY = 'correct horse battery staple';
 const ANY = { project: 'C:/any' };
 const readVault = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
