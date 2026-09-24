@@ -19,8 +19,21 @@
     "Stryker's sandbox is a copy of. They kill no mutant, because nothing they",
     "assert is an expression a mutator can reach."
   ],
+  "_comment_rule_is_enforced": [
+    "THE RULE ABOVE IS NOW A TEST, because I broke it by hand twice in the two",
+    "commits immediately after writing it. Mortimer found six test files that",
+    "exercise mutated modules and were absent from `command` -- including the two",
+    "newest, which are where H1-H5 and I1 are tested, so the most recently changed",
+    "code on the branch was being measured against a suite that could not see its",
+    "tests. Those kills existed; Stryker was never told to run them.",
+    "",
+    "A rule written in a comment is a rule nothing enforces. See",
+    "test/stryker-config.test.js: every module in `mutate` must have every test",
+    "file that requires it present in `command`, derived by reading the requires",
+    "rather than by restating the list."
+  ],
   "commandRunner": {
-    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/atomic-write.test.js test/store.test.js test/secret-vault.test.js test/secret-vault-lock.test.js test/secret-vault-lock-findings.test.js test/secret-vault-lock-pass2.test.js test/secret-ipc.test.js test/vault-lock-display.test.js test/file-lock.test.js test/openrouter.test.js test/project-path.test.js test/handshake.test.js test/host-identity.test.js test/port-for-project.test.js test/launch-target.test.js test/project-picker.test.js test/projects-display.test.js test/usage-display.test.js test/roster-width.test.js test/mood-machine.test.js test/bridge-contract.test.js test/agent-tool-name.test.js"
+    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/atomic-write.test.js test/store.test.js test/secret-vault.test.js test/secret-vault-lock.test.js test/secret-vault-lock-findings.test.js test/secret-vault-lock-pass2.test.js test/secret-ipc.test.js test/vault-lock-display.test.js test/file-lock.test.js test/openrouter.test.js test/project-path.test.js test/handshake.test.js test/host-identity.test.js test/port-for-project.test.js test/launch-target.test.js test/project-picker.test.js test/projects-display.test.js test/usage-display.test.js test/roster-width.test.js test/mood-machine.test.js test/bridge-contract.test.js test/agent-tool-name.test.js test/vault-damaged-path.test.js test/vault-lock-pass3.test.js test/milestones.test.js test/bugvault.test.js test/providers.test.js test/mood-machine-kills.test.js"
   },
   "mutate": [
     "host/quota.js",

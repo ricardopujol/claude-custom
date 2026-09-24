@@ -235,3 +235,70 @@ test('H5: an undeletable leftover is still reported from inside the lock', () =>
   assert.strictEqual(res.leftovers.length, 1);
   assert.strictEqual(fs.existsSync(`${file}.lock`), false);
 });
+
+// ---------------------------------------------------------------------------
+// J1 -- the sweep must never make a successful melt look like a failure
+// ---------------------------------------------------------------------------
+
+test('J1: a sweep failure cannot reach the ok flag -- source-asserted, and here is why', () => {
+  // Dexter, PR #42, J1, and a defect in my own H5 fix. `withFileLock` throws if it
+  // cannot acquire within the deadline, and that throw escaped `melt()` AFTER the
+  // vault was replaced and `state`/`sessionKey` reassigned -- so the service
+  // reported `{ok:false}`, telling the user their melt failed when it had
+  // succeeded, and losing `preserved` with it. The retry was a dead end:
+  // `sessionKey` is `undefined` by then, so a second melt throws "melt is for a
+  // forgotten key: the vault is open".
+  //
+  // WHY THIS IS A SOURCE ASSERTION AND NOT A BEHAVIOURAL ONE, said plainly because
+  // a weak test pretending to be strong is worse than a weak test admitting it.
+  //
+  // I tried to force the interleaving and could not, and failing taught me
+  // something about the finding. `persist` and the sweep take the SAME lockfile,
+  // sequentially. Blocking it blocks persist FIRST -- melt then fails with
+  // "nothing was written", which is correct and is not J1. To reach J1 the lock
+  // must become contended in the instant BETWEEN the two acquisitions, and there
+  // is no seam in this module to force that: `sweepTemps` itself cannot throw (its
+  // readdir and unlink are both already caught), so the lock is the only throw
+  // source, and I cannot fail the second acquisition without failing the first.
+  //
+  // So J1 is narrower than "any melt under lock contention" -- it needs an
+  // antivirus grabbing the lockfile in that exact gap. Real, documented on this
+  // machine by host/file-lock.js, and not reproducible from here.
+  //
+  // This is the `verify/` gap Dexter has named four times, in its cheapest form
+  // yet: the behaviour is only observable in the assembled product. The single
+  // `withFileLock` around melt's three operations, which is on the follow-up
+  // branch, removes the gap entirely rather than making it testable.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'app', 'secret-vault.js'), 'utf8');
+
+  const at = src.indexOf('let leftovers;');
+  assert.ok(at > 0, 'melt must collect leftovers in a reassignable binding');
+  const region = src.slice(at, at + 700);
+
+  assert.match(region, /try\s*\{[\s\S]*withFileLock/,
+    'the lock acquisition for the sweep must be inside a try');
+  assert.match(region, /catch\s*\([\s\S]*leftovers\s*=/,
+    'and its failure must be folded INTO leftovers, never rethrown');
+
+  // The rule the code comment states, pinned so the next reader cannot widen it
+  // to "unlink failures only" again -- which is exactly the narrowing that caused
+  // J1, since I wrote that comment for an unlink and never folded in a lock.
+  assert.match(src, /must not make melt look like it failed/,
+    'the rule must stay written down beside the code that honours it');
+});
+
+test('J1: melt still reports genuine leftovers, and still reports preserved', () => {
+  // The regression half: the try/catch must not swallow the normal path. Both
+  // fields have to survive, because `preserved` is how a damaged vault's owner
+  // learns where their possibly-recoverable file went.
+  const { file } = damagedVault();
+  const dir = path.dirname(file);
+  fs.mkdirSync(path.join(dir, '.secrets-1-1.tmp'));      // an undeletable leftover
+
+  const res = open(file).melt();
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.leftovers.length, 1, 'a real leftover is still reported');
+  assert.ok(res.preserved, 'and preserved survives alongside it');
+  assert.ok(fs.existsSync(res.preserved));
+});

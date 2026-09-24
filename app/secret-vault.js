@@ -723,8 +723,44 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // rename`, which `host/atomic-write.js` treats as non-transient and whose
     // header explicitly steers the next reader toward "a caller bug" -- into the
     // wrong file entirely. No data is lost; the diagnosis is what breaks.
-    const leftovers = withFileLock(`${file}.lock`, sweepTemps,
-      Number.isFinite(lockDeadlineMs) ? { deadlineMs: lockDeadlineMs } : {});
+    // THE SWEEP CAN NEVER MAKE MELT LOOK LIKE IT FAILED. Dexter, PR #42, J1, and
+    // this is a defect in my own H5 fix -- introduced by the line above it.
+    //
+    // `withFileLock` THROWS if it cannot acquire within the deadline. That throw
+    // escaped `melt()` after the vault had already been replaced and `state` and
+    // `sessionKey` reassigned, so `secret-service.melt`'s catch reported
+    // `{ok: false, error: 'could not take the lock'}` -- telling the user their
+    // melt failed when it had succeeded, and losing `preserved` with it, so a
+    // damaged vault's owner was not told where their possibly-recoverable file
+    // went.
+    //
+    // The retry was a dead end: `sessionKey` is `undefined` by then, so a second
+    // `melt()` throws "melt is for a forgotten key: the vault is open, so destroy
+    // the key instead" -- advice about a key they do not have, on a vault that is
+    // already gone.
+    //
+    // THE COMMENT DIRECTLY ABOVE STATES THE RULE THIS BROKE: a leftover we could
+    // not remove must not make melt look like it failed. I wrote that for an
+    // UNLINK failure and never folded in a LOCK-ACQUISITION failure. Third time
+    // this branch that a comment of mine asserted a property the code did not
+    // implement.
+    //
+    // Not damaged-only, which is what makes it worth fixing before merge: the
+    // sweep runs on EVERY melt, so an ordinary forgotten-key melt on a healthy
+    // vault could report failure after succeeding. The trigger is the one
+    // host/file-lock.js already names -- a lockfile held open without
+    // share-delete, "an antivirus scanner or a crashed host routinely does on
+    // Windows" -- the same adversary atomic-write.js's retry exists for, measured
+    // on this machine. No second window required.
+    let leftovers;
+    try {
+      leftovers = withFileLock(`${file}.lock`, sweepTemps,
+        Number.isFinite(lockDeadlineMs) ? { deadlineMs: lockDeadlineMs } : {});
+    } catch (err) {
+      // Reported as a leftover, which is exactly what it is: temps we could not
+      // sweep, for a reason we can name. The vault IS gone either way.
+      leftovers = [{ path: path.dirname(file), why: `could not sweep: ${err.message}` }];
+    }
     // `preserved` names the file we moved aside, so the panel can tell the user
     // where their possibly-recoverable secrets went. A copy nobody can find is
     // the same as no copy.
