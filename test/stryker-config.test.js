@@ -43,6 +43,7 @@ const REPO_SCANNING = new Set([
   'sources-parse.test.js',    // node --check over the tree
   'project-dir.test.js',      // asserts about real directories
   'stryker-config.test.js',   // this file: its subject is the config
+  'source-contracts.test.js', // asserts on product modules' SOURCE TEXT
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -118,4 +119,57 @@ test('the timeout leaves room for the real key derivation', () => {
   assert.ok(conf.timeoutMS >= 60000,
     `timeoutMS is ${conf.timeoutMS}: too low for a 200ms scrypt under `
     + 'instrumentation, and a timeout is scored as a kill');
+});
+
+test('no test in the command reads a MUTATED module as text', () => {
+  // Mortimer, PR #42 second run, and the hole this closes is worse than the one
+  // the first test closes -- it produces NO NUMBER rather than a wrong one.
+  //
+  // Stryker's instrumentation rewrites the source of every mutated module. A test
+  // in the command that reads that source and asserts on its CODE SHAPE is red on
+  // the UNMUTATED BASELINE inside the sandbox, which aborts the entire dry run:
+  // 574 of 575 passing, one failure, no mutation score at all. My J1 test did
+  // exactly that.
+  //
+  // THE FINER RULE, measured rather than assumed. FIVE tests in the command read a
+  // mutated module's text; only one aborted. The difference is what they assert on:
+  //
+  //   - COMMENT text survives instrumentation (Stryker preserves comments), so
+  //     four of them passed -- by luck rather than by rule, since nothing
+  //     guarantees that.
+  //   - CODE shape does not survive, because code is exactly what is rewritten.
+  //
+  // A guard that only flagged code-shape assertions would need to parse intent, so
+  // this flags the READ, which is the thing that is statically visible. The four
+  // comment-text cases are moved to test/source-contracts.test.js as they are
+  // touched; the allow-list below is what remains, and it must only SHRINK.
+  const conf2 = JSON.parse(fs.readFileSync(path.join(ROOT, 'stryker.conf.json'), 'utf8'));
+  const mutatedBase = new Set(conf2.mutate.map(m => path.basename(m)));
+  const inCommand = [...conf2.commandRunner.command.matchAll(/test\/([a-z0-9-]+\.test\.js)/g)]
+    .map(m => m[1]);
+
+  // Fragile-but-passing today: each asserts on COMMENT text only. Moving one here
+  // to source-contracts.test.js is always an improvement; adding one never is.
+  const TOLERATED = new Set([
+    'openrouter.test.js',       // asserts a comment in host/openrouter.js
+    'store.test.js',            // asserts the corrected header in host/store.js
+    'secret-vault-lock.test.js' // asserts the B2(a) limit paragraph
+  ]);
+
+  const offenders = [];
+  for (const file of inCommand) {
+    if (TOLERATED.has(file)) continue;
+    const src = fs.readFileSync(path.join(ROOT, 'test', file), 'utf8');
+    for (const lit of [...src.matchAll(/['"]([a-z0-9-]+\.js)['"]/g)].map(m => m[1])) {
+      if (mutatedBase.has(lit) && /readFileSync/.test(src)) {
+        offenders.push(`${file} reads ${lit}`);
+        break;
+      }
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    'these tests are in the mutation command AND read a mutated module as text. '
+    + 'Instrumentation rewrites that text, so an assertion on code shape aborts '
+    + 'the whole dry run and the gate produces no number. Move the assertion to '
+    + `test/source-contracts.test.js: ${offenders.join('; ')}`);
 });

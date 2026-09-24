@@ -171,17 +171,15 @@ test('the SECOND fail-open case cannot be pinned as a string property, and that 
     'case folding: correct on ordinary NTFS, wrong under a case-sensitive flag, '
     + 'and indistinguishable from here');
 
-  // What IS assertable is that the acceptance is written down where the next
-  // reader will look. Miguel: the load-bearing edit is upstream, in the module
-  // that owns the gap list, not only in the consumer.
-  const fs = require('fs');
-  const path = require('path');
-  const header = fs.readFileSync(
-    path.join(__dirname, '..', 'host', 'project-path.js'), 'utf8');
-  assert.match(header, /FAILS? OPEN/,
-    'the two fail-open cases must be named as such in host/project-path.js');
-  assert.match(header, /credential|secret/i,
-    'and the header must say the consequence changed, since that is what PR #40 changed');
+  // The acceptance must also be WRITTEN DOWN where the next reader will look, and
+  // that assertion lives in test/source-contracts.test.js rather than here.
+  //
+  // Mortimer, PR #42: this file is in the mutation command, and reading a mutated
+  // module's source inside a command-listed test is what aborted a whole dry run
+  // when the assertion was on code shape. This one is on COMMENT text, which
+  // survives Stryker's instrumentation -- so it passed, by luck rather than by
+  // rule, and nothing guarantees comments keep being preserved. Moved for the same
+  // reason the shared-scope allow-list is excluded: its subject is the repository.
 });
 
 test('deleting a separator must not merge two DIFFERENT projects', () => {

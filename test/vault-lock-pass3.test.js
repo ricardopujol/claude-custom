@@ -240,53 +240,22 @@ test('H5: an undeletable leftover is still reported from inside the lock', () =>
 // J1 -- the sweep must never make a successful melt look like a failure
 // ---------------------------------------------------------------------------
 
-test('J1: a sweep failure cannot reach the ok flag -- source-asserted, and here is why', () => {
-  // Dexter, PR #42, J1, and a defect in my own H5 fix. `withFileLock` throws if it
-  // cannot acquire within the deadline, and that throw escaped `melt()` AFTER the
-  // vault was replaced and `state`/`sessionKey` reassigned -- so the service
-  // reported `{ok:false}`, telling the user their melt failed when it had
-  // succeeded, and losing `preserved` with it. The retry was a dead end:
-  // `sessionKey` is `undefined` by then, so a second melt throws "melt is for a
-  // forgotten key: the vault is open".
-  //
-  // WHY THIS IS A SOURCE ASSERTION AND NOT A BEHAVIOURAL ONE, said plainly because
-  // a weak test pretending to be strong is worse than a weak test admitting it.
-  //
-  // I tried to force the interleaving and could not, and failing taught me
-  // something about the finding. `persist` and the sweep take the SAME lockfile,
-  // sequentially. Blocking it blocks persist FIRST -- melt then fails with
-  // "nothing was written", which is correct and is not J1. To reach J1 the lock
-  // must become contended in the instant BETWEEN the two acquisitions, and there
-  // is no seam in this module to force that: `sweepTemps` itself cannot throw (its
-  // readdir and unlink are both already caught), so the lock is the only throw
-  // source, and I cannot fail the second acquisition without failing the first.
-  //
-  // So J1 is narrower than "any melt under lock contention" -- it needs an
-  // antivirus grabbing the lockfile in that exact gap. Real, documented on this
-  // machine by host/file-lock.js, and not reproducible from here.
-  //
-  // This is the `verify/` gap Dexter has named four times, in its cheapest form
-  // yet: the behaviour is only observable in the assembled product. The single
-  // `withFileLock` around melt's three operations, which is on the follow-up
-  // branch, removes the gap entirely rather than making it testable.
-  const src = fs.readFileSync(
-    path.join(__dirname, '..', 'app', 'secret-vault.js'), 'utf8');
-
-  const at = src.indexOf('let leftovers;');
-  assert.ok(at > 0, 'melt must collect leftovers in a reassignable binding');
-  const region = src.slice(at, at + 700);
-
-  assert.match(region, /try\s*\{[\s\S]*withFileLock/,
-    'the lock acquisition for the sweep must be inside a try');
-  assert.match(region, /catch\s*\([\s\S]*leftovers\s*=/,
-    'and its failure must be folded INTO leftovers, never rethrown');
-
-  // The rule the code comment states, pinned so the next reader cannot widen it
-  // to "unlink failures only" again -- which is exactly the narrowing that caused
-  // J1, since I wrote that comment for an unlink and never folded in a lock.
-  assert.match(src, /must not make melt look like it failed/,
-    'the rule must stay written down beside the code that honours it');
-});
+// J1's SOURCE assertion lives in test/source-contracts.test.js, not here.
+//
+// Mortimer, PR #42 run 2: it read `app/secret-vault.js` as text and asserted on
+// its CODE SHAPE -- and Stryker's instrumentation rewrites that text, so the
+// assertion was red on the UNMUTATED BASELINE inside the sandbox and ABORTED THE
+// WHOLE DRY RUN. 574 of 575 passing, one failure, no mutation number at all.
+//
+// That is this project's documented worst failure mode: the gate does not fail
+// loudly, it simply never produces a number, and a branch can reach merge with
+// item 3 nominally satisfied and actually unmeasured. Caused by a test I wrote to
+// close J1.
+//
+// Any assertion about a mutated module's SOURCE TEXT belongs behind the
+// repo-scanning exemption, for the same reason the shared-scope allow-list does:
+// its subject is the repository, not a function, so it kills no mutant and cannot
+// survive instrumentation of the thing it reads.
 
 test('J1: melt still reports genuine leftovers, and still reports preserved', () => {
   // The regression half: the try/catch must not swallow the normal path. Both
