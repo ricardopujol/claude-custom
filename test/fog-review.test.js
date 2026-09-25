@@ -14,6 +14,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const {
   readFog, brightness, relativeTo,
@@ -25,7 +26,7 @@ const iso = ms => new Date(ms).toISOString();
 const CWD = 'C:/Users/ricar/VibeCode/proj';
 
 function projectDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-fogr-'));
+  const dir = tmpDir('cc-fogr-');
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   return { dir, project };

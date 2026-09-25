@@ -25,8 +25,9 @@ const os = require('os');
 const path = require('path');
 
 const { withFileLock, isStale, STALE_MS, DEADLINE_MS } = require('../host/file-lock');
+const { tmpDir } = require('./tmp-dir');
 
-const tmpdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lock-'));
+const tmpdir = () => tmpDir('cc-lock-');
 const lockIn = (dir) => path.join(dir, 'thing.json.lock');
 
 test('the work runs and its value comes back', () => {

@@ -112,7 +112,7 @@ test('every hook carries a timeout so a wedged helper cannot hang a tool call', 
 });
 
 test('writeHarnessSettings writes parseable JSON and returns its path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-writer-'));
+  const dir = tmpDir('cc-writer-');
   const p = writeHarnessSettings(dir, opts);
   assert.ok(fs.existsSync(p), 'file not written');
   const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -121,7 +121,7 @@ test('writeHarnessSettings writes parseable JSON and returns its path', () => {
 });
 
 test('writeHarnessSettings creates the directory if absent', () => {
-  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-writer-')), 'nested', 'deep');
+  const dir = path.join(tmpDir('cc-writer-'), 'nested', 'deep');
   const p = writeHarnessSettings(dir, opts);
   assert.ok(fs.existsSync(p));
   fs.rmSync(path.dirname(path.dirname(dir)), { recursive: true, force: true });
@@ -138,6 +138,7 @@ test('rejects a missing pipe name', () => {
 // --- claude argv construction -------------------------------------------
 
 const { buildClaudeArgs } = require('../host/settings-writer');
+const { tmpDir } = require('./tmp-dir');
 
 test('omits --settings entirely when the native helper is absent', () => {
   // The helper arrives in step 2. Until it exists, pointing hooks at a missing
@@ -233,7 +234,7 @@ test('two hosts get two settings FILES, so neither can redirect the other\'s hoo
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
+  const dir = tmpDir('cc-settings-');
 
   const a = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-A' }, 7701);
   const b = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-B' }, 7702);
@@ -252,7 +253,7 @@ test('the shared settings file is STILL written, because probes read it by that 
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
+  const dir = tmpDir('cc-settings-');
 
   writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-A' }, 7701);
   assert.ok(fs.existsSync(path.join(dir, 'harness-settings.json')),

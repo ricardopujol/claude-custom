@@ -6,8 +6,9 @@ const os = require('os');
 const path = require('path');
 
 const { backgroundFor, DIM_OPACITY } = require('../host/background');
+const { tmpDir } = require('./tmp-dir');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-bg-'));
+const tmp = () => tmpDir('cc-bg-');
 
 test('generates a background for a project', () => {
   const dir = tmp();

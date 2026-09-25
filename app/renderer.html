@@ -129,6 +129,25 @@
     .secret-field input { flex: 1; min-width: 0; }
     .secret-field button { flex: 0 0 auto; font-size: 11px; padding: 6px 8px; }
     #vault-secret[type="text"] { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+    #vault-lock { display: flex; flex-direction: column; gap: 6px; }
+    /* `lock-note`, not `locked-note`: the same element carries the "unlocked"
+       text in open-with-key, so the old name lied on the one screen where the
+       state is the whole point (Miguel, PR #42, minors). */
+    #vault-lock .lock-note { font-size: 11px; color: var(--accent); }
+    /* A label that is present for a screen reader and absent on screen. The
+       three password fields had placeholders only, which is a WCAG 3.3.2
+       failure on a field holding a vault key (Miguel A7). */
+    #vault-lock .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+    #vault-lock .lock-row { display: flex; gap: 6px; align-items: center; }
+    #vault-lock input { flex: 1; min-width: 0; }
+    /* Melt is destructive and irreversible, so it does not look like the rest.
+       It is also not offered until the second click. */
+    #vault-lock .melt { color: #e0674f; border-color: #e0674f; }
+    #vault-lock .melt-warn { font-size: 10.5px; color: #e0674f; line-height: 1.45; }
+    #vault-lock .keyless { font-size: 10.5px; color: var(--dim); }
     #vault-shared-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px;
       color: var(--dim); cursor: pointer; }
     #vault-shared-row input { margin: 0; }
@@ -662,6 +681,10 @@
           </div>
         </div>
         <div class="panel" data-panel="vault" id="vault-body">
+          <!-- The lock. Rendered from main's authoritative state, never from a
+               guess held here: a padlock the window decides is a padlock the
+               window can be wrong about. -->
+          <div id="vault-lock"></div>
           <input id="vault-search" type="search" placeholder="search labels" autocomplete="off" />
           <div id="vault-list"></div>
           <form id="vault-add" autocomplete="off">
@@ -753,6 +776,7 @@
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
   <script src="./roster-width.js"></script>
+  <script src="./vault-lock-display.js"></script>
   <script src="./career-display.js"></script>
   <script src="./quota-display.js"></script>
   <script src="./bugvault-display.js"></script>

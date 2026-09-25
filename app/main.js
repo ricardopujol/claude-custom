@@ -280,6 +280,22 @@ function createWindow(spawnedHost) {
     // the vault file itself is per-INSTALL, which is why the scope has to be
     // enforced rather than implied by where the file lives.
     project: PROJECT_CWD,
+    // DELIBERATELY NOT WRAPPED IN try/catch, and that rests on an invariant:
+    // `createVault` CONSTRUCTS FOR ANY BYTES ON DISK, reporting the vault as
+    // healthy or damaged rather than throwing.
+    //
+    // Miguel asked for this line, and the history is why. When `load()` threw on
+    // a malformed lock record, this call took the whole window down with it --
+    // no panel, no damage message, no melt button (Dexter G3). Wrapping it here
+    // would have been worse: a window whose vault panel is silently dead is the
+    // class this repo has already paid for four times (careerDisplay,
+    // quotaDisplay, isPanelToggle, `.vault-row`). So the throw was removed
+    // instead of the crash being caught.
+    //
+    // The invariant is pinned as a RULE, not by example, in
+    // test/vault-damaged-path.test.js -- eighteen adversarial byte shapes
+    // including a UTF-8 BOM. If you add a throw to `load()`, that test fails and
+    // this comment is what it means.
     vault: createVault({
       file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
       crypto: safeStorage,
@@ -298,6 +314,23 @@ function createWindow(spawnedHost) {
   ipcMain.handle('secrets:remove', (e, id) => (fromWindow(e) ? secrets.remove(id) : { ok: false }));
   ipcMain.handle('secrets:reveal', (e, id) => (fromWindow(e) ? secrets.reveal(id) : { ok: false }));
   ipcMain.handle('secrets:copy', (e, id) => (fromWindow(e) ? secrets.copy(id) : { ok: false }));
+
+  // The lock. Same `fromWindow` gate as everything above it: a handler that
+  // answers anyone is not a boundary.
+  // `hasKey: true` as well as `locked: true`, and `count: null`. An unauthorized
+  // sender must get the shape that draws as LOCKED and reveals nothing --
+  // `hasKey: false` with `locked: true` was already safe, but it says "locked
+  // vault with no key", which is not a state that exists. Now this default and
+  // the service's (secret-service.js, Dexter F6 / Miguel A2) are the same object.
+  ipcMain.handle('secrets:lockState', (e) =>
+    (fromWindow(e) ? secrets.lockState() : { hasKey: true, locked: true, count: null }));
+  ipcMain.handle('secrets:setKey', (e, key) =>
+    (fromWindow(e) ? secrets.setKey(key) : { ok: false }));
+  ipcMain.handle('secrets:unlock', (e, key) =>
+    (fromWindow(e) ? secrets.unlock(key) : { ok: false }));
+  ipcMain.handle('secrets:lock', (e) => (fromWindow(e) ? secrets.lock() : { ok: false }));
+  ipcMain.handle('secrets:removeKey', (e) => (fromWindow(e) ? secrets.removeKey() : { ok: false }));
+  ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
 
   // Headless verification of the secret store. The unit tests inject a fake
   // cipher, so they say nothing about whether DPAPI actually works here; this

@@ -497,6 +497,264 @@ function hideRevealed() {
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// --- the vault lock ----------------------------------------------------------
+// Every decision lives in app/vault-lock-display.js; this draws what it says.
+//
+// The melt confirmation is held HERE, and it is reset in renderVaultLock
+// whenever the state it was armed against is no longer the state on screen --
+// so an armed confirmation cannot survive a lock, an unlock or a background
+// re-render and fire against a vault the user is no longer looking at.
+//
+// Dexter F8: that sentence used to be a comment describing a reset that did not
+// exist. The flag was cleared only inside the click handler, so the input path
+// (`renderVault()` on typing) re-rendered with the confirmation still armed. He
+// could not turn it into an unintended melt, and was careful to say the three
+// reasons were incidental rather than designed -- chief among them that the flag
+// is read AFTER the awaits below, so a late `melt-cancel` still wins. A comment
+// asserting a safety property the code does not have is worse than no comment,
+// because it stops the next reader checking.
+let confirmingMelt = false;
+let lastLockState = null;
+
+async function renderVaultLock() {
+  const el = document.getElementById('vault-lock');
+  // `secrets` itself, before reaching into it: renderVault guards this and this
+  // path did not, so an old preload turned a missing feature into a TypeError.
+  if (!el || !window.harness || !window.harness.secrets) return null;
+  if (!window.harness.secrets.lockState) return null;
+
+  const state = await window.harness.secrets.lockState();
+
+  // THE COUNT COMES FROM lockState, NOT FROM list(). Dexter F5 / Miguel B3,
+  // found independently, and it was dead code twice over: the renderer passed
+  // `null` exactly when the display reads it, and it fetched the list only when
+  // the vault was already unlocked. So the "All 6 secrets" branch was
+  // unreachable and every user read the slogan the module exists to avoid.
+  //
+  // `list()` cannot supply it -- a locked vault returns [] by design and must
+  // keep doing so. A count is not a secret: no label, no note, no value, and the
+  // person about to destroy them owns them.
+  const d = window.vaultLockDisplay(state, {
+    confirmingMelt,
+    entryCount: state && typeof state.count === 'number' ? state.count : null,
+  });
+
+  // Reset an armed confirmation when the state it was armed against is gone.
+  // Compared on the drawn state rather than the raw object so that a re-render
+  // of the SAME state -- which is what typing in the filter causes -- does not
+  // cancel a confirmation the user is in the middle of reading.
+  // FROM THE DISPLAY, not recomputed here. Dexter I1: this line used to collapse
+  // 'confirm-melt' -> 'locked' itself, which meant the renderer had to know the
+  // display's state vocabulary -- and when a fifth state arrived with its own
+  // confirmation, this did not know about it, so arming melt on a damaged vault
+  // disarmed itself in the same tick and the vault had no working action at all.
+  const stamp = d.stamp || d.state;
+  if (lastLockState !== null && stamp !== lastLockState && confirmingMelt) {
+    confirmingMelt = false;
+    lastLockState = stamp;
+    return renderVaultLock();          // redraw without the armed confirmation
+  }
+  lastLockState = stamp;
+
+  const note = `<div class="lock-note">${escapeHtml(d.note)}</div>`;
+
+  // A LABELLED password field, every time. Miguel A7: all three inputs had only
+  // a placeholder, which is a WCAG 3.3.2 failure on the field holding a vault
+  // key. The label is visually hidden rather than dropped -- the control is
+  // obvious to a sighted user from the button beside it, and unlabelled to
+  // everyone else.
+  const keyField = (labelText, ph, ac) =>
+    `<label class="sr-only" for="vault-key">${escapeHtml(labelText)}</label>` +
+    `<input id="vault-key" type="password" placeholder="${escapeHtml(ph)}" autocomplete="${ac}" />`;
+
+  // THE DAMAGED PANEL, which offers no password field at all. Dexter H1: the
+  // ordinary locked panel invited the user to guess at a file where no password
+  // can work, and then offered melt as the only alternative.
+  if (d.state === 'damaged' || d.state === 'confirm-melt-damaged') {
+    el.innerHTML =
+      `<div class="melt-warn" role="alert" aria-live="polite">${escapeHtml(d.note)}</div>` +
+      (d.state === 'confirm-melt-damaged'
+        ? `<div class="melt-warn" id="melt-warning">${escapeHtml(d.meltWarning)}</div>` +
+          '<div class="lock-row">' +
+            '<button data-lock="melt-cancel" data-autofocus="1">Cancel</button>' +
+            '<button class="melt" data-lock="melt-confirm" aria-describedby="melt-warning">' +
+              'Start a new empty vault</button>' +
+          '</div>'
+        : '<div class="lock-row">'
+          + '<button class="melt" data-lock="melt-ask">Start over with an empty vault…</button>'
+          + '</div>');
+    return d;
+  }
+
+  if (d.state === 'locked' || d.state === 'confirm-melt') {
+    el.innerHTML = note +
+      '<div class="lock-row">' +
+        keyField('Vault key', 'key', 'current-password') +
+        '<button data-lock="unlock">Open</button>' +
+      '</div>' +
+      (d.state === 'confirm-melt'
+        // `aria-describedby` ties the warning to the destructive button, and
+        // CANCEL COMES FIRST. Miguel A7: the melt button used to sit before
+        // Cancel in tab order, two tabs and a space from the password field.
+        ? `<div class="melt-warn" id="melt-warning">${escapeHtml(d.meltWarning)}</div>` +
+          '<div class="lock-row">' +
+            '<button data-lock="melt-cancel" data-autofocus="1">Cancel</button>' +
+            '<button class="melt" data-lock="melt-confirm" aria-describedby="melt-warning">' +
+              'Melt it, I lost the key</button>' +
+          '</div>'
+        : '<div class="lock-row"><button class="melt" data-lock="melt-ask">Forgot the key…</button></div>');
+    return d;
+  }
+
+  if (d.state === 'open-no-key') {
+    el.innerHTML = `<div class="keyless">${escapeHtml(d.note)}</div>` +
+      '<div class="lock-row">' +
+        keyField('Choose a vault key', 'set a key', 'new-password') +
+        '<button data-lock="set">Close with a key</button>' +
+      '</div>';
+    return d;
+  }
+
+  el.innerHTML = note +
+    '<div class="lock-row">' +
+      '<button data-lock="lock">Lock</button>' +
+      keyField('Replacement vault key', 'new key', 'new-password') +
+      '<button data-lock="set">Replace</button>' +
+      '<button data-lock="remove">Remove key</button>' +
+    '</div>';
+  return d;
+}
+
+// Put focus somewhere useful after a redraw. `innerHTML` destroys the input, so
+// after a failed unlock -- the exact moment the user wants to type again -- focus
+// fell to <body> and they had to tab back blind (Miguel A7).
+//
+// In `confirm-melt` the focus goes to CANCEL, never to the destructive button.
+function focusLockPanel(el, hadFocus) {
+  const cancel = el.querySelector('[data-autofocus]');
+  if (cancel) { cancel.focus(); return; }
+  if (!hadFocus) return;              // don't steal focus the user put elsewhere
+  const key = el.querySelector('#vault-key');
+  if (key) key.focus();
+}
+
+// Delegated, so the controls survive every re-render without rebinding.
+async function runLockAction(act) {
+  const keyEl = document.getElementById('vault-key');
+
+  // READ AND CLEAR BEFORE THE FIRST await. Miguel A3: the comment said "the key
+  // is cleared whatever happened", but the clear sat after the IPC awaits -- so
+  // if an invoke rejected, the async listener died on an unhandled rejection and
+  // the password stayed on screen. In the very case the comment names as most
+  // likely to leave one there.
+  const key = keyEl ? keyEl.value : '';
+  if (keyEl) keyEl.value = '';
+
+  // Armed only by the ask, and cleared by anything else. A confirmation that
+  // outlives the click that raised it is a confirmation nobody gave.
+  if (act === 'melt-ask') { confirmingMelt = true; await renderVaultLock(); return; }
+  if (act === 'melt-cancel') { confirmingMelt = false; await renderVaultLock(); return; }
+  confirmingMelt = false;
+
+  // Wrapped, so a failing bridge shows the user something instead of dying
+  // silently in a listener. An unhandled rejection here reads as "the button
+  // does nothing", which in a lock panel is indistinguishable from being locked.
+  let res;
+  try {
+    if (act === 'unlock') res = await window.harness.secrets.unlock(key);
+    else if (act === 'set') res = await window.harness.secrets.setKey(key);
+    else if (act === 'lock') res = await window.harness.secrets.lock();
+    else if (act === 'remove') res = await window.harness.secrets.removeKey();
+    else if (act === 'melt-confirm') res = await window.harness.secrets.melt();
+    else res = { ok: true };
+  } catch (err) {
+    res = { ok: false, error: `the vault did not answer: ${err && err.message ? err.message : err}` };
+  }
+
+  const el = document.getElementById('vault-lock');
+  const d = await renderVaultLock();
+  const notes = [];
+
+  if (!res || res.ok !== true) {
+    // A DAMAGED HEADER IS NOT A WRONG KEY, and the difference decides whether
+    // the user should melt. Dexter F1: both used to print "that key does not
+    // open this vault", and the only other button on the panel is the
+    // irreversible one -- so the app pushed people toward destroying a vault it
+    // could have opened.
+    if (res && res.damaged) notes.push(res.error);
+    else if (res && res.wrongKey) notes.push('that key does not open this vault');
+    else notes.push((res && res.error) || 'that did not work');
+  }
+
+  // Things that succeeded but cost something the user must know about.
+  if (res && res.ok === true) {
+    if (Array.isArray(res.failed) && res.failed.length) {
+      // Dexter F3: entries a rekey could not carry. They still exist and are
+      // still wrapped under the OLD key, so they are unreadable now -- naming
+      // them is the only way the user can delete the broken one.
+      notes.push('these secrets could not be re-keyed and are unreadable, '
+        + 'delete and re-add them: '
+        + res.failed.map(f => f.label || f.id).join(', '));
+    }
+    if (res.preserved) {
+      // Dexter H2: the damaged vault was moved aside rather than destroyed,
+      // because the app had just told this user their secrets might be
+      // recoverable. Naming the path is the whole point -- a copy they cannot
+      // find is the same as no copy.
+      notes.push('your old vault could not be read, so it was MOVED ASIDE rather '
+        + `than deleted: ${res.preserved} — if those secrets matter, copy that `
+        + 'file somewhere safe. This harness will not read it again.');
+    }
+    if (Array.isArray(res.leftovers) && res.leftovers.length) {
+      // Dexter F2: copies melt could not remove. The promise shown to the user
+      // was "no backup and no recovery"; until these are gone it is not true.
+      notes.push('the vault is gone, but these copies could not be deleted and '
+        + 'still contain your labels and encrypted secrets — remove them by hand: '
+        + res.leftovers.map(l => l.path).join(', '));
+    }
+  }
+
+  if (notes.length && el) {
+    // `aria-live` so a screen reader announces the failure and the state change
+    // at all (Miguel A7) -- in confirm-melt that warning is the whole consent.
+    el.innerHTML = notes
+      .map(n => `<div class="melt-warn" role="alert" aria-live="assertive">${escapeHtml(n)}</div>`)
+      .join('') + el.innerHTML;
+  }
+  if (el) focusLockPanel(el, true);
+
+  if (d && d.showList) renderVault();
+  else {
+    const list = document.getElementById('vault-list');
+    if (list) list.innerHTML = '';
+  }
+}
+
+// Delegated, so the controls survive every re-render without rebinding.
+document.addEventListener('click', async (e) => {
+  const button = e.target.closest('#vault-lock button');
+  if (!button) return;
+  await runLockAction(button.dataset.lock);
+});
+
+// ENTER SUBMITS. Miguel A7: `#vault-lock` is not a form, so typing a key and
+// pressing Enter did nothing at all, with no hint why -- while `#vault-add`
+// directly below it IS a form, so the user has already learned the opposite
+// expectation from the panel one row down.
+//
+// Which action Enter means depends on the state, so it is taken from the first
+// non-destructive button in the row. Never melt: the destructive action requires
+// a deliberate click, and a keystroke is not one.
+document.addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter') return;
+  const input = e.target.closest('#vault-lock #vault-key');
+  if (!input) return;
+  e.preventDefault();
+  const panel = document.getElementById('vault-lock');
+  const submit = panel && panel.querySelector('button[data-lock="unlock"], button[data-lock="set"]');
+  if (submit) await runLockAction(submit.dataset.lock);
+});
+
 async function renderVault() {
   const list = document.getElementById('vault-list');
   if (!window.harness || !window.harness.secrets) {
@@ -509,6 +767,11 @@ async function renderVault() {
     return;
   }
   const query = document.getElementById('vault-search').value;
+  // The lock is drawn first and decides whether there is a list at all. Asking
+  // main rather than trusting a local flag: the window is not the authority on
+  // whether the vault is open.
+  const lockInfo = await renderVaultLock();
+  if (lockInfo && lockInfo.showList === false) { list.innerHTML = ''; return; }
   const entries = await window.harness.secrets.list(query);
   if (!entries.length) {
     list.innerHTML = `<div class="none">${query ? 'nothing matches that label.'
@@ -520,7 +783,19 @@ async function renderVault() {
     <div class="sec" data-id="${escapeHtml(e.id)}">
       <div class="row">
         <span class="label" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
-        ${e.shared ? '<span class="scope" title="visible from every project on this machine">shared</span>' : ''}
+        ${/* Miguel, PR #40, part 4. Narrowing legacy entries retroactively was the
+              right call -- a secret vanishing from a project that relies on it is a
+              disappearance the user cannot debug. But shipping a ONE-WAY DOOR WITH NO
+              SIGN is not: today someone sees `shared` on an old secret, wants it
+              scoped, and has no path, with nothing telling them one exists. It does:
+              delete it and add it again here.
+              Closed with a string rather than a feature. No new IPC, no new surface,
+              no new security question -- and a scope toggle does NOT belong in that
+              branch, because re-scoping is a renderer-driven privilege change and
+              would undo the one thing the branch got right: that the window does not
+              choose the scope. */ ''}
+        ${e.shared ? '<span class="scope" title="visible from every project on this machine'
+          + ' — to scope it to this project, delete it and add it again here">shared</span>' : ''}
         <button data-act="copy">Copy</button>
         <button data-act="reveal">Show</button>
         <button data-act="remove" title="delete permanently">×</button>
@@ -563,8 +838,33 @@ document.addEventListener('click', async (e) => {
   if (act === 'remove') {
     // No confirm dialog: an Electron modal blocks the whole window, and this
     // is a two-click action on a labelled card rather than a destructive sweep.
-    await window.harness.secrets.remove(id);
-    renderVault();
+    //
+    // THE RESULT IS READ. Dexter, PR #40, F6. This used to be
+    // `await remove(id); renderVault();` with the result dropped, so when
+    // `commit` threw -- the Windows EPERM/EBUSY rename path that
+    // host/atomic-write.js exists for, measured against this file on
+    // 2026-09-18 -- the window silently re-rendered with the entry still there.
+    // The x appears to do nothing, so the user clicks it again.
+    //
+    // Miguel's addition raises it: scoping gave `{ok:false}` a SECOND meaning.
+    // It used to mean only "already gone", which is benign and defensible to
+    // discard. It now also means "not yours to delete", and the renderer
+    // answered both by redrawing a row that is still there. Unreachable from
+    // today's UI because every card came from a scoped `list` -- and
+    // "unreachable from today's UI" is exactly the guarantee a second window or
+    // a future keyboard shortcut erases.
+    const res = await window.harness.secrets.remove(id);
+    await renderVault();
+    if (!res || res.ok !== true) {
+      const list = document.getElementById('vault-list');
+      const why = (res && res.error) ? res.error
+        : 'that secret was not deleted — it may already be gone, or not belong to this project';
+      if (list) {
+        list.innerHTML =
+          `<div class="err" role="alert" aria-live="assertive">${escapeHtml(why)}</div>`
+          + list.innerHTML;
+      }
+    }
   }
 });
 
