@@ -6,9 +6,10 @@ const os = require('os');
 const path = require('path');
 
 const { projectDirName, readUsage, EMPTY } = require('../host/usage');
+const { tmpDir } = require('./tmp-dir');
 
 function transcripts(cwd, files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-usage-'));
+  const root = tmpDir('cc-usage-');
   const dir = path.join(root, projectDirName(cwd));
   fs.mkdirSync(dir, { recursive: true });
   for (const [name, lines] of Object.entries(files)) {

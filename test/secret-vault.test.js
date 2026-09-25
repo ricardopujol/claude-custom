@@ -13,8 +13,9 @@ const os = require('os');
 const path = require('path');
 
 const { createVault: unboundVault, CLIPBOARD_CLEAR_MS } = require('../app/secret-vault');
+const { tmpDir } = require('./tmp-dir');
 
-const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vault-')), 'secrets.enc');
+const tmp = () => path.join(tmpDir('cc-vault-'), 'secrets.enc');
 
 // Stands in for Electron safeStorage. Reversible and obviously not real crypto:
 // the tests care about what the vault DOES with it, not about the cipher.

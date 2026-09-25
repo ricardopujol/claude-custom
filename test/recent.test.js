@@ -6,9 +6,10 @@ const os = require('os');
 const path = require('path');
 
 const { listRecentProjects } = require('../host/recent');
+const { tmpDir } = require('./tmp-dir');
 
 function projects(tree) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-recent-'));
+  const root = tmpDir('cc-recent-');
   for (const [dirName, sessions] of Object.entries(tree)) {
     const dir = path.join(root, dirName);
     fs.mkdirSync(dir, { recursive: true });
@@ -28,7 +29,7 @@ const entry = (cwd, input = 0, output = 0) => ({
 });
 
 test('an empty projects directory yields nothing', () => {
-  assert.deepStrictEqual(listRecentProjects({ projectsDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cc-')) }), []);
+  assert.deepStrictEqual(listRecentProjects({ projectsDir: tmpDir('cc-') }), []);
 });
 
 test('a missing projects directory yields nothing rather than throwing', () => {
@@ -106,7 +107,7 @@ test('honours a limit', () => {
 });
 
 test('a project with no transcripts is skipped', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-recent-'));
+  const root = tmpDir('cc-recent-');
   fs.mkdirSync(path.join(root, 'C--empty'), { recursive: true });
   assert.deepStrictEqual(listRecentProjects({ projectsDir: root }), []);
 });

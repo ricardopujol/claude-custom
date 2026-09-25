@@ -30,6 +30,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { createVault, SCRYPT, SALT_BYTES, IV_BYTES, TAG_BYTES,
         TEMP_PREFIX, TEMP_SUFFIX, validLockRecord } = require('../app/secret-vault');
@@ -40,7 +41,7 @@ const { createVault, SCRYPT, SALT_BYTES, IV_BYTES, TAG_BYTES,
 // a cheap test vault stays openable and cannot be mistaken for a real one.
 const FAST = { N: 1024, r: 8, p: 1, keylen: 32, maxmem: 32 * 1024 * 1024 };
 
-const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lock-')), 'secrets.enc');
+const tmp = () => path.join(tmpDir('cc-lock-'), 'secrets.enc');
 
 // Stands in for Electron safeStorage. Reversible and obviously not real crypto:
 // these tests care about what the vault DOES with it. Its reversibility is

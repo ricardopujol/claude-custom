@@ -20,9 +20,10 @@ const os = require('os');
 const path = require('path');
 
 const { detectRunner, parseResults, healthFrom, RUNNERS } = require('../host/health');
+const { tmpDir } = require('./tmp-dir');
 
 function repo(files) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hp-'));
+  const dir = tmpDir('cc-hp-');
   for (const [name, body] of Object.entries(files)) {
     const full = path.join(dir, name);
     fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -228,7 +229,7 @@ test("AGREES WITH THE REAL node:test REPORTER, bytes and all", () => {
   // invoking `npm test` from inside `npm test` recurses forever, which is
   // exactly what the first version of this test did.
   const { execFileSync } = require('child_process');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hp-run-'));
+  const dir = tmpDir('cc-hp-run-');
   fs.writeFileSync(path.join(dir, 'sample.test.js'), [
     "const test = require('node:test');",
     "const assert = require('node:assert');",

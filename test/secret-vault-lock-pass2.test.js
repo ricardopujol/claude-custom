@@ -29,8 +29,9 @@ const os = require('os');
 const path = require('path');
 
 const { createVault, TEMP_SUFFIX } = require('../app/secret-vault');
+const { tmpDir } = require('./tmp-dir');
 
-const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-p2-')), 'secrets.enc');
+const tmp = () => path.join(tmpDir('cc-p2-'), 'secrets.enc');
 
 const fakeCrypto = () => ({
   isEncryptionAvailable: () => true,

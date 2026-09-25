@@ -20,6 +20,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { readQuota, normalizeWindows, createQuotaAnnouncer, QUOTA_THRESHOLDS } =
   require('../host/quota');
@@ -43,7 +44,7 @@ const LIVE = () => ({
 });
 
 function credsFile(token = 'tok-' + 'x'.repeat(40)) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-quota-'));
+  const dir = tmpDir('cc-quota-');
   const p = path.join(dir, '.credentials.json');
   fs.writeFileSync(p, JSON.stringify({ claudeAiOauth: { accessToken: token } }));
   return p;

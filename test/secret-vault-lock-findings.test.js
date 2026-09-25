@@ -16,13 +16,14 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const {
   createVault, SCRYPT, SALT_BYTES, IV_BYTES, TAG_BYTES,
   TEMP_PREFIX, TEMP_SUFFIX, validLockRecord,
 } = require('../app/secret-vault');
 
-const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lockf-')), 'secrets.enc');
+const tmp = () => path.join(tmpDir('cc-lockf-'), 'secrets.enc');
 
 // Same stand-in for Electron safeStorage as the sibling suite. Reversible and
 // obviously not real crypto: these tests care what the vault DOES with it.

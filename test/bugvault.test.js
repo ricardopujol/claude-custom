@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 
 const { createStore } = require('../host/store');
+const { tmpDir } = require('./tmp-dir');
 
 const {
   createRecord, groupByCategory, detectionBreakdown, createBugVault, applyVaultAction, SEED_BUGS,
@@ -723,7 +724,7 @@ test('marking a bug fixed does not rewrite where it came from', () => {
 // side: every double ignores the name it is given, so nothing noticed that the
 // vault would address the wrong file.
 
-const realDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vault-'));
+const realDir = () => tmpDir('cc-vault-');
 
 test('the vault round-trips through a REAL store, under the real lock', () => {
   const dir = realDir();
