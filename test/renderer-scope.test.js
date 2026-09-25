@@ -273,3 +273,125 @@ test('every element id renderer.js reaches for at TOP LEVEL exists in renderer.h
   assert.deepStrictEqual(missing, [],
     `renderer.js reaches for these ids at top level and renderer.html has none of them: ${missing.join(', ')}`);
 });
+
+test('EVERY element id renderer.js reaches for exists in renderer.html, at any depth', () => {
+  // Miguel, PR #40, A7. The guard above scans TOP LEVEL only, because that is
+  // where a null `getElementById` throws and aborts the file. But a null deeper
+  // in is not harmless -- it is worse, because it is SILENT.
+  //
+  // `app/renderer.js` reads the Shared checkbox as
+  // `!!(sharedBox && sharedBox.checked)`, inside the submit handler. Rename or
+  // delete `vault-shared` in the HTML and the null-guard swallows it: `shared`
+  // is false forever, the user ticks a box that does nothing, no console error,
+  // suite green. A null-guard written for safety converts a loud failure into a
+  // permanent quiet wrong answer.
+  //
+  // This repo has now shipped that shape FOUR times -- careerDisplay,
+  // quotaDisplay, isPanelToggle, and `.vault-row`. Two of them were the same
+  // renderer.js/renderer.html drift this checks. It is a recurring class with a
+  // known guard, so the guard should cover the whole file.
+  //
+  // NOT a substring check against renderer.js. Miguel flagged the trap before I
+  // could walk into it again: `js.includes('vault-shared')` is satisfied by the
+  // `getElementById('vault-shared')` call itself, so it is true precisely when
+  // the bug is present. The comparison has to be against renderer.html.
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+
+  const ids = [...js.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(m => m[1]);
+  assert.ok(ids.length > 0, 'the scan must find something for this check to mean anything');
+
+  // THE INDIRECT IDS, which the first version of this guard missed and which
+  // matter more than the direct ones, because an indirection is where a static
+  // check usually gives up and a reader assumes it did not.
+  //
+  // Three call sites pass a VARIABLE: two `val = (id) => ...` helpers and the
+  // loop in `wireModelPanel`. My first version simply asserted no computed
+  // argument existed, and failed on all three -- a guard whose response to real
+  // code was to declare the code wrong. The ids are still statically knowable;
+  // they just travel one hop. So follow the hop instead of exempting it:
+  // `val('x')` call sites, and literal arrays handed to a getElementById loop.
+  for (const m of js.matchAll(/\bval\(['"]([^'"]+)['"]\)/g)) ids.push(m[1]);
+  for (const m of js.matchAll(/const ids = \[([^\]]+)\]/g)) {
+    for (const lit of m[1].matchAll(/['"]([^'"]+)['"]/g)) ids.push(lit[1]);
+  }
+
+  // Anything still computed is out of reach of a static check. There is nothing
+  // like that today; this asserts it rather than assuming it, so that adding one
+  // is a deliberate act with a name attached.
+  const computed = [...js.matchAll(/getElementById\(([^'")][^)]*)\)/g)]
+    .map(m => m[1].trim())
+    .filter(a => a !== 'id');   // the three helper parameters, followed above
+  assert.deepStrictEqual(computed, [],
+    'a computed getElementById argument cannot be checked statically -- ' +
+    'if one is added deliberately, exempt it here by name and say why');
+
+  const missing = [...new Set(ids)].filter(id => !html.includes(`id="${id}"`));
+  assert.deepStrictEqual(missing, [],
+    `renderer.js reaches for these ids and renderer.html has none of them: ${missing.join(', ')}`);
+});
+
+test('the deep-id guard actually catches a renamed id', () => {
+  // The guard above is a scan, and a scan that matches nothing passes. This
+  // pins that it would FAIL -- the check Miguel's A1 taught me to write, after
+  // my first version of a drift guard passed because the broken selector
+  // contained the string it searched for.
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+
+  assert.ok(js.includes("getElementById('vault-shared')"),
+    'precondition: the Shared checkbox is still read by this id');
+
+  const renamed = html.replace('id="vault-shared"', 'id="vault-shared-RENAMED"');
+  assert.notStrictEqual(renamed, html, 'precondition: the id exists in the markup');
+
+  const ids = [...new Set(
+    [...js.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(m => m[1]))];
+  assert.ok(ids.filter(id => !renamed.includes(`id="${id}"`)).includes('vault-shared'),
+    'renaming the checkbox must be caught -- otherwise the box silently does nothing');
+});
+
+test('no source file contains a stray control character', () => {
+  // A GUARD FOR A TOOLING TRAP, NOT A PRODUCT BUG, and it earns its place by
+  // recurrence: backslash mangling through a shell heredoc has now damaged this
+  // repo's source three times in one session.
+  //
+  // The last one wrote the guard directly above this. `\b` inside a
+  // double-quoted Python string is not the two characters backslash-b, it is
+  // BACKSPACE (0x08). So `/\bval\(...)/` was written to disk as
+  // `/<0x08>val\(...)/`, a regex that matches nothing.
+  //
+  // The damage is that it fails in the SAFE-LOOKING direction: a scan matching
+  // nothing finds nothing missing, so the guard passed, reported nine green
+  // tests, and covered exactly none of what it claimed. It was caught only by
+  // renaming an id on purpose and noticing the guard did not care.
+  //
+  // Invisible to every other check: it is valid UTF-8, a legal regex, and
+  // renders as nothing in most editors and in `git diff`.
+  const dirs = ['app', 'test', 'host', 'bin'];
+  const files = [];
+  for (const d of dirs) {
+    const dir = path.join(__dirname, '..', d);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (/\.(js|html|json)$/.test(f)) files.push(path.join(dir, f));
+    }
+  }
+  assert.ok(files.length > 20, `the scan must find the source to mean anything (${files.length})`);
+
+  // Tab, newline and carriage return are the only control characters source
+  // should hold. Everything else below 0x20 arrived by accident.
+  const offenders = [];
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8');
+    for (let i = 0; i < src.length; i++) {
+      const c = src.charCodeAt(i);
+      if (c < 0x20 && c !== 9 && c !== 10 && c !== 13) {
+        offenders.push(`${path.basename(f)} byte ${i}: 0x${c.toString(16).padStart(2, '0')}`);
+        break;
+      }
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    `control characters in source -- almost certainly a mangled backslash escape: ${offenders.join('; ')}`);
+});

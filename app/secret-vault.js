@@ -25,6 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeProjectPath, samePath } = require('../host/project-path');
 const crypto_ = require('crypto');
 const { renameWithRetry } = require('../host/atomic-write');
 
@@ -149,7 +150,7 @@ function createVault({ file, crypto, onWrite } = {}) {
     try { return !!crypto.isEncryptionAvailable(); } catch { return false; }
   }
 
-  function add({ label, secret, note } = {}) {
+  function add({ label, secret, note, project, shared } = {}) {
     // Fail closed. Storing plaintext because the OS keyring is unavailable is
     // the one outcome that must never happen quietly: the user believes it is
     // encrypted, since that is the entire point of the feature.
@@ -161,30 +162,87 @@ function createVault({ file, crypto, onWrite } = {}) {
     const value = String(secret == null ? '' : secret);
     if (!value) throw new Error('a secret is required');
 
+    // SCOPE, and THE TWO NULLS. Dexter, PR #40, Finding 1.
+    //
+    // `normalizeProjectPath` returns null for two different things: "shared"
+    // and "I cannot use this input". Every reader below fails CLOSED on that
+    // null -- visibleFrom, get and remove all treat it as deny-unless-shared.
+    // This line used to read it as an INTENTION, so one value meant
+    // deny-everything in three places and grant-everyone here.
+    //
+    // Measured: add({ project: '   ', shared: false }) stored a secret
+    // readable from every project on the machine, with the box unticked. And
+    // it is reachable through the real wiring -- main.js takes PROJECT_CWD
+    // from CLAUDE_CUSTOM_CWD, and a single space is truthy.
+    //
+    // A scope that cannot be determined is not a scope. Refuse, the way
+    // available() already refuses to store plaintext when the cipher is gone:
+    // the one outcome that must never happen quietly is the user believing a
+    // secret is contained when it is not.
+    const scope = shared === true ? null : normalizeProjectPath(project);
+    if (shared !== true && scope === null) {
+      throw new Error(
+        'refusing to store a secret with no scope: pass a usable project, ' +
+        'or mark it shared deliberately');
+    }
     const entry = {
       id: crypto_.randomUUID(),
       label: cleanLabel,
       note: String(note == null ? '' : note).trim(),
       secret: Buffer.from(crypto.encryptString(value)).toString('base64'),
       createdAt: Date.now(),
+      project: scope,
     };
     commit([...state.entries, entry]);
     return { id: entry.id, label: entry.label, note: entry.note, createdAt: entry.createdAt };
   }
 
-  // What the window renders. The secret is not in it, by construction.
-  function list() {
-    return state.entries.map(e => ({
-      id: e.id,
-      label: e.label,
-      note: e.note || '',
-      createdAt: e.createdAt || 0,
-    }));
+  // Is this entry visible from `project`?
+  //
+  // An entry with NO `project` key predates scoping and is treated as shared.
+  // Narrowing those retroactively would make secrets vanish from projects that
+  // rely on them -- a disappearance the user cannot debug, to fix a problem
+  // they never saw.
+  //
+  // `project: null` is stored deliberately and means the same thing: shared.
+  // ONE definition of the rule, deliberately. Miguel, PR #40, A4: this line and
+  // the `shared` flag in `list` both carried `e.project === undefined ? null :
+  // e.project`, written out twice. One decides VISIBILITY, the other decides
+  // what the marker SAYS -- so if they ever drifted, the marker would lie about
+  // exactly the thing it exists to announce. That is this branch's founding
+  // defect, reintroduced by copy-paste.
+  function scopeOf(entry) {
+    return entry.project === undefined ? null : entry.project;
   }
 
-  function get(id) {
+  function visibleFrom(entry, project) {
+    const scope = scopeOf(entry);
+    if (scope === null) return true;
+    return samePath(scope, project);
+  }
+
+  function list({ project } = {}) {
+    return state.entries
+      .filter(e => visibleFrom(e, project))
+      .map(e => ({
+        id: e.id,
+        label: e.label,
+        note: e.note || '',
+        createdAt: e.createdAt || 0,
+        // Said out loud. The original defect was that scope was INVISIBLE; a
+        // shared secret that does not announce itself is the same surprise in
+        // a new place.
+        shared: scopeOf(e) === null,
+      }));
+  }
+
+  // Scope is enforced HERE, not only in `list`. The renderer asks by id, so a
+  // window for one project could otherwise reveal another project's secret by
+  // replaying an id it should never have had.
+  function get(id, { project } = {}) {
     const entry = state.entries.find(e => e.id === id);
     if (!entry) return null;
+    if (!visibleFrom(entry, project)) return null;
     try {
       return crypto.decryptString(Buffer.from(entry.secret, 'base64'));
     } catch {
@@ -194,11 +252,28 @@ function createVault({ file, crypto, onWrite } = {}) {
     }
   }
 
-  function remove(id) {
-    const before = state.entries.length;
-    const next = state.entries.filter(e => e.id !== id);
-    if (next.length === before) return false;
-    commit(next);
+  function remove(id, { project } = {}) {
+    // Same enforcement as `get`: without it a window could delete a secret it
+    // is not allowed to see.
+    const target = state.entries.find(e => e.id === id);
+    if (!target || !visibleFrom(target, project)) return false;
+
+    // FILTER BY IDENTITY, NOT BY ID. Dexter, PR #40, F5: `filter(e => e.id !== id)`
+    // authorized ONE entry and deleted EVERY entry carrying that id. With two
+    // entries sharing an id under different projects, a window scoped to the
+    // first passes the guard above and destroys the second -- a secret it was
+    // never allowed to see, with `remove` returning true and nothing raised.
+    //
+    // Duplicate ids cannot arise through this API (`randomUUID` at add-time),
+    // so this is not reachable today. It needs a hand-edited vault, a restored
+    // `secrets.enc` from another install, or a future sync feature -- which is
+    // exactly the sort of thing this file will grow. Identity is correct
+    // however the duplicate arrived, and costs nothing.
+    //
+    // The old `before`/`next.length` equality check went with it: `target` was
+    // found by id, so the filter always removed at least one and the guard was
+    // unreachable. Dead code that reads as load-bearing (Miguel, suggestions).
+    commit(state.entries.filter(e => e !== target));
     return true;
   }
 

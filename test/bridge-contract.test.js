@@ -102,3 +102,62 @@ test('the attention cue is wired end to end, by name', () => {
   assert.match(renderer, /classList\.toggle\(\s*['"]attention-cue['"]/, 'the renderer must apply the class');
   assert.ok(html.includes('.attention-cue'), 'renderer.html must style it');
 });
+
+test('main.js gives the secret service a project, or the whole scope reverts', () => {
+  // Miguel, PR #40, B1, second half. `createSecretService({ project: PROJECT_CWD })`
+  // in app/main.js is ONE LINE with no test anywhere. Delete it and the
+  // constructor's guard is the only thing standing between the user and a
+  // vault where every secret is shared again -- and before that guard existed,
+  // deleting it reverted the entire feature silently.
+  //
+  // Asserted against source because main.js is not loadable in a test: it
+  // requires electron. Same instrument as the channel and bridge checks above.
+  const fs = require('fs');
+  const path = require('path');
+  const main = strip(fs.readFileSync(path.join(APP, 'main.js'), 'utf8'));
+
+  const call = main.slice(main.indexOf('createSecretService('));
+  assert.ok(call.length > 0, 'main.js must construct the secret service');
+  const head = call.slice(0, call.indexOf('});') + 3);
+  assert.match(head, /project:/,
+    'createSecretService must be given a project -- without it every secret is shared');
+  assert.match(head, /PROJECT_CWD/,
+    "and it must be the window's own project, not a literal or a default");
+});
+
+test('every class the vault list renders is actually reachable by a rule', () => {
+  // A1 generalised. The "shared" marker was styled by `.vault-row .scope` --
+  // and `.vault-row` is a class NOTHING renders, so the rule matched nothing
+  // and the marker drew unstyled. The scope invisible again, one layer out.
+  //
+  // MY FIRST VERSION OF THIS GUARD DID NOT CATCH IT: `html.includes('.scope')`
+  // is true even when the only rule is `.vault-row .scope`, because the broken
+  // selector CONTAINS the string. That is precisely the substring trap
+  // Mortimer documented on PR #33 -- a detector matching a superstring and
+  // reporting health -- rebuilt here by me one file later.
+  //
+  // So a class counts as styled only when some rule mentioning it has EVERY
+  // other class in that selector also rendered. A selector naming a class
+  // nobody emits matches nothing, whatever it contains.
+  const fs = require('fs');
+  const path = require('path');
+  const renderer = strip(fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8'));
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+
+  const body = renderer.slice(renderer.indexOf('#vault-list'), renderer.indexOf('#vault-list') + 2000);
+  const rendered = new Set([...body.matchAll(/class="([a-z][\w-]*)"/g)].map(m => m[1]));
+  assert.ok(rendered.size > 0, 'the scan must find something');
+
+  const NL = String.fromCharCode(10);
+  const selRe = new RegExp('^\\s*([^{}' + NL + ']+)\\{', 'gm');
+  const selectors = [...html.matchAll(selRe)].map(m => m[1].trim());
+  const reachable = (cls) => selectors.some((sel) => {
+    if (!new RegExp('\\.' + cls + '(?![\\w-])').test(sel)) return false;
+    const needed = [...sel.matchAll(/\.([a-z][\w-]*)/g)].map(m => m[1]);
+    return needed.every(c => c === cls || rendered.has(c));
+  });
+
+  const unstyled = [...rendered].filter(c => !reachable(c));
+  assert.deepStrictEqual(unstyled, [],
+    `the vault list renders these classes and no rule can ever match them: ${unstyled.join(', ')}`);
+});

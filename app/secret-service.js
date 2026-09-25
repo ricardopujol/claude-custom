@@ -16,12 +16,26 @@ const { CLIPBOARD_CLEAR_MS } = require('./secret-vault');
 function createSecretService({
   vault,
   clipboard,
+  // WHICH PROJECT THIS WINDOW IS. Every vault call carries it, so a window can
+  // only ever see and reveal secrets scoped to its own project, plus the ones
+  // explicitly marked shared. Supplied once by main.js rather than passed in
+  // from the renderer: a scope the window could choose is not a scope.
+  //
+  // NO DEFAULT. Dexter, PR #40, Finding 1, counterexample 1: with `project`
+  // defaulting to null, `createSecretService({ vault, clipboard })` produced a
+  // service whose every add stored a SHARED secret while the user left the box
+  // unticked. A default here is a silent grant, so there is none -- the
+  // constructor refuses instead, like the two above it.
+  project,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   clearAfterMs = CLIPBOARD_CLEAR_MS,
 } = {}) {
   if (!vault) throw new Error('createSecretService: vault is required');
   if (!clipboard) throw new Error('createSecretService: clipboard is required');
+  if (typeof project !== 'string' || !project.trim()) {
+    throw new Error('createSecretService: project is required -- secrets are scoped to one');
+  }
 
   let pendingClear = null;
   let lastCopied = null;
@@ -32,7 +46,7 @@ function createSecretService({
 
   function list({ query } = {}) {
     let entries;
-    try { entries = vault.list(); } catch { return []; }
+    try { entries = vault.list({ project }); } catch { return []; }
     const q = String(query || '').trim().toLowerCase();
     if (!q) return entries;
     // Labels and notes only. Matching secret VALUES would put a secret on
@@ -42,26 +56,26 @@ function createSecretService({
       String(e.note || '').toLowerCase().includes(q));
   }
 
-  function add({ label, secret, note } = {}) {
+  function add({ label, secret, note, shared } = {}) {
     try {
-      return { ok: true, entry: vault.add({ label, secret, note }) };
+      return { ok: true, entry: vault.add({ label, secret, note, project, shared }) };
     } catch (err) {
       return { ok: false, error: err.message };
     }
   }
 
   function remove(id) {
-    try { return { ok: !!vault.remove(id) }; } catch (err) { return { ok: false, error: err.message }; }
+    try { return { ok: !!vault.remove(id, { project }) }; } catch (err) { return { ok: false, error: err.message }; }
   }
 
   function reveal(id) {
-    const secret = vault.get(id);
+    const secret = vault.get(id, { project });
     if (secret == null) return { ok: false, error: 'not found or could not be decrypted' };
     return { ok: true, secret };
   }
 
   function copy(id) {
-    const secret = vault.get(id);
+    const secret = vault.get(id, { project });
     if (secret == null) return { ok: false, error: 'not found or could not be decrypted' };
 
     clipboard.writeText(secret);

@@ -520,6 +520,7 @@ async function renderVault() {
     <div class="sec" data-id="${escapeHtml(e.id)}">
       <div class="row">
         <span class="label" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
+        ${e.shared ? '<span class="scope" title="visible from every project on this machine">shared</span>' : ''}
         <button data-act="copy">Copy</button>
         <button data-act="reveal">Show</button>
         <button data-act="remove" title="delete permanently">×</button>
@@ -576,7 +577,14 @@ document.addEventListener('submit', async (e) => {
   e.preventDefault();
   const label = document.getElementById('vault-label');
   const secret = document.getElementById('vault-secret');
-  const res = await window.harness.secrets.add({ label: label.value, secret: secret.value });
+  const sharedBox = document.getElementById('vault-shared');
+  const res = await window.harness.secrets.add({
+    label: label.value,
+    secret: secret.value,
+    // Default is this project. Shared is an explicit act, and it is reset
+    // after every store so the next secret does not inherit it silently.
+    shared: !!(sharedBox && sharedBox.checked),
+  });
   if (!res.ok) {
     const list = document.getElementById('vault-list');
     list.innerHTML = `<div class="err">${escapeHtml(res.error)}</div>` + list.innerHTML;
@@ -584,6 +592,7 @@ document.addEventListener('submit', async (e) => {
   }
   label.value = '';
   secret.value = '';
+  if (sharedBox) sharedBox.checked = false;
   secretMask.stored();      // the next secret typed is not the one just revealed
   applyMask();
   renderVault();
@@ -1696,7 +1705,7 @@ term.attachCustomKeyEventHandler((e) => {
 
   // THE PANEL TOGGLE MUST BE DECIDED HERE, not in a document listener. xterm's
   // textarea always holds focus, so a document-level handler never saw Ctrl+B
-  // -- the terminal consumed it and sent  to the pty, which readline reads
+  // -- the terminal consumed it and sent \x02 to the pty, which readline reads
   // as backward-char. The binding looked dead while quietly editing the command
   // line. Returning false is what stops the terminal taking it.
   if (isPanelToggle(e)) {

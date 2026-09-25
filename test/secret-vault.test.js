@@ -12,7 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { createVault, CLIPBOARD_CLEAR_MS } = require('../app/secret-vault');
+const { createVault: unboundVault, CLIPBOARD_CLEAR_MS } = require('../app/secret-vault');
 
 const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vault-')), 'secrets.enc');
 
@@ -28,11 +28,58 @@ const fakeCrypto = (available = true) => ({
   },
 });
 
+// PROJECT-BOUND, deliberately, and this is the most important line in the file.
+//
+// Production NEVER calls this vault without a project: `createSecretService`
+// injects the window's own project into every call. The suite below predates
+// scoping and passed none -- so when scoping landed and `add()` began refusing
+// an unusable scope, every pre-existing call site was mechanically given
+// `shared: true` to keep the suite green.
+//
+// That repair was worse than the red suite it silenced. It moved the ENTIRE
+// pre-existing suite onto the SHARED path, where `visibleFrom` returns at the
+// `scope === null` line and the `samePath` comparison is never reached -- so
+// the DEFAULT path, the one the whole feature exists to create, was tested only
+// by the handful of tests written for it. Dexter predicted it from a grep,
+// without reading the fix.
+//
+// MEASURED, 2026-09-23, replacing the scoped branch with `return false` so it
+// never matches:
+//
+//   sprayed suite   4 of 47 tests fail
+//   bound suite    17 of 47 tests fail
+//
+// Note WHICH sabotage discriminates, because the obvious one does not: making
+// `visibleFrom` return `true` always -- deleting scoping from the product
+// outright -- fails the same 4 either way. It is a WIDENING, and every test
+// here reads from the project it wrote to, so nothing notices. Only narrowing
+// the scoped branch tells the two suites apart.
+//
+// So the helper binds one project and threads it through every call. The tests
+// below now read as what production actually does -- one window, one project,
+// everything scoped -- and a test that wants sharing asks for it by name.
+const HOME = process.platform === 'win32' ? 'C:/work/home-project' : '/work/home-project';
+
+function bindProject(v, project) {
+  return {
+    ...v,
+    add: (e = {}) => v.add({ project, ...e }),
+    get: (id, q) => v.get(id, q === undefined ? { project } : q),
+    list: (q) => v.list(q === undefined ? { project } : q),
+    remove: (id, q) => v.remove(id, q === undefined ? { project } : q),
+  };
+}
+
+// Shadows the import so EVERY construction in this file is bound, including the
+// two dozen that call it directly. A binding that covered only the `vault()`
+// helper would leave most of the suite exactly as blind as it was.
+const createVault = (opts) => bindProject(unboundVault(opts), HOME);
+
 const vault = (opts = {}) => createVault({ file: tmp(), crypto: fakeCrypto(), ...opts });
 
 test('an added secret can be read back', () => {
   const v = vault();
-  const e = v.add({ label: 'github token', secret: 'ghp_abc123' });
+  const e = v.add({ label: 'github token', secret: 'ghp_abc123'});
   assert.strictEqual(v.get(e.id), 'ghp_abc123');
 });
 
@@ -40,7 +87,7 @@ test('list NEVER carries secret values', () => {
   // The list is what the window renders. A secret in it is a secret on screen,
   // and on screen is one screenshot away from everywhere.
   const v = vault();
-  v.add({ label: 'github token', secret: 'ghp_abc123', note: 'personal' });
+  v.add({ label: 'github token', secret: 'ghp_abc123', note: 'personal'});
   const listed = v.list();
   assert.strictEqual(listed.length, 1);
   assert.ok(!('secret' in listed[0]), Object.keys(listed[0]).join(','));
@@ -50,7 +97,7 @@ test('list NEVER carries secret values', () => {
 test('the file on disk contains no plaintext secret', () => {
   const file = tmp();
   const v = createVault({ file, crypto: fakeCrypto() });
-  v.add({ label: 'db', secret: 'hunter2-correct-horse' });
+  v.add({ label: 'db', secret: 'hunter2-correct-horse'});
   const raw = fs.readFileSync(file);
   assert.ok(!raw.includes('hunter2-correct-horse'), 'plaintext secret found on disk');
 });
@@ -59,7 +106,7 @@ test('labels and notes are readable without decrypting anything', () => {
   // Only the SECRET is encrypted. Labels have to be searchable and listable, and
   // encrypting them would buy nothing while making the list a decrypt storm.
   const v = vault();
-  v.add({ label: 'github token', secret: 's', note: 'work account' });
+  v.add({ label: 'github token', secret: 's', note: 'work account'});
   const [e] = v.list();
   assert.strictEqual(e.label, 'github token');
   assert.strictEqual(e.note, 'work account');
@@ -68,7 +115,7 @@ test('labels and notes are readable without decrypting anything', () => {
 test('secrets survive a reopen', () => {
   const file = tmp();
   const a = createVault({ file, crypto: fakeCrypto() });
-  const id = a.add({ label: 'k', secret: 'value-1' }).id;
+  const id = a.add({ label: 'k', secret: 'value-1'}).id;
   const b = createVault({ file, crypto: fakeCrypto() });
   assert.strictEqual(b.get(id), 'value-1');
 });
@@ -78,7 +125,7 @@ test('REFUSES to store anything when encryption is unavailable', () => {
   // one outcome that must never happen quietly -- the user believes it is
   // encrypted, because that is what the feature is for.
   const v = vault({ crypto: fakeCrypto(false) });
-  assert.throws(() => v.add({ label: 'k', secret: 's' }), /encryption/i);
+  assert.throws(() => v.add({ label: 'k', secret: 's'}), /encryption/i);
 });
 
 test('reports whether it can be used at all, so the UI can say so', () => {
@@ -95,7 +142,7 @@ test('a corrupt file does not destroy what is still readable', () => {
   // other nine with it.
   const file = tmp();
   const v = createVault({ file, crypto: fakeCrypto() });
-  v.add({ label: 'good', secret: 'keep-me' });
+  v.add({ label: 'good', secret: 'keep-me'});
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
   onDisk.entries.push({ id: 'broken', label: 'bad', secret: 'not-base64-at-all' });
   fs.writeFileSync(file, JSON.stringify(onDisk));
@@ -116,7 +163,7 @@ test('a file that is not JSON at all is refused, not overwritten', () => {
 test('removing an entry removes the secret with it', () => {
   const file = tmp();
   const v = createVault({ file, crypto: fakeCrypto() });
-  const e = v.add({ label: 'k', secret: 'delete-me-entirely' });
+  const e = v.add({ label: 'k', secret: 'delete-me-entirely'});
   v.remove(e.id);
   assert.deepStrictEqual(v.list(), []);
   assert.strictEqual(v.get(e.id), null);
@@ -125,8 +172,8 @@ test('removing an entry removes the secret with it', () => {
 
 test('ids are unique even for identical labels', () => {
   const v = vault();
-  const a = v.add({ label: 'same', secret: '1' });
-  const b = v.add({ label: 'same', secret: '2' });
+  const a = v.add({ label: 'same', secret: '1'});
+  const b = v.add({ label: 'same', secret: '2'});
   assert.notStrictEqual(a.id, b.id);
   assert.strictEqual(v.get(a.id), '1');
   assert.strictEqual(v.get(b.id), '2');
@@ -134,11 +181,11 @@ test('ids are unique even for identical labels', () => {
 
 test('an empty secret is refused', () => {
   // An entry with no secret is a label pretending to be protection.
-  assert.throws(() => vault().add({ label: 'k', secret: '' }), /secret/i);
+  assert.throws(() => vault().add({ label: 'k', secret: ''}), /secret/i);
 });
 
 test('an empty label is refused, since the list is all labels', () => {
-  assert.throws(() => vault().add({ label: '  ', secret: 's' }), /label/i);
+  assert.throws(() => vault().add({ label: '  ', secret: 's'}), /label/i);
 });
 
 test('get on an unknown id returns null rather than throwing', () => {
@@ -155,7 +202,7 @@ test('the file is written atomically', () => {
     crypto: fakeCrypto(),
     onWrite: (target) => writes.push(target),
   });
-  v.add({ label: 'k', secret: 's' });
+  v.add({ label: 'k', secret: 's'});
   assert.ok(writes.some(w => w !== file), `expected a temp file, got ${JSON.stringify(writes)}`);
 });
 
@@ -191,7 +238,7 @@ test('a transient EPERM on the rename does NOT lose the secret', () => {
   };
   let entry;
   try {
-    entry = v.add({ label: 'token', secret: 'survives-eperm' });
+    entry = v.add({ label: 'token', secret: 'survives-eperm'});
   } finally {
     fs.renameSync = real;
   }
@@ -217,7 +264,7 @@ test('a rename that never recovers FAILS the save rather than reporting success'
     throw err;
   };
   try {
-    assert.throws(() => v.add({ label: 'token', secret: 'never-lands' }),
+    assert.throws(() => v.add({ label: 'token', secret: 'never-lands'}),
       (err) => err.code === 'EPERM');
   } finally {
     fs.renameSync = real;
@@ -243,7 +290,7 @@ test('a secret whose save FAILED is not listed, revealed, or gettable', () => {
   const v = vault();
   const restore = alwaysFails();
   try {
-    assert.throws(() => v.add({ label: 'aws', secret: 'AKIA-REAL' }), /EPERM/);
+    assert.throws(() => v.add({ label: 'aws', secret: 'AKIA-REAL'}), /EPERM/);
     // `list` is what the window renders, so it is the read path that matters
     // most -- and the only one reachable here, because `get` needs an id that
     // `add` never returned. An earlier version of this comment claimed three
@@ -268,12 +315,12 @@ test('a FAILED save is not silently committed by the NEXT successful one', () =>
 
   const restore = alwaysFails();
   try {
-    assert.throws(() => v.add({ label: 'ghost', secret: 'SHOULD-NOT-PERSIST' }));
+    assert.throws(() => v.add({ label: 'ghost', secret: 'SHOULD-NOT-PERSIST'}));
   } finally {
     restore();
   }
 
-  v.add({ label: 'real', secret: 'KEEP-ME' });
+  v.add({ label: 'real', secret: 'KEEP-ME'});
 
   const reopened = createVault({ file, crypto: fakeCrypto() });
   assert.deepStrictEqual(reopened.list().map(e => e.label), ['real'],
@@ -286,7 +333,7 @@ test('a DELETE that failed to reach disk still shows the entry', () => {
   // had succeeded -- a credential they believe is gone and is still on disk.
   const file = tmp();
   const v = createVault({ file, crypto: fakeCrypto() });
-  const entry = v.add({ label: 'keep', secret: 'STILL-HERE' });
+  const entry = v.add({ label: 'keep', secret: 'STILL-HERE'});
 
   const restore = alwaysFails();
   try {
@@ -314,7 +361,7 @@ test('a permanently failed save leaves no temp file behind', () => {
 
   const restore = alwaysFails();
   try {
-    assert.throws(() => v.add({ label: 'leaky', secret: 'S' }));
+    assert.throws(() => v.add({ label: 'leaky', secret: 'S'}));
   } finally {
     restore();
   }
@@ -347,7 +394,7 @@ test('a temp is not left behind when the WRITE fails either, not just the rename
     return realWrite(p, ...rest);
   };
   try {
-    assert.throws(() => v.add({ label: 'partial', secret: 'S' }), /ENOSPC/);
+    assert.throws(() => v.add({ label: 'partial', secret: 'S'}), /ENOSPC/);
   } finally {
     fs.writeFileSync = realWrite;
   }
@@ -372,7 +419,7 @@ test('a cleanup that ITSELF fails does not mask the real error', () => {
   fs.renameSync = () => { const e = new Error('EPERM: rename'); e.code = 'EPERM'; throw e; };
   fs.unlinkSync = () => { const e = new Error('EBUSY: unlink'); e.code = 'EBUSY'; throw e; };
   try {
-    assert.throws(() => v.add({ label: 'x', secret: 'y' }), /EPERM: rename/,
+    assert.throws(() => v.add({ label: 'x', secret: 'y'}), /EPERM: rename/,
       'the rename failure is what the caller must hear about, not the cleanup failure');
   } finally {
     fs.renameSync = realRename;
@@ -422,7 +469,7 @@ test('the vault reports encryption as unavailable when the cipher says so', () =
   const throwing = { ...fakeCrypto(), isEncryptionAvailable: () => { throw new Error('no dpapi'); } };
   const v = createVault({ file: tmp(), crypto: throwing });
   assert.strictEqual(v.available(), false);
-  assert.throws(() => v.add({ label: 'x', secret: 'y' }), /refusing to store a secret in plaintext/);
+  assert.throws(() => v.add({ label: 'x', secret: 'y'}), /refusing to store a secret in plaintext/);
 });
 
 test('remove reports whether it actually removed anything', () => {
@@ -431,7 +478,7 @@ test('remove reports whether it actually removed anything', () => {
   // what to tell the user, so "removed" and "there was nothing to remove"
   // collapsing into one answer is a wrong message either way round.
   const v = vault();
-  const entry = v.add({ label: 'gone', secret: 's' });
+  const entry = v.add({ label: 'gone', secret: 's'});
   assert.strictEqual(v.remove('no-such-id'), false, 'removing nothing must say so');
   assert.strictEqual(v.list().length, 1, 'and must not have removed anything');
   assert.strictEqual(v.remove(entry.id), true, 'removing something must say so');
@@ -469,9 +516,9 @@ test('removing one entry leaves every other one untouched', () => {
   // too. In a module whose entire job is storing secrets.
   const file = tmp();
   const v = createVault({ file, crypto: fakeCrypto() });
-  const a = v.add({ label: 'keep-a', secret: 'A' });
-  const b = v.add({ label: 'drop-b', secret: 'B' });
-  const c = v.add({ label: 'keep-c', secret: 'C' });
+  const a = v.add({ label: 'keep-a', secret: 'A'});
+  const b = v.add({ label: 'drop-b', secret: 'B'});
+  const c = v.add({ label: 'keep-c', secret: 'C'});
 
   assert.strictEqual(v.remove(b.id), true);
   assert.deepStrictEqual(v.list().map(e => e.label), ['keep-a', 'keep-c']);
@@ -504,7 +551,7 @@ test('an unknown id is not removed, and is not written either', () => {
   // makes the conditional load-bearing rather than decorative.
   const writes = [];
   const v = createVault({ file: tmp(), crypto: fakeCrypto(), onWrite: p => writes.push(p) });
-  const e = v.add({ label: 'one', secret: 's' });
+  const e = v.add({ label: 'one', secret: 's'});
   const afterAdd = writes.length;
 
   assert.strictEqual(v.remove('no-such-id'), false);
@@ -522,7 +569,7 @@ test('the committed file is announced exactly once per write', () => {
   const file = tmp();
   const writes = [];
   const v = createVault({ file, crypto: fakeCrypto(), onWrite: p => writes.push(p) });
-  v.add({ label: 'k', secret: 's' });
+  v.add({ label: 'k', secret: 's'});
   assert.strictEqual(writes.filter(w => w === file).length, 1,
     'the committed file must be announced exactly once');
   assert.strictEqual(writes.filter(w => w !== file).length, 1, 'and the temp exactly once');
@@ -532,8 +579,289 @@ test('notes are normalised: absent becomes empty, padded is trimmed', () => {
   // Mortimer SV-I. Every existing test that supplies a note supplies a clean
   // one, and none adds an entry WITHOUT a note and reads it back.
   const v = vault();
-  v.add({ label: 'no-note', secret: 's' });
+  v.add({ label: 'no-note', secret: 's'});
   assert.strictEqual(v.list()[0].note, '', 'an absent note reads as empty, never undefined');
-  v.add({ label: 'padded', secret: 's', note: '   spaced out   ' });
+  v.add({ label: 'padded', secret: 's', note: '   spaced out   '});
   assert.strictEqual(v.list()[1].note, 'spaced out');
+});
+
+// --- scope: which projects can see a secret ----------------------------------
+//
+// Ricardo asked for a "shared" option so vault secrets would be available in
+// other folders. The measurement inverted the request: the vault file is
+// `<install>/.harness/secrets.enc` (app/main.js), ONE PER INSTALL -- so every
+// secret already was visible in every project, and nothing said so.
+//
+// That is the direction that stings. A client credential added while working
+// on one project sat in the picker for every other project, including ones
+// belonging to somebody else.
+//
+// So the feature is the inverse of the request, which is what he agreed to:
+// project-scoped by DEFAULT, `shared` as an explicit opt-in.
+//
+// MIGRATION, stated because it is a silent-data decision: entries that predate
+// this have no `project` field, and they stay SHARED. Narrowing them would make
+// secrets vanish from projects where they are relied on -- a disappearance the
+// user cannot debug, to fix a problem they never saw. New entries are scoped.
+
+const A = 'C:/work/project-a';
+const B = 'C:/work/project-b';
+
+test('a secret added in a project is not visible from another one', () => {
+  const v = vault();
+  v.add({ label: 'a-only', secret: 's1', project: A });
+  assert.deepStrictEqual(v.list({ project: B }).map(e => e.label), []);
+  assert.deepStrictEqual(v.list({ project: A }).map(e => e.label), ['a-only']);
+});
+
+test('a SHARED secret is visible from every project', () => {
+  const v = vault();
+  v.add({ label: 'global', secret: 's', project: A, shared: true });
+  assert.deepStrictEqual(v.list({ project: B }).map(e => e.label), ['global']);
+  assert.deepStrictEqual(v.list({ project: A }).map(e => e.label), ['global']);
+});
+
+test('get() ENFORCES the scope -- an id from another project reveals nothing', () => {
+  // The security property, and the reason scope cannot live in `list` alone.
+  // The renderer asks by id; if `get` did not check, a window for project B
+  // could reveal project A's secret by guessing or replaying an id.
+  const v = vault();
+  const e = v.add({ label: 'a-only', secret: 'top-secret', project: A });
+  assert.strictEqual(v.get(e.id, { project: A }), 'top-secret');
+  assert.strictEqual(v.get(e.id, { project: B }), null);
+});
+
+test('a shared secret can be read from anywhere', () => {
+  const v = vault();
+  const e = v.add({ label: 'global', secret: 'everywhere', project: A, shared: true });
+  assert.strictEqual(v.get(e.id, { project: B }), 'everywhere');
+});
+
+test('remove() enforces the scope too', () => {
+  // Otherwise a window for B could delete A's secret without ever seeing it.
+  const v = vault();
+  const e = v.add({ label: 'a-only', secret: 's', project: A });
+  assert.strictEqual(v.remove(e.id, { project: B }), false);
+  assert.strictEqual(v.list({ project: A }).length, 1, 'it must still be there');
+  assert.strictEqual(v.remove(e.id, { project: A }), true);
+});
+
+test('EXISTING entries with no project stay shared', () => {
+  // The migration. These were written when every secret was global; narrowing
+  // them retroactively would make them vanish from projects that rely on them.
+  //
+  // THE FIXTURE IS RAW JSON, and it has to be. Dexter F2 / Miguel B2, found
+  // independently: this test used to build its legacy entry through `add()`,
+  // which ALWAYS writes the `project` key -- so the fixture was
+  // `{"project": null}`, a deliberately-shared entry, and the branch under test
+  // (`entry.project === undefined`) was never taken by any test in the file.
+  // It reported the migration as covered while covering the opposite case.
+  //
+  // Miguel mutated the line to prove it: `const scope = entry.project;` fails
+  // two tests, and neither is this one -- they are about `createdAt` and about
+  // corrupt files. The migration branch was killed only by accident, from tests
+  // that are about something else.
+  //
+  // The key must be genuinely ABSENT, which no path through `add()` can produce.
+  const file = tmp();
+  const enc = (s) => fakeCrypto().encryptString(s).toString('base64');
+  fs.writeFileSync(file, JSON.stringify({
+    format: 1,
+    entries: [{ id: 'legacy-id', label: 'legacy', secret: enc('old'), createdAt: 1 }],
+  }));
+
+  const v = createVault({ file, crypto: fakeCrypto() });
+  assert.deepStrictEqual(v.list({ project: B }).map(x => x.label), ['legacy'],
+    'an entry predating scoping must stay visible everywhere');
+  assert.strictEqual(v.get('legacy-id', { project: B }), 'old');
+  assert.strictEqual(v.list({ project: B })[0].shared, true,
+    'and must SAY it is shared -- the marker reads the same rule, from a second place');
+});
+
+test('a legacy entry keeps no project key, so the migration cannot silently expire', () => {
+  // The migration is a read-time rule, not a rewrite. If some future write path
+  // began stamping `project` onto entries it merely read, every legacy secret
+  // would narrow to whichever window happened to touch it first -- the exact
+  // disappearance the rule above exists to prevent, arriving later and looking
+  // like something else.
+  const file = tmp();
+  const enc = (s) => fakeCrypto().encryptString(s).toString('base64');
+  fs.writeFileSync(file, JSON.stringify({
+    format: 1,
+    entries: [{ id: 'legacy-id', label: 'legacy', secret: enc('old'), createdAt: 1 }],
+  }));
+
+  const v = createVault({ file, crypto: fakeCrypto() });
+  v.list({ project: A });
+  v.get('legacy-id', { project: A });
+  v.add({ label: 'unrelated', secret: 's', project: A });   // forces a rewrite of the file
+
+  const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'))
+    .entries.find(e => e.id === 'legacy-id');
+  assert.strictEqual('project' in onDisk, false,
+    'reading a legacy entry must not give it a scope');
+  // From B: the legacy entry, and NOT the scoped one just added under A.
+  // (My first version of this line expected 2 and was simply wrong -- the
+  // `unrelated` entry is scoped to A, so B correctly cannot see it.)
+  assert.deepStrictEqual(createVault({ file, crypto: fakeCrypto() })
+    .list({ project: B }).map(e => e.label), ['legacy'],
+    'it stays visible from elsewhere, and drags nothing scoped along with it');
+});
+
+test('the list says which entries are shared, so the scope is visible', () => {
+  // The whole defect was that the scope was invisible. A shared secret that
+  // does not announce itself is the same surprise in a new place.
+  const v = vault();
+  v.add({ label: 'local', secret: 's', project: A });
+  v.add({ label: 'global', secret: 's', project: A, shared: true });
+  const rows = v.list({ project: A });
+  assert.strictEqual(rows.find(r => r.label === 'local').shared, false);
+  assert.strictEqual(rows.find(r => r.label === 'global').shared, true);
+});
+
+test('asking with no project shows only shared entries, never everything', () => {
+  // Fail closed: an unknown project must not become a skeleton key. Before
+  // this, "no project" was the only mode and it meant "all of them".
+  const v = vault();
+  v.add({ label: 'local', secret: 's', project: A });
+  v.add({ label: 'global', secret: 's', project: A, shared: true });
+  assert.deepStrictEqual(v.list({}).map(e => e.label), ['global']);
+  assert.deepStrictEqual(v.list().map(e => e.label), ['global']);
+});
+
+// --- the two nulls ----------------------------------------------------------
+//
+// Dexter, PR #40 review, Finding 1. Severity High, and it is this project's
+// signature defect wearing the worst possible hat.
+//
+// `normalizeProjectPath` returns null for TWO different things: "shared" and
+// "I cannot use this input". Every reader failed closed on that null --
+// `visibleFrom`, `get`, `remove` all treat it as "deny unless shared" -- and
+// `add` alone read it as an INTENTION. So one value meant deny-everything in
+// three places and grant-everyone in the fourth, in one file.
+//
+// Reproduced before the fix:
+//   add({ label:'prod-db', secret:'hunter2', project:'   ', shared:false })
+//     -> visible from an unrelated project
+//     -> revealed from an unrelated project: hunter2
+//
+// And it is reachable through the real wiring, not just the API: main.js takes
+// PROJECT_CWD from CLAUDE_CUSTOM_CWD, and a single space is truthy, so it
+// passes ' ' straight in. Every verify/probe-*.js sets that variable by hand.
+//
+// A scope that cannot be determined is not a scope. It refuses, the way
+// `available()` already refuses to store plaintext when the cipher is gone.
+
+test('an unusable project REFUSES rather than storing the secret shared', () => {
+  const v = vault();
+  for (const bad of ['   ', '', null, undefined, 42, {}, []]) {
+    assert.throws(
+      () => v.add({ label: 'prod-db', secret: 'hunter2', project: bad, shared: false }),
+      /scope/i,
+      `project ${JSON.stringify(bad)} with shared:false must refuse`);
+  }
+  assert.deepStrictEqual(v.list({ project: 'C:/anywhere' }), [],
+    'and nothing may have been stored');
+});
+
+test('an explicit shared:true still stores, whatever the project is', () => {
+  // Refusing must not make the shared path unreachable: `shared` is a decision
+  // the user made, and it does not need a project to be valid.
+  const v = vault();
+  const e = v.add({ label: 'global', secret: 's', project: '   ', shared: true });
+  assert.strictEqual(v.get(e.id, { project: 'C:/anywhere' }), 's');
+});
+
+test('a LEGACY entry -- no project KEY at all -- is shared', () => {
+  // Dexter, Finding 2. The migration test asserted this and never built one:
+  // `add()` without a project stored `project: null`, an explicit share, so
+  // the `undefined` branch in visibleFrom was dead to the suite. The only way
+  // to make a real legacy entry is to write the file the way the old code did.
+  const file = tmp();
+  const v0 = createVault({ file, crypto: fakeCrypto() });
+  v0.add({ label: 'seed', secret: 'x', shared: true });
+
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete raw.entries[0].project;                       // as written before scoping existed
+  fs.writeFileSync(file, JSON.stringify(raw));
+
+  const v1 = createVault({ file, crypto: fakeCrypto() });
+  assert.strictEqual(raw.entries[0].project, undefined, 'precondition: the key is absent');
+  assert.deepStrictEqual(v1.list({ project: 'C:/any' }).map(e => e.label), ['seed']);
+  assert.strictEqual(v1.list({ project: 'C:/any' })[0].shared, true);
+});
+
+// --- the fixes Dexter and Miguel asked for, each with the test that pins it ---
+
+test('remove deletes ONE entry, even when two share an id', () => {
+  // Dexter, PR #40, F5. The guard authorized `target` and the filter deleted by
+  // ID, so a window scoped to A could destroy B's secret -- one it was never
+  // allowed to see -- and `remove` returned true with nothing raised.
+  //
+  // Not reachable through this API: ids come from randomUUID. It needs a
+  // hand-edited vault, a restored secrets.enc from another install, or a sync
+  // feature. The fix is to filter on identity, which is right however the
+  // duplicate arrived, so the test seeds the file directly.
+  const file = tmp();
+  const enc = (s) => fakeCrypto().encryptString(s).toString('base64');
+  fs.writeFileSync(file, JSON.stringify({
+    format: 1,
+    entries: [
+      { id: 'SAME', label: 'a-side', secret: enc('A'), createdAt: 1, project: A },
+      { id: 'SAME', label: 'b-side', secret: enc('B'), createdAt: 2, project: B },
+    ],
+  }));
+
+  const v = unboundVault({ file, crypto: fakeCrypto() });
+  assert.strictEqual(v.remove('SAME', { project: A }), true);
+
+  assert.deepStrictEqual(v.list({ project: B }).map(e => e.label), ['b-side'],
+    "B's secret must survive a delete authorized only against A's");
+  assert.strictEqual(v.get('SAME', { project: B }), 'B', 'and must still be readable');
+  assert.deepStrictEqual(v.list({ project: A }).map(e => e.label), []);
+});
+
+test('the shared marker and the visibility rule cannot drift apart', () => {
+  // Miguel, PR #40, A4. The rule was written out twice -- once deciding
+  // visibility, once deciding what the marker says. This asserts they AGREE on
+  // every shape of scope, which is the property that made two copies dangerous:
+  // a marker that disagrees with visibility lies about the one thing it exists
+  // to announce.
+  const file = tmp();
+  const enc = (s) => fakeCrypto().encryptString(s).toString('base64');
+  fs.writeFileSync(file, JSON.stringify({
+    format: 1,
+    entries: [
+      { id: 'legacy', label: 'legacy', secret: enc('x'), createdAt: 1 },       // no key
+      { id: 'null', label: 'deliberate', secret: enc('x'), createdAt: 1, project: null },
+      { id: 'scoped', label: 'scoped', secret: enc('x'), createdAt: 1, project: A },
+    ],
+  }));
+
+  const v = unboundVault({ file, crypto: fakeCrypto() });
+  // Listed from a project that matches NONE of them: anything still visible is
+  // visible because it is shared, so the marker must say so -- and anything the
+  // marker calls shared must be visible from here.
+  for (const e of v.list({ project: B })) {
+    assert.strictEqual(e.shared, true,
+      `${e.label} is visible from an unrelated project, so the marker must say shared`);
+  }
+  assert.deepStrictEqual(
+    v.list({ project: B }).map(e => e.id).sort(), ['legacy', 'null'],
+    'and the scoped one must not be there at all');
+});
+
+test('the shape production actually sends -- { project: null } -- is denied', () => {
+  // Miguel, PR #40, A5. The existing test pins `list({})` and `list()`, which
+  // is right: it fixes the RULE rather than a spelling. But neither is what
+  // production sends. `createSecretService` defaults `project = null`, so
+  // `{ project: null }` is the real call, and it was the one spelling with no
+  // test. `'   '` too, which normalizeProjectPath also collapses to null.
+  const v = vault();
+  v.add({ label: 'scoped', secret: 's', project: A });
+
+  for (const q of [{ project: null }, { project: '   ' }, { project: '' }, {}, undefined]) {
+    assert.deepStrictEqual(unboundVault({ file: v.file, crypto: fakeCrypto() }).list(q), [],
+      `an unusable project (${JSON.stringify(q)}) must see nothing, not everything`);
+  }
 });
