@@ -148,28 +148,71 @@ test('no test in the command reads a MUTATED module as text', () => {
   const inCommand = [...conf2.commandRunner.command.matchAll(/test\/([a-z0-9-]+\.test\.js)/g)]
     .map(m => m[1]);
 
-  // Fragile-but-passing today: each asserts on COMMENT text only. Moving one here
-  // to source-contracts.test.js is always an improvement; adding one never is.
+  // Fragile-but-passing today: each asserts on COMMENT text only, which survives
+  // instrumentation. Moving one to source-contracts.test.js is always an
+  // improvement; adding one never is.
   const TOLERATED = new Set([
-    'openrouter.test.js',       // asserts a comment in host/openrouter.js
-    'store.test.js',            // asserts the corrected header in host/store.js
-    'secret-vault-lock.test.js' // asserts the B2(a) limit paragraph
+    'openrouter.test.js',        // asserts a comment in host/openrouter.js
+    'store.test.js',             // asserts the corrected header in host/store.js
+    'secret-vault-lock.test.js', // asserts the B2(a) limit paragraph
   ]);
+
+  // THE BASENAME ANYWHERE INSIDE THE QUOTES. Mortimer, PR #42 run 3, and this is
+  // the correction that matters most: my first version required the quote to sit
+  // IMMEDIATELY before the basename, so any single path literal containing a
+  // slash was invisible. He measured the four natural idioms and three were
+  // blind:
+  //
+  //   INVISIBLE  read('app/secret-vault.js')
+  //   INVISIBLE  readFileSync(path.join(ROOT, 'app/secret-vault.js'), 'utf8')
+  //   INVISIBLE  readFileSync(path.join(__dirname, '../app/secret-vault.js'))
+  //   DETECTED   readFileSync(path.join(__dirname, '..', 'app', 'secret-vault.js'))
+  //
+  // And the first of those is the `read` helper in source-contracts.test.js:42 --
+  // which I created in the SAME COMMIT as this guard. So the commit that added
+  // the detector also introduced, one file over, the idiom it cannot see, in the
+  // file that is now the designated home for source assertions. The next one
+  // written by copying that helper into a command-listed file re-arms the abort
+  // with this test green. That path is likelier than the one it caught.
+  const reads = (src) => [...src.matchAll(/['"]([^'"\n]*?[a-z0-9-]+\.js)['"]/g)]
+    .map(m => path.basename(m[1]));
+
+  // POSITIVE CONTROL, before trusting the scan. Test 1 guards its own liveness
+  // with `inCommand.size > 20`; this one had nothing, so a broken regex would
+  // make `offenders` empty and the test green while detecting nothing -- the
+  // scan-matches-nothing-and-passes failure this whole session keeps finding.
+  for (const probe of ["read('app/secret-vault.js')",
+                       "fs.readFileSync(path.join(ROOT, 'app/secret-vault.js'), 'utf8')",
+                       "fs.readFileSync(path.join(__dirname, '..', 'app', 'secret-vault.js'))",
+                       "fs.readFileSync(path.join(__dirname, '../app/secret-vault.js'))"]) {
+    assert.ok(reads(probe).includes('secret-vault.js'),
+      `the detector must see this idiom, or it is not detecting anything: ${probe}`);
+  }
 
   const offenders = [];
   for (const file of inCommand) {
     if (TOLERATED.has(file)) continue;
     const src = fs.readFileSync(path.join(ROOT, 'test', file), 'utf8');
-    for (const lit of [...src.matchAll(/['"]([a-z0-9-]+\.js)['"]/g)].map(m => m[1])) {
-      if (mutatedBase.has(lit) && /readFileSync/.test(src)) {
-        offenders.push(`${file} reads ${lit}`);
-        break;
-      }
+    if (!/readFileSync|readFile\(/.test(src)) continue;
+    for (const base of reads(src)) {
+      if (mutatedBase.has(base)) { offenders.push(`${file} reads ${base}`); break; }
     }
   }
   assert.deepStrictEqual(offenders, [],
     'these tests are in the mutation command AND read a mutated module as text. '
     + 'Instrumentation rewrites that text, so an assertion on code shape aborts '
-    + 'the whole dry run and the gate produces no number. Move the assertion to '
+    + 'the whole dry run and the gate produces NO NUMBER. Move the assertion to '
     + `test/source-contracts.test.js: ${offenders.join('; ')}`);
+
+  // EVERY TOLERATED ENTRY MUST STILL BE NEEDED. Mortimer: nothing asserted that,
+  // so a stale exemption becomes a permanent silent hole and "must only SHRINK"
+  // stays aspirational. Now removal is forced rather than remembered -- when one
+  // of these is cleaned up, this fails and names it.
+  const stale = [...TOLERATED].filter((file) => {
+    const src = fs.readFileSync(path.join(ROOT, 'test', file), 'utf8');
+    return !reads(src).some(b => mutatedBase.has(b));
+  });
+  assert.deepStrictEqual(stale, [],
+    'these are exempted but no longer read a mutated module -- remove them from '
+    + `TOLERATED, which must only shrink: ${stale.join(', ')}`);
 });
