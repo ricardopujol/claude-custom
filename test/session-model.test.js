@@ -474,10 +474,12 @@ test('refresher: an event DURING a read gets a fresh read after it, not the stal
 test('refresher: a /clear mid-read never shows the OLD session under the new id (Finding 4B)', async () => {
   const { read, calls } = deferredReader();
   let sid = 'A';
-  const r = createSessionModelRefresher({ read, currentSessionId: () => sid });
+  const broadcasts = [];
+  const r = createSessionModelRefresher({ read, currentSessionId: () => sid, onChange: (m) => broadcasts.push(m) });
   const p1 = r.refresh();
   await tick();
   sid = 'B';                                  // SessionStart(B) while A's read is in flight
+  const switchedAt = broadcasts.length;
   const p2 = r.refresh();
   calls[0].resolve({ ...EMPTY, agents: { old: row('claude-opus-5') } });
   await tick();
@@ -488,6 +490,13 @@ test('refresher: a /clear mid-read never shows the OLD session under the new id 
   assert.ok(!('old' in b.agents), 'session A\'s agents must not appear under B');
   assert.strictEqual(b.session.model, 'claude-sonnet-5');
   assert.strictEqual(a, b);
+  // Not only the final state: nothing BROADCAST after the switch may carry A's
+  // agents either. Found by hand-mutation -- with the stale-result discard
+  // removed, the final state was still right (the next loop's reset cleaned
+  // it up) but clients were sent A's agents in between.
+  for (const m of broadcasts.slice(switchedAt)) {
+    assert.ok(!('old' in m.agents), 'a broadcast after the switch carried session A\'s agents');
+  }
 });
 
 test('refresher: a new session starts empty rather than inheriting the last one', async () => {
