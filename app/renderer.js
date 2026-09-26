@@ -1046,7 +1046,7 @@ function renderRoster() {
   agentsEl.innerHTML = rows.map(r =>
     `<div class="agent" data-state="${r.state}">` +
       `<div class="face">${faceHtml(r.portrait)}</div>` +
-      `<div class="meta"><div class="name" title="${r.agent}">${r.agent}` +
+      `<div class="meta"><div class="name" title="${escapeHtml(r.agent)}">${escapeHtml(r.agent)}` +
         countBadgeHtml(r.agent, counts) + `</div>` +
       `<div class="state">${r.state}</div>` +
       agentModelHtml(r.agent) +
