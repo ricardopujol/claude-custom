@@ -60,6 +60,17 @@
  * bug by forgetting to tell the renderer, and there is a test asserting the rule
  * over EVERY state rather than restating the pairs.
  */
+// B1: every state object leaving this builder must carry a string stamp, or the
+// renderer's F8 reset guard silently restores I1. See test/secret-vault-hardening.test.js.
+function emit(result) {
+  if (typeof result.stamp !== 'string' || !result.stamp) {
+    throw new Error(`vaultLockDisplay: state '${result.state}' has no stamp -- `
+      + 'a stamp is required so the renderer can detect state changes without '
+      + 're-deriving them from the state name (Dexter I1)');
+  }
+  return result;
+}
+
 function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } = {}) {
   const s = state && typeof state === 'object' ? state : {};
 
@@ -108,7 +119,7 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
   // F8: a comment asserting a safety property the code does not implement, which
   // stops the next reader checking. Fixed the same way, by making the code true.
   if (typeof s.damaged === 'string' && s.damaged) {
-    return {
+    return emit({
       state: confirmingMelt ? 'confirm-melt-damaged' : 'damaged',
       stamp: 'damaged',
       note: `this vault file cannot be read: ${s.damaged}. No password will open `
@@ -128,11 +139,11 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
         + 'deleting it, so a copy remains — but this harness will not read it '
         + 'again. If those secrets matter, copy the file somewhere safe first.',
       showList: false,
-    };
+    });
   }
 
   if (locked) {
-    return {
+    return emit({
       state: confirmingMelt ? 'confirm-melt' : 'locked',
       stamp: 'locked',
       note: 'the vault is locked',
@@ -147,20 +158,20 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
       canUnlock: true,
       canMelt: true,
       showList: false,
-    };
+    });
   }
 
   if (!hasKey) {
-    return {
+    return emit({
       state: 'open-no-key',
       stamp: 'open-no-key',
       note: 'no key set — anyone at this machine can read the vault',
       canSetKey: true,
       showList: true,
-    };
+    });
   }
 
-  return {
+  return emit({
     state: 'open-with-key',
     stamp: 'open-with-key',
     note: 'unlocked — it will lock again when the harness restarts',
@@ -168,7 +179,7 @@ function vaultLockDisplay(state, { confirmingMelt = false, entryCount = null } =
     canSetKey: true,        // replacing a key is setting one, while open
     canRemoveKey: true,
     showList: true,
-  };
+  });
 }
 
 if (typeof module !== 'undefined' && module.exports) {

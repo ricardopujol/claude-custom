@@ -136,18 +136,25 @@ test('G1: a write cannot land on top of a window that wrote during its EPERM ret
 test('G1: the exclusive lock is released even when the write is refused', () => {
   // A lock that leaks on the failure path is a permanent tombstone over the
   // vault, which is worse than the race it prevents. `withFileLock` promises to
-  // always release; this pins that the vault still works after a refused write.
+  // always release; this pins that the vault still works after every write path.
+  //
+  // Item C (feat/vault-hardening): refreshIfMoved() at the top of add() turns
+  // the old stale-write refusal into a transparent merge. The gen check still
+  // fires in the narrow race between refreshIfMoved and lock acquisition -- tested
+  // via onWrite injection in the G1 test above. For the common case, the stale
+  // write NOW SUCCEEDS, so we verify the lockfile is released after a merge too.
   const file = tmp();
   const v = open(file);
   v.add({ label: 'a', secret: '1', shared: true });
 
   const stale = open(file);
   v.add({ label: 'b', secret: '2', shared: true });        // moves the generation
-  assert.throws(() => stale.add({ label: 'c', secret: '3', shared: true }),
-    /another window changed the vault/i);
+
+  // C: stale handle reloads and merges -- no throw.
+  stale.add({ label: 'c', secret: '3', shared: true });
 
   v.add({ label: 'd', secret: '4', shared: true });
-  assert.strictEqual(v.list(ANY).length, 3, 'ordinary writes still work afterwards');
+  assert.strictEqual(v.list(ANY).length, 4, 'ordinary writes still work afterwards');
   assert.strictEqual(fs.existsSync(`${file}.lock`), false, 'the lockfile must be released');
 });
 
@@ -323,33 +330,26 @@ test('G6: a stale window can still MELT, because melt has nothing to preserve', 
   assert.deepStrictEqual(open(file).lockState(), { hasKey: false, locked: false, count: 0 });
 });
 
-test('G6: the refusal no longer prescribes an action that does nothing', () => {
-  // The message used to say "reopen the secrets panel to pick up the change".
+test('G6: a stale window recovers without needing a lockState call', () => {
+  // The old refusal message said "reopen the secrets panel to pick up the change".
   // Dexter: reopening the panel calls `lockState()` on the SAME vault instance
   // built once at main.js, and nothing user-reachable re-ran `load()` -- so the
   // prescribed action changed nothing and every later write from that window was
   // refused for the rest of its life.
   //
-  // My test commented `open(file)` as "what reopen the panel does", which was the
-  // drift he caught: it proved a new HANDLE recovers, not that the prescribed
-  // action does.
-  //
-  // Both halves are fixed. `lockState()` reloads on a generation mismatch, so
-  // reopening the panel genuinely does pick up the change -- and this asserts the
-  // RECOVERY rather than the wording, since wording is not a contract.
+  // Item C (feat/vault-hardening): `refreshIfMoved()` at the top of add() turns
+  // the refusal into a transparent merge. The stale window becomes usable without
+  // needing lockState() at all -- the prescription no longer applies. The INVARIANT
+  // is the same: the stale window can add entries and no data is lost.
   const file = tmp();
   const a = open(file);
   a.add({ label: 'first', secret: 's1', shared: true });
   const b = open(file);
   b.add({ label: 'second', secret: 's2', shared: true });
 
-  assert.throws(() => a.add({ label: 'third', secret: 's3', shared: true }),
-    /another window changed the vault/i);
-
-  // What the panel does on every render. After it, the window is usable again
-  // with no restart -- which is what makes the message true.
-  a.lockState();
+  // C: a's add() reloads internally and merges -- no throw, no lockState needed.
   a.add({ label: 'third', secret: 's3', shared: true });
   assert.deepStrictEqual(open(file).list(ANY).map(e => e.label).sort(),
-    ['first', 'second', 'third']);
+    ['first', 'second', 'third'],
+    'all three entries land; the stale window merged without requiring a reload gesture');
 });

@@ -548,7 +548,9 @@ async function renderVaultLock() {
   // display's state vocabulary -- and when a fifth state arrived with its own
   // confirmation, this did not know about it, so arming melt on a damaged vault
   // disarmed itself in the same tick and the vault had no working action at all.
-  const stamp = d.stamp || d.state;
+  // B1: no fallback -- vault-lock-display.js enforces the stamp invariant.
+  // See test/secret-vault-hardening.test.js 'B1: ...' for the test that pins this.
+  const stamp = d.stamp;
   if (lastLockState !== null && stamp !== lastLockState && confirmingMelt) {
     confirmingMelt = false;
     lastLockState = stamp;

@@ -41,20 +41,23 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
-test('J1: a sweep failure cannot reach the ok flag that melt returns', () => {
-  // Dexter, PR #42, J1, and a defect in my own H5 fix. `withFileLock` throws if it
-  // cannot acquire, and that throw escaped `melt()` AFTER the vault was replaced
-  // and `state`/`sessionKey` reassigned — so the service reported `{ok:false}`,
-  // telling the user their melt failed when it had succeeded, and losing
-  // `preserved` with it, so a damaged vault's owner was not told where their
-  // possibly-recoverable file went. The retry was a dead end: `sessionKey` is
-  // `undefined` by then, so a second melt throws "melt is for a forgotten key".
+test('J1 (new contract): melt uses ONE outer lock around all three operations', () => {
+  // Dexter, PR #42, J1 + I2 + H5 -- all closed by the single-outer-lock fix on
+  // feat/vault-hardening. The old design had three separate lock situations inside
+  // melt: rename-aside (none), persist (own lock), sweep (second acquisition).
+  // With two sequential acquisitions, a lockfile contended in the gap caused melt
+  // to report {ok:false} after succeeding (J1). The new design wraps all three in
+  // ONE outer withFileLock: if it cannot be taken, melt throws BEFORE touching
+  // anything -- the file is untouched and a retry works.
   //
-  // WHY THIS IS A SOURCE ASSERTION rather than a behavioural one, stated plainly
-  // because a weak test pretending to be strong is worse than one admitting it:
+  // WHY THIS IS A SOURCE ASSERTION: the gap was between two lock acquisitions, so
+  // a test that blocks the lockfile also blocks persist first -- correct but not
+  // J1. The single-lock design removes the gap rather than making it testable. The
+  // behavioural consequence IS testable and lives in
+  // test/secret-vault-hardening.test.js 'D (J1 new contract): ...'.
   //
   // I tried to force the interleaving and could not, and failing narrowed the
-  // finding. `persist` and the sweep take the SAME lockfile, sequentially, so
+  // finding. `persist` and the sweep took the SAME lockfile, sequentially, so
   // blocking it blocks persist FIRST — melt then fails with "nothing was written",
   // which is correct and is not J1. `sweepTemps` cannot throw on its own (its
   // readdir and unlink are both already caught), so the lock is the only throw
@@ -67,18 +70,22 @@ test('J1: a sweep failure cannot reach the ok flag that melt returns', () => {
   // removes the gap rather than making it testable.
   const src = read('app/secret-vault.js');
 
-  const at = src.indexOf('let leftovers;');
-  assert.ok(at > 0, 'melt must collect leftovers in a reassignable binding');
-  const region = src.slice(at, at + 900);
+  // ONE outer withFileLock in melt, containing persistLocked and sweepTemps.
+  // The two calls must appear INSIDE the withFileLock callback, not outside it.
+  // The behavioural consequence (lock blocked => throw => file untouched => retry
+  // works) is tested in test/secret-vault-hardening.test.js 'D (J1 new contract)'.
+  const meltAt = src.indexOf('function melt()');
+  assert.ok(meltAt > 0, 'melt function must exist');
+  const meltRegion = src.slice(meltAt, meltAt + 6000);
 
-  assert.match(region, /try\s*\{[\s\S]*withFileLock/,
-    'the lock acquisition for the sweep must be inside a try');
-  assert.match(region, /catch\s*\([\s\S]*leftovers\s*=/,
-    'and its failure must be folded INTO leftovers, never rethrown');
+  assert.match(meltRegion, /return withFileLock/,
+    'melt must return the result of the single outer withFileLock');
+  assert.match(meltRegion, /persistLocked\(nextState/,
+    'persistLocked is called directly inside the outer lock');
+  assert.match(meltRegion, /sweepTemps\(\)/,
+    'sweepTemps runs inside the same outer lock bracket');
 
-  // The rule the code comment states, pinned so the next reader cannot narrow it
-  // back to "unlink failures only" — which is exactly the narrowing that caused
-  // J1, since I wrote that comment for an unlink and never folded in a lock.
+  // The rule the code comment states, pinned so the next reader cannot narrow it.
   assert.match(src, /must not make melt look like it failed/,
     'the rule must stay written down beside the code that honours it');
 });

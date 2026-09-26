@@ -645,10 +645,13 @@ test('a STALE instance cannot strip the key off the vault', () => {
 
   assert.strictEqual(readVault(file).lock !== undefined, true, 'precondition: B set a key');
 
-  // A's ordinary add would have rewritten the file from its stale state.
+  // A's refreshIfMoved() (C) detects B's key and locks A out, so the message
+  // is "the vault is locked", not "another window changed the vault". The
+  // INVARIANT is the same: the lock survives on disk and the stale write does
+  // not strip it. The message is now truthful -- A is locked, not merely stale.
   assert.throws(() => a.add({ label: 'second', secret: 's2', shared: true }),
-    /another window changed the vault/i,
-    'a write against a file that moved must be refused, not silently applied');
+    /the vault is locked/i,
+    'after refresh, A is locked out by B\'s key -- the vault did not change, A did');
 
   // And the key B set is still there.
   assert.strictEqual(readVault(file).lock !== undefined, true,
@@ -677,19 +680,24 @@ test('the staleness check does not block ORDINARY consecutive writes', () => {
 });
 
 test('the second instance can pick up the change and then write', () => {
-  // The refusal has to be recoverable, or the message telling the user to reopen
-  // the panel is a lie. A new handle reads the current generation and proceeds.
+  // Item C (feat/vault-hardening): refreshIfMoved() at the top of add() turns
+  // the old refusal-then-reopen flow into a transparent merge. A stale handle now
+  // reloads before writing, so it never needs to be reopened -- the third entry
+  // lands directly, and no data from either window is lost.
+  //
+  // The INVARIANT is unchanged: no entry is overwritten or silently dropped.
+  // The UX changed: the "reopen the panel" message no longer applies for this path
+  // (the lock path -- another window set the key -- still throws, as the F9 test
+  // confirms: test/secret-vault-lock-findings.test.js 'a STALE instance...').
   const file = tmp();
   const a = open(file);
   a.add({ label: 'first', secret: 's1', shared: true });
   const b = open(file);
   b.add({ label: 'second', secret: 's2', shared: true });
 
-  assert.throws(() => a.add({ label: 'third', secret: 's3', shared: true }),
-    /another window changed the vault/i);
-
-  const reopened = open(file);              // what "reopen the panel" does
-  reopened.add({ label: 'third', secret: 's3', shared: true });
-  assert.deepStrictEqual(reopened.list(ANY).map(e => e.label).sort(),
-    ['first', 'second', 'third']);
+  // C: stale handle reloads and merges -- no throw, no reopening required.
+  a.add({ label: 'third', secret: 's3', shared: true });
+  const entries = open(file).list(ANY).map(e => e.label).sort();
+  assert.deepStrictEqual(entries, ['first', 'second', 'third'],
+    'all three entries survive: stale write is a merge, not a refusal');
 });

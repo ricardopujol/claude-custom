@@ -247,9 +247,24 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
   // is exactly what that message steers them toward -- would see the panel report
   // damaged forever, with melt still the only offer. H2's harm by a second route.
   //
-  // A fresh Symbol can never equal anything read from disk, so a damaged vault
-  // re-reads on every check and heals the moment the file becomes readable.
-  let loadedGen = state.damaged ? Symbol('damaged') : state.gen;
+  // B2: a stat token (mtimeMs + size) rather than a fresh Symbol. A Symbol never
+  // matches anything, so a damaged vault re-read on every lockState/list/get call
+  // -- two full parses per keystroke when the renderer refreshes on every search-
+  // box input. The stat token matches until the file actually changes, so the
+  // re-read fires exactly when it needs to (self-heal) and not otherwise (B2).
+  // Same-size edit within one mtime tick is not detected (NTFS granularity is
+  // 100ns, so this is theoretical) -- safe direction: we may miss one change and
+  // catch the next real one, rather than never noticing at all.
+  function statToken() {
+    try {
+      const s = fs.statSync(file);
+      return `damaged:${s.mtimeMs}:${s.size}`;
+    } catch {
+      return 'missing:';
+    }
+  }
+
+  let loadedGen = state.damaged ? statToken() : state.gen;
 
   // Read ONLY the token, and tolerate everything: a file that has gone missing,
   // become unreadable or stopped being JSON must not turn an ordinary write into
@@ -261,8 +276,9 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
       return parsed && typeof parsed === 'object' ? parsed.gen : null;
     } catch {
       // No file yet is the same as the fresh state we loaded; anything else
-      // unreadable is a mismatch we must not write over.
-      return fs.existsSync(file) ? Symbol('unreadable') : undefined;
+      // unreadable is a mismatch we must not write over. Stat token so an
+      // unchanged unreadable file does not re-parse on every call (B2).
+      return fs.existsSync(file) ? statToken() : undefined;
     }
   }
 
@@ -411,15 +427,20 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
    */
   function refreshIfMoved() {
     let onDisk;
-    try { onDisk = currentGen(); } catch { return; }
+    try {
+      // B2: when the loaded state is damaged, compare by stat token -- not gen.
+      // currentGen() returns parsed.gen for a valid-JSON-but-malformed-lock file,
+      // which never matches loadedGen (a stat token), causing re-parses per call.
+      // Stat vs stat: matches until the file changes, never otherwise.
+      onDisk = state.damaged ? statToken() : currentGen();
+    } catch { return; }
     if (onDisk === loadedGen) return;
 
     const held = sessionKey;
     const next = load();
     state = next;
-    // H3 again: re-establishing `undefined` here would re-break the self-healing
-    // on the very next call.
-    loadedGen = next.damaged ? Symbol('damaged') : next.gen;
+    // B2: same token logic after reload -- stat for damaged, gen for healthy.
+    loadedGen = next.damaged ? statToken() : next.gen;
 
     if (next.damaged) { sessionKey = null; return; }
 
@@ -462,6 +483,9 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
 
   /** Set the first key, or replace an existing one. Requires the vault open. */
   function setKey(password) {
+    // C: reload if another window wrote since we last read. Read-only and runs
+    // before persist takes the lock -- no nesting (H6 tripwire above persistLocked).
+    refreshIfMoved();
     requireOpen('setting a key');
     const pw = String(password == null ? '' : password);
     if (!pw) throw new Error('a key is required');
@@ -602,6 +626,9 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
 
   /** Destroy the key, leaving the vault permanently open with secrets intact. */
   function removeKey() {
+    // C: reload before rewrapAll so it operates on current entries, not a stale
+    // copy. Runs before persist takes the lock -- no nesting (H6 tripwire above persistLocked).
+    refreshIfMoved();
     requireOpen('destroying the key');
     if (!hasKey()) return { ok: false, failed: [] };
     const { entries, failed } = rewrapAll(sessionKey, null);
@@ -628,6 +655,11 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // This is melt's declared purpose in its own docstring: the way back from a
     // FORGOTTEN key. An open vault never needs it -- destroy the key instead and
     // keep the secrets.
+
+    // I2: capture damaged state BEFORE the refresh so we can detect whether another
+    // window already melted this vault while we were stale.
+    const wasDamaged = state.damaged;
+
     // REFRESH FIRST, so the guard below judges reality rather than what this
     // window last saw. Dexter G6: a stale window whose vault was locked by
     // ANOTHER window still believed itself open, so melt refused with "the vault
@@ -638,133 +670,112 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // A damaged file is melt's other legitimate case: nothing can open it, so
     // "destroy the key instead" is not available (Dexter G3).
     if (!state.damaged && !isLocked()) {
+      // I2: if we came in damaged but the vault is now healthy, another window
+      // already melted it -- return a specific signal rather than "destroy the key
+      // instead", which is advice about a key the user does not have.
+      if (wasDamaged) {
+        const sibling = findDamagedSibling();
+        return {
+          ok: false,
+          alreadyMelted: true,
+          error: 'another window already melted the vault'
+            + (sibling ? `; the damaged file is at ${sibling}` : ''),
+        };
+      }
       throw new Error('melt is for a forgotten key: the vault is open, '
         + 'so destroy the key instead and keep the secrets');
     }
 
-    // A DAMAGED FILE IS MOVED ASIDE, NOT OVERWRITTEN. Dexter, PR #42, H2, and it
-    // is the sharpest contradiction either review has found in my work.
+    // D: ONE OUTER LOCK around all three operations. I2 + H5.
     //
-    // On a damaged vault the app tells the user, in the words of
-    // LockHeaderDamaged, that "melting would destroy secrets that may still be
-    // recoverable" -- and then `requireOpen` refuses every other action with
-    // "melting is the only action that can proceed". So the app states the data
-    // may be recoverable, offers exactly one button, and that button destroyed
-    // it. The advice and the only available action contradicted each other, and
-    // the action won.
+    // melt's three filesystem operations previously each took their own lock or
+    // none: the rename-aside had NONE, persist had its own, and the sweep had a
+    // SECOND acquisition (H5's fix). Two separate acquisitions left a gap between
+    // them -- the exact window a crashed or antivirus process fills on Windows.
+    // In that gap: vault replaced and state committed, then the sweep lock fails,
+    // the throw escapes melt(), and the service reports {ok:false} after success
+    // (J1). The retry was a dead end: sessionKey is undefined, so a second melt()
+    // throws "the vault is open". Named, closed here.
     //
-    // NOT A REGRESSION OF F2, and the distinction is the whole design. F2 is
-    // about a vault the user COULD read and CHOSE to destroy -- there, leaving a
-    // copy makes "no backup and no recovery" a lie, and the sweep is right. A
-    // damaged vault is the opposite premise: the user was told the data may
-    // survive and given no alternative. Destroying it there is not honouring a
-    // choice, it is removing one.
+    // The sweep must not make melt look like it failed. With one outer lock
+    // there is no second acquisition: the sweep cannot fail independently after
+    // the vault was replaced. If the outer lock itself cannot be taken, melt
+    // throws (caught by the service) BEFORE touching anything -- the damaged file
+    // is still in place and a retry works (D/J1 new contract).
     //
-    // The two do not collide because `sweepTemps` anchors on TEMP_PREFIX and
-    // TEMP_SUFFIX, and this name matches neither -- so F2's sweep cannot delete
-    // what this preserves.
-    let preserved = null;
-    if (state.damaged) {
-      const aside = `${file}.damaged-${Date.now()}`;
-      try {
-        fs.renameSync(file, aside);
-        preserved = aside;
-      } catch {
-        // Could not move it: better to leave the unreadable file exactly where
-        // it is than to overwrite data we just told the user might be saved.
-        // The vault stays damaged, which is honest, and the user can act on the
-        // path themselves.
-        return {
-          ok: false,
-          error: 'could not move the damaged vault aside, so it was left '
-            + `untouched rather than destroyed: ${file}`,
-        };
+    // persistLocked is called DIRECTLY (not via persist) because we already hold
+    // the lock. The H6 tripwire above persistLocked names the reentrancy rule;
+    // the onWrite callback must not write to this vault for the same reason as
+    // before -- test/secret-vault-lock-pass2.test.js:61 (G1) is the tripwire.
+    return withFileLock(`${file}.lock`, () => {
+      // I2 IN-LOCK RE-CHECK: another window may have melted between our
+      // refreshIfMoved() above and acquiring the lock. Re-read the file state.
+      if (wasDamaged) {
+        const current = load();
+        if (!current.damaged) {
+          const sibling = findDamagedSibling();
+          return {
+            ok: false,
+            alreadyMelted: true,
+            error: 'another window already melted the vault'
+              + (sibling ? `; the damaged file is at ${sibling}` : ''),
+          };
+        }
       }
-    }
 
-    const nextState = { format: FORMAT, entries: [] };
-    // `force`: melt is the one write that cannot lose anything (Dexter G6). It
-    // discards the whole vault, so a concurrent window's work is not at risk,
-    // and it is the documented way out of a file we cannot even read.
-    //
-    // Load-bearing rather than a convenience, as he pointed out: on a damaged
-    // file `currentGen()` returns a Symbol that can never equal `loadedGen`, so
-    // without `force` melt would be refused forever on exactly the file melt
-    // exists for.
-    persist(nextState, { force: true });
-    state = nextState;
-    sessionKey = undefined;
+      // A DAMAGED FILE IS MOVED ASIDE, NOT OVERWRITTEN. Dexter, PR #42, H2.
+      // NOT A REGRESSION OF F2: `sweepTemps` anchors on TEMP_PREFIX/TEMP_SUFFIX,
+      // which the `.damaged-<ts>` name matches neither of.
+      let preserved = null;
+      if (state.damaged) {
+        const aside = `${file}.damaged-${Date.now()}`;
+        try {
+          fs.renameSync(file, aside);
+          preserved = aside;
+        } catch {
+          // Could not move it: nothing else ran, so the vault is genuinely left
+          // untouched (now actually true, because we are inside the single lock).
+          return {
+            ok: false,
+            error: 'could not move the damaged vault aside, so it was left '
+              + `untouched rather than destroyed: ${file}`,
+          };
+        }
+      }
 
-    // AND THE COPIES. Dexter, PR #42, F2.
-    //
-    // melt used to write exactly one path, and the panel told the user in words
-    // that there is "no backup and no recovery". That was not true. `persist`
-    // writes a temp and renames it, and when all five rename attempts fail --
-    // the Windows EPERM case measured against this very file on 2026-09-18 --
-    // the cleanup unlink is best-effort by its own comment, and most likely to
-    // fail under exactly the condition that caused it.
-    //
-    // What is left behind is `JSON.stringify` of the WHOLE vault: the lock, every
-    // wrapped ciphertext, and every label and note IN CLEARTEXT, since only
-    // `secret` is ever encrypted. So the user melts, is told nothing survives,
-    // and the directory still holds the complete inventory plus ciphertext that
-    // anyone who later learns the password can read.
-    //
-    // The existing test checked `readFileSync(file)` -- the one file guaranteed
-    // clean, and none of the copies that are not.
-    //
-    // Reported rather than thrown: a leftover we could not remove must not make
-    // melt look like it failed, because the main file IS gone and re-melting
-    // will not help. The user needs to be told which file to delete by hand.
-    // INSIDE THE LOCK. Dexter, PR #42, H5. `persist` takes and RELEASES the lock,
-    // so this ran unlocked -- and it matches on the temp name, so it could unlink
-    // a concurrent window's freshly written temp between that window's
-    // `writeFileSync` and its `renameWithRetry`. The victim then gets `ENOENT:
-    // rename`, which `host/atomic-write.js` treats as non-transient and whose
-    // header explicitly steers the next reader toward "a caller bug" -- into the
-    // wrong file entirely. No data is lost; the diagnosis is what breaks.
-    // THE SWEEP CAN NEVER MAKE MELT LOOK LIKE IT FAILED. Dexter, PR #42, J1, and
-    // this is a defect in my own H5 fix -- introduced by the line above it.
-    //
-    // `withFileLock` THROWS if it cannot acquire within the deadline. That throw
-    // escaped `melt()` after the vault had already been replaced and `state` and
-    // `sessionKey` reassigned, so `secret-service.melt`'s catch reported
-    // `{ok: false, error: 'could not take the lock'}` -- telling the user their
-    // melt failed when it had succeeded, and losing `preserved` with it, so a
-    // damaged vault's owner was not told where their possibly-recoverable file
-    // went.
-    //
-    // The retry was a dead end: `sessionKey` is `undefined` by then, so a second
-    // `melt()` throws "melt is for a forgotten key: the vault is open, so destroy
-    // the key instead" -- advice about a key they do not have, on a vault that is
-    // already gone.
-    //
-    // THE COMMENT DIRECTLY ABOVE STATES THE RULE THIS BROKE: a leftover we could
-    // not remove must not make melt look like it failed. I wrote that for an
-    // UNLINK failure and never folded in a LOCK-ACQUISITION failure. Third time
-    // this branch that a comment of mine asserted a property the code did not
-    // implement.
-    //
-    // Not damaged-only, which is what makes it worth fixing before merge: the
-    // sweep runs on EVERY melt, so an ordinary forgotten-key melt on a healthy
-    // vault could report failure after succeeding. The trigger is the one
-    // host/file-lock.js already names -- a lockfile held open without
-    // share-delete, "an antivirus scanner or a crashed host routinely does on
-    // Windows" -- the same adversary atomic-write.js's retry exists for, measured
-    // on this machine. No second window required.
-    let leftovers;
+      const nextState = { format: FORMAT, entries: [] };
+      // `force`: melt is the one write that cannot lose anything (Dexter G6).
+      // It discards the whole vault, so a concurrent window's work is not at
+      // risk, and it is the documented way out of a file we cannot even read.
+      // Called directly (not via persist) -- we already hold the outer lock.
+      persistLocked(nextState, { force: true });
+      state = nextState;
+      sessionKey = undefined;
+
+      // AND THE COPIES. Dexter, PR #42, F2. Sweep runs inside the same lock --
+      // structurally guaranteed not to race another window's temp write (H5).
+      // Reported rather than thrown: a leftover we could not remove must not make
+      // melt look like it failed, because the main file IS gone.
+      const leftovers = sweepTemps();
+
+      // `preserved` names the file we moved aside, so the panel can tell the
+      // user where their possibly-recoverable secrets went.
+      return { ok: true, leftovers, preserved };
+    }, Number.isFinite(lockDeadlineMs) ? { deadlineMs: lockDeadlineMs } : {});
+  }
+
+  // The newest `.damaged-*` sibling of the vault file, or null if none exist.
+  // Used by the I2 detection to name the file another window preserved.
+  function findDamagedSibling() {
     try {
-      leftovers = withFileLock(`${file}.lock`, sweepTemps,
-        Number.isFinite(lockDeadlineMs) ? { deadlineMs: lockDeadlineMs } : {});
-    } catch (err) {
-      // Reported as a leftover, which is exactly what it is: temps we could not
-      // sweep, for a reason we can name. The vault IS gone either way.
-      leftovers = [{ path: path.dirname(file), why: `could not sweep: ${err.message}` }];
-    }
-    // `preserved` names the file we moved aside, so the panel can tell the user
-    // where their possibly-recoverable secrets went. A copy nobody can find is
-    // the same as no copy.
-    return { ok: true, leftovers, preserved };
+      const dir = path.dirname(file);
+      const base = path.basename(file);
+      const siblings = fs.readdirSync(dir)
+        .filter(n => n.startsWith(base + '.damaged-'))
+        .sort()
+        .reverse();  // newest by name: timestamps are monotone, so lexicographic DESC = newest first
+      return siblings.length ? path.join(dir, siblings[0]) : null;
+    } catch { return null; }
   }
 
   // Every temp `persist` could have abandoned, matching the name it builds.
@@ -931,11 +942,15 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
    * naming the wrong cause, not a hang.
    *
    * The door is `onWrite`, which fires INSIDE the critical section at both call
-   * sites. Production passes none (app/main.js supplies only `file` and
-   * `crypto`), but G1's own test drives exactly that door -- `onWrite` performing
-   * another handle's `setKey` is a second lock attempt from inside the first,
-   * which is why that suite waited out the deadline. The injectable deadline made
-   * it cheap; it did not make it safe.
+   * sites and MUST NOT write to this vault -- a write attempt re-enters the same
+   * lockfile and waits out the deadline; test/secret-vault-lock-pass2.test.js:61
+   * (G1) drives exactly that door, so that suite's ~3s stall is the tripwire
+   * firing, not a slow disk, and a future reader must not diagnose it as anything
+   * else. Production passes none (app/main.js supplies only `file` and `crypto`),
+   * but G1's own test drives exactly that door -- `onWrite` performing another
+   * handle's `setKey` is a second lock attempt from inside the first, which is
+   * why that suite waited out the deadline. The injectable deadline made it cheap;
+   * it did not make it safe.
    *
    * `unlock`'s migration write is NOT such a path: Dexter enumerated every call
    * inside this function and `onWrite` is the only one that can re-enter.
@@ -1036,6 +1051,13 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
   }
 
   function add({ label, secret, note, project, shared } = {}) {
+    // C: reload if another window wrote since we last read. Runs before available()
+    // and requireOpen(), before persist takes the lock -- no nesting (H6 tripwire
+    // above persistLocked). Turns "another window changed the vault" refusal into a
+    // merge: commit([...reloaded entries, new entry]) appends to the current state.
+    // The narrow race (other window writes between refresh and lock acquisition)
+    // still hits the gen check and degrades to today's refusal -- acceptable.
+    refreshIfMoved();
     // Fail closed. Storing plaintext because the OS keyring is unavailable is
     // the one outcome that must never happen quietly: the user believes it is
     // encrypted, since that is the entire point of the feature.
