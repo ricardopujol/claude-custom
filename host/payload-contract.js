@@ -47,6 +47,17 @@ const CONTRACT = {
       tool_name: { used: 'processes.js, to close the running entry this completes' },
       tool_response: { used: 'mood-machine.js isFailure(), which decides stressed vs happy' },
     },
+    // Also read, but legitimately ABSENT on a main-session call, so it cannot
+    // be a required field here: agent_id, the owner processes.js ends a call
+    // with when its subagent stops. verify/probe-failure-payloads.js checks it
+    // arrives on a subagent's calls and matches that subagent's SubagentStop.
+  },
+  // A failed call fires this INSTEAD of PostToolUse. Measured 2026-09-25.
+  PostToolUseFailure: {
+    fields: {
+      tool_name: { used: 'processes.js label fallback + mood-machine.js attribution' },
+      tool_use_id: { used: 'processes.js, to close the running entry this failure ends' },
+    },
   },
   SubagentStop: {
     fields: {
@@ -54,6 +65,7 @@ const CONTRACT = {
         used: 'mood-machine.js + cooldowns, to credit the agent that ACTUALLY '
             + 'finished rather than the top of the delegation stack',
       },
+      agent_id: { used: 'processes.js, to end every call that subagent still has open' },
     },
     // Also arrives, unread for now, and worth knowing about:
     //   permission_mode  -- authoritative hazard level, currently scraped from
@@ -64,6 +76,9 @@ const CONTRACT = {
   },
   Stop: {
     fields: {},   // likewise: the turn ended, which is the whole message
+  },
+  SessionEnd: {
+    fields: {},   // the session is over; processes.js clears everything
   },
   Notification: {
     fields: {

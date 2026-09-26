@@ -745,7 +745,11 @@ if (helperExists) {
     }
     attention.handle(ev);
     mood.handle(ev);
-    processes.handle(ev);
+    // A backstop ending a call means that call's own close never arrived --
+    // logged, because a lost event nobody can see is how PostToolUseFailure
+    // went unhooked.
+    const ended = processes.handle(ev);
+    if (ended) console.log(`[processes] ${ev.event} ended ${ended} call(s) whose own close never arrived`);
     broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
@@ -1016,11 +1020,12 @@ term.onData((data) => {
 mood.on('change', ({ agent, state }) => broadcastControl({ type: 'mood', ...describe(agent, state) }));
 const moodTimer = setInterval(() => {
   mood.tick();
-  processes.sweep();
+  const swept = processes.sweep();
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
-  // own a clock of its own.
+  // own a clock of its own -- and on the FALLING EDGE too (see cooldowns below):
+  // a sweep that removed the last row must say so, or the row stays on screen.
   refreshPermissionMode();
-  if (processes.list().length) {
+  if (swept || processes.list().length) {
     broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
   }
   // The FALLING EDGE matters as much as the rising one. Broadcasting only a

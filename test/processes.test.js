@@ -113,3 +113,165 @@ test('stale entries are swept so a missed PostToolUse cannot pin one forever', (
   h.t.sweep();
   assert.deepStrictEqual(h.t.list(), []);
 });
+
+// --- closing a call that never reports its own success -----------------------
+// Found 2026-09-25 in a real session: three Bash calls stayed "running" after
+// they ended. All three had exited non-zero, and for a failed call Claude Code
+// sends PostToolUseFailure -- never PostToolUse. Measured against the real CLI
+// by verify/probe-failure-payloads.js, whose capture is the fixture below.
+
+const fs = require('fs');
+const path = require('path');
+const { STALE_SHOW_MS } = require('../host/processes');
+
+const FIXTURE = path.join(__dirname, 'hooks-real-subagent-failure.fixture.jsonl');
+const realStream = () => fs.readFileSync(FIXTURE, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+const runningOnly = t => t.list().filter(p => {
+  assert.ok(p.state === 'running' || p.state === 'stale', `every entry has a state, got ${p.state}`);
+  return p.state === 'running';
+});
+
+function ev(event, payload) { return { event, payload }; }
+
+test('a FAILED call is closed by PostToolUseFailure', () => {
+  const h = harness();
+  h.pre('Bash', { command: 'ls /nope' }, 'f1');
+  h.t.handle(ev('PostToolUseFailure', { tool_name: 'Bash', tool_input: { command: 'ls /nope' }, tool_use_id: 'f1' }));
+  assert.deepStrictEqual(h.t.list(), []);
+});
+
+test('a running call reports its state as running', () => {
+  const h = harness();
+  h.pre('Bash', { command: 'npm test' }, 'a1');
+  assert.strictEqual(h.t.list()[0].state, 'running');
+});
+
+test('a subagent stopping closes every call it still has open', () => {
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls x' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls y' }, tool_use_id: 's2', agent_id: 'A' }));
+  h.t.handle(ev('SubagentStop', { agent_id: 'A', agent_type: 'code-reviewer' }));
+  assert.deepStrictEqual(runningOnly(h.t), []);
+});
+
+test('a subagent stopping leaves other agents\' calls and the main session alone', () => {
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'mine' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'theirs' }, tool_use_id: 's2', agent_id: 'B' }));
+  h.pre('Bash', { command: 'main' }, 'm1');
+  h.t.handle(ev('SubagentStop', { agent_id: 'A' }));
+  assert.deepStrictEqual(runningOnly(h.t).map(p => p.label).sort(), ['main', 'theirs']);
+});
+
+test('a SubagentStop with no agent_id closes nothing', () => {
+  // Without an owner there is no way to know which calls were its; guessing
+  // would close a background agent's live command.
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'x' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('SubagentStop', {}));
+  assert.strictEqual(runningOnly(h.t).length, 1);
+});
+
+test('Stop closes the main session\'s open calls', () => {
+  const h = harness();
+  h.pre('Bash', { command: 'main' }, 'm1');
+  h.t.handle(ev('Stop', {}));
+  assert.deepStrictEqual(runningOnly(h.t), []);
+});
+
+test('Stop does NOT close a background subagent\'s calls', () => {
+  // Measured: with a background agent, Stop fires when the PARENT's turn ends,
+  // before the agent's own SubagentStop. Its commands are still really running.
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'bg work' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('Stop', {}));
+  assert.deepStrictEqual(runningOnly(h.t).map(p => p.label), ['bg work']);
+});
+
+test('SessionEnd clears everything, stale or not', () => {
+  const h = harness();
+  h.pre('Bash', { command: 'main' }, 'm1');
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'sub' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('SubagentStop', { agent_id: 'A' }));
+  h.t.handle(ev('SessionEnd', { reason: 'other' }));
+  assert.deepStrictEqual(h.t.list(), []);
+});
+
+test('a call closed by its owner stopping is shown as stale, not silently dropped', () => {
+  // Its own close never arrived, which is itself worth seeing: a missed event
+  // should be visible, or the next one goes unnoticed like this one did.
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls x' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('SubagentStop', { agent_id: 'A' }));
+  const [p] = h.t.list();
+  assert.strictEqual(p.state, 'stale');
+  assert.strictEqual(p.label, 'ls x');
+});
+
+test('a stale entry stops ageing and is swept once shown for its grace period', () => {
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls x' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.advance(5_000);
+  h.t.handle(ev('SubagentStop', { agent_id: 'A' }));
+  h.advance(STALE_SHOW_MS - 1);
+  h.t.sweep();
+  assert.strictEqual(h.t.list()[0].elapsedMs, 5_000, 'elapsed freezes at the moment it was closed');
+  h.advance(2);
+  h.t.sweep();
+  assert.deepStrictEqual(h.t.list(), []);
+});
+
+test('a late real close for a stale entry removes it', () => {
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls x' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('SubagentStop', { agent_id: 'A' }));
+  h.t.handle(ev('PostToolUseFailure', { tool_name: 'Bash', tool_input: { command: 'ls x' }, tool_use_id: 's1', agent_id: 'A' }));
+  assert.deepStrictEqual(h.t.list(), []);
+});
+
+test('replay: the real hook stream of a failing main + subagent call ends with nothing running', () => {
+  const h = harness();
+  for (const e of realStream()) {
+    if (e.event === 'SessionEnd') break;   // judge the state BEFORE the backstop
+    h.t.handle(e);
+  }
+  assert.deepStrictEqual(h.t.list(), []);
+});
+
+test('replay REGRESSION: a subagent Bash call with no end event is not running once the subagent completes', () => {
+  // The reported bug's shape, on real payloads: drop the subagent's
+  // PostToolUseFailure so its call gets no explicit end event at all.
+  const stream = realStream();
+  const lost = stream.find(e => e.event === 'PostToolUseFailure' && e.payload.agent_id);
+  assert.ok(lost, 'fixture must contain a subagent PostToolUseFailure to drop');
+  const h = harness();
+  for (const e of stream) {
+    if (e === lost) continue;
+    if (e.event === 'SubagentStop') {
+      assert.strictEqual(runningOnly(h.t).length, 1, 'still running until its agent completes');
+    }
+    if (e.event === 'SessionEnd') break;
+    h.t.handle(e);
+  }
+  assert.deepStrictEqual(runningOnly(h.t), []);
+  assert.deepStrictEqual(h.t.list().map(p => p.state), ['stale']);
+});
+
+test('sweep reports how many entries it removed, so the host can announce the falling edge', () => {
+  // The host only re-broadcast a NON-empty list, so the sweep that removed the
+  // last entry was never announced and its row stayed on screen.
+  const h = harness();
+  assert.strictEqual(h.t.sweep(), 0);
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'x' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('SubagentStop', { agent_id: 'A' }));
+  h.advance(STALE_SHOW_MS);
+  assert.strictEqual(h.t.sweep(), 1);
+});
+
+test('handle reports how many calls a backstop had to end', () => {
+  // Each one is a close event that never arrived -- worth a log line.
+  const h = harness();
+  h.pre('Bash', { command: 'main' }, 'm1');
+  assert.strictEqual(h.t.handle(ev('Stop', {})), 1);
+  assert.strictEqual(h.t.handle(ev('Stop', {})), 0, 'an already-stale entry is not ended twice');
+});

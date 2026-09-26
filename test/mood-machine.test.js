@@ -641,3 +641,19 @@ test('the card is derived from its invocations, not from whoever spoke last', ()
   assert.strictEqual(h.m.stateOf('many'), 'working');
   assert.strictEqual(h.m.stack().filter(n => n === 'many').length, 2);
 });
+
+test('a PostToolUseFailure counts as the agent\'s failure, like a non-zero PostToolUse', () => {
+  // A failed call fires PostToolUseFailure INSTEAD of PostToolUse, with an
+  // `error` string and no tool_response (real shape, from
+  // verify/probe-failure-payloads.js). Unhandled, the agent that failed a
+  // command finished with a happy face.
+  const h = harness();
+  h.pre('Agent', AGENT);
+  h.m.handle({ event: 'PostToolUseFailure', payload: {
+    tool_name: 'Bash', tool_input: { command: 'ls /nope' }, tool_use_id: 't1',
+    error: "Exit code 2\nls: cannot access '/nope'", is_interrupt: false,
+  } });
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed');
+  h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'code-reviewer' } });
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed', 'finishes stressed, not happy');
+});
