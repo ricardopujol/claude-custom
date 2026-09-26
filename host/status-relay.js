@@ -18,9 +18,25 @@
  * not stop the host hearing the truth. The two run concurrently.
  */
 const net = require('net');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const FORWARD_TIMEOUT_MS = 300;
+// How long the user's own statusLine command may run (Dexter r2 N6). Without
+// a bound a hung command (a network call, say) was awaited forever, and each
+// re-fire left one more of it behind.
+const USER_TIMEOUT_MS = 5000;
+
+// The whole tree: with shell:true the user's command runs UNDER a shell, and
+// killing only the shell leaves the command itself running.
+function killTree(child) {
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    } else {
+      process.kill(-child.pid, 'SIGKILL');
+    }
+  } catch { /* already gone */ }
+}
 
 function parseArgs(argv) {
   const out = { pipe: null, then: null };
@@ -53,7 +69,7 @@ function forward(pipe, input) {
   });
 }
 
-function runUser(encoded, input) {
+function runUser(encoded, input, { timeoutMs = USER_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     if (!encoded) { resolve(0); return; }
     let command;
@@ -61,13 +77,20 @@ function runUser(encoded, input) {
     if (!command) { resolve(0); return; }
     let child;
     try {
-      child = spawn(command, { shell: true, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true });
+      // detached on POSIX makes the shell a process-group leader, so killTree
+      // can reach its children; on Windows taskkill /T walks the tree instead.
+      child = spawn(command, {
+        shell: true, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true,
+        detached: process.platform !== 'win32',
+      });
     } catch {
       resolve(1);
       return;
     }
-    child.on('error', () => resolve(1));
-    child.on('close', code => resolve(typeof code === 'number' ? code : 1));
+    const timer = setTimeout(() => { killTree(child); resolve(1); }, timeoutMs);
+    timer.unref();
+    child.on('error', () => { clearTimeout(timer); resolve(1); });
+    child.on('close', (code) => { clearTimeout(timer); resolve(typeof code === 'number' ? code : 1); });
     child.stdin.on('error', () => { /* the user command may not read stdin */ });
     child.stdin.end(input);
   });
@@ -88,4 +111,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, relay, forward, runUser };
+module.exports = { parseArgs, relay, forward, runUser, USER_TIMEOUT_MS };
