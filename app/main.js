@@ -19,6 +19,16 @@ const { projectLabel } = require('../host/project-path');
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
 const { readIdentity } = require('../host/host-identity');
+const { readLook } = require('../host/style');
+const { sanitizeDim } = require('../host/look');
+const { createStore } = require('../host/store');
+
+// Install-wide UI state that belongs to no one project: today only how dark an
+// unfocused window gets. The same .harness/state the host's store uses, under
+// its own key, so neither side can clobber the other's file.
+const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state') });
+const UI_KEY = 'look-global';
+const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // Resolved in whenReady, because choosing it needs to probe. An explicit
 // CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone who names a
@@ -161,7 +171,9 @@ function createWindow(spawnedHost) {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
-    backgroundColor: '#11131a',
+    // The project's own app colour when it has one, so a window does not
+    // flash the default blue before the page paints its look.
+    backgroundColor: readLook(PROJECT_CWD).appColor || '#11131a',
     title: projectLabel(PROJECT_CWD),
     webPreferences: {
       contextIsolation: true,
@@ -212,10 +224,18 @@ function createWindow(spawnedHost) {
   // The EVENTS fired reliably in every one of her runs; it is the
   // point-in-time query that lies. So the events are the source of truth.
   let focused = win.isFocused();
-  win.on('focus', () => { focused = true; });
-  win.on('blur', () => { focused = false; });
+  // The page darkens itself while unfocused, so the window you are typing
+  // into is the one that is not dimmed. The dim level is read FRESH on every
+  // send: it is install-wide, so a slider moved in another project's window
+  // takes effect here the next time this one loses focus, with no watcher.
+  const sendFocus = () => {
+    if (!win.isDestroyed()) win.webContents.send('window-focus', { focused, dim: readDim() });
+  };
+  win.on('focus', () => { focused = true; sendFocus(); });
+  win.on('blur', () => { focused = false; sendFocus(); });
   win.on('minimize', () => { focused = false; });
-  win.on('restore', () => { focused = win.isFocused(); });
+  win.on('restore', () => { focused = win.isFocused(); sendFocus(); });
+  win.webContents.on('did-finish-load', sendFocus);
   const setCue = (on) => {
     cueOn = !!on;
     if (!win.isDestroyed()) win.webContents.send('attention-cue', cueOn);
@@ -331,6 +351,21 @@ function createWindow(spawnedHost) {
   ipcMain.handle('secrets:lock', (e) => (fromWindow(e) ? secrets.lock() : { ok: false }));
   ipcMain.handle('secrets:removeKey', (e) => (fromWindow(e) ? secrets.removeKey() : { ok: false }));
   ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
+
+  // The install-wide unfocused-window dim: the one Style-tab setting that is
+  // not project-scoped, so it lives here rather than going to the host.
+  ipcMain.handle('look:getDim', (e) => (fromWindow(e) ? readDim() : null));
+  ipcMain.handle('look:setDim', (e, value) => {
+    if (!fromWindow(e)) return null;
+    const dim = sanitizeDim(value);
+    try {
+      uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), unfocusedDim: dim }));
+    } catch (err) {
+      console.error('[main] could not save the unfocused dim:', err && err.message);
+      return null;
+    }
+    return dim;
+  });
 
   // Headless verification of the secret store. The unit tests inject a fake
   // cipher, so they say nothing about whether DPAPI actually works here; this

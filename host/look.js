@@ -149,7 +149,33 @@ function terminalOverride(look, baseTerminal) {
   return out;
 }
 
+/**
+ * The registry theme with this project's look merged in -- what the host
+ * sends the view, so the renderer paints it with the applyTheme it already
+ * has and never needs this module in a browser scope. The base is not mutated.
+ */
+function applyLook(theme, look) {
+  const base = theme || {};
+  return {
+    ...base,
+    chrome: derivePalette(look, base.chrome),
+    terminal: terminalOverride(look, base.terminal),
+  };
+}
+
+// How dark a window that is NOT focused gets -- install-wide, one value for
+// every window, because its job is telling windows apart, not identifying a
+// project. Capped below black: an unfocused window must still show which
+// project it is.
+const DEFAULT_DIM = 0.45;
+const MAX_DIM = 0.8;
+
+function sanitizeDim(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_DIM;
+  return Math.min(MAX_DIM, Math.max(0, v));
+}
+
 module.exports = {
-  parseHex, formatHex, sanitizeLook, derivePalette, terminalOverride, luminance,
-  DEFAULT_LOOK, MAX_DARKNESS, ACCEPTED_EXTENSIONS,
+  parseHex, formatHex, sanitizeLook, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
+  DEFAULT_LOOK, MAX_DARKNESS, ACCEPTED_EXTENSIONS, DEFAULT_DIM, MAX_DIM,
 };

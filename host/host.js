@@ -33,6 +33,7 @@ const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { setBackground, resetBackground, resolveStyle, setLook } = require('./style');
+const { applyLook } = require('./look');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
@@ -382,9 +383,14 @@ console.log('[host] background     :', path.basename(background.path), backgroun
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
 // look edited from another window of the same folder is what this one sends.
 // Falls back to the generated background above whenever there is no copy.
+// `theme` is the registry theme with the look merged in (host/look.js), so the
+// view paints a look with the same applyTheme it paints a registry theme with.
 function currentStyle() {
   const r = resolveStyle(CWD, background.path);
-  return { background: r.background, source: r.source, setAt: r.setAt, look: r.look };
+  return {
+    background: r.background, source: r.source, setAt: r.setAt, look: r.look,
+    theme: applyLook(theme, r.look),
+  };
 }
 
 // The session id arrives on the SessionStart hook. Until it does, only the
@@ -1147,7 +1153,7 @@ wss.on('connection', (ws) => {
   sendControl(ws, {
     type: 'hello',
     cwd: CWD,
-    theme,
+    theme: styleResolved.theme,
     hooks: helperExists,
     background: styleResolved.background,
     style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },

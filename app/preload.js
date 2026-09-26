@@ -74,4 +74,20 @@ contextBridge.exposeInMainWorld('harness', {
     removeKey: () => ipcRenderer.invoke('secrets:removeKey'),
     melt: () => ipcRenderer.invoke('secrets:melt'),
   },
+
+  // Focus, for the unfocused-window dim. Same replace-don't-accumulate
+  // convention as onAttentionCue. `dim` rides along so the page never has to
+  // ask for it separately at the moment it needs it.
+  onWindowFocus: (fn) => (ipcRenderer.removeAllListeners('window-focus'), ipcRenderer.on('window-focus',
+    (_e, state) => {
+      try { fn({ focused: !!(state && state.focused), dim: state && state.dim }); } catch (err) {
+        console.error('[preload] window-focus listener threw', err);
+      }
+    }), () => ipcRenderer.removeAllListeners('window-focus')),
+
+  // The install-wide unfocused dim (the project-scoped look goes to the host).
+  look: {
+    getDim: () => ipcRenderer.invoke('look:getDim'),
+    setDim: (value) => ipcRenderer.invoke('look:setDim', value),
+  },
 });

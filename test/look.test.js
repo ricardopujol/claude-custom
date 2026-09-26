@@ -146,3 +146,49 @@ test('terminalOverride sets only the terminal background, never the CLI text col
   const t = terminalOverride({ ...DEFAULT_LOOK, appColor: '#402020', textColor: '#ffffff' }, base);
   assert.deepStrictEqual(t, { ...base, background: '#402020' });
 });
+
+// --- unfocused-window dim (install-wide, one value for every window) -----------
+
+test('sanitizeDim clamps to [0, MAX_DIM] and treats a non-number as the default', () => {
+  const { sanitizeDim, DEFAULT_DIM, MAX_DIM } = require('../host/look');
+  assert.strictEqual(sanitizeDim(0.3), 0.3);
+  assert.strictEqual(sanitizeDim(0), 0, 'zero is a real choice: "never dim"');
+  assert.strictEqual(sanitizeDim(5), MAX_DIM);
+  assert.strictEqual(sanitizeDim(-1), 0);
+  for (const v of [undefined, null, '0.3', NaN, Infinity, {}]) {
+    assert.strictEqual(sanitizeDim(v), DEFAULT_DIM, JSON.stringify(v));
+  }
+  assert.ok(MAX_DIM < 1, 'a fully black unfocused window would hide which project it is');
+});
+
+// --- applyLook: the registry theme with this project's look merged in ----------
+
+test('applyLook merges the look into chrome and terminal, and leaves font alone', () => {
+  const { applyLook } = require('../host/look');
+  const theme = {
+    terminal: { background: '#0b1018', foreground: '#c3d2e4' },
+    chrome: { ...BASE_CHROME },
+    font: { family: 'X', size: 14 },
+  };
+  const out = applyLook(theme, { ...DEFAULT_LOOK, appColor: '#402020', textColor: '#eeeeee' });
+  assert.strictEqual(out.chrome.bg, '#402020');
+  assert.strictEqual(out.chrome.text, '#eeeeee');
+  assert.strictEqual(out.terminal.background, '#402020');
+  assert.strictEqual(out.terminal.foreground, '#c3d2e4');
+  assert.deepStrictEqual(out.font, theme.font);
+  assert.strictEqual(theme.chrome.bg, BASE_CHROME.bg, 'the base theme is never mutated');
+});
+
+test('applyLook with the default look is a deep copy of the theme', () => {
+  const { applyLook } = require('../host/look');
+  const theme = { terminal: { background: '#000000' }, chrome: { ...BASE_CHROME }, font: {} };
+  assert.deepStrictEqual(applyLook(theme, DEFAULT_LOOK), theme);
+  assert.deepStrictEqual(applyLook(theme, undefined), theme);
+});
+
+test('applyLook tolerates a theme with no chrome or terminal', () => {
+  const { applyLook } = require('../host/look');
+  const out = applyLook({}, { ...DEFAULT_LOOK, appColor: '#402020' });
+  assert.strictEqual(out.chrome.bg, '#402020');
+  assert.strictEqual(out.terminal.background, '#402020');
+});
