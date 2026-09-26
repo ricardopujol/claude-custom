@@ -29,6 +29,7 @@ const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
+const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
@@ -720,6 +721,14 @@ function seatPayload(seats) {
   return { type: 'seats', seats, max: MAX_SEATS, warnings: seatWarnings(seats) };
 }
 
+// Running processes and the party, from hook events and from the tick. Owns the
+// falling edge the tick used to miss -- see host/processes-broadcast.js.
+// A closure, not `broadcastControl` itself: that is a const declared further
+// down, and reading it here at startup is a TDZ ReferenceError that stops the
+// host before it serves anything. The closure reads it at first send, by which
+// point the whole module has run.
+const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
+
 let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
@@ -771,7 +780,7 @@ if (helperExists) {
     attention.handle(ev);
     mood.handle(ev);
     processes.handle(ev);
-    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
+    processesBroadcast.send(processes.list(), mood.stack());
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
   hookBridge.on('error', e => console.log('[hook!] bridge error:', e.message));
@@ -1043,11 +1052,10 @@ const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
-  // own a clock of its own.
+  // own a clock of its own -- and once more when the party shrank with nothing
+  // left running, or a reaped "×2" stays on a sleeping card.
   refreshPermissionMode();
-  if (processes.list().length) {
-    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
-  }
+  processesBroadcast.tick(processes.list(), mood.stack());
   // The FALLING EDGE matters as much as the rising one. Broadcasting only a
   // non-empty list means the panel is never told the last cooldown expired, so
   // the final row stays on screen claiming an agent is still unavailable.
