@@ -89,9 +89,14 @@ test('AGREES WITH THE REAL DIRECTORIES ON THIS MACHINE', () => {
   // project" is the MAIN checkout, not process.cwd(): a git worktree is a
   // folder Claude Code may never have run in, and CLAUDE.md mandates worktrees
   // for parallel agents -- so a cwd-based check failed for every one of them.
-  const commonDir = execFileSync('git',
-    ['rev-parse', '--path-format=absolute', '--git-common-dir'],
-    { cwd: __dirname, encoding: 'utf8' }).trim();
+  let commonDir;
+  try {
+    commonDir = execFileSync('git',
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd: __dirname, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return;                       // no git, or not a clone: same as no projects dir
+  }
   const mine = projectDirName(path.dirname(commonDir));
   assert.ok(dirs.includes(mine), `${mine} is not among the real project dirs`);
 });
