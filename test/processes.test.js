@@ -275,3 +275,37 @@ test('handle reports how many calls a backstop had to end', () => {
   assert.strictEqual(h.t.handle(ev('Stop', {})), 1);
   assert.strictEqual(h.t.handle(ev('Stop', {})), 0, 'an already-stale entry is not ended twice');
 });
+
+// --- the close-by-label fallback (Dexter F2, Miguel 1) -----------------------
+
+test('a close that carries a tool_use_id never falls back to matching by label', () => {
+  // Dexter F2: A is swept at 30 min while still running; A's late close then
+  // missed its key, matched by label, and deleted its still-running twin B.
+  const h = harness();
+  h.pre('Agent', { subagent_type: 'mutation-tester' }, 'A');
+  h.advance(5 * 60_000);
+  h.pre('Agent', { subagent_type: 'mutation-tester' }, 'B');
+  h.advance(25 * 60_000 + 1_000);
+  h.t.sweep();                                  // A swept, B still young
+  h.advance(60_000);
+  h.post('Agent', { subagent_type: 'mutation-tester' }, 'A');
+  assert.deepStrictEqual(runningOnly(h.t).map(p => p.label), ['mutation-tester'], 'B is still running');
+});
+
+test('the no-id fallback closes a RUNNING entry, not a stale one with the same label', () => {
+  // Miguel 1: it deleted the stale entry and left the live one running forever.
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' } }));
+  h.t.handle(ev('Stop', {}));                   // first one -> stale
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'n2' }));
+  h.t.handle(ev('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' } }));
+  assert.deepStrictEqual(runningOnly(h.t), []);
+  assert.deepStrictEqual(h.t.list().map(p => p.state), ['stale']);
+});
+
+test('the no-id fallback only closes a call of the same owner', () => {
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' } }));   // main session
+  assert.strictEqual(runningOnly(h.t).length, 1, 'the main session cannot close agent A\'s call');
+});

@@ -90,13 +90,21 @@ function createProcessTracker({ now = Date.now } = {}) {
       return 0;
     }
     if (CLOSE_EVENTS.has(event)) {
-      const key = keyFor(p);
-      if (!running.delete(key)) {
-        // No id, or an id that never started: fall back to the first entry with
-        // a matching label so a missing correlator does not leak an entry.
-        const label = labelFor(p.tool_name, p.tool_input);
-        for (const [k, v] of running) {
-          if (v.tool === p.tool_name && v.label === label) { running.delete(k); break; }
+      // A close with an id closes that id or nothing. Falling back by label
+      // there deleted a still-running twin whose sibling had been swept
+      // (Dexter F2).
+      if (p.tool_use_id) { running.delete(keyFor(p)); return 0; }
+      // No id at all: fall back to a matching label so a missing correlator does
+      // not leak an entry -- but only a RUNNING call of the SAME owner, or it
+      // closes a stale row and leaves the live one running forever (Miguel 1),
+      // or closes another agent's call. Not by key: an id-less key is the
+      // command text, which a stale twin shares.
+      const label = labelFor(p.tool_name, p.tool_input);
+      const owner = p.agent_id ?? null;
+      for (const [k, v] of running) {
+        if (v.endedAt === null && v.owner === owner && v.tool === p.tool_name && v.label === label) {
+          running.delete(k);
+          break;
         }
       }
       return 0;
