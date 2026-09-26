@@ -95,3 +95,36 @@ test('modelLine: an unresolved identity says so in the title, not just the displ
   assert.strictEqual(m.unresolved, true);
   assert.match(m.title, /identity unresolved/i);
 });
+
+// --- Miguel, PR #34: I1 (read side) and S1 -----------------------------------
+
+const { modelEntry, UNKNOWN } = require('../app/agent-card-display');
+
+test('modelEntry: only an OWN key is an entry -- __proto__ never reads the prototype', () => {
+  assert.strictEqual(modelEntry({}, '__proto__'), undefined);
+  assert.strictEqual(modelEntry({}, 'toString'), undefined);
+  const own = JSON.parse('{"__proto__": {"model": "m"}}');
+  assert.deepStrictEqual(modelEntry(own, '__proto__'), { model: 'm' });
+  assert.deepStrictEqual(modelEntry({ x: { model: 'm' } }, 'x'), { model: 'm' });
+});
+
+test('modelEntry: no map at all is no entry, not a throw', () => {
+  assert.strictEqual(modelEntry(undefined, 'x'), undefined);
+  assert.strictEqual(modelEntry(null, 'x'), undefined);
+});
+
+test('modelLine: failed reads are SAID, not hidden (S1)', () => {
+  const missing = modelLine(undefined, 2);
+  assert.strictEqual(missing.text, UNKNOWN);
+  assert.match(missing.title, /2 transcripts? unreadable/);
+  const known = modelLine({ model: 'claude-opus-5' }, 1);
+  assert.strictEqual(known.text, 'claude-opus-5');
+  assert.match(known.title, /1 transcript unreadable/);
+});
+
+test('modelLine: zero, missing or garbage errors add nothing to the title', () => {
+  for (const errors of [0, undefined, null, NaN, -1, '3', 1.5]) {
+    assert.strictEqual(modelLine({ model: 'm' }, errors).title, 'm', `errors=${String(errors)}`);
+    assert.strictEqual(modelLine(undefined, errors).title, 'model not read yet', `errors=${String(errors)}`);
+  }
+});

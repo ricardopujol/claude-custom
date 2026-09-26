@@ -567,3 +567,16 @@ test('refresher: on a session change the old state is dropped AT ONCE, not when 
   await tick();
   assert.deepStrictEqual(r.current().agents, {}, 'A\'s agents must be gone while B is being read');
 });
+
+test('readSessionModel: an agent labelled __proto__ is an own key, not a prototype swap (Miguel I1)', async () => {
+  const { projectsDir, projectDir, dir } = project();
+  writeSession(dir, 's1', []);
+  writeSubagent(dir, 's1', 'agent-a', { agentType: '__proto__', requestShape: 'background' },
+    [assistant('claude-opus-5', '2026-01-01T00:05:00.000Z')]);
+
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.ok(Object.prototype.hasOwnProperty.call(r.agents, '__proto__'), 'must be an own key');
+  assert.strictEqual(Object.getPrototypeOf(r.agents), Object.prototype, 'prototype untouched');
+  assert.strictEqual(JSON.parse(JSON.stringify(r.agents))['__proto__'].model, 'claude-opus-5',
+    'and it survives the trip to the renderer');
+});

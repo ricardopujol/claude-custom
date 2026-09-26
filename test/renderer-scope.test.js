@@ -65,7 +65,7 @@ const ALLOWED_GLOBALS = new Set([
   'bugVaultDisplay', 'formatBugRow',
   'projectsDisplay',
   // app/agent-card-display.js
-  'instanceCounts', 'modelLine',
+  'instanceCounts', 'modelLine', 'modelEntry',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules
@@ -175,7 +175,7 @@ test('the display modules the renderer needs are actually defined after loading'
   // module that has already been caught once.
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
                     'rosterWidth', 'faceSize', 'bugVaultDisplay',
-                    'vaultLockDisplay', 'instanceCounts', 'modelLine']) {
+                    'vaultLockDisplay', 'instanceCounts', 'modelLine', 'modelEntry']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });

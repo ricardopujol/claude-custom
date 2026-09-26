@@ -58,29 +58,48 @@ function instanceCounts(party) {
  * -- both draw the SAME "not read yet" state, because to the person looking at
  * the card they are the same fact: there is no model to show.
  */
-function modelLine(entry) {
+function modelLine(entry, errors) {
+  // Said, not hidden (Miguel, PR #34, S1): the host counts transcripts it could
+  // not read, and a card drawn from a partial read should admit it -- the same
+  // way the career panel propagates `unreadable`. Strict: only a positive
+  // integer is a count, so absence never reads as a confident number.
+  const failed = typeof errors === 'number' && Number.isInteger(errors) && errors > 0
+    ? ` — ${errors} transcript${errors === 1 ? '' : 's'} unreadable, this may be out of date`
+    : '';
   const model = entry && typeof entry.model === 'string' && entry.model ? entry.model : null;
   if (!model) {
-    return { text: UNKNOWN, title: 'model not read yet', unresolved: false };
+    return { text: UNKNOWN, title: 'model not read yet' + failed, unresolved: false };
   }
   const unresolved = !!(entry && entry.unresolved);
   return {
     text: model,
-    title: unresolved
+    title: (unresolved
       ? `${model} — identity unresolved, this is a label not an agent type`
-      : model,
+      : model) + failed,
     unresolved,
   };
+}
+
+/**
+ * One agent's entry from `sessionModel.agents`, by OWN key only. A plain
+ * `agents[agent]` hands an agent labelled `__proto__` (or `toString`)
+ * whatever the prototype chain holds instead of "no entry" (Miguel, PR #34,
+ * I1 -- read side; the host builds the map safely).
+ */
+function modelEntry(agents, agent) {
+  if (!agents || typeof agents !== 'object') return undefined;
+  return Object.prototype.hasOwnProperty.call(agents, agent) ? agents[agent] : undefined;
 }
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all. Same shape as
 // app/career-display.js and app/quota-display.js.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { instanceCounts, modelLine, UNKNOWN };
+  module.exports = { instanceCounts, modelLine, modelEntry, UNKNOWN };
 } else {
   root.instanceCounts = instanceCounts;
   root.modelLine = modelLine;
+  root.modelEntry = modelEntry;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

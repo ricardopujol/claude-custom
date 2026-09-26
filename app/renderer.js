@@ -1016,8 +1016,8 @@ function careerHtml(agent) {
 // concurrent instances of one agent (FF8). Both judgements live in
 // app/agent-card-display.js so they can be tested; this is only the drawing.
 function agentModelHtml(agent) {
-  const entry = sessionModel && sessionModel.agents ? sessionModel.agents[agent] : undefined;
-  const m = modelLine(entry);
+  const entry = modelEntry(sessionModel && sessionModel.agents, agent);
+  const m = modelLine(entry, sessionModel && sessionModel.errors);
   return `<div class="agent-model" title="${escapeHtml(m.title)}">${escapeHtml(m.text)}</div>`;
 }
 

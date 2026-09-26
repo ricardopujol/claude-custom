@@ -195,10 +195,13 @@ async function readSessionModel({
   openFile = (f, flags) => fsp.open(f, flags),
 } = {}) {
   const session = { model: null, at: null };
-  const agents = {};
+  // A Map, turned into an object only on the way out: `agents[agent] = row`
+  // with an agent labelled `__proto__` swaps the prototype instead of adding a
+  // key (Miguel, PR #34, I1). fromEntries defines own properties.
+  const agents = new Map();
 
   if (typeof sessionId !== 'string' || !sessionId || !projectsDir || !projectDir) {
-    return { session, agents, errors: 0 };
+    return { session, agents: {}, errors: 0 };
   }
 
   const dir = path.join(projectsDir, projectDir);
@@ -212,7 +215,7 @@ async function readSessionModel({
   if (files === null) {
     // The project folder itself could not be read. Mirrors
     // host/agent-stats.js's readAgentStats: absence, counted, never a zero.
-    return { session, agents, errors: 1 };
+    return { session, agents: {}, errors: 1 };
   }
 
   // This session's own top-level transcript plus the subagents it directly
@@ -262,10 +265,10 @@ async function readSessionModel({
 
     const row = { model: latest.model, at: latest.at };
     if (source === 'unresolved') row.unresolved = true;
-    agents[agent] = row;
+    agents.set(agent, row);
   }
 
-  return { session, agents, errors };
+  return { session, agents: Object.fromEntries(agents), errors };
 }
 
 const emptyModel = () => ({ session: { model: null, at: null }, agents: {}, errors: 0 });
