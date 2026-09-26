@@ -952,6 +952,11 @@ function applyTheme(theme) {
   // default (the theme's dark label) must come back, not a stale override.
   if (c.onAccent) root.setProperty('--on-accent', c.onAccent);
   else root.removeProperty('--on-accent');
+  // FF12 tints the cursor and --model-accent from the theme. The line above
+  // term.options.theme = ... REPLACED the tinted cursor, and a look changed
+  // during a session, per #47, never reached FF12's cached theme -- re-tint.
+  currentTheme = theme;
+  renderTopBar();
   // A font change alters cell size, so the pty must be told the new geometry or
   // Ink's layout corrupts.
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);

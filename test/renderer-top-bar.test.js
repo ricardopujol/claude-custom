@@ -78,6 +78,18 @@ test('a switch is planned before anything is typed, and typed only through send(
   assert.match(body, /\\x15/, 'Ctrl-U must clear the draft first');
 });
 
+test('a theme applied mid-session re-tints the top bar (#47 x FF12)', () => {
+  // #47 re-applies the theme on every look change; applyTheme REPLACES
+  // term.options.theme wholesale, which wiped FF12's model-tinted cursor, and
+  // FF12 cached the theme only at hello, so its untinted accent went stale.
+  const body = fnBody('applyTheme');
+  const replace = body.indexOf('term.options.theme = terminal');
+  const cache = body.indexOf('currentTheme = theme');
+  const repaint = body.indexOf('renderTopBar()');
+  assert.ok(cache !== -1, 'applyTheme must refresh the theme FF12 tints from');
+  assert.ok(repaint > replace, 'the top bar must be repainted AFTER the terminal theme is replaced');
+});
+
 test('the cursor goes to end-of-line BEFORE Ctrl-U (Dexter r2 N1)', () => {
   // MEASURED live: Ctrl-U deletes only back to the cursor. With the cursor at
   // Home it deleted nothing, and a `sonnet` click submitted
