@@ -89,4 +89,9 @@ child.on('exit', () => {
   else done(/\[probe\] tick/.test(out), 'host exited');
 });
 setTimeout(() => done(false, 'no listen + tick within 15s'), 15000);
-})().catch((err) => { console.log(`FAIL: probe could not start: ${err && err.message}`); process.exit(1); });
+})().catch((err) => {
+  // The temp cwd was made before freePort(); don't leak it when that fails (Miguel r2, G2).
+  try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* best effort */ }
+  console.log(`FAIL: probe could not start: ${err && err.message}`);
+  process.exit(1);
+});
