@@ -11,9 +11,10 @@
  * file is bound to the logged-in user and useless on another machine. The
  * cipher is injected so this is testable without Electron.
  *
- * ONLY the secret is encrypted. Labels and notes stay readable: they have to be
- * listed and searched, and encrypting them would buy nothing while turning
- * every render into a decrypt storm.
+ * FORMAT 2: WHEN THE VAULT HOLDS A KEY, `label` AND `note` ARE WRAPPED TOO,
+ * the same as `secret` -- same `wrap`/`unwrap`, same key. Without a key there
+ * is nothing to wrap them WITH, so they stay plain, and this paragraph says so
+ * on purpose rather than leaving it to be discovered.
  *
  * Deliberately NOT stored through store.js, which writes plain JSON.
  *
@@ -22,28 +23,40 @@
  * makes a secret easy to REACH; it cannot make pasting one into a session safe.
  * That is a property of the transcript, not of this file.
  *
- * A SECOND LIMIT, AND THE LOCK DOES NOT CLOSE IT: labels and notes are stored
- * in CLEARTEXT. Only `secret` is ever encrypted. So the lock protects VALUES,
- * and the inventory -- what exists, and what each one is for -- is readable from
- * `secrets.enc` in Notepad by anyone at an unlocked Windows session.
+ * WHY THIS WAS NOT ALWAYS TRUE, kept because the reasoning is still worth
+ * having: the lock's whole threat model, in Ricardo's words, is "in case he
+ * has to leave his computer and someone could enter the vault" -- exactly a
+ * person at the machine with the session open. Before this branch, only
+ * `secret` was ever encrypted, so that person could read every LABEL and NOTE
+ * straight out of `secrets.enc` in Notepad while every VALUE stayed locked.
+ * Miguel raised this as PR #42 B2(a) and was right that a label is a secret in
+ * its own right: "client-x prod database" names the client and says there is
+ * a production database, without revealing one character of the value. The
+ * "decrypt storm" the original design feared is N unwraps of a few KB once per
+ * render, not per keystroke -- nothing.
  *
- * That matters more than it looks, because this module says elsewhere, correctly,
- * that A LABEL IS A SECRET: "client-x prod database" names the client and tells
- * you there is a production database, without revealing one character of the
- * value. And the lock's whole threat model, in Ricardo's words, is "in case he
- * has to leave his computer and someone could enter the vault" -- which is
- * exactly a person at the machine with the session open.
+ * SEALED PER ENTRY, NOT PER FILE, and that is the load-bearing decision here
+ * rather than an implementation detail. `rewrapAll` is per-entry TOLERANT by
+ * design (Dexter F3): a corrupt entry is carried through UNCHANGED rather than
+ * aborting the whole rekey, so after a `setKey` on a vault holding one torn
+ * entry the file legitimately contains N sealed entries and one that stayed
+ * unsealed -- a half-migrated file this module's OWN rules produce, not only a
+ * crash. A per-entry `sealed: true` marker is the only thing that lets a
+ * reader tell which is which; a file-level flag cannot, because it would be
+ * lying about the one entry F3 deliberately refused to touch.
  *
- * Miguel raised this as PR #42 B2(a) and he is right. Wrapping `label` and
- * `note` under the session key is the correct fix, `rewrapAll` is the place, and
- * the "decrypt storm" the original comment feared is N unwraps of a few KB once
- * per render -- nothing. It is NOT done here only because it changes the on-disk
- * format of every entry rather than just the `lock` record, and a data-format
- * migration deserves its own branch and its own test for the half-migrated file.
+ * `format` ON THE FILE IS A SEPARATE THING FROM `sealed` ON AN ENTRY, and that
+ * split is item 5. `format: 2` means two things at once: entries MAY carry
+ * `sealed`, and any lock record MUST carry `fp`. The second half is the more
+ * correct answer to G2 -- a lock record with no `fp` is ambiguous by itself,
+ * either a vault written before the checksum existed (format 1: fine, `unlock`
+ * migrates it) or one where the field was removed (format 2: damaged, do not
+ * melt). See `lockMissingChecksum`.
  *
- * Written down rather than left implicit, because the failure mode Miguel named
- * is the code claiming one thing while the disk does another. Until that branch
- * lands, the honest statement is: the lock hides your secrets, not your list.
+ * THE HONEST STATEMENT NOW, replacing the one this paragraph used to end on:
+ * with a key, the lock hides the list too, not only the values. Without a key,
+ * everything but the value is plain, and the file says so above rather than
+ * pretending otherwise.
  */
 
 const fs = require('fs');
@@ -59,7 +72,13 @@ const { withFileLock } = require('../host/file-lock');
 // sitting on the clipboard an hour later.
 const CLIPBOARD_CLEAR_MS = 30000;
 
-const FORMAT = 1;
+// FORMAT 2 -- item 5 of VAULT_HARDENING_FOLLOWUP.md. Entries MAY carry
+// `sealed` (label/note wrapped like `secret`, see `add`/`rewrapAll`), and any
+// lock record that is PRESENT MUST carry `fp` (see `lockMissingChecksum`).
+// Stamped UNCONDITIONALLY on every write by `persistLocked`, so even a vault
+// that never holds a key ends up on this number eventually -- there is
+// nothing to migrate for one, only the number itself.
+const FORMAT = 2;
 
 // KEY DERIVATION, PINNED AND VERSIONED. Miguel, PR #42, A4.
 //
@@ -158,8 +177,17 @@ class LockHeaderDamaged extends Error {
  *     Those entries are unreadable forever, silently.
  *
  * And Miguel's half: deleting the `lock` field outright reopened the vault and
- * listed every label and note, since both are stored in cleartext. The values
+ * listed every label and note, since both were stored in cleartext. The values
  * stayed safe, but the inventory did not.
+ *
+ * ITEM 4 CLOSES THAT HALF TOO, as a side effect rather than a separate fix.
+ * Deleting `lock` still reopens the vault as keyless -- that part is unchanged,
+ * and correctly so, since it IS a vault with no key now. But every entry that
+ * was sealed under the key that got deleted stays sealed, and `sessionKey` is
+ * `undefined` with no key to unseal them, so `list()` reports them
+ * `unreadable` rather than handing back their labels. Deleting the lock no
+ * longer leaks the inventory; it only makes the inventory unreadable, which is
+ * a much smaller thing to have happen by accident.
  *
  * So a `lock` that is PRESENT must be well-formed or the file is refused, the
  * same way an unparseable file already is. Absent is fine -- that is a vault
@@ -194,6 +222,29 @@ function validLockRecord(lock) {
     if ((s.N & (s.N - 1)) !== 0) return false;
   }
   return true;
+}
+
+/**
+ * FORMAT 2 requires a checksum on any lock record that is present. Item 5.
+ *
+ * `validLockRecord` cannot decide this on its own: a record with no `fp` is
+ * ambiguous by itself, and only telling it apart from the FILE's `format`
+ * resolves the ambiguity -- absent under format 1 is a vault that predates the
+ * checksum (fine, `unlock` migrates it); absent under format 2 means the field
+ * was REMOVED, since a format-2 vault always writes one (`setKey`, and the
+ * `unlock` migration below). That is the whole of G2's fix: a missing `fp`
+ * used to read as "legacy" unconditionally, which is exactly how
+ * `delete j.lock.fp` reopened F1 in full on every vault that already existed.
+ *
+ * Kept as a SEPARATE, format-aware check rather than a second parameter on
+ * `validLockRecord`, so that function keeps the single-argument signature its
+ * own tests already pin (`validLockRecord(lock)` -- see
+ * test/secret-vault-lock-findings.test.js). Called from `load()`, right after
+ * `validLockRecord`, which is the other place the brief for this branch names
+ * as acceptable.
+ */
+function lockMissingChecksum(lock, format) {
+  return format >= 2 && lock !== undefined && lock.fp === undefined;
 }
 
 function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } = {}) {
@@ -316,7 +367,23 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // key, and F1 turns on not confusing the two. Checked explicitly because
     // createDecipheriv on a short buffer throws something that reads like an
     // auth failure.
-    if (all.length <= IV_BYTES + TAG_BYTES) {
+    //
+    // EXACTLY `IV_BYTES + TAG_BYTES` IS VALID, and was `<=` here until item 4
+    // made it reachable: an IV and a tag with a ZERO-LENGTH ciphertext body is
+    // exactly what `wrap` produces for an EMPTY plaintext, and `note` is
+    // wrapped even when it is `''` (add's `cleanNote`, and `rewrapAll` sealing
+    // a legacy entry that never had one). Before FORMAT 2 nothing this module
+    // ever wrapped could legitimately be empty -- `secret` is refused empty by
+    // `add`, and `CHECK_PLAINTEXT` is a fixed non-empty string -- so the `<=`
+    // off-by-one sat unreachable. It surfaced the moment an empty note got
+    // sealed: every entry with no note failed to unwrap ITS LABEL TOO, because
+    // `list()`'s single `try` wraps both, and the note throwing after the
+    // label had already unwrapped correctly still runs the placeholder branch
+    // -- one entry with no note took every field on the row down with it.
+    // Caught by the round-trip property test and the migration tests in
+    // test/secret-vault-format2.test.js, all of which generate or carry an
+    // empty note.
+    if (all.length < IV_BYTES + TAG_BYTES) {
       throw new LockHeaderDamaged(`wrapped value is ${all.length} bytes, too short to decrypt`);
     }
     const d = crypto_.createDecipheriv('aes-256-gcm', key, all.subarray(0, IV_BYTES));
@@ -344,14 +411,61 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
   // fix a format problem is the disappearance this module refuses everywhere
   // else. The caller decides what to tell the user, and `remove(id)` still
   // works, so there is a way out that does not cost the other secrets.
+  //
+  // ITEM 4 EXTENDS THIS TO `label` AND `note`, which is why this is the right
+  // place for the seal: it already re-keys everything else, per entry,
+  // tolerantly. A `sealed: true` entry is unsealed with `from` and re-sealed
+  // with `to` alongside its secret; an entry that was never sealed is sealed
+  // for the first time when `to` is a key, or left exactly as it was when it
+  // is not. `setKey`'s existing call re-seals in the same pass it already
+  // re-wraps, `removeKey`'s strips the marker in the same pass it already
+  // unwraps, and the `unlock` migration reuses this to seal a whole legacy
+  // vault in one write -- see its comment for why `from === to` there is
+  // deliberate rather than a no-op.
   function rewrapAll(from, to) {
     const failed = [];
     const entries = state.entries.map((e) => {
+      // Best-effort label recovery for the FAILURE REPORT, independent of
+      // whether the rest of the entry can be carried -- so `failed[].label` is
+      // still the human-readable name when it can be had, and only falls back
+      // to the id when it genuinely cannot.
+      const recoverLabel = () => {
+        if (!e.sealed) return e.label;
+        if (!from) return null;
+        try { return unwrap(e.label, from).toString('utf8'); } catch { return null; }
+      };
       try {
+        // A SEALED ENTRY WITH NO KEY TO UNSEAL IT IS CORRUPT, NOT ORDINARY.
+        // `sealed: true` only exists because a key was held at the moment it
+        // was written -- `add`, this function's own `to` branch, or the
+        // `unlock` migration -- so `from === null` here means the file
+        // disagrees with its own marker: a hand edit, two schema versions
+        // merged, a migration that landed the marker but not the key. Treated
+        // like any other unreadable entry (F3): reported, carried unchanged,
+        // never silently dropped.
+        if (e.sealed && !from) {
+          throw new Error('entry is marked sealed but no key was supplied to unseal it');
+        }
         const raw = from ? unwrap(e.secret, from) : Buffer.from(e.secret, 'base64');
-        return { ...e, secret: to ? wrap(raw, to) : raw.toString('base64') };
+        const label = e.sealed ? unwrap(e.label, from).toString('utf8') : e.label;
+        const note = e.sealed ? unwrap(e.note, from).toString('utf8') : (e.note || '');
+        if (to) {
+          return {
+            ...e,
+            secret: wrap(raw, to),
+            label: wrap(Buffer.from(label), to),
+            note: wrap(Buffer.from(note), to),
+            sealed: true,
+          };
+        }
+        // `to` is null: safeStorage-only, plain label/note, marker removed --
+        // not merely left `false`, since its ABSENCE is what format 1 and a
+        // freshly-unsealed format-2 entry have in common.
+        const { sealed: _sealed, ...rest } = e;
+        return { ...rest, secret: raw.toString('base64'), label, note };
       } catch (err) {
-        failed.push({ id: e.id, label: e.label, why: err.message });
+        const recovered = recoverLabel();
+        failed.push({ id: e.id, label: recovered == null ? e.id : recovered, why: err.message });
         return e;
       }
     });
@@ -562,28 +676,42 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     sessionKey = candidate;
 
     // MIGRATION, and it is the difference between F1 being fixed for Ricardo and
-    // fixed only for vaults created after today. Dexter, PR #42, G2.
+    // fixed only for vaults created after today. Dexter, PR #42, G2 -- now
+    // carrying item 4's label/note seal along with it, in the SAME write.
     //
     // `fp` is written by `setKey` and nowhere else, and `setKey` requires the
     // vault OPEN -- so a locked vault written before the checksum existed could
     // never acquire it, and `delete j.lock.fp` restored F1 in full on exactly the
-    // vault that matters. Every vault on disk today looks like that.
+    // vault that matters. Every vault on disk today looks like that. The same
+    // is true of `sealed`: a locked format-1 vault predates it exactly as it
+    // predates `fp`, and the first successful unlock is the one place that can
+    // fix both without asking the user for anything -- we hold the derived key
+    // AND have just proven the record intact by decrypting its own verifier, so
+    // the checksum and the seal are both computable and provably correct right
+    // now.
     //
-    // Here is the one place that can fix it without asking the user for anything:
-    // we hold the derived key AND have just proven the record intact by
-    // decrypting its own verifier. So the digest is computable and provably
-    // correct right now.
+    // ONE WRITE, NOT TWO. `rewrapAll(sessionKey, sessionKey)` looks like a
+    // no-op key-for-key, but it is not: for an entry with no `sealed` marker it
+    // wraps `label`/`note` for the FIRST time; for one already sealed (a
+    // format-2 file that reached here with `format` still behind, an edge case
+    // `state.format < FORMAT` alone would not otherwise imply) it re-wraps them
+    // under the same key. Either way it is the same tolerant, per-entry
+    // machinery as `setKey`, so a torn entry is reported in `failed` and
+    // carried through rather than aborting the migration -- but `failed` has
+    // nowhere to go from inside `unlock`, which is why the whole thing is
+    // best-effort below rather than surfaced.
     //
     // BEST EFFORT, deliberately. A successful unlock must never become a failure
     // because a migration write did not land -- and it legitimately may not: the
     // generation check refuses a write from a handle another window has moved
     // past. Failing quietly here costs the user nothing; failing loudly would
     // cost them the unlock they just earned.
-    if (state.lock.fp === undefined) {
+    if (state.format < FORMAT) {
       try {
         const lock = { ...state.lock };
-        lock.fp = lockFingerprint(lock);
-        const nextState = { ...state, lock };
+        if (lock.fp === undefined) lock.fp = lockFingerprint(lock);
+        const { entries } = rewrapAll(sessionKey, sessionKey);
+        const nextState = { ...state, lock, entries, format: FORMAT };
         persist(nextState);
         state = nextState;
       } catch { /* the unlock stands regardless */ }
@@ -704,11 +832,17 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // the cleanup unlink is best-effort by its own comment, and most likely to
     // fail under exactly the condition that caused it.
     //
-    // What is left behind is `JSON.stringify` of the WHOLE vault: the lock, every
-    // wrapped ciphertext, and every label and note IN CLEARTEXT, since only
-    // `secret` is ever encrypted. So the user melts, is told nothing survives,
-    // and the directory still holds the complete inventory plus ciphertext that
-    // anyone who later learns the password can read.
+    // What is left behind is `JSON.stringify` of the WHOLE vault: the lock and
+    // every wrapped ciphertext. UPDATED FOR ITEM 4: this used to say "and every
+    // label and note IN CLEARTEXT, since only `secret` is ever encrypted" --
+    // true when this was written, no longer true once the vault holds a key.
+    // A leftover from a vault that HAD a key carries the same protection the
+    // vault itself does, label and note sealed alongside the value. A leftover
+    // from a vault that NEVER held one is the one case the old sentence still
+    // describes exactly: there was nothing to wrap labels and notes WITH, so
+    // that temp is exactly as readable as the vault it came from always was.
+    // Either way the user melts, is told nothing survives, and the directory
+    // can still hold a copy that says otherwise.
     //
     // The existing test checked `readFileSync(file)` -- the one file guaranteed
     // clean, and none of the copies that are not.
@@ -809,7 +943,22 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
       // then double-wrapped every entry on the next setKey. Absent is fine, that
       // is a vault with no key. Present-but-wrong is a damaged file.
       if (!validLockRecord(parsed.lock)) throw new Error('lock record is malformed');
-      return parsed;
+      // A FILE WITH NO `format` FIELD PREDATES THE FIELD ENTIRELY, so it reads
+      // as 1 -- legacy, and `fp` stays optional on it (below). Every vault this
+      // module has ever written since FORMAT 2 stamps a number unconditionally
+      // (`persistLocked`), so an absent field here can only mean "older than
+      // that", never "the field was there and got dropped" -- unlike `fp`,
+      // which format 2 makes mandatory precisely because it CAN be dropped.
+      const format = Number.isInteger(parsed.format) ? parsed.format : 1;
+      // ITEM 5, the format-aware half `validLockRecord` cannot do on its own
+      // (see `lockMissingChecksum`). This is what turns a missing checksum
+      // under format 2 into damage rather than a silent legacy read -- the
+      // fix G2 asked for, generalised past "the field never existed yet".
+      if (lockMissingChecksum(parsed.lock, format)) {
+        throw new Error('the lock record has no checksum (fp), which a format 2 vault always '
+          + 'writes -- the field was removed rather than never written');
+      }
+      return { ...parsed, format };
     } catch (err) {
       // DAMAGED, NOT FATAL. Dexter, PR #42, G3, and this is a fix for my own fix.
       //
@@ -990,6 +1139,15 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
         + '-- reopening the secrets panel alone will not do it.');
     }
     candidate.gen = crypto_.randomBytes(8).toString('hex');
+    // STAMPED UNCONDITIONALLY, next to `gen`. Item 5. A vault that never holds
+    // a key has nothing to migrate -- no entry to seal, no lock to checksum --
+    // so there is no dedicated migration path for it the way `unlock` has one
+    // for a locked legacy vault. It is still on FORMAT 1 on disk until
+    // SOMETHING writes it, and this is the one line that guarantees that
+    // write, whenever it comes, always lands on the current number. Read-only
+    // paths (`load`, `list`, `get`) never reach here, so a vault nobody ever
+    // touches again correctly stays exactly as old as it is.
+    candidate.format = FORMAT;
 
     if (onWrite) onWrite(tmp);
     // The WRITE is inside the try as well as the rename. Miguel, review of the
@@ -1050,6 +1208,7 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     if (!cleanLabel) throw new Error('a label is required: the list is all labels');
     const value = String(secret == null ? '' : secret);
     if (!value) throw new Error('a secret is required');
+    const cleanNote = String(note == null ? '' : note).trim();
 
     // SCOPE, and THE TWO NULLS. Dexter, PR #40, Finding 1.
     //
@@ -1076,8 +1235,11 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     }
     const entry = {
       id: crypto_.randomUUID(),
-      label: cleanLabel,
-      note: String(note == null ? '' : note).trim(),
+      // SEALED LIKE THE VALUE, not merely alongside it, whenever a key is
+      // held. Item 4 / Miguel B2(a) -- see the module header for why a label
+      // is a secret in its own right and why the marker below is per-entry.
+      label: sessionKey ? wrap(Buffer.from(cleanLabel), sessionKey) : cleanLabel,
+      note: sessionKey ? wrap(Buffer.from(cleanNote), sessionKey) : cleanNote,
       // safeStorage first, then the key layer when the vault has one. Both
       // are required to read it back.
       secret: sessionKey
@@ -1086,8 +1248,12 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
       createdAt: Date.now(),
       project: scope,
     };
+    if (sessionKey) entry.sealed = true;
     commit([...state.entries, entry]);
-    return { id: entry.id, label: entry.label, note: entry.note, createdAt: entry.createdAt };
+    // PLAINTEXT ON THE WAY OUT, always. The caller just typed this in with its
+    // own eyes on it -- sealing is for the FILE, not for hiding it from the
+    // renderer that supplied it a moment ago.
+    return { id: entry.id, label: cleanLabel, note: cleanNote, createdAt: entry.createdAt };
   }
 
   // Is this entry visible from `project`?
@@ -1133,16 +1299,44 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     if (isLocked()) return [];
     return state.entries
       .filter(e => visibleFrom(e, project))
-      .map(e => ({
-        id: e.id,
-        label: e.label,
-        note: e.note || '',
-        createdAt: e.createdAt || 0,
-        // Said out loud. The original defect was that scope was INVISIBLE; a
-        // shared secret that does not announce itself is the same surprise in
-        // a new place.
-        shared: scopeOf(e) === null,
-      }));
+      .map(e => {
+        let label = e.label;
+        let note = e.note || '';
+        let unreadable = false;
+        if (e.sealed) {
+          try {
+            label = unwrap(e.label, sessionKey).toString('utf8');
+            note = unwrap(e.note, sessionKey).toString('utf8');
+          } catch {
+            // ONE UNREADABLE LABEL MUST NOT TAKE THE OTHERS WITH IT -- the same
+            // rule `get` states two screens down: partial loss beats total
+            // loss. A placeholder keeps the ROW, and its `remove` button,
+            // reachable (F3's "there is a way out that does not cost the other
+            // secrets", applied to the inventory instead of a value). Reached
+            // by a sealed label that genuinely will not unwrap, and also by
+            // Miguel's deleted-`lock` scenario documented on `validLockRecord`:
+            // `sessionKey` is `undefined` there, which fails the same way.
+            unreadable = true;
+            label = `(unreadable entry ${e.id.slice(0, 8)})`;
+            note = '';
+          }
+        }
+        return {
+          id: e.id,
+          label,
+          note,
+          createdAt: e.createdAt || 0,
+          // Said out loud. The original defect was that scope was INVISIBLE; a
+          // shared secret that does not announce itself is the same surprise in
+          // a new place.
+          shared: scopeOf(e) === null,
+          // Present only when true, so every consumer that predates this
+          // (renderer.js, secret-service.js) keeps working unmodified -- an
+          // absent field, not a `false` one, is what "nothing changed here"
+          // has always looked like on this object.
+          ...(unreadable ? { unreadable: true } : {}),
+        };
+      });
   }
 
   // Scope is enforced HERE, not only in `list`. The renderer asks by id, so a
