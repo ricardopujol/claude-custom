@@ -23,12 +23,12 @@
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-boot-'));
-const port = String(47900 + Math.floor(Math.random() * 90));
 
 // Wrap the tick so "it ticked" is observed, not inferred from silence.
 const bootstrap = `
@@ -44,6 +44,20 @@ Module.prototype.require = function (id) {
 };
 require(${JSON.stringify(path.join(ROOT, 'host', 'host.js'))});`;
 
+// A port the OS says is free right now (Miguel, PR #34 r1, S4: a random pick
+// from a 90-port range could collide and read as a boot failure). There is
+// still a gap before the host binds it, so a collision is also DETECTED below
+// and reported as what it is.
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+  });
+}
+
+(async () => {
+const port = String(await freePort());
 const env = { ...process.env,
   CLAUDE_CUSTOM_BIN: process.platform === 'win32' ? 'C:\\Windows\\System32\\cmd.exe' : '/bin/sh',
   CLAUDE_CUSTOM_CWD: cwd, CLAUDE_CUSTOM_PORT: port };
@@ -64,12 +78,15 @@ const done = (ok, why) => {
 };
 
 const timer = setInterval(() => {
-  if (/ReferenceError|TypeError|SyntaxError/.test(out)) done(false, 'the host threw while loading');
+  if (/EADDRINUSE/.test(out)) done(false, `port ${port} was taken before the host bound it -- a collision, not a boot failure; re-run`);
+  else if (/ReferenceError|TypeError|SyntaxError/.test(out)) done(false, 'the host threw while loading');
   else if (/listening on ws:/.test(out) && /\[probe\] tick/.test(out)) done(true, 'host loaded, listened and ticked');
 }, 100);
 child.on('exit', () => {
   clearInterval(timer);
-  if (/ReferenceError|TypeError|SyntaxError/.test(out)) done(false, 'the host threw while loading');
+  if (/EADDRINUSE/.test(out)) done(false, `port ${port} was taken before the host bound it -- a collision, not a boot failure; re-run`);
+  else if (/ReferenceError|TypeError|SyntaxError/.test(out)) done(false, 'the host threw while loading');
   else done(/\[probe\] tick/.test(out), 'host exited');
 });
 setTimeout(() => done(false, 'no listen + tick within 15s'), 15000);
+})().catch((err) => { console.log(`FAIL: probe could not start: ${err && err.message}`); process.exit(1); });
