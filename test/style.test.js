@@ -2,418 +2,299 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const fc = require('fast-check');
 
 const {
-  planBackgroundChoice, setBackground, resetBackground, resolveStyle,
-  ACCEPTED_EXTENSIONS, MAX_BYTES, normalize, fileNameFor, isInside,
+  planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
+  readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, LOOK_DIR_NAME,
 } = require('../host/style');
-const { createStore } = require('../host/store');
+const { DEFAULT_LOOK } = require('../host/look');
+const { tmpDir } = require('./tmp-dir');
 
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-
-// A minimal in-memory store double for the pure/thin-layer tests below --
-// the real createStore (host/store.js) is exercised separately by the
-// integration tests further down, so both the fake and the real thing agree.
-function fakeStore(initial = {}) {
-  let data = { ...initial };
-  return {
-    read: (name, fallback) => (name in data ? data[name] : fallback),
-    write: (name, value) => { data[name] = value; return value; },
-    _dump: () => data,
-  };
+// A project folder with one source image beside it, both real and self-cleaning.
+function project() {
+  const cwd = tmpDir('cc-look-proj-');
+  const src = tmpDir('cc-look-src-');
+  const png = path.join(src, 'chosen.png');
+  fs.writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  return { cwd, src, png };
 }
+const lookFile = (cwd) => path.join(cwd, LOOK_DIR_NAME, 'look.json');
 
 // --- planBackgroundChoice: PURE, no fs at all --------------------------------
 
 test('planBackgroundChoice refuses when no source is given', () => {
-  const r = planBackgroundChoice({ cwd: 'C:/proj', dir: 'C:/harness/style' });
+  const r = planBackgroundChoice({ cwd: 'C:/proj' });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /no file/i);
 });
 
 test('planBackgroundChoice refuses when no project is open', () => {
-  const r = planBackgroundChoice({ source: 'C:/x/pic.png', dir: 'C:/harness/style' });
-  assert.strictEqual(r.ok, false);
-  assert.match(r.reason, /project/i);
-});
-
-test('planBackgroundChoice refuses when there is nowhere to store the copy', () => {
-  const r = planBackgroundChoice({ source: 'C:/x/pic.png', cwd: 'C:/proj' });
-  assert.strictEqual(r.ok, false);
-  assert.match(r.reason, /nowhere/i);
+  for (const cwd of [undefined, '', '   ']) {
+    const r = planBackgroundChoice({ source: 'C:/x/pic.png', cwd });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.reason, /project/i);
+  }
 });
 
 test('planBackgroundChoice refuses an unsupported extension, and says why', () => {
-  const r = planBackgroundChoice({ source: 'C:/x/movie.mp4', cwd: 'C:/proj', dir: 'C:/harness/style' });
+  const r = planBackgroundChoice({ source: 'C:/x/movie.mp4', cwd: 'C:/proj' });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /mp4/);
 });
 
 test('planBackgroundChoice refuses a file with no extension at all', () => {
-  const r = planBackgroundChoice({ source: 'C:/x/README', cwd: 'C:/proj', dir: 'C:/harness/style' });
+  const r = planBackgroundChoice({ source: 'C:/x/README', cwd: 'C:/proj' });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /no extension/i);
 });
 
-test('every accepted extension is actually accepted, case-insensitively', () => {
+test('every accepted extension is accepted, case-insensitively, as background.<ext>', () => {
   for (const ext of ACCEPTED_EXTENSIONS) {
     for (const cased of [ext, ext.toUpperCase()]) {
-      const r = planBackgroundChoice({
-        source: `C:/x/pic.${cased}`, cwd: 'C:/proj', dir: 'C:/harness/style', size: 100,
-      });
+      const r = planBackgroundChoice({ source: `C:/x/pic.${cased}`, cwd: 'C:/proj', size: 100 });
       assert.strictEqual(r.ok, true, `${cased} should be accepted: ${r.reason}`);
-      assert.ok(r.dest.endsWith(`.${ext}`), `dest ${r.dest} should keep the ${ext} extension`);
+      assert.strictEqual(r.dest, path.join(lookDir('C:/proj'), `background.${ext}`));
     }
   }
-});
-
-test('planBackgroundChoice refuses a file over the size ceiling, and says so', () => {
-  const r = planBackgroundChoice({
-    source: 'C:/x/pic.png', cwd: 'C:/proj', dir: 'C:/harness/style', size: MAX_BYTES + 1,
-  });
-  assert.strictEqual(r.ok, false);
-  assert.match(r.reason, /25MB|large/i);
 });
 
 test('the size ceiling boundary is pinned, not a bare literal', () => {
-  // The module-scope-constant trap this codebase already names in
-  // host/control.js: a bare number in the test would drift silently.
   assert.strictEqual(MAX_BYTES, 25 * 1024 * 1024);
-  assert.strictEqual(
-    planBackgroundChoice({ source: 'C:/x/pic.png', cwd: 'C:/proj', dir: 'C:/harness/style', size: MAX_BYTES }).ok,
-    true, 'exactly at the ceiling must still be accepted');
-  assert.strictEqual(
-    planBackgroundChoice({ source: 'C:/x/pic.png', cwd: 'C:/proj', dir: 'C:/harness/style', size: MAX_BYTES + 1 }).ok,
-    false, 'one byte over the ceiling must be refused');
+  assert.strictEqual(planBackgroundChoice({ source: 'C:/x/p.png', cwd: 'C:/proj', size: MAX_BYTES }).ok, true);
+  const over = planBackgroundChoice({ source: 'C:/x/p.png', cwd: 'C:/proj', size: MAX_BYTES + 1 });
+  assert.strictEqual(over.ok, false);
+  assert.match(over.reason, /25MB/);
 });
 
 test('a missing size is not treated as oversized', () => {
-  // planBackgroundChoice is pure -- when the caller has not statted yet (or
-  // chooses not to pass it through), size is simply not judged.
-  const r = planBackgroundChoice({ source: 'C:/x/pic.png', cwd: 'C:/proj', dir: 'C:/harness/style' });
-  assert.strictEqual(r.ok, true);
+  assert.strictEqual(planBackgroundChoice({ source: 'C:/x/pic.png', cwd: 'C:/proj' }).ok, true);
 });
 
-// PROPERTY: for a wide sample of project paths and filenames, the destination
-// this function proposes is ALWAYS inside `dir` -- the invariant the brief
-// names explicitly. Constructed by looping many synthetic inputs, the same
-// style test/drop-security.test.js and test/store.test.js already use in this
-// project, which has no property-testing library installed for JS.
-test('PROPERTY: the proposed destination is always inside the given directory', () => {
-  const dir = 'C:/harness/style';
-  const cwds = [
-    'C:/proj', 'C:/Users/ricar/VibeCode/weird name with spaces',
-    '/home/ricar/proj', 'c:\\Work\\Alpha', 'C:/proj/../../etc',
-    'C:/proj/☃/unicode', '', '   ', 'C:/' + 'a'.repeat(500),
-  ];
-  const exts = [...ACCEPTED_EXTENSIONS];
-  let checked = 0;
-  for (const cwd of cwds) {
-    for (const ext of exts) {
-      const r = planBackgroundChoice({ source: `C:/drop/x.${ext}`, cwd, dir, size: 10 });
-      if (!r.ok) continue;             // an empty/blank cwd is refused above
-      checked++;
-      assert.ok(isInside(r.dest, dir), `${r.dest} must resolve inside ${dir}`);
-    }
+test('PROPERTY: the destination is always directly inside the project\'s look folder', () => {
+  fc.assert(fc.property(
+    fc.string({ minLength: 1 }).filter((s) => s.trim()),
+    fc.constantFrom(...ACCEPTED_EXTENSIONS),
+    // A non-empty base name: `.png` alone is a dotfile with NO extension to
+    // Node, and is (correctly) refused by the extension check above.
+    fc.string({ minLength: 1 }).filter((s) => !/[\\/]/.test(s)),
+    (cwd, ext, name) => {
+      const r = planBackgroundChoice({ source: `C:/drop/${name}.${ext}`, cwd, size: 1 });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(path.dirname(r.dest), lookDir(cwd));
+    }));
+});
+
+// --- readLook / writeLook ------------------------------------------------------
+
+test('readLook of a project with no look folder is the default look', () => {
+  assert.deepStrictEqual(readLook(tmpDir('cc-look-empty-')), DEFAULT_LOOK);
+});
+
+test('readLook of a corrupt look.json is the default look, never a throw', () => {
+  const { cwd } = project();
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  for (const body of ['{not json', '[]', 'null', '"x"', '']) {
+    fs.writeFileSync(lookFile(cwd), body);
+    assert.deepStrictEqual(readLook(cwd), DEFAULT_LOOK, JSON.stringify(body));
   }
-  assert.ok(checked > 0, 'the sweep must exercise at least one accepted case');
 });
 
-test('the same project and extension always produce the same filename', () => {
-  const a = planBackgroundChoice({ source: 'C:/drop/one.png', cwd: 'C:/proj/alpha', dir: 'C:/h/style', size: 1 });
-  const b = planBackgroundChoice({ source: 'C:/drop/two.png', cwd: 'c:\\proj\\alpha', dir: 'C:/h/style', size: 1 });
-  assert.strictEqual(a.dest, b.dest, 'slash direction and case must not change the destination');
+test('readLook drops a recorded background whose file is gone', () => {
+  const { cwd } = project();
+  writeLook(cwd, { appColor: '#112233', background: { file: 'background.png', setAt: null } });
+  assert.strictEqual(readLook(cwd).background, null);
+  assert.strictEqual(readLook(cwd).appColor, '#112233', 'the rest of the look survives');
 });
 
-test('different projects get different filenames', () => {
-  const a = planBackgroundChoice({ source: 'C:/drop/one.png', cwd: 'C:/proj/alpha', dir: 'C:/h/style', size: 1 });
-  const b = planBackgroundChoice({ source: 'C:/drop/one.png', cwd: 'C:/proj/beta', dir: 'C:/h/style', size: 1 });
-  assert.notStrictEqual(a.dest, b.dest);
+test('writeLook creates the folder with a .gitignore that ignores everything, once', () => {
+  const { cwd } = project();
+  writeLook(cwd, { appColor: '#112233' });
+  const ignore = path.join(cwd, LOOK_DIR_NAME, '.gitignore');
+  assert.strictEqual(fs.readFileSync(ignore, 'utf8').trim().split(/\r?\n/).pop(), '*');
+  // A person who edited it (say, to commit their look) keeps their edit.
+  fs.writeFileSync(ignore, '# mine\n');
+  writeLook(cwd, { appColor: '#445566' });
+  assert.strictEqual(fs.readFileSync(ignore, 'utf8'), '# mine\n');
 });
 
-test('fileNameFor is exposed and matches what planBackgroundChoice proposes', () => {
-  const r = planBackgroundChoice({ source: 'C:/drop/one.png', cwd: 'C:/proj/alpha', dir: 'C:/h/style', size: 1 });
-  assert.strictEqual(r.dest, path.join('C:/h/style', fileNameFor('C:/proj/alpha', 'png')));
+test('writeLook sanitizes before writing and leaves no temp file behind', () => {
+  const { cwd } = project();
+  const written = writeLook(cwd, { appColor: '#ABCDEF', textColor: 'blue', darkness: 7 });
+  assert.strictEqual(written.appColor, '#abcdef');
+  assert.strictEqual(written.textColor, null);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(lookFile(cwd), 'utf8')), written);
+  const leftovers = fs.readdirSync(path.join(cwd, LOOK_DIR_NAME)).filter((f) => f.includes('.tmp'));
+  assert.deepStrictEqual(leftovers, []);
 });
 
-// --- setBackground: the thin fs layer ----------------------------------------
+// --- setLook --------------------------------------------------------------------
 
-function fakeFs({ existing = new Set(), fail = {} } = {}) {
+test('setLook merges only the fields it is given; null resets a field', () => {
+  const { cwd } = project();
+  setLook({ cwd, patch: { appColor: '#102030', textColor: '#f0f0f0' } });
+  setLook({ cwd, patch: { darkness: 0.2 } });
+  let look = readLook(cwd);
+  assert.strictEqual(look.appColor, '#102030');
+  assert.strictEqual(look.textColor, '#f0f0f0');
+  assert.strictEqual(look.darkness, 0.2);
+  setLook({ cwd, patch: { textColor: null } });
+  look = readLook(cwd);
+  assert.strictEqual(look.textColor, null);
+  assert.strictEqual(look.appColor, '#102030');
+});
+
+test('setLook cannot be used to point the background at an arbitrary file', () => {
+  const { cwd } = project();
+  const r = setLook({ cwd, patch: { background: { file: 'background.png' }, appColor: '#000000' } });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(readLook(cwd).background, null, 'background is only ever set by setBackground');
+});
+
+test('setLook refuses a patch that is not an object, and writes nothing', () => {
+  const { cwd } = project();
+  for (const patch of [null, 'x', [], 3]) {
+    assert.strictEqual(setLook({ cwd, patch }).ok, false);
+  }
+  assert.ok(!fs.existsSync(path.join(cwd, LOOK_DIR_NAME)));
+});
+
+// --- setBackground --------------------------------------------------------------
+
+function fakeFs({ fail = {} } = {}) {
   const calls = [];
   return {
     calls,
-    statSync: (p) => {
-      calls.push(['stat', p]);
-      if (fail.stat) throw fail.stat;
-      if (!existing.has(p)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
-      return { isFile: () => true, size: fail.size ?? 1024 };
-    },
-    mkdirSync: (p) => calls.push(['mkdir', p]),
+    statSync: () => { calls.push(['stat']); return { isFile: () => true, size: 1024 }; },
+    mkdirSync: () => calls.push(['mkdir']),
+    existsSync: () => true,
+    readFileSync: () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+    writeFileSync: (p) => calls.push(['write', p]),
     copyFileSync: (from, to) => {
       calls.push(['copy', from, to]);
       if (fail.copy) throw fail.copy;
     },
-    renameSync: (from, to) => {
-      calls.push(['rename', from, to]);
-      if (fail.rename) throw fail.rename;
-    },
+    renameSync: (from, to) => calls.push(['rename', from, to]),
+    readdirSync: () => [],
     unlinkSync: (p) => calls.push(['unlink', p]),
   };
 }
 
-test('setBackground refuses to read the store missing a store', () => {
-  assert.throws(() => setBackground({ source: 'x', cwd: 'C:/proj', dir: 'C:/h/style' }),
-    /store is required/);
-});
-
-test('setBackground refuses a source that cannot be statted', () => {
-  const store = fakeStore();
-  const r = setBackground({
-    source: 'C:/gone/x.png', cwd: 'C:/proj', dir: 'C:/h/style', store,
-    fsImpl: fakeFs({ existing: new Set() }),
-  });
+test('setBackground refuses a source that cannot be read, and writes nothing', () => {
+  const { cwd } = project();
+  const r = setBackground({ source: path.join(cwd, 'gone.png'), cwd });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /could not be read/);
-  assert.deepStrictEqual(store._dump(), {}, 'a failed read must never touch the store');
+  assert.ok(!fs.existsSync(path.join(cwd, LOOK_DIR_NAME)));
 });
 
-test('setBackground refuses a directory statted where a file was expected', () => {
-  const store = fakeStore();
-  const fsImpl = fakeFs({ existing: new Set(['C:/x/dir']) });
-  fsImpl.statSync = (p) => { fsImpl.calls.push(['stat', p]); return { isFile: () => false, size: 1 }; };
-  const r = setBackground({ source: 'C:/x/dir', cwd: 'C:/proj', dir: 'C:/h/style', store, fsImpl });
+test('setBackground refuses a directory', () => {
+  const { cwd, src } = project();
+  const r = setBackground({ source: src, cwd });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /not a file/);
 });
 
-test('a refused choice leaves the store BYTE-IDENTICAL', () => {
-  // The invariant named in the brief. Backed by the REAL store (write-and-
-  // rename to an actual file), not the fake, so "byte-identical" means what
-  // it says: the file on disk, not just an in-memory object.
-  const dir = tmp('cc-style-store-');
-  const store = createStore({ dir });
-  store.write('style', { 'c:/existing': { background: { file: 'C:/h/style/x.png', setAt: 'then' } } });
-  const before = fs.readFileSync(path.join(dir, 'style.json'), 'utf8');
-
-  const r = setBackground({
-    source: 'C:/x/movie.mp4', cwd: 'C:/proj', dir: 'C:/h/style', store,
-    fsImpl: fakeFs({ existing: new Set(['C:/x/movie.mp4']) }),
-  });
-  assert.strictEqual(r.ok, false);
-
-  const after = fs.readFileSync(path.join(dir, 'style.json'), 'utf8');
-  assert.strictEqual(after, before, 'an unsupported extension must not touch style.json at all');
+test('a refused choice leaves look.json BYTE-IDENTICAL', () => {
+  const { cwd, src } = project();
+  writeLook(cwd, { appColor: '#123456' });
+  const before = fs.readFileSync(lookFile(cwd), 'utf8');
+  const mp4 = path.join(src, 'movie.mp4');
+  fs.writeFileSync(mp4, 'x');
+  assert.strictEqual(setBackground({ source: mp4, cwd }).ok, false);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
 });
 
-test('setBackground copies temp-then-rename, in that order, before writing the store', () => {
-  const store = fakeStore();
-  const fsImpl = fakeFs({ existing: new Set(['C:/drop/pic.png']) });
-  const r = setBackground({ source: 'C:/drop/pic.png', cwd: 'C:/proj/alpha', dir: 'C:/h/style', store, fsImpl });
-
+test('setBackground copies to a temp file and renames it into place', () => {
+  const fsImpl = fakeFs();
+  const r = setBackground({ source: 'C:/drop/pic.png', cwd: 'C:/proj', fsImpl });
   assert.strictEqual(r.ok, true, JSON.stringify(r));
-  const kinds = fsImpl.calls.map(c => c[0]);
-  assert.deepStrictEqual(kinds, ['stat', 'mkdir', 'copy', 'rename']);
-
-  const [, copyFrom, copyTo] = fsImpl.calls[2];
-  const [, renameFrom, renameTo] = fsImpl.calls[3];
-  assert.strictEqual(copyFrom, 'C:/drop/pic.png');
-  assert.strictEqual(renameTo, r.dest, 'the rename must land on the planned destination');
-  assert.strictEqual(copyTo, renameFrom, 'the copy target and the rename source must be the same temp file');
-  assert.notStrictEqual(copyTo, r.dest, 'the destination must never be opened directly for the copy');
+  const copy = fsImpl.calls.find((c) => c[0] === 'copy');
+  const rename = fsImpl.calls.find((c) => c[0] === 'rename' && c[2] === r.dest);
+  assert.ok(copy && rename, JSON.stringify(fsImpl.calls));
+  assert.strictEqual(copy[2], rename[1], 'the copy target is the rename source');
+  assert.notStrictEqual(copy[2], r.dest, 'the destination is never opened directly for the copy');
 });
 
-test('setBackground records the override under the NORMALISED project key', () => {
-  const store = fakeStore();
-  const fsImpl = fakeFs({ existing: new Set(['C:/drop/pic.png']) });
-  const r = setBackground({ source: 'C:/drop/pic.png', cwd: 'c:\\Proj\\Alpha\\', dir: 'C:/h/style', store, fsImpl });
-
-  assert.strictEqual(r.ok, true);
-  const state = store._dump().style;
-  const key = normalize('c:\\Proj\\Alpha\\');
-  assert.ok(state[key], 'the entry must be keyed by the normalised project path');
-  assert.strictEqual(state[key].background.file, r.dest);
-  assert.ok(typeof state[key].background.setAt === 'string' && state[key].background.setAt.length > 0);
-  // Returned to the caller too, so host.js can broadcast it without a second
-  // read of the store it just wrote.
-  assert.strictEqual(r.setAt, state[key].background.setAt);
-});
-
-test('a copy failure is reported, cleans up the temp file, and never reaches the store', () => {
-  const store = fakeStore();
-  const fsImpl = fakeFs({ existing: new Set(['C:/drop/pic.png']), fail: { copy: new Error('disk full') } });
-  const r = setBackground({ source: 'C:/drop/pic.png', cwd: 'C:/proj', dir: 'C:/h/style', store, fsImpl });
-
+test('a copy failure is reported, cleans up its temp file, and never records a background', () => {
+  const fsImpl = fakeFs({ fail: { copy: new Error('disk full') } });
+  const r = setBackground({ source: 'C:/drop/pic.png', cwd: 'C:/proj', fsImpl });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /disk full/);
-  assert.deepStrictEqual(store._dump(), {});
-  const kinds = fsImpl.calls.map(c => c[0]);
-  assert.ok(kinds.includes('unlink'), 'a failed copy must clean up its temp file');
+  assert.ok(fsImpl.calls.some((c) => c[0] === 'unlink'));
+  assert.ok(!fsImpl.calls.some((c) => c[0] === 'rename' && String(c[2]).endsWith('look.json')));
 });
 
-// --- resetBackground ----------------------------------------------------------
+test('setBackground keeps the rest of the look and replaces an older background of another format', () => {
+  const { cwd, src, png } = project();
+  setLook({ cwd, patch: { appColor: '#203040', darkness: 0.7 } });
+  const jpg = path.join(src, 'old.jpg');
+  fs.writeFileSync(jpg, 'jpg-bytes');
+  assert.strictEqual(setBackground({ source: jpg, cwd }).ok, true);
 
-test('resetBackground on a project with no override reports nothing removed, and does not write', () => {
-  const store = fakeStore();
-  const r = resetBackground({ cwd: 'C:/proj', dir: 'C:/h/style', store, fsImpl: fakeFs() });
-  assert.deepStrictEqual(r, { ok: true, removed: false });
-  assert.deepStrictEqual(store._dump(), {});
+  const r = setBackground({ source: png, cwd });
+  assert.strictEqual(r.ok, true);
+  const files = fs.readdirSync(path.join(cwd, LOOK_DIR_NAME)).filter((f) => f.startsWith('background.'));
+  assert.deepStrictEqual(files, ['background.png'], 'the old jpg copy is gone');
+  const look = readLook(cwd);
+  assert.strictEqual(look.appColor, '#203040');
+  assert.strictEqual(look.darkness, 0.7);
+  assert.strictEqual(look.background.file, 'background.png');
+  assert.strictEqual(look.background.setAt, r.setAt);
+  assert.deepStrictEqual(fs.readFileSync(r.dest), fs.readFileSync(png), 'byte-identical copy');
 });
 
-test('resetBackground removes the entry and unlinks a copy that lives inside the style dir', () => {
-  const key = normalize('C:/proj');
-  const store = fakeStore({ style: { [key]: { background: { file: 'C:/h/style/proj-abc.png', setAt: 'x' } } } });
-  const fsImpl = fakeFs();
-  const r = resetBackground({ cwd: 'C:/proj', dir: 'C:/h/style', store, fsImpl });
+// --- resetBackground ------------------------------------------------------------
 
-  assert.deepStrictEqual(r, { ok: true, removed: true });
-  assert.deepStrictEqual(store._dump().style, {});
-  assert.deepStrictEqual(fsImpl.calls, [['unlink', 'C:/h/style/proj-abc.png']]);
+test('resetBackground with nothing set reports nothing removed and writes nothing', () => {
+  const { cwd } = project();
+  assert.deepStrictEqual(resetBackground({ cwd }), { ok: true, removed: false });
+  assert.ok(!fs.existsSync(path.join(cwd, LOOK_DIR_NAME)));
 });
 
-test('resetBackground NEVER unlinks a file outside the style directory', () => {
-  // A hand-edited style.json must not turn "reset" into an arbitrary delete.
-  const key = normalize('C:/proj');
-  const store = fakeStore({ style: { [key]: { background: { file: 'C:/Users/ricar/Desktop/family.png', setAt: 'x' } } } });
-  const fsImpl = fakeFs();
-  const r = resetBackground({ cwd: 'C:/proj', dir: 'C:/h/style', store, fsImpl });
-
-  assert.deepStrictEqual(r, { ok: true, removed: true }, 'the STATE entry is still removed');
-  assert.deepStrictEqual(fsImpl.calls, [], 'but nothing outside the style dir is ever touched on disk');
+test('resetBackground removes the copy and the record, and keeps the colours', () => {
+  const { cwd, png } = project();
+  setLook({ cwd, patch: { appColor: '#203040' } });
+  const set = setBackground({ source: png, cwd });
+  assert.deepStrictEqual(resetBackground({ cwd }), { ok: true, removed: true });
+  assert.ok(!fs.existsSync(set.dest));
+  assert.strictEqual(readLook(cwd).background, null);
+  assert.strictEqual(readLook(cwd).appColor, '#203040');
 });
 
-test('resetBackground only removes the ASKING project, not every override', () => {
-  const store = fakeStore({
-    style: {
-      [normalize('C:/proj/a')]: { background: { file: 'C:/h/style/a.png', setAt: 'x' } },
-      [normalize('C:/proj/b')]: { background: { file: 'C:/h/style/b.png', setAt: 'x' } },
-    },
-  });
-  resetBackground({ cwd: 'C:/proj/a', dir: 'C:/h/style', store, fsImpl: fakeFs() });
-  const state = store._dump().style;
-  assert.ok(!state[normalize('C:/proj/a')]);
-  assert.ok(state[normalize('C:/proj/b')]);
+// --- resolveStyle -----------------------------------------------------------------
+
+test('resolveStyle falls back to the generated art when there is no look', () => {
+  const r = resolveStyle(tmpDir('cc-look-none-'), '/gen/bg.svg');
+  assert.deepStrictEqual(r, { background: '/gen/bg.svg', source: 'generated', setAt: null, look: DEFAULT_LOOK });
 });
 
-// --- resolveStyle ---------------------------------------------------------------
-
-test('resolveStyle falls back to generated when there is no store at all', () => {
-  assert.deepStrictEqual(resolveStyle(null, 'C:/proj', '/gen/bg.svg'), { background: '/gen/bg.svg', source: 'generated' });
-});
-
-test('resolveStyle falls back to generated when nothing is recorded for this project', () => {
-  const store = fakeStore({ style: {} });
-  assert.deepStrictEqual(resolveStyle(store, 'C:/proj', '/gen/bg.svg'), { background: '/gen/bg.svg', source: 'generated' });
-});
-
-test('resolveStyle does not leak one project\'s override onto another', () => {
-  const store = fakeStore({
-    style: { [normalize('C:/other')]: { background: { file: 'C:/h/style/x.png', setAt: 't' } } },
-  });
-  assert.deepStrictEqual(resolveStyle(store, 'C:/proj', '/gen/bg.svg'), { background: '/gen/bg.svg', source: 'generated' });
-});
-
-test('resolveStyle returns the override, keyed regardless of slash direction or case', () => {
-  const store = fakeStore({
-    style: { [normalize('C:/Proj/Alpha')]: { background: { file: 'C:/h/style/x.png', setAt: 't1' } } },
-  });
-  const r = resolveStyle(store, 'c:\\proj\\alpha', '/gen/bg.svg');
-  assert.deepStrictEqual(r, { background: 'C:/h/style/x.png', source: 'override', setAt: 't1' });
-});
-
-test('resolveStyle never throws on a malformed entry, and falls back', () => {
-  const cases = [
-    { style: { [normalize('C:/proj')]: null } },
-    { style: { [normalize('C:/proj')]: {} } },
-    { style: { [normalize('C:/proj')]: { background: null } } },
-    { style: { [normalize('C:/proj')]: { background: {} } } },
-    { style: { [normalize('C:/proj')]: { background: { file: 123 } } } },
-    { style: [] },
-    { style: 'garbage' },
-    { style: null },
-  ];
-  for (const data of cases) {
-    const store = fakeStore(data);
-    assert.doesNotThrow(() => resolveStyle(store, 'C:/proj', '/gen/bg.svg'), JSON.stringify(data));
-    const r = resolveStyle(store, 'C:/proj', '/gen/bg.svg');
-    assert.strictEqual(r.source, 'generated', JSON.stringify(data));
-  }
-});
-
-test('resolveStyle refuses an override that resolves outside the given style directory', () => {
-  const store = fakeStore({
-    style: { [normalize('C:/proj')]: { background: { file: 'C:/Users/ricar/Desktop/x.png', setAt: 't' } } },
-  });
-  const r = resolveStyle(store, 'C:/proj', '/gen/bg.svg', { styleDir: 'C:/h/style' });
-  assert.strictEqual(r.source, 'generated');
-  assert.strictEqual(r.background, '/gen/bg.svg');
-  assert.match(r.note, /outside the harness directory/);
-});
-
-test('resolveStyle trusts an override that DOES resolve inside the given style directory', () => {
-  const store = fakeStore({
-    style: { [normalize('C:/proj')]: { background: { file: 'C:/h/style/x.png', setAt: 't' } } },
-  });
-  const r = resolveStyle(store, 'C:/proj', '/gen/bg.svg', { styleDir: 'C:/h/style' });
+test('resolveStyle returns the project\'s own copy, and the look with it', () => {
+  const { cwd, png } = project();
+  setLook({ cwd, patch: { appColor: '#203040' } });
+  const set = setBackground({ source: png, cwd });
+  const r = resolveStyle(cwd, '/gen/bg.svg');
   assert.strictEqual(r.source, 'override');
-  assert.strictEqual(r.background, 'C:/h/style/x.png');
+  assert.strictEqual(r.background, set.dest);
+  assert.strictEqual(r.setAt, set.setAt);
+  assert.strictEqual(r.look.appColor, '#203040');
 });
 
-// --- integration, against the REAL store and REAL filesystem -------------------
-
-test('INTEGRATION: set, resolve, and reset round-trip through the real store and fs', () => {
-  const stateDir = tmp('cc-style-state-');
-  const styleDir = tmp('cc-style-files-');
-  const sourceDir = tmp('cc-style-src-');
-  const store = createStore({ dir: stateDir });
-
-  const source = path.join(sourceDir, 'chosen.png');
-  fs.writeFileSync(source, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
-
-  const cwd = 'C:/some/real/project';
-
-  // Before setting anything, resolveStyle must fall back to the generated one.
-  const before = resolveStyle(store, cwd, '/gen/bg.svg', { styleDir });
-  assert.strictEqual(before.source, 'generated');
-
-  const set = setBackground({ source, cwd, dir: styleDir, store });
-  assert.strictEqual(set.ok, true, JSON.stringify(set));
-  assert.ok(fs.existsSync(set.dest), 'the copy must actually exist on disk');
-  assert.ok(isInside(set.dest, styleDir));
-  assert.deepStrictEqual(fs.readFileSync(set.dest), fs.readFileSync(source), 'the copy must be byte-identical to the source');
-
-  const after = resolveStyle(store, cwd, '/gen/bg.svg', { styleDir });
-  assert.strictEqual(after.source, 'override');
-  assert.strictEqual(after.background, set.dest);
-
-  const reset = resetBackground({ cwd, dir: styleDir, store });
-  assert.deepStrictEqual(reset, { ok: true, removed: true });
-  assert.ok(!fs.existsSync(set.dest), 'reset must remove the copy');
-
-  const finalState = resolveStyle(store, cwd, '/gen/bg.svg', { styleDir });
-  assert.strictEqual(finalState.source, 'generated');
+test('resolveStyle never follows a hand-edited file name out of the look folder', () => {
+  const { cwd } = project();
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  fs.writeFileSync(path.join(cwd, 'secret.png'), 'x');
+  fs.writeFileSync(lookFile(cwd), JSON.stringify({ background: { file: '../secret.png' } }));
+  assert.strictEqual(resolveStyle(cwd, '/gen/bg.svg').source, 'generated');
 });
 
-test('PROPERTY: after setBackground, resolveStyle never returns a path outside the harness style dir', () => {
-  const stateDir = tmp('cc-style-state2-');
-  const styleDir = tmp('cc-style-files2-');
-  const sourceDir = tmp('cc-style-src2-');
-  const store = createStore({ dir: stateDir });
-
-  const source = path.join(sourceDir, 'a.png');
-  fs.writeFileSync(source, Buffer.from([1, 2, 3]));
-
-  const cwds = [
-    'C:/proj/one', 'C:/Proj/Two/', 'c:\\proj\\three', '/home/r/four',
-    'C:/proj/with spaces/five', 'C:/proj/six/../six',
-  ];
-  for (const cwd of cwds) {
-    const r = setBackground({ source, cwd, dir: styleDir, store });
-    assert.strictEqual(r.ok, true, JSON.stringify(r));
-    const resolved = resolveStyle(store, cwd, '/gen/bg.svg', { styleDir });
-    assert.strictEqual(resolved.source, 'override');
-    assert.ok(isInside(resolved.background, styleDir),
-      `${resolved.background} escaped ${styleDir} for cwd ${cwd}`);
-  }
+test('one project\'s look never leaks onto another', () => {
+  const a = project();
+  const b = project();
+  setLook({ cwd: a.cwd, patch: { appColor: '#aa0000' } });
+  setBackground({ source: a.png, cwd: a.cwd });
+  const r = resolveStyle(b.cwd, '/gen/bg.svg');
+  assert.strictEqual(r.source, 'generated');
+  assert.strictEqual(r.look.appColor, null);
 });

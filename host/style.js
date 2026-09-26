@@ -1,82 +1,53 @@
 'use strict';
 /**
- * Per-project background OVERRIDE: the user's own image, instead of the
- * generated one from host/background.js.
+ * Per-project LOOK storage: the colours, darkness and background image a
+ * person picked for one project folder.
  *
- * The chosen image is COPIED into the harness's own directory rather than
- * referenced in place -- a moved or deleted source file must not silently
- * revert the look out from under someone. Copy is temp-write-then-rename,
- * mirroring host/store.js and host/atomic-write.js: never open the
- * destination with 'w' before the copy is known good.
+ * It lives IN the project, at `<project>/.claude-custom/`:
  *
- * State lives at the store key 'style', shaped:
+ *   look.json          the look (shape and meaning: host/look.js)
+ *   background.<ext>   a COPY of the chosen image
+ *   .gitignore         `*`, written once, so the folder never shows up in
+ *                      `git status`. Delete it to commit a look on purpose.
  *
- *   { [normalisedProjectPath]: { background: { file, setAt } } }
+ * In the project rather than in the harness's .harness/ because the look
+ * belongs to the folder: every session opened there, from any launcher,
+ * finds it without the harness needing a path-keyed registry, and a renamed
+ * or moved folder keeps its look. (FF6 first stored this harness-side, keyed
+ * by normalised path; that never merged.)
  *
- * keyed by the SAME normalise-a-project-path convention as host/themes.js and
- * host/background.js (forward slashes, no trailing slash, lowercase) -- the
- * project path IS the scope, the same way host/store.js's header explains
- * '.harness/state' is install-wide by itself.
+ * The image is copied rather than referenced in place -- a moved or deleted
+ * source file must not silently revert the look out from under someone.
+ * Every write is temp-then-rename (host/atomic-write.js): never open the
+ * destination before the new bytes are known good.
  *
- * Every read defaults. `resolveStyle` never throws on the hot path: a
- * missing key, a corrupt style.json (store.js already turns that into the
- * fallback `{}`) or a hand-edited entry pointing somewhere outside the
- * harness's own style directory all resolve to "generated", never a crash
- * and never a trusted arbitrary path.
+ * Every read defaults. A missing folder, a corrupt look.json or a hand-edited
+ * background name resolve to "the registry theme and the generated art",
+ * never a throw on the attach path and never a trusted arbitrary path -- the
+ * file name is structurally a bare `background.<ext>` (host/look.js).
  */
 
 const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
+const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
 
-// Mirrors host/background.js's own accepted-image assumption, widened to the
-// formats this feature actually accepts. Refused, not sanitised -- the panel
-// says why rather than silently coercing.
-const ACCEPTED_EXTENSIONS = Object.freeze(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg']);
-
-// 25MB, per the brief. A module-scope constant -- pinned by an explicit
-// boundary test, the way host/control.js's MAX_TERMINAL_DIM is, because a
-// bare literal drifts unnoticed under this project's mutation-testing setup.
+// 25MB, per the FF6 brief. Pinned by an explicit boundary test, the way
+// host/control.js's MAX_TERMINAL_DIM is.
 const MAX_BYTES = 25 * 1024 * 1024;
 
-const STORE_KEY = 'style';
+const LOOK_DIR_NAME = '.claude-custom';
+const LOOK_FILE = 'look.json';
+const GITIGNORE_BODY =
+  '# claude-custom per-project look. Ignored by default; delete this file to commit it.\n*\n';
 
-// Same convention as host/themes.js normalize() / host/background.js
-// normalize(): forward slashes, no trailing slash, lowercase. Kept as its own
-// small copy rather than importing either -- both of those files already
-// keep their own local copy for the same reason (themes.js does not import
-// background.js's), and this one is not the SVG-only namer either.
-function normalize(p) {
-  return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-}
+// The fields a person sets through the Style tab. `background` is absent on
+// purpose: only setBackground/resetBackground may change it, so a control
+// message can never point the look at a file the harness did not copy.
+const PATCHABLE = Object.freeze(['appColor', 'textColor', 'darkness']);
 
-// Identical algorithm to host/background.js's hash32 -- FNV-1a, 32-bit --
-// duplicated rather than imported for the same reason its own comment gives
-// for keeping fileNameFor here: this module names files by a DIFFERENT
-// input shape (an arbitrary extension, not always .svg).
-function hash32(s) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function slugFor(projectPath) {
-  const norm = normalize(projectPath);
-  return (norm.split('/').filter(Boolean).pop() || 'project')
-    .replace(/[^A-Za-z0-9._-]/g, '-')
-    .replace(/^[.-]+/, '')
-    .slice(0, 40) || 'project';
-}
-
-// Mirrors host/background.js's fileNameFor, with the extension as a
-// parameter -- a background override keeps the format it was uploaded in,
-// unlike the generated art, which is always SVG.
-function fileNameFor(projectPath, ext) {
-  const norm = normalize(projectPath);
-  return `${slugFor(projectPath)}-${hash32(norm).toString(16).padStart(8, '0')}.${ext}`;
+function lookDir(cwd) {
+  return path.join(String(cwd), LOOK_DIR_NAME);
 }
 
 function extOf(p) {
@@ -84,31 +55,16 @@ function extOf(p) {
   return raw ? raw.slice(1).toLowerCase() : '';
 }
 
-// A file-path containment check, the same shape as host/drop.js's isInside:
-// compare NORMALISED keys, never the display string, and a directory is
-// "inside" itself.
-function isInside(file, dir) {
-  const f = normalize(file);
-  const d = normalize(dir);
-  return !!d && !!f && (f === d || f.startsWith(d + '/'));
-}
-
 /**
  * PURE decision: may this candidate become the project's background, and if
- * so, where would the copy live? No filesystem access at all -- `size` is
- * injected so this stays testable without a real file, and so a refusal can
- * be decided before anything is statted.
- *
- * Returns `{ ok, reason }` on refusal, `{ ok: true, dest, ext }` on success.
- * `dest` is always `path.join(dir, <safe filename>)` -- constructed the same
- * way host/background.js's own filenames are, so it can never climb out of
- * `dir` no matter what `source` or `cwd` contain.
+ * so, where would the copy live? `size` is injected so a refusal can be
+ * decided before anything is statted, and so this stays testable without a
+ * real file. The destination is always `<project>/.claude-custom/background.<ext>`.
  */
-function planBackgroundChoice({ source, cwd, size, dir } = {}) {
+function planBackgroundChoice({ source, cwd, size } = {}) {
   const src = typeof source === 'string' ? source.trim() : '';
   if (!src) return { ok: false, reason: 'no file was given' };
-  if (!cwd || !String(cwd).trim()) return { ok: false, reason: 'no project is open' };
-  if (!dir || !String(dir).trim()) return { ok: false, reason: 'nowhere to store the image' };
+  if (typeof cwd !== 'string' || !cwd.trim()) return { ok: false, reason: 'no project is open' };
 
   const ext = extOf(src);
   if (!ACCEPTED_EXTENSIONS.includes(ext)) {
@@ -127,17 +83,80 @@ function planBackgroundChoice({ source, cwd, size, dir } = {}) {
     };
   }
 
-  return { ok: true, dest: path.join(dir, fileNameFor(cwd, ext)), ext };
+  return { ok: true, dest: path.join(lookDir(cwd), `background.${ext}`), ext };
+}
+
+function ensureLookDir(cwd, fsImpl) {
+  const dir = lookDir(cwd);
+  fsImpl.mkdirSync(dir, { recursive: true });
+  const ignore = path.join(dir, '.gitignore');
+  // Written once, never overwritten: a person who edited it (to commit their
+  // look, say) keeps their edit. 'wx' makes "only if absent" atomic.
+  if (!fsImpl.existsSync(ignore)) {
+    try { fsImpl.writeFileSync(ignore, GITIGNORE_BODY, { flag: 'wx' }); } catch (err) {
+      if (!err || err.code !== 'EEXIST') throw err;
+    }
+  }
+  return dir;
+}
+
+/** The project's look, sanitized. A background whose copy is gone is dropped. */
+function readLook(cwd, { fsImpl = fs } = {}) {
+  let raw;
+  try {
+    raw = JSON.parse(fsImpl.readFileSync(path.join(lookDir(cwd), LOOK_FILE), 'utf8'));
+  } catch {
+    return sanitizeLook(null);
+  }
+  const look = sanitizeLook(raw);
+  if (look.background && !fsImpl.existsSync(path.join(lookDir(cwd), look.background.file))) {
+    look.background = null;
+  }
+  return look;
+}
+
+/** Sanitize and write atomically. Returns what was written. */
+function writeLook(cwd, look, { fsImpl = fs } = {}) {
+  const clean = sanitizeLook(look);
+  const dir = ensureLookDir(cwd, fsImpl);
+  const file = path.join(dir, LOOK_FILE);
+  const temp = `${file}.tmp${process.pid}`;
+  try {
+    fsImpl.writeFileSync(temp, JSON.stringify(clean, null, 2) + '\n');
+    renameWithRetry(temp, file, { rename: fsImpl.renameSync });
+  } catch (err) {
+    try { fsImpl.unlinkSync(temp); } catch { /* best effort */ }
+    throw err;
+  }
+  return clean;
 }
 
 /**
- * The thin fs layer. Stats the source, decides via `planBackgroundChoice`,
- * copies temp-then-rename, and records the override in the store -- in that
- * order, so a refused or failed choice never touches style.json at all.
+ * Merge a partial look from the Style tab. Only PATCHABLE keys are read; a key
+ * present with `null` resets that field to the registry theme.
  */
-function setBackground({ source, cwd, dir, store, fsImpl = fs } = {}) {
-  if (!store) throw new Error('setBackground: store is required');
+function setLook({ cwd, patch, fsImpl = fs } = {}) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    return { ok: false, reason: 'nothing to change' };
+  }
+  if (typeof cwd !== 'string' || !cwd.trim()) return { ok: false, reason: 'no project is open' };
+  const next = { ...readLook(cwd, { fsImpl }) };
+  for (const key of PATCHABLE) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) next[key] = patch[key];
+  }
+  try {
+    return { ok: true, look: writeLook(cwd, next, { fsImpl }) };
+  } catch (err) {
+    return { ok: false, reason: `could not save the look: ${err.message}` };
+  }
+}
 
+/**
+ * Copy `source` in as the project's background: stat, decide, copy
+ * temp-then-rename, drop any older copy in another format, then record it --
+ * in that order, so a refused or failed choice never touches look.json.
+ */
+function setBackground({ source, cwd, fsImpl = fs } = {}) {
   let stat;
   try {
     stat = fsImpl.statSync(source);
@@ -146,103 +165,65 @@ function setBackground({ source, cwd, dir, store, fsImpl = fs } = {}) {
   }
   if (!stat.isFile()) return { ok: false, reason: 'that is not a file' };
 
-  const plan = planBackgroundChoice({ source, cwd, size: stat.size, dir });
+  const plan = planBackgroundChoice({ source, cwd, size: stat.size });
   if (!plan.ok) return plan;
 
-  fsImpl.mkdirSync(dir, { recursive: true });
   const temp = `${plan.dest}.tmp${process.pid}`;
   try {
+    ensureLookDir(cwd, fsImpl);
     fsImpl.copyFileSync(source, temp);
-    renameWithRetry(temp, plan.dest, fsImpl.renameSync ? { rename: fsImpl.renameSync } : undefined);
+    renameWithRetry(temp, plan.dest, { rename: fsImpl.renameSync });
   } catch (err) {
     try { fsImpl.unlinkSync(temp); } catch { /* best effort */ }
     return { ok: false, reason: `could not copy the image: ${err.message}` };
   }
 
-  const key = normalize(cwd);
-  const state = readState(store);
-  const setAt = new Date().toISOString();
-  state[key] = { background: { file: plan.dest, setAt } };
-  store.write(STORE_KEY, state);
+  const file = path.basename(plan.dest);
+  let siblings = [];
+  try { siblings = fsImpl.readdirSync(lookDir(cwd)); } catch { /* nothing to tidy */ }
+  for (const name of siblings) {
+    if (name !== file && /^background\.[a-z0-9]+$/i.test(name)) {
+      try { fsImpl.unlinkSync(path.join(lookDir(cwd), name)); } catch { /* best effort */ }
+    }
+  }
 
-  return { ok: true, dest: plan.dest, source: 'override', setAt };
+  const setAt = new Date().toISOString();
+  try {
+    const look = writeLook(cwd, { ...readLook(cwd, { fsImpl }), background: { file, setAt } }, { fsImpl });
+    return { ok: true, dest: plan.dest, setAt, look };
+  } catch (err) {
+    return { ok: false, reason: `could not save the look: ${err.message}` };
+  }
 }
 
-/**
- * Reset to the generated background: removes the override (best-effort
- * unlink of the copy) and reports whether there was one to remove.
- *
- * The unlink is refused, not attempted, for a file that does not resolve
- * inside `dir` -- a hand-edited style.json must not be able to make this
- * host delete an arbitrary path.
- */
-function resetBackground({ cwd, dir, store, fsImpl = fs } = {}) {
-  if (!store) throw new Error('resetBackground: store is required');
-
-  const key = normalize(cwd);
-  const state = readState(store);
-  const entry = state[key];
-  if (!entry) return { ok: true, removed: false };
-
-  const next = { ...state };
-  delete next[key];
-  store.write(STORE_KEY, next);
-
-  const file = entry.background && typeof entry.background.file === 'string'
-    ? entry.background.file : null;
-  if (file && dir && isInside(file, dir)) {
-    try { fsImpl.unlinkSync(file); } catch { /* best effort -- already gone is fine */ }
-  }
+/** Back to the generated art. The colours are kept. */
+function resetBackground({ cwd, fsImpl = fs } = {}) {
+  const look = readLook(cwd, { fsImpl });
+  if (!look.background) return { ok: true, removed: false };
+  writeLook(cwd, { ...look, background: null }, { fsImpl });
+  // Safe by construction: sanitizeLook only ever yields a bare background.<ext>.
+  try { fsImpl.unlinkSync(path.join(lookDir(cwd), look.background.file)); } catch { /* already gone */ }
   return { ok: true, removed: true };
 }
 
-// A defensive read: store.read('style', {}) already defaults on a corrupt
-// file, but a *valid* JSON file whose top level is not a plain object (an
-// array, a string, null written by hand) must not propagate into `state[key]`
-// lookups below and throw there instead.
-function readState(store) {
-  const raw = store.read(STORE_KEY, {});
-  return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-}
-
 /**
- * What background should this project actually show right now?
- *
- * `fallbackBackground` is the generated image's path (host/background.js's
- * `backgroundFor(cwd).path`) -- the caller resolves that first, since it is
- * cheap and always succeeds, and this function decides whether to use it.
- *
- * `styleDir`, if given, is the closure check for the invariant this module
- * exists to hold: an override is only ever trusted if it resolves inside the
- * harness's own style directory. Every legitimate write from `setBackground`
- * satisfies that by construction (`dest` is built from `dir` itself), so this
- * only ever fires against a style.json edited or corrupted by hand.
+ * What this project should show right now. `fallbackBackground` is the
+ * generated art's path (host/background.js), used whenever there is no copy.
  */
-function resolveStyle(store, cwd, fallbackBackground, { styleDir } = {}) {
-  const generated = { background: fallbackBackground, source: 'generated' };
-  if (!store) return generated;
-
-  const state = readState(store);
-  const entry = state[normalize(cwd)];
-  const file = entry && entry.background && typeof entry.background.file === 'string'
-    ? entry.background.file : null;
-  if (!file) return generated;
-
-  if (styleDir && !isInside(file, styleDir)) {
-    return {
-      ...generated,
-      note: 'the stored background is outside the harness directory -- using the generated background',
-    };
+function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
+  const look = readLook(cwd, { fsImpl });
+  if (!look.background) {
+    return { background: fallbackBackground, source: 'generated', setAt: null, look };
   }
-
   return {
-    background: file,
+    background: path.join(lookDir(cwd), look.background.file),
     source: 'override',
-    setAt: (entry.background && entry.background.setAt) || null,
+    setAt: look.background.setAt,
+    look,
   };
 }
 
 module.exports = {
-  planBackgroundChoice, setBackground, resetBackground, resolveStyle,
-  ACCEPTED_EXTENSIONS, MAX_BYTES, normalize, fileNameFor, isInside, STORE_KEY,
+  planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
+  readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, LOOK_DIR_NAME,
 };

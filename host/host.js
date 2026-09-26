@@ -32,7 +32,7 @@ const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
-const { setBackground, resetBackground, resolveStyle } = require('./style');
+const { setBackground, resetBackground, resolveStyle, setLook } = require('./style');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
@@ -378,11 +378,14 @@ const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dir
 const background = backgroundFor(CWD, { dir: BACKGROUNDS_DIR });
 console.log('[host] background     :', path.basename(background.path), background.created ? '(new)' : '(existing)');
 
-// FF6: a per-project override lives here, keyed by normalised project path in
-// the 'style' store key -- see host/style.js. Falls back to the generated
-// background above whenever there is none, or the recorded copy no longer
-// resolves inside this directory.
-const STYLE_DIR = process.env.CLAUDE_CUSTOM_STYLE_DIR || path.join(HARNESS_DIR, 'style');
+// The project's own look -- colours, darkness and an optional background copy
+// in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
+// look edited from another window of the same folder is what this one sends.
+// Falls back to the generated background above whenever there is no copy.
+function currentStyle() {
+  const r = resolveStyle(CWD, background.path);
+  return { background: r.background, source: r.source, setAt: r.setAt, look: r.look };
+}
 
 // The session id arrives on the SessionStart hook. Until it does, only the
 // project total is knowable -- readUsage handles that rather than blocking.
@@ -1140,14 +1143,14 @@ wss.on('connection', (ws) => {
   // through style.js instead, so a per-project override (FF6) wins over the
   // generated art without the Style panel needing a second round trip just to
   // learn what is already showing.
-  const styleResolved = resolveStyle(store, CWD, background.path, { styleDir: STYLE_DIR });
+  const styleResolved = currentStyle();
   sendControl(ws, {
     type: 'hello',
     cwd: CWD,
     theme,
     hooks: helperExists,
     background: styleResolved.background,
-    style: { source: styleResolved.source, setAt: styleResolved.setAt || null },
+    style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     running: processes.list(),
@@ -1376,7 +1379,7 @@ wss.on('connection', (ws) => {
       return;
     }
     if (msg.type === 'style') {
-      // set-background / reset-background. A refusal answers ONLY the asking
+      // set-background / reset-background / set-look. A refusal answers ONLY the asking
       // client -- it is that action failing, not a state change anyone else
       // needs to hear about, the same distinction host/host.js already draws
       // for the project picker's 'open' errors. A successful change IS
@@ -1388,19 +1391,34 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'style', error: 'no file was given' }));
           return;
         }
-        const r = setBackground({ source: asked, cwd: CWD, dir: STYLE_DIR, store });
+        const r = setBackground({ source: asked, cwd: CWD });
         if (!r.ok) {
           console.log('[host] style refused :', r.reason);
           ws.send(JSON.stringify({ type: 'style', error: r.reason }));
           return;
         }
-        broadcastControl({ type: 'style', background: r.dest, source: 'override', setAt: r.setAt });
+        broadcastControl({ type: 'style', ...currentStyle() });
         return;
       }
       if (msg.action === 'reset-background') {
-        resetBackground({ cwd: CWD, dir: STYLE_DIR, store });
-        const resolved = resolveStyle(store, CWD, background.path, { styleDir: STYLE_DIR });
-        broadcastControl({ type: 'style', background: resolved.background, source: resolved.source, setAt: resolved.setAt || null });
+        try {
+          resetBackground({ cwd: CWD });
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'style', error: `could not reset: ${err.message}` }));
+          return;
+        }
+        broadcastControl({ type: 'style', ...currentStyle() });
+        return;
+      }
+      if (msg.action === 'set-look') {
+        // Colours and darkness only -- host/style.js ignores any other key, so
+        // this cannot point the background at a file it did not copy in.
+        const r = setLook({ cwd: CWD, patch: msg.look });
+        if (!r.ok) {
+          ws.send(JSON.stringify({ type: 'style', error: r.reason }));
+          return;
+        }
+        broadcastControl({ type: 'style', ...currentStyle() });
         return;
       }
       return;
