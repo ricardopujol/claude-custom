@@ -65,7 +65,8 @@ function svcWith(vaultOverrides = {}) {
 // Survivors at app/secret-service.js:78 -- `{ ok: true, failed: (r && r.failed) || [] }`
 
 test('setKey FORWARDS the entries a rekey could not carry', () => {
-  // Kills: `(r && r.failed) || []` -> `[]`, and -> `r`. Dexter F3: these are
+  // Kills any mutant that replaces `(r && r.failed) || []` with a constant `[]`,
+  // and any that forwards `r` itself instead of `r.failed`. Dexter F3: these are
   // secrets that survived but did not move, and the user is the only one who
   // can decide what to do about them. An empty array here is a lie that loses
   // them silently -- the rekey reports total success and some entries are now
@@ -122,9 +123,10 @@ test('removeKey COERCES a truthy non-boolean to true', () => {
   // Kills: removal of `!!`. Without it `ok` is whatever the vault put there,
   // and the renderer's `res.ok === true` then reads false for a string that
   // means yes -- an operation that worked, reported as failed.
-  const svc = svcWith({ removeKey: () => ({ ok: 'yes', failed: [] }) });
+  // Both shapes, because `failed` being present or absent must not change how
+  // `ok` is read -- the two fields are forwarded independently.
+  assert.strictEqual(svcWith({ removeKey: () => ({ ok: 'yes', failed: [] }) }).removeKey().ok, true);
   assert.strictEqual(svcWith({ removeKey: () => ({ ok: 'yes' }) }).removeKey().ok, true);
-  assert.strictEqual(svc.removeKey().ok, true);
 });
 
 test('removeKey FAILS CLOSED on a vault that returns nothing', () => {
