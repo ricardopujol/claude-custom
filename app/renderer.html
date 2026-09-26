@@ -678,7 +678,10 @@
                position: relative; }
     .tb-chip { background: var(--chrome); color: var(--text); border: 1px solid var(--model-accent);
                border-radius: 999px; padding: 2px 9px; font-size: 10.5px; line-height: 1.5;
-               cursor: pointer; font: inherit; }
+               cursor: pointer; font: inherit;
+               /* The chip shows a FULL id ("claude-sonnet-5"); wrapped, the
+                  pill became a three-line circle (seen in the live probe). */
+               white-space: nowrap; }
     .tb-chip:hover { background: color-mix(in srgb, var(--model-accent) 14%, var(--chrome)); }
     /* Pending never claims success -- see app/top-bar-display.js's
        pendingResolver. It only ever LOOKS unsettled until the truth (or the
