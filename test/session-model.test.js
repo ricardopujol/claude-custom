@@ -654,3 +654,53 @@ test('readSessionModel: the widening STOPS at the cap -- beyond it the model is 
   const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
   assert.strictEqual(r.session.model, null);
 });
+
+// --- round 1: Dexter r1 F1 / Miguel r1 N1, F2, F3 -----------------------------
+
+test('mergeSessionModel: a partial read never puts an OLDER run back on the card (r1 F1 / N1)', () => {
+  // Known: sonnet @ 11:00. Next read could not open run 2's transcript, so the
+  // only run it saw is run 1: opus @ 10:00. The card must keep sonnet.
+  const prev = { ...EMPTY, agents: { lr: row('claude-sonnet-5', '2026-01-01T11:00:00.000Z') } };
+  const partial = { ...EMPTY, agents: { lr: row('claude-opus-5', '2026-01-01T10:00:00.000Z') }, errors: 1 };
+  assert.deepStrictEqual(mergeSessionModel(prev, partial).agents.lr, row('claude-sonnet-5', '2026-01-01T11:00:00.000Z'));
+});
+
+test('mergeSessionModel: an equal or newer run still replaces, and a stamped run beats a bare one', () => {
+  const at = '2026-01-01T11:00:00.000Z';
+  const prev = { ...EMPTY, agents: { a: row('m1', at), b: row('m1', '2026-01-01T10:00:00.000Z'), c: row('m1', undefined), d: row('m1', at) } };
+  const next = { ...EMPTY, agents: { a: row('m2', at), b: row('m2', at), c: row('m2', at), d: row('m2', undefined) } };
+  const m = mergeSessionModel(prev, next).agents;
+  assert.strictEqual(m.a.model, 'm2', 'equal stamp: the fresh read wins');
+  assert.strictEqual(m.b.model, 'm2', 'newer: replaces');
+  assert.strictEqual(m.c.model, 'm2', 'stamped beats bare');
+  assert.strictEqual(m.d.model, 'm1', 'a bare row never displaces a stamped one');
+});
+
+test('mergeSessionModel: an UNRESOLVED row is not carried forward -- a wrong name must not stick (r1 F3)', () => {
+  // R1 half-failed (identity tables unreadable) and filed the run under its
+  // label L; a clean R2 resolves it to its type T. Only T may remain.
+  const prev = { ...EMPTY, agents: { L: { ...row('m'), unresolved: true }, known: row('m') } };
+  const clean = { ...EMPTY, agents: { T: row('m') } };
+  const m = mergeSessionModel(prev, clean).agents;
+  assert.deepStrictEqual(Object.keys(m).sort(), ['T', 'known']);
+});
+
+test('refresher: a /clear is reflected by current() AT ONCE, even while the old read is still in flight (r1 F2)', async () => {
+  const { read, calls } = deferredReader();
+  let sid = 'A';
+  const r = createSessionModelRefresher({ read, currentSessionId: () => sid });
+  const p = r.refresh();
+  await tick();
+  calls[0].resolve({ ...EMPTY, agents: { old: row('m') } });
+  await p;                                   // A is known
+  const p2 = r.refresh();                    // a second read of A starts...
+  await tick();
+  sid = 'B';                                 // ...and /clear lands while it runs
+  r.refresh();
+  assert.deepStrictEqual(r.current().agents, {}, 'hello must not carry A\'s agents under B');
+  calls[1].resolve({ ...EMPTY, agents: { old: row('m') } });
+  await tick();
+  calls[2].resolve({ ...EMPTY });
+  await p2;
+  assert.deepStrictEqual(r.current().agents, {});
+});

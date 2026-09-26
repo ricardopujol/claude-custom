@@ -323,8 +323,23 @@ const emptyModel = () => ({ session: { model: null, at: null }, agents: {}, erro
  * properties, and JSON round-trips them.
  */
 function mergeSessionModel(prev, next) {
-  const rows = new Map(Object.entries((prev && prev.agents) || {}));
-  for (const [agent, row] of Object.entries((next && next.agents) || {})) rows.set(agent, row);
+  // Carried forward: only rows filed under a RESOLVED identity. An unresolved
+  // row is a label a half-failed read fell back to; once a later read resolves
+  // the same run to its type, keeping the label would show one run twice under
+  // two names for the rest of the session (Dexter, PR #34 round 1, F3).
+  const rows = new Map(Object.entries((prev && prev.agents) || {})
+    .filter(([, row]) => !(row && row.unresolved)));
+  for (const [agent, row] of Object.entries((next && next.agents) || {})) {
+    // A fresh read replaces a known row unless the known one is strictly
+    // NEWER. A partial read that could not open an agent's latest transcript
+    // still sees its older runs, and letting that overwrite put an older
+    // model back on the card -- Finding 1 again, one layer up (Dexter r1 F1,
+    // Miguel r1 N1). Same ordering as within a read; the empty file names make
+    // a tie go to the fresh read.
+    const known = rows.get(agent);
+    if (known && isNewerRun({ at: known.at, file: '' }, { at: row && row.at, file: '' })) continue;
+    rows.set(agent, row);
+  }
   const nextSession = next && next.session;
   const session = nextSession && typeof nextSession.model === 'string'
     ? nextSession
@@ -367,11 +382,7 @@ function createSessionModelRefresher({ read, currentSessionId, onChange = () => 
       // A new session owns none of the old one's rows. Drop them now, before
       // the read, so nothing that asks in the meantime (a client's hello) is
       // handed the previous session's agents under the new id.
-      if (stateSession !== null && stateSession !== sid) {
-        state = emptyModel();
-        stateSession = sid;
-        onChange(state);
-      }
+      resetIfSessionChanged(sid);
       let result;
       try {
         result = await read(sid);
@@ -391,8 +402,22 @@ function createSessionModelRefresher({ read, currentSessionId, onChange = () => 
     return state;
   }
 
+  // Drop the old session's rows the moment a new id is seen. Called from
+  // refresh() as well as run(): run() may be parked on the OLD session's read
+  // for seconds, and until it wakes, current() -- what a client's hello gets --
+  // would still hand out the old agents under the new id (Dexter r1 F2).
+  function resetIfSessionChanged(sid) {
+    if (stateSession !== null && stateSession !== sid) {
+      state = emptyModel();
+      stateSession = sid;
+      onChange(state);
+    }
+  }
+
   function refresh() {
-    if (!currentSessionId()) return Promise.resolve(state);
+    const sid = currentSessionId();
+    if (!sid) return Promise.resolve(state);
+    resetIfSessionChanged(sid);
     if (pending) { dirty = true; return pending; }
     pending = run().finally(() => { pending = null; });
     return pending;
