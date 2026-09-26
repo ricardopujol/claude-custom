@@ -16,14 +16,19 @@
 
 function createProcessesBroadcast(broadcast) {
   let lastParty = null;           // JSON of the party last sent; null = never sent
+  let lastRan = false;            // whether the last message sent listed any running row
 
   function send(running, party) {
     broadcast({ type: 'processes', running, party });
     lastParty = JSON.stringify(party);
+    lastRan = running.length > 0;
   }
 
+  // The running list's falling edge counts too: when processes.sweep() removes
+  // the last stale row, nothing runs and the party may be unchanged, yet the
+  // panel still shows that row until it is told (#45).
   function tick(running, party) {
-    if (running.length || JSON.stringify(party) !== lastParty) send(running, party);
+    if (running.length || lastRan || JSON.stringify(party) !== lastParty) send(running, party);
   }
 
   return { send, tick };

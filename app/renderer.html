@@ -627,6 +627,10 @@
     .proc .el { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
     /* Anything past a minute is worth noticing rather than assuming hung. */
     .proc.slow .el { color: var(--accent); }
+    /* Ended without its own close event: not running, so no pulse. */
+    .proc.stale { opacity: .55; }
+    .proc.stale .dot { animation: none; background: var(--dim); }
+    .proc.stale .lbl { text-decoration: line-through; }
 
     /* Scrollbars follow the theme. The default chrome scrollbar is a bright
        grey slab that ignores the palette entirely and is the one element that

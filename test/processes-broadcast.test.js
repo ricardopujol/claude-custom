@@ -27,6 +27,22 @@ test('tick: the party shrinking to nothing IS broadcast, even with no processes 
   assert.deepStrictEqual(sent, [{ type: 'processes', running: [], party: [] }]);
 });
 
+test('tick: the LAST running row going away IS broadcast, even with the party unchanged (#45)', () => {
+  // processes.sweep() removes a stale row on the tick; nothing runs afterwards
+  // and the party is the same. Sending only "while anything runs or the party
+  // changed" left the swept row on screen forever -- the exact defect #45 fixes,
+  // reintroduced by the merge with this module.
+  const { b, sent } = harness();
+  const row = { id: 't1', tool: 'Bash', stale: true };
+  b.send([row], ['main']);
+  sent.length = 0;
+  b.tick([], ['main']);                                    // swept; party unchanged
+  assert.deepStrictEqual(sent, [{ type: 'processes', running: [], party: ['main'] }]);
+  sent.length = 0;
+  b.tick([], ['main']);                                    // and only once
+  assert.strictEqual(sent.length, 0);
+});
+
 test('tick: an unchanged, idle party is NOT re-broadcast every second', () => {
   const { b, sent } = harness();
   b.send([], []);

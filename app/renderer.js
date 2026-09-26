@@ -1576,11 +1576,21 @@ function renderProcesses(running) {
     procListEl.innerHTML = '<div class="none">nothing running</div>';
     return;
   }
+  // A label is a Bash command: untrusted text, never markup (Dexter F5). Nested,
+  // not top-level, because renderer.js shares one global scope with the other
+  // plain scripts -- see CLAUDE.md.
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   procListEl.innerHTML = running.map(p => {
-    const slow = p.elapsedMs >= 60000 ? ' slow' : '';
-    return '<div class="proc' + slow + '"><span class="dot"></span>' +
-           '<span class="lbl" title="' + p.tool + ': ' + p.label + '">' + p.label + '</span>' +
-           '<span class="el">' + humanElapsed(p.elapsedMs) + '</span></div>';
+    // "stale": ended because its agent or turn finished, while its own close
+    // event never arrived. Shown briefly rather than dropped, so a lost event
+    // is visible instead of silently recurring.
+    const stale = p.state === 'stale';
+    const cls = stale ? ' stale' : (p.elapsedMs >= 60000 ? ' slow' : '');
+    return '<div class="proc' + cls + '"><span class="dot"></span>' +
+           '<span class="lbl" title="' + esc(p.tool + ': ' + p.label) +
+             (stale ? ' (ended; its own finish event never arrived)' : '') + '">' + esc(p.label) + '</span>' +
+           '<span class="el">' + (stale ? 'ended (stale)' : humanElapsed(p.elapsedMs)) + '</span></div>';
   }).join('');
 }
 

@@ -9,6 +9,7 @@
  *   PreToolUse(Agent|Task)  -> working
  *   PostToolUse ok          -> working
  *   PostToolUse error       -> stressed (err++)
+ *   PostToolUseFailure      -> stressed (err++)  -- a failed call's ONLY event
  *   same tool x3 running    -> stressed
  *   SubagentStop, err == 0  -> happy    (flash) -> sleeping
  *   SubagentStop, err > 0   -> stressed (flash) -> sleeping
@@ -136,8 +137,19 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       return;
     }
 
-    if (event === 'PostToolUse') {
-      const agent = current();
+    // A failed call fires PostToolUseFailure INSTEAD of PostToolUse, so it is
+    // the same result event -- and a failure, unless the user interrupted it
+    // (Esc), which is not the agent failing (Dexter F4).
+    const failureEvent = event === 'PostToolUseFailure';
+    const failed = failureEvent && !p.is_interrupt;
+    if (event === 'PostToolUse' || failureEvent) {
+      // WHOSE call. Measured: a subagent's calls carry agent_id + agent_type, a
+      // main-session call carries neither. So a failure with no agent_id is the
+      // main session's; blaming current() stressed a subagent that had failed
+      // nothing (Dexter F1). PostToolUse keeps the current() fallback for older
+      // CLIs that send no agent_id at all.
+      if (failureEvent && !p.agent_id) return;
+      const agent = p.agent_type && running(p.agent_type) ? p.agent_type : current();
       if (!agent) return;                     // no running agent to attribute to
       const a = ensure(agent);
 
@@ -158,7 +170,7 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
       }
       a.lastActivity = now();
 
-      if (isFailure(p.tool_response)) {
+      if (failed || isFailure(p.tool_response)) {
         a.errors++;
         a.repeats = 0;
         a.lastSignature = null;
