@@ -13,8 +13,24 @@
 const params = new URLSearchParams(location.search);
 const PORT = params.get('port') || '7681';
 const CWD = params.get('cwd') || '';
+const PROJECT = params.get('project') || '';
 
 document.getElementById('cwd').textContent = CWD;
+
+// FF21: "project/branch" in the top-left, replacing the static "claude-custom"
+// label -- `PROJECT` paints immediately from the window's own query params
+// (same source as the OS window title), `branch` arrives with the host's
+// `hello` and updates live off host.js's `branch` broadcasts. No project name
+// at all (should not happen once a window has a cwd) falls back to the
+// original static label rather than an empty header.
+let currentBranchName = null;
+function renderTitle() {
+  const el = document.getElementById('title');
+  if (!el) return;
+  const project = PROJECT || 'claude-custom';
+  el.textContent = currentBranchName ? `${project}/${currentBranchName}` : project;
+}
+renderTitle();
 
 // --- terminal ---------------------------------------------------------------
 const term = new Terminal({
@@ -2243,6 +2259,8 @@ function handleControl(msg) {
     // is already on screen and the session appears twice.
     term.reset();
     document.getElementById('cwd').textContent = msg.cwd || '';
+    currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
+    renderTitle();
     // `msg.background` is already resolved through host/style.js (the
     // project's own copy wins over generated art) and `msg.theme` already has
     // the project's look merged in; `msg.style` carries WHY, for the panel.
@@ -2293,6 +2311,11 @@ function handleControl(msg) {
   if (msg.type === 'mood') {
     roster.set(msg.agent, msg);
     renderRoster();
+    return;
+  }
+  if (msg.type === 'branch') {
+    currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
+    renderTitle();
     return;
   }
   if (msg.type === 'processes') {
