@@ -84,7 +84,15 @@ test('AGREES WITH THE REAL DIRECTORIES ON THIS MACHINE', () => {
   assert.deepStrictEqual(bad, [],
     'Claude Code used characters the encoder does not produce: ' + bad.join(', '));
 
-  // And this project's own directory must be exactly what we compute.
+  // And this project's own directory must be exactly what we compute -- from
+  // the canonical checkout. A git worktree, which global CLAUDE.md mandates for
+  // every parallel agent, has a `.git` FILE rather than a directory, and a cwd
+  // Claude Code has never opened, so there is no real directory for it to agree
+  // with. Same `return` as the other-machine case above: the assertion that
+  // carries the value has already run.
+  let worktree = false;
+  try { worktree = fs.statSync(path.join(process.cwd(), '.git')).isFile(); } catch { /* no .git at all */ }
+  if (worktree) return;
   const mine = projectDirName(process.cwd());
   assert.ok(dirs.includes(mine), `${mine} is not among the real project dirs`);
 });
