@@ -61,6 +61,15 @@ const SYNTHETIC = '<synthetic>';
 // tens-of-MB file to one small read rather than a full parse.
 const TAIL_BYTES = 128 * 1024;
 
+// How far the window may WIDEN when it holds no model-bearing line. "Always
+// near EOF" is usually true and not always: a subagent killed right after a
+// huge Read ends on one tool_result longer than the whole window (Dexter, PR
+// #34, Finding 5). Doubling from TAIL_BYTES reaches 8 MiB in six reads; past
+// that the model is reported as unread (and the host keeps what it knew)
+// rather than paying for a full parse of a tens-of-MB transcript on every
+// SubagentStop.
+const TAIL_MAX_BYTES = 8 * 1024 * 1024;
+
 function defaultProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects');
 }
@@ -118,7 +127,40 @@ function isNewerRun(a, b) {
 }
 
 /**
- * The parsed JSONL records in the last `TAIL_BYTES` of `file`, in file order.
+ * The complete JSONL records in the last `window` bytes of a file of `size`.
+ *
+ * Reads ONE byte more than the window. The tail can begin mid-line, so
+ * everything up to and including the first newline is dropped -- a truncated
+ * fragment must never reach JSON.parse, where it could parse into a
+ * wrong-shaped object that happens to validate. Starting a byte early makes
+ * that drop exact: if the window begins precisely on a line boundary, the extra
+ * byte IS the previous line's newline, and dropping it keeps the first line
+ * whole. Without it, that complete line was thrown away as a fragment (Dexter,
+ * PR #34, Finding 5).
+ */
+async function readWindow(fh, size, window) {
+  const start = Math.max(0, size - window);
+  const from = start > 0 ? start - 1 : 0;
+  const len = size - from;
+  if (len <= 0) return [];
+  const buf = Buffer.allocUnsafe(len);
+  await fh.read(buf, 0, len, from);
+  let text = buf.toString('utf8');
+  if (start > 0) {
+    const nl = text.indexOf('\n');
+    text = nl === -1 ? '' : text.slice(nl + 1);
+  }
+  return text.split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+}
+
+/**
+ * The parsed JSONL records in the tail of `file`, in file order: the last
+ * `TAIL_BYTES` first, doubling up to `TAIL_MAX_BYTES` until `until(entries)`
+ * holds (or the whole file has been read).
  *
  * Returns `{ entries, gone }`:
  *
@@ -133,7 +175,7 @@ function isNewerRun(a, b) {
  *                 genuinely partial final write) is simply dropped -- it is
  *                 not ours to guess at.
  */
-async function tailEntries(file, openFile) {
+async function tailEntries(file, openFile, { until = () => true } = {}) {
   let stat;
   try {
     stat = await fsp.stat(file);
@@ -151,26 +193,15 @@ async function tailEntries(file, openFile) {
     return { entries: null, gone: false };
   }
   try {
-    const start = Math.max(0, stat.size - TAIL_BYTES);
-    const len = stat.size - start;
-    if (len <= 0) return { entries: [], gone: false };
-    const buf = Buffer.allocUnsafe(len);
-    await fh.read(buf, 0, len, start);
-    let text = buf.toString('utf8');
-    if (start > 0) {
-      // The tail can begin mid-line. Drop everything up to and including the
-      // first newline so a truncated fragment is never handed to JSON.parse as
-      // if it were a complete record -- it would either throw (harmless) or,
-      // worse, parse into a wrong-shaped object that happens to validate.
-      const nl = text.indexOf('\n');
-      text = nl === -1 ? '' : text.slice(nl + 1);
+    let window = TAIL_BYTES;
+    for (;;) {
+      const entries = await readWindow(fh, stat.size, window);
+      // Stop at what the caller wanted, at the start of the file, or at the cap.
+      if (until(entries) || window >= stat.size || window >= TAIL_MAX_BYTES) {
+        return { entries, gone: false };
+      }
+      window = Math.min(window * 2, TAIL_MAX_BYTES);
     }
-    const entries = text.split('\n')
-      .map(l => l.trim())
-      .filter(Boolean)
-      .map(l => { try { return JSON.parse(l); } catch { return null; } })
-      .filter(Boolean);
-    return { entries, gone: false };
   } catch {
     return { entries: null, gone: false };
   } finally {
@@ -230,7 +261,7 @@ async function readSessionModel({
   const picked = new Map();
 
   for (const entry of mine) {
-    const { entries, gone } = await tailEntries(entry.file, openFile);
+    const { entries, gone } = await tailEntries(entry.file, openFile, { until: (e) => latestModel(e) !== null });
     if (gone) continue;                        // vanished: correctly nothing
     if (entries === null) { errors++; continue; }   // exists, unreadable: a failure
 
@@ -371,6 +402,6 @@ function createSessionModelRefresher({ read, currentSessionId, onChange = () => 
 }
 
 module.exports = {
-  latestModel, isNewerRun, readSessionModel, defaultProjectsDir, SYNTHETIC, TAIL_BYTES,
+  latestModel, isNewerRun, readSessionModel, defaultProjectsDir, SYNTHETIC, TAIL_BYTES, TAIL_MAX_BYTES,
   mergeSessionModel, createSessionModelRefresher,
 };

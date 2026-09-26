@@ -580,3 +580,52 @@ test('readSessionModel: an agent labelled __proto__ is an own key, not a prototy
   assert.strictEqual(JSON.parse(JSON.stringify(r.agents))['__proto__'].model, 'claude-opus-5',
     'and it survives the trip to the renderer');
 });
+
+// --- Dexter, PR #34, Finding 5: the tail window ------------------------------
+
+const { TAIL_BYTES } = require('../host/session-model');
+
+// An assistant line padded so its JSON is EXACTLY `len` bytes (ASCII only).
+function paddedAssistant(model, at, len) {
+  const base = JSON.stringify({ ...assistant(model, at), pad: '' });
+  const obj = { ...assistant(model, at), pad: 'x'.repeat(len - base.length) };
+  assert.strictEqual(JSON.stringify(obj).length, len);
+  return obj;
+}
+
+test('readSessionModel: a last record bigger than the tail window does not lose the model', async () => {
+  // A subagent killed right after a huge Read: its final line is a user
+  // tool_result longer than TAIL_BYTES, and every model-bearing line is before it.
+  const { projectsDir, projectDir, dir } = project();
+  writeSession(dir, 's1', [
+    assistant('claude-opus-5', '2026-01-01T00:00:00.000Z'),
+    { type: 'user', message: { role: 'user', content: 'y'.repeat(TAIL_BYTES + 12 * 1024) } },
+  ]);
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.strictEqual(r.session.model, 'claude-opus-5');
+});
+
+test('readSessionModel: a window that starts EXACTLY on a line boundary keeps that line', async () => {
+  // The last line plus its newline is exactly TAIL_BYTES, so the byte before the
+  // window is '\n' and the window's first line is complete. Dropping it as a
+  // "partial fragment" loses the newest model -- and merely widening would then
+  // find the OLDER one, so this pins the boundary itself, not just widening.
+  const { projectsDir, projectDir, dir } = project();
+  writeSession(dir, 's1', [
+    assistant('claude-opus-5', '2026-01-01T00:00:00.000Z'),
+    paddedAssistant('claude-sonnet-5', '2026-01-01T00:01:00.000Z', TAIL_BYTES - 1),
+  ]);
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.strictEqual(r.session.model, 'claude-sonnet-5');
+});
+
+test('readSessionModel: the widening STOPS at the cap -- beyond it the model is unread, not guessed', async () => {
+  const { TAIL_MAX_BYTES } = require('../host/session-model');
+  const { projectsDir, projectDir, dir } = project();
+  writeSession(dir, 's1', [
+    assistant('claude-opus-5', '2026-01-01T00:00:00.000Z'),
+    { type: 'user', message: { role: 'user', content: 'y'.repeat(TAIL_MAX_BYTES + 1024) } },
+  ]);
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.strictEqual(r.session.model, null);
+});
