@@ -202,11 +202,23 @@ function mainModelOf(payload) {
  * only itself (Dexter #1, #5) -- family would call opus-4-5 a success for
  * opus-4-7, and 'other' would call any two provider models equal.
  */
+//
+// An alias may carry the 1M-context suffix (Dexter r2 N4). MEASURED
+// 2026-09-26 (v2.1.283): `/model sonnet[1m]` reports `claude-sonnet-5[1m]`.
+// So the suffix must agree on both sides: `sonnet[1m]` is not confirmed by a
+// 200k sonnet, and plain `opus` is not "already running" on opus[1m].
+const CONTEXT_1M = '[1m]';
+
 function modelMatches(truth, requested) {
   if (typeof truth !== 'string' || !truth || typeof requested !== 'string' || !requested) return false;
   const req = requested.trim().toLowerCase();
-  if (MODEL_CHOICES.indexOf(req) !== -1) return modelFamily(truth) === req;
-  return truth.trim().toLowerCase() === req;
+  const running = truth.trim().toLowerCase();
+  const wants1m = req.endsWith(CONTEXT_1M);
+  const alias = wants1m ? req.slice(0, -CONTEXT_1M.length) : req;
+  if (MODEL_CHOICES.indexOf(alias) !== -1) {
+    return modelFamily(running) === alias && running.endsWith(CONTEXT_1M) === wants1m;
+  }
+  return running === req;
 }
 
 function effortMatches(truth, requested) {
@@ -253,18 +265,56 @@ function validModelInput(value) {
  */
 const RULE_LINE = /^─{10,}$/;
 
-function inputState(lines) {
-  if (!Array.isArray(lines)) return 'unknown';
+// The live box: the lines between the LAST two rules, and what is under it.
+// `box` is null when there is no box on screen.
+function liveBox(lines) {
+  if (!Array.isArray(lines)) return null;
   const text = lines.map(l => (typeof l === 'string' ? l.trim() : ''));
-  if (!text.some(Boolean)) return 'unknown';
   const rules = [];
   text.forEach((l, i) => { if (RULE_LINE.test(l)) rules.push(i); });
-  if (rules.length < 2) return 'dialog';
+  if (rules.length < 2) return { text, box: null, below: [] };
   const top = rules[rules.length - 2];
   const bottom = rules[rules.length - 1];
-  const box = text.slice(top + 1, bottom);
-  if (!box.length || box[0].charAt(0) !== '❯') return 'dialog';
-  return box.length > 1 ? 'multiline' : 'ready';
+  return { text, box: text.slice(top + 1, bottom), below: text.slice(bottom + 1) };
+}
+
+// MEASURED (verify/probe-vim-mode.js): in vim INSERT the footer line under
+// the box starts `-- INSERT --`; in NORMAL it is absent -- as it is with vim
+// off, which is why the caller latches "vim is on" once this has been seen.
+const VIM_INSERT = /^-- INSERT --(\s|$)/;
+
+function vimInsertShown(lines) {
+  const live = liveBox(lines);
+  return !!(live && live.box && live.below.some(l => VIM_INSERT.test(l)));
+}
+
+/**
+ * `opts.vim` is the caller's latch: vim mode has been seen in this session.
+ * With it, a box with no INSERT marker is 'vim-normal' -- keys typed there are
+ * motions, not text (Dexter r2 N2).
+ */
+function inputState(lines, opts) {
+  const live = liveBox(lines);
+  if (!live || !live.text.some(Boolean)) return 'unknown';
+  const box = live.box;
+  if (!box || !box.length || box[0].charAt(0) !== '❯') return 'dialog';
+  if (box.length > 1) return 'multiline';
+  if (opts && opts.vim && !vimInsertShown(lines)) return 'vim-normal';
+  return 'ready';
+}
+
+/**
+ * The read-back just before the CR (Miguel r2): is the live box EXACTLY
+ * `❯ <command>`? The screen was judged once, before four spaced writes; a
+ * dialog opening meanwhile, or a draft the clear did not reach, would
+ * otherwise take the CR. Whitespace runs (xterm may render a non-breaking
+ * space) compare as one space.
+ */
+function commandTyped(lines, command, opts) {
+  if (typeof command !== 'string' || !command) return false;
+  if (inputState(lines, opts) !== 'ready') return false;
+  const line = liveBox(lines).box[0].replace(/\s+/g, ' ').trim();
+  return line === `❯ ${command}`;
 }
 
 const SCREEN_REFUSALS = {
@@ -297,11 +347,14 @@ function planSwitch({ kind, raw, current, screen, connected } = {}) {
     return { ok: false, notice: 'nothing to switch' };
   }
   if (!connected) return { ok: false, notice: `didn't send /${kind} ${value}: not connected to the session` };
-  if (screen !== 'ready') {
+  // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
+  // text. MEASURED (verify/probe-vim-mode.js): `i` there is a mode switch.
+  const enterInsert = screen === 'vim-normal';
+  if (screen !== 'ready' && !enterInsert) {
     return { ok: false, notice: `didn't send /${kind} ${value}: ${SCREEN_REFUSALS[screen] || SCREEN_REFUSALS.unknown}` };
   }
   const alreadyRunning = kind === 'model' ? modelMatches(current, value) : effortMatches(current, value);
-  return { ok: true, value, command: `/${kind} ${value}`, alreadyRunning };
+  return { ok: true, value, command: `/${kind} ${value}`, alreadyRunning, enterInsert };
 }
 
 /**
@@ -319,6 +372,34 @@ function switchNotice(r) {
   return null;
 }
 
+/**
+ * Where an open menu goes, in viewport pixels for `position: fixed`. The
+ * menus used to hang off the header, whose `overflow: hidden` clipped them
+ * and whose stacking context let the panels below paint over them. `anchor`
+ * is the chip's bounding rect, `menu` the menu's size, `viewport` the
+ * window's. Under the chip, left-aligned; above it when there is no room
+ * below; always pulled back inside MENU_MARGIN of the edges. Total: missing
+ * measurements place the menu at the margin, never at NaN.
+ */
+const MENU_MARGIN = 4;
+const MENU_GAP = 2;
+
+function menuPlacement(anchor, menu, viewport) {
+  const num = v => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const a = anchor || {};
+  const m = menu || {};
+  const vp = viewport || {};
+  const w = num(m.width);
+  const h = num(m.height);
+  const clamp = (v, hi) => Math.max(MENU_MARGIN, Math.min(v, hi));
+  const left = clamp(num(a.left), num(vp.width) - MENU_MARGIN - w);
+  const below = num(a.bottom) + MENU_GAP;
+  const above = num(a.top) - MENU_GAP - h;
+  const fitsBelow = below + h <= num(vp.height) - MENU_MARGIN;
+  const top = clamp(!fitsBelow && above >= MENU_MARGIN ? above : below, num(vp.height) - MENU_MARGIN - h);
+  return { left, top };
+}
+
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all. Same shape as
 // app/quota-display.js.
@@ -327,6 +408,7 @@ if (typeof module !== 'undefined' && module.exports) {
     modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
+    vimInsertShown, commandTyped, menuPlacement,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -344,6 +426,9 @@ if (typeof module !== 'undefined' && module.exports) {
   root.inputState = inputState;
   root.planSwitch = planSwitch;
   root.switchNotice = switchNotice;
+  root.vimInsertShown = vimInsertShown;
+  root.commandTyped = commandTyped;
+  root.menuPlacement = menuPlacement;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

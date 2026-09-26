@@ -1788,6 +1788,13 @@ let pendingEffort = null;
 // #9), until the next request or NOTICE_MS.
 const tbNotices = { model: null, effort: null };
 const tbNoticeTimers = { model: null, effort: null };
+// Whether each notice is a TIMEOUT, whose "the session reports X" a later
+// truth makes stale (Dexter r2 N5). A refusal says why nothing was sent, which
+// no truth changes.
+const tbNoticeIsTimeout = { model: false, effort: false };
+// Vim mode seen on this session: its INSERT marker has been on screen. Only
+// then can a box without the marker be read as NORMAL (verify/probe-vim-mode.js).
+let vimSeen = false;
 const NOTICE_MS = 12000;
 
 const currentModel = () => liveModel || sessionModelFallback;
@@ -1814,12 +1821,18 @@ function applyModelAccent(family, theme) {
   term.options.theme = { ...term.options.theme, cursor };
 }
 
-function setTopBarNotice(kind, text) {
+function setTopBarNotice(kind, text, isTimeout) {
   tbNotices[kind] = text || null;
+  tbNoticeIsTimeout[kind] = !!(text && isTimeout);
   clearTimeout(tbNoticeTimers[kind]);
   if (text) {
     tbNoticeTimers[kind] = setTimeout(() => { tbNotices[kind] = null; renderTopBar(); }, NOTICE_MS);
   }
+}
+
+// A new truth makes a timeout's "the session reports X" out of date.
+function clearStaleNotice(kind) {
+  if (tbNoticeIsTimeout[kind]) setTopBarNotice(kind, null);
 }
 
 function setPending(kind, pending) {
@@ -1842,7 +1855,7 @@ function schedulePendingTimeout(kind, request) {
     if (res.pending) { schedulePendingTimeout(kind, request); return; }
     setPending(kind, null);
     setTopBarNotice(kind, switchNotice({ kind, result: res.result, value: request.value,
-      current: kind === 'model' ? currentModel() : currentEffort }));
+      current: kind === 'model' ? currentModel() : currentEffort }), res.result === 'timeout');
     renderTopBar();
   }, delay);
 }
@@ -1866,10 +1879,12 @@ function screenLines() {
 const PTY_STEP_MS = 120;
 
 function requestSwitch(kind, raw) {
+  const lines = screenLines();
+  if (vimInsertShown(lines)) vimSeen = true;
   const plan = planSwitch({
     kind, raw,
     current: kind === 'model' ? currentModel() : currentEffort,
-    screen: inputState(screenLines()),
+    screen: inputState(lines, { vim: vimSeen }),
     connected: !!ws && ws.readyState === WebSocket.OPEN,
   });
   if (!plan.ok) {
@@ -1894,18 +1909,46 @@ function requestSwitch(kind, raw) {
   // Ctrl-E first: Ctrl-U deletes only back to the CURSOR (measured, Dexter r2
   // N1). With the cursor at Home it deleted nothing, and the command was
   // typed in front of the draft -- `/model sonnetrefactor the parser`.
-  input('\x05');
-  setTimeout(() => input('\x15'), PTY_STEP_MS);
-  setTimeout(() => input(plan.command), PTY_STEP_MS * 2);
-  setTimeout(() => input('\r'), PTY_STEP_MS * 5);
+  // vim NORMAL: `i` first, or every key after it is a motion (Dexter r2 N2).
+  const lead = plan.enterInsert ? 1 : 0;
+  if (lead) input('i');
+  setTimeout(() => input('\x05'), PTY_STEP_MS * lead);
+  setTimeout(() => input('\x15'), PTY_STEP_MS * (lead + 1));
+  setTimeout(() => input(plan.command), PTY_STEP_MS * (lead + 2));
+  // Read the box back before Enter (Miguel r2): the screen was judged before
+  // four spaced writes, and a dialog opening meanwhile, or anything glued to
+  // the command, would take the CR. Not exactly the command: clear it instead.
+  setTimeout(() => {
+    if (commandTyped(screenLines(), plan.command, { vim: vimSeen })) { input('\r'); return; }
+    input('\x05');
+    setTimeout(() => input('\x15'), PTY_STEP_MS);
+    const pending = kind === 'model' ? pendingModel : pendingEffort;
+    if (pending && pending.value === plan.value) setPending(kind, null);
+    setTopBarNotice(kind, switchNotice({ kind, result: 'refused',
+      notice: `didn't send ${plan.command}: the input line changed before Enter` }));
+    renderTopBar();
+  }, PTY_STEP_MS * (lead + 5));
 }
 
-function toggleMenu(menu, otherMenu) {
+// The menus sit at body level, position:fixed (renderer.html says why), so
+// each one is placed against its chip when it opens: shown first, so it has a
+// size to measure.
+function toggleMenu(menu, otherMenu, chip) {
   if (!menu) return;
   const opening = menu.hidden;
   if (otherMenu) otherMenu.hidden = true;
   menu.hidden = !opening;
-  if (opening && menu === tbModelMenu && tbModelCustom) tbModelCustom.focus();
+  if (!opening) return;
+  if (chip) {
+    const at = menuPlacement(chip.getBoundingClientRect(),
+      { width: menu.offsetWidth, height: menu.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight });
+    menu.style.left = `${at.left}px`;
+    menu.style.top = `${at.top}px`;
+  }
+  // preventScroll: focus() scrolls every overflow:hidden ancestor to reveal
+  // its target, and that slid the whole header sideways.
+  if (menu === tbModelMenu && tbModelCustom) tbModelCustom.focus({ preventScroll: true });
 }
 
 function closeTopBarMenus() {
@@ -1922,8 +1965,8 @@ function submitCustomModel() {
   closeTopBarMenus();
 }
 
-if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu, tbEffortMenu));
-if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMenu, tbModelMenu));
+if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu, tbEffortMenu, tbModelEl));
+if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMenu, tbModelMenu, tbEffortEl));
 if (tbModelMenu) {
   tbModelMenu.addEventListener('click', (e) => {
     const row = e.target.closest('[data-model]');
@@ -1950,7 +1993,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && closeTopBarMenus()) { e.preventDefault(); e.stopPropagation(); }
 }, true);
 document.addEventListener('mousedown', (e) => {
-  if (!e.target.closest || !e.target.closest('#top-bar')) closeTopBarMenus();
+  if (!e.target.closest || !e.target.closest('#top-bar, .tb-menu')) closeTopBarMenus();
 });
 
 // --- permission mode --------------------------------------------------------
@@ -2357,6 +2400,7 @@ function handleControl(msg) {
     // /model -- see host/status-relay.js. Resolves a pending switch only if it is
     // no older than the request -- see pendingResolver.
     liveModel = typeof msg.model === 'string' && msg.model ? msg.model : null;
+    clearStaleNotice('model');
     if (pendingModel) {
       const res = pendingResolver(pendingModel, {
         type: 'truth', kind: 'model', at: msg.at, matches: modelMatches(liveModel, pendingModel.value),
@@ -2457,6 +2501,7 @@ function handleControl(msg) {
     // statusLine or a main-session hook payload. null is ABSENT (a model with
     // no effort levels), never a level.
     currentEffort = typeof msg.level === 'string' ? msg.level : null;
+    clearStaleNotice('effort');
     if (pendingEffort) {
       const res = pendingResolver(pendingEffort, {
         type: 'truth', kind: 'effort', at: msg.at, matches: effortMatches(currentEffort, pendingEffort.value),

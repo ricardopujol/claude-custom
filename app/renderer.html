@@ -691,7 +691,7 @@
        the truth; the dashed border says "look at the tooltip". */
     .tb-chip.notice { border-style: dashed; }
     .tb-menu .note { font-size: 10px; opacity: .6; padding: 3px 7px 0; max-width: 170px; }
-    .tb-menu { position: absolute; top: 26px; z-index: 30; display: flex; flex-direction: column;
+    .tb-menu { position: fixed; left: 0; top: 0; z-index: 50; display: flex; flex-direction: column;
                gap: 2px; background: var(--chrome); border: 1px solid var(--border);
                border-radius: 8px; padding: 5px; min-width: 128px;
                box-shadow: 0 6px 18px rgba(0,0,0,.35); }
@@ -775,6 +775,32 @@
 <body>
   <div id="bg"></div>
   <div id="focus-veil"></div>
+  <!-- FF12's menus, at BODY level on purpose: inside the header they were
+       clipped by its overflow:hidden and painted over by the panels below
+       (every #app child is its own z-index:1 layer). renderer.js places
+       them against their chip with menuPlacement(). -->
+  <div id="tb-model-menu" class="tb-menu" hidden>
+    <button type="button" data-model="opus">opus</button>
+    <button type="button" data-model="sonnet">sonnet</button>
+    <button type="button" data-model="haiku">haiku</button>
+    <div class="custom">
+      <input id="tb-model-custom" type="text" placeholder="full model id…" autocomplete="off" />
+      <button type="button" id="tb-model-custom-go">Go</button>
+    </div>
+    <!-- MEASURED (verify/probe-top-bar-truth.js): /model saves the pick as
+         the default for new sessions. Approved 2026-09-26: say so. -->
+    <div class="note">also becomes your default for new sessions</div>
+  </div>
+
+  <div id="tb-effort-menu" class="tb-menu" hidden>
+    <button type="button" data-effort="low">low</button>
+    <button type="button" data-effort="medium">medium</button>
+    <button type="button" data-effort="high">high</button>
+    <button type="button" data-effort="xhigh">xhigh</button>
+    <button type="button" data-effort="max">max</button>
+    <button type="button" data-effort="auto">auto</button>
+    <div class="note">also becomes your default for new sessions</div>
+  </div>
   <div id="app">
     <header>
       <span class="dot" id="dot"></span>
@@ -787,28 +813,7 @@
            status, not controls, and stay in #usage/#quota below. -->
       <span id="top-bar">
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
-        <div id="tb-model-menu" class="tb-menu" hidden>
-          <button type="button" data-model="opus">opus</button>
-          <button type="button" data-model="sonnet">sonnet</button>
-          <button type="button" data-model="haiku">haiku</button>
-          <div class="custom">
-            <input id="tb-model-custom" type="text" placeholder="full model id…" autocomplete="off" />
-            <button type="button" id="tb-model-custom-go">Go</button>
-          </div>
-          <!-- MEASURED (verify/probe-top-bar-truth.js): /model saves the pick as
-               the default for new sessions. Approved 2026-09-26: say so. -->
-          <div class="note">also becomes your default for new sessions</div>
-        </div>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
-        <div id="tb-effort-menu" class="tb-menu" hidden>
-          <button type="button" data-effort="low">low</button>
-          <button type="button" data-effort="medium">medium</button>
-          <button type="button" data-effort="high">high</button>
-          <button type="button" data-effort="xhigh">xhigh</button>
-          <button type="button" data-effort="max">max</button>
-          <button type="button" data-effort="auto">auto</button>
-          <div class="note">also becomes your default for new sessions</div>
-        </div>
       </span>
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>

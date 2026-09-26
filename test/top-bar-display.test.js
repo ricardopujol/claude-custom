@@ -16,6 +16,7 @@ const {
   modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
   MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS,
   modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
+  vimInsertShown, commandTyped, menuPlacement,
 } = require('../app/top-bar-display');
 
 // --- modelFamily -------------------------------------------------------------
@@ -422,12 +423,12 @@ const READY = { screen: 'ready', connected: true };
 
 test('a valid model choice on a ready screen plans the /model command', () => {
   const p = planSwitch({ kind: 'model', raw: ' sonnet ', current: 'claude-opus-5-5', ...READY });
-  assert.deepStrictEqual(p, { ok: true, value: 'sonnet', command: '/model sonnet', alreadyRunning: false });
+  assert.deepStrictEqual(p, { ok: true, value: 'sonnet', command: '/model sonnet', alreadyRunning: false, enterInsert: false });
 });
 
 test('a valid effort level plans the /effort command', () => {
   const p = planSwitch({ kind: 'effort', raw: 'HIGH', current: 'medium', ...READY });
-  assert.deepStrictEqual(p, { ok: true, value: 'high', command: '/effort high', alreadyRunning: false });
+  assert.deepStrictEqual(p, { ok: true, value: 'high', command: '/effort high', alreadyRunning: false, enterInsert: false });
 });
 
 test('choosing what is already running is marked, so it resolves at once (Dexter #6)', () => {
@@ -514,4 +515,114 @@ test('topBarState carries a notice onto its chip, and topBarDisplay marks and ti
   assert.strictEqual(el.textContent, 'claude-opus-5-5', 'the label still reports the truth');
   topBarDisplay({ modelEl: el }, topBarState({ model: 'claude-opus-5-5', theme: THEME }));
   assert.ok(!classes.has('notice'), 'the mark clears with the notice');
+});
+
+// --- [1m] aliases (Dexter r2 N4) -------------------------------------------------
+// MEASURED 2026-09-26, v2.1.283: `/model sonnet[1m]` makes the statusLine report
+// model.id `claude-sonnet-5[1m]`; `opus[1m]` gives `claude-opus-5-5[1m]`.
+
+test('a [1m] alias is confirmed by its family running with the 1M context', () => {
+  assert.strictEqual(modelMatches('claude-sonnet-5[1m]', 'sonnet[1m]'), true);
+  assert.strictEqual(modelMatches('claude-opus-5-5[1m]', 'OPUS[1M]'), true);
+  assert.strictEqual(modelMatches('claude-opus-5-5[1m]', 'sonnet[1m]'), false);
+});
+
+test('the context size must agree: [1m] and plain never confirm each other', () => {
+  assert.strictEqual(modelMatches('claude-sonnet-5', 'sonnet[1m]'), false);
+  assert.strictEqual(modelMatches('claude-opus-5-5[1m]', 'opus'), false);
+});
+
+test('switching from opus[1m] to plain opus is a real switch, not "already running"', () => {
+  const p = planSwitch({ kind: 'model', raw: 'opus', current: 'claude-opus-5-5[1m]', screen: 'ready', connected: true });
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.alreadyRunning, false);
+});
+
+// --- vim mode (Dexter r2 N2) ------------------------------------------------------
+// MEASURED (verify/probe-vim-mode.js): INSERT draws `-- INSERT --` on the footer
+// line under the box; NORMAL draws nothing, which is also how non-vim looks.
+
+const VIM_INSERT = ['  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)'];
+const NO_MARK = ['  ⏵⏵ auto mode on (shift+tab to cycle)'];
+
+test('vimInsertShown sees the INSERT marker only BELOW the live box', () => {
+  assert.strictEqual(vimInsertShown(['h', RULE, '❯ abc', RULE, ...VIM_INSERT]), true);
+  assert.strictEqual(vimInsertShown(['h', RULE, '❯ abc', RULE, ...NO_MARK]), false);
+  // A draft that merely mentions it is not the marker.
+  assert.strictEqual(vimInsertShown(['h', RULE, '❯ -- INSERT --', RULE, ...NO_MARK]), false);
+  assert.strictEqual(vimInsertShown(null), false);
+});
+
+test('with vim known on, a box without the INSERT marker is NORMAL mode, not ready', () => {
+  assert.strictEqual(inputState(['h', RULE, '❯ abc', RULE, ...NO_MARK], { vim: true }), 'vim-normal');
+  assert.strictEqual(inputState(['h', RULE, '❯ abc', RULE, ...VIM_INSERT], { vim: true }), 'ready');
+});
+
+test('without vim, the same box is ready exactly as before', () => {
+  assert.strictEqual(inputState(['h', RULE, '❯ abc', RULE, ...NO_MARK]), 'ready');
+  assert.strictEqual(inputState(['h', RULE, '❯ abc', RULE, ...NO_MARK], { vim: false }), 'ready');
+});
+
+test('vim NORMAL is planned with an `i` first, so the keys land as text', () => {
+  const p = planSwitch({ kind: 'effort', raw: 'high', current: 'medium', screen: 'vim-normal', connected: true });
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.enterInsert, true);
+  const q = planSwitch({ kind: 'effort', raw: 'high', current: 'medium', screen: 'ready', connected: true });
+  assert.strictEqual(q.enterInsert, false);
+});
+
+// --- read-back before CR (Miguel r2 TOCTOU) ----------------------------------------
+
+test('commandTyped: the live box reads back exactly the command', () => {
+  assert.strictEqual(commandTyped(['h', RULE, '❯ /model sonnet', RULE, ...NO_MARK], '/model sonnet'), true);
+  assert.strictEqual(commandTyped(['h', RULE, '❯\u00a0/model  sonnet ', RULE, ...NO_MARK], '/model sonnet'), true);
+});
+
+test('commandTyped: anything glued on, a dialog, or a second line is refused', () => {
+  assert.strictEqual(commandTyped(['h', RULE, '❯ /model sonnetrefactor the parser', RULE], '/model sonnet'), false);
+  assert.strictEqual(commandTyped(['h', RULE, '❯ x/model sonnet', RULE], '/model sonnet'), false);
+  assert.strictEqual(commandTyped(['h', RULE, '❯ /model sonnet', '  more', RULE], '/model sonnet'), false);
+  assert.strictEqual(commandTyped(['  Select model', '  Esc to cancel'], '/model sonnet'), false);
+  assert.strictEqual(commandTyped(['h', RULE, '❯ /model sonnet', RULE, ...NO_MARK], '/model sonnet', { vim: true }), false);
+  assert.strictEqual(commandTyped(null, '/model sonnet'), false);
+});
+
+// --- menuPlacement (the dropdown was clipped by the header) --------------------------
+
+const VIEW = { width: 1200, height: 800 };
+const chip = (left, top, w = 60, h = 20) => ({ left, top, right: left + w, bottom: top + h });
+
+test('a menu opens just under its chip, left-aligned', () => {
+  assert.deepStrictEqual(menuPlacement(chip(700, 10), { width: 180, height: 200 }, VIEW), { left: 700, top: 32 });
+});
+
+test('a menu near the right edge is pulled back inside the window', () => {
+  const p = menuPlacement(chip(1150, 10), { width: 180, height: 200 }, VIEW);
+  assert.strictEqual(p.left, 1200 - 4 - 180);
+});
+
+test('a menu with no room below opens above its chip', () => {
+  const p = menuPlacement(chip(100, 700), { width: 180, height: 200 }, VIEW);
+  assert.strictEqual(p.top, 700 - 2 - 200);
+});
+
+test('PROPERTY: a menu that fits the window is always placed wholly inside it', () => {
+  let seed = 7;
+  const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let i = 0; i < 2000; i++) {
+    const view = { width: 200 + rnd(1600), height: 150 + rnd(900) };
+    const menu = { width: 20 + rnd(view.width - 28), height: 20 + rnd(view.height - 28) };
+    const a = chip(rnd(view.width), rnd(view.height), 1 + rnd(80), 1 + rnd(30));
+    const p = menuPlacement(a, menu, view);
+    const ctx = JSON.stringify({ view, menu, a, p });
+    assert.ok(p.left >= 4 && p.left + menu.width <= view.width - 4, ctx);
+    assert.ok(p.top >= 4 && p.top + menu.height <= view.height - 4, ctx);
+  }
+});
+
+test('menuPlacement never throws on missing measurements', () => {
+  for (const bad of [[null, null, null], [{}, {}, {}], [chip(1, 1), undefined, VIEW]]) {
+    const p = menuPlacement(...bad);
+    assert.ok(Number.isFinite(p.left) && Number.isFinite(p.top), JSON.stringify(bad));
+  }
 });
