@@ -63,11 +63,19 @@ test('a field the host reads only for SOME tools is not reported missing', () =>
   assert.strictEqual(res.ok, true, JSON.stringify(res.missing));
 });
 
-test('effort.level and permission_mode are required on every event, since every real payload carries them', () => {
+test('permission_mode is required on every event but SessionEnd, which measurably carries none', () => {
   for (const event of Object.keys(CONTRACT)) {
-    const spec = CONTRACT[event];
-    assert.ok(spec.fields['effort.level'], `${event} is missing effort.level from the contract`);
-    assert.ok(spec.fields.permission_mode, `${event} is missing permission_mode from the contract`);
+    const has = Boolean(CONTRACT[event].fields.permission_mode);
+    assert.strictEqual(has, event !== 'SessionEnd', `${event} permission_mode required: ${has}`);
+  }
+});
+
+test('effort.level is required NOWHERE: a model with no effort levels (Haiku) sends none', () => {
+  // FF12 first made it required on every event, from an Opus capture. The
+  // Haiku capture in test/hooks-real-subagent-failure.fixture.jsonl has it on
+  // no event at all; host/hook-session.js reads that as "no effort".
+  for (const event of Object.keys(CONTRACT)) {
+    assert.ok(!CONTRACT[event].fields['effort.level'], `${event} must not require effort.level`);
   }
 });
 

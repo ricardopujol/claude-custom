@@ -20,8 +20,10 @@ const path = require('path');
 const HOST = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
 
 test('the hook bridge reads effort.level and broadcasts it on change', () => {
-  assert.ok(/ev\.payload(?:\s*&&\s*ev\.payload)?\.effort/.test(HOST),
-    'host.js must read ev.payload.effort off the bridge event');
+  // The rules (subagents silent, absent effort is null) live in
+  // host/hook-session.js and are tested there; this pins that host.js uses it.
+  assert.ok(/readSessionHook\(ev\.payload\)/.test(HOST),
+    'host.js must read the bridge event through host/hook-session.js');
   assert.ok(/type:\s*['"]effort['"]/.test(HOST),
     'host.js must broadcast a {type:"effort"} control message');
 });

@@ -130,15 +130,20 @@ const seen = () => (log.match(/\[hook:full\] .*/g) || [])
     launches.map(p => `${p.tool_name}/${p.tool_input.subagent_type}`).join(', ') || 'no agent launch observed');
 
   // FF12 (2026-09-23): effort.level and permission_mode are hooks.md "common
-  // input fields" -- MEASURED present on every hooked event, not derived from
-  // any fixture. Pinned by NAME here, not folded into the generic "carries
+  // input fields". Pinned by NAME here, not folded into the generic "carries
   // every field" check above, so a rename of either shows up as its own line
   // rather than a combined MISSING list someone has to go parse.
+  // effort.level is checked on MAIN-session payloads only, and only because
+  // this probe runs the default model: on Haiku (so also a Haiku subagent) no
+  // event carries it -- see host/hook-session.js. SessionEnd carries neither.
   for (const [event, list] of byEvent) {
-    if (!CONTRACT[event]) continue;
-    check(`${event} carries effort.level on every observed payload`,
-      list.every(p => p.effort && typeof p.effort.level === 'string'),
-      list.map(p => p.effort && p.effort.level).join(', ') || 'no effort field observed');
+    if (!CONTRACT[event] || event === 'SessionEnd') continue;
+    const main = list.filter(p => !p.agent_id);
+    if (main.length) {
+      check(`${event} carries effort.level on every main-session payload`,
+        main.every(p => p.effort && typeof p.effort.level === 'string'),
+        main.map(p => p.effort && p.effort.level).join(', ') || 'no effort field observed');
+    }
     check(`${event} carries permission_mode on every observed payload`,
       list.every(p => typeof p.permission_mode === 'string'),
       list.map(p => p.permission_mode).join(', ') || 'no permission_mode field observed');

@@ -21,17 +21,18 @@
 // Agent; older versions called it Task. This is the exact field that moved.
 const AGENT_TOOLS = ['Agent', 'Task'];
 
-// hooks.md's "common input fields" -- present on EVERY hooked event, not just
-// some of them, so these two are spread into every entry below rather than
-// listed once and hoped for. FF12 (2026-09-23): `effort.level` is the truth
-// source the top bar's pending /effort switch resolves against; permission_mode
-// is read only as a HANDSHAKE fallback (see host.js) -- the TUI scrape in
+// hooks.md's "common input fields". permission_mode is present on every
+// hooked event but SessionEnd (measured 2026-09-23 and 2026-09-25), so it is
+// spread into every entry below rather than listed once and hoped for. It is
+// read only as a HANDSHAKE fallback (see host.js) -- the TUI scrape in
 // host/mode.js remains authoritative once it has drawn anything, by design.
+//
+// NOT required, though read: `effort.level`, FF12's truth source for a pending
+// /effort switch. It is ABSENT on every event when the model has no effort
+// levels -- measured on `--model haiku` (test/hooks-real-subagent-failure
+// .fixture.jsonl) -- and host/hook-session.js reads that absence as "no effort",
+// not as a missing field.
 const COMMON_FIELDS = {
-  'effort.level': {
-    used: 'host.js -> tracks lastEffort and broadcasts {type:"effort"} on '
-        + 'change; app/top-bar-display.js resolves a pending /effort switch against it',
-  },
   permission_mode: {
     used: 'host.js -> hello handshake fallback for the mode badge, before the '
         + 'TUI has drawn a status line for host/mode.js to scrape',
@@ -78,6 +79,7 @@ const CONTRACT = {
       tool_name: { used: 'processes.js label fallback + mood-machine.js attribution' },
       tool_use_id: { used: 'processes.js, to close the running entry this failure ends' },
       is_interrupt: { used: 'mood-machine.js: an Esc interrupt is not the agent failing' },
+      ...COMMON_FIELDS,
     },
     // agent_id / agent_type: read by mood-machine.js to credit the failing
     // subagent; ABSENT on a main-session call, so not required here.
@@ -100,7 +102,9 @@ const CONTRACT = {
     fields: { ...COMMON_FIELDS },   // otherwise: the turn ended, which is the whole message
   },
   SessionEnd: {
-    fields: {},   // the session is over; processes.js clears everything
+    // The session is over; processes.js clears everything. No COMMON_FIELDS:
+    // measured, it carries no permission_mode.
+    fields: {},
   },
   Notification: {
     fields: {

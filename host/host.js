@@ -41,6 +41,7 @@ const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
+const { readSessionHook } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { validResizeDims, handleFrame } = require('./control');
@@ -786,20 +787,17 @@ if (helperExists) {
         broadcastControl({ type: 'cooldowns', cooldowns: cooldowns.list() });
       }
     }
-    // `permission_mode` and `effort.level` are common to every hook payload
-    // (hooks.md). permission_mode is a handshake fallback only -- see its
-    // declaration above. effort IS broadcast, gated on a change, the same
-    // shape as every other polled/pushed value in this file.
-    if (ev.payload && typeof ev.payload.permission_mode === 'string') {
-      lastHookPermissionMode = ev.payload.permission_mode;
-    }
-    if (ev.payload && ev.payload.effort && typeof ev.payload.effort.level === 'string') {
-      const level = ev.payload.effort.level;
-      if (level !== lastEffort) {
-        lastEffort = level;
-        console.log('[host] effort         :', lastEffort);
-        broadcastControl({ type: 'effort', level: lastEffort });
-      }
+    // Main-session permission mode and effort, read by host/hook-session.js:
+    // subagent payloads and SessionEnd say nothing (undefined), and a missing
+    // effort.level is ABSENT (null) -- Haiku has none. permission_mode is a
+    // handshake fallback only -- see its declaration below. effort IS
+    // broadcast, gated on a change, including a change to absent.
+    const said = readSessionHook(ev.payload);
+    if (said.permissionMode !== undefined) lastHookPermissionMode = said.permissionMode;
+    if (said.effort !== undefined && said.effort !== lastEffort) {
+      lastEffort = said.effort;
+      console.log('[host] effort         :', lastEffort);
+      broadcastControl({ type: 'effort', level: lastEffort });
     }
     // Logged because the roster silently showed nothing when agents ran, and
     // there was no way to tell whether hooks were arriving at all.
@@ -1076,19 +1074,20 @@ function refreshPermissionMode() {
   }
 }
 
-// `permission_mode` also arrives on every hook payload (hooks.md "common
-// input fields") -- kept only as a HANDSHAKE fallback for the window that
-// attaches before the TUI has drawn its first status line, when the scrape
-// above is still null. The scrape stays authoritative once it has anything:
+// `permission_mode` also arrives on every hook payload but SessionEnd, mapped
+// onto a MODES key by host/hook-session.js -- kept only as a HANDSHAKE
+// fallback for the window that attaches before the TUI has drawn its first
+// status line, when the scrape above is still null. The scrape stays authoritative once it has anything:
 // FF12's brief is explicit that this must not replace it.
 let lastHookPermissionMode = null;
 
-// Effort is session-scoped (`/effort <level>`, never persisted) and, like
-// `permission_mode`, arrives on every hook payload as `effort.level`. This is
-// the truth source FF12's top-bar picker resolves a pending `/effort` switch
-// against -- see app/top-bar-display.js's pendingResolver. `null` until the
-// first hook event carries it, which the top bar renders as "—", never a
-// guessed default.
+// Effort is session-scoped (`/effort <level>`, never persisted) and arrives
+// on main-session hook payloads as `effort.level` -- but only for a model
+// that HAS effort levels: on Haiku it is absent from every event (measured).
+// This is the truth source FF12's top-bar picker resolves a pending `/effort`
+// switch against -- see app/top-bar-display.js's pendingResolver. `null`
+// until a hook event carries it, and again whenever one stops carrying it;
+// the top bar renders that as "—", never a guessed default.
 let lastEffort = null;
 
 // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
