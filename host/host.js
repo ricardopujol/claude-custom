@@ -740,10 +740,22 @@ if (helperExists) {
     }
     if (ev.event === 'SubagentStop') {
       // The transcript is on disk by the time this fires, so its tokens and
-      // timestamps are already there to read.
+      // timestamps are already there to read. Refresh both the agent stats panel
+      // AND the token count — before this change only agentStats was refreshed,
+      // so the session token display lagged up to 5 seconds after each agent
+      // finished (the timer eventually caught it, but the agents panel updated
+      // instantly while the token headline stayed stale).
       refreshAgentStats()
         .then((stats) => broadcastControl({ type: 'agentStats', stats }))
         .catch(() => { /* the next finish will carry it */ });
+      // The milestone rides along, or the headline crosses a rung while the
+      // flourish waits for the next tick. announcer.see dedupes the timer's call.
+      refreshUsage()
+        .then((usage) => {
+          broadcastControl({ type: 'usage', usage });
+          checkMilestone(usage);
+        })
+        .catch(() => { /* the timer will carry it */ });
       // Same reasoning: the subagent's own transcript, including its true
       // model, is on disk by the time this fires.
       sessionModels.refresh().catch(() => { /* the next finish will carry it */ });
