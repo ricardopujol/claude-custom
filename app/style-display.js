@@ -33,6 +33,8 @@ const HEX_RE = /^#[0-9a-f]{6}$/i;
 // black for any invalid value, which would read as a real choice.
 const FALLBACK_BG = '#11131a';
 const FALLBACK_TEXT = '#c7cede';
+const FALLBACK_ACCENT = '#d08c4a';
+const FALLBACK_DIM = '#6d7689';
 
 // Strict, never coercing: an absent fraction is "unknown", not 0%.
 function toPercent(v) {
@@ -56,6 +58,10 @@ function coloursSectionView(state) {
     known: !!state && (typeof s.baseBg === 'string' || typeof s.appColor === 'string'),
     app: colourView(s.appColor, s.baseBg, FALLBACK_BG),
     text: colourView(s.textColor, s.baseText, FALLBACK_TEXT),
+    // Unset, these show the colour actually painted: the theme's accent, and
+    // the secondary text derived from Text and App.
+    accent: colourView(s.accentColor, s.baseAccent, FALLBACK_ACCENT),
+    secondary: colourView(s.secondaryColor, s.baseDim, FALLBACK_DIM),
     error: errorOf(state),
   };
 }
@@ -165,7 +171,9 @@ function reduceStyle(prev, msg) {
     // exactly what the merged theme's chrome holds.
     colours: {
       appColor: look.appColor, textColor: look.textColor,
-      baseBg: chrome.bg, baseText: chrome.text, error: keep('colours'),
+      accentColor: look.accentColor, secondaryColor: look.secondaryColor,
+      baseBg: chrome.bg, baseText: chrome.text, baseAccent: chrome.accent, baseDim: chrome.dim,
+      error: keep('colours'),
     },
     background: {
       source: style.source || 'generated', setAt: style.setAt || null,

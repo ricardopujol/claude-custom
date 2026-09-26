@@ -12,6 +12,8 @@
      - a dark red app colour (header, sidebar, terminal background) instead of
        the default blue, with visible panel/border edges
      - pale yellow UI text (header, sidebar), while the CLI text keeps its own
+     - a green accent (the active tab, the sliders) and tan secondary text (the
+       Style tab's descriptions and labels), not the theme's blue and gray
      - the generated test image behind the terminal, darkened toward the red
      - the Style tab open, showing Colours / Background image / Inactive windows
 
@@ -75,7 +77,8 @@ const lookDir = path.join(project, '.claude-custom');
 fs.mkdirSync(lookDir);
 fs.writeFileSync(path.join(lookDir, 'background.png'), gradientPng(96, 64));
 fs.writeFileSync(path.join(lookDir, 'look.json'), JSON.stringify({
-  version: 1, appColor: '#3a1418', textColor: '#f3e3a0', darkness: 0.6,
+  version: 1, appColor: '#3a1418', textColor: '#f3e3a0', accentColor: '#5fd07a', secondaryColor: '#c8a878',
+  darkness: 0.6,
   background: { file: 'background.png', setAt: new Date().toISOString() },
 }, null, 2));
 console.log('project:', project);

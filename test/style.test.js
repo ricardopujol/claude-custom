@@ -145,6 +145,18 @@ test('setLook merges only the fields it is given; null resets a field', () => {
   assert.strictEqual(look.appColor, '#102030');
 });
 
+test('setLook stores and resets the accent and secondary text colours', () => {
+  const { cwd } = project();
+  assert.strictEqual(setLook({ cwd, patch: { accentColor: '#E0A030', secondaryColor: '#a09070' } }).ok, true);
+  let look = readLook(cwd);
+  assert.strictEqual(look.accentColor, '#e0a030');
+  assert.strictEqual(look.secondaryColor, '#a09070');
+  setLook({ cwd, patch: { accentColor: null } });
+  look = readLook(cwd);
+  assert.strictEqual(look.accentColor, null);
+  assert.strictEqual(look.secondaryColor, '#a09070');
+});
+
 test('setLook cannot be used to point the background at an arbitrary file', () => {
   const { cwd } = project();
   const r = setLook({ cwd, patch: { background: { file: 'background.png' }, appColor: '#000000' } });

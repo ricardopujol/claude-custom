@@ -32,6 +32,8 @@ const DEFAULT_LOOK = Object.freeze({
   version: 1,
   appColor: null,
   textColor: null,
+  accentColor: null,
+  secondaryColor: null,
   darkness: 0.5,
   background: null,
 });
@@ -91,6 +93,8 @@ function sanitizeLook(raw) {
     version: 1,
     appColor: normalHex(raw.appColor),
     textColor: normalHex(raw.textColor),
+    accentColor: normalHex(raw.accentColor),
+    secondaryColor: normalHex(raw.secondaryColor),
     darkness: sanitizeDarkness(raw.darkness),
     background: sanitizeBackground(raw.background),
   };
@@ -145,13 +149,16 @@ function ensureContrast(color, against) {
 
 /**
  * The chrome colours for this look, over the registry theme's `chrome`.
- * Keys it does not own (accent, ok, bad) pass through untouched.
+ * Keys it does not own (ok, bad) pass through untouched, and so does an accent
+ * the person has not set.
  */
 function derivePalette(look, baseChrome) {
   const base = { ...(baseChrome || {}) };
   const appColor = normalHex(look && look.appColor);
   const textColor = normalHex(look && look.textColor);
-  if (!appColor && !textColor) return base;
+  const accentColor = normalHex(look && look.accentColor);
+  const secondaryColor = normalHex(look && look.secondaryColor);
+  if (!appColor && !textColor && !accentColor && !secondaryColor) return base;
 
   const out = { ...base };
   if (appColor) {
@@ -161,12 +168,17 @@ function derivePalette(look, baseChrome) {
     out.border = mix(appColor, toward, BORDER_MIX);
   }
   if (textColor) out.text = textColor;
-  if (parseHex(out.text) && parseHex(out.bg)) {
+  if ((appColor || textColor) && parseHex(out.text) && parseHex(out.bg)) {
     out.text = ensureContrast(out.text, out.bg);
     // Dim is re-derived whenever either end moved: the base theme's dim was
     // tuned against the base background, and against a new one it can vanish.
     out.dim = mix(out.text, out.bg, DIM_MIX);
   }
+  // A chosen accent or secondary text colour gets the same guard as Text: the
+  // active tab's label and the secondary text must never vanish into the bg.
+  const readable = (hex) => (parseHex(out.bg) ? ensureContrast(hex, out.bg) : hex);
+  if (accentColor) out.accent = readable(accentColor);
+  if (secondaryColor) out.dim = readable(secondaryColor);
   return out;
 }
 

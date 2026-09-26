@@ -135,6 +135,30 @@ test('a colour input always gets a valid #rrggbb, even before anything is known'
   assert.strictEqual(c.view.known, false);
 });
 
+test('accent and secondary text show the effective colour until set, then the set one', () => {
+  const unset = section({ colours: { baseBg: '#0b1018', baseAccent: '#4fa3d9', baseDim: '#6b7d94' } }, 'colours');
+  assert.deepStrictEqual(unset.view.accent, { value: '#4fa3d9', isSet: false });
+  assert.deepStrictEqual(unset.view.secondary, { value: '#6b7d94', isSet: false });
+  const set = section({ colours: { baseBg: '#0b1018', accentColor: '#e0a030', secondaryColor: '#a09070' } }, 'colours');
+  assert.deepStrictEqual(set.view.accent, { value: '#e0a030', isSet: true });
+  assert.deepStrictEqual(set.view.secondary, { value: '#a09070', isSet: true });
+  const none = section({}, 'colours');
+  assert.match(none.view.accent.value, /^#[0-9a-f]{6}$/);
+  assert.match(none.view.secondary.value, /^#[0-9a-f]{6}$/);
+});
+
+test('reduceStyle carries the accent and secondary colours and their effective values', () => {
+  const s = reduceStyle(undefined, {
+    type: 'style', ask: 'colours', source: 'generated', setAt: null,
+    look: { appColor: null, textColor: null, accentColor: '#e0a030', secondaryColor: null, darkness: 0.5 },
+    theme: { chrome: { bg: '#0b1018', text: '#c3d2e4', accent: '#e0a030', dim: '#6b7d94' } },
+  });
+  assert.strictEqual(s.colours.accentColor, '#e0a030');
+  assert.strictEqual(s.colours.secondaryColor, null);
+  assert.strictEqual(s.colours.baseAccent, '#e0a030');
+  assert.strictEqual(s.colours.baseDim, '#6b7d94');
+});
+
 test('a colours error is surfaced, and an empty one is not', () => {
   assert.strictEqual(section({ colours: { error: 'could not save' } }, 'colours').view.error, 'could not save');
   assert.strictEqual(section({ colours: { error: '' } }, 'colours').view.error, null);

@@ -607,7 +607,9 @@
       border: 1px solid var(--border); border-radius: 4px; background: none;
     }
     .style-hex {
-      width: 70px; min-width: 0; font: 11px Consolas, monospace; padding: 3px 5px;
+      /* Never shrinks: a narrowed sidebar (or its scrollbar) cut "#3a1418" to
+         "#3a141". The Reset button gives up width instead. */
+      width: calc(7ch + 14px); flex: none; font: 11px Consolas, monospace; padding: 3px 5px;
       background: var(--panel); color: var(--text);
       border: 1px solid var(--border); border-radius: 4px;
     }

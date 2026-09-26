@@ -225,6 +225,40 @@ test('property F4 (+Miguel #4): UI text reads against the bg for any app/text pa
   }));
 });
 
+// --- accent and secondary text (Ricardo's manual test: tabs, sliders and the gray
+// secondary text could not be changed) ---------------------------------------------
+
+test('sanitizeLook keeps accent and secondary colours, lowercased, and drops invalid ones', () => {
+  const look = sanitizeLook({ accentColor: '#E0A030', secondaryColor: 'gray' });
+  assert.strictEqual(look.accentColor, '#e0a030');
+  assert.strictEqual(look.secondaryColor, null);
+  assert.strictEqual(DEFAULT_LOOK.accentColor, null);
+  assert.strictEqual(DEFAULT_LOOK.secondaryColor, null);
+});
+
+test('derivePalette uses accentColor for accent and secondaryColor for dim', () => {
+  const p = derivePalette({ ...DEFAULT_LOOK, accentColor: '#e0a030', secondaryColor: '#a09070' }, BASE_CHROME);
+  assert.strictEqual(p.accent, '#e0a030');
+  assert.strictEqual(p.dim, '#a09070');
+  assert.strictEqual(p.bg, BASE_CHROME.bg, 'the app colour is not touched');
+});
+
+test('an unset accent keeps the theme accent; an unset secondary keeps the derived dim', () => {
+  const p = derivePalette({ ...DEFAULT_LOOK, appColor: '#000000', textColor: '#ffffff' }, BASE_CHROME);
+  assert.strictEqual(p.accent, BASE_CHROME.accent);
+  assert.notStrictEqual(p.dim, BASE_CHROME.dim);
+});
+
+test('property: a set accent or secondary colour always reads against the bg', () => {
+  fc.assert(fc.property(fc.option(hexArb, { nil: null }), hexArb, hexArb, (appColor, accentColor, secondaryColor) => {
+    const p = derivePalette({ ...DEFAULT_LOOK, appColor, accentColor, secondaryColor }, BASE_CHROME);
+    for (const k of ['accent', 'dim']) {
+      assert.match(p[k], HEX, k);
+      assert.ok(contrastRatio(p[k], p.bg) >= 4.5, `${k} ${p[k]} on ${p.bg}`);
+    }
+  }));
+});
+
 test('a colour that already reads is left exactly as chosen', () => {
   const p = derivePalette({ ...DEFAULT_LOOK, appColor: '#101010', textColor: '#f0f0f0' }, BASE_CHROME);
   assert.strictEqual(p.text, '#f0f0f0');

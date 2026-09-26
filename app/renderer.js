@@ -1833,6 +1833,9 @@ function renderStyleSection(section) {
       `<div class="style-current">This project only. Every window opened in this folder uses it.</div>` +
       colourRow('App', v.app, 'id="style-app"', 'id="style-app-hex"', 'id="style-app-reset"') +
       colourRow('Text', v.text, 'id="style-text"', 'id="style-text-hex"', 'id="style-text-reset"') +
+      colourRow('Accent', v.accent, 'id="style-accent"', 'id="style-accent-hex"', 'id="style-accent-reset"') +
+      colourRow('Secondary text', v.secondary, 'id="style-secondary"', 'id="style-secondary-hex"',
+        'id="style-secondary-reset"') +
       (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
       `</section>`
     );
@@ -1935,6 +1938,12 @@ function bindStyleSections() {
   bindColour(document.getElementById('style-text'), document.getElementById('style-text-hex'),
     document.getElementById('style-text-reset'), 'textColor',
     (hex) => document.documentElement.style.setProperty('--text', hex));
+  bindColour(document.getElementById('style-accent'), document.getElementById('style-accent-hex'),
+    document.getElementById('style-accent-reset'), 'accentColor',
+    (hex) => document.documentElement.style.setProperty('--accent', hex));
+  bindColour(document.getElementById('style-secondary'), document.getElementById('style-secondary-hex'),
+    document.getElementById('style-secondary-reset'), 'secondaryColor',
+    (hex) => document.documentElement.style.setProperty('--dim', hex));
 
   const dark = document.getElementById('style-dark');
   if (dark) {

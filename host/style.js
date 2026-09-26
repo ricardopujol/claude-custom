@@ -44,7 +44,7 @@ const GITIGNORE_BODY =
 // The fields a person sets through the Style tab. `background` is absent on
 // purpose: only setBackground/resetBackground may change it, so a control
 // message can never point the look at a file the harness did not copy.
-const PATCHABLE = Object.freeze(['appColor', 'textColor', 'darkness']);
+const PATCHABLE = Object.freeze(['appColor', 'textColor', 'accentColor', 'secondaryColor', 'darkness']);
 
 function lookDir(cwd) {
   return path.join(String(cwd), LOOK_DIR_NAME);
