@@ -729,6 +729,25 @@ test('readSessionModel: a file of exactly TAIL_MAX_BYTES + 1 keeps its first lin
   assert.strictEqual(r.session.model, 'claude-opus-5');
 });
 
+test('readSessionModel: a model-free file of exactly TAIL_MAX_BYTES + 1 was read WHOLE, so it is not unread (r4)', async () => {
+  // The read starts one byte early, so at this size it begins at byte 0 and
+  // sees every byte. Judged by the window alone (window >= size) it looked
+  // capped and counted as unread -- errors: 1 for a file that was read in full,
+  // which blocks a legitimate eviction (Dexter, PR #34 r4, Low).
+  const { TAIL_MAX_BYTES } = require('../host/session-model');
+  const { projectsDir, projectDir, dir } = project();
+  const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'x' } });
+  const user = { type: 'user', message: { role: 'user', content: '' } };
+  user.message.content = 'y'.repeat(TAIL_MAX_BYTES + 1 - first.length - 2 - JSON.stringify(user).length);
+  const text = first + NL + JSON.stringify(user) + NL;
+  assert.strictEqual(Buffer.byteLength(text), TAIL_MAX_BYTES + 1);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), text);
+
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.strictEqual(r.session.model, null);
+  assert.strictEqual(r.errors, 0, 'a file read in full is not unread');
+});
+
 // --- round 2: Dexter r2 #1 / Miguel r2 G1 -------------------------------------
 
 test('mergeSessionModel: a FAILED read does not evict an unresolved row (r2 #1, wipe)', () => {
