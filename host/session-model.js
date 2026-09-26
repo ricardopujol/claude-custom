@@ -200,7 +200,10 @@ async function tailEntries(file, openFile, { until = () => true } = {}) {
     for (;;) {
       const entries = await readWindow(fh, stat.size, window);
       // Stop at what the caller wanted, at the start of the file, or at the cap.
-      if (until(entries) || window >= stat.size) return { entries, gone: false };
+      // `+ 1` because readWindow reads one byte before the window: at
+      // window + 1 === size that read began at byte 0 and saw the whole file
+      // (Dexter, PR #34 r4).
+      if (until(entries) || window + 1 >= stat.size) return { entries, gone: false };
       // Stopped by the cap with what was wanted still unfound: the rest of the
       // file was never read, so this is UNREAD, not absent. `capped` lets the
       // caller count it -- otherwise a read that skipped a run looks clean

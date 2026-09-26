@@ -729,6 +729,55 @@ test('readSessionModel: a file of exactly TAIL_MAX_BYTES + 1 keeps its first lin
   assert.strictEqual(r.session.model, 'claude-opus-5');
 });
 
+test('readSessionModel: a model-free file of exactly TAIL_MAX_BYTES + 1 was read WHOLE, so it is not unread (r4)', async () => {
+  // The read starts one byte early, so at this size it begins at byte 0 and
+  // sees every byte. Judged by the window alone (window >= size) it looked
+  // capped and counted as unread -- errors: 1 for a file that was read in full,
+  // which blocks a legitimate eviction (Dexter, PR #34 r4, Low).
+  const { TAIL_MAX_BYTES } = require('../host/session-model');
+  const { projectsDir, projectDir, dir } = project();
+  const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'x' } });
+  const user = { type: 'user', message: { role: 'user', content: '' } };
+  user.message.content = 'y'.repeat(TAIL_MAX_BYTES + 1 - first.length - 2 - JSON.stringify(user).length);
+  const text = first + NL + JSON.stringify(user) + NL;
+  assert.strictEqual(Buffer.byteLength(text), TAIL_MAX_BYTES + 1);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), text);
+
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.strictEqual(r.session.model, null);
+  assert.strictEqual(r.errors, 0, 'a file read in full is not unread');
+});
+
+test('readSessionModel: a model-free read counts as clean EXACTLY when it began at byte 0 (#50, Dexter)', async () => {
+  // tailEntries decides "the whole file was read" with its own formula
+  // (window + 1 >= size) rather than asking readWindow where it started. The
+  // two agree today; this pins them together at the pair of sizes where they
+  // meet, so changing either alone -- e.g. readWindow reading from `start`
+  // instead of `start - 1` -- turns a skipped byte 0 into a clean read.
+  const { TAIL_MAX_BYTES } = require('../host/session-model');
+  for (const size of [TAIL_MAX_BYTES + 1, TAIL_MAX_BYTES + 2]) {
+    const { projectsDir, projectDir, dir } = project();
+    const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'x' } });
+    const user = { type: 'user', message: { role: 'user', content: '' } };
+    user.message.content = 'y'.repeat(size - first.length - 2 - JSON.stringify(user).length);
+    const text = first + NL + JSON.stringify(user) + NL;
+    assert.strictEqual(Buffer.byteLength(text), size);
+    fs.writeFileSync(path.join(dir, 's1.jsonl'), text);
+
+    let lowest = Infinity;
+    const openFile = async (f, flags) => {
+      const fh = await fs.promises.open(f, flags);
+      const read = fh.read.bind(fh);
+      fh.read = (...a) => { lowest = Math.min(lowest, a[3]); return read(...a); };
+      return fh;
+    };
+    const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1', openFile });
+    assert.strictEqual(r.errors === 0, lowest === 0,
+      `size ${size}: clean=${r.errors === 0} but the lowest byte read was ${lowest}`);
+    assert.strictEqual(r.errors, size === TAIL_MAX_BYTES + 1 ? 0 : 1, `size ${size}`);
+  }
+});
+
 // --- round 2: Dexter r2 #1 / Miguel r2 G1 -------------------------------------
 
 test('mergeSessionModel: a FAILED read does not evict an unresolved row (r2 #1, wipe)', () => {
