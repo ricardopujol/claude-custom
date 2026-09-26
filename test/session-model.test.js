@@ -587,8 +587,11 @@ const { TAIL_BYTES } = require('../host/session-model');
 
 // An assistant line padded so its JSON is EXACTLY `len` bytes (ASCII only).
 function paddedAssistant(model, at, len) {
-  const base = JSON.stringify({ ...assistant(model, at), pad: '' });
-  const obj = { ...assistant(model, at), pad: 'x'.repeat(len - base.length) };
+  // ONE assistant() call, measured and then padded. assistant() mints a random
+  // message id whose length varies, so measuring one object and padding a
+  // second came out a byte short about half the time.
+  const obj = { ...assistant(model, at), pad: '' };
+  obj.pad = 'x'.repeat(len - JSON.stringify(obj).length);
   assert.strictEqual(JSON.stringify(obj).length, len);
   return obj;
 }
@@ -608,15 +611,28 @@ test('readSessionModel: a last record bigger than the tail window does not lose 
 test('readSessionModel: a window that starts EXACTLY on a line boundary keeps that line', async () => {
   // The last line plus its newline is exactly TAIL_BYTES, so the byte before the
   // window is '\n' and the window's first line is complete. Dropping it as a
-  // "partial fragment" loses the newest model -- and merely widening would then
-  // find the OLDER one, so this pins the boundary itself, not just widening.
+  // "partial fragment" empties the window.
+  //
+  // WHAT IS OBSERVABLE, corrected after hand-mutation: widening then re-reads
+  // from further back and still finds the newest model, so the ANSWER is right
+  // either way -- a first version of this test asserted only the answer and
+  // passed with the fix reverted. The defect that remains is a wasted second
+  // read of every such file, so that is what is asserted: one read, not two.
   const { projectsDir, projectDir, dir } = project();
   writeSession(dir, 's1', [
     assistant('claude-opus-5', '2026-01-01T00:00:00.000Z'),
     paddedAssistant('claude-sonnet-5', '2026-01-01T00:01:00.000Z', TAIL_BYTES - 1),
   ]);
-  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  let reads = 0;
+  const openFile = async (f, flags) => {
+    const fh = await fs.promises.open(f, flags);
+    const read = fh.read.bind(fh);
+    fh.read = (...a) => { reads++; return read(...a); };
+    return fh;
+  };
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1', openFile });
   assert.strictEqual(r.session.model, 'claude-sonnet-5');
+  assert.strictEqual(reads, 1, 'the boundary line is kept by the FIRST window, not recovered by widening');
 });
 
 test('readSessionModel: the widening STOPS at the cap -- beyond it the model is unread, not guessed', async () => {
