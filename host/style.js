@@ -86,6 +86,64 @@ function planBackgroundChoice({ source, cwd, size } = {}) {
   return { ok: true, dest: path.join(lookDir(cwd), `background.${ext}`), ext };
 }
 
+/**
+ * Where the look folder stands, before anything reads or writes through it:
+ *
+ *   'absent'   no folder yet -- a write may create it
+ *   'ok'       a real directory inside the project
+ *   'foreign'  a symlink or junction (or not a directory at all). A cloned
+ *              repo can ship `.claude-custom` pointing anywhere; following it
+ *              would write look.json and unlink background.* OUTSIDE the
+ *              project (Dexter F7), so it is neither read nor written.
+ */
+function lookDirState(cwd, fsImpl) {
+  let st;
+  try {
+    st = fsImpl.lstatSync(lookDir(cwd));
+  } catch (err) {
+    return err && err.code === 'ENOENT' ? 'absent' : 'foreign';
+  }
+  return st.isSymbolicLink() || !st.isDirectory() ? 'foreign' : 'ok';
+}
+
+/**
+ * The look plus WHY it is what it is -- the distinction store.js draws
+ * between "missing" and "corrupt" (Dexter F6). Only a missing or readable
+ * look.json may be written over; a corrupt one is the person's data in a
+ * state this code does not understand, and replacing it with the default
+ * on the next slider move would lose it.
+ */
+function readLookState(cwd, fsImpl) {
+  const dirState = lookDirState(cwd, fsImpl);
+  if (dirState === 'foreign') return { status: 'foreign', look: sanitizeLook(null) };
+  if (dirState === 'absent') return { status: 'missing', look: sanitizeLook(null) };
+  let text;
+  try {
+    text = fsImpl.readFileSync(path.join(lookDir(cwd), LOOK_FILE), 'utf8');
+  } catch (err) {
+    return { status: err && err.code === 'ENOENT' ? 'missing' : 'corrupt', look: sanitizeLook(null) };
+  }
+  let raw;
+  try { raw = JSON.parse(text); } catch { return { status: 'corrupt', look: sanitizeLook(null) }; }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { status: 'corrupt', look: sanitizeLook(null) };
+  const look = sanitizeLook(raw);
+  if (look.background && !fsImpl.existsSync(path.join(lookDir(cwd), look.background.file))) {
+    look.background = null;
+  }
+  return { status: 'ok', look };
+}
+
+// The reason a write is refused, or null when it may go ahead.
+function refusalFor(state, cwd) {
+  if (state.status === 'foreign') {
+    return `${LOOK_DIR_NAME} is a link to somewhere else -- not writing through it`;
+  }
+  if (state.status === 'corrupt') {
+    return `look.json can't be read -- fix or delete ${path.join(lookDir(cwd), LOOK_FILE)}`;
+  }
+  return null;
+}
+
 function ensureLookDir(cwd, fsImpl) {
   const dir = lookDir(cwd);
   fsImpl.mkdirSync(dir, { recursive: true });
@@ -100,19 +158,12 @@ function ensureLookDir(cwd, fsImpl) {
   return dir;
 }
 
-/** The project's look, sanitized. A background whose copy is gone is dropped. */
+/**
+ * The project's look, sanitized -- the default for a missing, corrupt or
+ * foreign folder. A background whose copy is gone is dropped.
+ */
 function readLook(cwd, { fsImpl = fs } = {}) {
-  let raw;
-  try {
-    raw = JSON.parse(fsImpl.readFileSync(path.join(lookDir(cwd), LOOK_FILE), 'utf8'));
-  } catch {
-    return sanitizeLook(null);
-  }
-  const look = sanitizeLook(raw);
-  if (look.background && !fsImpl.existsSync(path.join(lookDir(cwd), look.background.file))) {
-    look.background = null;
-  }
-  return look;
+  return readLookState(cwd, fsImpl).look;
 }
 
 /** Sanitize and write atomically. Returns what was written. */
@@ -131,6 +182,20 @@ function writeLook(cwd, look, { fsImpl = fs } = {}) {
   return clean;
 }
 
+const HEX_RE = /^#[0-9a-f]{6}$/i;
+
+// Why this one patched value is refused, or null. `null` itself is valid: it
+// means "back to the registry theme". Anything else malformed is REFUSED
+// rather than sanitized to null, which would silently wipe a stored colour
+// and report success (Dexter F5).
+function patchValueRefusal(key, value) {
+  if (value === null) return null;
+  if (key === 'darkness') {
+    return typeof value === 'number' && Number.isFinite(value) ? null : 'darkness must be a number';
+  }
+  return typeof value === 'string' && HEX_RE.test(value) ? null : `"${String(value)}" is not a colour -- use #rrggbb`;
+}
+
 /**
  * Merge a partial look from the Style tab. Only PATCHABLE keys are read; a key
  * present with `null` resets that field to the registry theme.
@@ -140,10 +205,19 @@ function setLook({ cwd, patch, fsImpl = fs } = {}) {
     return { ok: false, reason: 'nothing to change' };
   }
   if (typeof cwd !== 'string' || !cwd.trim()) return { ok: false, reason: 'no project is open' };
-  const next = { ...readLook(cwd, { fsImpl }) };
-  for (const key of PATCHABLE) {
-    if (Object.prototype.hasOwnProperty.call(patch, key)) next[key] = patch[key];
+  const keys = PATCHABLE.filter((key) => Object.prototype.hasOwnProperty.call(patch, key));
+  // Nothing this code sets: refused BEFORE any folder is created, so a stray
+  // message does not leave a .claude-custom/ in a project that never had a look.
+  if (!keys.length) return { ok: false, reason: 'nothing to change' };
+  for (const key of keys) {
+    const reason = patchValueRefusal(key, patch[key]);
+    if (reason) return { ok: false, reason };
   }
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) return { ok: false, reason: refused };
+  const next = { ...state.look };
+  for (const key of keys) next[key] = patch[key];
   try {
     return { ok: true, look: writeLook(cwd, next, { fsImpl }) };
   } catch (err) {
@@ -151,10 +225,19 @@ function setLook({ cwd, patch, fsImpl = fs } = {}) {
   }
 }
 
+function tryUnlink(fsImpl, file) {
+  try { fsImpl.unlinkSync(file); } catch { /* best effort */ }
+}
+
 /**
- * Copy `source` in as the project's background: stat, decide, copy
- * temp-then-rename, drop any older copy in another format, then record it --
- * in that order, so a refused or failed choice never touches look.json.
+ * Copy `source` in as the project's background.
+ *
+ * ORDER IS THE POINT (Dexter F1, Miguel #1). Until look.json names the new
+ * copy, the old background must still be whole: it is set aside as a .bak
+ * rather than overwritten, and every other older copy is left alone. Only
+ * once look.json is written are the .bak and the older copies removed. If
+ * the look.json write fails, the new copy is removed and the .bak restored,
+ * so the result is either "new background, recorded" or "exactly as before".
  */
 function setBackground({ source, cwd, fsImpl = fs } = {}) {
   let stat;
@@ -168,37 +251,58 @@ function setBackground({ source, cwd, fsImpl = fs } = {}) {
   const plan = planBackgroundChoice({ source, cwd, size: stat.size });
   if (!plan.ok) return plan;
 
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) return { ok: false, reason: refused };
+
+  const rename = { rename: fsImpl.renameSync };
   const temp = `${plan.dest}.tmp${process.pid}`;
+  const bak = `${plan.dest}.bak${process.pid}`;
+  let setAside = false;
   try {
     ensureLookDir(cwd, fsImpl);
     fsImpl.copyFileSync(source, temp);
-    renameWithRetry(temp, plan.dest, { rename: fsImpl.renameSync });
+    if (fsImpl.existsSync(plan.dest)) {
+      renameWithRetry(plan.dest, bak, rename);
+      setAside = true;
+    }
+    renameWithRetry(temp, plan.dest, rename);
   } catch (err) {
-    try { fsImpl.unlinkSync(temp); } catch { /* best effort */ }
+    tryUnlink(fsImpl, temp);
+    if (setAside) { try { renameWithRetry(bak, plan.dest, rename); } catch { /* reported below */ } }
     return { ok: false, reason: `could not copy the image: ${err.message}` };
   }
 
   const file = path.basename(plan.dest);
+  const setAt = new Date().toISOString();
+  let look;
+  try {
+    look = writeLook(cwd, { ...state.look, background: { file, setAt } }, { fsImpl });
+  } catch (err) {
+    tryUnlink(fsImpl, plan.dest);
+    if (setAside) { try { renameWithRetry(bak, plan.dest, rename); } catch { /* best effort */ } }
+    return { ok: false, reason: `could not save the look: ${err.message}` };
+  }
+
+  // Recorded: now, and only now, the older copies can go.
+  if (setAside) tryUnlink(fsImpl, bak);
   let siblings = [];
   try { siblings = fsImpl.readdirSync(lookDir(cwd)); } catch { /* nothing to tidy */ }
   for (const name of siblings) {
-    if (name !== file && /^background\.[a-z0-9]+$/i.test(name)) {
-      try { fsImpl.unlinkSync(path.join(lookDir(cwd), name)); } catch { /* best effort */ }
-    }
+    if (name !== file && /^background\.[a-z0-9]+$/i.test(name)) tryUnlink(fsImpl, path.join(lookDir(cwd), name));
   }
-
-  const setAt = new Date().toISOString();
-  try {
-    const look = writeLook(cwd, { ...readLook(cwd, { fsImpl }), background: { file, setAt } }, { fsImpl });
-    return { ok: true, dest: plan.dest, setAt, look };
-  } catch (err) {
-    return { ok: false, reason: `could not save the look: ${err.message}` };
-  }
+  return { ok: true, dest: plan.dest, setAt, look };
 }
 
-/** Back to the generated art. The colours are kept. */
+/**
+ * Back to the generated art. The colours are kept. Throws, like writeLook,
+ * when the look cannot be written -- the host reports it to the asker.
+ */
 function resetBackground({ cwd, fsImpl = fs } = {}) {
-  const look = readLook(cwd, { fsImpl });
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) throw new Error(refused);
+  const look = state.look;
   if (!look.background) return { ok: true, removed: false };
   writeLook(cwd, { ...look, background: null }, { fsImpl });
   // Safe by construction: sanitizeLook only ever yields a bare background.<ext>.

@@ -168,7 +168,9 @@ function fakeFs({ fail = {} } = {}) {
     calls,
     statSync: () => { calls.push(['stat']); return { isFile: () => true, size: 1024 }; },
     mkdirSync: () => calls.push(['mkdir']),
-    existsSync: () => true,
+    // No look folder yet, so the write is allowed (host/style.js lookDirState).
+    lstatSync: () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+    existsSync: () => false,
     readFileSync: () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
     writeFileSync: (p) => calls.push(['write', p]),
     copyFileSync: (from, to) => {
@@ -297,4 +299,98 @@ test('one project\'s look never leaks onto another', () => {
   const r = resolveStyle(b.cwd, '/gen/bg.svg');
   assert.strictEqual(r.source, 'generated');
   assert.strictEqual(r.look.appColor, null);
+});
+
+// --- review fixes: Dexter F1/F5/F6/F7, Miguel #1 -------------------------------
+
+// Real fs, except that writing look.json fails -- the moment AFTER the image
+// copy has landed, which is where F1 lost the old background.
+const failingLookWrite = () => ({
+  ...fs,
+  renameSync: (from, to) => {
+    if (String(to).endsWith('look.json')) throw new Error('disk full');
+    return fs.renameSync(from, to);
+  },
+});
+
+test('F1: a failed look.json write after a new-format copy keeps the old background intact', () => {
+  const { cwd, src } = project();
+  const jpg = path.join(src, 'old.jpg');
+  fs.writeFileSync(jpg, 'old-jpg-bytes');
+  assert.strictEqual(setBackground({ source: jpg, cwd }).ok, true);
+  const png = path.join(src, 'new.png');
+  fs.writeFileSync(png, 'new-png-bytes');
+
+  const r = setBackground({ source: png, cwd, fsImpl: failingLookWrite() });
+  assert.strictEqual(r.ok, false);
+  const dir = path.join(cwd, LOOK_DIR_NAME);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'background.jpg'), 'utf8'), 'old-jpg-bytes');
+  assert.ok(!fs.existsSync(path.join(dir, 'background.png')), 'no orphaned new copy');
+  assert.strictEqual(readLook(cwd).background.file, 'background.jpg');
+  assert.deepStrictEqual(fs.readdirSync(dir).filter((f) => /\.(tmp|bak)/.test(f)), []);
+});
+
+test('F1: a failed look.json write after a SAME-format copy keeps the old bytes', () => {
+  const { cwd, src } = project();
+  const a = path.join(src, 'a.png');
+  fs.writeFileSync(a, 'A');
+  assert.strictEqual(setBackground({ source: a, cwd }).ok, true);
+  const b = path.join(src, 'b.png');
+  fs.writeFileSync(b, 'B');
+
+  assert.strictEqual(setBackground({ source: b, cwd, fsImpl: failingLookWrite() }).ok, false);
+  assert.strictEqual(fs.readFileSync(path.join(cwd, LOOK_DIR_NAME, 'background.png'), 'utf8'), 'A');
+});
+
+test('F5: an invalid colour or darkness is refused, not silently reset', () => {
+  const { cwd } = project();
+  setLook({ cwd, patch: { appColor: '#102030', darkness: 0.3 } });
+  for (const patch of [{ appColor: '#246' }, { textColor: 'red' }, { darkness: '0.5' }, { darkness: NaN }]) {
+    const r = setLook({ cwd, patch });
+    assert.strictEqual(r.ok, false, JSON.stringify(patch));
+    assert.match(r.reason, /#rrggbb|number/);
+  }
+  assert.strictEqual(readLook(cwd).appColor, '#102030');
+  assert.strictEqual(readLook(cwd).darkness, 0.3);
+});
+
+test('F5: a patch with nothing this code sets is refused and creates no folder', () => {
+  const { cwd } = project();
+  for (const patch of [{}, { background: { file: 'background.png' } }, { font: 'x' }]) {
+    assert.strictEqual(setLook({ cwd, patch }).ok, false, JSON.stringify(patch));
+  }
+  assert.ok(!fs.existsSync(path.join(cwd, LOOK_DIR_NAME)));
+});
+
+test('F6: a corrupt look.json is never overwritten by a write -- it is refused, and says where', () => {
+  const { cwd, png } = project();
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  const corrupt = '{"appColor": "#102030",}';
+  fs.writeFileSync(lookFile(cwd), corrupt);
+  for (const r of [
+    setLook({ cwd, patch: { darkness: 0.2 } }),
+    setBackground({ source: png, cwd }),
+  ]) {
+    assert.strictEqual(r.ok, false);
+    assert.match(r.reason, /look\.json/);
+  }
+  assert.throws(() => resetBackground({ cwd }), /look\.json/);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), corrupt, 'byte-identical');
+  assert.deepStrictEqual(readLook(cwd), DEFAULT_LOOK, 'reads still degrade to the default');
+});
+
+test('F7: a .claude-custom that is a link to elsewhere is neither written through nor read', () => {
+  const { cwd, png } = project();
+  const elsewhere = tmpDir('cc-look-elsewhere-');
+  fs.writeFileSync(path.join(elsewhere, 'look.json'), JSON.stringify({ appColor: '#ff0000' }));
+  fs.writeFileSync(path.join(elsewhere, 'background.jpg'), 'someone else\'s');
+  fs.symlinkSync(elsewhere, path.join(cwd, LOOK_DIR_NAME), 'junction');
+
+  assert.strictEqual(readLook(cwd).appColor, null, 'not read through the link');
+  const r = setLook({ cwd, patch: { appColor: '#102030' } });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /link/);
+  assert.strictEqual(setBackground({ source: png, cwd }).ok, false);
+  assert.deepStrictEqual(fs.readdirSync(elsewhere).sort(), ['background.jpg', 'look.json']);
+  assert.strictEqual(fs.readFileSync(path.join(elsewhere, 'background.jpg'), 'utf8'), 'someone else\'s');
 });
