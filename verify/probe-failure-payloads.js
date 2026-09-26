@@ -59,6 +59,10 @@ fs.writeFileSync(settingsFile, JSON.stringify(settings));
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
+// `claude -p` prefers an API key in the environment over the subscription
+// login, so with one set this probe BILLED the key -- and once its balance ran
+// out, failed with "Credit balance is too low". A probe must never spend.
+delete env.ANTHROPIC_API_KEY;
 
 const prompt =
   'Do exactly these steps and nothing else. ' +
@@ -122,4 +126,8 @@ if (DUMP) {
 
 console.log('');
 console.log(failures ? `${failures} check(s) FAILED` : 'all checks passed');
+// Kept only when something failed, so the raw capture can be inspected
+// (Miguel: an unconditional leak is the class bc1e5ac fixed).
+if (failures) console.log(`capture kept for inspection: ${dir}`);
+else fs.rmSync(dir, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

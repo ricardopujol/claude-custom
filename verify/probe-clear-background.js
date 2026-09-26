@@ -27,8 +27,9 @@ const check = (label, ok, detail) => {
   if (!ok) failures++;
 };
 
-const env = { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT), // A fresh worktree stops at claude's folder-trust dialog; PROBE_CWD points
-              // the session at an already-trusted folder. The scenario only runs sleep.
+// A fresh worktree stops at claude's folder-trust dialog; PROBE_CWD points the
+// session at an already-trusted folder. The scenario only runs `sleep`.
+const env = { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT),
               CLAUDE_CUSTOM_CWD: process.env.PROBE_CWD || REPO,
               CLAUDE_CUSTOM_TOKEN: TOKEN, CLAUDE_CUSTOM_HOOK_DEBUG: '1' };
 delete env.ELECTRON_RUN_AS_NODE;

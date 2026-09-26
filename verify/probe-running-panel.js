@@ -12,7 +12,7 @@
    the GUI would render.
 
      node verify/probe-running-panel.js */
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');
 
@@ -30,7 +30,9 @@ const check = (label, ok, detail) => {
 
 // Claude Code is itself an Electron app; a child spawned from a session would
 // otherwise inherit this and start as plain Node.
-const env = { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT), CLAUDE_CUSTOM_CWD: REPO,
+const env = { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT),
+              // A fresh worktree stops at claude's folder-trust dialog.
+              CLAUDE_CUSTOM_CWD: process.env.PROBE_CWD || REPO,
               CLAUDE_CUSTOM_TOKEN: TOKEN };
 delete env.ELECTRON_RUN_AS_NODE;
 
@@ -78,7 +80,11 @@ host.stderr.on('data', d => { log += d.toString(); });
   check('its OWN close ended it, not a backstop (never shown stale)',
     !snapshots.some(s => mine(s).some(p => p.state === 'stale')));
 
-  try { ws.close(); host.kill(); } catch {}
+  // On Windows host.kill() is a hard TerminateProcess that skips the host's
+  // shutdown, orphaning the pty's `claude` (Miguel). Kill the whole tree.
+  try { ws.close(); } catch {}
+  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(host.pid), '/T', '/F'], { stdio: 'ignore' });
+  else host.kill();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
   if (failures) console.log('\n--- host log tail ---\n' + log.slice(-2000));
   process.exit(failures === 0 ? 0 : 1);
