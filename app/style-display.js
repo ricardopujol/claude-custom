@@ -121,7 +121,61 @@ function styleDisplay(state) {
   }));
 }
 
-const API = { styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent };
+// The sections a host reply can be tagged with -- also the only state keys a
+// tag may address, so an arbitrary `ask` string never becomes a property name.
+const ASKABLE = ['colours', 'background'];
+
+function emptyStyleState() {
+  return {
+    colours: null,
+    background: { source: null, setAt: null, error: null, darkness: null },
+    inactive: { dim: null },
+  };
+}
+
+/**
+ * The panel's next state after a host message (`hello` or `style`).
+ *
+ * Dexter F2: a refusal is routed by the `ask` tag the host ECHOES from the
+ * request it answers, not by whichever request was sent last -- with a slow
+ * image copy in flight, "last sent" is a different section. And a success
+ * clears only its OWN section's error, so one section's success does not wipe
+ * another's still-true failure. Untagged (older host, or a hello) falls back
+ * to background for an error and clears everything for a success.
+ *
+ * Dexter F3: a refusal leaves every stored value as it was, so the renderer
+ * can repaint the stored darkness and theme over any failed preview.
+ *
+ * The inactive dim is main's, never the host's, so it is carried through.
+ */
+function reduceStyle(prev, msg) {
+  const state = prev || emptyStyleState();
+  const m = msg || {};
+  const ask = ASKABLE.includes(m.ask) ? m.ask : null;
+  if (typeof m.error === 'string' && m.error) {
+    const key = ask || 'background';
+    return { ...state, [key]: { ...(state[key] || {}), error: m.error } };
+  }
+  const style = m.style || m;
+  const look = style.look || {};
+  const chrome = (m.theme && m.theme.chrome) || {};
+  const keep = (key) => (ask && ask !== key && state[key] ? state[key].error || null : null);
+  return {
+    // Unset colours show the theme's own value -- which, with nothing set, is
+    // exactly what the merged theme's chrome holds.
+    colours: {
+      appColor: look.appColor, textColor: look.textColor,
+      baseBg: chrome.bg, baseText: chrome.text, error: keep('colours'),
+    },
+    background: {
+      source: style.source || 'generated', setAt: style.setAt || null,
+      darkness: look.darkness, error: keep('background'),
+    },
+    inactive: state.inactive,
+  };
+}
+
+const API = { reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else Object.assign(root, API);

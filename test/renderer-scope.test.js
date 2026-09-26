@@ -65,7 +65,7 @@ const ALLOWED_GLOBALS = new Set([
   'bugVaultDisplay', 'formatBugRow',
   'projectsDisplay',
   // app/style-display.js
-  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent',
+  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules

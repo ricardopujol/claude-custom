@@ -148,3 +148,68 @@ test('the inactive section shows the dim as a percent, or "reading…" before it
   assert.strictEqual(unknown.dimPercent, null);
   assert.strictEqual(unknown.description, 'reading…');
 });
+
+// --- reduceStyle: panel state from host messages (Dexter F2/F3) ------------------
+
+const { reduceStyle } = require('../app/style-display');
+
+const hello = {
+  type: 'hello', theme: { chrome: { bg: '#0b1018', text: '#c3d2e4' } },
+  style: { source: 'generated', setAt: null, look: { appColor: null, textColor: null, darkness: 0.5 } },
+};
+
+test('reduceStyle builds the panel state from hello', () => {
+  const s = reduceStyle(undefined, hello);
+  assert.strictEqual(s.colours.baseBg, '#0b1018');
+  assert.strictEqual(s.background.source, 'generated');
+  assert.strictEqual(s.background.darkness, 0.5);
+  assert.strictEqual(s.colours.error, null);
+});
+
+test('F2: a refusal lands under the section it ANSWERS, not the last one asked', () => {
+  let s = reduceStyle(undefined, hello);
+  s = reduceStyle(s, { type: 'style', error: 'too large', ask: 'background' });
+  assert.strictEqual(s.background.error, 'too large');
+  assert.strictEqual(s.colours.error, null);
+});
+
+test('F2: a success clears only its own section\'s error, so another failure stays visible', () => {
+  let s = reduceStyle(undefined, hello);
+  s = reduceStyle(s, { type: 'style', error: 'too large', ask: 'background' });
+  s = reduceStyle(s, {
+    type: 'style', ask: 'colours', source: 'generated', setAt: null,
+    look: { appColor: '#402020', textColor: null, darkness: 0.5 }, theme: { chrome: { bg: '#402020' } },
+  });
+  assert.strictEqual(s.background.error, 'too large', 'the background failure is still shown');
+  assert.strictEqual(s.colours.appColor, '#402020');
+});
+
+test('F2: an untagged refusal falls back to the background section, never vanishes', () => {
+  const s = reduceStyle(reduceStyle(undefined, hello), { type: 'style', error: 'x' });
+  assert.strictEqual(s.background.error, 'x');
+});
+
+test('F2: an unknown ask tag is not used as a state key', () => {
+  const s = reduceStyle(reduceStyle(undefined, hello), { type: 'style', error: 'x', ask: '__proto__' });
+  assert.strictEqual(s.background.error, 'x');
+  assert.deepStrictEqual(Object.keys(s).sort(), ['background', 'colours', 'inactive']);
+});
+
+test('F3: a refusal keeps the STORED darkness, so the preview can be put back', () => {
+  let s = reduceStyle(undefined, hello);
+  s = reduceStyle(s, { type: 'style', error: 'disk full', ask: 'background' });
+  assert.strictEqual(s.background.darkness, 0.5);
+});
+
+test('reduceStyle keeps the inactive dim, which the host never reports', () => {
+  const prev = { ...reduceStyle(undefined, hello), inactive: { dim: 0.3 } };
+  assert.deepStrictEqual(reduceStyle(prev, hello).inactive, { dim: 0.3 });
+});
+
+// --- Miguel #3: colours say "reading…" until they are known -----------------------
+
+test('the colours section is marked unknown before hello, and known after', () => {
+  assert.strictEqual(section({}, 'colours').view.known, false);
+  const s = reduceStyle(undefined, hello);
+  assert.strictEqual(styleDisplay(s).find((x) => x.id === 'colours').view.known, true);
+});

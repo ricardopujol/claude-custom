@@ -67,11 +67,13 @@
     #app > * { position: relative; z-index: 1; }
 
     /* A project's OWN image is not pre-dimmed the way the generated art is, so
-       it gets a veil in the app colour at the chosen darkness -- darker means
-       more app colour, never plain black over someone's picture. */
+       it gets a veil at the chosen darkness. The veil is mostly BLACK with a
+       quarter of the app colour: "darkness" has to mean darker for every app
+       colour -- a pure app-colour veil washed an image out to white under a
+       white app colour (Dexter F8) -- while still tinting toward the project. */
     body.has-custom-bg #bg::after {
       content: ''; position: absolute; inset: 0;
-      background: var(--bg); opacity: var(--bg-darkness);
+      background: color-mix(in srgb, var(--bg) 25%, #000); opacity: var(--bg-darkness);
     }
 
     /* The unfocused-window dim: the window you are NOT typing into goes dark,

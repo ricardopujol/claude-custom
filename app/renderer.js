@@ -938,6 +938,10 @@ function applyTheme(theme) {
   }
   const c = theme.chrome || {};
   const root = document.documentElement.style;
+  // NAMING TRAP (Miguel, feat/project-look #5): the theme's `panel` colour is
+  // the CSS `--chrome` variable (header, sidebar). The CSS `--panel` variable
+  // is a different thing -- a hover/raised surface DERIVED from --chrome in
+  // renderer.html -- and no theme key feeds it directly.
   for (const [key, cssVar] of Object.entries({
     bg: '--bg', panel: '--chrome', border: '--border', text: '--text',
     dim: '--dim', accent: '--accent', ok: '--ok', bad: '--bad',
@@ -1726,29 +1730,10 @@ function renderParty(party) {
 // the unfocused-window dim is install-wide and lives with main. Both are
 // painted here from what they report, never from what was last typed -- a
 // preview is local and temporary, the host's broadcast is what sticks.
-let styleState = {
-  colours: null,
-  background: { source: null, setAt: null, error: null, darkness: null },
-  inactive: { dim: null },
-};
-// Which section asked last, so a refusal from the host (which is not tagged
-// with one) lands under the control that caused it.
-let lastStyleAsk = 'background';
-
-// The style parts of a `hello` or `style` message, as panel state.
-function styleStateFrom(msg) {
-  const look = (msg.style && msg.style.look) || msg.look || {};
-  const chrome = (msg.theme && msg.theme.chrome) || {};
-  const source = (msg.style && msg.style.source) || msg.source || 'generated';
-  const setAt = (msg.style ? msg.style.setAt : msg.setAt) || null;
-  return {
-    // Unset colours show the theme's own value -- which, with nothing set, is
-    // exactly what the merged theme's chrome already holds.
-    colours: { appColor: look.appColor, textColor: look.textColor, baseBg: chrome.bg, baseText: chrome.text, error: null },
-    background: { source, setAt, error: null, darkness: look.darkness },
-    inactive: styleState.inactive,
-  };
-}
+// State transitions live in app/style-display.js (reduceStyle), where they
+// are tested: which section a refusal belongs to, which errors a success
+// clears, and that a refusal leaves the stored values alone.
+let styleState = emptyStyleState();
 
 // Background, darkness and theme from one style-bearing message, in the order
 // that matters: the background first, because applyTheme decides from it
@@ -1764,9 +1749,18 @@ function applyStyleMessage(msg) {
   if (msg.theme) applyTheme(msg.theme);
 }
 
+// `ask` names the section asking; the host echoes it on the reply, so a
+// refusal is shown where it belongs even with another request in flight.
 function sendStyle(section, payload) {
-  lastStyleAsk = section;
-  try { ws.send(JSON.stringify({ type: 'style', ...payload })); } catch { /* not attached */ }
+  try { ws.send(JSON.stringify({ type: 'style', ask: section, ...payload })); } catch { /* not attached */ }
+}
+
+// A refusal means every preview on screen is uncommitted: repaint what the
+// host last stored -- the theme and the darkness -- over all of them.
+function revertStylePreviews() {
+  if (lastTheme) applyTheme(lastTheme);
+  const stored = styleState.background.darkness;
+  if (typeof stored === 'number') document.documentElement.style.setProperty('--bg-darkness', String(stored));
 }
 
 // The id attributes are passed in WHOLE, as literals, rather than built from a
@@ -1786,6 +1780,12 @@ function colourRow(label, c, pickerId, hexId, resetId) {
 function renderStyleSection(section) {
   const header = `<h3>${escapeHtml(section.title)}</h3>`;
   const v = section.view;
+  if (section.id === 'colours' && v && !v.known) {
+    // Before hello there is no colour to show; a picker would show a
+    // fallback as if it were this project's colour (Miguel #3).
+    return `<section class="style-section" data-section="colours">${header}` +
+      `<div class="style-current">reading…</div></section>`;
+  }
   if (section.id === 'colours' && v) {
     return (
       `<section class="style-section" data-section="colours">${header}` +
@@ -1989,7 +1989,7 @@ function handleControl(msg) {
     // project's own copy wins over generated art) and `msg.theme` already has
     // the project's look merged in; `msg.style` carries WHY, for the panel.
     applyStyleMessage(msg);
-    styleState = styleStateFrom(msg);
+    styleState = reduceStyle(styleState, msg);
     renderStylePanel();
     renderUsage(msg.usage);
     // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
@@ -2128,16 +2128,9 @@ function handleControl(msg) {
     // action; the CURRENT background/source is left exactly as it was, the
     // same "say what failed, do not repaint the world" rule renderProjects
     // follows for its own error branch.
-    // A refused colour reverts its preview too: the theme is repainted from
-    // the last look the host actually stored.
-    if (msg.error) {
-      const section = lastStyleAsk;
-      styleState = { ...styleState, [section]: { ...(styleState[section] || {}), error: msg.error } };
-      if (section === 'colours' && lastTheme) applyTheme(lastTheme);
-    } else {
-      applyStyleMessage(msg);
-      styleState = styleStateFrom(msg);
-    }
+    styleState = reduceStyle(styleState, msg);
+    if (msg.error) revertStylePreviews();
+    else applyStyleMessage(msg);
     renderStylePanel();
     return;
   }

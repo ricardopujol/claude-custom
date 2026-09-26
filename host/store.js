@@ -34,7 +34,11 @@
  * feature instead of all of them, and the diffs stay readable.
  *
  * The host owns every write. The GUI reads through the control protocol and
- * never writes.
+ * never writes. ONE EXCEPTION (Miguel, feat/project-look #2): Electron MAIN
+ * writes the 'look-global' key -- the install-wide unfocused-window dim --
+ * because focus is a fact only main knows and no host is involved. Its own
+ * key, regenerable, last-writer-wins by design: two windows moving the same
+ * slider should end on whichever moved last.
  *
  * NO LONGER ONE HOST, AND THIS FILE HAS NOT CAUGHT UP. Dexter F3 / Miguel,
  * PR #31. Until multi-project, one host at a time was the practical reality

@@ -1391,40 +1391,48 @@ wss.on('connection', (ws) => {
       // for the project picker's 'open' errors. A successful change IS
       // broadcast: two windows can attach to one host and one of them silently
       // disagreeing about what is showing is worse than a redraw.
+      //
+      // `ask` names the Style-tab section that asked, echoed on the refusal and
+      // on the broadcast, so the view files a refusal under the request it
+      // ANSWERS rather than whichever was sent last (Dexter F2). Only known
+      // section names are echoed.
+      const ask = msg.ask === 'colours' || msg.ask === 'background' ? msg.ask : undefined;
+      const refuse = (error) => ws.send(JSON.stringify({ type: 'style', ask, error }));
+      const announce = () => broadcastControl({ type: 'style', ask, ...currentStyle() });
       if (msg.action === 'set-background') {
         const asked = msg && msg.path;
         if (typeof asked !== 'string' || !asked.trim()) {
-          ws.send(JSON.stringify({ type: 'style', error: 'no file was given' }));
+          refuse('no file was given');
           return;
         }
         const r = setBackground({ source: asked, cwd: CWD });
         if (!r.ok) {
           console.log('[host] style refused :', r.reason);
-          ws.send(JSON.stringify({ type: 'style', error: r.reason }));
+          refuse(r.reason);
           return;
         }
-        broadcastControl({ type: 'style', ...currentStyle() });
+        announce();
         return;
       }
       if (msg.action === 'reset-background') {
         try {
           resetBackground({ cwd: CWD });
         } catch (err) {
-          ws.send(JSON.stringify({ type: 'style', error: `could not reset: ${err.message}` }));
+          refuse(`could not reset: ${err.message}`);
           return;
         }
-        broadcastControl({ type: 'style', ...currentStyle() });
+        announce();
         return;
       }
       if (msg.action === 'set-look') {
-        // Colours and darkness only -- host/style.js ignores any other key, so
+        // Colours and darkness only -- host/style.js refuses any other key, so
         // this cannot point the background at a file it did not copy in.
         const r = setLook({ cwd: CWD, patch: msg.look });
         if (!r.ok) {
-          ws.send(JSON.stringify({ type: 'style', error: r.reason }));
+          refuse(r.reason);
           return;
         }
-        broadcastControl({ type: 'style', ...currentStyle() });
+        announce();
         return;
       }
       return;
