@@ -110,14 +110,39 @@ app.on('ready', async () => {
     fs.mkdirSync(OUT_DIR, { recursive: true });
     const win = new BrowserWindow({
       width: 1300, height: 760, show: true,
-      webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(REPO, 'app', 'preload.js') },
+      // backgroundThrottling off: with the display asleep, locked or the window
+      // occluded, Chromium throttles timers -- and requestSwitch's spaced key
+      // writes and this probe's waits all run on timers. Two runs stalled for
+      // minutes before this; the page was fine, the clock was throttled.
+      webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
+        preload: path.join(REPO, 'app', 'preload.js') },
     });
     await sleep(2500);
     // NOT awaited: the returned promise never settled here (the page keeps a
     // load in flight), and app/main.js does not await it either.
     win.loadFile(path.join(REPO, 'app', 'renderer.html'),
       { query: { port: String(PORT), token: TOKEN, cwd: REPO } }).catch(() => {});
-    const js = src => win.webContents.executeJavaScript(src);
+    // A page call that never returns (a frozen renderer) must FAIL the probe
+    // with a reason, not burn the whole deadline in silence -- which is what
+    // an unexplained stall did twice.
+    win.webContents.on('console-message', (e, level, message) => {
+      if (level >= 2) console.log(`      [page ${level === 3 ? 'error' : 'warn'}] ${String(message).slice(0, 300)}`);
+    });
+    win.webContents.on('render-process-gone', (e, d) => console.log(`      [page GONE] ${JSON.stringify(d)}`));
+    win.on('unresponsive', () => console.log('      [page UNRESPONSIVE]'));
+    if (process.env.PROBE_NAV) {
+      const at = () => `${Math.round((Date.now() - T0) / 100) / 10}s`;
+      for (const ev of ['did-start-loading', 'did-stop-loading', 'did-finish-load', 'dom-ready', 'did-navigate', 'did-fail-load']) {
+        win.webContents.on(ev, (e, ...a) => console.log(`      [nav ${at()}] ${ev} ${a.slice(0, 2).map(String).join(' ').slice(0, 120)}`));
+      }
+      win.webContents.session.webRequest.onCompleted((d) => console.log(`      [req ${at()}] ${d.statusCode} ${d.url.slice(0, 120)}`));
+      win.webContents.session.webRequest.onErrorOccurred((d) => console.log(`      [req ${at()}] ERR ${d.error} ${d.url.slice(0, 120)}`));
+    }
+    const js = src => Promise.race([
+      win.webContents.executeJavaScript(src),
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error(`page call did not return in 10s: ${src.slice(0, 80)}`)), 10000)),
+    ]);
     for (let i = 0; i < 60; i++) {
       try { if (await js(`document.readyState !== 'loading' && typeof requestSwitch === 'function'`)) break; } catch {}
       await sleep(500);
@@ -126,9 +151,15 @@ app.on('ready', async () => {
       return { text: e.textContent, title: e.title, pending: e.classList.contains('pending'),
                notice: e.classList.contains('notice') }; })()`);
     const screen = () => js(`screenLines().join('\\n')`);
+    // Best-effort: capturePage needs a live display surface, and a locked or
+    // sleeping screen has none. The ASSERTIONS are the probe; shots are extra.
     const shot = async (name) => {
-      const img = await win.webContents.capturePage();
-      fs.writeFileSync(path.join(OUT_DIR, `${name}.png`), img.toPNG());
+      try {
+        const img = await win.webContents.capturePage();
+        fs.writeFileSync(path.join(OUT_DIR, `${name}.png`), img.toPNG());
+      } catch (err) {
+        console.log(`      (no screenshot for ${name}: ${err.message})`);
+      }
     };
     async function until(pred, ms, step = 250) {
       for (let t = 0; t < ms; t += step) { const v = await pred(); if (v) return v; await sleep(step); }
