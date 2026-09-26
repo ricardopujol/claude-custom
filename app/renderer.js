@@ -952,6 +952,11 @@ function applyTheme(theme) {
   // default (the theme's dark label) must come back, not a stale override.
   if (c.onAccent) root.setProperty('--on-accent', c.onAccent);
   else root.removeProperty('--on-accent');
+  // FF12 tints the cursor and --model-accent from the theme. The line above
+  // term.options.theme = ... REPLACED the tinted cursor, and a look changed
+  // during a session, per #47, never reached FF12's cached theme -- re-tint.
+  currentTheme = theme;
+  renderTopBar();
   // A font change alters cell size, so the pty must be told the new geometry or
   // Ink's layout corrupts.
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
@@ -1731,6 +1736,202 @@ window.addEventListener('focus', () => {
   document.title = 'claude-custom';
 });
 
+// --- top bar: model / effort -------------------------------------------------
+// FF12. Model and effort are CONTROLS, not labels: clicking either opens a
+// small picker, and choosing an option types the matching slash command into
+// the pty via the `{type:'input'}` control message -- exactly as a human
+// would (see host/control.js's `input` branch). The panel then shows a
+// PENDING state until the truth arrives and NEVER flips optimistically --
+// app/top-bar-display.js's pendingResolver only reaches "applied" from a
+// matching truth message, never from the timeout alone.
+const tbModelEl = document.getElementById('tb-model');
+const tbEffortEl = document.getElementById('tb-effort');
+const tbModelMenu = document.getElementById('tb-model-menu');
+const tbEffortMenu = document.getElementById('tb-effort-menu');
+const tbModelCustom = document.getElementById('tb-model-custom');
+
+// The model chip reads `liveModel` -- the statusLine's exact id
+// (host/status-relay.js), fresh ~1s after a /model -- and falls back to #34's
+// transcript-derived session model only until the first status document
+// arrives. That fallback is the LAST ASSISTANT LINE, blind to a switch until
+// the next reply (Dexter #2), so it is displayed but never confirms a switch.
+// Both null is absence, rendered "—", never a guess. `currentTheme` is cached
+// only so a model change can recompute the accent without the next `hello`.
+let liveModel = null;
+let sessionModelFallback = null;
+let currentEffort = null;
+let currentTheme = null;
+let pendingModel = null;    // { kind:'model', value, startedAt } | null
+let pendingEffort = null;
+// What a chip says about a switch that timed out or was never sent (Dexter
+// #9), until the next request or NOTICE_MS.
+const tbNotices = { model: null, effort: null };
+const tbNoticeTimers = { model: null, effort: null };
+const NOTICE_MS = 12000;
+
+const currentModel = () => liveModel || sessionModelFallback;
+
+function renderTopBar() {
+  const state = topBarState({
+    model: currentModel(), effort: currentEffort,
+    pendingModel, pendingEffort, theme: currentTheme, notices: tbNotices,
+  });
+  topBarDisplay({ modelEl: tbModelEl, effortEl: tbEffortEl }, state);
+  applyModelAccent(state.model.family, currentTheme);
+}
+
+// The colour cue lives on a CSS var so the header chips and the active
+// side-tab underline pick it up for free; xterm's cursor is separate JS state
+// (`term.options.theme`) and needs telling directly. Untinted (no family
+// known), the cursor is left exactly as the theme itself configured it --
+// "untinted" means unmodified, not "coincidentally equal to the accent".
+function applyModelAccent(family, theme) {
+  const accent = cueColour(family, theme);
+  document.documentElement.style.setProperty('--model-accent', accent);
+  const themeCursor = theme && theme.terminal && theme.terminal.cursor;
+  const cursor = family ? accent : (themeCursor || accent);
+  term.options.theme = { ...term.options.theme, cursor };
+}
+
+function setTopBarNotice(kind, text) {
+  tbNotices[kind] = text || null;
+  clearTimeout(tbNoticeTimers[kind]);
+  if (text) {
+    tbNoticeTimers[kind] = setTimeout(() => { tbNotices[kind] = null; renderTopBar(); }, NOTICE_MS);
+  }
+}
+
+function setPending(kind, pending) {
+  if (kind === 'model') pendingModel = pending; else pendingEffort = pending;
+}
+
+// A switch that never hears back (refused, unrecognised, or a
+// model-switch-blocked confirmation nobody answers) must still resolve to
+// something rather than pulse forever. RE-ARMED until the request it was set
+// for resolves (Dexter #8): with the wall clock stepped back the resolver
+// says "not yet", and a one-shot timer then left the chip pulsing forever.
+function schedulePendingTimeout(kind, request) {
+  const remaining = request.startedAt + PENDING_TIMEOUT_MS - Date.now();
+  const delay = Math.min(PENDING_TIMEOUT_MS, Math.max(250, remaining + 50));
+  setTimeout(() => {
+    const pending = kind === 'model' ? pendingModel : pendingEffort;
+    if (pending !== request) return;   // resolved, or superseded by a newer request
+    const res = pendingResolver(pending,
+      { type: 'timeout', kind, now: Date.now(), timeoutMs: PENDING_TIMEOUT_MS });
+    if (res.pending) { schedulePendingTimeout(kind, request); return; }
+    setPending(kind, null);
+    setTopBarNotice(kind, switchNotice({ kind, result: res.result, value: request.value,
+      current: kind === 'model' ? currentModel() : currentEffort }));
+    renderTopBar();
+  }, delay);
+}
+
+// The bottom page of the terminal, where the input box lives, whatever the
+// user has scrolled back to -- inputState() reads the box off this.
+function screenLines() {
+  const b = term.buffer.active;
+  const out = [];
+  for (let y = 0; y < term.rows; y++) {
+    const line = b.getLine(b.baseY + y);
+    out.push(line ? line.translateToString(true) : '');
+  }
+  return out;
+}
+
+// Ctrl-E, Ctrl-U, the command, then CR -- as separate writes, spaced: typed as ONE
+// chunk, a line is taken for a paste and its CR swallowed (verify/probe-
+// payloads.js). Ctrl-U clears a single-line draft without submitting it, and
+// the CLI offers Ctrl+Y to get it back (verify/probe-top-bar-truth.js).
+const PTY_STEP_MS = 120;
+
+function requestSwitch(kind, raw) {
+  const plan = planSwitch({
+    kind, raw,
+    current: kind === 'model' ? currentModel() : currentEffort,
+    screen: inputState(screenLines()),
+    connected: !!ws && ws.readyState === WebSocket.OPEN,
+  });
+  if (!plan.ok) {
+    setTopBarNotice(kind, switchNotice({ kind, result: 'refused', notice: plan.notice }));
+    renderTopBar();
+    return;
+  }
+  setTopBarNotice(kind, null);
+  // Already running: the truth is broadcast only on a change, so waiting for
+  // one would always time out (Dexter #6). The command is still sent -- an
+  // alias can move within its family, e.g. opus 4.8 -> opus 5.5, and the live
+  // model then reports that like any other change.
+  if (plan.alreadyRunning) {
+    setPending(kind, null);
+  } else {
+    const request = { kind, value: plan.value, startedAt: Date.now() };
+    setPending(kind, request);
+    schedulePendingTimeout(kind, request);
+  }
+  renderTopBar();
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  // Ctrl-E first: Ctrl-U deletes only back to the CURSOR (measured, Dexter r2
+  // N1). With the cursor at Home it deleted nothing, and the command was
+  // typed in front of the draft -- `/model sonnetrefactor the parser`.
+  input('\x05');
+  setTimeout(() => input('\x15'), PTY_STEP_MS);
+  setTimeout(() => input(plan.command), PTY_STEP_MS * 2);
+  setTimeout(() => input('\r'), PTY_STEP_MS * 5);
+}
+
+function toggleMenu(menu, otherMenu) {
+  if (!menu) return;
+  const opening = menu.hidden;
+  if (otherMenu) otherMenu.hidden = true;
+  menu.hidden = !opening;
+  if (opening && menu === tbModelMenu && tbModelCustom) tbModelCustom.focus();
+}
+
+function closeTopBarMenus() {
+  const open = (tbModelMenu && !tbModelMenu.hidden) || (tbEffortMenu && !tbEffortMenu.hidden);
+  if (tbModelMenu) tbModelMenu.hidden = true;
+  if (tbEffortMenu) tbEffortMenu.hidden = true;
+  return open;
+}
+
+function submitCustomModel() {
+  if (!tbModelCustom) return;
+  requestSwitch('model', tbModelCustom.value);
+  tbModelCustom.value = '';
+  closeTopBarMenus();
+}
+
+if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu, tbEffortMenu));
+if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMenu, tbModelMenu));
+if (tbModelMenu) {
+  tbModelMenu.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-model]');
+    if (row) { closeTopBarMenus(); requestSwitch('model', row.dataset.model); return; }
+    if (e.target.id === 'tb-model-custom-go') submitCustomModel();
+  });
+}
+if (tbModelCustom) {
+  tbModelCustom.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitCustomModel(); }
+  });
+}
+if (tbEffortMenu) {
+  tbEffortMenu.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-effort]');
+    if (row) { closeTopBarMenus(); requestSwitch('effort', row.dataset.effort); }
+  });
+}
+// Esc and a click anywhere outside the top bar close an open menu. Esc is
+// only taken when a menu WAS open, so it never reaches the TUI by accident as
+// the first of an Esc Esc (which opens the rewind menu) -- and never swallowed
+// from it otherwise.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && closeTopBarMenus()) { e.preventDefault(); e.stopPropagation(); }
+}, true);
+document.addEventListener('mousedown', (e) => {
+  if (!e.target.closest || !e.target.closest('#top-bar')) closeTopBarMenus();
+});
+
 // --- permission mode --------------------------------------------------------
 const modeEl = document.getElementById('mode');
 let modeTable = {};
@@ -2059,6 +2260,21 @@ function handleControl(msg) {
     if (msg.modes) modeTable = msg.modes;
     renderMode(msg.mode);
     latestParty = msg.party || [];
+    // FF12. `effort` is null until the first hook payload has carried it --
+    // rendered as "—", never a guessed default. The model comes from #34's
+    // `sessionModel` ({ session: { model, at }, agents, errors }) through
+    // mainModelOf -- NOT `sessionModel.model`, which FF12 assumed before #34
+    // merged and which never exists. A reattach clears any pending
+    // switch a PREVIOUS window started -- this handshake IS the current
+    // truth, and holding onto a stale "switching…" across it would be the
+    // "flips back to pending on its own" bug the timeout logic exists to avoid.
+    currentTheme = msg.theme || currentTheme;
+    currentEffort = typeof msg.effort === 'string' ? msg.effort : null;
+    liveModel = typeof msg.liveModel === 'string' && msg.liveModel ? msg.liveModel : null;
+    sessionModelFallback = mainModelOf(msg.sessionModel);
+    pendingModel = null;
+    pendingEffort = null;
+    renderTopBar();
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
@@ -2092,8 +2308,33 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'sessionModel') {
+    // ONE handler for both consumers. FF12's used to be a second
+    // `msg.type === 'sessionModel'` branch further down, which never ran
+    // because this one returns -- the chip never updated and a pending model
+    // switch never resolved. test/renderer-dispatch.test.js now fails on that.
+    //
+    // 1. FF10: every agent card's model line.
     sessionModel = { session: msg.session, agents: msg.agents || {}, errors: msg.errors };
     renderRoster();
+    // 2. FF12: the model chip's FALLBACK, until the statusLine reports. It
+    //    never resolves a pending /model: it is the last assistant line of
+    //    the transcript, written before any switch (Dexter #1, #2).
+    sessionModelFallback = mainModelOf(msg);
+    renderTopBar();
+    return;
+  }
+  if (msg.type === 'liveModel') {
+    // FF12's model truth: the statusLine's exact id, re-fired ~1s after a
+    // /model -- see host/status-relay.js. Resolves a pending switch only if it is
+    // no older than the request -- see pendingResolver.
+    liveModel = typeof msg.model === 'string' && msg.model ? msg.model : null;
+    if (pendingModel) {
+      const res = pendingResolver(pendingModel, {
+        type: 'truth', kind: 'model', at: msg.at, matches: modelMatches(liveModel, pendingModel.value),
+      });
+      pendingModel = res.pending;
+    }
+    renderTopBar();
     return;
   }
   if (msg.type === 'attention') {
@@ -2180,6 +2421,20 @@ function handleControl(msg) {
   }
   if (msg.type === 'mode') {
     renderMode(msg.mode);
+    return;
+  }
+  if (msg.type === 'effort') {
+    // The truth source a pending /effort switch resolves against, from the
+    // statusLine or a main-session hook payload. null is ABSENT (a model with
+    // no effort levels), never a level.
+    currentEffort = typeof msg.level === 'string' ? msg.level : null;
+    if (pendingEffort) {
+      const res = pendingResolver(pendingEffort, {
+        type: 'truth', kind: 'effort', at: msg.at, matches: effortMatches(currentEffort, pendingEffort.value),
+      });
+      pendingEffort = res.pending;
+    }
+    renderTopBar();
     return;
   }
   if (msg.type === 'usage') {

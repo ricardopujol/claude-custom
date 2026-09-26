@@ -8,8 +8,13 @@
  * 1. `--settings` merges with the other layers at the TOP LEVEL only. Any
  *    single-valued key it supplies replaces its counterpart WHOLESALE -- a
  *    partial `statusLine: {padding: 1}` destroyed the user's `statusLine.command`.
- *    So this file carries exactly ONE key. Anything else the harness needs
- *    travels through the pty environment instead, never through settings.
+ *    So this file carries `hooks` and, deliberately, ONE more: `statusLine`,
+ *    FF12's truth source (its stdin carries model.id and effort.level and
+ *    re-fires ~1s after /model and /effort -- verify/probe-top-bar-truth.js).
+ *    Because it replaces the user's, it is a RELAY (host/status-relay.js) that
+ *    runs the user's own command and passes its output through, and it keeps
+ *    every other field of theirs. Anything else the harness needs travels
+ *    through the pty environment, never through settings.
  *
  * 2. `hooks`, unlike single-valued keys, ACCUMULATES across layers. The harness
  *    therefore contributes only its OWN matchers and never copies the user's in.
@@ -48,7 +53,28 @@ const quote = s => `"${s}"`;
 // always accepted this form.
 const bareName = pipeName => String(pipeName).replace(/^\\\\\.\\pipe\\/i, '');
 
-function buildHarnessSettings({ helperPath, pipeName } = {}) {
+// Forward slashes: node on Windows takes them, and no shell treats them as an
+// escape (the backslash trap above, for paths).
+const slashes = p => String(p).replace(/\\/g, '/');
+const RELAY_MARK = 'status-relay.js';
+
+/**
+ * The statusLine entry: the relay, chained to the user's own command. The
+ * user's command travels as base64 -- an alphabet with no quote, backslash,
+ * `$` or backtick, so no shell between the CLI and the relay can alter it.
+ * A user statusLine that is already this relay is not chained, or the relay
+ * would run itself.
+ */
+function buildStatusLine({ nodePath, scriptPath, userStatusLine }, pipeName) {
+  const user = userStatusLine && typeof userStatusLine === 'object' ? userStatusLine : null;
+  const userCommand = user && user.type === 'command' && typeof user.command === 'string'
+    && user.command && !user.command.includes(RELAY_MARK) ? user.command : null;
+  let command = `${quote(slashes(nodePath))} ${quote(slashes(scriptPath))} --pipe ${quote(bareName(pipeName))}`;
+  if (userCommand) command += ` --then ${Buffer.from(userCommand, 'utf8').toString('base64')}`;
+  return { padding: 0, ...(user || {}), type: 'command', command };
+}
+
+function buildHarnessSettings({ helperPath, pipeName, statusRelay } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -62,7 +88,7 @@ function buildHarnessSettings({ helperPath, pipeName } = {}) {
     hooks: [{ type: 'command', command: command(event), timeout: HOOK_TIMEOUT_SECONDS }],
   });
 
-  return {
+  const settings = {
     hooks: {
       PreToolUse: [entry(PRE_TOOL_MATCHER, 'PreToolUse')],
       PostToolUse: [entry(POST_TOOL_MATCHER, 'PostToolUse')],
@@ -85,6 +111,33 @@ function buildHarnessSettings({ helperPath, pipeName } = {}) {
       Stop: [entry('', 'Stop')],
     },
   };
+  if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
+  return settings;
+}
+
+/**
+ * The statusLine the user would have had without the harness: the first
+ * layer that defines one, in the CLI's own precedence (project-local, then
+ * project, then user). Null when none is a runnable command. An unreadable
+ * layer is skipped -- the CLI reports its own settings errors.
+ */
+function findUserStatusLine({ home, cwd } = {}) {
+  const candidates = [];
+  if (cwd) {
+    candidates.push(path.join(cwd, '.claude', 'settings.local.json'));
+    candidates.push(path.join(cwd, '.claude', 'settings.json'));
+  }
+  if (home) candidates.push(path.join(home, '.claude', 'settings.json'));
+  for (const file of candidates) {
+    let parsed;
+    try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+    if (!parsed || typeof parsed !== 'object' || !('statusLine' in parsed)) continue;
+    const sl = parsed.statusLine;
+    const runnable = sl && typeof sl === 'object' && sl.type === 'command'
+      && typeof sl.command === 'string' && sl.command;
+    return runnable ? sl : null;
+  }
+  return null;
 }
 
 /**
@@ -136,4 +189,4 @@ function buildClaudeArgs({ settingsFile, helperExists } = {}) {
   return args;
 }
 
-module.exports = { buildHarnessSettings, writeHarnessSettings, buildClaudeArgs };
+module.exports = { buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };

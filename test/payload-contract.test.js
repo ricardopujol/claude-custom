@@ -25,11 +25,20 @@ test('every event the settings file hooks is in the contract', () => {
   }
 });
 
+// FF12 (2026-09-23): effort.level and permission_mode are hooks.md "common
+// input fields" -- present on every real hooked event -- so every fixture in
+// this file that claims `ok: true` must carry them too. This is exactly the
+// file's own warning about fixtures supplying the shape they expect: a
+// fixture missing a field every real payload has is not a passing case, it is
+// a stale one.
+const COMMON = { effort: { level: 'high' }, permission_mode: 'bypass' };
+
 test('a payload carrying every required field passes', () => {
   const ok = checkPayload('PreToolUse', {
     hook_event_name: 'PreToolUse',
     tool_name: 'Agent',
     tool_input: { subagent_type: 'code-reviewer' },
+    ...COMMON,
   });
   assert.deepStrictEqual(ok.missing, []);
   assert.strictEqual(ok.ok, true);
@@ -49,8 +58,25 @@ test('a field the host reads only for SOME tools is not reported missing', () =>
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
     tool_input: { command: 'echo hi' },
+    ...COMMON,
   });
   assert.strictEqual(res.ok, true, JSON.stringify(res.missing));
+});
+
+test('permission_mode is required on every event but SessionEnd, which measurably carries none', () => {
+  for (const event of Object.keys(CONTRACT)) {
+    const has = Boolean(CONTRACT[event].fields.permission_mode);
+    assert.strictEqual(has, event !== 'SessionEnd', `${event} permission_mode required: ${has}`);
+  }
+});
+
+test('effort.level is required NOWHERE: a model with no effort levels (Haiku) sends none', () => {
+  // FF12 first made it required on every event, from an Opus capture. The
+  // Haiku capture in test/hooks-real-subagent-failure.fixture.jsonl has it on
+  // no event at all; host/hook-session.js reads that as "no effort".
+  for (const event of Object.keys(CONTRACT)) {
+    assert.ok(!CONTRACT[event].fields['effort.level'], `${event} must not require effort.level`);
+  }
 });
 
 test('an unknown event is reported rather than silently passing', () => {
@@ -82,6 +108,7 @@ test('nested fields are addressed by path', () => {
     tool_name: 'Agent',
     tool_input: { subagent_type: 'x' },
     tool_response: {},
+    ...COMMON,
   });
   assert.strictEqual(res.ok, true, JSON.stringify(res.missing));
 });

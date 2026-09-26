@@ -11,10 +11,12 @@ const HELPER = 'C:/tools/claude-custom-hook.exe';
 const PIPE = '\\\\.\\pipe\\claude-custom-abc123';
 const opts = { helperPath: HELPER, pipeName: PIPE };
 
-test('supplies exactly one top-level key: hooks', () => {
+test('without a status relay, supplies exactly one top-level key: hooks', () => {
   // Load-bearing. --settings replaces single-valued keys WHOLESALE, so any
   // extra key here would silently destroy the user's version of it. Measured:
-  // a partial statusLine object wiped the user's statusLine.command.
+  // a partial statusLine object wiped the user's statusLine.command. The one
+  // deliberate exception, statusLine as a chaining relay, is pinned in
+  // test/status-relay.test.js.
   const s = buildHarnessSettings(opts);
   assert.deepStrictEqual(Object.keys(s), ['hooks']);
 });
