@@ -918,8 +918,13 @@ function hexToRgba(hex, alpha) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+// The last theme the host sent, so a refused or abandoned colour preview can
+// be put back exactly.
+let lastTheme = null;
+
 function applyTheme(theme) {
   if (!theme) return;
+  lastTheme = theme;
   const terminal = { ...theme.terminal };
   if (backgroundUrl) {
     terminal.background = hexToRgba(terminal.background, TERM_ALPHA);
@@ -1512,11 +1517,18 @@ function flourish(milestone) {
   activeFlourish = { el, show, hide };
 }
 
-function applyBackground(filePath) {
+// `custom`: the project's own image rather than the generated art. Only a
+// custom image gets the darkness veil -- the generated SVG bakes its own dim.
+// `version` busts the image cache: a replaced background.png keeps its name.
+function applyBackground(filePath, { custom = false, version = '' } = {}) {
   if (!filePath) return;
-  backgroundUrl = 'file:///' + String(filePath).replace(/\\/g, '/');
+  // encodeURI, then the two characters it leaves alone that a path can hold
+  // and a URL cannot: a project under "C:\a#b" must not lose half its path.
+  const encoded = encodeURI(String(filePath).replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
+  backgroundUrl = 'file:///' + encoded + (version ? '?v=' + encodeURIComponent(version) : '');
   document.getElementById('bg').style.backgroundImage = `url("${backgroundUrl}")`;
   document.body.classList.add('has-bg');
+  document.body.classList.toggle('has-custom-bg', !!custom);
 
   // The WebGL renderer does not composite a transparent background correctly:
   // cells carrying an explicit ANSI background render as opaque boxes, which
@@ -1709,20 +1721,108 @@ function renderParty(party) {
 // A container that GROWS. app/style-display.js keeps the section registry and
 // the pure view logic; this file only draws it and wires its interactions to
 // the websocket -- the same division of labour as every other display module.
-let styleState = { background: { source: null, setAt: null, error: null } };
+//
+// The look itself is PROJECT-scoped and lives with the host (host/style.js);
+// the unfocused-window dim is install-wide and lives with main. Both are
+// painted here from what they report, never from what was last typed -- a
+// preview is local and temporary, the host's broadcast is what sticks.
+let styleState = {
+  colours: null,
+  background: { source: null, setAt: null, error: null, darkness: null },
+  inactive: { dim: null },
+};
+// Which section asked last, so a refusal from the host (which is not tagged
+// with one) lands under the control that caused it.
+let lastStyleAsk = 'background';
+
+// The style parts of a `hello` or `style` message, as panel state.
+function styleStateFrom(msg) {
+  const look = (msg.style && msg.style.look) || msg.look || {};
+  const chrome = (msg.theme && msg.theme.chrome) || {};
+  const source = (msg.style && msg.style.source) || msg.source || 'generated';
+  const setAt = (msg.style ? msg.style.setAt : msg.setAt) || null;
+  return {
+    // Unset colours show the theme's own value -- which, with nothing set, is
+    // exactly what the merged theme's chrome already holds.
+    colours: { appColor: look.appColor, textColor: look.textColor, baseBg: chrome.bg, baseText: chrome.text, error: null },
+    background: { source, setAt, error: null, darkness: look.darkness },
+    inactive: styleState.inactive,
+  };
+}
+
+// Background, darkness and theme from one style-bearing message, in the order
+// that matters: the background first, because applyTheme decides from it
+// whether the terminal must be transparent.
+function applyStyleMessage(msg) {
+  const look = (msg.style && msg.style.look) || msg.look || {};
+  const source = (msg.style && msg.style.source) || msg.source;
+  const setAt = (msg.style ? msg.style.setAt : msg.setAt) || '';
+  applyBackground(msg.background, { custom: source === 'override', version: setAt });
+  if (typeof look.darkness === 'number') {
+    document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));
+  }
+  if (msg.theme) applyTheme(msg.theme);
+}
+
+function sendStyle(section, payload) {
+  lastStyleAsk = section;
+  try { ws.send(JSON.stringify({ type: 'style', ...payload })); } catch { /* not attached */ }
+}
+
+// The id attributes are passed in WHOLE, as literals, rather than built from a
+// prefix: test/renderer-scope.test.js guards that every id this file looks up is
+// one it can see written out, and a computed id is one it cannot check.
+function colourRow(label, c, pickerId, hexId, resetId) {
+  return (
+    `<span class="style-label">${escapeHtml(label)}</span><div class="style-row">` +
+    `<input type="color" ${pickerId} value="${escapeHtml(c.value)}">` +
+    `<input type="text" class="style-hex" ${hexId} value="${escapeHtml(c.value)}" ` +
+    `maxlength="7" spellcheck="false">` +
+    `<button type="button" ${resetId}${c.isSet ? '' : ' disabled'} ` +
+    `title="Back to the theme's colour">Reset</button></div>`
+  );
+}
 
 function renderStyleSection(section) {
   const header = `<h3>${escapeHtml(section.title)}</h3>`;
-  if (section.id === 'background' && section.view) {
-    const v = section.view;
+  const v = section.view;
+  if (section.id === 'colours' && v) {
+    return (
+      `<section class="style-section" data-section="colours">${header}` +
+      `<div class="style-current">This project only. Every window opened in this folder uses it.</div>` +
+      colourRow('App', v.app, 'id="style-app"', 'id="style-app-hex"', 'id="style-app-reset"') +
+      colourRow('Text', v.text, 'id="style-text"', 'id="style-text-hex"', 'id="style-text-reset"') +
+      (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
+      `</section>`
+    );
+  }
+  if (section.id === 'background' && v) {
+    const dark = v.darknessPercent;
     return (
       `<section class="style-section" data-section="background">${header}` +
       `<div class="style-current">${escapeHtml(v.description)}</div>` +
       `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image here, or ` +
       `<label class="style-browse">choose a file<input type="file" id="style-bg-file" ` +
       `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden></label></div>` +
+      (v.isOverride
+        ? `<span class="style-label">Darkness</span><div class="style-row">` +
+          `<input type="range" id="style-dark" min="0" max="95" step="1" value="${dark === null ? 50 : dark}">` +
+          `<span class="style-val" id="style-dark-val">${dark === null ? '—' : dark + '%'}</span></div>`
+        : '') +
       `<button type="button" id="style-bg-reset"${v.isOverride ? '' : ' disabled'}>Reset to generated</button>` +
       (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
+      `</section>`
+    );
+  }
+  if (section.id === 'inactive' && v) {
+    const dim = v.dimPercent;
+    return (
+      `<section class="style-section" data-section="inactive">${header}` +
+      `<div class="style-current">${escapeHtml(v.description)}</div>` +
+      `<span class="style-label">Dim</span><div class="style-row">` +
+      `<input type="range" id="style-dim" min="0" max="80" step="1" value="${dim === null ? 45 : dim}"` +
+      `${dim === null ? ' disabled' : ''}>` +
+      `<span class="style-val" id="style-dim-val">${dim === null ? '—' : dim + '%'}</span></div>` +
       `</section>`
     );
   }
@@ -1780,11 +1880,92 @@ function bindStyleSections() {
 
   const resetBtn = document.getElementById('style-bg-reset');
   if (resetBtn) {
-    resetBtn.addEventListener('click', () => {
-      try { ws.send(JSON.stringify({ type: 'style', action: 'reset-background' })); } catch { /* not attached */ }
+    resetBtn.addEventListener('click', () => sendStyle('background', { action: 'reset-background' }));
+  }
+
+  bindColour(document.getElementById('style-app'), document.getElementById('style-app-hex'),
+    document.getElementById('style-app-reset'), 'appColor', (hex) => {
+    // A preview, not the palette: the host derives panel and border on commit.
+    const root = document.documentElement.style;
+    root.setProperty('--bg', hex);
+    root.setProperty('--chrome', hex);
+    if (!backgroundUrl) term.options.theme = { ...term.options.theme, background: hex };
+  });
+  bindColour(document.getElementById('style-text'), document.getElementById('style-text-hex'),
+    document.getElementById('style-text-reset'), 'textColor',
+    (hex) => document.documentElement.style.setProperty('--text', hex));
+
+  const dark = document.getElementById('style-dark');
+  if (dark) {
+    const label = document.getElementById('style-dark-val');
+    dark.addEventListener('input', () => {
+      document.documentElement.style.setProperty('--bg-darkness', String(dark.value / 100));
+      if (label) label.textContent = dark.value + '%';
+    });
+    dark.addEventListener('change', () => sendStyle('background', { action: 'set-look', look: { darkness: dark.value / 100 } }));
+  }
+
+  const dim = document.getElementById('style-dim');
+  if (dim && window.harness && window.harness.look) {
+    const label = document.getElementById('style-dim-val');
+    dim.addEventListener('input', () => { if (label) label.textContent = dim.value + '%'; });
+    dim.addEventListener('change', () => {
+      window.harness.look.setDim(dim.value / 100).then((saved) => {
+        // null means main could not save it: say so by showing what IS stored.
+        if (typeof saved === 'number') applyDim(saved);
+        else refreshDim();
+      });
     });
   }
 }
+
+const HEX_INPUT = /^#[0-9a-f]{6}$/i;
+
+// One colour control: the picker previews while it moves and commits when it
+// settles; the hex field commits on Enter/blur, and only a real #rrggbb.
+function bindColour(picker, hex, reset, key, preview) {
+  const commit = (value) => sendStyle('colours', { action: 'set-look', look: { [key]: value } });
+  if (picker) {
+    picker.addEventListener('input', () => { preview(picker.value); if (hex) hex.value = picker.value; });
+    picker.addEventListener('change', () => commit(picker.value));
+  }
+  if (hex) {
+    hex.addEventListener('change', () => {
+      const v = hex.value.trim();
+      if (!HEX_INPUT.test(v)) { hex.classList.add('bad'); return; }
+      hex.classList.remove('bad');
+      preview(v);
+      commit(v.toLowerCase());
+    });
+  }
+  if (reset) reset.addEventListener('click', () => commit(null));
+}
+
+// --- unfocused-window dim -----------------------------------------------------
+// Main tells the page when the window gains or loses focus, with the current
+// install-wide dim level. The veil is CSS (#focus-veil); this only flips it.
+function applyDim(dim) {
+  if (typeof dim !== 'number' || !Number.isFinite(dim)) return;
+  document.documentElement.style.setProperty('--unfocused-dim', String(dim));
+  const changed = styleState.inactive.dim !== dim;
+  styleState = { ...styleState, inactive: { dim } };
+  // Not re-rendered on every focus flip -- only when the value moved, so an
+  // open control in the panel is not rebuilt under the pointer.
+  if (changed) renderStylePanel();
+}
+
+function refreshDim() {
+  if (!window.harness || !window.harness.look) return;
+  window.harness.look.getDim().then(applyDim).catch(() => { /* main has no answer; leave it unknown */ });
+}
+
+if (window.harness && window.harness.onWindowFocus) {
+  window.harness.onWindowFocus(({ focused, dim }) => {
+    applyDim(dim);
+    document.body.classList.toggle('unfocused', !focused);
+  });
+}
+refreshDim();
 
 // One image at a time. `webUtils.getPathForFile` across the preload bridge is
 // the only way to get a dropped/chosen file's real path -- `File.path` was
@@ -1794,7 +1975,7 @@ function requestStyleBackground(files) {
   if (!files.length) return;
   const path = (window.harness && window.harness.pathForFile) ? window.harness.pathForFile(files[0]) : '';
   if (!path) return;
-  try { ws.send(JSON.stringify({ type: 'style', action: 'set-background', path })); } catch { /* not attached */ }
+  sendStyle('background', { action: 'set-background', path });
 }
 
 function handleControl(msg) {
@@ -1804,16 +1985,12 @@ function handleControl(msg) {
     // is already on screen and the session appears twice.
     term.reset();
     document.getElementById('cwd').textContent = msg.cwd || '';
-    // Background first: applyTheme needs to know whether to make the terminal
-    // translucent, and getting that order wrong leaves the art fully hidden.
-    applyBackground(msg.background);
-    // `msg.background` is already resolved through host/style.js (override
-    // wins over generated); `msg.style` carries WHY, for the Style panel's
-    // "generated for this project" / "your image, set <when>" line.
-    styleState = { background: { source: (msg.style && msg.style.source) || 'generated',
-      setAt: (msg.style && msg.style.setAt) || null, error: null } };
+    // `msg.background` is already resolved through host/style.js (the
+    // project's own copy wins over generated art) and `msg.theme` already has
+    // the project's look merged in; `msg.style` carries WHY, for the panel.
+    applyStyleMessage(msg);
+    styleState = styleStateFrom(msg);
     renderStylePanel();
-    applyTheme(msg.theme);
     renderUsage(msg.usage);
     // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
     // and the host sends a `quota` message as soon as the read lands.
@@ -1951,11 +2128,15 @@ function handleControl(msg) {
     // action; the CURRENT background/source is left exactly as it was, the
     // same "say what failed, do not repaint the world" rule renderProjects
     // follows for its own error branch.
+    // A refused colour reverts its preview too: the theme is repainted from
+    // the last look the host actually stored.
     if (msg.error) {
-      styleState = { background: { ...styleState.background, error: msg.error } };
+      const section = lastStyleAsk;
+      styleState = { ...styleState, [section]: { ...(styleState[section] || {}), error: msg.error } };
+      if (section === 'colours' && lastTheme) applyTheme(lastTheme);
     } else {
-      styleState = { background: { source: msg.source || 'generated', setAt: msg.setAt || null, error: null } };
-      applyBackground(msg.background);
+      applyStyleMessage(msg);
+      styleState = styleStateFrom(msg);
     }
     renderStylePanel();
     return;

@@ -23,8 +23,50 @@
 (function (root) {
 
 const STYLE_SECTIONS = [
+  { id: 'colours', title: 'Colours' },
   { id: 'background', title: 'Background image' },
+  { id: 'inactive', title: 'Inactive windows' },
 ];
+
+const HEX_RE = /^#[0-9a-f]{6}$/i;
+// What an <input type=color> is handed before anything is known. It shows
+// black for any invalid value, which would read as a real choice.
+const FALLBACK_BG = '#11131a';
+const FALLBACK_TEXT = '#c7cede';
+
+// Strict, never coercing: an absent fraction is "unknown", not 0%.
+function toPercent(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return Math.round(v * 100);
+}
+
+function errorOf(state) {
+  return (state && typeof state.error === 'string' && state.error) || null;
+}
+
+function colourView(set, base, fallback) {
+  if (typeof set === 'string' && HEX_RE.test(set)) return { value: set.toLowerCase(), isSet: true };
+  const value = typeof base === 'string' && HEX_RE.test(base) ? base.toLowerCase() : fallback;
+  return { value, isSet: false };
+}
+
+function coloursSectionView(state) {
+  const s = state || {};
+  return {
+    known: !!state && (typeof s.baseBg === 'string' || typeof s.appColor === 'string'),
+    app: colourView(s.appColor, s.baseBg, FALLBACK_BG),
+    text: colourView(s.textColor, s.baseText, FALLBACK_TEXT),
+    error: errorOf(state),
+  };
+}
+
+function inactiveSectionView(state) {
+  const dimPercent = toPercent(state && state.dim);
+  return {
+    dimPercent,
+    description: dimPercent === null ? 'reading…' : "How dark a window gets while you're typing in another one. Applies to every window.",
+  };
+}
 
 // Strict, not coercing -- Number(null) is 0, this codebase's named trap, and
 // an invalid/absent timestamp must read as "no time known", never as epoch.
@@ -53,11 +95,16 @@ function backgroundSectionView(state) {
     // Only meaningful once there IS an override -- resetting a generated
     // background to itself is not an action, so the button starts disabled.
     isOverride: !!(state && state.source === 'override'),
-    error: (state && typeof state.error === 'string' && state.error) || null,
+    darknessPercent: toPercent(state && state.darkness),
+    error: errorOf(state),
   };
 }
 
-const SECTION_VIEWS = { background: backgroundSectionView };
+const SECTION_VIEWS = {
+  colours: coloursSectionView,
+  background: backgroundSectionView,
+  inactive: inactiveSectionView,
+};
 
 /**
  * `state` is keyed by section id, the same shape the registry uses --
@@ -74,7 +121,7 @@ function styleDisplay(state) {
   }));
 }
 
-const API = { styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView };
+const API = { styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else Object.assign(root, API);
