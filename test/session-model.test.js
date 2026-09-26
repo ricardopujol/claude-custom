@@ -412,3 +412,158 @@ test('readSessionModel: an agent spawned by an agent is still resolved (nested i
   assert.strictEqual(r.agents['ui-designer'].model, 'claude-fable-5-1');
   assert.ok(!r.agents['ascii-judge']);
 });
+
+// --- mergeSessionModel + the host's refresher --------------------------------
+//
+// Dexter, PR #34, Findings 3 and 4. These live here rather than in host.js so
+// the host's wiring has a test at all (Miguel, S2): host.js is the process
+// entry point and cannot be required without starting one.
+
+const { mergeSessionModel, createSessionModelRefresher } = require('../host/session-model');
+
+const EMPTY = { session: { model: null, at: null }, agents: {}, errors: 0 };
+const row = (model, at = '2026-01-01T00:00:00.000Z') => ({ model, at });
+
+test('mergeSessionModel: a failed read does NOT erase a model already known (Finding 3)', () => {
+  const prev = { session: { model: 'claude-opus-5', at: 'x' }, agents: { X: row('claude-opus-5') }, errors: 0 };
+  const failed = { session: { model: null, at: null }, agents: {}, errors: 1 };
+  const m = mergeSessionModel(prev, failed);
+  assert.deepStrictEqual(m.agents.X, row('claude-opus-5'));
+  assert.strictEqual(m.session.model, 'claude-opus-5');
+  assert.strictEqual(m.errors, 1, 'the failure is still reported');
+});
+
+test('mergeSessionModel: a newer read of an agent replaces it; new agents are added', () => {
+  const prev = { ...EMPTY, agents: { X: row('claude-opus-5', 'a') } };
+  const next = { ...EMPTY, agents: { X: row('claude-sonnet-5', 'b'), Y: row('claude-fable-5-1') } };
+  const m = mergeSessionModel(prev, next);
+  assert.deepStrictEqual(m.agents, { X: row('claude-sonnet-5', 'b'), Y: row('claude-fable-5-1') });
+});
+
+test('mergeSessionModel: an agent literally named __proto__ is an own key, not a prototype swap', () => {
+  const next = { ...EMPTY, agents: JSON.parse('{"__proto__": {"model": "m", "at": null}}') };
+  const m = mergeSessionModel(EMPTY, next);
+  assert.ok(Object.prototype.hasOwnProperty.call(m.agents, '__proto__'));
+  assert.strictEqual(Object.getPrototypeOf(m.agents), Object.prototype);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(m.agents)), { ['__proto__']: { model: 'm', at: null } });
+});
+
+// A read whose resolution the test controls.
+function deferredReader() {
+  const calls = [];
+  const read = (sessionId) => new Promise((resolve, reject) => calls.push({ sessionId, resolve, reject }));
+  return { read, calls };
+}
+const tick = () => new Promise(r => setImmediate(r));
+
+test('refresher: an event DURING a read gets a fresh read after it, not the stale one (Finding 4A)', async () => {
+  const { read, calls } = deferredReader();
+  const r = createSessionModelRefresher({ read, currentSessionId: () => 's1' });
+  const first = r.refresh();                 // SubagentStop(agent-organizer)
+  await tick();
+  const second = r.refresh();                // SubagentStop(vera), mid-read
+  calls[0].resolve({ ...EMPTY, agents: { 'agent-organizer': row('claude-opus-5') } });
+  await tick();
+  assert.strictEqual(calls.length, 2, 'a follow-up read must be issued for the event that arrived mid-read');
+  calls[1].resolve({ ...EMPTY, agents: { 'agent-organizer': row('claude-opus-5'), vera: row('claude-sonnet-5') } });
+  const [a, b] = await Promise.all([first, second]);
+  assert.strictEqual(b.agents.vera.model, 'claude-sonnet-5');
+  assert.strictEqual(a, b, 'both callers settle on the same final state');
+});
+
+test('refresher: a /clear mid-read never shows the OLD session under the new id (Finding 4B)', async () => {
+  const { read, calls } = deferredReader();
+  let sid = 'A';
+  const r = createSessionModelRefresher({ read, currentSessionId: () => sid });
+  const p1 = r.refresh();
+  await tick();
+  sid = 'B';                                  // SessionStart(B) while A's read is in flight
+  const p2 = r.refresh();
+  calls[0].resolve({ ...EMPTY, agents: { old: row('claude-opus-5') } });
+  await tick();
+  assert.strictEqual(calls.length, 2);
+  assert.strictEqual(calls[1].sessionId, 'B');
+  calls[1].resolve({ ...EMPTY, session: { model: 'claude-sonnet-5', at: 't' } });
+  const [a, b] = await Promise.all([p1, p2]);
+  assert.ok(!('old' in b.agents), 'session A\'s agents must not appear under B');
+  assert.strictEqual(b.session.model, 'claude-sonnet-5');
+  assert.strictEqual(a, b);
+});
+
+test('refresher: a new session starts empty rather than inheriting the last one', async () => {
+  let sid = 'A';
+  const r = createSessionModelRefresher({
+    read: async (s) => (s === 'A' ? { ...EMPTY, agents: { old: row('m') } } : { ...EMPTY }),
+    currentSessionId: () => sid,
+  });
+  await r.refresh();
+  sid = 'B';
+  const m = await r.refresh();
+  assert.deepStrictEqual(m.agents, {});
+});
+
+test('refresher: a failed read keeps what was known, and says so (Finding 3 end to end)', async () => {
+  const reads = [
+    { ...EMPTY, agents: { X: row('claude-opus-5') } },
+    { ...EMPTY, errors: 1 },
+  ];
+  const r = createSessionModelRefresher({ read: async () => reads.shift(), currentSessionId: () => 's1' });
+  await r.refresh();
+  const m = await r.refresh();
+  assert.strictEqual(m.agents.X.model, 'claude-opus-5');
+  assert.strictEqual(m.errors, 1);
+});
+
+test('refresher: a read that THROWS keeps the last state and reports no change', async () => {
+  const changes = [];
+  let fail = false;
+  const r = createSessionModelRefresher({
+    read: async () => { if (fail) throw new Error('boom'); return { ...EMPTY, agents: { X: row('m') } }; },
+    currentSessionId: () => 's1',
+    onChange: (m) => changes.push(m),
+    log: () => {},
+  });
+  await r.refresh();
+  fail = true;
+  const m = await r.refresh();
+  assert.strictEqual(m.agents.X.model, 'm');
+  assert.strictEqual(changes.length, 1, 'only the first, real change is announced');
+});
+
+test('refresher: onChange fires once per real change, never for an identical read', async () => {
+  const changes = [];
+  const r = createSessionModelRefresher({
+    read: async () => ({ ...EMPTY, agents: { X: row('m') } }),
+    currentSessionId: () => 's1',
+    onChange: (m) => changes.push(m),
+  });
+  await r.refresh();
+  await r.refresh();
+  await r.refresh();
+  assert.strictEqual(changes.length, 1);
+});
+
+test('refresher: no session id yet means no read and the empty state', async () => {
+  let reads = 0;
+  const r = createSessionModelRefresher({ read: async () => { reads++; return EMPTY; }, currentSessionId: () => null });
+  const m = await r.refresh();
+  assert.strictEqual(reads, 0);
+  assert.deepStrictEqual(m, EMPTY);
+  assert.deepStrictEqual(r.current(), EMPTY);
+});
+
+test('refresher: on a session change the old state is dropped AT ONCE, not when the new read lands', async () => {
+  // Between SessionStart(B) and B's read resolving, a client that connects gets
+  // current() in its hello. It must not be session A's agents.
+  const { read, calls } = deferredReader();
+  let sid = 'A';
+  const r = createSessionModelRefresher({ read, currentSessionId: () => sid });
+  const p = r.refresh();
+  await tick();
+  calls[0].resolve({ ...EMPTY, agents: { old: row('m') } });
+  await p;
+  sid = 'B';
+  r.refresh();
+  await tick();
+  assert.deepStrictEqual(r.current().agents, {}, 'A\'s agents must be gone while B is being read');
+});

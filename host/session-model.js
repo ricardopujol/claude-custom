@@ -268,6 +268,106 @@ async function readSessionModel({
   return { session, agents, errors };
 }
 
+const emptyModel = () => ({ session: { model: null, at: null }, agents: {}, errors: 0 });
+
+/**
+ * Fold a fresh read into what is already known about the SAME session.
+ *
+ * A known model is never downgraded to unknown by a later read. A read that
+ * failed -- or half-failed: one unlistable folder, one oversized tail -- comes
+ * back missing rows it did not manage to see, and replacing the whole map with
+ * it flipped every card to "—" (Dexter, PR #34, Finding 3). The renderer fixed
+ * the same class for careers in `mergeAgentStats`.
+ *
+ * What the new read DID see wins: it is a full read, and readSessionModel has
+ * already picked each agent's newest run. `errors` is the new read's own, so a
+ * failure is still reported even though nothing was lost.
+ *
+ * Built through a Map and `Object.fromEntries`, never `obj[agent] = row`: an
+ * agent labelled `__proto__` would otherwise swap the object's prototype
+ * instead of becoming a key (Miguel, PR #34, I1). fromEntries defines own
+ * properties, and JSON round-trips them.
+ */
+function mergeSessionModel(prev, next) {
+  const rows = new Map(Object.entries((prev && prev.agents) || {}));
+  for (const [agent, row] of Object.entries((next && next.agents) || {})) rows.set(agent, row);
+  const nextSession = next && next.session;
+  const session = nextSession && typeof nextSession.model === 'string'
+    ? nextSession
+    : (prev && prev.session) || { model: null, at: null };
+  return {
+    session,
+    agents: Object.fromEntries(rows),
+    errors: next && Number.isInteger(next.errors) ? next.errors : 0,
+  };
+}
+
+/**
+ * The host's refresh of the session model, as a unit it can test.
+ *
+ * Coalesces concurrent refreshes -- a read walks the whole main transcript and
+ * takes seconds -- but NOT by handing a later event the read already in
+ * flight. That read started before the event, so it cannot contain what the
+ * event announced: a subagent that spawned and finished mid-read never
+ * appeared, and a /clear mid-read showed the old session's agents under the
+ * new id (Dexter, PR #34, Finding 4). Instead an event during a read marks it
+ * dirty, and ONE follow-up read runs after it settles; every caller gets the
+ * state after the last read. A result for a session that is no longer current
+ * is discarded rather than merged.
+ *
+ *   read(sessionId)      -> Promise<readSessionModel result>
+ *   currentSessionId()   -> the id to read now, or null before SessionStart
+ *   onChange(state)      -> called once per settled change, never for a no-op
+ */
+function createSessionModelRefresher({ read, currentSessionId, onChange = () => {}, log = console.error } = {}) {
+  let state = emptyModel();
+  let stateSession = null;
+  let pending = null;
+  let dirty = false;
+
+  async function run() {
+    do {
+      dirty = false;
+      const sid = currentSessionId();
+      if (!sid) break;
+      // A new session owns none of the old one's rows. Drop them now, before
+      // the read, so nothing that asks in the meantime (a client's hello) is
+      // handed the previous session's agents under the new id.
+      if (stateSession !== null && stateSession !== sid) {
+        state = emptyModel();
+        stateSession = sid;
+        onChange(state);
+      }
+      let result;
+      try {
+        result = await read(sid);
+      } catch (err) {
+        log('[host] session model read failed:', err && err.message);
+        continue;                                // keep what is known; retry only if dirty
+      }
+      // The session changed while this read ran: its answer is about the wrong
+      // session. Go round again for the current one instead of merging it.
+      if (currentSessionId() !== sid) { dirty = true; continue; }
+      const base = stateSession === sid ? state : emptyModel();
+      const before = JSON.stringify(state);
+      state = mergeSessionModel(base, result);
+      stateSession = sid;
+      if (JSON.stringify(state) !== before) onChange(state);
+    } while (dirty);
+    return state;
+  }
+
+  function refresh() {
+    if (!currentSessionId()) return Promise.resolve(state);
+    if (pending) { dirty = true; return pending; }
+    pending = run().finally(() => { pending = null; });
+    return pending;
+  }
+
+  return { refresh, current: () => state };
+}
+
 module.exports = {
   latestModel, isNewerRun, readSessionModel, defaultProjectsDir, SYNTHETIC, TAIL_BYTES,
+  mergeSessionModel, createSessionModelRefresher,
 };
