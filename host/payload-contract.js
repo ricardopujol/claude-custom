@@ -57,7 +57,10 @@ const CONTRACT = {
     fields: {
       tool_name: { used: 'processes.js label fallback + mood-machine.js attribution' },
       tool_use_id: { used: 'processes.js, to close the running entry this failure ends' },
+      is_interrupt: { used: 'mood-machine.js: an Esc interrupt is not the agent failing' },
     },
+    // agent_id / agent_type: read by mood-machine.js to credit the failing
+    // subagent; ABSENT on a main-session call, so not required here.
   },
   SubagentStop: {
     fields: {

@@ -138,10 +138,18 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
     }
 
     // A failed call fires PostToolUseFailure INSTEAD of PostToolUse, so it is
-    // the same result event, and by definition a failure.
-    const failed = event === 'PostToolUseFailure';
-    if (event === 'PostToolUse' || failed) {
-      const agent = current();
+    // the same result event -- and a failure, unless the user interrupted it
+    // (Esc), which is not the agent failing (Dexter F4).
+    const failureEvent = event === 'PostToolUseFailure';
+    const failed = failureEvent && !p.is_interrupt;
+    if (event === 'PostToolUse' || failureEvent) {
+      // WHOSE call. Measured: a subagent's calls carry agent_id + agent_type, a
+      // main-session call carries neither. So a failure with no agent_id is the
+      // main session's; blaming current() stressed a subagent that had failed
+      // nothing (Dexter F1). PostToolUse keeps the current() fallback for older
+      // CLIs that send no agent_id at all.
+      if (failureEvent && !p.agent_id) return;
+      const agent = p.agent_type && running(p.agent_type) ? p.agent_type : current();
       if (!agent) return;                     // no running agent to attribute to
       const a = ensure(agent);
 

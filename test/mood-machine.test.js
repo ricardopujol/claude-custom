@@ -651,9 +651,60 @@ test('a PostToolUseFailure counts as the agent\'s failure, like a non-zero PostT
   h.pre('Agent', AGENT);
   h.m.handle({ event: 'PostToolUseFailure', payload: {
     tool_name: 'Bash', tool_input: { command: 'ls /nope' }, tool_use_id: 't1',
+    agent_id: 'a1', agent_type: 'code-reviewer',    // a SUBAGENT's call carries these
     error: "Exit code 2\nls: cannot access '/nope'", is_interrupt: false,
   } });
   assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed');
   h.m.handle({ event: 'SubagentStop', payload: { agent_type: 'code-reviewer' } });
   assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed', 'finishes stressed, not happy');
+});
+
+// --- who a failure belongs to (Dexter F1, F4) --------------------------------
+const fail = (extra) => ({ event: 'PostToolUseFailure', payload: {
+  tool_name: 'Bash', tool_input: { command: 'ls /nope' }, tool_use_id: 'x',
+  error: 'Exit code 2', is_interrupt: false, ...extra,
+} });
+
+test('a MAIN-session failure (no agent_id) does not stress a running subagent', () => {
+  // Measured: main-session calls carry no agent_id. Attributing by current()
+  // blamed whichever agent was on top of the stack.
+  const h = harness();
+  h.pre('Agent', AGENT);
+  h.m.handle(fail({}));
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'working');
+  h.m.handle({ event: 'SubagentStop', payload: { agent_id: 'a1', agent_type: 'code-reviewer' } });
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'happy');
+});
+
+test('a subagent failure is credited to the agent the payload names, not the top of the stack', () => {
+  const h = harness();
+  h.pre('Agent', { subagent_type: 'code-reviewer' });
+  h.pre('Agent', { subagent_type: 'logic-reviewer' });
+  h.m.handle(fail({ agent_id: 'a1', agent_type: 'code-reviewer' }));
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed');
+  assert.strictEqual(h.m.stateOf('logic-reviewer'), 'working');
+});
+
+test('an interrupted call (the user pressed Esc) is not the agent\'s failure', () => {
+  const h = harness();
+  h.pre('Agent', AGENT);
+  h.m.handle(fail({ agent_id: 'a1', agent_type: 'code-reviewer', is_interrupt: true }));
+  assert.notStrictEqual(h.m.stateOf('code-reviewer'), 'stressed');
+});
+
+test('replay: the real stream, minus the subagent\'s own failure, ends with a HAPPY agent', () => {
+  // Dexter F1's counterexample on the committed capture: the main session's
+  // failing ls (no agent_id) stressed general-purpose, which then finished
+  // stressed though it failed nothing.
+  const fs = require('fs');
+  const path = require('path');
+  const stream = fs.readFileSync(path.join(__dirname, 'hooks-real-subagent-failure.fixture.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+    .filter(e => !(e.event === 'PostToolUseFailure' && e.payload.agent_id));
+  const h = harness();
+  const seen = [];
+  h.m.on('change', c => seen.push(c.agent + ':' + c.state));
+  for (const e of stream) h.m.handle(e);
+  assert.ok(!seen.includes('general-purpose:stressed'), seen.join(', '));
+  assert.ok(seen.includes('general-purpose:happy'), seen.join(', '));
 });
