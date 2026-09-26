@@ -46,22 +46,34 @@ function errorOf(state) {
   return (state && typeof state.error === 'string' && state.error) || null;
 }
 
-function colourView(set, base, fallback) {
-  if (typeof set === 'string' && HEX_RE.test(set)) return { value: set.toLowerCase(), isSet: true };
-  const value = typeof base === 'string' && HEX_RE.test(base) ? base.toLowerCase() : fallback;
-  return { value, isSet: false };
+const THEME_RESET = "Back to the theme's colour";
+
+// `painted` is the colour on screen (the merged theme's), and is the value
+// shown while unset. Set, the picker keeps the person's choice; when the
+// readability guard moved it (Dexter, accent review #2), `painted` says to what.
+function colourView(set, painted, fallback, resetTitle) {
+  const paintedHex = typeof painted === 'string' && HEX_RE.test(painted) ? painted.toLowerCase() : null;
+  if (typeof set === 'string' && HEX_RE.test(set)) {
+    const value = set.toLowerCase();
+    const view = { value, isSet: true, resetTitle };
+    if (paintedHex && paintedHex !== value) view.painted = paintedHex;
+    return view;
+  }
+  return { value: paintedHex || fallback, isSet: false, resetTitle };
 }
 
 function coloursSectionView(state) {
   const s = state || {};
   return {
     known: !!state && (typeof s.baseBg === 'string' || typeof s.appColor === 'string'),
-    app: colourView(s.appColor, s.baseBg, FALLBACK_BG),
-    text: colourView(s.textColor, s.baseText, FALLBACK_TEXT),
+    app: colourView(s.appColor, s.baseBg, FALLBACK_BG, THEME_RESET),
+    text: colourView(s.textColor, s.baseText, FALLBACK_TEXT, THEME_RESET),
     // Unset, these show the colour actually painted: the theme's accent, and
-    // the secondary text derived from Text and App.
-    accent: colourView(s.accentColor, s.baseAccent, FALLBACK_ACCENT),
-    secondary: colourView(s.secondaryColor, s.baseDim, FALLBACK_DIM),
+    // the secondary text derived from Text and App (Miguel, accent review #1:
+    // so its Reset does not claim to restore a theme colour).
+    accent: colourView(s.accentColor, s.baseAccent, FALLBACK_ACCENT, "Back to the theme's accent"),
+    secondary: colourView(s.secondaryColor, s.baseDim, FALLBACK_DIM,
+      'Back to automatic: worked out from Text and App'),
     error: errorOf(state),
   };
 }

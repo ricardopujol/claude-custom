@@ -114,16 +114,20 @@ test('an unknown darkness is null, not a confident 0%', () => {
 
 // --- colours ----------------------------------------------------------------------
 
+// The colour facts of a row, without its reset wording (pinned separately).
+const colour = ({ value, isSet, painted }) => (painted === undefined ? { value, isSet } : { value, isSet, painted });
+
 test('a colour the project has not set shows the theme value and says it is the default', () => {
   const c = section({ colours: { appColor: null, textColor: null, baseBg: '#0b1018', baseText: '#c3d2e4' } }, 'colours');
-  assert.deepStrictEqual(c.view.app, { value: '#0b1018', isSet: false });
-  assert.deepStrictEqual(c.view.text, { value: '#c3d2e4', isSet: false });
+  assert.deepStrictEqual(colour(c.view.app), { value: '#0b1018', isSet: false });
+  assert.deepStrictEqual(colour(c.view.text), { value: '#c3d2e4', isSet: false });
 });
 
 test('a colour the project HAS set is shown and marked resettable', () => {
-  const c = section({ colours: { appColor: '#402020', textColor: '#eeeeee', baseBg: '#0b1018', baseText: '#c3d2e4' } }, 'colours');
-  assert.deepStrictEqual(c.view.app, { value: '#402020', isSet: true });
-  assert.deepStrictEqual(c.view.text, { value: '#eeeeee', isSet: true });
+  // The merged theme paints what was set, so base* equals the choice here.
+  const c = section({ colours: { appColor: '#402020', textColor: '#eeeeee', baseBg: '#402020', baseText: '#eeeeee' } }, 'colours');
+  assert.deepStrictEqual(colour(c.view.app), { value: '#402020', isSet: true });
+  assert.deepStrictEqual(colour(c.view.text), { value: '#eeeeee', isSet: true });
 });
 
 test('a colour input always gets a valid #rrggbb, even before anything is known', () => {
@@ -137,11 +141,11 @@ test('a colour input always gets a valid #rrggbb, even before anything is known'
 
 test('accent and secondary text show the effective colour until set, then the set one', () => {
   const unset = section({ colours: { baseBg: '#0b1018', baseAccent: '#4fa3d9', baseDim: '#6b7d94' } }, 'colours');
-  assert.deepStrictEqual(unset.view.accent, { value: '#4fa3d9', isSet: false });
-  assert.deepStrictEqual(unset.view.secondary, { value: '#6b7d94', isSet: false });
+  assert.deepStrictEqual(colour(unset.view.accent), { value: '#4fa3d9', isSet: false });
+  assert.deepStrictEqual(colour(unset.view.secondary), { value: '#6b7d94', isSet: false });
   const set = section({ colours: { baseBg: '#0b1018', accentColor: '#e0a030', secondaryColor: '#a09070' } }, 'colours');
-  assert.deepStrictEqual(set.view.accent, { value: '#e0a030', isSet: true });
-  assert.deepStrictEqual(set.view.secondary, { value: '#a09070', isSet: true });
+  assert.deepStrictEqual(colour(set.view.accent), { value: '#e0a030', isSet: true });
+  assert.deepStrictEqual(colour(set.view.secondary), { value: '#a09070', isSet: true });
   const none = section({}, 'colours');
   assert.match(none.view.accent.value, /^#[0-9a-f]{6}$/);
   assert.match(none.view.secondary.value, /^#[0-9a-f]{6}$/);
@@ -157,6 +161,25 @@ test('reduceStyle carries the accent and secondary colours and their effective v
   assert.strictEqual(s.colours.secondaryColor, null);
   assert.strictEqual(s.colours.baseAccent, '#e0a030');
   assert.strictEqual(s.colours.baseDim, '#6b7d94');
+});
+
+// Dexter (accent review) #2: when the readability guard moved a chosen colour,
+// the panel says what is actually painted instead of only the choice.
+test('a set colour the guard adjusted reports the painted value; an untouched one does not', () => {
+  const moved = section({ colours: { baseBg: '#ffffff', accentColor: '#ffff00', baseAccent: '#737300' } }, 'colours');
+  assert.strictEqual(moved.view.accent.value, '#ffff00', 'the picker keeps the choice');
+  assert.strictEqual(moved.view.accent.painted, '#737300');
+  const kept = section({ colours: { baseBg: '#000000', accentColor: '#ffff00', baseAccent: '#ffff00' } }, 'colours');
+  assert.strictEqual(kept.view.accent.painted, undefined);
+});
+
+// Miguel (accent review) #1: unset secondary text is derived, not the theme's.
+test('each colour row says truthfully what its Reset goes back to', () => {
+  const v = section({ colours: { baseBg: '#0b1018' } }, 'colours').view;
+  assert.match(v.app.resetTitle, /theme/i);
+  assert.match(v.accent.resetTitle, /theme/i);
+  assert.doesNotMatch(v.secondary.resetTitle, /theme/i);
+  assert.match(v.secondary.resetTitle, /Text and App/);
 });
 
 test('a colours error is surfaced, and an empty one is not', () => {

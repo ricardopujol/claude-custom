@@ -948,6 +948,10 @@ function applyTheme(theme) {
   })) {
     if (c[key]) root.setProperty(cssVar, c[key]);
   }
+  // Only a look with a chosen accent carries onAccent; without one the CSS
+  // default (the theme's dark label) must come back, not a stale override.
+  if (c.onAccent) root.setProperty('--on-accent', c.onAccent);
+  else root.removeProperty('--on-accent');
   // A font change alters cell size, so the pty must be told the new geometry or
   // Ink's layout corrupts.
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
@@ -1814,7 +1818,10 @@ function colourRow(label, c, pickerId, hexId, resetId) {
     `<input type="text" class="style-hex" ${hexId} value="${escapeHtml(c.value)}" ` +
     `maxlength="7" spellcheck="false">` +
     `<button type="button" ${resetId}${c.isSet ? '' : ' disabled'} ` +
-    `title="Back to the theme's colour">Reset</button></div>`
+    `title="${escapeHtml(c.resetTitle || '')}">Reset</button></div>` +
+    (c.painted
+      ? `<div class="style-note">shown as ${escapeHtml(c.painted)} so it stays readable</div>`
+      : '')
   );
 }
 

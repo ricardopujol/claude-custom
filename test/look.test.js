@@ -259,6 +259,42 @@ test('property: a set accent or secondary colour always reads against the bg', (
   }));
 });
 
+// Dexter (accent review) #1: the inner-agent pill draws its label ON the accent.
+test('the label drawn on a chosen accent reads against it, even on a light app colour', () => {
+  const p = derivePalette({ ...DEFAULT_LOOK, appColor: '#ffffff', accentColor: '#000080' }, BASE_CHROME);
+  assert.ok(contrastRatio(p.onAccent, p.accent) >= 4.5, `${p.onAccent} on ${p.accent}`);
+});
+
+test('property: the label on a chosen accent always reads', () => {
+  fc.assert(fc.property(fc.option(hexArb, { nil: null }), hexArb, (appColor, accentColor) => {
+    const p = derivePalette({ ...DEFAULT_LOOK, appColor, accentColor }, BASE_CHROME);
+    assert.match(p.onAccent, HEX);
+    assert.ok(contrastRatio(p.onAccent, p.accent) >= 4.5, `${p.onAccent} on ${p.accent}`);
+  }));
+});
+
+// Dexter (accent review) #3: tabs and the header sit on the PANEL, not the bg.
+test('a chosen accent reads against the panel too, not only the bg', () => {
+  const p = derivePalette({ ...DEFAULT_LOOK, appColor: '#000000', accentColor: '#767676' }, BASE_CHROME);
+  assert.ok(contrastRatio(p.accent, p.panel) >= 4.5, `${p.accent} on panel ${p.panel}`);
+});
+
+// On the panel the bar is "4.5:1, or the best black/white can do": for a
+// mid-tone app colour (#7265b1, found by this property) no colour reaches 4.5:1
+// on both the bg and its slightly lighter panel.
+test('property: set text, accent and secondary colours read on the bg, and as well as possible on the panel', () => {
+  fc.assert(fc.property(fc.option(hexArb, { nil: null }), hexArb, hexArb, hexArb,
+    (appColor, textColor, accentColor, secondaryColor) => {
+      const p = derivePalette({ ...DEFAULT_LOOK, appColor, textColor, accentColor, secondaryColor }, BASE_CHROME);
+      const extreme = contrastRatio('#ffffff', p.bg) >= contrastRatio('#000000', p.bg) ? '#ffffff' : '#000000';
+      const panelBar = Math.min(4.5, contrastRatio(extreme, p.panel));
+      for (const k of ['text', 'accent', 'dim']) {
+        assert.ok(contrastRatio(p[k], p.bg) >= 4.5, `${k} ${p[k]} on bg ${p.bg}`);
+        assert.ok(contrastRatio(p[k], p.panel) >= panelBar - 1e-9, `${k} ${p[k]} on panel ${p.panel}`);
+      }
+    }));
+});
+
 test('a colour that already reads is left exactly as chosen', () => {
   const p = derivePalette({ ...DEFAULT_LOOK, appColor: '#101010', textColor: '#f0f0f0' }, BASE_CHROME);
   assert.strictEqual(p.text, '#f0f0f0');

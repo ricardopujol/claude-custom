@@ -138,14 +138,35 @@ const MIN_CONTRAST = 4.5;
  * that already reads is returned untouched.
  */
 function ensureContrast(color, against) {
-  if (contrastRatio(color, against) >= MIN_CONTRAST) return color;
-  const extreme = contrastRatio('#ffffff', against) >= contrastRatio('#000000', against) ? '#ffffff' : '#000000';
+  return ensureContrastAll(color, [against]);
+}
+
+/**
+ * ensureContrast against SEVERAL surfaces at once -- the UI text sits on both
+ * the bg and the panel (header, tab strip), which differ slightly (Dexter,
+ * accent review #3).
+ *
+ * The FIRST surface is the guarantee: the extreme walked toward is the one that
+ * reads best on it, so 4.5:1 there always holds. The others are met whenever
+ * that extreme can meet them. For a mid-tone bg (luminance near 0.18) no colour
+ * at all reaches 4.5:1 on both it and a slightly lighter panel -- found by the
+ * property test with #7265b1 -- and the panel then gets the extreme's best.
+ */
+function ensureContrastAll(color, againsts) {
+  const worst = (c) => Math.min(...againsts.map((a) => contrastRatio(c, a)));
+  if (worst(color) >= MIN_CONTRAST) return color;
+  const primary = againsts[0];
+  const extreme = contrastRatio('#ffffff', primary) >= contrastRatio('#000000', primary) ? '#ffffff' : '#000000';
   for (let step = 1; step <= 20; step++) {
     const candidate = mix(color, extreme, step / 20);
-    if (contrastRatio(candidate, against) >= MIN_CONTRAST) return candidate;
+    if (worst(candidate) >= MIN_CONTRAST) return candidate;
   }
   return extreme;
 }
+
+// The theme's dark label on the accent (the inner-agent pill). Kept when it
+// reads on the chosen accent, walked to white-ish when it does not.
+const ON_ACCENT = '#12141c';
 
 /**
  * The chrome colours for this look, over the registry theme's `chrome`.
@@ -168,16 +189,22 @@ function derivePalette(look, baseChrome) {
     out.border = mix(appColor, toward, BORDER_MIX);
   }
   if (textColor) out.text = textColor;
+  // Every surface UI text is drawn on: the bg and the panel (header, tabs).
+  const surfaces = [out.bg, out.panel].filter((c) => parseHex(c));
+  const readable = (hex) => (surfaces.length ? ensureContrastAll(hex, surfaces) : hex);
   if ((appColor || textColor) && parseHex(out.text) && parseHex(out.bg)) {
-    out.text = ensureContrast(out.text, out.bg);
+    out.text = readable(out.text);
     // Dim is re-derived whenever either end moved: the base theme's dim was
     // tuned against the base background, and against a new one it can vanish.
     out.dim = mix(out.text, out.bg, DIM_MIX);
   }
-  // A chosen accent or secondary text colour gets the same guard as Text: the
-  // active tab's label and the secondary text must never vanish into the bg.
-  const readable = (hex) => (parseHex(out.bg) ? ensureContrast(hex, out.bg) : hex);
-  if (accentColor) out.accent = readable(accentColor);
+  // A chosen accent or secondary colour is used as given when it reads, and
+  // moved just far enough when it would vanish -- a separate guard from the
+  // derived dim above, which is never overridden unless the person set one.
+  if (accentColor) {
+    out.accent = readable(accentColor);
+    out.onAccent = ensureContrast(ON_ACCENT, out.accent);
+  }
   if (secondaryColor) out.dim = readable(secondaryColor);
   return out;
 }
@@ -225,6 +252,6 @@ function sanitizeDim(v) {
 
 module.exports = {
   parseHex, formatHex, sanitizeLook, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
-  contrastRatio, ensureContrast, MIN_CONTRAST,
+  contrastRatio, ensureContrast, ensureContrastAll, MIN_CONTRAST,
   DEFAULT_LOOK, MAX_DARKNESS, ACCEPTED_EXTENSIONS, DEFAULT_DIM, MAX_DIM,
 };
