@@ -200,9 +200,12 @@ async function tailEntries(file, openFile, { until = () => true } = {}) {
     for (;;) {
       const entries = await readWindow(fh, stat.size, window);
       // Stop at what the caller wanted, at the start of the file, or at the cap.
-      if (until(entries) || window >= stat.size || window >= TAIL_MAX_BYTES) {
-        return { entries, gone: false };
-      }
+      if (until(entries) || window >= stat.size) return { entries, gone: false };
+      // Stopped by the cap with what was wanted still unfound: the rest of the
+      // file was never read, so this is UNREAD, not absent. `capped` lets the
+      // caller count it -- otherwise a read that skipped a run looks clean
+      // (Dexter, PR #34 round 3).
+      if (window >= TAIL_MAX_BYTES) return { entries, gone: false, capped: true };
       window = Math.min(window * 2, TAIL_MAX_BYTES);
     }
   } catch {
@@ -264,12 +267,15 @@ async function readSessionModel({
   const picked = new Map();
 
   for (const entry of mine) {
-    const { entries, gone } = await tailEntries(entry.file, openFile, { until: (e) => latestModel(e) !== null });
+    const { entries, gone, capped } = await tailEntries(entry.file, openFile, { until: (e) => latestModel(e) !== null });
     if (gone) continue;                        // vanished: correctly nothing
     if (entries === null) { errors++; continue; }   // exists, unreadable: a failure
 
     const latest = latestModel(entries);
-    if (!latest) continue;                      // nothing usable yet: absence
+    if (!latest) {
+      if (capped) errors++;                     // never reached a model line: UNREAD
+      continue;                                 // whole file, no model yet: absence
+    }
 
     if (!entry.subagent) {
       session.model = latest.model;
@@ -333,6 +339,12 @@ function mergeSessionModel(prev, next) {
   // or partial read that simply did not see the run would otherwise wipe it
   // or hand it an older run (Dexter r2 #1, Miguel r2 G1). A clean read that
   // still can't resolve the label re-reports it, so nothing real is lost.
+  //
+  // "Clean" = errors === 0, which counts unreadable files AND runs the tail
+  // cap stopped short of (Dexter r3). One skip is still uncounted, knowingly:
+  // a subagent whose `.meta.json` is missing (ENOENT) and whose identity the
+  // tables can't resolve is skipped as "nothing to file it under". Claude Code
+  // writes the meta beside the transcript, so that needs a half-written pair.
   const cleanRead = !!next && next.errors === 0;
   const rows = new Map(Object.entries((prev && prev.agents) || {})
     .filter(([, row]) => !(cleanRead && row && row.unresolved)));
@@ -354,7 +366,9 @@ function mergeSessionModel(prev, next) {
   return {
     session,
     agents: Object.fromEntries(rows),
-    errors: next && Number.isInteger(next.errors) ? next.errors : 0,
+    // A read that did not report a count has an UNKNOWN count, not zero --
+    // the same input `cleanRead` above already refuses to call clean.
+    errors: next && Number.isInteger(next.errors) ? next.errors : null,
   };
 }
 

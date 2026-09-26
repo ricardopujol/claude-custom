@@ -308,6 +308,9 @@ test('readSessionModel: no assistant line yet is null, never a guessed string', 
   assert.strictEqual(r.session.model, null);
   assert.strictEqual(r.session.at, null);
   assert.ok(!('code-reviewer' in r.agents), 'nothing to report yet is absence, not a row');
+  // ...and absence is not a failure: a small file with no model line yet was
+  // read WHOLE. Only a capped read counts (Dexter r3).
+  assert.strictEqual(r.errors, 0);
 });
 
 test('readSessionModel: a session with no subagents is ordinary, not an error', async () => {
@@ -653,6 +656,9 @@ test('readSessionModel: the widening STOPS at the cap -- beyond it the model is 
   ]);
   const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
   assert.strictEqual(r.session.model, null);
+  // Dexter r3: a run the cap stopped short of is UNREAD, not absent -- it must
+  // count, or an errors:0 read passes as clean and evicts what it never saw.
+  assert.strictEqual(r.errors, 1, 'a capped run with no model is counted as unread');
 });
 
 // --- round 1: Dexter r1 F1 / Miguel r1 N1, F2, F3 -----------------------------
@@ -735,4 +741,36 @@ test('mergeSessionModel: a PARTIAL read cannot put an older run back on an unres
   const prev = { ...EMPTY, agents: { L: { ...row('claude-sonnet-5', '2026-01-01T11:00:00.000Z'), unresolved: true } } };
   const partial = { ...EMPTY, agents: { L: { ...row('claude-opus-5', '2026-01-01T10:00:00.000Z'), unresolved: true } }, errors: 1 };
   assert.strictEqual(mergeSessionModel(prev, partial).agents.L.model, 'claude-sonnet-5');
+});
+
+// --- round 3: Dexter r3 #1 and coverage note ----------------------------------
+
+test('refresher: an unresolved row survives a read whose only run of it hit the cap unread (r3 #1)', async () => {
+  // End to end through the real reader: L was known; the next read finds L's
+  // transcript grown past TAIL_MAX_BYTES of model-free tail. That read is NOT
+  // clean, so it may not evict L.
+  const { TAIL_MAX_BYTES } = require('../host/session-model');
+  const { projectsDir, projectDir, dir } = project();
+  writeSession(dir, 's1', []);
+  const lines = [assistant('claude-sonnet-5', '2026-01-01T11:00:00.000Z')];
+  writeSubagent(dir, 's1', 'agent-a', { agentType: 'ghost-label', requestShape: 'background' }, lines);
+  const r = createSessionModelRefresher({
+    read: (sessionId) => readSessionModel({ projectsDir, projectDir, sessionId }),
+    currentSessionId: () => 's1',
+  });
+  const first = await r.refresh();
+  assert.strictEqual(first.agents['ghost-label'].unresolved, true);
+
+  fs.appendFileSync(path.join(dir, 's1', 'subagents', 'agent-a.jsonl'),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'y'.repeat(TAIL_MAX_BYTES + 1024) } }) + NL);
+  const second = await r.refresh();
+  assert.strictEqual(second.errors, 1);
+  assert.strictEqual(second.agents['ghost-label'] && second.agents['ghost-label'].model, 'claude-sonnet-5');
+});
+
+test('mergeSessionModel: a read with NO errors field is not clean, and its count is unknown, not 0 (r3 note)', () => {
+  const prev = { ...EMPTY, agents: { L: { ...row('m', '2026-01-01T11:00:00.000Z'), unresolved: true } } };
+  const m = mergeSessionModel(prev, { session: { model: null, at: null }, agents: {} });
+  assert.strictEqual(m.agents.L && m.agents.L.model, 'm', 'no errors field must not count as a clean read');
+  assert.strictEqual(m.errors, null, 'an unreported count is unknown -- never a confident zero');
 });
