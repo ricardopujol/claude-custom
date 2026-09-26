@@ -57,14 +57,22 @@ function damagedVault() {
 
   const j = JSON.parse(fs.readFileSync(file, 'utf8'));
   // The RECOVERABLE bytes, captured before we damage the header: the wrapped
-  // ciphertext and the cleartext label. Note the secret VALUE never appears in
+  // ciphertext and the wrapped label. Note the secret VALUE never appears in
   // the file -- it is safeStorage-encrypted and then key-wrapped, which is the
   // point of the feature. My first version of these tests looked for the
   // plaintext marker and failed, correctly.
+  //
+  // FORMAT 2 / item 4: the label is captured WRAPPED too, not as the literal
+  // string passed to `add`. `setKey` above sealed it the moment a key existed,
+  // which is the whole point of item 4 -- a damaged-but-preserved file no
+  // longer hands the label to anyone who opens it in Notepad either. Fixing
+  // the header is still what makes it human-readable again, exactly as it was
+  // always true of the secret value.
   const wrapped = j.entries[0].secret;
+  const wrappedLabel = j.entries[0].label;
   j.lock.scrypt = { ...j.lock.scrypt, keylen: 16 };     // fails validLockRecord
   fs.writeFileSync(file, JSON.stringify(j));
-  return { file, wrapped, label: 'client-x prod db' };
+  return { file, wrapped, label: wrappedLabel };
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +163,11 @@ test('H2: melting a DAMAGED vault moves the file aside and names where it went',
   assert.ok(kept.includes(wrapped),
     'the WRAPPED CIPHERTEXT must survive -- that is the recoverable part, and '
     + 'the thing the app told the user it might still have');
-  assert.ok(kept.includes(label), 'and the label with it, so they can tell what it was');
+  // FORMAT 2 / item 4: `label` is now the WRAPPED bytes, not the plaintext
+  // string -- fixing the header and unlocking is what makes it readable
+  // again, exactly like the secret always was. What survives here is that the
+  // label is preserved AT ALL, in the same shape it was in before the damage.
+  assert.ok(kept.includes(label), 'and the wrapped label survives with it, once the header is fixed');
 
   // And the sweep cannot eat it: it anchors on the temp prefix/suffix, which
   // this name matches neither of. Asserted rather than assumed, because these
