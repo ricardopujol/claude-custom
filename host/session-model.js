@@ -326,12 +326,16 @@ const emptyModel = () => ({ session: { model: null, at: null }, agents: {}, erro
  * properties, and JSON round-trips them.
  */
 function mergeSessionModel(prev, next) {
-  // Carried forward: only rows filed under a RESOLVED identity. An unresolved
-  // row is a label a half-failed read fell back to; once a later read resolves
-  // the same run to its type, keeping the label would show one run twice under
-  // two names for the rest of the session (Dexter, PR #34 round 1, F3).
+  // An unresolved row is a label a half-failed read fell back to; once a later
+  // read resolves the same run to its type, keeping the label would show one
+  // run twice under two names for the rest of the session (Dexter, PR #34
+  // round 1, F3). But only a CLEAN read has the standing to evict it: a failed
+  // or partial read that simply did not see the run would otherwise wipe it
+  // or hand it an older run (Dexter r2 #1, Miguel r2 G1). A clean read that
+  // still can't resolve the label re-reports it, so nothing real is lost.
+  const cleanRead = !!next && next.errors === 0;
   const rows = new Map(Object.entries((prev && prev.agents) || {})
-    .filter(([, row]) => !(row && row.unresolved)));
+    .filter(([, row]) => !(cleanRead && row && row.unresolved)));
   for (const [agent, row] of Object.entries((next && next.agents) || {})) {
     // A fresh read replaces a known row unless the known one is strictly
     // NEWER. A partial read that could not open an agent's latest transcript

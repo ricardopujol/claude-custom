@@ -722,3 +722,17 @@ test('readSessionModel: a file of exactly TAIL_MAX_BYTES + 1 keeps its first lin
   const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
   assert.strictEqual(r.session.model, 'claude-opus-5');
 });
+
+// --- round 2: Dexter r2 #1 / Miguel r2 G1 -------------------------------------
+
+test('mergeSessionModel: a FAILED read does not evict an unresolved row (r2 #1, wipe)', () => {
+  const prev = { ...EMPTY, agents: { L: { ...row('claude-sonnet-5', '2026-01-01T11:00:00.000Z'), unresolved: true } } };
+  const m = mergeSessionModel(prev, { ...EMPTY, errors: 1 });
+  assert.strictEqual(m.agents.L && m.agents.L.model, 'claude-sonnet-5');
+});
+
+test('mergeSessionModel: a PARTIAL read cannot put an older run back on an unresolved row (r2 #1, overwrite)', () => {
+  const prev = { ...EMPTY, agents: { L: { ...row('claude-sonnet-5', '2026-01-01T11:00:00.000Z'), unresolved: true } } };
+  const partial = { ...EMPTY, agents: { L: { ...row('claude-opus-5', '2026-01-01T10:00:00.000Z'), unresolved: true } }, errors: 1 };
+  assert.strictEqual(mergeSessionModel(prev, partial).agents.L.model, 'claude-sonnet-5');
+});
