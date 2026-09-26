@@ -66,7 +66,13 @@ function buildHarnessSettings({ helperPath, pipeName } = {}) {
     hooks: {
       PreToolUse: [entry(PRE_TOOL_MATCHER, 'PreToolUse')],
       PostToolUse: [entry(POST_TOOL_MATCHER, 'PostToolUse')],
+      // A FAILED call fires this INSTEAD of PostToolUse -- never both. Without
+      // it every non-zero Bash exit stayed "running" in the panel, and the mood
+      // engine never saw the failure. Measured: verify/probe-failure-payloads.js.
+      PostToolUseFailure: [entry(POST_TOOL_MATCHER, 'PostToolUseFailure')],
       SubagentStop: [entry('', 'SubagentStop')],
+      // Once per session: the backstop that ends anything still shown running.
+      SessionEnd: [entry('', 'SessionEnd')],
       // Fires once per session, not per tool call, so it adds nothing to the
       // critical path. It carries the session id, which is how the host finds
       // this session's transcript to read token spend from.

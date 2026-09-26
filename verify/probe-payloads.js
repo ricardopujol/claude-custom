@@ -88,11 +88,17 @@ const seen = () => (log.match(/\[hook:full\] .*/g) || [])
   // Notification is the exception: it fires only when the session is BLOCKED
   // waiting for you, which cannot happen in the bypass mode the harness runs.
   // Calling that a failure reports on the scenario, not on the contract.
-  const NOT_EXERCISED_HERE = new Set(['Notification']);
+  // PostToolUseFailure needs a FAILING call and SessionEnd a session that ends;
+  // this scenario has neither. verify/probe-failure-payloads.js measures both.
+  const NOT_EXERCISED_HERE = new Map([
+    ['Notification', 'cannot fire in bypass mode — nothing ever asks permission'],
+    ['PostToolUseFailure', 'needs a failing call — see verify/probe-failure-payloads.js'],
+    ['SessionEnd', 'needs the session to end — see verify/probe-failure-payloads.js'],
+  ]);
   for (const event of Object.keys(CONTRACT)) {
     const got = byEvent.get(event) || [];
     if (!got.length && NOT_EXERCISED_HERE.has(event)) {
-      console.log(`SKIP  ${event} cannot fire in bypass mode — nothing ever asks permission`);
+      console.log(`SKIP  ${event} ${NOT_EXERCISED_HERE.get(event)}`);
       continue;
     }
     check(`${event} was observed`, got.length > 0, got.length ? `${got.length}x` : 'never fired');

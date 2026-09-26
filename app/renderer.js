@@ -959,13 +959,15 @@ const roster = new Map();
 
 function faceHtml(portrait) {
   if (portrait && portrait.kind === 'file') {
-    return `<img src="file:///${portrait.path.replace(/\\/g, '/')}" alt="" />`;
+    return `<img src="file:///${escapeHtml(portrait.path.replace(/\\/g, '/'))}" alt="" />`;
   }
   const p = portrait || { initials: '??', hue: 210 };
   // Placeholder: stable per-agent hue so an agent stays recognisable until a
-  // generated portrait exists for it.
+  // generated portrait exists for it. The initials come from the agent's name,
+  // which is a hook payload's, not ours -- escaped like the name itself (#49).
+  // The hue is forced numeric so it can't carry markup into the style either.
   return `<span style="width:100%;height:100%;display:flex;align-items:center;` +
-         `justify-content:center;background:hsl(${p.hue} 42% 62%)">${p.initials}</span>`;
+         `justify-content:center;background:hsl(${Number(p.hue) || 0} 42% 62%)">${escapeHtml(p.initials)}</span>`;
 }
 
 // Career stats per agent, keyed by agent type. Arrives with the handshake and
@@ -975,6 +977,16 @@ let agentStats = new Map();
 // not on any row -- and `ok: false` means the figures below are a lower bound,
 // which the panel has to be able to say.
 let lastAgentStatsPayload = null;
+
+// The live delegation stack, exactly as `hello`/`processes` carry it, kept so
+// renderRoster can turn it into a per-agent running count (app/agent-card-display.js
+// `instanceCounts`) without a third module re-deriving it from mood.js.
+let latestParty = [];
+// The model each agent actually used, read from its own transcript -- see
+// host/session-model.js. `{model:null,...}` on a fresh session before
+// SessionStart's read has landed, which app/agent-card-display.js's
+// `modelLine` draws as "not read yet", never a guess.
+let sessionModel = { session: { model: null, at: null }, agents: {}, errors: 0 };
 
 // Ricardo: tokens spent and time worked IN THE PROJECT, not in this window.
 // Compact because it sits beside a 40px portrait -- "47.1M / 30m" reads at a
@@ -1011,6 +1023,22 @@ function careerHtml(agent) {
     `</div>`;
 }
 
+// The model line under the state (FF10) and the ×N badge beside the name for
+// concurrent instances of one agent (FF8). Both judgements live in
+// app/agent-card-display.js so they can be tested; this is only the drawing.
+function agentModelHtml(agent) {
+  const entry = modelEntry(sessionModel && sessionModel.agents, agent);
+  const m = modelLine(entry, sessionModel && sessionModel.errors);
+  return `<div class="agent-model" title="${escapeHtml(m.title)}">${escapeHtml(m.text)}</div>`;
+}
+
+function countBadgeHtml(agent, counts) {
+  // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
+  // concurrent run is news.
+  const n = counts.get(agent) || 0;
+  return n >= 2 ? `<span class="agent-count" title="${n} running now">×${n}</span>` : '';
+}
+
 function renderRoster() {
   if (roster.size === 0) {
     // Three different situations, not one sentence. "No agents yet" is a
@@ -1024,12 +1052,15 @@ function renderRoster() {
   const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };
   const rows = [...roster.values()].sort((a, b) =>
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
+  const counts = instanceCounts(latestParty);
 
   agentsEl.innerHTML = rows.map(r =>
     `<div class="agent" data-state="${r.state}">` +
       `<div class="face">${faceHtml(r.portrait)}</div>` +
-      `<div class="meta"><div class="name" title="${r.agent}">${r.agent}</div>` +
+      `<div class="meta"><div class="name" title="${escapeHtml(r.agent)}">${escapeHtml(r.agent)}` +
+        countBadgeHtml(r.agent, counts) + `</div>` +
       `<div class="state">${r.state}</div>` +
+      agentModelHtml(r.agent) +
       careerHtml(r.agent) +
       `</div>` +
     `</div>`
@@ -1561,11 +1592,21 @@ function renderProcesses(running) {
     procListEl.innerHTML = '<div class="none">nothing running</div>';
     return;
   }
+  // A label is a Bash command: untrusted text, never markup (Dexter F5). Nested,
+  // not top-level, because renderer.js shares one global scope with the other
+  // plain scripts -- see CLAUDE.md.
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   procListEl.innerHTML = running.map(p => {
-    const slow = p.elapsedMs >= 60000 ? ' slow' : '';
-    return '<div class="proc' + slow + '"><span class="dot"></span>' +
-           '<span class="lbl" title="' + p.tool + ': ' + p.label + '">' + p.label + '</span>' +
-           '<span class="el">' + humanElapsed(p.elapsedMs) + '</span></div>';
+    // "stale": ended because its agent or turn finished, while its own close
+    // event never arrived. Shown briefly rather than dropped, so a lost event
+    // is visible instead of silently recurring.
+    const stale = p.state === 'stale';
+    const cls = stale ? ' stale' : (p.elapsedMs >= 60000 ? ' slow' : '');
+    return '<div class="proc' + cls + '"><span class="dot"></span>' +
+           '<span class="lbl" title="' + esc(p.tool + ': ' + p.label) +
+             (stale ? ' (ended; its own finish event never arrived)' : '') + '">' + esc(p.label) + '</span>' +
+           '<span class="el">' + (stale ? 'ended (stale)' : humanElapsed(p.elapsedMs)) + '</span></div>';
   }).join('');
 }
 
@@ -2001,11 +2042,13 @@ function handleControl(msg) {
     renderProcesses(msg.running);
     if (msg.modes) modeTable = msg.modes;
     renderMode(msg.mode);
+    latestParty = msg.party || [];
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
-    // Before renderRoster, so the first paint already carries the careers
-    // rather than flashing the roster without them.
+    // Before renderRoster, so the first paint already carries the careers and
+    // the models rather than flashing the roster without them.
+    if (msg.sessionModel) sessionModel = msg.sessionModel;
     renderAgentStats(msg.agentStats);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -2025,7 +2068,16 @@ function handleControl(msg) {
     // `mode`, so calling renderMode(undefined) here hid the badge a second after
     // `hello` had correctly set it -- the host was right the whole time.
     renderProcesses(msg.running);
+    latestParty = msg.party || [];
     renderParty(msg.party);
+    // The ×N badge is derived from `party`, which just changed; the roster map
+    // itself may not have, so nothing else here would repaint it.
+    renderRoster();
+    return;
+  }
+  if (msg.type === 'sessionModel') {
+    sessionModel = { session: msg.session, agents: msg.agents || {}, errors: msg.errors };
+    renderRoster();
     return;
   }
   if (msg.type === 'attention') {

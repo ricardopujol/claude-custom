@@ -69,8 +69,27 @@ test('hooks only the events the harness actually consumes', () => {
   const s = buildHarnessSettings(opts);
   assert.deepStrictEqual(
     Object.keys(s.hooks).sort(),
-    ['Notification', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']
+    ['Notification', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'SessionEnd', 'SessionStart',
+     'Stop', 'SubagentStop']
   );
+});
+
+test('PostToolUseFailure is hooked with exactly the PostToolUse matcher', () => {
+  // A failed call fires PostToolUseFailure INSTEAD of PostToolUse (measured by
+  // verify/probe-failure-payloads.js). Unhooked, every non-zero Bash exit was
+  // left "running" in the panel. Same matcher, or a tool closes on success and
+  // leaks on failure.
+  const s = buildHarnessSettings(opts);
+  assert.ok(Array.isArray(s.hooks.PostToolUseFailure) && s.hooks.PostToolUseFailure.length === 1);
+  assert.strictEqual(s.hooks.PostToolUseFailure[0].matcher, s.hooks.PostToolUse[0].matcher);
+  assert.match(s.hooks.PostToolUseFailure[0].hooks[0].command, /--event PostToolUseFailure$/);
+});
+
+test('SessionEnd is hooked so a finished session leaves nothing running', () => {
+  const s = buildHarnessSettings(opts);
+  assert.ok(Array.isArray(s.hooks.SessionEnd) && s.hooks.SessionEnd.length === 1);
+  assert.strictEqual(s.hooks.SessionEnd[0].matcher, '');
+  assert.match(s.hooks.SessionEnd[0].hooks[0].command, /--event SessionEnd$/);
 });
 
 test('SessionStart is hooked so the host learns the session id', () => {

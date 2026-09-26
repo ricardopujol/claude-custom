@@ -85,3 +85,22 @@ test('nested fields are addressed by path', () => {
   });
   assert.strictEqual(res.ok, true, JSON.stringify(res.missing));
 });
+
+test('every contracted event in a REAL captured hook stream carries what the host reads', () => {
+  // Real payloads from verify/probe-failure-payloads.js, not shapes written to
+  // match the code -- the circularity that hid "Agent" vs "Task".
+  const fs = require('fs');
+  const path = require('path');
+  const stream = fs.readFileSync(path.join(__dirname, 'hooks-real-subagent-failure.fixture.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const seen = new Set();
+  for (const { event, payload } of stream) {
+    if (!CONTRACT[event]) continue;
+    seen.add(event);
+    const res = checkPayload(event, payload);
+    assert.ok(res.ok, `${event} missing ${res.missing.join(', ')}`);
+  }
+  for (const event of ['PostToolUseFailure', 'SubagentStop', 'Stop', 'SessionEnd']) {
+    assert.ok(seen.has(event), `fixture exercises ${event}`);
+  }
+});
