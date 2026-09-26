@@ -15,6 +15,7 @@ const assert = require('node:assert');
 const {
   modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
   MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS,
+  modelMatches, effortMatches, validModelInput, inputState,
 } = require('../app/top-bar-display');
 
 // --- modelFamily -------------------------------------------------------------
@@ -90,23 +91,41 @@ test('cueColour never throws when the theme is missing or malformed', () => {
 
 // --- pendingResolver -----------------------------------------------------------
 
-test('a matching truth message resolves pending to "applied"', () => {
+test('a matching truth message newer than the request resolves pending to "applied"', () => {
   const pending = { kind: 'model', value: 'sonnet', startedAt: 1000 };
-  const res = pendingResolver(pending, { type: 'truth', kind: 'model', matches: true });
+  const res = pendingResolver(pending, { type: 'truth', kind: 'model', matches: true, at: 1500 });
   assert.strictEqual(res.result, 'applied');
   assert.strictEqual(res.pending, null);
 });
 
-test('a non-matching truth message resolves pending to "rejected", not silently kept', () => {
+test('a NON-matching truth keeps waiting: it may be a status that predates the switch', () => {
+  // Dexter #2: a truth naming the OLD model used to resolve "rejected" on a
+  // switch that then succeeded. The only honest failure is the timeout.
   const pending = { kind: 'model', value: 'sonnet', startedAt: 1000 };
-  const res = pendingResolver(pending, { type: 'truth', kind: 'model', matches: false });
-  assert.strictEqual(res.result, 'rejected');
-  assert.strictEqual(res.pending, null);
+  const res = pendingResolver(pending, { type: 'truth', kind: 'model', matches: false, at: 1500 });
+  assert.strictEqual(res.result, null);
+  assert.strictEqual(res.pending, pending);
+});
+
+test('a truth OLDER than the request cannot confirm it, even if it matches', () => {
+  // Dexter #1: opus-4-5 -> opus-4-7, "confirmed" by a stale truth.
+  const pending = { kind: 'model', value: 'sonnet', startedAt: 1000 };
+  const res = pendingResolver(pending, { type: 'truth', kind: 'model', matches: true, at: 999 });
+  assert.strictEqual(res.result, null);
+  assert.strictEqual(res.pending, pending);
+});
+
+test('a truth with no timestamp cannot confirm anything: absence is not "newer"', () => {
+  const pending = { kind: 'model', value: 'sonnet', startedAt: 1000 };
+  for (const at of [undefined, null, '2000', NaN]) {
+    const res = pendingResolver(pending, { type: 'truth', kind: 'model', matches: true, at });
+    assert.strictEqual(res.result, null, String(at));
+  }
 });
 
 test('a truth message for a DIFFERENT kind does not touch this pending switch', () => {
   const pending = { kind: 'model', value: 'sonnet', startedAt: 1000 };
-  const res = pendingResolver(pending, { type: 'truth', kind: 'effort', matches: true });
+  const res = pendingResolver(pending, { type: 'truth', kind: 'effort', matches: true, at: 2000 });
   assert.strictEqual(res.result, null);
   assert.strictEqual(res.pending, pending);
 });
@@ -143,13 +162,16 @@ test('PROPERTY: pending never resolves to "applied" from a timeout event, whatev
   }
 });
 
-test('PROPERTY: a truth event only ever produces "applied" or "rejected", never "timeout"', () => {
+test('PROPERTY: a truth resolves "applied" exactly when it matches AND is not older than the request', () => {
   for (const matches of [true, false]) {
     for (const kind of ['model', 'effort']) {
-      const pending = { kind, value: 'x', startedAt: 0 };
-      const res = pendingResolver(pending, { type: 'truth', kind, matches });
-      assert.notStrictEqual(res.result, 'timeout');
-      assert.strictEqual(res.result, matches ? 'applied' : 'rejected');
+      for (let at = 0; at <= 2000; at += 250) {
+        const pending = { kind, value: 'x', startedAt: 1000 };
+        const res = pendingResolver(pending, { type: 'truth', kind, matches, at });
+        const applied = matches && at >= 1000;
+        assert.strictEqual(res.result, applied ? 'applied' : null, `${kind} ${matches} at=${at}`);
+        assert.strictEqual(res.pending, applied ? null : pending);
+      }
     }
   }
 });
@@ -268,5 +290,128 @@ test('mainModelOf: absence is null, never a guessed or empty model', () => {
   for (const x of [undefined, null, {}, { session: null }, { session: {} },
     { session: { model: null } }, { session: { model: '' } }, { session: { model: 42 } }, 'claude-opus-5']) {
     assert.strictEqual(mainModelOf(x), null, JSON.stringify(x));
+  }
+});
+
+// --- modelMatches / effortMatches ---------------------------------------------
+
+test('an alias from the menu matches any id of its own family', () => {
+  assert.strictEqual(modelMatches('claude-sonnet-5', 'sonnet'), true);
+  assert.strictEqual(modelMatches('claude-opus-5-5', 'opus'), true);
+  assert.strictEqual(modelMatches('claude-haiku-4-5-20251001', 'HAIKU'), true);
+  assert.strictEqual(modelMatches('claude-opus-5-5', 'sonnet'), false);
+});
+
+test('a free-typed id matches only EXACTLY, never by family (Dexter #1, #5)', () => {
+  assert.strictEqual(modelMatches('claude-opus-4-7', 'claude-opus-4-7'), true);
+  assert.strictEqual(modelMatches('Claude-Opus-4-7', 'claude-opus-4-7'), true);
+  assert.strictEqual(modelMatches('claude-opus-4-5', 'claude-opus-4-7'), false);
+  assert.strictEqual(modelMatches('deepseek/deepseek-chat', 'moonshotai/kimi-k2'), false);
+});
+
+test('PROPERTY: two distinct non-menu ids never match each other', () => {
+  const ids = ['gpt-5', 'moonshotai/kimi-k2', 'deepseek/deepseek-chat', 'claude-opus-4-5',
+    'claude-opus-4-7', 'claude-sonnet-5', 'sonnet[1m]', 'x'];
+  for (const a of ids) {
+    for (const b of ids) {
+      assert.strictEqual(modelMatches(a, b), a === b, `${a} vs ${b}`);
+    }
+  }
+});
+
+test('an absent truth never matches', () => {
+  for (const t of [null, undefined, '', 7]) {
+    assert.strictEqual(modelMatches(t, 'sonnet'), false, String(t));
+    assert.strictEqual(effortMatches(t, 'high'), false, String(t));
+  }
+});
+
+test('effort matches case-insensitively and exactly', () => {
+  assert.strictEqual(effortMatches('high', 'HIGH'), true);
+  assert.strictEqual(effortMatches('xhigh', 'high'), false);
+});
+
+// --- validModelInput (Miguel #1) ------------------------------------------------
+
+test('a model id is accepted only from its own alphabet', () => {
+  for (const ok of ['claude-opus-4-7', 'sonnet[1m]', 'moonshotai/kimi-k2', 'us.anthropic.claude-x:0',
+    '  claude-sonnet-5  ']) {
+    const r = validModelInput(ok);
+    assert.strictEqual(r.ok, true, ok);
+    assert.strictEqual(r.value, ok.trim());
+  }
+});
+
+test('an embedded CR, LF or any control character refuses the whole value: no second command', () => {
+  const bad = ['sonnet\r/permissions bypass', 'sonnet\n/exit', 'a\x1b[Zb', 'a\x15b',
+    'a\x00b', 'a\tb', 'a b', 'a;b', 'a&b', 'a|b', 'a"b', "a'b", 'a`b', 'a$b', 'a b'];
+  for (const v of bad) {
+    const r = validModelInput(v);
+    assert.strictEqual(r.ok, false, JSON.stringify(v));
+    assert.ok(r.reason, 'a refusal says why');
+  }
+});
+
+test('empty, overlong and non-string input is refused', () => {
+  for (const v of ['', '   ', 'a'.repeat(101), null, undefined, 5, {}]) {
+    assert.strictEqual(validModelInput(v).ok, false, String(v));
+  }
+});
+
+test('aliases the truth cannot confirm are refused from free text (Dexter #5)', () => {
+  // `default` names no family and `opusplan` runs sonnet outside plan mode, so
+  // neither can be matched against the model that actually runs.
+  for (const alias of ['default', 'DEFAULT', 'opusplan']) {
+    assert.strictEqual(validModelInput(alias).ok, false, alias);
+  }
+});
+
+test('PROPERTY: whatever validModelInput accepts is only the id alphabet', () => {
+  for (let c = 0; c < 0x3000; c++) {
+    const r = validModelInput('a' + String.fromCharCode(c) + 'b');
+    if (r.ok) assert.ok(/^[A-Za-z0-9._/:\-[\]]+$/.test(r.value), `accepted U+${c.toString(16)}`);
+  }
+});
+
+// --- inputState (Dexter #4) -----------------------------------------------------
+
+const RULE = '─'.repeat(60);
+const FOOT = ['  ⏵⏵ bypass permissions on (shift+tab to cycle)'];
+
+test('an empty or single-line input box between the two rules is ready', () => {
+  assert.strictEqual(inputState(['header', RULE, '❯ Try "how do I log an error?"', RULE, ...FOOT]), 'ready');
+  assert.strictEqual(inputState(['header', RULE, '❯ draft words here', RULE, ...FOOT]), 'ready');
+  assert.strictEqual(inputState(['header', RULE, '❯', RULE, ...FOOT]), 'ready');
+});
+
+test('a draft spanning more than one line is multiline: Ctrl-U would clear only the last', () => {
+  assert.strictEqual(inputState(['h', RULE, '❯ first line', '  second line', RULE, ...FOOT]), 'multiline');
+});
+
+test('no input box on screen is a dialog: the command would land in it', () => {
+  // Measured: bare /model's picker draws no ❯ box between rules.
+  const dialog = ['❯ /model', '▔▔▔▔▔▔▔▔', '   Select model', '    ❯ 4.  Sonnet 5 ✔',
+    '      5.  Haiku 4.5', '   Enter to set as default · s to use this session only · Esc to cancel'];
+  assert.strictEqual(inputState(dialog), 'dialog');
+});
+
+test('scrollback prompts above the box do not count: only the LAST box is live', () => {
+  const lines = ['❯ /model sonnet', '  ⎿  Set model to Sonnet 5', RULE, '❯', RULE, ...FOOT];
+  assert.strictEqual(inputState(lines), 'ready');
+});
+
+test('with two boxes on screen, the LOWER one is the live input', () => {
+  // A resize can leave an old box's rules in the visible scrollback. The
+  // upper box below is multiline; judging it instead would refuse a click
+  // (or, the other way round, type into a multiline draft).
+  const lines = [RULE, '❯ old draft', '  second line', RULE, 'output', RULE, '❯', RULE, ...FOOT];
+  assert.strictEqual(inputState(lines), 'ready');
+  const flipped = [RULE, '❯', RULE, 'output', RULE, '❯ live draft', '  more', RULE, ...FOOT];
+  assert.strictEqual(inputState(flipped), 'multiline');
+});
+
+test('garbage screens are never ready', () => {
+  for (const g of [null, undefined, [], [''], 'text', [RULE], [RULE, RULE], [RULE, 'no prompt', RULE]]) {
+    assert.notStrictEqual(inputState(g), 'ready', JSON.stringify(g));
   }
 });

@@ -34,11 +34,12 @@ const FAMILY_COLOURS = {
 const MODEL_CHOICES = ['opus', 'sonnet', 'haiku'];
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'auto'];
 
-// How long a picker waits for the truth (the next `sessionModel` broadcast,
-// or the next hook payload's `effort.level`) before it gives up and says the
-// switch did not take. `/model` has a documented refusal path
-// (`model-switch-blocked`) that sends no further event at all, so a session
-// that goes silent must still resolve to something rather than spin forever.
+// How long a picker waits for the truth before it gives up and says the
+// switch did not take. The truth is the statusLine document (host/status-
+// relay.js), MEASURED to re-fire ~1s after /model and /effort with no turn
+// (verify/probe-top-bar-truth.js), so 15s is generous. `/model` has a
+// documented refusal path (`model-switch-blocked`) that changes nothing, so a
+// session that goes silent must still resolve rather than spin forever.
 const PENDING_TIMEOUT_MS = 15000;
 
 /**
@@ -84,31 +85,37 @@ function cueColour(family, theme) {
  * The pending-switch state machine. `pending` is `{ kind, value, startedAt }`
  * or `null`. `event` is one of:
  *
- *   { type: 'truth',   kind, matches }               -- a new truth arrived
+ *   { type: 'truth',   kind, matches, at }           -- a new truth arrived
  *   { type: 'timeout', kind, now, timeoutMs }         -- a clock check
  *
- * Matching is the CALLER's job (model-family equivalence for `/model`,
- * case-insensitive string equality for `/effort`) precisely so this function
- * stays domain-agnostic and total.
+ * Matching is the CALLER's job (modelMatches / effortMatches below) so this
+ * function stays domain-agnostic and total.
  *
  * Returns `{ pending, result }` where `result` is `null` (nothing changed),
- * `'applied'` (the truth confirmed the request), `'rejected'` (a truth
- * arrived but did not match -- refused, or overridden by someone else), or
- * `'timeout'` (no truth arrived in time).
+ * `'applied'` (a truth confirmed the request) or `'timeout'` (none did in
+ * time).
+ *
+ * A truth that does NOT match keeps waiting rather than rejecting: it may be
+ * a status the CLI wrote before it processed the command (Dexter #2), and a
+ * switch that then succeeds must not read as refused. A truth OLDER than the
+ * request (`at < startedAt`), or with no usable `at`, is ignored outright
+ * (Dexter #1): it cannot know about the request, so it cannot confirm it.
  *
  * The property this function exists to guarantee, matching the brief's
  * "never flips optimistically": the ONLY event that can produce `'applied'`
- * is a matching `'truth'` event. A `'timeout'` can never produce it, however
- * the clock is fed.
+ * is a matching `'truth'` event no older than the request. A `'timeout'` can
+ * never produce it, however the clock is fed.
  */
 function pendingResolver(pending, event) {
   if (!pending || !event || event.kind !== pending.kind) {
     return { pending: pending || null, result: null };
   }
   if (event.type === 'truth') {
-    return event.matches
+    const fresh = typeof event.at === 'number' && Number.isFinite(event.at)
+      && event.at >= pending.startedAt;
+    return fresh && event.matches
       ? { pending: null, result: 'applied' }
-      : { pending: null, result: 'rejected' };
+      : { pending, result: null };
   }
   if (event.type === 'timeout') {
     const elapsed = event.now - pending.startedAt;
@@ -183,6 +190,78 @@ function mainModelOf(payload) {
   return typeof model === 'string' && model ? model : null;
 }
 
+/**
+ * Does the running model (`truth`, a full id like "claude-sonnet-5") satisfy
+ * the request? A menu alias resolves to "the current model of that family",
+ * so family is the whole test. A free-typed id is not an alias: it matches
+ * only itself (Dexter #1, #5) -- family would call opus-4-5 a success for
+ * opus-4-7, and 'other' would call any two provider models equal.
+ */
+function modelMatches(truth, requested) {
+  if (typeof truth !== 'string' || !truth || typeof requested !== 'string' || !requested) return false;
+  const req = requested.trim().toLowerCase();
+  if (MODEL_CHOICES.indexOf(req) !== -1) return modelFamily(truth) === req;
+  return truth.trim().toLowerCase() === req;
+}
+
+function effortMatches(truth, requested) {
+  if (typeof truth !== 'string' || !truth || typeof requested !== 'string' || !requested) return false;
+  return truth.trim().toLowerCase() === requested.trim().toLowerCase();
+}
+
+// A model id's whole alphabet. It is typed into a live pty after `/model `,
+// so anything else -- above all an embedded CR or LF, which would submit a
+// SECOND command (Miguel #1) -- refuses the value outright rather than being
+// stripped: a mangled id is not what the user asked for either.
+const MODEL_ID = /^[A-Za-z0-9._/:\-[\]]+$/;
+const MODEL_ID_MAX = 100;
+// Aliases whose running model can never be matched against them: `default`
+// names no family, and `opusplan` runs sonnet outside plan mode (Dexter #5).
+const UNCONFIRMABLE = ['default', 'opusplan'];
+
+function validModelInput(value) {
+  if (typeof value !== 'string') return { ok: false, reason: 'not a model id' };
+  const v = value.trim();
+  if (!v) return { ok: false, reason: 'type a model id' };
+  if (v.length > MODEL_ID_MAX) return { ok: false, reason: 'too long for a model id' };
+  if (!MODEL_ID.test(v)) {
+    return { ok: false, reason: 'only letters, digits and . _ / : - [ ] belong in a model id' };
+  }
+  if (UNCONFIRMABLE.indexOf(v.toLowerCase()) !== -1) {
+    return { ok: false, reason: `"${v}" can't be confirmed against the running model; type a full id` };
+  }
+  return { ok: true, value: v };
+}
+
+/**
+ * Is the TUI's input box safe to type a slash command into? `lines` is the
+ * visible screen, top to bottom. MEASURED (verify/probe-top-bar-truth.js):
+ * the live box is a `❯` line between the LAST two full-width `─` rules, and an
+ * open dialog (bare /model's picker, a permission prompt) draws no such box.
+ *
+ *   'ready'     -- one input line; Ctrl-U clears it without submitting
+ *   'multiline' -- a draft over several lines; Ctrl-U clears only the last,
+ *                  and the rest would be submitted WITH the command
+ *   'dialog'    -- no input box: the keys would land in the dialog, and the
+ *                  CR would confirm whatever it has highlighted (Dexter #4)
+ *   'unknown'   -- nothing on screen to judge by
+ */
+const RULE_LINE = /^─{10,}$/;
+
+function inputState(lines) {
+  if (!Array.isArray(lines)) return 'unknown';
+  const text = lines.map(l => (typeof l === 'string' ? l.trim() : ''));
+  if (!text.some(Boolean)) return 'unknown';
+  const rules = [];
+  text.forEach((l, i) => { if (RULE_LINE.test(l)) rules.push(i); });
+  if (rules.length < 2) return 'dialog';
+  const top = rules[rules.length - 2];
+  const bottom = rules[rules.length - 1];
+  const box = text.slice(top + 1, bottom);
+  if (!box.length || box[0].charAt(0) !== '❯') return 'dialog';
+  return box.length > 1 ? 'multiline' : 'ready';
+}
+
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all. Same shape as
 // app/quota-display.js.
@@ -190,6 +269,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
+    modelMatches, effortMatches, validModelInput, inputState,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -201,6 +281,10 @@ if (typeof module !== 'undefined' && module.exports) {
   root.EFFORT_LEVELS = EFFORT_LEVELS;
   root.PENDING_TIMEOUT_MS = PENDING_TIMEOUT_MS;
   root.mainModelOf = mainModelOf;
+  root.modelMatches = modelMatches;
+  root.effortMatches = effortMatches;
+  root.validModelInput = validModelInput;
+  root.inputState = inputState;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);
