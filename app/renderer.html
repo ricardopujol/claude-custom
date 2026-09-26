@@ -503,6 +503,13 @@
     }
     .agent .career-sep { opacity: 0.5; }
     .agent .career-warn { color: var(--accent); font-weight: 600; cursor: help; }
+    /* The model an agent ACTUALLY used (host/session-model.js), and how many
+       instances of it are running right now (mood.stack() via `party`). */
+    .agent .agent-model { font-size: 10px; color: var(--dim); opacity: 0.6;
+      font-variant-numeric: tabular-nums; margin-top: 1px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    .agent .agent-count { font-size: 10px; font-weight: 700; color: var(--accent);
+      opacity: .85; margin-left: 4px; }
 
     /* --- model browser ---------------------------------------------------- */
     #models-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
@@ -785,6 +792,7 @@
   <script src="./quota-display.js"></script>
   <script src="./bugvault-display.js"></script>
   <script src="./projects-display.js"></script>
+  <script src="./agent-card-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

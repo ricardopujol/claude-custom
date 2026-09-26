@@ -28,6 +28,9 @@ const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
+const { createProcessesBroadcast } = require('./processes-broadcast');
+const { projectDirName } = require('./project-dir');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
@@ -670,6 +673,25 @@ function refreshAgentStats() {
   return agentStatsPending;
 }
 
+// The model each agent ACTUALLY used, read from its own transcript -- never
+// the Agent tool_input's REQUESTED model, which is a different fact. See
+// host/session-model.js. Recomputed on SessionStart (the session id just
+// became known) and on SubagentStop (a subagent's transcript just landed).
+//
+// The coalescing, the merge that keeps known models through a failed read, and
+// the "broadcast only on a CHANGE" rule all live in createSessionModelRefresher,
+// where they are tested (Dexter, PR #34, Findings 3 and 4). A payload that reads
+// identically to what clients already have is not news -- same as quota.js.
+const sessionModels = createSessionModelRefresher({
+  read: (id) => readSessionModel({
+    projectsDir: defaultProjectsDir(),
+    projectDir: projectDirName(CWD),
+    sessionId: id,
+  }),
+  currentSessionId: () => sessionId,
+  onChange: (m) => broadcastControl({ type: 'sessionModel', ...m }),
+});
+
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
@@ -699,6 +721,14 @@ function seatPayload(seats) {
   return { type: 'seats', seats, max: MAX_SEATS, warnings: seatWarnings(seats) };
 }
 
+// Running processes and the party, from hook events and from the tick. Owns the
+// falling edge the tick used to miss -- see host/processes-broadcast.js.
+// A closure, not `broadcastControl` itself: that is a const declared further
+// down, and reading it here at startup is a TDZ ReferenceError that stops the
+// host before it serves anything. The closure reads it at first send, by which
+// point the whole module has run.
+const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
+
 let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
@@ -706,13 +736,29 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      sessionModels.refresh().catch(() => { /* the next SubagentStop will carry it */ });
     }
     if (ev.event === 'SubagentStop') {
       // The transcript is on disk by the time this fires, so its tokens and
-      // timestamps are already there to read.
+      // timestamps are already there to read. Refresh both the agent stats panel
+      // AND the token count — before this change only agentStats was refreshed,
+      // so the session token display lagged up to 5 seconds after each agent
+      // finished (the timer eventually caught it, but the agents panel updated
+      // instantly while the token headline stayed stale).
       refreshAgentStats()
         .then((stats) => broadcastControl({ type: 'agentStats', stats }))
         .catch(() => { /* the next finish will carry it */ });
+      // The milestone rides along, or the headline crosses a rung while the
+      // flourish waits for the next tick. announcer.see dedupes the timer's call.
+      refreshUsage()
+        .then((usage) => {
+          broadcastControl({ type: 'usage', usage });
+          checkMilestone(usage);
+        })
+        .catch(() => { /* the timer will carry it */ });
+      // Same reasoning: the subagent's own transcript, including its true
+      // model, is on disk by the time this fires.
+      sessionModels.refresh().catch(() => { /* the next finish will carry it */ });
       // agent_type when the payload carries it; the top of the stack only as a
       // fallback. Cooldowns applied to the wrong agent are worse than none.
       const finished = (ev.payload && ev.payload.agent_type)
@@ -750,7 +796,7 @@ if (helperExists) {
     // went unhooked.
     const ended = processes.handle(ev);
     if (ended) console.log(`[processes] ${ev.event} ended ${ended} call(s) whose own close never arrived`);
-    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
+    processesBroadcast.send(processes.list(), mood.stack());
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
   hookBridge.on('error', e => console.log('[hook!] bridge error:', e.message));
@@ -1020,14 +1066,13 @@ term.onData((data) => {
 mood.on('change', ({ agent, state }) => broadcastControl({ type: 'mood', ...describe(agent, state) }));
 const moodTimer = setInterval(() => {
   mood.tick();
-  const swept = processes.sweep();
+  processes.sweep();
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
-  // own a clock of its own -- and on the FALLING EDGE too (see cooldowns below):
-  // a sweep that removed the last row must say so, or the row stays on screen.
+  // own a clock of its own -- and on both falling edges: a sweep that removed
+  // the last row, and a party that shrank with nothing left running.
+  // host/processes-broadcast.js owns both.
   refreshPermissionMode();
-  if (swept || processes.list().length) {
-    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
-  }
+  processesBroadcast.tick(processes.list(), mood.stack());
   // The FALLING EDGE matters as much as the rising one. Broadcasting only a
   // non-empty list means the panel is never told the last cooldown expired, so
   // the final row stays on screen claiming an agent is still unavailable.
@@ -1151,6 +1196,9 @@ wss.on('connection', (ws) => {
     vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
+    // May still be `{model:null,...}` on a fast attach, before SessionStart's
+    // read lands -- the renderer draws "—" for that, never a guessed model.
+    sessionModel: sessionModels.current(),
     // May still be null on a fast attach; the renderer draws "reading…" for
     // that, never three bars at zero.
     quota: lastQuota,
