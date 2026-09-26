@@ -146,7 +146,10 @@ async function readWindow(fh, size, window) {
   const buf = Buffer.allocUnsafe(len);
   await fh.read(buf, 0, len, from);
   let text = buf.toString('utf8');
-  if (start > 0) {
+  // Gated on where the read BEGAN, not where the window did: at start === 1 the
+  // read starts at byte 0, there is no fragment, and dropping to the first
+  // newline threw away a complete first line (Dexter, PR #34 round 1, F4).
+  if (from > 0) {
     const nl = text.indexOf('\n');
     text = nl === -1 ? '' : text.slice(nl + 1);
   }

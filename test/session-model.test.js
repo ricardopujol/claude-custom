@@ -704,3 +704,21 @@ test('refresher: a /clear is reflected by current() AT ONCE, even while the old 
   await p2;
   assert.deepStrictEqual(r.current().agents, {});
 });
+
+test('readSessionModel: a file of exactly TAIL_MAX_BYTES + 1 keeps its first line (r1 F4)', async () => {
+  // At the cap the window starts at byte 1, so the read begins at byte 0 --
+  // there IS no fragment to drop, and dropping "up to the first newline" threw
+  // away line 1, here the only model-bearing line.
+  const { TAIL_MAX_BYTES } = require('../host/session-model');
+  const { projectsDir, projectDir, dir } = project();
+  const first = JSON.stringify(assistant('claude-opus-5', '2026-01-01T00:00:00.000Z'));
+  const user = { type: 'user', message: { role: 'user', content: '' } };
+  // total = first + '\n' + user + '\n' === TAIL_MAX_BYTES + 1
+  user.message.content = 'y'.repeat(TAIL_MAX_BYTES + 1 - first.length - 2 - JSON.stringify(user).length);
+  const text = first + NL + JSON.stringify(user) + NL;
+  assert.strictEqual(Buffer.byteLength(text), TAIL_MAX_BYTES + 1);
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), text);
+
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.strictEqual(r.session.model, 'claude-opus-5');
+});
