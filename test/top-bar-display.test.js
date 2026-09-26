@@ -244,3 +244,29 @@ test('every model choice maps to its own family, not "other"', () => {
     assert.strictEqual(modelFamily(choice), choice);
   }
 });
+
+// --- the real sessionModel contract (PR #34, merged 185ebd4) ------------------
+//
+// FF12 was written before #34 merged and assumed `sessionModel.model`. The real
+// shape is `{ session: { model, at }, agents, errors }` -- on hello's
+// `sessionModel` AND on the `sessionModel` broadcast, which carries the same
+// fields at top level. Reading the assumed shape left the chip at "—" forever.
+
+const { mainModelOf } = require('../app/top-bar-display');
+
+test('mainModelOf: reads session.model from the real #34 shape', () => {
+  assert.strictEqual(mainModelOf({ session: { model: 'claude-opus-5', at: 't' }, agents: {}, errors: 0 }), 'claude-opus-5');
+  // the broadcast message: same fields, plus `type`
+  assert.strictEqual(mainModelOf({ type: 'sessionModel', session: { model: 'claude-sonnet-5' } }), 'claude-sonnet-5');
+});
+
+test('mainModelOf: the OLD assumed shape is not the contract -- null, not a match', () => {
+  assert.strictEqual(mainModelOf({ model: 'claude-opus-5' }), null);
+});
+
+test('mainModelOf: absence is null, never a guessed or empty model', () => {
+  for (const x of [undefined, null, {}, { session: null }, { session: {} },
+    { session: { model: null } }, { session: { model: '' } }, { session: { model: 42 } }, 'claude-opus-5']) {
+    assert.strictEqual(mainModelOf(x), null, JSON.stringify(x));
+  }
+});

@@ -1745,8 +1745,9 @@ const tbModelMenu = document.getElementById('tb-model-menu');
 const tbEffortMenu = document.getElementById('tb-effort-menu');
 const tbModelCustom = document.getElementById('tb-model-custom');
 
-// `currentModel` stays null until PR-A's `sessionModel` broadcast lands (or
-// `hello.sessionModel`, once that PR merges) -- absence, not a guess, and the
+// `currentModel` stays null until #34's session model reports one (hello's
+// `sessionModel` or the `sessionModel` broadcast, both read through
+// mainModelOf) -- absence, not a guess, and the
 // top bar renders it as "—" the same way every other reading… state in this
 // file does. `currentTheme` is cached only so a model change can recompute
 // the accent alone, without waiting for the next `hello`.
@@ -2169,16 +2170,16 @@ function handleControl(msg) {
     renderMode(msg.mode);
     latestParty = msg.party || [];
     // FF12. `effort` is null until the first hook payload has carried it --
-    // rendered as "—", never a guessed default. `sessionModel` is PR-A's
-    // contract; until that PR merges, `msg.sessionModel` is absent and the
-    // model chip correctly stays "—" too. A reattach clears any pending
+    // rendered as "—", never a guessed default. The model comes from #34's
+    // `sessionModel` ({ session: { model, at }, agents, errors }) through
+    // mainModelOf -- NOT `sessionModel.model`, which FF12 assumed before #34
+    // merged and which never exists. A reattach clears any pending
     // switch a PREVIOUS window started -- this handshake IS the current
     // truth, and holding onto a stale "switching…" across it would be the
     // "flips back to pending on its own" bug the timeout logic exists to avoid.
     currentTheme = msg.theme || currentTheme;
     currentEffort = typeof msg.effort === 'string' ? msg.effort : null;
-    currentModel = (msg.sessionModel && typeof msg.sessionModel.model === 'string')
-      ? msg.sessionModel.model : null;
+    currentModel = mainModelOf(msg.sessionModel);
     pendingModel = null;
     pendingEffort = null;
     renderTopBar();
@@ -2215,8 +2216,30 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'sessionModel') {
+    // ONE handler for both consumers. FF12's used to be a second
+    // `msg.type === 'sessionModel'` branch further down, which never ran
+    // because this one returns -- the chip never updated and a pending model
+    // switch never resolved. test/renderer-dispatch.test.js now fails on that.
+    //
+    // 1. FF10: every agent card's model line.
     sessionModel = { session: msg.session, agents: msg.agents || {}, errors: msg.errors };
     renderRoster();
+    // 2. FF12: the main session's model chip, and any pending /model switch.
+    //    A match is family equivalence (an alias like "sonnet" resolves to a
+    //    full id like "claude-sonnet-5") OR an exact case-insensitive match,
+    //    which covers a free-typed full id.
+    const model = mainModelOf(msg);
+    currentModel = model;
+    if (pendingModel) {
+      const requested = String(pendingModel.value);
+      const matches = !!model && (
+        (modelFamily(model) !== null && modelFamily(model) === modelFamily(requested))
+        || model.toLowerCase() === requested.toLowerCase()
+      );
+      const res = pendingResolver(pendingModel, { type: 'truth', kind: 'model', matches });
+      pendingModel = res.pending;
+    }
+    renderTopBar();
     return;
   }
   if (msg.type === 'attention') {
@@ -2315,25 +2338,6 @@ function handleControl(msg) {
         currentEffort.toLowerCase() === String(pendingEffort.value).toLowerCase();
       const res = pendingResolver(pendingEffort, { type: 'truth', kind: 'effort', matches });
       pendingEffort = res.pending;
-    }
-    renderTopBar();
-    return;
-  }
-  if (msg.type === 'sessionModel') {
-    // PR-A's contract: `{ type:'sessionModel', session:{ model, at }, ... }`,
-    // `model: null` for unknown. A match is family equivalence (an alias like
-    // "sonnet" resolves to a full id like "claude-sonnet-4-5-...") OR an exact
-    // case-insensitive match, which covers a free-typed full id.
-    const model = msg.session && typeof msg.session.model === 'string' ? msg.session.model : null;
-    currentModel = model;
-    if (pendingModel) {
-      const requested = String(pendingModel.value);
-      const matches = !!model && (
-        (modelFamily(model) !== null && modelFamily(model) === modelFamily(requested))
-        || model.toLowerCase() === requested.toLowerCase()
-      );
-      const res = pendingResolver(pendingModel, { type: 'truth', kind: 'model', matches });
-      pendingModel = res.pending;
     }
     renderTopBar();
     return;

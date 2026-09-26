@@ -167,13 +167,29 @@ function topBarDisplay(els, state) {
   writeChip(els.effortEl, state.effort, 'effort');
 }
 
+/**
+ * The main session's model from the host's session-model payload, or null.
+ *
+ * The contract is #34's (host/session-model.js): `{ session: { model, at },
+ * agents, errors }`, the same on hello's `sessionModel` and on the
+ * `sessionModel` broadcast (which carries those fields at top level). FF12
+ * was written before #34 merged and read `sessionModel.model`, which never
+ * exists -- the chip stayed "—" for good. One reader, used for both paths.
+ * Absence and anything that is not a non-empty string is null, never a guess.
+ */
+function mainModelOf(payload) {
+  const session = payload && typeof payload === 'object' ? payload.session : null;
+  const model = session && typeof session === 'object' ? session.model : null;
+  return typeof model === 'string' && model ? model : null;
+}
+
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all. Same shape as
 // app/quota-display.js.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
-    MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN,
+    MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -184,6 +200,7 @@ if (typeof module !== 'undefined' && module.exports) {
   root.MODEL_CHOICES = MODEL_CHOICES;
   root.EFFORT_LEVELS = EFFORT_LEVELS;
   root.PENDING_TIMEOUT_MS = PENDING_TIMEOUT_MS;
+  root.mainModelOf = mainModelOf;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);
