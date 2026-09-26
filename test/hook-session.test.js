@@ -18,7 +18,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { readSessionHook, cliModeToKey } = require('../host/hook-session');
+const { readSessionHook, cliModeToKey, readStatus } = require('../host/hook-session');
 const { MODES } = require('../host/mode');
 
 const REAL = fs.readFileSync(path.join(__dirname, 'hooks-real-subagent-failure.fixture.jsonl'), 'utf8')
@@ -127,4 +127,36 @@ test('PROPERTY: an agent_id always silences the payload, whatever else it carrie
       assert.deepStrictEqual(r, {}, JSON.stringify({ permission_mode, effort }));
     }
   }
+});
+
+// --- readStatus: the statusLine document (host/status-relay.js) -------------
+//
+// Always the MAIN session, and MEASURED (verify/probe-top-bar-truth.js) to
+// carry model.id and effort.level, re-fired ~1s after /model and /effort.
+
+test('readStatus reads the model id and effort level off a real-shaped document', () => {
+  const r = readStatus({ model: { id: 'claude-sonnet-5', display_name: 'Sonnet 5' }, effort: { level: 'high' } });
+  assert.deepStrictEqual(r, { model: 'claude-sonnet-5', effort: 'high' });
+});
+
+test('readStatus: a model with no effort levels reads effort ABSENT, not the last one', () => {
+  const r = readStatus({ model: { id: 'claude-haiku-4-5-20251001' } });
+  assert.deepStrictEqual(r, { model: 'claude-haiku-4-5-20251001', effort: null });
+});
+
+test('readStatus: the display name is never used as the id', () => {
+  const r = readStatus({ model: { display_name: 'Sonnet 5' }, effort: { level: 'high' } });
+  assert.deepStrictEqual(r, {});
+});
+
+test('readStatus: a document with no model says nothing at all', () => {
+  // Without a model it is not the document we measured; half-trusting it
+  // could clear a real effort level.
+  for (const doc of [undefined, null, 'x', {}, { model: null }, { model: { id: '' } }, { model: { id: 5 } }]) {
+    assert.deepStrictEqual(readStatus(doc), {}, JSON.stringify(doc));
+  }
+});
+
+test('readStatus: an empty effort level is absent, not a level named ""', () => {
+  assert.strictEqual(readStatus({ model: { id: 'claude-opus-5-5' }, effort: { level: '' } }).effort, null);
 });

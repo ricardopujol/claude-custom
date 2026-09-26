@@ -46,4 +46,19 @@ function readSessionHook(payload) {
   };
 }
 
-module.exports = { readSessionHook, cliModeToKey, CLI_MODE_KEYS };
+/**
+ * What the statusLine document (forwarded by host/status-relay.js) says about
+ * the main session: `{ model, effort }`, or {} when it carries no model id --
+ * without one it is not the document we measured, and half-trusting it could
+ * clear a real effort level. `model` is the id, never the display name.
+ * `effort` is null when absent, as on a model with no effort levels.
+ */
+function readStatus(doc) {
+  if (!doc || typeof doc !== 'object') return {};
+  const id = doc.model && typeof doc.model === 'object' ? doc.model.id : null;
+  if (typeof id !== 'string' || !id) return {};
+  const level = doc.effort && typeof doc.effort === 'object' ? doc.effort.level : null;
+  return { model: id, effort: typeof level === 'string' && level !== '' ? level : null };
+}
+
+module.exports = { readSessionHook, cliModeToKey, readStatus, CLI_MODE_KEYS };

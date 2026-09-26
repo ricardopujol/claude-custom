@@ -20,7 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
-const { writeHarnessSettings, buildClaudeArgs } = require('./settings-writer');
+const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
 const { createMoodMachine } = require('./mood-machine');
@@ -41,7 +41,7 @@ const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
-const { readSessionHook } = require('./hook-session');
+const { readSessionHook, readStatus } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { validResizeDims, handleFrame } = require('./control');
@@ -302,9 +302,19 @@ async function currentFog() {
 // be this host's too -- otherwise a second host starting during this one's
 // module init redirects our claude's hooks into its bridge. See the header of
 // writeHarnessSettings; the shared copy is still written for the probes.
+//
+// The statusLine relay is FF12's truth source (see host/status-relay.js). It
+// runs under `node` from PATH -- this process's execPath is electron, which
+// is only node with ELECTRON_RUN_AS_NODE set, and that must not be relied on
+// in the pty. Under plain node (the probes) the exact binary is used instead.
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
   pipeName: PIPE_NAME,
+  statusRelay: {
+    nodePath: process.versions.electron ? 'node' : process.execPath,
+    scriptPath: path.join(__dirname, 'status-relay.js'),
+    userStatusLine: findUserStatusLine({ home: os.homedir(), cwd: CWD }),
+  },
 }, PORT);
 
 // Attached only once the native helper exists (step 2). Wiring hooks to a
@@ -750,6 +760,15 @@ let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
   hookBridge.on('event', (ev) => {
+    // The statusLine document, forwarded by host/status-relay.js on every
+    // status redraw. Not a hook: handled here and ONLY here, so the mood
+    // engine, the process panel and the [hook] log never see it.
+    if (ev.event === 'Status') {
+      const status = readStatus(ev.payload);
+      if (status.model !== undefined) setLiveModel(status.model);
+      if (status.effort !== undefined) setEffort(status.effort);
+      return;
+    }
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
@@ -794,11 +813,7 @@ if (helperExists) {
     // broadcast, gated on a change, including a change to absent.
     const said = readSessionHook(ev.payload);
     if (said.permissionMode !== undefined) lastHookPermissionMode = said.permissionMode;
-    if (said.effort !== undefined && said.effort !== lastEffort) {
-      lastEffort = said.effort;
-      console.log('[host] effort         :', lastEffort);
-      broadcastControl({ type: 'effort', level: lastEffort });
-    }
+    if (said.effort !== undefined) setEffort(said.effort);
     // Logged because the roster silently showed nothing when agents ran, and
     // there was no way to tell whether hooks were arriving at all.
     const what = ev.payload && (ev.payload.tool_input?.subagent_type || ev.payload.tool_name);
@@ -1090,6 +1105,29 @@ let lastHookPermissionMode = null;
 // the top bar renders that as "—", never a guessed default.
 let lastEffort = null;
 
+// The main session's model as the statusLine reports it: the exact id, fresh
+// ~1s after a /model. #34's sessionModel.session.model is the LAST ASSISTANT
+// LINE of the transcript, so it cannot see a switch until the next reply
+// (Dexter #2); this can. null until the first status document.
+let lastLiveModel = null;
+
+// Both broadcast only on a change, stamped with the host's clock: a pending
+// switch in the renderer is confirmed only by a truth no older than itself
+// (app/top-bar-display.js's pendingResolver).
+function setEffort(level) {
+  if (level === lastEffort) return;
+  lastEffort = level;
+  console.log('[host] effort         :', lastEffort);
+  broadcastControl({ type: 'effort', level: lastEffort, at: Date.now() });
+}
+
+function setLiveModel(model) {
+  if (model === lastLiveModel) return;
+  lastLiveModel = model;
+  console.log('[host] live model     :', lastLiveModel);
+  broadcastControl({ type: 'liveModel', model: lastLiveModel, at: Date.now() });
+}
+
 // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
 // Distinguishing by content would be wrong -- terminal output can contain
 // anything, including a leading '{'.
@@ -1249,6 +1287,7 @@ wss.on('connection', (ws) => {
     // FF12's top bar: null until the first hook payload carries effort.level,
     // which the panel renders as "—" rather than a guessed default.
     effort: lastEffort,
+    liveModel: lastLiveModel,
     cooldowns: cooldowns.list(),
     vault: vaultPayload(),
     health: healthState,

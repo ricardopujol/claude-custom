@@ -28,16 +28,6 @@ test('the hook bridge reads effort.level and broadcasts it on change', () => {
     'host.js must broadcast a {type:"effort"} control message');
 });
 
-test('a repeated, unchanged effort level does not broadcast again', () => {
-  // Mirrors the existing mode/usage/quota pattern in this file: broadcast
-  // only on a CHANGE, so an idle session stays silent on the wire.
-  const idx = HOST.indexOf('.effort');
-  assert.ok(idx !== -1, 'effort must be read for this check to mean anything');
-  const region = HOST.slice(Math.max(0, idx - 400), idx + 400);
-  assert.ok(/!==\s*lastEffort|lastEffort\s*!==/.test(region),
-    'the effort broadcast must be gated on a change, not fired on every hook event');
-});
-
 test('lastEffort is carried in the hello handshake', () => {
   const helloIdx = HOST.indexOf("type: 'hello'");
   assert.ok(helloIdx !== -1, 'the hello handshake must exist for this check to mean anything');
@@ -63,4 +53,42 @@ test('every type host.js broadcasts by hand is a real WebSocket message, not a t
   const renderer = fs.readFileSync(rendererPath, 'utf8');
   assert.ok(/msg\.type === ['"]effort['"]/.test(renderer),
     'app/renderer.js must handle the {type:"effort"} broadcast host.js now sends');
+});
+
+test('a Status event is handled first and RETURNS: it is not a hook', () => {
+  // It arrives on every status redraw. Falling through would feed the mood
+  // engine and the process panel a non-hook, and log a [hook] line each time.
+  const handler = HOST.indexOf("hookBridge.on('event'");
+  const status = HOST.indexOf("ev.event === 'Status'", handler);
+  const firstOther = HOST.indexOf("ev.event === 'SessionStart'", handler);
+  assert.ok(handler !== -1 && status !== -1, 'the bridge must handle Status');
+  assert.ok(status < firstOther, 'Status must be handled before any hook branch');
+  const branch = HOST.slice(status, firstOther);
+  assert.ok(/readStatus\(ev\.payload\)/.test(branch), 'read through host/hook-session.js');
+  assert.ok(/\breturn;/.test(branch), 'the Status branch must return');
+});
+
+test('effort and live model broadcast only on change, stamped with the host clock', () => {
+  for (const [fn, type] of [['setEffort', 'effort'], ['setLiveModel', 'liveModel']]) {
+    const start = HOST.indexOf(`function ${fn}(`);
+    assert.ok(start !== -1, `${fn} must exist`);
+    const body = HOST.slice(start, HOST.indexOf('\n}', start));
+    assert.ok(/===\s*last\w+\)\s*return/.test(body), `${fn} must be gated on a change`);
+    assert.ok(new RegExp(`type:\\s*'${type}'[^}]*at:\\s*Date\\.now\\(\\)`).test(body),
+      `${fn} must broadcast {type:'${type}', ..., at}`);
+  }
+});
+
+test('hello carries the live model, so a window attaching mid-session is not blank', () => {
+  const helloIdx = HOST.indexOf("type: 'hello'");
+  const hello = HOST.slice(helloIdx, HOST.indexOf('});', helloIdx));
+  assert.ok(/liveModel:\s*lastLiveModel/.test(hello));
+});
+
+test("the settings file is written with the status relay, chained to the user's statusLine", () => {
+  const i = HOST.indexOf('writeHarnessSettings(HARNESS_DIR');
+  const call = HOST.slice(i, HOST.indexOf('}, PORT);', i));
+  assert.ok(/statusRelay:/.test(call), 'no statusRelay passed');
+  assert.ok(/status-relay\.js/.test(call), 'the relay script is not named');
+  assert.ok(/findUserStatusLine\(/.test(call), "the user's statusLine is not looked up");
 });
