@@ -1833,7 +1833,7 @@ function screenLines() {
   return out;
 }
 
-// Ctrl-U, the command, then CR -- as separate writes, spaced: typed as ONE
+// Ctrl-E, Ctrl-U, the command, then CR -- as separate writes, spaced: typed as ONE
 // chunk, a line is taken for a paste and its CR swallowed (verify/probe-
 // payloads.js). Ctrl-U clears a single-line draft without submitting it, and
 // the CLI offers Ctrl+Y to get it back (verify/probe-top-bar-truth.js).
@@ -1865,9 +1865,13 @@ function requestSwitch(kind, raw) {
   }
   renderTopBar();
   const input = data => send(JSON.stringify({ type: 'input', data }));
-  input('\x15');
-  setTimeout(() => input(plan.command), PTY_STEP_MS);
-  setTimeout(() => input('\r'), PTY_STEP_MS * 4);
+  // Ctrl-E first: Ctrl-U deletes only back to the CURSOR (measured, Dexter r2
+  // N1). With the cursor at Home it deleted nothing, and the command was
+  // typed in front of the draft -- `/model sonnetrefactor the parser`.
+  input('\x05');
+  setTimeout(() => input('\x15'), PTY_STEP_MS);
+  setTimeout(() => input(plan.command), PTY_STEP_MS * 2);
+  setTimeout(() => input('\r'), PTY_STEP_MS * 5);
 }
 
 function toggleMenu(menu, otherMenu) {

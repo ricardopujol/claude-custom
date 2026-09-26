@@ -20,7 +20,7 @@
      bad id    a free-typed id with an embedded CR is refused
      user line the user's own statusLine still renders (chained, not lost)
 
-   FIRST RUN, 2026-09-26: 17/17 after two probe fixes. Found on the way:
+   FIRST RUN, 2026-09-26: 16/16 after two probe fixes (18 with the r2 Home case). Found on the way:
    <input type=text> strips CR/LF from its value, so Miguel #1's pasted CR
    cannot come through the text box at all (validModelInput is the second
    wall, pinned via requestSwitch); and the full model id wrapped its pill
@@ -81,10 +81,11 @@ let host = null;
 let hostLog = '';
 const failures = [];
 const check = (label, ok, detail) => {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? '  -- ' + detail : ''}`);
+  console.log(`${ok ? 'PASS' : 'FAIL'}  [${Math.round((Date.now() - T0) / 1000)}s] ${label}${detail ? '  -- ' + detail : ''}`);
   if (!ok) failures.push(label);
 };
-const bail = setTimeout(() => { console.error('TIMED OUT'); finish(2); }, 180000);
+const T0 = Date.now();
+const bail = setTimeout(() => { console.error(`TIMED OUT at ${Math.round((Date.now() - T0) / 1000)}s`); finish(2); }, 300000);
 
 async function finish(code) {
   clearTimeout(bail);
@@ -160,6 +161,25 @@ app.on('ready', async () => {
     check('effort: the draft was cleared, not submitted as a prompt',
       !/draft words here/.test(afterEffort), afterEffort.split('\n').filter(l => /draft/.test(l)).join(' | '));
     await shot('2-effort');
+
+    // --- Dexter r2 N1: the cursor at Home, then a click -------------------------
+    // Ctrl-U deletes only back to the cursor; at Home it deleted nothing and
+    // the command landed IN FRONT of the draft.
+    await idle();
+    await js(`send(JSON.stringify({ type: 'input', data: 'refactor the parser' })); true`);
+    await sleep(700);
+    await js(`send(JSON.stringify({ type: 'input', data: '\\x1b[H' })); true`);   // Home
+    await sleep(400);
+    const back = startEffort === target ? 'low' : startEffort;
+    await js(`document.getElementById('tb-effort').click();
+      document.querySelector('[data-effort="${back}"]').click(); true`);
+    const homeDone = await until(async () => { const c = await chip('tb-effort'); return !c.pending && c.text === back && c; }, 10000);
+    const afterHome = await screen();
+    check(`home: with the cursor at Home, a click on "${back}" still confirms`, !!homeDone,
+      JSON.stringify(await chip('tb-effort')));
+    check('home: the draft is gone and was never glued onto the command',
+      !/refactor the parser/.test(afterHome),
+      afterHome.split('\n').filter(l => /refactor/.test(l)).join(' | '));
 
     // --- model ----------------------------------------------------------------------
     await idle();

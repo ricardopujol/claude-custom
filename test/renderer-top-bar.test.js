@@ -78,6 +78,17 @@ test('a switch is planned before anything is typed, and typed only through send(
   assert.match(body, /\\x15/, 'Ctrl-U must clear the draft first');
 });
 
+test('the cursor goes to end-of-line BEFORE Ctrl-U (Dexter r2 N1)', () => {
+  // MEASURED live: Ctrl-U deletes only back to the cursor. With the cursor at
+  // Home it deleted nothing, and a `sonnet` click submitted
+  // `/model sonnetrefactor the parser`. Ctrl-E first clears the whole line.
+  const body = fnBody('requestSwitch');
+  const end = body.indexOf("input('\\x05')");
+  const kill = body.indexOf("input('\\x15')");
+  assert.ok(end !== -1, 'Ctrl-E (end of line) must be sent');
+  assert.ok(kill !== -1 && end < kill, 'Ctrl-E must come before Ctrl-U');
+});
+
 test('the only place renderer.js types a slash command is requestSwitch', () => {
   // The old requestModel/requestEffort typed `/model ${value}\r` in one chunk.
   assert.doesNotMatch(JS, /`\/(model|effort) \$\{/);
