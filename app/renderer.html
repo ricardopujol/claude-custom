@@ -684,6 +684,10 @@
        pendingResolver. It only ever LOOKS unsettled until the truth (or the
        timeout) says otherwise. */
     .tb-chip.pending { opacity: .68; animation: pulse 1.2s ease-in-out infinite; }
+    /* A switch that did not take, or was not sent. The label still reports
+       the truth; the dashed border says "look at the tooltip". */
+    .tb-chip.notice { border-style: dashed; }
+    .tb-menu .note { font-size: 10px; opacity: .6; padding: 3px 7px 0; max-width: 170px; }
     .tb-menu { position: absolute; top: 26px; z-index: 30; display: flex; flex-direction: column;
                gap: 2px; background: var(--chrome); border: 1px solid var(--border);
                border-radius: 8px; padding: 5px; min-width: 128px;
@@ -788,6 +792,9 @@
             <input id="tb-model-custom" type="text" placeholder="full model id…" autocomplete="off" />
             <button type="button" id="tb-model-custom-go">Go</button>
           </div>
+          <!-- MEASURED (verify/probe-top-bar-truth.js): /model saves the pick as
+               the default for new sessions. Approved 2026-09-26: say so. -->
+          <div class="note">also becomes your default for new sessions</div>
         </div>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
         <div id="tb-effort-menu" class="tb-menu" hidden>
@@ -797,6 +804,7 @@
           <button type="button" data-effort="xhigh">xhigh</button>
           <button type="button" data-effort="max">max</button>
           <button type="button" data-effort="auto">auto</button>
+          <div class="note">also becomes your default for new sessions</div>
         </div>
       </span>
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>

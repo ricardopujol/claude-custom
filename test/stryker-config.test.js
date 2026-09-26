@@ -44,6 +44,9 @@ const REPO_SCANNING = new Set([
   'project-dir.test.js',      // asserts about real directories
   'stryker-config.test.js',   // this file: its subject is the config
   'source-contracts.test.js', // asserts on product modules' SOURCE TEXT
+  // renderer.js / renderer.html source text; requires top-bar-display only for
+  // MODEL_CHOICES / EFFORT_LEVELS, which top-bar-display.test.js pins itself.
+  'renderer-top-bar.test.js',
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))

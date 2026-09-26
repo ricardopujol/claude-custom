@@ -126,7 +126,7 @@ function pendingResolver(pending, event) {
 
 const UNKNOWN = '—';   // em dash, same non-claim as the sibling display modules
 
-function chipState(value, pending) {
+function chipState(value, pending, notice) {
   const family = modelFamily(typeof value === 'string' ? value : null);
   return {
     value: typeof value === 'string' && value ? value : null,
@@ -134,6 +134,7 @@ function chipState(value, pending) {
     family,
     pending: !!pending,
     pendingLabel: pending ? pending.value : null,
+    notice: typeof notice === 'string' && notice ? notice : null,
   };
 }
 
@@ -143,11 +144,12 @@ function chipState(value, pending) {
  * never from a pending request, so the colour only ever reports the truth.
  */
 function topBarState(input) {
-  const { model, effort, pendingModel, pendingEffort, theme } = input || {};
+  const { model, effort, pendingModel, pendingEffort, theme, notices } = input || {};
   const family = modelFamily(typeof model === 'string' ? model : null);
+  const n = notices && typeof notices === 'object' ? notices : {};
   return {
-    model: chipState(model, pendingModel),
-    effort: chipState(effort, pendingEffort),
+    model: chipState(model, pendingModel, n.model),
+    effort: chipState(effort, pendingEffort, n.effort),
     accent: cueColour(family, theme),
   };
 }
@@ -163,9 +165,12 @@ function writeChip(el, chip, verb) {
   if (!el) return;
   el.textContent = chip.pending ? `${chip.pendingLabel}…` : chip.label;
   if (chip.pending) el.classList.add('pending'); else el.classList.remove('pending');
+  // A switch that did not take is MARKED, while the label keeps reporting the
+  // truth: the notice says what happened, never what we hoped.
+  if (chip.notice && !chip.pending) el.classList.add('notice'); else el.classList.remove('notice');
   el.title = chip.pending
     ? `switching ${verb} to ${chip.pendingLabel}…`
-    : `${verb}: ${chip.label}`;
+    : (chip.notice || `${verb}: ${chip.label}`);
 }
 
 function topBarDisplay(els, state) {
@@ -262,6 +267,58 @@ function inputState(lines) {
   return box.length > 1 ? 'multiline' : 'ready';
 }
 
+const SCREEN_REFUSALS = {
+  dialog: 'a dialog is open in the terminal; answer it or press Esc first',
+  multiline: 'your draft spans several lines; send or clear it first',
+  unknown: "the terminal's input box isn't on screen yet",
+};
+
+/**
+ * Everything decided before a key reaches the pty. `raw` is the chosen or
+ * typed value, `current` the running value, `screen` inputState()'s answer,
+ * `connected` whether the socket is open. Returns
+ *   { ok: true, value, command, alreadyRunning }   -- send `command`
+ *   { ok: false, notice }                           -- send nothing, say why
+ * `alreadyRunning`: the choice is what runs now. The truth is broadcast only
+ * on a change, so a pending switch would always time out (Dexter #6); the
+ * caller resolves it at once instead.
+ */
+function planSwitch({ kind, raw, current, screen, connected } = {}) {
+  let value;
+  if (kind === 'model') {
+    const v = validModelInput(raw);
+    if (!v.ok) return { ok: false, notice: `didn't switch model: ${v.reason}` };
+    value = v.value;
+  } else if (kind === 'effort') {
+    const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (EFFORT_LEVELS.indexOf(v) === -1) return { ok: false, notice: "didn't switch effort: not a level /effort accepts" };
+    value = v;
+  } else {
+    return { ok: false, notice: 'nothing to switch' };
+  }
+  if (!connected) return { ok: false, notice: `didn't send /${kind} ${value}: not connected to the session` };
+  if (screen !== 'ready') {
+    return { ok: false, notice: `didn't send /${kind} ${value}: ${SCREEN_REFUSALS[screen] || SCREEN_REFUSALS.unknown}` };
+  }
+  const alreadyRunning = kind === 'model' ? modelMatches(current, value) : effortMatches(current, value);
+  return { ok: true, value, command: `/${kind} ${value}`, alreadyRunning };
+}
+
+/**
+ * What a chip says about a switch that did not take (Dexter #9: a result
+ * computed and thrown away looked exactly like never having clicked).
+ * `result` is pendingResolver's, or 'refused' with planSwitch's `notice`.
+ */
+function switchNotice(r) {
+  if (!r || !r.result || r.result === 'applied') return null;
+  if (r.result === 'refused') return r.notice || null;
+  if (r.result === 'timeout') {
+    const now = typeof r.current === 'string' && r.current ? r.current : UNKNOWN;
+    return `couldn't confirm the switch to ${r.value}; the session reports ${now}`;
+  }
+  return null;
+}
+
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all. Same shape as
 // app/quota-display.js.
@@ -269,7 +326,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
-    modelMatches, effortMatches, validModelInput, inputState,
+    modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -285,6 +342,8 @@ if (typeof module !== 'undefined' && module.exports) {
   root.effortMatches = effortMatches;
   root.validModelInput = validModelInput;
   root.inputState = inputState;
+  root.planSwitch = planSwitch;
+  root.switchNotice = switchNotice;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

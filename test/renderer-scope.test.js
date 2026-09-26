@@ -72,6 +72,7 @@ const ALLOWED_GLOBALS = new Set([
   'modelFamily', 'cueColour', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
+  'planSwitch', 'switchNotice',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules

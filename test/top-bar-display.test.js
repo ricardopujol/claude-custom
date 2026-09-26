@@ -15,7 +15,7 @@ const assert = require('node:assert');
 const {
   modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
   MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS,
-  modelMatches, effortMatches, validModelInput, inputState,
+  modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
 } = require('../app/top-bar-display');
 
 // --- modelFamily -------------------------------------------------------------
@@ -414,4 +414,104 @@ test('garbage screens are never ready', () => {
   for (const g of [null, undefined, [], [''], 'text', [RULE], [RULE, RULE], [RULE, 'no prompt', RULE]]) {
     assert.notStrictEqual(inputState(g), 'ready', JSON.stringify(g));
   }
+});
+
+// --- planSwitch: everything decided before a key reaches the pty -----------------
+
+const READY = { screen: 'ready', connected: true };
+
+test('a valid model choice on a ready screen plans the /model command', () => {
+  const p = planSwitch({ kind: 'model', raw: ' sonnet ', current: 'claude-opus-5-5', ...READY });
+  assert.deepStrictEqual(p, { ok: true, value: 'sonnet', command: '/model sonnet', alreadyRunning: false });
+});
+
+test('a valid effort level plans the /effort command', () => {
+  const p = planSwitch({ kind: 'effort', raw: 'HIGH', current: 'medium', ...READY });
+  assert.deepStrictEqual(p, { ok: true, value: 'high', command: '/effort high', alreadyRunning: false });
+});
+
+test('choosing what is already running is marked, so it resolves at once (Dexter #6)', () => {
+  // The truth is broadcast only on a CHANGE, so waiting would always time out.
+  assert.strictEqual(planSwitch({ kind: 'effort', raw: 'high', current: 'high', ...READY }).alreadyRunning, true);
+  assert.strictEqual(planSwitch({ kind: 'model', raw: 'sonnet', current: 'claude-sonnet-5', ...READY }).alreadyRunning, true);
+  assert.strictEqual(planSwitch({ kind: 'model', raw: 'claude-opus-4-7', current: 'claude-opus-4-5', ...READY }).alreadyRunning, false);
+  assert.strictEqual(planSwitch({ kind: 'effort', raw: 'high', current: null, ...READY }).alreadyRunning, false);
+});
+
+test('an effort level outside the measured vocabulary is refused', () => {
+  for (const raw of ['ultracode', 'hi', '', 'high\r/exit', null]) {
+    const p = planSwitch({ kind: 'effort', raw, current: null, ...READY });
+    assert.strictEqual(p.ok, false, String(raw));
+    assert.ok(p.notice);
+  }
+});
+
+test('an unsafe model id is refused with the validator\'s reason (Miguel #1)', () => {
+  const p = planSwitch({ kind: 'model', raw: 'sonnet\r/permissions', current: null, ...READY });
+  assert.strictEqual(p.ok, false);
+  assert.match(p.notice, /model id/);
+});
+
+test('nothing is sent unless the input box is ready (Dexter #4)', () => {
+  for (const screen of ['dialog', 'multiline', 'unknown', undefined]) {
+    const p = planSwitch({ kind: 'model', raw: 'sonnet', current: null, screen, connected: true });
+    assert.strictEqual(p.ok, false, String(screen));
+    assert.ok(p.notice, 'a refusal says why');
+  }
+});
+
+test('nothing is sent while disconnected: refused at once, not after a 15s wait (Miguel #2)', () => {
+  const p = planSwitch({ kind: 'model', raw: 'sonnet', current: null, screen: 'ready', connected: false });
+  assert.strictEqual(p.ok, false);
+  assert.match(p.notice, /connect/);
+});
+
+test('an unknown kind is refused', () => {
+  assert.strictEqual(planSwitch({ kind: 'mode', raw: 'plan', ...READY }).ok, false);
+});
+
+test('PROPERTY: every planned command is one line of the id alphabet, whatever the input', () => {
+  const raws = ['sonnet', 'opus', 'claude-x', 'a\rb', 'a\nb', '\x15', 'high', 'max', 'a b', '/exit', ''];
+  for (const kind of ['model', 'effort']) {
+    for (const raw of raws) {
+      for (const screen of ['ready', 'dialog']) {
+        const p = planSwitch({ kind, raw, current: null, screen, connected: true });
+        if (p.ok) assert.ok(/^\/(model|effort) [A-Za-z0-9._/:\-[\]]+$/.test(p.command), JSON.stringify(p));
+      }
+    }
+  }
+});
+
+// --- switchNotice (Dexter #9) ------------------------------------------------------
+
+test('a timeout says the switch was not confirmed, and what is running instead', () => {
+  const n = switchNotice({ kind: 'model', result: 'timeout', value: 'sonnet', current: 'claude-opus-5-5' });
+  assert.match(n, /sonnet/);
+  assert.match(n, /claude-opus-5-5/);
+});
+
+test('a timeout with nothing known running says so, not a guess', () => {
+  const n = switchNotice({ kind: 'effort', result: 'timeout', value: 'high', current: null });
+  assert.match(n, /high/);
+  assert.ok(n.includes('—'));
+});
+
+test('applied, or no result, has no notice', () => {
+  assert.strictEqual(switchNotice({ kind: 'model', result: 'applied', value: 'x', current: 'x' }), null);
+  assert.strictEqual(switchNotice(null), null);
+  assert.strictEqual(switchNotice({ kind: 'model', result: null }), null);
+});
+
+test('topBarState carries a notice onto its chip, and topBarDisplay marks and titles it', () => {
+  const s = topBarState({ model: 'claude-opus-5-5', effort: 'high', notices: { model: 'nope' }, theme: THEME });
+  assert.strictEqual(s.model.notice, 'nope');
+  assert.strictEqual(s.effort.notice, null);
+  const classes = new Set();
+  const el = { textContent: '', title: '', classList: { add: c => classes.add(c), remove: c => classes.delete(c) } };
+  topBarDisplay({ modelEl: el }, s);
+  assert.ok(classes.has('notice'));
+  assert.strictEqual(el.title, 'nope');
+  assert.strictEqual(el.textContent, 'claude-opus-5-5', 'the label still reports the truth');
+  topBarDisplay({ modelEl: el }, topBarState({ model: 'claude-opus-5-5', theme: THEME }));
+  assert.ok(!classes.has('notice'), 'the mark clears with the notice');
 });

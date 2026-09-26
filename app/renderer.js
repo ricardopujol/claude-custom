@@ -1745,22 +1745,31 @@ const tbModelMenu = document.getElementById('tb-model-menu');
 const tbEffortMenu = document.getElementById('tb-effort-menu');
 const tbModelCustom = document.getElementById('tb-model-custom');
 
-// `currentModel` stays null until #34's session model reports one (hello's
-// `sessionModel` or the `sessionModel` broadcast, both read through
-// mainModelOf) -- absence, not a guess, and the
-// top bar renders it as "—" the same way every other reading… state in this
-// file does. `currentTheme` is cached only so a model change can recompute
-// the accent alone, without waiting for the next `hello`.
-let currentModel = null;
+// The model chip reads `liveModel` -- the statusLine's exact id
+// (host/status-relay.js), fresh ~1s after a /model -- and falls back to #34's
+// transcript-derived session model only until the first status document
+// arrives. That fallback is the LAST ASSISTANT LINE, blind to a switch until
+// the next reply (Dexter #2), so it is displayed but never confirms a switch.
+// Both null is absence, rendered "—", never a guess. `currentTheme` is cached
+// only so a model change can recompute the accent without the next `hello`.
+let liveModel = null;
+let sessionModelFallback = null;
 let currentEffort = null;
 let currentTheme = null;
 let pendingModel = null;    // { kind:'model', value, startedAt } | null
 let pendingEffort = null;
+// What a chip says about a switch that timed out or was never sent (Dexter
+// #9), until the next request or NOTICE_MS.
+const tbNotices = { model: null, effort: null };
+const tbNoticeTimers = { model: null, effort: null };
+const NOTICE_MS = 12000;
+
+const currentModel = () => liveModel || sessionModelFallback;
 
 function renderTopBar() {
   const state = topBarState({
-    model: currentModel, effort: currentEffort,
-    pendingModel, pendingEffort, theme: currentTheme,
+    model: currentModel(), effort: currentEffort,
+    pendingModel, pendingEffort, theme: currentTheme, notices: tbNotices,
   });
   topBarDisplay({ modelEl: tbModelEl, effortEl: tbEffortEl }, state);
   applyModelAccent(state.model.family, currentTheme);
@@ -1779,39 +1788,86 @@ function applyModelAccent(family, theme) {
   term.options.theme = { ...term.options.theme, cursor };
 }
 
+function setTopBarNotice(kind, text) {
+  tbNotices[kind] = text || null;
+  clearTimeout(tbNoticeTimers[kind]);
+  if (text) {
+    tbNoticeTimers[kind] = setTimeout(() => { tbNotices[kind] = null; renderTopBar(); }, NOTICE_MS);
+  }
+}
+
+function setPending(kind, pending) {
+  if (kind === 'model') pendingModel = pending; else pendingEffort = pending;
+}
+
 // A switch that never hears back (refused, unrecognised, or a
 // model-switch-blocked confirmation nobody answers) must still resolve to
-// something rather than pulse forever. Scheduled once per request; a stale
-// timer firing after the pending it was for already cleared is a no-op.
-function schedulePendingTimeout(kind) {
+// something rather than pulse forever. RE-ARMED until the request it was set
+// for resolves (Dexter #8): with the wall clock stepped back the resolver
+// says "not yet", and a one-shot timer then left the chip pulsing forever.
+function schedulePendingTimeout(kind, request) {
+  const remaining = request.startedAt + PENDING_TIMEOUT_MS - Date.now();
+  const delay = Math.min(PENDING_TIMEOUT_MS, Math.max(250, remaining + 50));
   setTimeout(() => {
     const pending = kind === 'model' ? pendingModel : pendingEffort;
-    if (!pending) return;
+    if (pending !== request) return;   // resolved, or superseded by a newer request
     const res = pendingResolver(pending,
       { type: 'timeout', kind, now: Date.now(), timeoutMs: PENDING_TIMEOUT_MS });
-    if (res.pending === null) {
-      if (kind === 'model') pendingModel = null; else pendingEffort = null;
-      renderTopBar();
-    }
-  }, PENDING_TIMEOUT_MS + 250);
+    if (res.pending) { schedulePendingTimeout(kind, request); return; }
+    setPending(kind, null);
+    setTopBarNotice(kind, switchNotice({ kind, result: res.result, value: request.value,
+      current: kind === 'model' ? currentModel() : currentEffort }));
+    renderTopBar();
+  }, delay);
 }
 
-function requestModel(choice) {
-  const value = String(choice || '').trim();
-  if (!value) return;
-  pendingModel = { kind: 'model', value, startedAt: Date.now() };
-  renderTopBar();
-  schedulePendingTimeout('model');
-  try { ws.send(JSON.stringify({ type: 'input', data: `/model ${value}\r` })); } catch (err) {}
+// The bottom page of the terminal, where the input box lives, whatever the
+// user has scrolled back to -- inputState() reads the box off this.
+function screenLines() {
+  const b = term.buffer.active;
+  const out = [];
+  for (let y = 0; y < term.rows; y++) {
+    const line = b.getLine(b.baseY + y);
+    out.push(line ? line.translateToString(true) : '');
+  }
+  return out;
 }
 
-function requestEffort(choice) {
-  const value = String(choice || '').trim();
-  if (!value) return;
-  pendingEffort = { kind: 'effort', value, startedAt: Date.now() };
+// Ctrl-U, the command, then CR -- as separate writes, spaced: typed as ONE
+// chunk, a line is taken for a paste and its CR swallowed (verify/probe-
+// payloads.js). Ctrl-U clears a single-line draft without submitting it, and
+// the CLI offers Ctrl+Y to get it back (verify/probe-top-bar-truth.js).
+const PTY_STEP_MS = 120;
+
+function requestSwitch(kind, raw) {
+  const plan = planSwitch({
+    kind, raw,
+    current: kind === 'model' ? currentModel() : currentEffort,
+    screen: inputState(screenLines()),
+    connected: !!ws && ws.readyState === WebSocket.OPEN,
+  });
+  if (!plan.ok) {
+    setTopBarNotice(kind, switchNotice({ kind, result: 'refused', notice: plan.notice }));
+    renderTopBar();
+    return;
+  }
+  setTopBarNotice(kind, null);
+  // Already running: the truth is broadcast only on a change, so waiting for
+  // one would always time out (Dexter #6). The command is still sent -- an
+  // alias can move within its family, e.g. opus 4.8 -> opus 5.5, and the live
+  // model then reports that like any other change.
+  if (plan.alreadyRunning) {
+    setPending(kind, null);
+  } else {
+    const request = { kind, value: plan.value, startedAt: Date.now() };
+    setPending(kind, request);
+    schedulePendingTimeout(kind, request);
+  }
   renderTopBar();
-  schedulePendingTimeout('effort');
-  try { ws.send(JSON.stringify({ type: 'input', data: `/effort ${value}\r` })); } catch (err) {}
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  input('\x15');
+  setTimeout(() => input(plan.command), PTY_STEP_MS);
+  setTimeout(() => input('\r'), PTY_STEP_MS * 4);
 }
 
 function toggleMenu(menu, otherMenu) {
@@ -1819,6 +1875,21 @@ function toggleMenu(menu, otherMenu) {
   const opening = menu.hidden;
   if (otherMenu) otherMenu.hidden = true;
   menu.hidden = !opening;
+  if (opening && menu === tbModelMenu && tbModelCustom) tbModelCustom.focus();
+}
+
+function closeTopBarMenus() {
+  const open = (tbModelMenu && !tbModelMenu.hidden) || (tbEffortMenu && !tbEffortMenu.hidden);
+  if (tbModelMenu) tbModelMenu.hidden = true;
+  if (tbEffortMenu) tbEffortMenu.hidden = true;
+  return open;
+}
+
+function submitCustomModel() {
+  if (!tbModelCustom) return;
+  requestSwitch('model', tbModelCustom.value);
+  tbModelCustom.value = '';
+  closeTopBarMenus();
 }
 
 if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu, tbEffortMenu));
@@ -1826,20 +1897,31 @@ if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMe
 if (tbModelMenu) {
   tbModelMenu.addEventListener('click', (e) => {
     const row = e.target.closest('[data-model]');
-    if (row) { requestModel(row.dataset.model); tbModelMenu.hidden = true; return; }
-    if (e.target.id === 'tb-model-custom-go' && tbModelCustom) {
-      requestModel(tbModelCustom.value);
-      tbModelCustom.value = '';
-      tbModelMenu.hidden = true;
-    }
+    if (row) { closeTopBarMenus(); requestSwitch('model', row.dataset.model); return; }
+    if (e.target.id === 'tb-model-custom-go') submitCustomModel();
+  });
+}
+if (tbModelCustom) {
+  tbModelCustom.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitCustomModel(); }
   });
 }
 if (tbEffortMenu) {
   tbEffortMenu.addEventListener('click', (e) => {
     const row = e.target.closest('[data-effort]');
-    if (row) { requestEffort(row.dataset.effort); tbEffortMenu.hidden = true; }
+    if (row) { closeTopBarMenus(); requestSwitch('effort', row.dataset.effort); }
   });
 }
+// Esc and a click anywhere outside the top bar close an open menu. Esc is
+// only taken when a menu WAS open, so it never reaches the TUI by accident as
+// the first of an Esc Esc (which opens the rewind menu) -- and never swallowed
+// from it otherwise.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && closeTopBarMenus()) { e.preventDefault(); e.stopPropagation(); }
+}, true);
+document.addEventListener('mousedown', (e) => {
+  if (!e.target.closest || !e.target.closest('#top-bar')) closeTopBarMenus();
+});
 
 // --- permission mode --------------------------------------------------------
 const modeEl = document.getElementById('mode');
@@ -2179,7 +2261,8 @@ function handleControl(msg) {
     // "flips back to pending on its own" bug the timeout logic exists to avoid.
     currentTheme = msg.theme || currentTheme;
     currentEffort = typeof msg.effort === 'string' ? msg.effort : null;
-    currentModel = mainModelOf(msg.sessionModel);
+    liveModel = typeof msg.liveModel === 'string' && msg.liveModel ? msg.liveModel : null;
+    sessionModelFallback = mainModelOf(msg.sessionModel);
     pendingModel = null;
     pendingEffort = null;
     renderTopBar();
@@ -2224,19 +2307,22 @@ function handleControl(msg) {
     // 1. FF10: every agent card's model line.
     sessionModel = { session: msg.session, agents: msg.agents || {}, errors: msg.errors };
     renderRoster();
-    // 2. FF12: the main session's model chip, and any pending /model switch.
-    //    A match is family equivalence (an alias like "sonnet" resolves to a
-    //    full id like "claude-sonnet-5") OR an exact case-insensitive match,
-    //    which covers a free-typed full id.
-    const model = mainModelOf(msg);
-    currentModel = model;
+    // 2. FF12: the model chip's FALLBACK, until the statusLine reports. It
+    //    never resolves a pending /model: it is the last assistant line of
+    //    the transcript, written before any switch (Dexter #1, #2).
+    sessionModelFallback = mainModelOf(msg);
+    renderTopBar();
+    return;
+  }
+  if (msg.type === 'liveModel') {
+    // FF12's model truth: the statusLine's exact id, re-fired ~1s after a
+    // /model -- see host/status-relay.js. Resolves a pending switch only if it is
+    // no older than the request -- see pendingResolver.
+    liveModel = typeof msg.model === 'string' && msg.model ? msg.model : null;
     if (pendingModel) {
-      const requested = String(pendingModel.value);
-      const matches = !!model && (
-        (modelFamily(model) !== null && modelFamily(model) === modelFamily(requested))
-        || model.toLowerCase() === requested.toLowerCase()
-      );
-      const res = pendingResolver(pendingModel, { type: 'truth', kind: 'model', matches });
+      const res = pendingResolver(pendingModel, {
+        type: 'truth', kind: 'model', at: msg.at, matches: modelMatches(liveModel, pendingModel.value),
+      });
       pendingModel = res.pending;
     }
     renderTopBar();
@@ -2329,14 +2415,14 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'effort') {
-    // The truth source a pending /effort switch resolves against. No alias
-    // table for effort levels -- the six choices ARE their own /effort
-    // argument, so a case-insensitive exact match is the whole rule.
+    // The truth source a pending /effort switch resolves against, from the
+    // statusLine or a main-session hook payload. null is ABSENT (a model with
+    // no effort levels), never a level.
     currentEffort = typeof msg.level === 'string' ? msg.level : null;
     if (pendingEffort) {
-      const matches = !!currentEffort &&
-        currentEffort.toLowerCase() === String(pendingEffort.value).toLowerCase();
-      const res = pendingResolver(pendingEffort, { type: 'truth', kind: 'effort', matches });
+      const res = pendingResolver(pendingEffort, {
+        type: 'truth', kind: 'effort', at: msg.at, matches: effortMatches(currentEffort, pendingEffort.value),
+      });
       pendingEffort = res.pending;
     }
     renderTopBar();
