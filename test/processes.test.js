@@ -188,13 +188,26 @@ test('Stop does NOT close a background subagent\'s calls', () => {
   assert.deepStrictEqual(runningOnly(h.t).map(p => p.label), ['bg work']);
 });
 
-test('SessionEnd clears everything, stale or not', () => {
+test('SessionEnd ends everything, and shows what it ended as stale', () => {
+  // Measured (verify/probe-clear-background.js): /clear fires SessionEnd with
+  // reason "clear" and KILLS background agents, whose open calls then never
+  // close. So every call ends -- visibly, like any other backstop, rather than
+  // being wiped (Dexter F3: a wiped call "disappears without ever being stale").
   const h = harness();
   h.pre('Bash', { command: 'main' }, 'm1');
-  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'sub' }, tool_use_id: 's1', agent_id: 'A' }));
-  h.t.handle(ev('SubagentStop', { agent_id: 'A' }));
-  h.t.handle(ev('SessionEnd', { reason: 'other' }));
-  assert.deepStrictEqual(h.t.list(), []);
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'bg' }, tool_use_id: 's1', agent_id: 'A' }));
+  assert.strictEqual(h.t.handle(ev('SessionEnd', { reason: 'clear' })), 2);
+  assert.deepStrictEqual(runningOnly(h.t), []);
+  assert.deepStrictEqual(h.t.list().map(p => p.state), ['stale', 'stale']);
+});
+
+test('a killed agent\'s SubagentStop after /clear does not revive or double-count its calls', () => {
+  // Measured order after /clear: SessionEnd -> SessionStart -> SubagentStop.
+  const h = harness();
+  h.t.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'bg' }, tool_use_id: 's1', agent_id: 'A' }));
+  h.t.handle(ev('SessionEnd', { reason: 'clear' }));
+  assert.strictEqual(h.t.handle(ev('SubagentStop', { agent_id: 'A' })), 0);
+  assert.deepStrictEqual(h.t.list().map(p => p.state), ['stale']);
 });
 
 test('a call closed by its owner stopping is shown as stale, not silently dropped', () => {

@@ -22,7 +22,8 @@
  *   Stop                   -> the main session's open calls end. NOT a
  *                             subagent's: a background agent outlives its
  *                             parent's turn, and Stop fires first (measured).
- *   SessionEnd             -> everything goes
+ *   SessionEnd             -> everything ends (/clear kills background
+ *                             agents: verify/probe-clear-background.js)
  * A call ended by a backstop is shown as "stale" for a short while rather than
  * vanishing, because its own close never came -- and a missed event nobody can
  * see is how this bug went unnoticed.
@@ -113,11 +114,9 @@ function createProcessTracker({ now = Date.now } = {}) {
     // end a background agent's live command, so it ends nothing.
     if (event === 'SubagentStop') return p.agent_id ? endOwned(o => o === p.agent_id) : 0;
     if (event === 'Stop') return endOwned(o => o === null);
-    if (event === 'SessionEnd') {
-      const n = endOwned(() => true);
-      running.clear();
-      return n;
-    }
+    // Measured: /clear fires SessionEnd (reason "clear") and KILLS background
+    // agents, so every open call is over -- ended visibly, not wiped.
+    if (event === 'SessionEnd') return endOwned(() => true);
     return 0;
   }
 
