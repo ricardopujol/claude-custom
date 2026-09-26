@@ -35,6 +35,8 @@ const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
+const { setBackground, resetBackground, resolveStyle, setLook } = require('./style');
+const { applyLook } = require('./look');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
@@ -379,6 +381,20 @@ const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent,
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
 const background = backgroundFor(CWD, { dir: BACKGROUNDS_DIR });
 console.log('[host] background     :', path.basename(background.path), background.created ? '(new)' : '(existing)');
+
+// The project's own look -- colours, darkness and an optional background copy
+// in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
+// look edited from another window of the same folder is what this one sends.
+// Falls back to the generated background above whenever there is no copy.
+// `theme` is the registry theme with the look merged in (host/look.js), so the
+// view paints a look with the same applyTheme it paints a registry theme with.
+function currentStyle() {
+  const r = resolveStyle(CWD, background.path);
+  return {
+    background: r.background, source: r.source, setAt: r.setAt, look: r.look,
+    theme: applyLook(theme, r.look),
+  };
+}
 
 // The session id arrives on the SessionStart hook. Until it does, only the
 // project total is knowable -- readUsage handles that rather than blocking.
@@ -1179,12 +1195,18 @@ wss.on('connection', (ws) => {
   // Attach handshake: everything the view needs to draw itself, then the
   // current screen. The view holds no session state of its own, so this is the
   // only place it learns the theme, the roster or what is on the terminal.
+  // `background` used to be `background.path` unconditionally -- resolved
+  // through style.js instead, so a per-project override (FF6) wins over the
+  // generated art without the Style panel needing a second round trip just to
+  // learn what is already showing.
+  const styleResolved = currentStyle();
   sendControl(ws, {
     type: 'hello',
     cwd: CWD,
-    theme,
+    theme: styleResolved.theme,
     hooks: helperExists,
-    background: background.path,
+    background: styleResolved.background,
+    style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     running: processes.list(),
@@ -1413,6 +1435,59 @@ wss.on('connection', (ws) => {
             status: { failed: true, error: err && err.message } }));
         } catch { /* the client went away */ }
       });
+      return;
+    }
+    if (msg.type === 'style') {
+      // set-background / reset-background / set-look. A refusal answers ONLY the asking
+      // client -- it is that action failing, not a state change anyone else
+      // needs to hear about, the same distinction host/host.js already draws
+      // for the project picker's 'open' errors. A successful change IS
+      // broadcast: two windows can attach to one host and one of them silently
+      // disagreeing about what is showing is worse than a redraw.
+      //
+      // `ask` names the Style-tab section that asked, echoed on the refusal and
+      // on the broadcast, so the view files a refusal under the request it
+      // ANSWERS rather than whichever was sent last (Dexter F2). Only known
+      // section names are echoed.
+      const ask = msg.ask === 'colours' || msg.ask === 'background' ? msg.ask : undefined;
+      const refuse = (error) => ws.send(JSON.stringify({ type: 'style', ask, error }));
+      const announce = () => broadcastControl({ type: 'style', ask, ...currentStyle() });
+      if (msg.action === 'set-background') {
+        const asked = msg && msg.path;
+        if (typeof asked !== 'string' || !asked.trim()) {
+          refuse('no file was given');
+          return;
+        }
+        const r = setBackground({ source: asked, cwd: CWD });
+        if (!r.ok) {
+          console.log('[host] style refused :', r.reason);
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'reset-background') {
+        try {
+          resetBackground({ cwd: CWD });
+        } catch (err) {
+          refuse(`could not reset: ${err.message}`);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'set-look') {
+        // Colours and darkness only -- host/style.js refuses any other key, so
+        // this cannot point the background at a file it did not copy in.
+        const r = setLook({ cwd: CWD, patch: msg.look });
+        if (!r.ok) {
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
       return;
     }
   }

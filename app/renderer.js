@@ -918,8 +918,13 @@ function hexToRgba(hex, alpha) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+// The last theme the host sent, so a refused or abandoned colour preview can
+// be put back exactly.
+let lastTheme = null;
+
 function applyTheme(theme) {
   if (!theme) return;
+  lastTheme = theme;
   const terminal = { ...theme.terminal };
   if (backgroundUrl) {
     terminal.background = hexToRgba(terminal.background, TERM_ALPHA);
@@ -933,12 +938,20 @@ function applyTheme(theme) {
   }
   const c = theme.chrome || {};
   const root = document.documentElement.style;
+  // NAMING TRAP (Miguel, feat/project-look #5): the theme's `panel` colour is
+  // the CSS `--chrome` variable (header, sidebar). The CSS `--panel` variable
+  // is a different thing -- a hover/raised surface DERIVED from --chrome in
+  // renderer.html -- and no theme key feeds it directly.
   for (const [key, cssVar] of Object.entries({
     bg: '--bg', panel: '--chrome', border: '--border', text: '--text',
     dim: '--dim', accent: '--accent', ok: '--ok', bad: '--bad',
   })) {
     if (c[key]) root.setProperty(cssVar, c[key]);
   }
+  // Only a look with a chosen accent carries onAccent; without one the CSS
+  // default (the theme's dark label) must come back, not a stale override.
+  if (c.onAccent) root.setProperty('--on-accent', c.onAccent);
+  else root.removeProperty('--on-accent');
   // A font change alters cell size, so the pty must be told the new geometry or
   // Ink's layout corrupts.
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
@@ -1543,11 +1556,18 @@ function flourish(milestone) {
   activeFlourish = { el, show, hide };
 }
 
-function applyBackground(filePath) {
+// `custom`: the project's own image rather than the generated art. Only a
+// custom image gets the darkness veil -- the generated SVG bakes its own dim.
+// `version` busts the image cache: a replaced background.png keeps its name.
+function applyBackground(filePath, { custom = false, version = '' } = {}) {
   if (!filePath) return;
-  backgroundUrl = 'file:///' + String(filePath).replace(/\\/g, '/');
+  // encodeURI, then the two characters it leaves alone that a path can hold
+  // and a URL cannot: a project under "C:\a#b" must not lose half its path.
+  const encoded = encodeURI(String(filePath).replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
+  backgroundUrl = 'file:///' + encoded + (version ? '?v=' + encodeURIComponent(version) : '');
   document.getElementById('bg').style.backgroundImage = `url("${backgroundUrl}")`;
   document.body.classList.add('has-bg');
+  document.body.classList.toggle('has-custom-bg', !!custom);
 
   // The WebGL renderer does not composite a transparent background correctly:
   // cells carrying an explicit ANSI background render as opaque boxes, which
@@ -1746,6 +1766,275 @@ function renderParty(party) {
   ).join('');
 }
 
+// --- style: background image override (FF6) ---------------------------------
+// A container that GROWS. app/style-display.js keeps the section registry and
+// the pure view logic; this file only draws it and wires its interactions to
+// the websocket -- the same division of labour as every other display module.
+//
+// The look itself is PROJECT-scoped and lives with the host (host/style.js);
+// the unfocused-window dim is install-wide and lives with main. Both are
+// painted here from what they report, never from what was last typed -- a
+// preview is local and temporary, the host's broadcast is what sticks.
+// State transitions live in app/style-display.js (reduceStyle), where they
+// are tested: which section a refusal belongs to, which errors a success
+// clears, and that a refusal leaves the stored values alone.
+let styleState = emptyStyleState();
+
+// Background, darkness and theme from one style-bearing message, in the order
+// that matters: the background first, because applyTheme decides from it
+// whether the terminal must be transparent.
+function applyStyleMessage(msg) {
+  const look = (msg.style && msg.style.look) || msg.look || {};
+  const source = (msg.style && msg.style.source) || msg.source;
+  const setAt = (msg.style ? msg.style.setAt : msg.setAt) || '';
+  applyBackground(msg.background, { custom: source === 'override', version: setAt });
+  if (typeof look.darkness === 'number') {
+    document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));
+  }
+  if (msg.theme) applyTheme(msg.theme);
+}
+
+// `ask` names the section asking; the host echoes it on the reply, so a
+// refusal is shown where it belongs even with another request in flight.
+function sendStyle(section, payload) {
+  try { ws.send(JSON.stringify({ type: 'style', ask: section, ...payload })); } catch { /* not attached */ }
+}
+
+// A refusal means every preview on screen is uncommitted: repaint what the
+// host last stored -- the theme and the darkness -- over all of them.
+function revertStylePreviews() {
+  if (lastTheme) applyTheme(lastTheme);
+  const stored = styleState.background.darkness;
+  if (typeof stored === 'number') document.documentElement.style.setProperty('--bg-darkness', String(stored));
+}
+
+// The id attributes are passed in WHOLE, as literals, rather than built from a
+// prefix: test/renderer-scope.test.js guards that every id this file looks up is
+// one it can see written out, and a computed id is one it cannot check.
+function colourRow(label, c, pickerId, hexId, resetId) {
+  return (
+    `<span class="style-label">${escapeHtml(label)}</span><div class="style-row">` +
+    `<input type="color" ${pickerId} value="${escapeHtml(c.value)}">` +
+    `<input type="text" class="style-hex" ${hexId} value="${escapeHtml(c.value)}" ` +
+    `maxlength="7" spellcheck="false">` +
+    `<button type="button" ${resetId}${c.isSet ? '' : ' disabled'} ` +
+    `title="${escapeHtml(c.resetTitle || '')}">Reset</button></div>` +
+    (c.painted
+      ? `<div class="style-note">shown as ${escapeHtml(c.painted)} so it stays readable</div>`
+      : '')
+  );
+}
+
+function renderStyleSection(section) {
+  const header = `<h3>${escapeHtml(section.title)}</h3>`;
+  const v = section.view;
+  if (section.id === 'colours' && v && !v.known) {
+    // Before hello there is no colour to show; a picker would show a
+    // fallback as if it were this project's colour (Miguel #3).
+    return `<section class="style-section" data-section="colours">${header}` +
+      `<div class="style-current">reading…</div></section>`;
+  }
+  if (section.id === 'colours' && v) {
+    return (
+      `<section class="style-section" data-section="colours">${header}` +
+      `<div class="style-current">This project only. Every window opened in this folder uses it.</div>` +
+      colourRow('App', v.app, 'id="style-app"', 'id="style-app-hex"', 'id="style-app-reset"') +
+      colourRow('Text', v.text, 'id="style-text"', 'id="style-text-hex"', 'id="style-text-reset"') +
+      colourRow('Accent', v.accent, 'id="style-accent"', 'id="style-accent-hex"', 'id="style-accent-reset"') +
+      colourRow('Secondary text', v.secondary, 'id="style-secondary"', 'id="style-secondary-hex"',
+        'id="style-secondary-reset"') +
+      (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
+      `</section>`
+    );
+  }
+  if (section.id === 'background' && v) {
+    const dark = v.darknessPercent;
+    return (
+      `<section class="style-section" data-section="background">${header}` +
+      `<div class="style-current">${escapeHtml(v.description)}</div>` +
+      `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image here, or ` +
+      `<label class="style-browse">choose a file<input type="file" id="style-bg-file" ` +
+      `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden></label></div>` +
+      (v.isOverride
+        ? `<span class="style-label">Darkness</span><div class="style-row">` +
+          `<input type="range" id="style-dark" min="0" max="95" step="1" value="${dark === null ? 50 : dark}">` +
+          `<span class="style-val" id="style-dark-val">${dark === null ? '—' : dark + '%'}</span></div>`
+        : '') +
+      `<button type="button" id="style-bg-reset"${v.isOverride ? '' : ' disabled'}>Reset to generated</button>` +
+      (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
+      `</section>`
+    );
+  }
+  if (section.id === 'inactive' && v) {
+    const dim = v.dimPercent;
+    return (
+      `<section class="style-section" data-section="inactive">${header}` +
+      `<div class="style-current">${escapeHtml(v.description)}</div>` +
+      `<span class="style-label">Dim</span><div class="style-row">` +
+      `<input type="range" id="style-dim" min="0" max="80" step="1" value="${dim === null ? 45 : dim}"` +
+      `${dim === null ? ' disabled' : ''}>` +
+      `<span class="style-val" id="style-dim-val">${dim === null ? '—' : dim + '%'}</span></div>` +
+      `</section>`
+    );
+  }
+  // A future section with no view function yet still gets its title drawn,
+  // rather than vanishing -- "say something rather than nothing", the same
+  // rule the fog and projects panels follow for a failed read.
+  return `<section class="style-section" data-section="${escapeHtml(section.id)}">${header}</section>`;
+}
+
+function renderStylePanel() {
+  const container = document.getElementById('style-sections');
+  if (!container) return;
+  container.innerHTML = styleDisplay(styleState).map(renderStyleSection).join('');
+  bindStyleSections();
+}
+
+// Bound fresh on every render, since the elements themselves are replaced by
+// the innerHTML assignment above.
+//
+// Listeners are attached DIRECTLY on the drop zone, never delegated to
+// `document`: the whole-window drag-and-drop handler further down is bound to
+// `#app`, an ANCESTOR of this panel, and the bubble phase runs target-first --
+// only a `stopPropagation()` called on a DESCENDANT's own listener fires early
+// enough to stop it. Without this, dropping a background image here would
+// ALSO be typed at the terminal prompt and, outside the project folder,
+// requested as an `/add-dir` grant -- exactly the drop-zone behaviour this
+// panel must not trigger for its own, unrelated kind of drop.
+function bindStyleSections() {
+  const zone = document.getElementById('style-bg-drop');
+  if (zone) {
+    zone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      zone.classList.add('dropping');
+    });
+    for (const leave of ['dragleave', 'dragend']) {
+      zone.addEventListener(leave, (e) => { e.stopPropagation(); zone.classList.remove('dropping'); });
+    }
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.remove('dropping');
+      requestStyleBackground([...(e.dataTransfer.files || [])]);
+    });
+  }
+
+  const fileInput = document.getElementById('style-bg-file');
+  if (fileInput) {
+    fileInput.addEventListener('change', () => {
+      requestStyleBackground([...(fileInput.files || [])]);
+      fileInput.value = '';      // so picking the SAME file twice still fires 'change'
+    });
+  }
+
+  const resetBtn = document.getElementById('style-bg-reset');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => sendStyle('background', { action: 'reset-background' }));
+  }
+
+  bindColour(document.getElementById('style-app'), document.getElementById('style-app-hex'),
+    document.getElementById('style-app-reset'), 'appColor', (hex) => {
+    // A preview, not the palette: the host derives panel and border on commit.
+    const root = document.documentElement.style;
+    root.setProperty('--bg', hex);
+    root.setProperty('--chrome', hex);
+    if (!backgroundUrl) term.options.theme = { ...term.options.theme, background: hex };
+  });
+  bindColour(document.getElementById('style-text'), document.getElementById('style-text-hex'),
+    document.getElementById('style-text-reset'), 'textColor',
+    (hex) => document.documentElement.style.setProperty('--text', hex));
+  bindColour(document.getElementById('style-accent'), document.getElementById('style-accent-hex'),
+    document.getElementById('style-accent-reset'), 'accentColor',
+    (hex) => document.documentElement.style.setProperty('--accent', hex));
+  bindColour(document.getElementById('style-secondary'), document.getElementById('style-secondary-hex'),
+    document.getElementById('style-secondary-reset'), 'secondaryColor',
+    (hex) => document.documentElement.style.setProperty('--dim', hex));
+
+  const dark = document.getElementById('style-dark');
+  if (dark) {
+    const label = document.getElementById('style-dark-val');
+    dark.addEventListener('input', () => {
+      document.documentElement.style.setProperty('--bg-darkness', String(dark.value / 100));
+      if (label) label.textContent = dark.value + '%';
+    });
+    dark.addEventListener('change', () => sendStyle('background', { action: 'set-look', look: { darkness: dark.value / 100 } }));
+  }
+
+  const dim = document.getElementById('style-dim');
+  if (dim && window.harness && window.harness.look) {
+    const label = document.getElementById('style-dim-val');
+    dim.addEventListener('input', () => { if (label) label.textContent = dim.value + '%'; });
+    dim.addEventListener('change', () => {
+      window.harness.look.setDim(dim.value / 100).then((saved) => {
+        // null means main could not save it: say so by showing what IS stored.
+        if (typeof saved === 'number') applyDim(saved);
+        else refreshDim();
+      });
+    });
+  }
+}
+
+const HEX_INPUT = /^#[0-9a-f]{6}$/i;
+
+// One colour control: the picker previews while it moves and commits when it
+// settles; the hex field commits on Enter/blur, and only a real #rrggbb.
+function bindColour(picker, hex, reset, key, preview) {
+  const commit = (value) => sendStyle('colours', { action: 'set-look', look: { [key]: value } });
+  if (picker) {
+    picker.addEventListener('input', () => { preview(picker.value); if (hex) hex.value = picker.value; });
+    picker.addEventListener('change', () => commit(picker.value));
+  }
+  if (hex) {
+    hex.addEventListener('change', () => {
+      const v = hex.value.trim();
+      if (!HEX_INPUT.test(v)) { hex.classList.add('bad'); return; }
+      hex.classList.remove('bad');
+      preview(v);
+      commit(v.toLowerCase());
+    });
+  }
+  if (reset) reset.addEventListener('click', () => commit(null));
+}
+
+// --- unfocused-window dim -----------------------------------------------------
+// Main tells the page when the window gains or loses focus, with the current
+// install-wide dim level. The veil is CSS (#focus-veil); this only flips it.
+function applyDim(dim) {
+  if (typeof dim !== 'number' || !Number.isFinite(dim)) return;
+  document.documentElement.style.setProperty('--unfocused-dim', String(dim));
+  const changed = styleState.inactive.dim !== dim;
+  styleState = { ...styleState, inactive: { dim } };
+  // Not re-rendered on every focus flip -- only when the value moved, so an
+  // open control in the panel is not rebuilt under the pointer.
+  if (changed) renderStylePanel();
+}
+
+function refreshDim() {
+  if (!window.harness || !window.harness.look) return;
+  window.harness.look.getDim().then(applyDim).catch(() => { /* main has no answer; leave it unknown */ });
+}
+
+if (window.harness && window.harness.onWindowFocus) {
+  window.harness.onWindowFocus(({ focused, dim }) => {
+    applyDim(dim);
+    document.body.classList.toggle('unfocused', !focused);
+  });
+}
+refreshDim();
+
+// One image at a time. `webUtils.getPathForFile` across the preload bridge is
+// the only way to get a dropped/chosen file's real path -- `File.path` was
+// removed in Electron 32 -- and it returns '' for anything that is not a real
+// file, which is filtered here rather than sent to the host at all.
+function requestStyleBackground(files) {
+  if (!files.length) return;
+  const path = (window.harness && window.harness.pathForFile) ? window.harness.pathForFile(files[0]) : '';
+  if (!path) return;
+  sendStyle('background', { action: 'set-background', path });
+}
+
 function handleControl(msg) {
   if (msg.type === 'hello') {
     // The host sends `hello` immediately before replaying the current screen.
@@ -1753,10 +2042,12 @@ function handleControl(msg) {
     // is already on screen and the session appears twice.
     term.reset();
     document.getElementById('cwd').textContent = msg.cwd || '';
-    // Background first: applyTheme needs to know whether to make the terminal
-    // translucent, and getting that order wrong leaves the art fully hidden.
-    applyBackground(msg.background);
-    applyTheme(msg.theme);
+    // `msg.background` is already resolved through host/style.js (the
+    // project's own copy wins over generated art) and `msg.theme` already has
+    // the project's look merged in; `msg.style` carries WHY, for the panel.
+    applyStyleMessage(msg);
+    styleState = reduceStyle(styleState, msg);
+    renderStylePanel();
     renderUsage(msg.usage);
     // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
     // and the host sends a `quota` message as soon as the read lands.
@@ -1898,6 +2189,17 @@ function handleControl(msg) {
   }
   if (msg.type === 'dropped') {
     renderDropNote(msg.note);
+    return;
+  }
+  if (msg.type === 'style') {
+    // A refusal (unsupported type, too large, no file) answers ONLY this
+    // action; the CURRENT background/source is left exactly as it was, the
+    // same "say what failed, do not repaint the world" rule renderProjects
+    // follows for its own error branch.
+    styleState = reduceStyle(styleState, msg);
+    if (msg.error) revertStylePreviews();
+    else applyStyleMessage(msg);
+    renderStylePanel();
     return;
   }
   if (msg.type === 'quota') {

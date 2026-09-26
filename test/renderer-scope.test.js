@@ -64,6 +64,8 @@ const ALLOWED_GLOBALS = new Set([
   // deleting someone else's export is not conflict resolution.
   'bugVaultDisplay', 'formatBugRow',
   'projectsDisplay',
+  // app/style-display.js
+  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
 ]);
@@ -175,7 +177,7 @@ test('the display modules the renderer needs are actually defined after loading'
   // module that has already been caught once.
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
                     'rosterWidth', 'faceSize', 'bugVaultDisplay',
-                    'vaultLockDisplay', 'instanceCounts', 'modelLine', 'modelEntry']) {
+                    'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });

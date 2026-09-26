@@ -33,7 +33,7 @@
     "rather than by restating the list."
   ],
   "commandRunner": {
-    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/atomic-write.test.js test/store.test.js test/secret-vault.test.js test/secret-vault-lock.test.js test/secret-vault-lock-findings.test.js test/secret-vault-lock-pass2.test.js test/secret-ipc.test.js test/vault-lock-display.test.js test/file-lock.test.js test/openrouter.test.js test/project-path.test.js test/handshake.test.js test/host-identity.test.js test/port-for-project.test.js test/launch-target.test.js test/project-picker.test.js test/projects-display.test.js test/usage-display.test.js test/roster-width.test.js test/mood-machine.test.js test/bridge-contract.test.js test/agent-tool-name.test.js test/vault-damaged-path.test.js test/vault-lock-pass3.test.js test/milestones.test.js test/bugvault.test.js test/providers.test.js test/mood-machine-kills.test.js test/session-model.test.js test/processes-broadcast.test.js test/secret-service-forwarding.test.js"
+    "command": "node --test test/quota.test.js test/quota-announcer.test.js test/quota-display.test.js test/atomic-write.test.js test/store.test.js test/secret-vault.test.js test/secret-vault-lock.test.js test/secret-vault-lock-findings.test.js test/secret-vault-lock-pass2.test.js test/secret-ipc.test.js test/vault-lock-display.test.js test/file-lock.test.js test/openrouter.test.js test/project-path.test.js test/handshake.test.js test/host-identity.test.js test/port-for-project.test.js test/launch-target.test.js test/project-picker.test.js test/projects-display.test.js test/usage-display.test.js test/roster-width.test.js test/mood-machine.test.js test/bridge-contract.test.js test/agent-tool-name.test.js test/vault-damaged-path.test.js test/vault-lock-pass3.test.js test/milestones.test.js test/bugvault.test.js test/providers.test.js test/mood-machine-kills.test.js test/session-model.test.js test/processes-broadcast.test.js test/secret-service-forwarding.test.js test/style.test.js test/look.test.js"
   },
   "mutate": [
     "host/quota.js",
@@ -56,7 +56,9 @@
     "app/roster-width.js",
     "host/mood-machine.js",
     "host/session-model.js",
-    "host/processes-broadcast.js"
+    "host/processes-broadcast.js",
+    "host/style.js",
+    "host/look.js"
   ],
   "reporters": [
     "clear-text",
