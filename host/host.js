@@ -717,8 +717,13 @@ if (helperExists) {
       refreshAgentStats()
         .then((stats) => broadcastControl({ type: 'agentStats', stats }))
         .catch(() => { /* the next finish will carry it */ });
+      // The milestone rides along, or the headline crosses a rung while the
+      // flourish waits for the next tick. announcer.see dedupes the timer's call.
       refreshUsage()
-        .then((usage) => broadcastControl({ type: 'usage', usage }))
+        .then((usage) => {
+          broadcastControl({ type: 'usage', usage });
+          checkMilestone(usage);
+        })
         .catch(() => { /* the timer will carry it */ });
       // agent_type when the payload carries it; the top of the stack only as a
       // fallback. Cooldowns applied to the wrong agent are worse than none.
