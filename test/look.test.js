@@ -192,3 +192,42 @@ test('applyLook tolerates a theme with no chrome or terminal', () => {
   assert.strictEqual(out.chrome.bg, '#402020');
   assert.strictEqual(out.terminal.background, '#402020');
 });
+
+// --- Dexter F4: contrast is guaranteed, not hoped for ----------------------------
+
+const { contrastRatio } = require('../host/look');
+
+test('F4: an app colour equal to the terminal foreground does not hide the CLI text', () => {
+  const base = { background: '#11131a', foreground: '#c7cede' };
+  const t = terminalOverride({ ...DEFAULT_LOOK, appColor: '#c7cede' }, base);
+  assert.ok(contrastRatio(t.background, t.foreground) >= 4.5, t.background);
+});
+
+test('F4: a text colour equal to the app colour is still readable', () => {
+  const p = derivePalette({ ...DEFAULT_LOOK, appColor: '#402020', textColor: '#402020' }, BASE_CHROME);
+  assert.ok(contrastRatio(p.text, p.bg) >= 4.5, `${p.text} on ${p.bg}`);
+  assert.notStrictEqual(p.dim, p.bg);
+});
+
+test('property F4: the terminal background always reads against its own foreground', () => {
+  fc.assert(fc.property(hexArb, hexArb, (appColor, foreground) => {
+    const t = terminalOverride({ ...DEFAULT_LOOK, appColor }, { background: '#000000', foreground });
+    assert.ok(contrastRatio(t.background, t.foreground) >= 4.5, `${t.background} vs ${t.foreground}`);
+  }));
+});
+
+test('property F4 (+Miguel #4): UI text reads against the bg for any app/text pair, either one unset', () => {
+  fc.assert(fc.property(fc.option(hexArb, { nil: null }), fc.option(hexArb, { nil: null }), (appColor, textColor) => {
+    fc.pre(appColor !== null || textColor !== null);
+    const p = derivePalette({ ...DEFAULT_LOOK, appColor, textColor }, BASE_CHROME);
+    for (const k of ['bg', 'panel', 'border', 'text', 'dim']) assert.match(p[k], HEX, k);
+    assert.ok(contrastRatio(p.text, p.bg) >= 4.5, `${p.text} on ${p.bg}`);
+  }));
+});
+
+test('a colour that already reads is left exactly as chosen', () => {
+  const p = derivePalette({ ...DEFAULT_LOOK, appColor: '#101010', textColor: '#f0f0f0' }, BASE_CHROME);
+  assert.strictEqual(p.text, '#f0f0f0');
+  const t = terminalOverride({ ...DEFAULT_LOOK, appColor: '#101010' }, { background: '#000000', foreground: '#f0f0f0' });
+  assert.strictEqual(t.background, '#101010');
+});

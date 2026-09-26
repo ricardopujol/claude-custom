@@ -113,6 +113,36 @@ function luminance(hex) {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
+// WCAG contrast ratio, 1 (identical) .. 21 (black on white).
+function contrastRatio(a, b) {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+// WCAG AA for normal text. Always reachable: for any `against`, black or
+// white is at least ~4.58:1 from it.
+const MIN_CONTRAST = 4.5;
+
+/**
+ * `color` if it already reads against `against`; otherwise `color` walked
+ * toward whichever of black and white contrasts more, just far enough.
+ *
+ * Dexter F4: a person picks colours one at a time, so a perfectly reasonable
+ * app colour can equal the terminal's (or the UI's) text colour and make it
+ * vanish -- and an invisible Style tab cannot be used to undo it. A choice
+ * that already reads is returned untouched.
+ */
+function ensureContrast(color, against) {
+  if (contrastRatio(color, against) >= MIN_CONTRAST) return color;
+  const extreme = contrastRatio('#ffffff', against) >= contrastRatio('#000000', against) ? '#ffffff' : '#000000';
+  for (let step = 1; step <= 20; step++) {
+    const candidate = mix(color, extreme, step / 20);
+    if (contrastRatio(candidate, against) >= MIN_CONTRAST) return candidate;
+  }
+  return extreme;
+}
+
 /**
  * The chrome colours for this look, over the registry theme's `chrome`.
  * Keys it does not own (accent, ok, bad) pass through untouched.
@@ -131,9 +161,12 @@ function derivePalette(look, baseChrome) {
     out.border = mix(appColor, toward, BORDER_MIX);
   }
   if (textColor) out.text = textColor;
-  // Dim is re-derived whenever either end moved: the base theme's dim was
-  // tuned against the base background, and against a new one it can vanish.
-  if (parseHex(out.text) && parseHex(out.bg)) out.dim = mix(out.text, out.bg, DIM_MIX);
+  if (parseHex(out.text) && parseHex(out.bg)) {
+    out.text = ensureContrast(out.text, out.bg);
+    // Dim is re-derived whenever either end moved: the base theme's dim was
+    // tuned against the base background, and against a new one it can vanish.
+    out.dim = mix(out.text, out.bg, DIM_MIX);
+  }
   return out;
 }
 
@@ -145,7 +178,10 @@ function derivePalette(look, baseChrome) {
 function terminalOverride(look, baseTerminal) {
   const out = { ...(baseTerminal || {}) };
   const appColor = normalHex(look && look.appColor);
-  if (appColor) out.background = appColor;
+  if (!appColor) return out;
+  // Moved away from the CLI's own text colour when it would hide it -- this
+  // feature cannot change that text, so the background is what must give.
+  out.background = parseHex(out.foreground) ? ensureContrast(appColor, out.foreground) : appColor;
   return out;
 }
 
@@ -177,5 +213,6 @@ function sanitizeDim(v) {
 
 module.exports = {
   parseHex, formatHex, sanitizeLook, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
+  contrastRatio, ensureContrast, MIN_CONTRAST,
   DEFAULT_LOOK, MAX_DARKNESS, ACCEPTED_EXTENSIONS, DEFAULT_DIM, MAX_DIM,
 };
