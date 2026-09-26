@@ -17,18 +17,18 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const { latestModel, readSessionModel } = require('../host/session-model');
 const { projectDirName } = require('../host/project-dir');
+const { tmpDir } = require('./tmp-dir');
 
 const NL = String.fromCharCode(10);
 const CWD = 'C:/w/proj';
 const SYNTHETIC = '<synthetic>';
 
 function project() {
-  const projectsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-session-model-'));
+  const projectsDir = tmpDir('cc-session-model-');
   const projectDir = projectDirName(CWD);
   const dir = path.join(projectsDir, projectDir);
   fs.mkdirSync(dir, { recursive: true });
