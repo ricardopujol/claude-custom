@@ -202,7 +202,13 @@ async function readSessionModel({
   }
 
   const dir = path.join(projectsDir, projectDir);
-  const { files } = await transcriptFiles(dir);
+  // `errors` is folded in, as all three sibling readers do: a subagents folder
+  // that could not be LISTED hides transcripts, and dropping the count made
+  // that read as a clean "this session ran no agents" (Dexter, PR #34,
+  // Finding 2). transcriptFiles counts across the whole project folder, not
+  // per session, so this can over-report by another session's failure --
+  // the conservative direction, and the same trade its siblings make.
+  const { files, errors: enumErrors } = await transcriptFiles(dir);
   if (files === null) {
     // The project folder itself could not be read. Mirrors
     // host/agent-stats.js's readAgentStats: absence, counted, never a zero.
@@ -215,7 +221,7 @@ async function readSessionModel({
   // transcript, which is one of them.
   const mine = files.filter(f => f.session === sessionId);
   const tables = await identityTables(mine);
-  let errors = tables.errors;
+  let errors = enumErrors + tables.errors;
   // Which run each agent's row came from, so a later file can be compared
   // against it rather than simply overwriting it -- see isNewerRun.
   const picked = new Map();

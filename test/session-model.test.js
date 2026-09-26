@@ -327,6 +327,21 @@ test('readSessionModel: a project folder that cannot be read is absence, counted
   assert.deepStrictEqual(r.agents, {});
 });
 
+test('readSessionModel: a subagents folder that cannot be LISTED is counted, not a clean "no agents"', async () => {
+  // Dexter, PR #34, Finding 2: transcriptFiles reported the failure in its
+  // `errors` and this module destructured it away, so EBUSY/EPERM on the
+  // subagents folder came back as { agents: {}, errors: 0 }. `subagents` as a
+  // FILE makes readdir fail with ENOTDIR -- the same non-ENOENT class, portably.
+  const { projectsDir, projectDir, dir } = project();
+  writeSession(dir, 's1', [assistant('claude-opus-5', '2026-01-01T00:00:00.000Z')]);
+  fs.mkdirSync(path.join(dir, 's1'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 's1', 'subagents'), 'not a folder');
+
+  const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  assert.ok(r.errors >= 1, `expected the unlistable folder to be counted, got errors=${r.errors}`);
+  assert.strictEqual(r.session.model, 'claude-opus-5', 'what COULD be read is still reported');
+});
+
 test('readSessionModel: a subagent transcript that exists but cannot be OPENED is counted, not swallowed', async () => {
   const { projectsDir, projectDir, dir } = project();
   writeSession(dir, 's1', [agentSpawn('toolu_1', 'code-reviewer')]);
