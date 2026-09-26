@@ -92,6 +92,32 @@ function latestModel(entries) {
 }
 
 /**
+ * Whether candidate run `a` is newer than the current pick `b`, across FILES.
+ *
+ * Within one file "latest" is last-in-file (see latestModel). Across the several
+ * transcripts one agent type can have in a session, file order means nothing:
+ * subagent ids are random hex, so readdir order is alphabetical noise, and
+ * last-writer-wins over it showed an older run's model (Dexter, PR #34,
+ * Finding 1). The timestamp is the only ordering there is.
+ *
+ * A run with no parseable timestamp cannot be ordered, so it never displaces
+ * one that can. Ties -- equal stamps, or neither stamped -- fall to the file
+ * name, which is arbitrary but STABLE: the answer must not depend on the order
+ * the directory happened to be read in.
+ *
+ * Pure. `a`/`b` are `{ at, file }`.
+ */
+function isNewerRun(a, b) {
+  const ta = typeof a.at === 'string' ? Date.parse(a.at) : NaN;
+  const tb = typeof b.at === 'string' ? Date.parse(b.at) : NaN;
+  const hasA = Number.isFinite(ta);
+  const hasB = Number.isFinite(tb);
+  if (hasA !== hasB) return hasA;
+  if (hasA && ta !== tb) return ta > tb;
+  return String(a.file) > String(b.file);
+}
+
+/**
  * The parsed JSONL records in the last `TAIL_BYTES` of `file`, in file order.
  *
  * Returns `{ entries, gone }`:
@@ -190,6 +216,9 @@ async function readSessionModel({
   const mine = files.filter(f => f.session === sessionId);
   const tables = await identityTables(mine);
   let errors = tables.errors;
+  // Which run each agent's row came from, so a later file can be compared
+  // against it rather than simply overwriting it -- see isNewerRun.
+  const picked = new Map();
 
   for (const entry of mine) {
     const { entries, gone } = await tailEntries(entry.file, openFile);
@@ -220,6 +249,11 @@ async function readSessionModel({
     const { agent, source } = resolveAgent(meta, tables, entry.session);
     if (!agent) continue;                       // nothing to file it under
 
+    const current = picked.get(agent);
+    const candidate = { at: latest.at, file: entry.file };
+    if (current && !isNewerRun(candidate, current)) continue;
+    picked.set(agent, candidate);
+
     const row = { model: latest.model, at: latest.at };
     if (source === 'unresolved') row.unresolved = true;
     agents[agent] = row;
@@ -229,5 +263,5 @@ async function readSessionModel({
 }
 
 module.exports = {
-  latestModel, readSessionModel, defaultProjectsDir, SYNTHETIC, TAIL_BYTES,
+  latestModel, isNewerRun, readSessionModel, defaultProjectsDir, SYNTHETIC, TAIL_BYTES,
 };

@@ -201,6 +201,78 @@ test('readSessionModel: an ordinary subagent is filed under its TYPE', async () 
     { model: 'claude-opus-5', at: '2026-01-01T00:05:00.000Z' });
 });
 
+// Dexter, PR #34, Finding 1: two runs of one agent type in one session. Subagent
+// file ids are random hex, so readdir order says nothing about which run is
+// newer -- the card must show the model of the LATEST run, and the answer must
+// not change with the order the files happen to be enumerated in. Both
+// orientations are asserted: a fix that only reverses the loop passes one.
+for (const newerSortsFirst of [true, false]) {
+  test(`readSessionModel: two runs of one type -- the NEWER run wins (newer file sorts ${newerSortsFirst ? 'first' : 'last'})`, async () => {
+    const { projectsDir, projectDir, dir } = project();
+    writeSession(dir, 's1', [agentSpawn('toolu_1', 'logic-reviewer'), agentSpawn('toolu_2', 'logic-reviewer')]);
+    const [newerFile, olderFile] = newerSortsFirst ? ['agent-0a9e', 'agent-f3c1'] : ['agent-f3c1', 'agent-0a9e'];
+    writeSubagent(dir, 's1', olderFile, { agentType: 'logic-reviewer', toolUseId: 'toolu_1' },
+      [assistant('claude-opus-5', '2026-01-01T10:00:00.000Z')]);
+    writeSubagent(dir, 's1', newerFile, { agentType: 'logic-reviewer', toolUseId: 'toolu_2' },
+      [assistant('claude-sonnet-5', '2026-01-01T11:00:00.000Z')]);
+
+    const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+    assert.deepStrictEqual(r.agents['logic-reviewer'],
+      { model: 'claude-sonnet-5', at: '2026-01-01T11:00:00.000Z' });
+  });
+}
+
+test('isNewerRun (property): the pick is the same for EVERY enumeration order', () => {
+  // Exhaustive over all 120 orders of five runs covering every branch: two
+  // equal stamps (tie -> file), an unparseable stamp, a missing one, and the
+  // true newest. A pick that depends on order is the Finding 1 defect.
+  const { isNewerRun } = require('../host/session-model');
+  const runs = [
+    { at: '2026-01-01T10:00:00.000Z', file: 'd' },
+    { at: '2026-01-01T12:00:00.000Z', file: 'a' },
+    { at: '2026-01-01T12:00:00.000Z', file: 'c' },
+    { at: 'not a date', file: 'z' },
+    { at: null, file: 'y' },
+  ];
+  const permutations = (xs) => xs.length <= 1 ? [xs]
+    : xs.flatMap((x, i) => permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map(p => [x, ...p]));
+  const pick = (order) => order.reduce((best, r) => (!best || isNewerRun(r, best) ? r : best), null);
+
+  const picks = new Set(permutations(runs).map(o => pick(o).file));
+  assert.deepStrictEqual([...picks], ['c'], 'newest stamp, tie broken by file name, in every order');
+});
+
+test('isNewerRun: irreflexive and asymmetric -- never both a>b and b>a', () => {
+  const { isNewerRun } = require('../host/session-model');
+  const runs = [
+    { at: '2026-01-01T10:00:00.000Z', file: 'a' }, { at: '2026-01-01T10:00:00.000Z', file: 'b' },
+    { at: undefined, file: 'a' }, { at: 'garbage', file: 'b' }, { at: '2026-01-02T00:00:00.000Z', file: 'a' },
+  ];
+  for (const a of runs) {
+    assert.strictEqual(isNewerRun(a, a), false);
+    for (const b of runs) {
+      if (a === b) continue;
+      assert.ok(!(isNewerRun(a, b) && isNewerRun(b, a)), `${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+    }
+  }
+});
+
+test('readSessionModel: a run WITH a timestamp beats one without, in either order', async () => {
+  // A missing `at` cannot be ordered, so it must never displace one that can.
+  for (const stampedFirst of [true, false]) {
+    const { projectsDir, projectDir, dir } = project();
+    writeSession(dir, 's1', [agentSpawn('toolu_1', 'logic-reviewer'), agentSpawn('toolu_2', 'logic-reviewer')]);
+    const [stamped, bare] = stampedFirst ? ['agent-0a9e', 'agent-f3c1'] : ['agent-f3c1', 'agent-0a9e'];
+    writeSubagent(dir, 's1', stamped, { agentType: 'logic-reviewer', toolUseId: 'toolu_1' },
+      [assistant('claude-sonnet-5', '2026-01-01T11:00:00.000Z')]);
+    writeSubagent(dir, 's1', bare, { agentType: 'logic-reviewer', toolUseId: 'toolu_2' },
+      [assistant('claude-opus-5', undefined)]);
+
+    const r = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+    assert.strictEqual(r.agents['logic-reviewer'].model, 'claude-sonnet-5', `stampedFirst=${stampedFirst}`);
+  }
+});
+
 test('readSessionModel: a NAMED spawn resolves to its TYPE, not its name', async () => {
   // The exact defect host/agent-stats.js exists for -- reused here, not
   // re-derived, so this module cannot get it independently wrong.
