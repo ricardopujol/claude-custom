@@ -709,10 +709,17 @@ if (helperExists) {
     }
     if (ev.event === 'SubagentStop') {
       // The transcript is on disk by the time this fires, so its tokens and
-      // timestamps are already there to read.
+      // timestamps are already there to read. Refresh both the agent stats panel
+      // AND the token count — before this change only agentStats was refreshed,
+      // so the session token display lagged up to 5 seconds after each agent
+      // finished (the timer eventually caught it, but the agents panel updated
+      // instantly while the token headline stayed stale).
       refreshAgentStats()
         .then((stats) => broadcastControl({ type: 'agentStats', stats }))
         .catch(() => { /* the next finish will carry it */ });
+      refreshUsage()
+        .then((usage) => broadcastControl({ type: 'usage', usage }))
+        .catch(() => { /* the timer will carry it */ });
       // agent_type when the payload carries it; the top of the stack only as a
       // fallback. Cooldowns applied to the wrong agent are worse than none.
       const finished = (ev.payload && ev.payload.agent_type)
