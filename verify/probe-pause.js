@@ -34,9 +34,11 @@
 
    (b) What does the CLI expose for STOPPING a background agent/task?
        Inventory only, no spend: `claude --help` (background-relevant
-       commands), the built-in slash-command list (typing `/` never submits
-       to the model -- it is a local, zero-token filter list -- verified
-       below by never seeing a token charged for it), the shipped SDK tool
+       commands), the built-in slash-command list (typing `/` is a local,
+       zero-token filter list that never submits to the model -- a
+       well-known CLI behaviour, not independently re-verified here via a
+       transcript/cost-state check the way the real session below is), the
+       shipped SDK tool
        schemas in the installed npm package (sdk-tools.d.ts -- the model-
        facing BashInput.run_in_background and TaskStopInput shapes), the
        hook events host/settings-writer.js already wires (so gaps are
@@ -105,8 +107,9 @@
          to inspect, `stop|kill`/`rm` to end one -- all keyed by the short
          id `--bg` prints, all at the SESSION level, nothing at the
          individual-background-bash-task level.
-         Built-in slash commands (typing `/` is a local, zero-token filter
-         -- confirmed by these calls never producing a transcript entry):
+         Built-in slash commands (typing `/` is a local, zero-token filter,
+         by construction -- not independently re-verified via transcript
+         here; M1, Miguel PR #61 review, reworded from an earlier overclaim):
          `/tasks` (alias `/bashes`) = "View and manage everything running
          in the background"; `/background` = "Send this session to the
          background and free the terminal". No built-in `/pause`, `/kill`,
@@ -153,6 +156,7 @@ const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const { spawn, spawnSync, execFileSync } = require('child_process');
+const { createHygieneRegistry } = require('./lib/process-hygiene');
 
 const REPO = path.join(__dirname, '..');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -160,6 +164,16 @@ const T0 = Date.now();
 const at = () => `${Math.round((Date.now() - T0) / 1000)}s`;
 
 const results = { platform: process.platform, suspendPrimitive: {}, realSession: null, inventory: {} };
+
+// H1 (Miguel, PR #61 review): Ctrl+C during the documented ~20s suspend
+// window is Node's default SIGINT behaviour, which terminates immediately
+// and skips every pending `finally` -- exactly the moment an operator
+// watching this probe run is most likely to press it. This registry is what
+// runs INSTEAD, resuming every pid this run has suspended and tree-killing
+// every process tree it has spawned, so a Ctrl+C leaves nothing suspended
+// forever and no live paid session orphaned. `hygiene.setResumeFn` is wired
+// below, once `ntAction` exists.
+const hygiene = createHygieneRegistry();
 
 // =============================================================================
 // Part (a) step 1: which suspend primitive works, measured against a plain
@@ -205,6 +219,13 @@ function ntAction(action, pid) {
   return { code: r.status, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
 }
 
+// Wired here (not at declaration) because it closes over ntAction.
+// hygiene.install() itself is called only under the require.main === module
+// guard at the bottom of this file -- NOT here at module load -- so a test
+// that requires this file to reuse its pure helpers does not silently hijack
+// its own process's SIGINT/uncaughtException handling as a side effect.
+hygiene.setResumeFn((pid) => ntAction('Resume', pid));
+
 async function detectSuspendPrimitive() {
   console.log('\n=== Part (a) step 1: suspend primitive ===');
   if (process.platform !== 'win32') {
@@ -227,26 +248,38 @@ async function detectSuspendPrimitive() {
     `let n=0;setInterval(()=>{n++;require('fs').appendFileSync(${JSON.stringify(heartbeat)},n+' '+Date.now()+'\\n')},300)`],
     { detached: true, stdio: 'ignore' });
   const lines = () => { try { return fs.readFileSync(heartbeat, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+  hygiene.registerSpawnedTree(child.pid);
 
-  await sleep(1000);
-  // The baseline is sampled AFTER the suspend call returns, not before it is
-  // issued: spinning up powershell and JIT-compiling the Add-Type P/Invoke
-  // shim costs several hundred ms to over a second, during which the
-  // heartbeat keeps ticking. Sampling "before" prior to that setup cost made
-  // an already-suspended process look like it had kept running. By the time
-  // NtSuspendProcess returns rc=0 the process is actually suspended, so that
-  // is the correct t=0 for "during".
-  const sRes = ntAction('Suspend', child.pid);
-  console.log(`NtSuspendProcess: ${sRes.out || sRes.err}`);
-  const before = lines();
-  await sleep(2000);
-  const during = lines();
-  const rRes = ntAction('Resume', child.pid);
-  console.log(`NtResumeProcess: ${rRes.out || rRes.err}`);
+  let sRes, rRes, before, during;
+  try {
+    await sleep(1000);
+    // The baseline is sampled AFTER the suspend call returns, not before it is
+    // issued: spinning up powershell and JIT-compiling the Add-Type P/Invoke
+    // shim costs several hundred ms to over a second, during which the
+    // heartbeat keeps ticking. Sampling "before" prior to that setup cost made
+    // an already-suspended process look like it had kept running. By the time
+    // NtSuspendProcess returns rc=0 the process is actually suspended, so that
+    // is the correct t=0 for "during".
+    sRes = ntAction('Suspend', child.pid);
+    console.log(`NtSuspendProcess: ${sRes.out || sRes.err}`);
+    hygiene.registerSuspended(child.pid);
+    before = lines();
+    await sleep(2000);
+    during = lines();
+  } finally {
+    // L2 (Miguel, PR #61 review): resume lives in its own finally, independent
+    // of the SIGINT/uncaughtException backstop, so a throw between suspend and
+    // resume (a `lines()`/sleep hiccup) still resumes cleanly instead of
+    // leaning on the emergency path to notice.
+    rRes = ntAction('Resume', child.pid);
+    console.log(`NtResumeProcess: ${rRes.out || rRes.err}`);
+    hygiene.clearSuspended(child.pid);
+  }
   await sleep(1200);
   const after = lines();
   console.log(`heartbeat lines: right-after-suspend-call=${before} still-during-suspend(+2s)=${during} after-resume=${after}`);
   try { process.kill(child.pid); } catch {}
+  hygiene.unregisterSpawnedTree(child.pid);
   try { fs.unlinkSync(heartbeat); } catch {}
 
   const ntWorks = sRes.code === 0 && rRes.code === 0 && during <= before + 1 && after > during;
@@ -400,6 +433,7 @@ async function realSessionTest(suspendPrimitive) {
     name: 'xterm-256color', cols: 120, rows: 45, cwd: REPO, env: { ...cleanEnv(), TERM: 'xterm-256color' },
   });
   console.log(`pty pid (claude.exe): ${term.pid}`);
+  hygiene.registerSpawnedTree(term.pid);
 
   const xterm = new Terminal({ cols: 120, rows: 45, allowProposedApi: true });
   term.onData(d => xterm.write(d));
@@ -508,26 +542,36 @@ async function realSessionTest(suspendPrimitive) {
     const beforeLines = hbLines();
     console.log(`[${at()}] heartbeat lines before suspend: ${beforeLines}`);
 
-    const sRes = ntAction('Suspend', targetPid);
-    console.log(`[${at()}] suspend: ${sRes.out || sRes.err}`);
-    record.suspendResult = sRes;
-
+    // L2 (Miguel, PR #61 review): suspend->resume gets its OWN try/finally,
+    // independent of the SIGINT/uncaughtException backstop (`hygiene`) --
+    // registerSuspended below means a Ctrl+C is still covered, but a plain
+    // exception from tasksPanel()/hbLines() mid-suspend should resume via
+    // this finally directly, not fall through to the emergency path.
     const samples = [];
-    for (let i = 0; i < 4; i++) {
-      await sleep(5000);
-      const n = hbLines();
-      samples.push(n);
-      console.log(`[${at()}] +${(i + 1) * 5}s while suspended, heartbeat lines: ${n}`);
-    }
-    const panelMid = await tasksPanel('midway through the ~20s suspend window');
-    record.linesWhileSuspended = samples;
-    const staysFlat = samples.every(n => n === samples[0]);
-    console.log(`heartbeat stayed flat for the whole ~20s suspend window: ${staysFlat}`);
-    record.staysFlatWhileSuspended = staysFlat;
+    let sRes, rRes, panelMid, staysFlat;
+    hygiene.registerSuspended(targetPid);
+    try {
+      sRes = ntAction('Suspend', targetPid);
+      console.log(`[${at()}] suspend: ${sRes.out || sRes.err}`);
+      record.suspendResult = sRes;
 
-    const rRes = ntAction('Resume', targetPid);
-    console.log(`[${at()}] resume: ${rRes.out || rRes.err}`);
-    record.resumeResult = rRes;
+      for (let i = 0; i < 4; i++) {
+        await sleep(5000);
+        const n = hbLines();
+        samples.push(n);
+        console.log(`[${at()}] +${(i + 1) * 5}s while suspended, heartbeat lines: ${n}`);
+      }
+      panelMid = await tasksPanel('midway through the ~20s suspend window');
+      record.linesWhileSuspended = samples;
+      staysFlat = samples.every(n => n === samples[0]);
+      console.log(`heartbeat stayed flat for the whole ~20s suspend window: ${staysFlat}`);
+      record.staysFlatWhileSuspended = staysFlat;
+    } finally {
+      rRes = ntAction('Resume', targetPid);
+      console.log(`[${at()}] resume: ${rRes.out || rRes.err}`);
+      record.resumeResult = rRes;
+      hygiene.clearSuspended(targetPid);
+    }
 
     await sleep(3000);
     const afterLines = hbLines();
@@ -559,6 +603,7 @@ async function realSessionTest(suspendPrimitive) {
     results.realSession = record;
   } finally {
     try { term.kill(); } catch {}
+    hygiene.unregisterSpawnedTree(term.pid);
     // Belt-and-suspenders sweep, unconditional regardless of which branch
     // above ran or threw: term.kill() only kills the top-level claude.exe
     // pty process, NOT its nested bash.exe/node.exe descendants (they are
@@ -628,17 +673,29 @@ async function inventory() {
   bgLines.forEach(l => console.log('  ' + l.trim()));
   inv.helpBackgroundLines = bgLines.map(l => l.trim());
 
-  // Built-in slash commands: typing '/' is a local filter list, never a
-  // prompt sent to the model -- verified by these calls never producing a
-  // transcript turn (no session-id is even passed to this pty, and no
-  // "STARTED"-style reply is ever awaited here).
+  // Built-in slash commands: typing '/' is a local filter list, by
+  // construction never a prompt sent to the model -- this is a well-known
+  // CLI behaviour, not something this script independently re-verifies via a
+  // transcript/cost-state check the way realSessionTest does for its own
+  // session (M1, Miguel, PR #61 review: the earlier wording here claimed
+  // "verified below", which overstated what this code path actually checks).
+  //
+  // H2 (Miguel, PR #61 review): `term` is declared outside the try so a
+  // `finally` can always reach it -- the previous version only killed it as
+  // the LAST statement of the try block, so any exception between spawn and
+  // that line (a Terminal buffer read, a node-pty hiccup) left a live
+  // claude.exe (bypassPermissions, no session id) with nothing supervising
+  // it, the same failure class realSessionTest's own comment already
+  // documents having hit once for real.
+  let term = null;
   try {
     const pty = require('node-pty');
     const { Terminal } = require('@xterm/headless');
     const CLAUDE_BIN = resolveClaudeExe();
-    const term = pty.spawn(CLAUDE_BIN, ['--permission-mode', 'bypassPermissions'], {
+    term = pty.spawn(CLAUDE_BIN, ['--permission-mode', 'bypassPermissions'], {
       name: 'xterm-256color', cols: 120, rows: 45, cwd: REPO, env: { ...cleanEnv(), TERM: 'xterm-256color' },
     });
+    hygiene.registerSpawnedTree(term.pid);
     const xterm = new Terminal({ cols: 120, rows: 45, allowProposedApi: true });
     term.onData(d => xterm.write(d));
     const screen = () => {
@@ -688,10 +745,14 @@ async function inventory() {
     inv.idleTasksPanel = panel;
     term.write('\x1b');
     await sleep(300);
-    term.kill();
   } catch (err) {
     console.log(`SKIP: could not drive an interactive pty for the slash-command inventory (${err.message})`);
     inv.slashCommandInventory = { skip: err.message };
+  } finally {
+    if (term) {
+      try { term.kill(); } catch { /* already gone */ }
+      hygiene.unregisterSpawnedTree(term.pid);
+    }
   }
 
   // The model-facing tool schemas the CLI ships (BashInput.run_in_background,
@@ -765,15 +826,29 @@ async function inventory() {
   results.inventory = inv;
 }
 
-(async () => {
+async function main() {
+  hygiene.install();
   const primitive = await detectSuspendPrimitive();
   await realSessionTest(primitive);
   await inventory();
   try { fs.unlinkSync(NT_HELPER_PS1); } catch {}
   console.log('\n=== RESULTS ===\n' + JSON.stringify(results, null, 2));
   process.exit(0);
-})().catch((err) => {
-  console.error('probe failed:', err && err.stack);
-  try { fs.unlinkSync(NT_HELPER_PS1); } catch {}
-  process.exit(1);
-});
+}
+
+// Guarded so `require('./probe-pause')` (test/probe-hygiene.test.js) can
+// reuse the pure helpers below -- and inspect `hygiene` itself -- without
+// installing real SIGINT/uncaughtException handlers on the test process or
+// spawning a real `claude` session as a side effect of loading the module.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('probe failed:', err && err.stack);
+    try { fs.unlinkSync(NT_HELPER_PS1); } catch {}
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  hygiene, ntAction, ancestryChain, findBackgroundTaskInfo, findTranscriptPath,
+  readTranscriptEntries, readAssistantReply, latestCostState, resolveClaudeExe, cleanEnv,
+};

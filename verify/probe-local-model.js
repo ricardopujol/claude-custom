@@ -74,9 +74,10 @@
          rather than shown as free/unknown; worth a note for #4's design (a
          local model must not be able to display a paid-looking cost). */
 
-const { spawn, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const http = require('http');
 const crypto = require('crypto');
+const { spawnWithTimeout } = require('./lib/spawn-with-timeout');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
@@ -109,7 +110,12 @@ function systemLen(body) {
 }
 
 // --- the fake Anthropic-compatible endpoint -----------------------------------
-function startFakeServer(token) {
+// `port` defaults to 0 (OS picks a free ephemeral port) in normal use; the
+// parameter exists so test/probe-hygiene.test.js can force a real EADDRINUSE
+// by requesting a port a plain http.Server is already holding open, to prove
+// the L1 fix (a bind failure rejects instead of throwing) against a genuine
+// collision rather than a mocked one.
+function startFakeServer(token, { port = 0 } = {}) {
   const requests = [];
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || !/\/v1\/messages/.test(req.url)) {
@@ -181,47 +187,45 @@ function startFakeServer(token) {
       res.end();
     });
   });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, requests }));
+  return new Promise((resolve, reject) => {
+    // An unhandled 'error' event on an EventEmitter THROWS synchronously,
+    // hard-crashing the process instead of producing a graceful SKIP (Miguel,
+    // PR #61 review L1). Binding to port 0 on 127.0.0.1 essentially never
+    // fails, but "essentially never" is not "never" -- a caller gets a
+    // rejected promise it can turn into a SKIP line instead of a stack trace.
+    server.on('error', (err) => reject(new Error(`fake server failed to bind: ${err.message}`)));
+    server.listen(port, '127.0.0.1', () => resolve({ server, port: server.address().port, requests }));
   });
 }
 
 // --- spawn the real CLI against a given base URL ------------------------------
-function runClaudeAttempt(name, { baseUrl, authVar, extraArgs = [], timeoutMs = 60000,
+async function runClaudeAttempt(name, { baseUrl, authVar, extraArgs = [], timeoutMs = 60000,
   prompt = 'say hi' }) {
-  return new Promise((resolve) => {
-    const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
-    delete env.ANTHROPIC_BASE_URL;
-    delete env.ANTHROPIC_API_KEY;
-    delete env.ANTHROPIC_AUTH_TOKEN;
-    delete env.CLAUDE_CODE_USE_BEDROCK;
-    delete env.CLAUDE_CODE_USE_VERTEX;
-    env.ANTHROPIC_BASE_URL = baseUrl;
-    env[authVar] = 'probe-not-a-key';
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.ANTHROPIC_BASE_URL;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  delete env.CLAUDE_CODE_USE_BEDROCK;
+  delete env.CLAUDE_CODE_USE_VERTEX;
+  env.ANTHROPIC_BASE_URL = baseUrl;
+  env[authVar] = 'probe-not-a-key';
 
-    const args = ['-p', prompt, '--output-format', 'json', '--no-session-persistence', ...extraArgs];
-    console.log(`[${at()}] spawning: claude ${args.join(' ')}  (env: ANTHROPIC_BASE_URL=${baseUrl}, ${authVar}=probe-not-a-key)`);
+  const args = ['-p', prompt, '--output-format', 'json', '--no-session-persistence', ...extraArgs];
+  console.log(`[${at()}] spawning: claude ${args.join(' ')}  (env: ANTHROPIC_BASE_URL=${baseUrl}, ${authVar}=probe-not-a-key)`);
 
-    let stdout = '', stderr = '';
-    // Windows only knows how to run `claude.cmd` (the npm shim) through a
-    // shell; every arg below is a hardcoded probe constant, never user input,
-    // so DEP0190's injection warning does not apply here.
-    const child = spawn('claude', args, {
-      env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32',
-    });
-    const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
-    child.stdout.on('data', d => { stdout += d; });
-    child.stderr.on('data', d => { stderr += d; });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ name, code, stdout: stdout.slice(0, 4000), stderr: stderr.slice(0, 2000) });
-    });
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({ name, code: null, stdout, stderr: `spawn error: ${err.message}` });
-    });
+  // Windows only knows how to run `claude.cmd` (the npm shim) through a
+  // shell; every arg below is a hardcoded probe constant, never user input,
+  // so DEP0190's injection warning does not apply here. spawnWithTimeout
+  // tree-kills on timeout (host/kill-tree.js's killPidTree) rather than a
+  // bare child.kill(), which on Windows with shell:true only kills cmd.exe,
+  // not the real claude process tree beneath it (Miguel, PR #61 review H3).
+  const r = await spawnWithTimeout({
+    cmd: 'claude', args, env, timeoutMs, shell: process.platform === 'win32',
   });
+  if (r.error) return { name, code: null, stdout: r.stdout, stderr: `spawn error: ${r.error}` };
+  if (r.timedOut) console.log(`[${at()}] ${name} TIMED OUT after ${timeoutMs}ms -- tree-killed pid ${r.pid}`);
+  return { name, code: r.code, stdout: r.stdout.slice(0, 4000), stderr: r.stderr.slice(0, 2000) };
 }
 
 // --- layer (b): is anything Anthropic-compatible listening locally? ----------
@@ -237,7 +241,7 @@ function probeGet(url, timeoutMs = 1500, bodyLimit = 500) {
   });
 }
 
-(async () => {
+async function main() {
   const v = spawnSync('claude', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' });
   results.cliVersion = (v.stdout || v.stderr || '').trim();
   console.log(`claude --version: ${results.cliVersion}`);
@@ -246,7 +250,20 @@ function probeGet(url, timeoutMs = 1500, bodyLimit = 500) {
   console.log('\n=== Layer (a): fake Anthropic-compatible endpoint ===');
   const token = crypto.randomBytes(8).toString('hex');
   console.log(`probe token: ${token}`);
-  const fake = await startFakeServer(token);
+  let fake;
+  try {
+    fake = await startFakeServer(token);
+  } catch (err) {
+    // A bind failure is a SKIP, not a crash (Miguel, PR #61 review L1). Layer
+    // (b) is independent of the fake server in principle, but is not run in
+    // this branch -- this path exists so an essentially-impossible bind
+    // failure on 127.0.0.1:0 produces one clear SKIP line instead of an
+    // uncaught 'error' event taking the whole process down.
+    console.log(`SKIP: layer (a) fake endpoint could not start (${err.message})`);
+    results.layerA = { skip: err.message };
+    console.log('\n=== RESULTS ===\n' + JSON.stringify(results, null, 2));
+    return;
+  }
   const baseUrl = `http://127.0.0.1:${fake.port}`;
   console.log(`fake server listening on ${baseUrl}`);
 
@@ -369,7 +386,16 @@ function probeGet(url, timeoutMs = 1500, bodyLimit = 500) {
 
   console.log('\n=== RESULTS ===\n' + JSON.stringify(results, null, 2));
   process.exit(0);
-})().catch((err) => {
-  console.error('probe failed:', err && err.stack);
-  process.exit(1);
-});
+}
+
+// Guarded so `require('./probe-local-model')` (test/probe-hygiene.test.js)
+// can reuse the small, pure helpers below without spawning the real CLI or a
+// fake server as a side effect of loading the module.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('probe failed:', err && err.stack);
+    process.exit(1);
+  });
+}
+
+module.exports = { runClaudeAttempt, startFakeServer, hasToolResult, systemLen, maskHeaders, probeGet };
