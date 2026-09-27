@@ -2652,6 +2652,18 @@ term.attachCustomKeyEventHandler((e) => {
     return false;
   }
 
+  // Ctrl+V (BACKLOG #12, #8). Taken here for the same reason as Ctrl+B:
+  // left to xterm, it sent \x16 to the pty and pasted nothing -- xterm cancels
+  // the keydown, so the default Edit menu's accelerator never ran either
+  // (verify/probe-paste.js). Returning false with preventDefault keeps it that
+  // way, which is what makes this the ONLY paste a press produces.
+  if (isPasteKey(e)) {
+    hit.add('paste'); renderChecks();
+    e.preventDefault();
+    pasteFromClipboard();
+    return false;
+  }
+
   const mods =
     (e.ctrlKey ? 'Ctrl+' : '') +
     (e.shiftKey ? 'Shift+' : '') +
@@ -2674,10 +2686,42 @@ term.attachCustomKeyEventHandler((e) => {
   if (e.key === 'Escape')            { hit.add('esc'); renderChecks(); }
   if (e.ctrlKey && e.key === 'c')    { hit.add('ctrlC'); renderChecks(); }
   if (e.ctrlKey && e.key === 'r')    { hit.add('ctrlR'); renderChecks(); }
-  if (e.ctrlKey && e.key === 'v')    { hit.add('paste'); renderChecks(); }
 
   return true;
 });
+
+// What the clipboard holds decides what Ctrl+V does (app/paste-action.js).
+// Text goes in pasteFrame's `{type:'input'}` wrapper, NEVER term.paste: raw,
+// a clipboard holding allow-listed JSON would run as a host control message
+// (Miguel, PR #55, B1). Bracketed when the CLI has asked for it, so several
+// lines arrive as ONE paste. An image is ESC+v: `claude` reads the clipboard
+// itself.
+async function pasteFromClipboard() {
+  // Never silent (Miguel, PR #55, S2): a Ctrl+V that does nothing reads as
+  // "paste is broken". Same on-screen note the drop gesture uses.
+  if (!(window.harness && window.harness.readClipboard)) {
+    console.warn('[paste] no clipboard bridge (window.harness.readClipboard)');
+    flourish(pasteFailureNote(null));
+    return;
+  }
+  let clip;
+  try {
+    clip = await window.harness.readClipboard();
+  } catch (err) {
+    console.warn('[paste] clipboard read failed:', err);
+    flourish(pasteFailureNote(err));
+    return;
+  }
+  const action = pasteAction(clip);
+  if (action.kind === 'text') {
+    const frame = pasteFrame(action.text, term.modes.bracketedPasteMode);
+    logLine('Ctrl+V', JSON.parse(frame).data);
+    send(frame);
+  } else if (action.kind === 'image') {
+    logLine('Ctrl+V (image)', action.data);
+    send(action.data);
+  }
+}
 
 // --- sizing -----------------------------------------------------------------
 // Resize must propagate on window resize AND on font change, or the Ink layout
