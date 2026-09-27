@@ -2065,6 +2065,7 @@ function renderStyleSection(section) {
       colourRow('Accent', v.accent, 'id="style-accent"', 'id="style-accent-hex"', 'id="style-accent-reset"') +
       colourRow('Secondary text', v.secondary, 'id="style-secondary"', 'id="style-secondary-hex"',
         'id="style-secondary-reset"') +
+      `<button type="button" id="style-reroll" title="A new random look for this project, checked for contrast">Random colours</button>` +
       (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
       `</section>`
     );
@@ -2150,6 +2151,9 @@ function bindStyleSections() {
       fileInput.value = '';      // so picking the SAME file twice still fires 'change'
     });
   }
+
+  const reroll = document.getElementById('style-reroll');
+  if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
 
   const resetBtn = document.getElementById('style-bg-reset');
   if (resetBtn) {
