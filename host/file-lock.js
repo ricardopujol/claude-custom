@@ -150,6 +150,7 @@ function withFileLock(lockPath, fn, opts = {}) {
   const giveUpAt = now() + deadlineMs;
 
   let fd = null;
+  let lastTry = false;
   for (;;) {
     try {
       fd = fs.openSync(lockPath, 'wx');
@@ -183,7 +184,16 @@ function withFileLock(lockPath, fn, opts = {}) {
     // Claude session dies with it. A hang is strictly worse than the throw
     // Dexter F2 closed, and this module's own header promises the opposite in
     // capitals.
+    //
+    // BUT A BREAK EARNS ONE MORE OPEN, deadline or not. Checking the clock
+    // between freeing a stale lock and re-opening it threw away a lock we had
+    // just recovered whenever one slow pass (read, stat, pid probe, unlink)
+    // outlasted the deadline -- the full-suite flake of 2026-09-26/27, and a
+    // refused record in production on any host slow enough. Exactly one:
+    // `lastTry` keeps a path that is re-staled as fast as we clear it from
+    // looping past the deadline.
     if (now() >= giveUpAt) {
+      if (broke && !lastTry) { lastTry = true; continue; }
       throw new Error(
         `could not take the lock on ${lockPath} within ${deadlineMs}ms` +
         `${held && held.pid ? ` (held by pid ${held.pid})` : ''}; nothing was written`);

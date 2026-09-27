@@ -245,11 +245,27 @@ test('a deadline of 0 means try once and do not wait', () => {
   // mutant for -- so nothing in a mutation score can tell you this default is
   // right. Swapping the isFinite check for a truthy one would silently turn 0
   // into 3000. Asserted explicitly, because the tool cannot.
+  //
+  // COUNTED IN ATTEMPTS, NOT MILLISECONDS. This used to assert the call took
+  // under 200ms of wall clock, and it failed under full-suite load: one pass
+  // (open, read, stat, pid probe) on a machine running ~1550 tests in
+  // parallel can take longer than that on its own. "Did not wait" means "did
+  // not come round again", which the attempt counter says exactly, on any
+  // machine; a deadline wrongly defaulted to 3000 makes hundreds.
   const lock = lockIn(tmpdir());
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
-  const started = Date.now();
-  assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0 }), /lock/i);
-  assert.ok(Date.now() - started < 200, 'a zero deadline must not wait');
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(attempts, 1, `a zero deadline must not wait, took ${attempts} attempts`);
 });
 
 // --- the rules the tests were only accidentally enforcing --------------------
@@ -310,10 +326,23 @@ test('a genuine filesystem error surfaces at once, not as a lock timeout 3 secon
   // into the retry loop, where it resurfaces as "could not take the lock" --
   // a message that sends the reader looking for a competing process that does
   // not exist. Only EEXIST means "somebody holds it".
+  //
+  // "At once" is counted as "never entered the retry loop" -- no read of the
+  // lock path -- rather than as under 500ms of wall clock, which a machine
+  // under full-suite load can miss without the code doing anything wrong.
   const missing = path.join(tmpdir(), 'no-such-dir', 'thing.json.lock');
-  const started = Date.now();
-  assert.throws(() => withFileLock(missing, () => {}), (err) => err.code === 'ENOENT');
-  assert.ok(Date.now() - started < 500, 'it must not spend the deadline on it');
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === missing) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(missing, () => {}), (err) => err.code === 'ENOENT');
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(attempts, 0, `it must not spend the deadline on it, retried ${attempts} times`);
 });
 
 test('waiting sleeps rather than spinning -- the host owns the pty', () => {
@@ -444,4 +473,58 @@ test('a lock whose mtime cannot be read is broken, not treated as a tombstone', 
   } finally {
     fs.statSync = realStat;
   }
+});
+
+// --- a successful break must get its retry, even past the deadline ----------
+//
+// The full-suite flake, 2026-09-26/27. Under load, four stale-lock tests
+// failed with "could not take the lock ... within 200ms" -- on a lock that had
+// just been BROKEN. Instrumented under a stress harness (24 parallel copies of
+// this file plus CPU burners): 65 of the give-ups fired with `broke === true`.
+//
+// The loop checked the deadline BETWEEN unlinking the stale lock and trying
+// the open again. When one slow pass (read + stat + a pid probe + unlink)
+// outlasted the deadline, the caller threw away a lock it had already freed
+// and refused the write. Not a test artefact: in production the same thing
+// happens whenever the machine is slow enough to eat the deadline inside a
+// single pass -- an AV scan of the lock file, a paging host -- and a
+// recovered stale lock turns into a refused record.
+
+test('a stale lock broken just as the deadline passes is still taken', () => {
+  // The clock is on time for the give-up computation and then jumps far past
+  // it: the one pass that breaks the lock is the pass that runs out of time.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  let calls = 0;
+  const now = () => (calls++ === 0 ? 1000 : 9999999);
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200, now }), 'took it');
+  assert.strictEqual(fs.existsSync(lock), false);
+});
+
+test('past the deadline a break earns exactly ONE more attempt, not a loop', () => {
+  // The liveness half. "Retry after a break" must not become "retry forever"
+  // when something keeps re-creating a stale lock as fast as we remove it.
+  // Every open reports EEXIST, every unlink succeeds, and the lock always
+  // reads as held by a dead pid -- a pass that breaks every single time.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const realOpen = fs.openSync;
+  const realUnlink = fs.unlinkSync;
+  let opens = 0;
+  fs.openSync = (...a) => {
+    if (String(a[0]) !== lock) return realOpen.apply(fs, a);
+    // A backstop so a looping mutant fails instead of hanging the suite.
+    if (++opens > 20) throw new Error('looped past the deadline');
+    const e = new Error('EEXIST'); e.code = 'EEXIST'; throw e;
+  };
+  fs.unlinkSync = (...a) => { if (String(a[0]) !== lock) return realUnlink.apply(fs, a); };
+  let calls = 0;
+  const now = () => (calls++ === 0 ? 1000 : 9999999);
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 200, now }), /could not take the lock/);
+  } finally {
+    fs.openSync = realOpen;
+    fs.unlinkSync = realUnlink;
+  }
+  assert.strictEqual(opens, 2, `the first try plus one after the break, got ${opens}`);
 });
