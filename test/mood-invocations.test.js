@@ -357,6 +357,44 @@ test('Dexter #3: a main-session PostToolUse never touches a background agent', (
   }
 });
 
+test('Dexter #1: a late agentId "correction" never ends a run bound to a different LIVE agent', () => {
+  // His steps 1-7, verbatim. B was spawned second but spoke first, so first-
+  // come binding put B's id on A's record (k1). B's SubagentStop then closed
+  // k1's record, and k2's completed result -- naming B -- used to re-key the
+  // record that is really A's (bound to `a`, live) and finish it, cutting
+  // off A's child U too. From then on A was asleep for the rest of its run.
+  const h = harness();
+  h.spawn('T', 'k1');                                   // run A
+  h.spawn('T', 'k2');                                   // run B
+  h.call('b', 'T');                                     // B speaks first: crosswise
+  h.call('a', 'T');
+  h.spawn('U', 'k3', { by: 'a', byType: 'T' });         // A's child
+  h.subStop('b', 'T');                                  // B really ended
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 'k2', tool_input: { subagent_type: 'T' },
+    tool_response: { status: 'completed', agentId: 'b' } } });
+  assert.ok(h.busy('T'), 'A is still running');
+  assert.ok(h.busy('U'), 'and so is its child');
+  assert.strictEqual(h.m.stateOf('T'), 'working');
+  assert.strictEqual(h.m.stateOf('U'), 'working');
+  h.subStop('u', 'U');
+  h.subStop('a', 'T');
+  assert.strictEqual(h.m.stateOf('T'), 'happy', 'A ends on its own SubagentStop');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('Dexter #1: a correction naming an id nobody holds does not re-key a run bound to a live id', () => {
+  const h = harness();
+  h.spawn('T', 'k1');
+  h.call('a', 'T');
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 'k1', tool_input: { subagent_type: 'T' },
+    tool_response: { isAsync: true, status: 'async_launched', agentId: 'zzz' } } });
+  assert.strictEqual(h.m.invocations()[0].agentId, 'a', 'a live identity is not overwritten on a guess');
+  h.call('a', 'T', { exit_code: 1 });
+  assert.strictEqual(h.m.stateOf('T'), 'stressed', 'its calls still reach it');
+});
+
 test('Dexter #4: a duplicate SubagentStop for an ended id does not end a silent sibling', () => {
   const h = harness();
   h.spawn('miguel', 't1');

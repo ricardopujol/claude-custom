@@ -186,12 +186,23 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   }
 
   // The spawn's result names the id for certain; a guess that went the other
-  // way is swapped rather than left holding someone else's identity.
+  // way is swapped when BOTH runs are still open. Returns whether the result
+  // really is about `inv`'s run -- false when it can't be:
+  //   - the id it names has already ended: a crosswise binding already
+  //     closed that run under the other record, so `inv` holds someone
+  //     else's live run;
+  //   - `inv` is bound to a DIFFERENT live id and nobody holds the named one
+  //     to swap with.
+  // Acting on it then ended a live run (Dexter, PR #56, #1): the result is
+  // ignored instead, and that run ends on its own SubagentStop.
   function adopt(inv, agentId) {
-    if (!agentId || inv.agentId === agentId) return;
+    if (inv.agentId === agentId) return true;
+    if (endedIds.has(agentId)) return false;
     const other = invs.find(i => i.agentId === agentId);
+    if (!other && inv.agentId) return false;
     if (other) other.agentId = inv.agentId;
     inv.agentId = agentId;
+    return true;
   }
 
   const fgChildren = inv => invs.filter(c => c.parent === inv && !c.background);
@@ -277,7 +288,10 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       return;
     }
     const r = p.tool_response;
-    if (r && typeof r === 'object' && r.agentId) { saysWho = true; adopt(inv, r.agentId); }
+    if (r && typeof r === 'object' && r.agentId) {
+      saysWho = true;
+      if (!adopt(inv, r.agentId)) return;
+    }
     if (isAsyncLaunch(r)) { inv.background = true; return; }
     if (isCompleted(r)) finish(inv);
   }
