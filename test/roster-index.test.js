@@ -13,7 +13,9 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { agentDefinitions, historyNames, wholeRoster } = require('../host/roster-index');
+const {
+  agentDefinitions, historyNames, wholeRoster, nameFromFrontmatter, scanProjects, resolveSubagentEntry,
+} = require('../host/roster-index');
 const { projectDirName } = require('../host/project-dir');
 const { tmpDir } = require('./tmp-dir');
 
@@ -181,4 +183,121 @@ test('wholeRoster is definitions UNION history', async () => {
 
   const { names } = await wholeRoster({ homeDir: home, projectsDir: root });
   assert.deepStrictEqual(names.sort(), ['has-run', 'never-run']);
+});
+
+// --- Dexter F8: a quoted YAML name must not create a duplicate row -------------
+
+test('nameFromFrontmatter strips surrounding double quotes', () => {
+  assert.strictEqual(nameFromFrontmatter('---' + NL + 'name: "code-reviewer"' + NL + '---', 'f'),
+    'code-reviewer');
+});
+
+test('nameFromFrontmatter strips surrounding single quotes', () => {
+  assert.strictEqual(nameFromFrontmatter('---' + NL + "name: 'code-reviewer'" + NL + '---', 'f'),
+    'code-reviewer');
+});
+
+test('a quoted definition name matches the same agent found in history -- one row, not two', async () => {
+  const home = tmpDir('cc-roster-home-');
+  writeAgentMd(path.join(home, '.claude', 'agents'), 'reviewer.md',
+    '---' + NL + 'name: "code-reviewer"' + NL + '---');
+
+  const root = tmpDir('cc-roster-projects-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'code-reviewer' }]);
+  subagent(dir, 's1', 'agent-a', { agentType: 'code-reviewer', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+
+  const { names } = await wholeRoster({ homeDir: home, projectsDir: root });
+  assert.deepStrictEqual(names, ['code-reviewer'], 'the quoted definition must not create a second row');
+});
+
+// --- Dexter F5 / Miguel M1 / F10: one shared project scan ----------------------
+
+test('scanProjects walks every project once, carrying files+identityTables for each', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const dirA = project(root, 'C:/w/proj-a');
+  session(dirA, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  subagent(dirA, 's1', 'agent-a', { agentType: 'paris', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+
+  const { projects, errors } = await scanProjects(root);
+  assert.strictEqual(projects.length, 1);
+  assert.strictEqual(errors, 0);
+  assert.ok(Array.isArray(projects[0].files));
+  assert.ok(projects[0].tables && projects[0].tables.byToolUse instanceof Map);
+});
+
+test('historyNames accepts a pre-computed scan instead of walking again', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  subagent(dir, 's1', 'agent-a', { agentType: 'paris', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+
+  const scan = await scanProjects(root);
+  const { names } = await historyNames({ scan });
+  assert.deepStrictEqual([...names], ['paris']);
+});
+
+test('wholeRoster folds the shared scan errors in exactly once (Miguel L2)', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  // A file where a project directory should be makes transcriptFiles' walk
+  // enumerate it fine (readdir lists files and dirs alike) but the identity
+  // pass sees an empty project -- not the shape under test here. Use a
+  // genuinely unreadable subagents directory instead: a FILE named
+  // "subagents" inside a session directory, so readdir on it throws ENOTDIR.
+  const dir = project(root, 'C:/w/proj-a');
+  fs.mkdirSync(path.join(dir, 's1'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 's1', 'subagents'), 'not a directory');
+  fs.writeFileSync(path.join(dir, 's1.jsonl'), '');
+
+  const scan = await scanProjects(root);
+  assert.ok(scan.errors >= 1, 'precondition: the shared scan must see the enumeration failure');
+
+  const roster = await wholeRoster({ projectsDir: root, scan });
+  assert.strictEqual(roster.unreadable, scan.errors,
+    'wholeRoster must fold the shared scan errors in exactly once, not double them');
+});
+
+// --- Dexter F3 / Miguel L1: an unresolved label is not a peer of a real type ---
+
+test('an orphaned NAMED spawn is kept as history but flagged unresolved, not silently treated as a type', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const dir = project(root, 'C:/w/proj-a');
+  // No parent session .jsonl at all -- the name "miguel-usage" can never be
+  // resolved to a real subagent_type, the exact orphan case resolveAgent's own
+  // contract warns about.
+  subagent(dir, 's1', 'agent-a', { agentType: 'miguel-usage', requestShape: 'background' },
+    [turn(0, U(10, 0))]);
+
+  const { names, unresolvedNames } = await historyNames({ projectsDir: root });
+  assert.ok(names.has('miguel-usage'), 'a run that really happened is still real history');
+  assert.ok(unresolvedNames.has('miguel-usage'), 'but it must be flagged, not drawn as a peer of a real type');
+});
+
+test('resolveSubagentEntry reports source and a readError for a corrupt meta.json (Dexter F4)', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'agent-a.meta.json'), '{"agentType":'); // truncated
+  fs.writeFileSync(path.join(sd, 'agent-a.jsonl'), JSON.stringify(turn(0, U(10, 0))) + NL);
+
+  const { projects } = await scanProjects(root);
+  const file = projects[0].files.find(f => f.subagent);
+  const { readError, agent } = await resolveSubagentEntry(file, projects[0].tables);
+  assert.strictEqual(readError, true);
+  assert.strictEqual(agent, null);
+});
+
+test('historyNames counts a corrupt meta.json as unreadable rather than silently dropping the run', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'agent-a.meta.json'), 'null'); // valid JSON, no identity
+  fs.writeFileSync(path.join(sd, 'agent-a.jsonl'), JSON.stringify(turn(0, U(10, 0))) + NL);
+
+  const { unreadable } = await historyNames({ projectsDir: root });
+  assert.strictEqual(unreadable, 1);
 });
