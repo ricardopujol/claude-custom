@@ -453,6 +453,19 @@ document.getElementById('side-hint').addEventListener('click', () => {
 
 window.addEventListener('DOMContentLoaded', () => {
   wireModelPanel();
+  renderClaudeChoices();
+  renderRefreshButton();
+  // BACKLOG E #5, #3: the saved favourites, read once through the bridge --
+  // see app/favourites-bridge.js. Absent on a build with no bridge (a
+  // headless probe's window, an older preload) leaves modelFavourites at its
+  // empty default rather than throwing.
+  if (window.harness && window.harness.favourites) {
+    window.harness.favourites.get().then((f) => {
+      modelFavourites = normalizeFavourites(f);
+      renderClaudeChoices();
+      renderModels();
+    }).catch(() => {});
+  }
   // Restored per window, so a collapsed sidebar stays collapsed across a
   // restart rather than springing back every launch.
   let saved = DEFAULT_TAB;
@@ -1123,6 +1136,13 @@ let catalogueMeta = null;
 let councilSeats = [];
 let seatMax = 3;
 let councilWarnings = [];
+// BACKLOG E #5. Favourites: app/models-favourites.js decides shape and
+// ordering; this is only the last answer main handed back (or the empty
+// shape until it does). Refresh: true from the click that sent `force`
+// until the next 'models' message clears it -- app/models-refresh.js decides
+// what the button says from this one flag.
+let modelFavourites = emptyFavourites();
+let modelsRefreshPending = false;
 
 const money = (perM) => {
   if (perM === null || perM === undefined) return null;
@@ -1157,26 +1177,41 @@ function renderSeats() {
 
 function renderProvenance() {
   const el = document.getElementById('model-provenance');
-  if (!el || !catalogueMeta) return;
-  el.classList.toggle('stale', !!catalogueMeta.stale);
-
-  if (catalogueMeta.source === 'none') {
-    el.textContent = 'could not reach OpenRouter - ' + (catalogueMeta.error || 'no catalogue');
-    return;
+  const textEl = el && el.querySelector('.prov-text');
+  if (el && catalogueMeta) {
+    el.classList.toggle('stale', !!catalogueMeta.stale);
+    if (textEl) {
+      if (catalogueMeta.source === 'none') {
+        textEl.textContent = 'could not reach OpenRouter - ' + (catalogueMeta.error || 'no catalogue');
+      } else {
+        const mins = catalogueMeta.fetchedAt
+          ? Math.max(0, Math.round((Date.now() - catalogueMeta.fetchedAt) / 60000))
+          : null;
+        const when = mins === null ? 'unknown age'
+          : mins < 1 ? 'just now'
+            : mins < 60 ? mins + ' min ago'
+              : Math.round(mins / 60) + ' h ago';
+        // Staleness is STATED, never implied. A month-old price shown as
+        // current is the failure here that actually costs money.
+        textEl.textContent = catalogueMeta.stale
+          ? 'PRICES MAY BE OUT OF DATE - cached ' + when + ', could not refresh (' +
+            (catalogueMeta.error || 'offline') + ')'
+          : catalogue.length + ' models, ' + when;
+      }
+    }
   }
-  const mins = catalogueMeta.fetchedAt
-    ? Math.max(0, Math.round((Date.now() - catalogueMeta.fetchedAt) / 60000))
-    : null;
-  const when = mins === null ? 'unknown age'
-    : mins < 1 ? 'just now'
-      : mins < 60 ? mins + ' min ago'
-        : Math.round(mins / 60) + ' h ago';
-  // Staleness is STATED, never implied. A month-old price shown as current is
-  // the failure here that actually costs money.
-  el.textContent = catalogueMeta.stale
-    ? 'PRICES MAY BE OUT OF DATE - cached ' + when + ', could not refresh (' +
-      (catalogueMeta.error || 'offline') + ')'
-    : catalogue.length + ' models, ' + when;
+  renderRefreshButton();
+}
+
+// BACKLOG E #5, step 2. Pure decision lives in app/models-refresh.js; this is
+// the DOM write, same split as renderTopBar/topBarDisplay.
+function renderRefreshButton() {
+  const btn = document.getElementById('model-refresh');
+  if (!btn) return;
+  const state = refreshButtonState({ pending: modelsRefreshPending, catalogueMeta });
+  btn.disabled = state.disabled;
+  btn.textContent = state.label;
+  btn.title = state.title;
 }
 
 function renderModels() {
@@ -1229,23 +1264,27 @@ function renderModels() {
     return byId(a, b);
   };
 
-  // GROUPED BY PROVIDER. 445 flat rows is a wall; the provider is also the unit
-  // the council actually cares about, since two models from one vendor share
-  // failure modes. Groups are ordered by their best member under the chosen
-  // sort, so "cheapest" still puts the cheapest provider first rather than
-  // alphabetising them and burying it.
-  const groups = new Map();
-  for (const m of rows) {
-    const key = m.provider || 'other';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(m);
-  }
-  for (const list of groups.values()) list.sort(within);
-
-  const ordered = [...groups.entries()].sort((a, b) => within(a[1][0], b[1][0]));
-
   const seated = {};
   for (const st of councilSeats) seated[st.id] = true;
+
+  const renderRow = (m) => {
+    const price = m.priced ? money(m.promptPerM) + ' / ' + money(m.completionPerM) : 'price unknown';
+    // The short name inside a provider group: the prefix is the heading.
+    const short = m.id.indexOf('/') > 0 ? m.id.slice(m.id.indexOf('/') + 1) : m.id;
+    const tip = m.name + ' -- ' + m.id + ' -- ' +
+      (m.tools ? 'supports tools' : 'NO tool support, cannot drive the main session');
+    const starred = isFavourite(modelFavourites, 'openrouter', m.id);
+    return '<div class="model' + (seated[m.id] ? ' seated' : '') + '" data-model="' +
+      escapeHtml(m.id) + '" title="' + escapeHtml(tip) + '">' +
+      '<button type="button" class="m-star' + (starred ? ' starred' : '') + '" data-star="' +
+        escapeHtml(m.id) + '" title="' + (starred ? 'unfavourite' : 'favourite') + ' ' + escapeHtml(m.id) + '">' +
+        (starred ? '★' : '☆') + '</button>' +
+      '<span class="m-id">' + escapeHtml(short) + '</span>' +
+      (m.tools ? '' : '<span class="m-notools">no tools</span>') +
+      '<span class="m-ctx">' + ctxLabel(m.context) + '</span>' +
+      '<span class="m-price' + (m.priced ? '' : ' unknown') + '">' + escapeHtml(price) + '</span>' +
+      '</div>';
+  };
 
   // Capped across the whole list, not per group: 445 rows of DOM per keystroke
   // stutters. The line underneath says what is hidden rather than letting the
@@ -1253,26 +1292,42 @@ function renderModels() {
   const LIMIT = 200;
   let drawn = 0;
   const out = [];
+
+  // Favourites (BACKLOG E #5, #3): their OWN section at the very top of the
+  // whole list, ahead of the provider grouping -- a star must never end up
+  // buried inside its provider's own price/context position. Sorted by the
+  // same comparator as everything else, so "cheapest" orders this section too.
+  const { favourites: favRows, rest: restRows } = partitionFavourites(rows, modelFavourites.openrouter, (m) => m.id);
+  if (favRows.length) {
+    favRows.sort(within);
+    out.push('<div class="provider"><span class="p-name">★ favourites</span>' +
+      '<span class="p-count">' + favRows.length + '</span></div>');
+    for (const m of favRows) { out.push(renderRow(m)); drawn++; }
+  }
+
+  // GROUPED BY PROVIDER. 445 flat rows is a wall; the provider is also the unit
+  // the council actually cares about, since two models from one vendor share
+  // failure modes. Groups are ordered by their best member under the chosen
+  // sort, so "cheapest" still puts the cheapest provider first rather than
+  // alphabetising them and burying it. Built from `restRows`, not `rows` --
+  // a favourited model lives ONLY in the favourites section above, never
+  // duplicated into its provider's group too.
+  const groups = new Map();
+  for (const m of restRows) {
+    const key = m.provider || 'other';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
+  }
+  for (const list of groups.values()) list.sort(within);
+  const ordered = [...groups.entries()].sort((a, b) => within(a[1][0], b[1][0]));
+
   for (const [provider, list] of ordered) {
     if (drawn >= LIMIT) break;
     const take = list.slice(0, LIMIT - drawn);
     drawn += take.length;
     out.push('<div class="provider"><span class="p-name">' + escapeHtml(provider) +
       '</span><span class="p-count">' + list.length + '</span></div>');
-    for (const m of take) {
-      const price = m.priced ? money(m.promptPerM) + ' / ' + money(m.completionPerM) : 'price unknown';
-      // The short name inside a provider group: the prefix is the heading.
-      const short = m.id.indexOf('/') > 0 ? m.id.slice(m.id.indexOf('/') + 1) : m.id;
-      const tip = m.name + ' -- ' + m.id + ' -- ' +
-        (m.tools ? 'supports tools' : 'NO tool support, cannot drive the main session');
-      out.push('<div class="model' + (seated[m.id] ? ' seated' : '') + '" data-model="' +
-        escapeHtml(m.id) + '" title="' + escapeHtml(tip) + '">' +
-        '<span class="m-id">' + escapeHtml(short) + '</span>' +
-        (m.tools ? '' : '<span class="m-notools">no tools</span>') +
-        '<span class="m-ctx">' + ctxLabel(m.context) + '</span>' +
-        '<span class="m-price' + (m.priced ? '' : ' unknown') + '">' + escapeHtml(price) + '</span>' +
-        '</div>');
-    }
+    for (const m of take) out.push(renderRow(m));
   }
   if (rows.length > drawn) {
     out.push('<div class="none">' + (rows.length - drawn) + ' more, narrow the search</div>');
@@ -1284,6 +1339,22 @@ function requestModels(force) {
   try { ws.send(JSON.stringify({ type: 'models', force: !!force })); } catch (e) {}
 }
 
+// BACKLOG E #5, #3. Toggles `kind`/`id` both locally (so the star flips at
+// once) and through the bridge (so it survives a restart) -- see
+// app/favourites-bridge.js. The bridge's answer still wins once it arrives:
+// a second window's toggle landing in between must not be clobbered by this
+// window's optimistic guess.
+function toggleModelFavourite(kind, id) {
+  modelFavourites = toggleFavourite(modelFavourites, kind, id);
+  if (kind === 'claude') renderClaudeChoices(); else renderModels();
+  if (!(window.harness && window.harness.favourites)) return;
+  window.harness.favourites.toggle(kind, id).then((f) => {
+    if (!f) return;
+    modelFavourites = normalizeFavourites(f);
+    if (kind === 'claude') renderClaudeChoices(); else renderModels();
+  }).catch(() => {});
+}
+
 function wireModelPanel() {
   const ids = ['model-search', 'model-target', 'model-sort', 'model-free'];
   for (const id of ids) {
@@ -1293,6 +1364,10 @@ function wireModelPanel() {
   const list = document.getElementById('model-list');
   if (list) {
     list.addEventListener('click', (e) => {
+      // Checked FIRST: the star sits INSIDE the `.model` row, so
+      // `closest('[data-model]')` would also match a click on the star.
+      const star = e.target.closest('[data-star]');
+      if (star) { toggleModelFavourite('openrouter', star.dataset.star); return; }
       const row = e.target.closest('[data-model]');
       if (!row) return;
       const m = catalogue.find(x => x.id === row.dataset.model);
@@ -1313,6 +1388,19 @@ function wireModelPanel() {
       const b = e.target.closest('[data-unseat]');
       if (!b) return;
       try { ws.send(JSON.stringify({ type: 'seat', action: 'remove', id: b.dataset.unseat })); } catch (err) {}
+    });
+  }
+  // BACKLOG E #5, step 2: the Refresh button. Guarded against a second click
+  // while the first request is still in flight -- app/models-refresh.js's
+  // refreshButtonState already disables the DOM button for the same reason,
+  // this is the belt to that braces in case a click lands before the render.
+  const refreshBtn = document.getElementById('model-refresh');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      if (modelsRefreshPending) return;
+      modelsRefreshPending = true;
+      renderRefreshButton();
+      requestModels(true);
     });
   }
 }
@@ -1900,6 +1988,24 @@ function requestSwitch(kind, raw) {
   setTimeout(() => input('\r'), PTY_STEP_MS * 5);
 }
 
+// BACKLOG E #5, #3. The Claude choices, redrawn with a star per choice and
+// favourited ones first -- app/models-favourites.js's pinFavouritesFirst
+// decides the order, this only rewrites the container's markup to match.
+// Rebuilt (not diffed) because there are only ever a handful of choices.
+function renderClaudeChoices() {
+  const el = document.getElementById('tb-model-choices');
+  if (!el) return;
+  const order = pinFavouritesFirst(MODEL_CHOICES, modelFavourites.claude, (id) => id);
+  el.innerHTML = order.map((id) => {
+    const starred = isFavourite(modelFavourites, 'claude', id);
+    return '<span class="tb-model-choice">' +
+      '<button type="button" data-model="' + escapeHtml(id) + '">' + escapeHtml(id) + '</button>' +
+      '<button type="button" class="star' + (starred ? ' starred' : '') + '" data-star-claude="' +
+        escapeHtml(id) + '" title="' + (starred ? 'unfavourite' : 'favourite') + ' ' + escapeHtml(id) + '">' +
+        (starred ? '★' : '☆') + '</button></span>';
+  }).join('');
+}
+
 function toggleMenu(menu, otherMenu) {
   if (!menu) return;
   const opening = menu.hidden;
@@ -1926,6 +2032,11 @@ if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu,
 if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMenu, tbModelMenu));
 if (tbModelMenu) {
   tbModelMenu.addEventListener('click', (e) => {
+    // Checked first, same reason as the Models panel's star: it is a sibling
+    // of the `[data-model]` button inside the same choice, and a favourite
+    // click must never also submit a model switch.
+    const star = e.target.closest('[data-star-claude]');
+    if (star) { toggleModelFavourite('claude', star.dataset.starClaude); return; }
     const row = e.target.closest('[data-model]');
     if (row) { closeTopBarMenus(); requestSwitch('model', row.dataset.model); return; }
     if (e.target.id === 'tb-model-custom-go') submitCustomModel();
@@ -2435,6 +2546,9 @@ function handleControl(msg) {
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (Array.isArray(msg.warnings)) councilWarnings = msg.warnings;
     if (msg.max) seatMax = msg.max;
+    // Whatever asked for this (a tab open, a stale re-check, or a Refresh
+    // click) has its answer now -- the button can be clicked again.
+    modelsRefreshPending = false;
     renderSeats();
     renderProvenance();
     renderModels();
