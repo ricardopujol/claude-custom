@@ -83,17 +83,20 @@ const lum = s => { const [r, g, b] = s.split(',').map(Number); return 0.2126 * r
 const meanLum = set => set.size ? Math.round([...set].reduce((a, s) => a + lum(s), 0) / set.size) : NaN;
 
 async function run(c) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-theme-probe-'));
+  const dir = c.dir || fs.mkdtempSync(path.join(os.tmpdir(), 'cc-theme-probe-'));
   if (c.project) {
-    fs.mkdirSync(path.join(dir, '.claude'));
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
     for (const [f, v] of Object.entries(c.project)) fs.writeFileSync(path.join(dir, '.claude', f), JSON.stringify(v));
   }
   const args = (c.args || []).map(a => a.replace('{dir}', dir));
+  const settingsPath = path.join(dir, 'probe-settings.json');
   if (c.settingsFile) {
-    const f = path.join(dir, 'probe-settings.json');
+    const f = settingsPath;
     fs.writeFileSync(f, JSON.stringify(c.settingsFile));
     args.push('--settings', f);
   }
+  const debugPath = path.join(dir, 'probe-debug.log');
+  if (c.debugLog) args.push('--debug-file', debugPath);
 
   // A headless xterm stands in for our renderer. For the `auto` + OSC 11 case
   // it answers the CLI's colour query from its own theme background.
@@ -102,6 +105,8 @@ async function run(c) {
   let raw = '';
   const child = pty.spawn(CLAUDE_BIN, args, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: dir, env: childEnv(c.env) });
   child.onData(d => { raw += d; term.write(d); });
+  let exitCode = null;
+  child.onExit(e => { exitCode = e.exitCode; });
   // xterm.js's own query replies go back to the CLI (0 of them is itself a
   // finding: headless xterm doesn't answer OSC 11). `osc11` answers the CLI's
   // background query by hand, the way our renderer could.
@@ -114,13 +119,22 @@ async function run(c) {
   });
 
   await sleep(SETTLE_MS);
+  // Live phase: change a settings source mid-session, then force a redraw.
+  // Only output emitted AFTER the mark is judged, so the startup paint can't
+  // pass for a live change.
+  let mark = null;
+  const exitedAtSettle = exitCode;
+  if (c.during) { mark = raw.length; await c.during({ child, dir, settingsPath }); }
   const screen = [];
   for (let y = 0; y < ROWS; y++) { const l = term.buffer.active.getLine(y); if (l) screen.push(l.translateToString(true).trimEnd()); }
   try { child.write('\x03'); await sleep(300); child.write('\x03'); await sleep(800); } catch {}
   try { child.kill(); } catch {}
   await sleep(500);
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
-  return { raw, screen, replies, osc11, ...colours(raw) };
+  let debug = '';
+  if (c.debugLog) try { debug = fs.readFileSync(debugPath, 'utf8'); } catch {}
+  if (!c.keepDir) try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  return { raw, screen, replies, osc11, dir, exitedAtSettle, debug, ...colours(raw),
+    live: mark === null ? null : { after: colours(raw.slice(mark)), bytes: raw.length - mark } };
 }
 
 const CANDIDATES = [
@@ -137,13 +151,94 @@ const CANDIDATES = [
   { name: 'auto + hand-answered OSC 11 white', args: ['--settings', '{"theme":"auto"}'], osc11: 'rgb:ffff/ffff/ffff' },
 ];
 
+// ---------------------------------------------------------------------------
+// Live reload: does a settings change reach a RUNNING CLI?
+//
+// Read from the bundle (v2.1.283): the settingsChangeDetector watches settings
+// files with chokidar (polling fallback when native fs.watch is silent). Its
+// file list comes from a loop over the sources that explicitly skips
+// flagSettings (`if(Z==="flagSettings")continue`), so a --settings file is
+// never watched; user, project, local and policy files are. Separately, the
+// ThemeProvider seeds its state from resolveSetting('theme') once, in a
+// useState initializer. The probe measures whether either path repaints.
+//
+// Colour signatures, measured by the static phase above:
+const LIGHT_SIG = ['102,102,102', '150,108,30'];
+const DARK_SIG = ['136,136,136', '255,193,7'];
+
+// A harmless redraw: resize the pty away and back, then type a character and
+// delete it. Enter is never pressed.
+async function redraw(child) {
+  child.resize(COLS - 1, ROWS); await sleep(1500);
+  child.resize(COLS, ROWS); await sleep(1500);
+  child.write('x'); await sleep(800);
+  child.write('\x7f'); await sleep(1500);
+}
+
+function judgeLive(r) {
+  const a = r.live.after.fg;
+  const light = LIGHT_SIG.filter(x => a.has(x)), dark = DARK_SIG.filter(x => a.has(x));
+  const verdict = light.length && !dark.length ? 'LIVE: repainted light'
+    : dark.length && !light.length ? 'NOT LIVE: repainted, still dark'
+    : light.length && dark.length ? 'MIXED' : 'INCONCLUSIVE: redraw emitted no signature colour';
+  return { verdict, light, dark };
+}
+
+async function livePhase() {
+  const writeTheme = (f, theme) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify({ theme })); };
+  const cases = [
+    { name: 'control: --settings file dark, no change, redraw', settingsFile: { theme: 'dark' },
+      during: async ({ child }) => { await sleep(4000); await redraw(child); } },
+    { name: '--settings file dark -> light', settingsFile: { theme: 'dark' },
+      during: async ({ child, settingsPath }) => { writeTheme(settingsPath, 'light'); await sleep(5000); await redraw(child); } },
+    { name: 'project settings.local.json dark -> light', project: { 'settings.local.json': { theme: 'dark' } },
+      during: async ({ child, dir }) => { writeTheme(path.join(dir, '.claude', 'settings.local.json'), 'light'); await sleep(5000); await redraw(child); } },
+    { name: 'project settings.json dark -> light', project: { 'settings.json': { theme: 'dark' } },
+      during: async ({ child, dir }) => { writeTheme(path.join(dir, '.claude', 'settings.json'), 'light'); await sleep(5000); await redraw(child); } },
+  ];
+  console.log('\n=== LIVE RELOAD (only output after the change is judged) ===');
+  for (const c of cases) {
+    // --debug-file shows whether the settings watcher saw the edit at all, which
+    // separates "file not watched" from "watched, but the theme isn't re-read".
+    c.debugLog = true;
+    let r = await run(c);
+    if (r.raw.length < 500) r = await run(c);
+    const j = judgeLive(r);
+    console.log(`\n[${j.verdict}] ${c.name}`);
+    console.log(`  after-change output: ${r.live.bytes} bytes, fg truecolor: ${[...r.live.after.fg].sort().join(' | ') || '(none)'}`);
+    const log = r.debug.split(/\r?\n/);
+    const watching = log.find(l => /Watching for changes in setting files/.test(l));
+    const detected = log.filter(l => /Detected (change|creation|deletion)|settings change/i.test(l) && !/Watching/.test(l));
+    console.log(`  watcher: ${watching ? watching.replace(/^.*?Watching/, 'Watching').slice(0, 260) : '(no "Watching" line in debug log)'}`);
+    console.log(`  change events: ${detected.length ? detected.map(l => l.replace(/^\S+\s+\[\w+\]\s*/, '').slice(0, 160)).join(' || ') : '(none)'}`);
+  }
+}
+
+// Fallback: quit, then relaunch in the same folder with --continue and the new
+// theme. A fresh folder has no conversation, so this checks the flag doesn't
+// abort the launch and that the theme applies.
+async function relaunchPhase() {
+  console.log('\n=== RELAUNCH WITH --continue ===');
+  const first = await run({ settingsFile: { theme: 'dark' }, keepDir: true });
+  const r = await run({ dir: first.dir, settingsFile: { theme: 'light' }, args: ['--continue'] });
+  const light = LIGHT_SIG.filter(x => r.fg.has(x)), dark = DARK_SIG.filter(x => r.fg.has(x));
+  const err = r.screen.find(s => /no conversation|not found|error/i.test(s));
+  console.log(`first launch (dark): ${first.raw.length} bytes, dark sig: ${DARK_SIG.filter(x => first.fg.has(x)).join(' ') || '(none)'}`);
+  console.log(`relaunch --continue (light): ${r.raw.length} bytes, exited before settle: ${r.exitedAtSettle !== null ? 'yes, code ' + r.exitedAtSettle : 'no'}`);
+  console.log(`  light sig: ${light.join(' ') || '(none)'} | dark sig: ${dark.join(' ') || '(none)'}${err ? ` | screen says: "${err}"` : ''}`);
+  console.log(`  -> ${r.exitedAtSettle === null && light.length && !dark.length ? 'WORKS: session stays up and comes back light' : 'DOES NOT WORK cleanly (see above)'}`);
+}
+
+// PHASES=static,live,relaunch (default all). The baseline always runs.
+const PHASES = (process.env.PHASES || 'static,live,relaunch').split(',');
+
 (async () => {
-  const before = { global: sha(GLOBAL_JSON), user: sha(USER_SETTINGS), theme: globalTheme() };
+  const before ={ global: sha(GLOBAL_JSON), user: sha(USER_SETTINGS), theme: globalTheme() };
   console.log('claude binary :', CLAUDE_BIN);
   console.log('before        : ~/.claude.json', before.global, 'theme=', before.theme, '| settings.json', before.user);
 
   const results = [];
-  for (const c of CANDIDATES) {
+  for (const c of PHASES.includes('static') ? CANDIDATES : CANDIDATES.slice(0, 1)) {
     process.stdout.write(`running: ${c.name} ... `);
     // node-pty's ConPTY agent occasionally dies with "AttachConsole failed"
     // and the run yields ~50 bytes. That's the instrument, not the CLI: retry.
@@ -171,6 +266,9 @@ const CANDIDATES = [
     if (r !== base) console.log(`  vs baseline: +${added.length} -${removed.length}`);
     console.log(`  palette codes (${r.palette.size}): ${[...r.palette].sort().join(' ')}`);
   }
+
+  if (PHASES.includes('live')) await livePhase();
+  if (PHASES.includes('relaunch')) await relaunchPhase();
 
   const after = { global: sha(GLOBAL_JSON), user: sha(USER_SETTINGS), theme: globalTheme() };
   console.log('\n=== GLOBAL CONFIG ===');
