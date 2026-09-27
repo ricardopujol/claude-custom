@@ -421,6 +421,36 @@ test('Dexter #5: a spawn from an ENDED agent is an orphan too, and SessionEnd en
   assert.deepStrictEqual(h.m.stack(), []);
 });
 
+test('Dexter #7: Stop\'s name-only background_tasks match only considers runs Stop would end', () => {
+  // X is a silent foreground child of background P; Y is the main session's
+  // own miguel, backgrounded with no async_launched result. The listed task
+  // is Y's, and only Y is at risk from Stop. The name-only match used to pick
+  // X (older), re-key it as `y`, and finish Y while it ran.
+  const h = harness();
+  h.spawn('paris', 't1', { background: true });
+  h.call('p', 'paris');
+  h.spawn('miguel', 'tX', { by: 'p', byType: 'paris' });    // X
+  h.spawn('miguel', 'tY');                                  // Y
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [
+    { id: 'y', type: 'subagent', status: 'running', agent_type: 'miguel' }] } });
+  assert.deepStrictEqual(h.m.stack(), ['paris', 'miguel', 'miguel'], 'Y is spared, and so is X');
+  const x = h.m.invocations().find(i => i.key === 'tX');
+  assert.strictEqual(x.agentId, null, 'X keeps its own identity');
+  assert.strictEqual(x.background, false);
+});
+
+test('Dexter #7: an ambiguous name-only match binds nobody', () => {
+  const h = harness();
+  h.spawn('miguel', 't1');
+  h.spawn('miguel', 't2');
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [
+    { id: 'y', type: 'subagent', status: 'running', agent_type: 'miguel' }] } });
+  // Neither can be told apart, so neither is re-keyed as `y`; a later call
+  // from `y` finds no run to take over.
+  h.call('y', 'miguel', { exit_code: 1 });
+  assert.notStrictEqual(h.m.stateOf('miguel'), 'stressed');
+});
+
 test('Dexter #4: a duplicate SubagentStop for an ended id does not end a silent sibling', () => {
   const h = harness();
   h.spawn('miguel', 't1');

@@ -424,10 +424,17 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       // Stop fires while a background agent still runs, and lists it in
       // `background_tasks` -- even one launched with no run_in_background.
       for (const task of Array.isArray(p.background_tasks) ? p.background_tasks : []) {
-        if (!task || !task.id) continue;
-        const inv = invs.find(i => i.agentId === task.id)
-          || invs.find(i => !i.agentId && i.name === task.agent_type
+        if (!task || !task.id || endedIds.has(task.id)) continue;
+        // By id when we know it. Otherwise by name, but only among the runs
+        // Stop is about to end (the only ones a wrong guess can hurt), and
+        // only when exactly one fits: an ambiguous guess re-keyed the wrong
+        // run and ended the listed one (Dexter, PR #56, #7).
+        let inv = invs.find(i => i.agentId === task.id);
+        if (!inv) {
+          const fits = invs.filter(i => !i.agentId && mainForeground(i) && i.name === task.agent_type
             && (task.description == null || i.description === task.description));
+          if (fits.length === 1) inv = fits[0];
+        }
         if (!inv) continue;
         inv.agentId = task.id;
         inv.background = true;
