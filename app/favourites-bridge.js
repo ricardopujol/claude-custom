@@ -30,6 +30,14 @@
  * just added. Sending the desired end state (`on: true/false`) makes every
  * click idempotent -- "make X starred" can never un-star it, whichever
  * window's click the store sees last.
+ *
+ * "Whichever window's click the store sees last" is about ONE id, not a
+ * cross-window lock: `store.update` is still an unlocked read-modify-write
+ * (host/store.js), so two windows starring DIFFERENT ids in the same instant
+ * can still lose one of them (Dexter, PR #60 review, Finding 8 -- deferred,
+ * correctly Low: the data is regenerable and nothing is corrupted). This
+ * module fixes WHICH value a single click writes, not whether two
+ * simultaneous writers can race.
  */
 
 const { normalizeFavourites, setFavourite, KINDS } = require('./models-favourites');
@@ -68,7 +76,13 @@ function registerFavouriteHandlers({ ipcMain, store, win }) {
 
   ipcMain.handle(SET_CHANNEL, (e, kind, id, on) => {
     if (!fromWindow(e)) return null;
-    if (KINDS.indexOf(kind) === -1 || typeof id !== 'string' || !id) return null;
+    // Dexter, PR #60 round 2, N5: `on` used to be truth-coerced (`!!on`)
+    // inside setFavourite, so the literal string `'false'` -- truthy in
+    // JavaScript -- STARRED the model instead of leaving it unstarred. Only
+    // the renderer sends this today, and it always sends a real boolean, but
+    // the channel itself must refuse the ambiguous case rather than silently
+    // doing the opposite of what was asked.
+    if (KINDS.indexOf(kind) === -1 || typeof id !== 'string' || !id || typeof on !== 'boolean') return null;
     let next = null;
     try {
       store.update(FAVOURITES_KEY, {}, (prev) => {

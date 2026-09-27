@@ -126,6 +126,23 @@ test('set refuses an unknown kind or a non-string id, and writes nothing', async
   assert.strictEqual(store.data[FAVOURITES_KEY], undefined);
 });
 
+// Dexter, PR #60 round 2, N5: `on` was truth-coerced, so the STRING 'false'
+// (truthy) starred the model -- the exact opposite of the literal value sent.
+test('N5: set refuses a non-boolean `on`, and writes nothing', async () => {
+  const ipcMain = fakeIpc();
+  const win = { webContents: {} };
+  const store = fakeStore();
+  registerFavouriteHandlers({ ipcMain, store, win });
+  const set = ipcMain.handlers.get(SET_CHANNEL);
+
+  assert.strictEqual(await set({ sender: win.webContents }, 'openrouter', 'a/b', 'false'), null,
+    'the string "false" must not be coerced into true');
+  assert.strictEqual(await set({ sender: win.webContents }, 'openrouter', 'a/b', 1), null);
+  assert.strictEqual(await set({ sender: win.webContents }, 'openrouter', 'a/b', null), null);
+  assert.strictEqual(await set({ sender: win.webContents }, 'openrouter', 'a/b', undefined), null);
+  assert.strictEqual(store.data[FAVOURITES_KEY], undefined, 'nothing must have been written');
+});
+
 test('a store whose update throws answers null rather than crashing the handler', async () => {
   const ipcMain = fakeIpc();
   const win = { webContents: {} };
