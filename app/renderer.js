@@ -1069,7 +1069,71 @@ function countBadgeHtml(agent, counts) {
   return n >= 2 ? `<span class="agent-count" title="${n} running now">×${n}</span>` : '';
 }
 
+// --- Active/Inactive roster tabs (BACKLOG D #16) -----------------------------
+// The split and sort are pure decisions in app/roster-tabs-display.js; this is
+// only wiring and HTML assembly, the same division as careerHtml/agentModelHtml
+// above.
+let activeRosterTab = 'active';
+// The WHOLE roster, from the host's background scan across every project --
+// `{ ok, agents: [{agent, tokens, portrait}], complete, unreadable }`. `null`
+// until the first `hello` or `rosterIndex` message lands.
+let rosterIndexPayload = null;
+
+function wholeRosterEntries() {
+  return rosterIndexPayload && Array.isArray(rosterIndexPayload.agents) ? rosterIndexPayload.agents : [];
+}
+
+function rosterIndexEntry(agent) {
+  return wholeRosterEntries().find(a => a.agent === agent);
+}
+
+function setRosterTab(tab) {
+  activeRosterTab = tab === 'inactive' ? 'inactive' : 'active';
+  for (const b of document.querySelectorAll('#roster-subtabs button')) {
+    b.classList.toggle('on', b.dataset.rosterTab === activeRosterTab);
+  }
+  renderRoster();
+}
+
+for (const b of document.querySelectorAll('#roster-subtabs button')) {
+  b.addEventListener('click', () => setRosterTab(b.dataset.rosterTab));
+}
+
+function inactiveRowHtml(row) {
+  const entry = rosterIndexEntry(row.agent);
+  // The scan is complete AND clean before a total stops being a lower bound --
+  // the same "ok, not just done" distinction host/agent-stats.js already draws
+  // for the per-project career panel.
+  const complete = !!(rosterIndexPayload && rosterIndexPayload.complete && rosterIndexPayload.ok);
+  const state = rosterTokenState(row.tokens, complete);
+  const tokenHtml = state.show
+    ? `<div class="career" title="lifetime tokens across every project"><span class="career-tok">${state.prefix}${compactTokens(row.tokens)}</span></div>`
+    : '';
+  return `<div class="agent" data-state="inactive">` +
+      `<div class="face">${faceHtml(entry && entry.portrait)}</div>` +
+      `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}</div>` +
+      `<div class="state">inactive</div>` +
+      tokenHtml +
+      `</div>` +
+    `</div>`;
+}
+
 function renderRoster() {
+  const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
+
+  if (activeRosterTab === 'inactive') {
+    if (inactive.length === 0) {
+      agentsEl.innerHTML = '<div class="empty">No other agents known yet.</div>';
+      return;
+    }
+    const rows = sortRosterRows(inactive.map((agent) => {
+      const entry = rosterIndexEntry(agent);
+      return { agent, tokens: entry && typeof entry.tokens === 'number' ? entry.tokens : null };
+    }));
+    agentsEl.innerHTML = rows.map(inactiveRowHtml).join('');
+    return;
+  }
+
   if (roster.size === 0) {
     // Three different situations, not one sentence. "No agents yet" is a
     // positive claim about history and must not be made on a read that failed.
@@ -1095,6 +1159,12 @@ function renderRoster() {
       `</div>` +
     `</div>`
   ).join('');
+}
+
+function renderRosterIndex(rosterIndex) {
+  if (!rosterIndex) return;
+  rosterIndexPayload = rosterIndex;
+  renderRoster();
 }
 
 function renderAgentStats(stats) {
@@ -2309,6 +2379,7 @@ function handleControl(msg) {
     // Before renderRoster, so the first paint already carries the careers and
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
+    rosterIndexPayload = msg.rosterIndex || null;
     renderAgentStats(msg.agentStats);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -2427,6 +2498,10 @@ function handleControl(msg) {
   }
   if (msg.type === 'agentStats') {
     renderAgentStats(msg.stats);
+    return;
+  }
+  if (msg.type === 'rosterIndex') {
+    renderRosterIndex(msg.rosterIndex);
     return;
   }
   if (msg.type === 'models') {

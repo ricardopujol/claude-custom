@@ -50,6 +50,8 @@ const ALLOWED_GLOBALS = new Set([
   'vaultLockDisplay',
   'cacheWriteOf',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
+  // app/roster-tabs-display.js (BACKLOG D #16: Active/Inactive roster tabs)
+  'splitActiveInactive', 'rosterTokenState', 'sortRosterRows',
   'quotaDisplay', 'formatQuotaCountdown',
   // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
   // IIFE-wrapped module, not leaks -- checked before allowlisting them, since
@@ -186,7 +188,8 @@ test('the display modules the renderer needs are actually defined after loading'
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
                     'rosterWidth', 'faceSize', 'bugVaultDisplay',
                     'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry',
-                    'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote']) {
+                    'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote',
+                    'splitActiveInactive', 'rosterTokenState', 'sortRosterRows']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });

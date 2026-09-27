@@ -28,6 +28,8 @@ const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { wholeRoster } = require('./roster-index');
+const { lifetimeAgentTokens } = require('./agent-stats-cache');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
 const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
@@ -722,6 +724,53 @@ function refreshAgentStats() {
   return agentStatsPending;
 }
 
+// The WHOLE roster (BACKLOG D #16): Active/Inactive tabs need every agent
+// definition and history entry ACROSS EVERY PROJECT, not just this one, sorted
+// by lifetime tokens. Both halves -- host/roster-index.js's identity walk and
+// host/agent-stats-cache.js's cached, incremental token sum -- read every
+// project under ~/.claude/projects/, which MEASURED at 1232 transcripts across
+// 48 projects (~1.2GB) taking ~14s cold. So this is fired once, in the
+// BACKGROUND, well after the pty and the ws server exist, and only ever
+// broadcast when it resolves -- never awaited by anything that could block
+// startup or the control channel.
+const ROSTER_LIFETIME_CACHE = path.join(HARNESS_DIR, 'state', 'roster-lifetime.json');
+let lastRosterIndex = { ok: false, agents: [], complete: false, unreadable: 0 };
+let rosterIndexPending = null;
+
+function refreshRosterIndex() {
+  if (rosterIndexPending) return rosterIndexPending;
+  rosterIndexPending = Promise.all([
+    wholeRoster({ cwd: CWD }),
+    lifetimeAgentTokens({ cacheFile: ROSTER_LIFETIME_CACHE }),
+  ])
+    .then(([roster, lifetime]) => {
+      const agents = roster.names.map((agent) => ({
+        agent,
+        // Never used shows NO count -- `null`, not a coerced zero (Number(null)
+        // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
+        // strict presence check that makes that hold.
+        tokens: lifetime.agents.has(agent) ? lifetime.agents.get(agent) : null,
+        portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+      }));
+      lastRosterIndex = {
+        ok: roster.unreadable === 0 && lifetime.unreadable === 0,
+        agents,
+        // TRUE the moment one full pass has resolved, however it went --
+        // `ok` (above) carries whether it was CLEAN, separately, the same
+        // split host/agent-stats.js and host/usage.js already make.
+        complete: true,
+        unreadable: roster.unreadable + lifetime.unreadable,
+      };
+      return lastRosterIndex;
+    })
+    .catch((err) => {
+      console.error('[host] roster index failed:', err && err.message);
+      return lastRosterIndex;
+    })
+    .finally(() => { rosterIndexPending = null; });
+  return rosterIndexPending;
+}
+
 // The model each agent ACTUALLY used, read from its own transcript -- never
 // the Agent tool_input's REQUESTED model, which is a different fact. See
 // host/session-model.js. Recomputed on SessionStart (the session id just
@@ -1158,6 +1207,15 @@ const sendControl = (ws, msg) => {
 };
 const broadcastControl = msg => { for (const ws of clients) sendControl(ws, msg); };
 
+// Kicked off once, here, rather than waiting for the first attach: the
+// whole-roster scan is install-wide (every project, not this one), so there is
+// no reason to delay it until a window happens to connect. Fire-and-forget --
+// the connection handler above already covers a client that attaches before
+// this lands, and a client already attached gets the broadcast when it does.
+refreshRosterIndex()
+  .then((rosterIndex) => broadcastControl({ type: 'rosterIndex', rosterIndex }))
+  .catch(() => { /* lastRosterIndex already reflects the failure; the next attach retries */ });
+
 term.onData((data) => {
   termState.write(data);
   const frame = Buffer.from(data, 'utf8');
@@ -1335,6 +1393,10 @@ wss.on('connection', (ws) => {
     vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
+    // The WHOLE roster (BACKLOG D #16) -- still `complete: false` on a fast
+    // attach, before the first background scan across every project has
+    // finished. The renderer draws every total as a lower bound until then.
+    rosterIndex: lastRosterIndex,
     // May still be `{model:null,...}` on a fast attach, before SessionStart's
     // read lands -- the renderer draws "—" for that, never a guessed model.
     sessionModel: sessionModels.current(),
@@ -1370,6 +1432,19 @@ wss.on('connection', (ws) => {
         if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'agentStats', stats });
       })
       .catch(() => { /* the next finish will carry it */ });
+  }
+
+  // The whole-roster scan is install-wide, not per-project, so it is kicked
+  // off once at boot (below, near `wss`'s creation) rather than per
+  // connection -- but a client attaching before that first pass has landed
+  // still deserves the update the moment it does, same reasoning as usage and
+  // agentStats above.
+  if (!lastRosterIndex.complete) {
+    refreshRosterIndex()
+      .then((rosterIndex) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'rosterIndex', rosterIndex });
+      })
+      .catch(() => { /* the next attach will carry it */ });
   }
 
   // A milestone reached while nothing was attached is delivered now rather than
