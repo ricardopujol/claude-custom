@@ -239,7 +239,11 @@ test('a lock path that can be neither read nor deleted fails closed instead of h
   assert.ok(waited < 5000, `must give up, not spin -- still going after ${waited}ms`);
 });
 
-test('a deadline of 0 means try once and do not wait', () => {
+test('a deadline of 0 against a LIVE holder tries once and does not wait', () => {
+  // "Once" is against a holder that is alive. Against a stale lock a zero
+  // deadline breaks it and takes the one extra open a break earns -- see
+  // "a deadline of 0 still takes a STALE lock" below (Dexter, PR #57 F3).
+  //
   // Mortimer: `Number.isFinite(opts.deadlineMs) ? opts.deadlineMs : DEADLINE_MS`
   // is a ternary with a bare CALL as its test, which StrykerJS generates no
   // mutant for -- so nothing in a mutation score can tell you this default is
@@ -526,6 +530,27 @@ test('past the deadline a break earns exactly ONE more attempt, not a loop', () 
     fs.openSync = realOpen;
   }
   assert.strictEqual(opens, 2, `the first try plus one after the break, got ${opens}`);
+});
+
+test('a deadline of 0 still takes a STALE lock -- in exactly two opens, without waiting', () => {
+  // Dexter, PR #57 F3. Before the extra try, a zero deadline refused a lock it
+  // had just recovered. It no longer does, and that is the better contract: a
+  // caller that cannot wait should not be refused a lock that is free. Pinned
+  // so the next change cannot quietly reverse it.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const realOpen = fs.openSync;
+  let opens = 0;
+  fs.openSync = (...a) => {
+    if (String(a[0]) === lock) opens++;
+    return realOpen.apply(fs, a);
+  };
+  try {
+    assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 0 }), 'took it');
+  } finally {
+    fs.openSync = realOpen;
+  }
+  assert.strictEqual(opens, 2, `one refused open, one after the break; got ${opens}`);
 });
 
 // --- breaking removes EXACTLY the lock that was judged stale ------------------
