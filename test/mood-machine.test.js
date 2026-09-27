@@ -187,11 +187,17 @@ test('an error reported as a string exit status still registers', () => {
   assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed');
 });
 
-test('an interrupted tool counts as an error', () => {
+test('an interrupted tool is NOT an error: it ends the interrupted run instead', () => {
+  // Backlog #7 CHANGED THIS TEST, deliberately. It used to assert 'stressed',
+  // while the PostToolUseFailure path (`is_interrupt`, below) asserted the
+  // opposite for the same act: the user pressing Esc. Esc is not the agent
+  // failing, whichever event carries it, and it cuts the run off -- so the
+  // agent stops working rather than finishing, and is never counted stressed.
   const h = harness();
   h.pre('Task', AGENT);
   h.post('Bash', { command: 'sleep 999' }, { interrupted: true });
-  assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed');
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'sleeping');
+  assert.deepStrictEqual(h.m.stack(), []);
 });
 
 test('events for an agent that never started do not create ghosts', () => {

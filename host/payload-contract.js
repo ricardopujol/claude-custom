@@ -72,6 +72,18 @@ const CONTRACT = {
     // be a required field here: agent_id, the owner processes.js ends a call
     // with when its subagent stops. verify/probe-failure-payloads.js checks it
     // arrives on a subagent's calls and matches that subagent's SubagentStop.
+    //
+    // Also read by mood-machine.js (backlog #7), optional by nature:
+    //   agent_id / agent_type -- which invocation made the call, so activity
+    //     keeps THAT run and its parents alive, not every running agent;
+    //   tool_use_id + tool_response.agentId on the Agent tool's own result --
+    //     the only field that joins a spawn to the subagent's agent_id.
+    //     Measured shapes: background { isAsync: true, status:
+    //     "async_launched", agentId } at once; foreground { status:
+    //     "completed", agentId } at the end. Absent on older CLIs and on
+    //     truncated captures, so the machine falls back to binding a new
+    //     agent_id to the oldest unbound invocation of its type;
+    //   tool_response.interrupted -- an interrupt, never a failure.
   },
   // A failed call fires this INSTEAD of PostToolUse. Measured 2026-09-25.
   PostToolUseFailure: {
@@ -90,7 +102,8 @@ const CONTRACT = {
         used: 'mood-machine.js + cooldowns, to credit the agent that ACTUALLY '
             + 'finished rather than the top of the delegation stack',
       },
-      agent_id: { used: 'processes.js, to end every call that subagent still has open' },
+      agent_id: { used: 'processes.js, to end every call that subagent still has open; '
+                      + 'mood-machine.js, to end THAT invocation and its foreground children' },
       ...COMMON_FIELDS,
     },
     // Also arrives, unread for now, and worth knowing about:
@@ -100,6 +113,11 @@ const CONTRACT = {
   },
   Stop: {
     fields: { ...COMMON_FIELDS },   // otherwise: the turn ended, which is the whole message
+    // Also read, optional: background_tasks [{ id: <agent_id>, agent_type,
+    // description, status }]. mood-machine.js ends the main session's
+    // FOREGROUND runs on Stop and spares the ones listed here -- measured,
+    // Stop fires while a background agent is still running
+    // (test/hooks-real-subagent-failure.fixture.jsonl).
   },
   SessionEnd: {
     // The session is over; processes.js clears everything. No COMMON_FIELDS:

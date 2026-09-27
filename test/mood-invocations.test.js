@@ -1,0 +1,317 @@
+'use strict';
+/**
+ * Backlog #7: a card is working while its DELEGATED work runs, and stops
+ * working the moment that work is over -- including when it is over because
+ * the user pressed Esc, the turn ended, or /clear killed it.
+ *
+ * The machine tracks INVOCATIONS, each with an identity and a parent link,
+ * rather than a name-keyed stack whose nesting was implied by order.
+ *
+ * THE LINKAGE, measured rather than assumed (2026-09-27, from real sessions):
+ *   - PreToolUse(Agent) carries the spawn's `tool_use_id`, and the SPAWNER's
+ *     `agent_id` when a subagent is the one spawning (none from the main
+ *     session).
+ *   - Every call the subagent then makes carries ITS `agent_id` + `agent_type`,
+ *     and nothing that names the spawn. So the first sighting of an unknown
+ *     agent_id binds it to the oldest still-unbound invocation of that type.
+ *   - PostToolUse(Agent) for that same tool_use_id carries the real link in
+ *     `tool_response.agentId`: at once for a background spawn
+ *     (`status: "async_launched"`, `isAsync: true`), at completion for a
+ *     foreground one (`status: "completed"`). Claude Code also writes it to
+ *     disk as subagents/agent-<agentId>.meta.json `{ toolUseId }`.
+ *   - Stop lists still-running background agents in `background_tasks`
+ *     `{ id: <agent_id>, agent_type, description, status }` -- and Stop DOES
+ *     fire while one is still running (test/hooks-real-subagent-failure).
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+const { createMoodMachine } = require('../host/mood-machine');
+
+function harness(opts = {}) {
+  let now = 1_000_000;
+  const m = createMoodMachine({ now: () => now, ...opts });
+  const h = {
+    m,
+    advance(ms) { now += ms; m.tick(); },
+    // A spawn. `by` is the spawner's agent_id; omitted means the main session.
+    spawn(type, toolUseId, { by, byType, background, description } = {}) {
+      m.handle({ event: 'PreToolUse', payload: {
+        tool_name: 'Agent', tool_use_id: toolUseId,
+        tool_input: { subagent_type: type, description, ...(background ? { run_in_background: true } : {}) },
+        ...(by ? { agent_id: by, agent_type: byType } : {}),
+      } });
+    },
+    // A Bash call made BY a subagent.
+    call(agentId, agentType, response = { exit_code: 0 }, input = { command: 'c' + Math.random() }) {
+      m.handle({ event: 'PostToolUse', payload: {
+        tool_name: 'Bash', tool_input: input, tool_response: response, agent_id: agentId, agent_type: agentType,
+      } });
+    },
+    fail(agentId, agentType, extra = {}) {
+      m.handle({ event: 'PostToolUseFailure', payload: {
+        tool_name: 'Bash', tool_input: { command: 'x' }, error: 'Exit code 1', is_interrupt: false,
+        ...(agentId ? { agent_id: agentId, agent_type: agentType } : {}), ...extra,
+      } });
+    },
+    subStop(agentId, agentType) {
+      m.handle({ event: 'SubagentStop', payload: { agent_id: agentId, agent_type: agentType } });
+    },
+    busy(name) { return h.m.stack().includes(name); },
+  };
+  return h;
+}
+
+// --- the parent link ---------------------------------------------------------
+
+test('a subagent stopping ends its foreground children with it', () => {
+  // A parent cannot finish while a foreground child it is waiting on still
+  // runs, so a child still open when its parent stops had its own
+  // SubagentStop dropped (host/usage.js: dropped 31 times in 35). Leaving it
+  // open is the "working until the 30 minute stall" bug.
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');
+  h.spawn('worker', 't2', { by: 'p1', byType: 'paris' });
+  h.call('w1', 'worker');
+  h.subStop('p1', 'paris');
+  assert.strictEqual(h.m.stateOf('paris'), 'happy');
+  assert.notStrictEqual(h.m.stateOf('worker'), 'working');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('a child working keeps its SILENT parent alive, on the parent link rather than the whole stack', () => {
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 9_000_000 });
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');
+  h.spawn('worker', 't2', { by: 'p1', byType: 'paris' });
+  for (let i = 0; i < 10; i++) { h.advance(100_000); h.call('w1', 'worker'); }
+  assert.strictEqual(h.m.stateOf('paris'), 'working', 'waiting on a child is not stalling');
+  assert.strictEqual(h.m.stateOf('worker'), 'working');
+});
+
+test('a subagent\'s calls do NOT keep an unrelated sibling alive', () => {
+  // Before, any call refreshed every invocation on the stack, so one busy
+  // agent kept a dead sibling "working" until the absolute cap.
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 9_000_000 });
+  h.spawn('ghost', 't1');
+  h.call('g1', 'ghost');
+  h.spawn('live', 't2');
+  for (let i = 0; i < 10; i++) { h.advance(100_000); h.call('l1', 'live'); }
+  assert.strictEqual(h.m.stateOf('ghost'), 'sleeping', 'a silent sibling stalls on its own clock');
+  assert.strictEqual(h.m.stateOf('live'), 'working');
+});
+
+test('the absolute cap does not reap a parent while its foreground child is still running', () => {
+  // A parent is never non-working while a live descendant runs. The child is
+  // younger, so its own cap -- or its close -- comes first; the parent goes
+  // after it, never before.
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 900_000 });
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');
+  h.advance(500_000);
+  h.spawn('worker', 't2', { by: 'p1', byType: 'paris' });
+  for (let i = 0; i < 6; i++) { h.advance(100_000); h.call('w1', 'worker'); }   // paris is 1100s old
+  assert.strictEqual(h.m.stateOf('paris'), 'working');
+  assert.deepStrictEqual(h.m.stack(), ['paris', 'worker']);
+  h.subStop('w1', 'worker');
+  h.advance(1);
+  assert.deepStrictEqual(h.m.stack(), [], 'once the child is gone the stranded parent is reaped');
+});
+
+test('a call from an agent that never started here blames nobody', () => {
+  // It used to fall back to the top of the stack, stressing whoever was there.
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.call('z9', 'stranger', { exit_code: 1 });
+  assert.strictEqual(h.m.stateOf('paris'), 'working');
+  assert.deepStrictEqual(h.m.roster().map(r => r.agent), ['paris']);
+});
+
+test('parallel siblings of one type are separate invocations; the card works while any is live', () => {
+  const h = harness();
+  h.spawn('miguel', 't1');
+  h.spawn('miguel', 't2');
+  h.call('m1', 'miguel');
+  h.call('m2', 'miguel');
+  h.subStop('m1', 'miguel');
+  assert.strictEqual(h.m.stateOf('miguel'), 'working');
+  h.subStop('m2', 'miguel');
+  assert.strictEqual(h.m.stateOf('miguel'), 'happy');
+});
+
+// --- the spawn's own result -------------------------------------------------
+
+test('a foreground spawn\'s completed result closes it even when SubagentStop was dropped', () => {
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 't1', tool_input: { subagent_type: 'paris' },
+    tool_response: { status: 'completed', agentId: 'p1', agentType: 'paris' },
+  } });
+  assert.strictEqual(h.m.stateOf('paris'), 'happy');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('a spawn\'s result is never credited to the agent it spawned', () => {
+  // The fixture's PostToolUse(Agent) for a BACKGROUND spawn arrives 6ms after
+  // launch. It is the spawner's call, not the child's; attributing it to the
+  // top of the stack fed the child's retry counter with its own launch.
+  const h = harness();
+  h.spawn('paris', 't1');
+  for (let i = 0; i < 3; i++) {
+    h.m.handle({ event: 'PostToolUse', payload: {
+      tool_name: 'Agent', tool_use_id: 't1', tool_input: { subagent_type: 'paris' }, tool_response: { truncated: true } } });
+  }
+  assert.strictEqual(h.m.stateOf('paris'), 'working');
+});
+
+test('a spawn that FAILED ends that invocation, stressed', () => {
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.m.handle({ event: 'PostToolUseFailure', payload: {
+    tool_name: 'Agent', tool_use_id: 't1', tool_input: { subagent_type: 'paris' }, error: 'boom', is_interrupt: false } });
+  assert.strictEqual(h.m.stateOf('paris'), 'stressed');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+// --- interrupts: the chain ends, and it is nobody's failure -----------------
+
+test('Esc on a spawn ends that invocation and its descendants, and is not an error', () => {
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');
+  h.spawn('worker', 't2', { by: 'p1', byType: 'paris' });
+  h.m.handle({ event: 'PostToolUseFailure', payload: {
+    tool_name: 'Agent', tool_use_id: 't1', tool_input: { subagent_type: 'paris' }, error: 'interrupted', is_interrupt: true } });
+  assert.strictEqual(h.m.stateOf('paris'), 'sleeping');
+  assert.strictEqual(h.m.stateOf('worker'), 'sleeping');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('an interrupted call inside a subagent ends THAT subagent, not its parent', () => {
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');
+  h.spawn('worker', 't2', { by: 'p1', byType: 'paris' });
+  h.call('w1', 'worker');
+  h.fail('w1', 'worker', { is_interrupt: true });
+  assert.strictEqual(h.m.stateOf('worker'), 'sleeping');
+  assert.strictEqual(h.m.stateOf('paris'), 'working');
+});
+
+test('both interrupt paths agree: PostToolUse interrupted:true is not an error either', () => {
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris', { interrupted: true });
+  assert.notStrictEqual(h.m.stateOf('paris'), 'stressed');
+  assert.strictEqual(h.busy('paris'), false, 'and it ends the interrupted run, like the failure path');
+});
+
+test('Esc on a MAIN-session call ends the main session\'s foreground chain', () => {
+  // A failure with no agent_id is the main session's own call (measured).
+  // Esc aborts the whole foreground turn, and Stop does not fire for it.
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.spawn('bg', 't2', { background: true });
+  h.fail(null, null, { is_interrupt: true });
+  assert.strictEqual(h.busy('paris'), false);
+  assert.strictEqual(h.m.stateOf('paris'), 'sleeping');
+  assert.strictEqual(h.m.stateOf('bg'), 'working', 'Esc does not kill background work');
+});
+
+// --- Stop and SessionEnd ----------------------------------------------------
+
+test('Stop ends every foreground invocation under the main session', () => {
+  // The turn is over, so its foreground work is over; one still open lost
+  // its close. It finished, so it flashes rather than vanishing.
+  const h = harness({ flashMs: 8_000 });
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');
+  h.spawn('worker', 't2', { by: 'p1', byType: 'paris' });
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [] } });
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.strictEqual(h.m.stateOf('paris'), 'happy');
+  h.advance(8_001);
+  assert.strictEqual(h.m.stateOf('paris'), 'sleeping');
+  assert.strictEqual(h.m.stateOf('worker'), 'sleeping');
+});
+
+test('Stop spares an agent launched with run_in_background, and its own children', () => {
+  const h = harness();
+  h.spawn('bg', 't1', { background: true });
+  h.call('b1', 'bg');
+  h.spawn('child', 't2', { by: 'b1', byType: 'bg' });
+  h.m.handle({ event: 'Stop', payload: {} });
+  assert.strictEqual(h.m.stateOf('bg'), 'working');
+  assert.strictEqual(h.m.stateOf('child'), 'working');
+});
+
+test('Stop spares an agent its background_tasks list says is still running', () => {
+  // Measured: an Agent call with no run_in_background can still be launched
+  // async, and Stop then fires with it running. Stop's own list says so.
+  const h = harness();
+  h.spawn('general-purpose', 't1', { description: 'Run sub-probe commands' });
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [
+    { id: 'ac76', type: 'subagent', status: 'running', description: 'Run sub-probe commands', agent_type: 'general-purpose' },
+  ] } });
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'working');
+  h.subStop('ac76', 'general-purpose');
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'happy', 'and the listed id is now its identity');
+});
+
+test('Stop spares a spawn whose own result said async_launched', () => {
+  const h = harness();
+  h.spawn('bg', 't1');
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 't1', tool_input: { subagent_type: 'bg' },
+    tool_response: { isAsync: true, status: 'async_launched', agentId: 'b1' } } });
+  h.m.handle({ event: 'Stop', payload: {} });
+  assert.strictEqual(h.m.stateOf('bg'), 'working');
+  h.call('b1', 'bg', { exit_code: 1 });
+  assert.strictEqual(h.m.stateOf('bg'), 'stressed', 'its calls are credited to it by the id the result named');
+});
+
+test('background work does not keep its parent\'s card working', () => {
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 9_000_000 });
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');
+  h.spawn('bgchild', 't2', { by: 'p1', byType: 'paris', background: true });
+  h.subStop('p1', 'paris');
+  assert.strictEqual(h.m.stateOf('paris'), 'happy', 'the parent finished; its background child is not its run');
+  assert.strictEqual(h.m.stateOf('bgchild'), 'working', 'and the child carries on');
+  for (let i = 0; i < 10; i++) { h.advance(100_000); h.call('c1', 'bgchild'); }
+  assert.strictEqual(h.m.stateOf('paris'), 'sleeping');
+});
+
+test('SessionEnd ends everything, background included', () => {
+  // Measured: /clear fires SessionEnd and kills background agents
+  // (verify/probe-clear-background.js).
+  const h = harness();
+  h.spawn('fg', 't1');
+  h.spawn('bg', 't2', { background: true });
+  h.m.handle({ event: 'SessionEnd', payload: { reason: 'clear' } });
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.strictEqual(h.m.stateOf('fg'), 'sleeping');
+  assert.strictEqual(h.m.stateOf('bg'), 'sleeping');
+});
+
+// --- the real capture, unfiltered ------------------------------------------
+
+test('replay: the real background agent survives the first Stop and ends with its own failure showing', () => {
+  const stream = fs.readFileSync(path.join(__dirname, 'hooks-real-subagent-failure.fixture.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const h = harness();
+  const seen = [];
+  h.m.on('change', c => seen.push(c.agent + ':' + c.state));
+  let afterFirstStop = null;
+  for (const e of stream) {
+    h.m.handle(e);
+    if (e.event === 'Stop' && afterFirstStop === null) afterFirstStop = h.m.stateOf('general-purpose');
+  }
+  assert.strictEqual(afterFirstStop, 'working', 'Stop fired while the background agent still ran');
+  assert.deepStrictEqual(seen, ['general-purpose:working', 'general-purpose:stressed',
+    'general-purpose:working', 'general-purpose:stressed']);
+  assert.deepStrictEqual(h.m.stack(), []);
+});
