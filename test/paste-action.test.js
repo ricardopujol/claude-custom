@@ -36,6 +36,16 @@ test('the image bytes are exactly ESC v -- what the probe proved claude accepts'
   assert.strictEqual(IMAGE_PASTE_BYTES, '\x1bv');
 });
 
+test('whitespace-only text does not beat an image (Miguel, PR #55, S1)', () => {
+  // Office can leave a residual text/plain -- a lone space -- beside a bitmap.
+  assert.deepStrictEqual(pasteAction({ text: ' \r\n\t', hasImage: true }), { kind: 'image', data: '\x1bv' });
+  assert.deepStrictEqual(pasteAction({ text: '  ', hasImage: false }), { kind: 'none' });
+});
+
+test('real text keeps its own whitespace -- only the emptiness check trims', () => {
+  assert.deepStrictEqual(pasteAction({ text: '  indented\n', hasImage: true }), { kind: 'text', text: '  indented\n' });
+});
+
 test('an empty clipboard does nothing', () => {
   assert.deepStrictEqual(pasteAction({ text: '', hasImage: false }), { kind: 'none' });
 });

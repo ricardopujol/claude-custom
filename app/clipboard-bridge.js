@@ -19,8 +19,10 @@ function readClipboard(clipboard) {
   try {
     const raw = clipboard.readText();
     const text = typeof raw === 'string' ? raw : '';
-    if (text) return { text, hasImage: false };
-    return { text: '', hasImage: !clipboard.readImage().isEmpty() };
+    // Whitespace-only text is not text (Miguel, PR #55, S1): look for the
+    // image, or pasteAction never learns there was one to prefer.
+    if (text.trim()) return { text, hasImage: false };
+    return { text, hasImage: !clipboard.readImage().isEmpty() };
   } catch {
     return { ...EMPTY };
   }

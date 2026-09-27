@@ -29,7 +29,10 @@ const IMAGE_PASTE_BYTES = '\x1bv';
 // bitmap alongside the words, and words are what the user copied.
 function pasteAction(clip) {
   const text = clip && typeof clip.text === 'string' ? clip.text : '';
-  if (text) return { kind: 'text', text };
+  // Trimmed for the CHECK only (Miguel, PR #55, S1): Office can leave a lone
+  // space as text/plain beside a copied bitmap, and that must not hide the
+  // image. Real text is pasted with its whitespace intact.
+  if (text.trim()) return { kind: 'text', text };
   if (clip && clip.hasImage === true) return { kind: 'image', data: IMAGE_PASTE_BYTES };
   return { kind: 'none' };
 }

@@ -33,6 +33,11 @@ test('the image is not decoded when there is text -- text wins anyway', () => {
   assert.strictEqual(cb.calls.readImage, 0);
 });
 
+test('whitespace-only text still looks for the image (Miguel, PR #55, S1)', () => {
+  // Otherwise pasteAction never learns there was one to prefer.
+  assert.deepStrictEqual(readClipboard(fakeClipboard({ text: ' ', image: true })), { text: ' ', hasImage: true });
+});
+
 test('an empty clipboard is empty, not an error', () => {
   assert.deepStrictEqual(readClipboard(fakeClipboard()), { text: '', hasImage: false });
 });
