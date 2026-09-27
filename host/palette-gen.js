@@ -7,9 +7,11 @@
  * Math.random) so every test replays exactly. host/style.js decides WHEN a look
  * is generated and writes it; this module only decides WHAT it is.
  *
- * Only the look colours are generated (appColor, textColor, accentColor,
- * secondaryColor, darkness). The terminal's 16 ANSI colours are the CLI's, not
- * this feature's.
+ * Only the four look colours are generated (appColor, textColor, accentColor,
+ * secondaryColor). Not darkness: that's the veil over a custom background
+ * image, a Background-section control, and rolling it from "Random colours"
+ * could drop a 0.9 veil over a bright photo to 0.4 (Dexter F2). Not the
+ * terminal's 16 ANSI colours either: those are the CLI's.
  *
  * Colours are picked in OKLCH, where "same L" really does mean "same
  * lightness" across hues, so one hue can be rotated for the accent without the
@@ -46,7 +48,7 @@
  *             colour can change that.
  */
 
-const { derivePalette, contrastRatio, luminance, MAX_DARKNESS } = require('./look');
+const { derivePalette, contrastRatio, luminance } = require('./look');
 
 const MIN_TEXT_CONTRAST = 4.5;
 const MIN_CONTROL_CONTRAST = 3;
@@ -63,7 +65,6 @@ const SAFE_LOOK = Object.freeze({
   textColor: '#e6e8ee',
   accentColor: '#e0a060',
   secondaryColor: '#a0a6b4',
-  darkness: 0.5,
 });
 
 // --- OKLCH -> sRGB ------------------------------------------------------------
@@ -173,7 +174,6 @@ function drawLook(rng) {
     textColor: oklchToHex(between(rng, 0.9, 0.96), between(rng, 0.005, 0.025), hue),
     accentColor: oklchToHex(between(rng, 0.76, 0.84), between(rng, 0.09, 0.15), accentHue),
     secondaryColor: oklchToHex(between(rng, 0.73, 0.79), between(rng, 0.02, 0.06), secondaryHue),
-    darkness: Math.min(MAX_DARKNESS, Math.round(between(rng, 0.4, 0.7) * 100) / 100),
   };
 }
 

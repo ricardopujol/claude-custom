@@ -13,6 +13,7 @@ const { seedLookIfNew, rerollLook, readLook, setLook, LOOK_DIR_NAME } = require(
 const { hasClaudeHistory } = require('../host/recent');
 const { projectDirName } = require('../host/project-dir');
 const { lookFailures, SAFE_LOOK } = require('../host/palette-gen');
+const { DEFAULT_LOOK } = require('../host/look');
 const { tmpDir } = require('./tmp-dir');
 
 const lookFile = (cwd) => path.join(cwd, LOOK_DIR_NAME, 'look.json');
@@ -161,6 +162,25 @@ test('rerollLook keeps the background image', () => {
   fs.writeFileSync(lookFile(cwd), JSON.stringify({ background: { file: 'background.png', setAt: null } }));
   assert.strictEqual(rerollLook({ cwd, rng: mulberry32(3) }).ok, true);
   assert.deepStrictEqual(readLook(cwd).background, { file: 'background.png', setAt: null });
+});
+
+test('rerollLook keeps the darkness a person set for their image (Dexter F2)', () => {
+  const cwd = tmpDir('cc-reroll-dark-');
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  fs.writeFileSync(path.join(cwd, LOOK_DIR_NAME, 'background.png'), 'x');
+  fs.writeFileSync(lookFile(cwd), JSON.stringify({ darkness: 0.9, background: { file: 'background.png', setAt: null } }));
+  for (let seed = 0; seed < 20; seed++) {
+    assert.strictEqual(rerollLook({ cwd, rng: mulberry32(seed) }).ok, true);
+    assert.strictEqual(readLook(cwd).darkness, 0.9, `seed ${seed}`);
+  }
+});
+
+test('a seeded look keeps the default darkness -- there is no image to veil yet', () => {
+  for (let seed = 0; seed < 20; seed++) {
+    const cwd = tmpDir('cc-seed-dark-');
+    seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(seed) });
+    assert.strictEqual(readLook(cwd).darkness, DEFAULT_LOOK.darkness, `seed ${seed}`);
+  }
 });
 
 test('rerollLook refuses a corrupt look.json, like every other write', () => {

@@ -7,7 +7,7 @@ const {
   generateLook, drawLook, lookFailures, oklchToHex, SAFE_LOOK, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
   MIN_TEXT_CONTRAST, MIN_CONTROL_CONTRAST, MAX_BG_LUMINANCE,
 } = require('../host/palette-gen');
-const { derivePalette, terminalOverride, contrastRatio, luminance, MAX_DARKNESS } = require('../host/look');
+const { derivePalette, terminalOverride, contrastRatio, luminance } = require('../host/look');
 
 const HEX = /^#[0-9a-f]{6}$/;
 
@@ -98,12 +98,15 @@ test('lookFailures refuses a look with a colour missing', () => {
 
 // --- generateLook -------------------------------------------------------------
 
-test('generateLook returns the five look fields and nothing else', () => {
+test('generateLook returns the four colours and NOT darkness (Dexter F2, Miguel #2)', () => {
+  // darkness is the veil over a custom background image -- a Background
+  // section control. Rolling it from "Random colours" dropped a person's 0.9
+  // veil to 0.4 and left the CLI text at ~2:1 over a bright photo.
   const look = generateLook(mulberry32(1));
   assert.deepStrictEqual(Object.keys(look).sort(),
-    ['accentColor', 'appColor', 'darkness', 'secondaryColor', 'textColor']);
+    ['accentColor', 'appColor', 'secondaryColor', 'textColor']);
   for (const k of ['appColor', 'textColor', 'accentColor', 'secondaryColor']) assert.match(look[k], HEX, k);
-  assert.ok(look.darkness >= 0 && look.darkness <= MAX_DARKNESS);
+  assert.ok(!('darkness' in SAFE_LOOK), 'the fallback does not carry a darkness either');
 });
 
 test('generateLook is deterministic for an injected rng', () => {
