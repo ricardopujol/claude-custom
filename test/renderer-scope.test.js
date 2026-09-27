@@ -73,6 +73,9 @@ const ALLOWED_GLOBALS = new Set([
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice',
+  // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
+  // renderer.js's key handler, like isPanelToggle.
+  'pasteAction', 'isPasteKey',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules
@@ -182,7 +185,8 @@ test('the display modules the renderer needs are actually defined after loading'
   // module that has already been caught once.
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
                     'rosterWidth', 'faceSize', 'bugVaultDisplay',
-                    'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry']) {
+                    'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry',
+                    'pasteAction', 'isPasteKey']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });
