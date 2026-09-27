@@ -187,11 +187,19 @@ test('an error reported as a string exit status still registers', () => {
   assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed');
 });
 
-test('an interrupted tool counts as an error', () => {
+test('an interrupted tool is NOT an error, and the run goes on', () => {
+  // Backlog #7 CHANGED THIS TEST, deliberately, twice. It used to assert
+  // 'stressed', while the PostToolUseFailure path (`is_interrupt`, below)
+  // said an interrupt is not the agent failing. The first rewrite also ended
+  // the run here, and Dexter (PR #56, #2) showed why that is wrong: a
+  // PostToolUse ARRIVED, so the agent's turn went on -- only the command was
+  // killed. No real transcript has ever shown interrupted:true (32,137
+  // results, all false), so nothing supports reading it as the run ending.
   const h = harness();
   h.pre('Task', AGENT);
   h.post('Bash', { command: 'sleep 999' }, { interrupted: true });
-  assert.strictEqual(h.m.stateOf('code-reviewer'), 'stressed');
+  assert.strictEqual(h.m.stateOf('code-reviewer'), 'working');
+  assert.deepStrictEqual(h.m.stack(), ['code-reviewer']);
 });
 
 test('events for an agent that never started do not create ghosts', () => {
