@@ -31,6 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
 const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
+const { generateLook } = require('./palette-gen');
 
 // 25MB, per the FF6 brief. Pinned by an explicit boundary test, the way
 // host/control.js's MAX_TERMINAL_DIM is.
@@ -225,6 +226,38 @@ function setLook({ cwd, patch, fsImpl = fs } = {}) {
   }
 }
 
+/**
+ * Backlog #15: give a NEW project a random, readable look, once.
+ *
+ * "New" is two facts, both required: look.json is MISSING (not 'ok', not
+ * 'corrupt' -- the person's data in a state we don't understand -- and not
+ * 'foreign'), AND the folder has no Claude history. `hasHistory` is a
+ * function so it's only asked when the look is missing: a project that
+ * already has a look never pays for the transcript-folder scan. The write
+ * goes through setLook, so it's the same atomic, re-checked write the Style
+ * tab uses. `rng` and `terminalForeground` pass straight to the generator.
+ */
+function seedLookIfNew({ cwd, hasHistory, rng, terminalForeground, fsImpl = fs } = {}) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return { seeded: false, reason: 'no project is open' };
+  const state = readLookState(cwd, fsImpl);
+  if (state.status !== 'missing') return { seeded: false, reason: `look is ${state.status}` };
+  if (typeof hasHistory !== 'function' || hasHistory() !== false) {
+    return { seeded: false, reason: 'the folder has Claude history' };
+  }
+  const r = setLook({ cwd, patch: generateLook(rng, { terminalForeground }), fsImpl });
+  return r.ok ? { seeded: true, look: r.look } : { seeded: false, reason: r.reason };
+}
+
+/**
+ * The Style tab's re-roll: a fresh generated look over this project's
+ * colours. An explicit ask, so unlike seedLookIfNew it doesn't care whether
+ * a look exists -- but it's still a setLook, so a corrupt or foreign look
+ * folder is refused and the background image is kept.
+ */
+function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
+  return setLook({ cwd, patch: generateLook(rng, { terminalForeground }), fsImpl });
+}
+
 function tryUnlink(fsImpl, file) {
   try { fsImpl.unlinkSync(file); } catch { /* best effort */ }
 }
@@ -330,4 +363,5 @@ function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
 module.exports = {
   planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
   readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, LOOK_DIR_NAME,
+  seedLookIfNew, rerollLook,
 };

@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { projectDirName } = require('./project-dir');
 
 const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -141,4 +142,41 @@ function listRecentProjects({ projectsDir, limit = 12, cache, onRead } = {}) {
   return out;
 }
 
-module.exports = { listRecentProjects, defaultProjectsDir };
+/**
+ * Has Claude Code ever run in `cwd`? True when its transcript folder
+ * (host/project-dir.js names it) holds at least one .jsonl.
+ *
+ * Used to decide whether a folder is a NEW project (backlog #15), which is
+ * the one case a look may be written unasked. So every doubt answers TRUE:
+ * a projects root that exists but can't be read, or no cwd at all, is "maybe
+ * it has history", and a maybe never gets a look written over it. Only a root
+ * that is not there at all (Claude has never run on this machine) is a
+ * confident "no".
+ *
+ * Compared case-insensitively: the same folder is recorded as both `C--...`
+ * and `c--...` on this machine, depending on how the session was started.
+ * The encoding is lossy (`a-b` and `a/b` collide), and a collision can only
+ * report history that isn't there -- the safe direction.
+ */
+function hasClaudeHistory(cwd, { projectsDir } = {}) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return true;
+  const root = projectsDir || defaultProjectsDir();
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch (err) {
+    return !(err && err.code === 'ENOENT');
+  }
+  const want = projectDirName(cwd).toLowerCase();
+  for (const d of entries) {
+    if (!d.isDirectory() || d.name.toLowerCase() !== want) continue;
+    try {
+      if (fs.readdirSync(path.join(root, d.name)).some(f => f.endsWith('.jsonl'))) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+module.exports = { listRecentProjects, defaultProjectsDir, hasClaudeHistory };
