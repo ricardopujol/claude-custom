@@ -169,8 +169,16 @@ test('property: an incremental scan equals a from-scratch scan for any add/grow/
 // total, merging across the identity join and a `readTranscript`-shaped
 // reader, is what the spec actually names as "the cached total". This drives
 // one real subagent transcript through add/remove/clear-turn edits and checks
-// that a scan chaining its cache from the previous step agrees with a fresh
-// one (`prevEntries: {}`) at every step.
+// the incremental (cache-chaining) total at every step.
+//
+// PR #59 R2, Dexter's note: the first version of this property compared the
+// incremental call against a SECOND `lifetimeAgentTokens` call with
+// `prevEntries: {}` -- both calls of the SAME function under test, so a bug
+// shared by both codepaths (there mostly aren't two, since the fresh call
+// exercises the identical summing logic) couldn't be caught, and the property
+// was really only checking "the function agrees with itself". The oracle now
+// is `turns.reduce(sum)` -- a hand-summed total computed from what the test
+// itself generated, entirely independent of any code under test.
 
 const NL = String.fromCharCode(10);
 const usage = (n) => ({ input_tokens: n, output_tokens: 0,
@@ -187,7 +195,7 @@ const turnOpArb = fc.oneof(
   { weight: 1, arbitrary: fc.record({ op: fc.constant('clear') }) },
 );
 
-test('property: lifetimeAgentTokens agrees with a from-scratch scan for any sequence of transcript edits', async () => {
+test('property: lifetimeAgentTokens matches a hand-summed, independent oracle for any sequence of transcript edits', async () => {
   const root = tmpDir('cc-lifetime-prop-'); // ONE directory for every fc run -- see the header
   const cwd = 'C:/w/prop-project';
   const dir = path.join(root, projectDirName(cwd));
@@ -231,9 +239,11 @@ test('property: lifetimeAgentTokens agrees with a from-scratch scan for any sequ
       bumpMtime(transcriptFile);
 
       const incremental = await lifetimeAgentTokens({ projectsDir: root, prevEntries: cache });
-      const fresh = await lifetimeAgentTokens({ projectsDir: root, prevEntries: {} });
 
-      assert.strictEqual(incremental.agents.get('agent-x') || 0, fresh.agents.get('agent-x') || 0,
+      // THE INDEPENDENT ORACLE: hand-summed from the generator's own record of
+      // what it wrote, not from a second call to the function under test.
+      const expected = turns.reduce((a, b) => a + b, 0);
+      assert.strictEqual(incremental.agents.get('agent-x') || 0, expected,
         `agent-x total diverged after ${JSON.stringify(o)}, turns=${JSON.stringify(turns)}`);
 
       cache = incremental.entries;
