@@ -95,4 +95,13 @@ contextBridge.exposeInMainWorld('harness', {
     getDim: () => ipcRenderer.invoke('look:getDim'),
     setDim: (value) => ipcRenderer.invoke('look:setDim', value),
   },
+
+  // Model favourites (BACKLOG E #5, #3): a star on an OpenRouter row or a
+  // Claude choice, persisted install-wide -- see app/favourites-bridge.js.
+  // Its own two channels, not a widened look:setDim: a generic "set any key"
+  // handler reachable from the page could overwrite look-global itself.
+  favourites: {
+    get: () => ipcRenderer.invoke('favourites:get'),
+    toggle: (kind, id) => ipcRenderer.invoke('favourites:toggle', kind, id),
+  },
 });
