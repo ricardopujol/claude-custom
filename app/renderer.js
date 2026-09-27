@@ -2568,6 +2568,12 @@ function sendResize() {
 }
 
 // Everything xterm translates from a keypress flows through here.
+// Typing drops the selection, as in Windows Terminal: a selection left
+// behind is the one a later Ctrl+C would copy instead of interrupting
+// (Miguel, PR #58, I1). onKey, not onData: onData also carries focus and
+// mouse reports, which must not clear a selection the user is still using.
+term.onKey(() => { if (term.hasSelection()) term.clearSelection(); });
+
 term.onData((data) => {
   logLine(pendingKeyDesc || 'input', data);
   pendingKeyDesc = null;
@@ -2668,6 +2674,20 @@ term.attachCustomKeyEventHandler((e) => {
     return false;
   }
 
+  // Ctrl+C with a selection copies it (app/paste-action.js); with none, it
+  // falls through and xterm sends ^C to the CLI as before. Left to xterm, a
+  // selection was never copied: the keydown became ^C and interrupted claude.
+  // A selection scrolled out of sight is dropped, and ^C goes through
+  // (Miguel, PR #58, I1).
+  const copy = copyKeyAction(e, term.getSelection(),
+    selectionVisible(term.getSelectionPosition(), term.buffer.active.viewportY, term.rows));
+  if (copy.kind === 'copy') {
+    e.preventDefault();
+    copySelection(copy.text);
+    return false;
+  }
+  if (copy.kind === 'stale') term.clearSelection();
+
   const mods =
     (e.ctrlKey ? 'Ctrl+' : '') +
     (e.shiftKey ? 'Shift+' : '') +
@@ -2700,6 +2720,28 @@ term.attachCustomKeyEventHandler((e) => {
 // (Miguel, PR #55, B1). Bracketed when the CLI has asked for it, so several
 // lines arrive as ONE paste. An image is ESC+v: `claude` reads the clipboard
 // itself.
+// Never silent, like Ctrl+V: a copy that failed says so. The selection is
+// cleared only once the text is really on the clipboard, so a failed copy
+// can be retried.
+async function copySelection(text) {
+  let res;
+  try {
+    res = window.harness && window.harness.writeClipboard
+      ? await window.harness.writeClipboard(text)
+      : { ok: false, error: 'no clipboard bridge' };
+  } catch (err) {
+    res = { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+  // Seen, not silent: a copy that swallowed a Ctrl+C says what it did
+  // (Miguel, PR #58, I1).
+  if (res && res.ok) {
+    term.clearSelection();
+    flourish({ icon: '📋', name: `Copied ${text.length} character${text.length === 1 ? '' : 's'}` });
+    return;
+  }
+  flourish({ icon: '⛔', name: 'Ctrl+C could not copy: ' + ((res && res.error) || 'unknown error') });
+}
+
 async function pasteFromClipboard() {
   // Never silent (Miguel, PR #55, S2): a Ctrl+V that does nothing reads as
   // "paste is broken". Same on-screen note the drop gesture uses.
