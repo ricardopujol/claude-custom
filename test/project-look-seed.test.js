@@ -30,8 +30,8 @@ function mulberry32(seed) {
 }
 
 // A projects root holding a transcript folder for `cwd`, as Claude Code names it.
-function historyFor(cwd, { name = projectDirName(cwd), withTranscript = true } = {}) {
-  const root = tmpDir('cc-seed-projects-');
+function historyFor(cwd, { name = projectDirName(cwd), withTranscript = true, root = tmpDir('cc-seed-projects-') } = {}) {
+  fs.mkdirSync(root, { recursive: true });
   const dir = path.join(root, name);
   fs.mkdirSync(dir);
   if (withTranscript) fs.writeFileSync(path.join(dir, 'abc.jsonl'), '{}\n');
@@ -74,6 +74,27 @@ test('hasClaudeHistory: a projects folder that cannot be read counts AS history 
 
 test('hasClaudeHistory: no cwd is no answer to write on', () => {
   assert.strictEqual(hasClaudeHistory('', { projectsDir: tmpDir('cc-seed-x-') }), true);
+});
+
+test('Dexter F3: history under CLAUDE_CONFIG_DIR is found when the default folder does not exist', () => {
+  const cwd = 'C:/Users/x/oldproj';
+  const config = path.dirname(historyFor(cwd, { root: path.join(tmpDir('cc-seed-cfg-'), 'projects') }));
+  const home = tmpDir('cc-seed-home-');                    // no .claude/projects at all
+  assert.strictEqual(hasClaudeHistory(cwd, { env: { CLAUDE_CONFIG_DIR: config }, homeDir: home }), true);
+});
+
+test('Dexter F3: with CLAUDE_CONFIG_DIR set, history in the default folder still counts', () => {
+  const cwd = 'C:/Users/x/oldproj';
+  const home = path.dirname(path.dirname(historyFor(cwd, { root: path.join(tmpDir('cc-seed-home2-'), '.claude', 'projects') })));
+  const config = path.join(tmpDir('cc-seed-cfg2-'), 'missing');
+  assert.strictEqual(hasClaudeHistory(cwd, { env: { CLAUDE_CONFIG_DIR: config }, homeDir: home }), true);
+});
+
+test('Dexter F3: neither folder holding this project is still a confident "no history"', () => {
+  const home = tmpDir('cc-seed-home3-');
+  const config = tmpDir('cc-seed-cfg3-');
+  assert.strictEqual(hasClaudeHistory('C:/fresh', { env: { CLAUDE_CONFIG_DIR: config }, homeDir: home }), false);
+  assert.strictEqual(hasClaudeHistory('C:/fresh', { env: {}, homeDir: home }), false);
 });
 
 // --- seedLookIfNew: the gate ---------------------------------------------------------

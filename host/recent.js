@@ -158,16 +158,35 @@ function listRecentProjects({ projectsDir, limit = 12, cache, onRead } = {}) {
  * The encoding is lossy (`a-b` and `a/b` collide), and a collision can only
  * report history that isn't there -- the safe direction.
  */
-function hasClaudeHistory(cwd, { projectsDir } = {}) {
+function hasClaudeHistory(cwd, { projectsDir, env = process.env, homeDir = os.homedir() } = {}) {
   if (typeof cwd !== 'string' || !cwd.trim()) return true;
-  const root = projectsDir || defaultProjectsDir();
+  const want = projectDirName(cwd).toLowerCase();
+  return historyRoots({ projectsDir, env, homeDir }).some(root => rootHasHistory(root, want));
+}
+
+/**
+ * Every folder Claude Code may keep transcripts in (Dexter F3). Claude honours
+ * CLAUDE_CONFIG_DIR, and a missing ~/.claude/projects proves nothing when it's
+ * set, so both are checked. History in EITHER counts. This is the only
+ * reader here that honours it: the launcher's lists still read the default,
+ * and a missed row there is cosmetic, where a missed history here writes a look.
+ */
+function historyRoots({ projectsDir, env, homeDir }) {
+  if (projectsDir) return [projectsDir];
+  const roots = [];
+  const configDir = env && typeof env.CLAUDE_CONFIG_DIR === 'string' ? env.CLAUDE_CONFIG_DIR.trim() : '';
+  if (configDir) roots.push(path.join(configDir, 'projects'));
+  roots.push(path.join(homeDir, '.claude', 'projects'));
+  return roots;
+}
+
+function rootHasHistory(root, want) {
   let entries;
   try {
     entries = fs.readdirSync(root, { withFileTypes: true });
   } catch (err) {
     return !(err && err.code === 'ENOENT');
   }
-  const want = projectDirName(cwd).toLowerCase();
   for (const d of entries) {
     if (!d.isDirectory() || d.name.toLowerCase() !== want) continue;
     try {
