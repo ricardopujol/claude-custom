@@ -106,6 +106,31 @@ test('an existing look is never replaced, and history is not even asked about', 
   assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
 });
 
+test('Dexter F5 / Miguel #3: a look that appears between the check and the write is NOT overwritten', () => {
+  // The history scan runs between reading "missing" and writing. Another
+  // window (or the person) saves a look in that gap: the seed must lose.
+  const cwd = tmpDir('cc-seed-race-');
+  let theirs = null;
+  const r = seedLookIfNew({
+    cwd,
+    rng: mulberry32(4),
+    hasHistory: () => {
+      setLook({ cwd, patch: { appColor: '#300010' } });
+      theirs = fs.readFileSync(lookFile(cwd), 'utf8');
+      return false;
+    },
+  });
+  assert.strictEqual(r.seeded, false);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), theirs, 'byte-identical to what they saved');
+  assert.strictEqual(readLook(cwd).appColor, '#300010');
+});
+
+test('a seed leaves only look.json and .gitignore behind -- no temp file', () => {
+  const cwd = tmpDir('cc-seed-clean-');
+  assert.strictEqual(seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(8) }).seeded, true);
+  assert.deepStrictEqual(fs.readdirSync(path.join(cwd, LOOK_DIR_NAME)).sort(), ['.gitignore', 'look.json']);
+});
+
 test('a corrupt look.json is never overwritten by a seed', () => {
   const cwd = tmpDir('cc-seed-corrupt-');
   fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));

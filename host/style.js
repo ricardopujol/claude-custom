@@ -234,8 +234,8 @@ function setLook({ cwd, patch, fsImpl = fs } = {}) {
  * 'foreign'), AND the folder has no Claude history. `hasHistory` is a
  * function so it's only asked when the look is missing: a project that
  * already has a look never pays for the transcript-folder scan. The write
- * goes through setLook, so it's the same atomic, re-checked write the Style
- * tab uses. `rng` and `terminalForeground` pass straight to the generator.
+ * is create-only (createLook), so a look that appears during the scan is
+ * kept rather than patched over. `rng` and `terminalForeground` pass straight to the generator.
  */
 function seedLookIfNew({ cwd, hasHistory, rng, terminalForeground, fsImpl = fs } = {}) {
   if (typeof cwd !== 'string' || !cwd.trim()) return { seeded: false, reason: 'no project is open' };
@@ -246,8 +246,34 @@ function seedLookIfNew({ cwd, hasHistory, rng, terminalForeground, fsImpl = fs }
   }
   const look = generateLook(rng, { terminalForeground });
   if (!look) return { seeded: false, reason: noLookReason(terminalForeground || DEFAULT_TERMINAL_FG) };
-  const r = setLook({ cwd, patch: look, fsImpl });
-  return r.ok ? { seeded: true, look: r.look } : { seeded: false, reason: r.reason };
+  try {
+    return { seeded: true, look: createLook(cwd, { ...state.look, ...look }, { fsImpl }) };
+  } catch (err) {
+    if (err && err.code === 'EEXIST') return { seeded: false, reason: 'a look was saved meanwhile -- kept it' };
+    return { seeded: false, reason: `could not save the look: ${err && err.message}` };
+  }
+}
+
+/**
+ * writeLook's create-only twin, for the seed (Dexter F5, Miguel #3). "Missing"
+ * was read BEFORE the history scan; a look someone saves in that gap must win.
+ * So the complete file is written to a temp name and then hard-linked into
+ * place: link() refuses an existing destination (EEXIST) atomically, and a
+ * reader never sees a half-written look.json. A filesystem without hard links
+ * fails the seed, which writes nothing -- the safe direction.
+ */
+function createLook(cwd, look, { fsImpl = fs } = {}) {
+  const clean = sanitizeLook(look);
+  const dir = ensureLookDir(cwd, fsImpl);
+  const file = path.join(dir, LOOK_FILE);
+  const temp = `${file}.seed${process.pid}`;
+  try {
+    fsImpl.writeFileSync(temp, JSON.stringify(clean, null, 2) + '\n');
+    fsImpl.linkSync(temp, file);
+  } finally {
+    tryUnlink(fsImpl, temp);
+  }
+  return clean;
 }
 
 /**
