@@ -8,7 +8,7 @@ const assert = require('node:assert');
 const fc = require('fast-check');
 
 const {
-  emptyFavourites, normalizeFavourites, isFavourite, toggleFavourite,
+  KINDS, emptyFavourites, normalizeFavourites, isFavourite, toggleFavourite, setFavourite,
   partitionFavourites, pinFavouritesFirst,
 } = require('../app/models-favourites');
 
@@ -88,6 +88,56 @@ test('the OTHER kind is untouched by a toggle', () => {
   const after = toggleFavourite(fav, 'claude', 'sonnet');
   assert.deepStrictEqual(after.openrouter, ['a/b']);
   assert.deepStrictEqual(after.claude, ['opus', 'sonnet']);
+});
+
+// --- setFavourite (Dexter, PR #60 review, Finding 6) -------------------------------
+
+test('KINDS names exactly the two kinds this module knows about', () => {
+  assert.deepStrictEqual([...KINDS], ['openrouter', 'claude']);
+});
+
+test('setFavourite(..., true) adds an absent id and is a no-op on an already-present one', () => {
+  const empty = emptyFavourites();
+  const added = setFavourite(empty, 'openrouter', 'a/b', true);
+  assert.deepStrictEqual(added, { openrouter: ['a/b'], claude: [] });
+  // THE regression this function exists to fix: setting "on" a SECOND time
+  // (another window already starred it) must never remove it -- a toggle
+  // would have.
+  const again = setFavourite(added, 'openrouter', 'a/b', true);
+  assert.deepStrictEqual(again, { openrouter: ['a/b'], claude: [] });
+});
+
+test('setFavourite(..., false) removes a present id and is a no-op on an absent one', () => {
+  const withOne = { openrouter: ['a/b'], claude: [] };
+  const removed = setFavourite(withOne, 'openrouter', 'a/b', false);
+  assert.deepStrictEqual(removed, { openrouter: [], claude: [] });
+  const again = setFavourite(removed, 'openrouter', 'a/b', false);
+  assert.deepStrictEqual(again, { openrouter: [], claude: [] });
+});
+
+test('setFavourite never mutates its input', () => {
+  const before = { openrouter: ['a/b'], claude: [] };
+  const snapshot = JSON.parse(JSON.stringify(before));
+  setFavourite(before, 'openrouter', 'c/d', true);
+  assert.deepStrictEqual(before, snapshot);
+});
+
+test('setFavourite is a no-op (beyond normalizing) for an unknown kind or bad id', () => {
+  const fav = { openrouter: ['a/b'], claude: ['opus'] };
+  assert.deepStrictEqual(setFavourite(fav, 'ollama', 'x', true), normalizeFavourites(fav));
+  assert.deepStrictEqual(setFavourite(fav, 'openrouter', '', true), normalizeFavourites(fav));
+  assert.deepStrictEqual(setFavourite(fav, 'openrouter', null, true), normalizeFavourites(fav));
+});
+
+test('property: setFavourite is idempotent -- applying the same (kind, id, on) twice equals applying it once', () => {
+  fc.assert(fc.property(
+    fc.constantFrom('openrouter', 'claude'), fc.string({ minLength: 1 }), fc.boolean(),
+    (kind, id, on) => {
+      const once = setFavourite(emptyFavourites(), kind, id, on);
+      const twice = setFavourite(once, kind, id, on);
+      assert.deepStrictEqual(twice, once);
+    },
+  ));
 });
 
 // --- partitionFavourites / pinFavouritesFirst --------------------------------------

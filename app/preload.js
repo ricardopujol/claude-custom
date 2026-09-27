@@ -100,8 +100,13 @@ contextBridge.exposeInMainWorld('harness', {
   // Claude choice, persisted install-wide -- see app/favourites-bridge.js.
   // Its own two channels, not a widened look:setDim: a generic "set any key"
   // handler reachable from the page could overwrite look-global itself.
+  // `set`, not `toggle` (Dexter, PR #60 review, F6): the page always knows
+  // the state it wants (it just decided which way the star should go), so it
+  // sends THAT rather than asking main to flip whatever the store currently
+  // holds -- a toggle computed against a second window's fresher state
+  // inverts the click's intent instead of losing to it.
   favourites: {
     get: () => ipcRenderer.invoke('favourites:get'),
-    toggle: (kind, id) => ipcRenderer.invoke('favourites:toggle', kind, id),
+    set: (kind, id, on) => ipcRenderer.invoke('favourites:set', kind, id, on),
   },
 });

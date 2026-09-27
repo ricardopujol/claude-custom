@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 const {
-  readFavourites, registerFavouriteHandlers, FAVOURITES_KEY, GET_CHANNEL, TOGGLE_CHANNEL,
+  readFavourites, registerFavouriteHandlers, FAVOURITES_KEY, GET_CHANNEL, SET_CHANNEL,
 } = require('../app/favourites-bridge');
 
 function fakeIpc() {
@@ -69,41 +69,60 @@ test('any other sender gets the empty shape, never the real favourites', () => {
   assert.deepStrictEqual(r, { openrouter: [], claude: [] });
 });
 
-test('toggle persists through the store and returns the new value', async () => {
+test('set persists through the store and returns the new value', async () => {
   const ipcMain = fakeIpc();
   const win = { webContents: {} };
   const store = fakeStore();
   registerFavouriteHandlers({ ipcMain, store, win });
 
-  const toggle = ipcMain.handlers.get(TOGGLE_CHANNEL);
-  const added = await toggle({ sender: win.webContents }, 'openrouter', 'a/b');
+  const set = ipcMain.handlers.get(SET_CHANNEL);
+  const added = await set({ sender: win.webContents }, 'openrouter', 'a/b', true);
   assert.deepStrictEqual(added, { openrouter: ['a/b'], claude: [] });
   assert.deepStrictEqual(store.data[FAVOURITES_KEY], { openrouter: ['a/b'], claude: [] });
 
-  const removed = await toggle({ sender: win.webContents }, 'openrouter', 'a/b');
+  const removed = await set({ sender: win.webContents }, 'openrouter', 'a/b', false);
   assert.deepStrictEqual(removed, { openrouter: [], claude: [] });
 });
 
-test('toggle from an unauthorized sender writes nothing and returns null', async () => {
+// Dexter, PR #60 review, Finding 6 -- THE regression this channel exists to
+// fix. A toggle computed against the store's CURRENT value inverts the
+// user's intent the moment a second window's view is stale; sending the
+// desired state must not.
+test('F6: setting "on" a SECOND time (another window already starred it) is a no-op, never an un-star', async () => {
+  const ipcMain = fakeIpc();
+  const win = { webContents: {} };
+  const store = fakeStore({ [FAVOURITES_KEY]: { openrouter: ['google/gemini-2.5-pro'], claude: [] } });
+  registerFavouriteHandlers({ ipcMain, store, win });
+
+  // Window B's click intends "star this model" (on=true), even though it has
+  // no idea window A already starred it -- the store already holds it.
+  const set = ipcMain.handlers.get(SET_CHANNEL);
+  const result = await set({ sender: win.webContents }, 'openrouter', 'google/gemini-2.5-pro', true);
+  assert.deepStrictEqual(result, { openrouter: ['google/gemini-2.5-pro'], claude: [] },
+    'the favourite must survive -- a toggle here would have removed it');
+  assert.deepStrictEqual(store.data[FAVOURITES_KEY], { openrouter: ['google/gemini-2.5-pro'], claude: [] });
+});
+
+test('set from an unauthorized sender writes nothing and returns null', async () => {
   const ipcMain = fakeIpc();
   const store = fakeStore();
   registerFavouriteHandlers({ ipcMain, store, win: { webContents: {} } });
 
-  const result = await ipcMain.handlers.get(TOGGLE_CHANNEL)({ sender: {} }, 'openrouter', 'a/b');
+  const result = await ipcMain.handlers.get(SET_CHANNEL)({ sender: {} }, 'openrouter', 'a/b', true);
   assert.strictEqual(result, null);
   assert.strictEqual(store.data[FAVOURITES_KEY], undefined);
 });
 
-test('toggle refuses an unknown kind or a non-string id, and writes nothing', async () => {
+test('set refuses an unknown kind or a non-string id, and writes nothing', async () => {
   const ipcMain = fakeIpc();
   const win = { webContents: {} };
   const store = fakeStore();
   registerFavouriteHandlers({ ipcMain, store, win });
-  const toggle = ipcMain.handlers.get(TOGGLE_CHANNEL);
+  const set = ipcMain.handlers.get(SET_CHANNEL);
 
-  assert.strictEqual(await toggle({ sender: win.webContents }, 'ollama', 'a/b'), null);
-  assert.strictEqual(await toggle({ sender: win.webContents }, 'openrouter', null), null);
-  assert.strictEqual(await toggle({ sender: win.webContents }, 'openrouter', ''), null);
+  assert.strictEqual(await set({ sender: win.webContents }, 'ollama', 'a/b', true), null);
+  assert.strictEqual(await set({ sender: win.webContents }, 'openrouter', null, true), null);
+  assert.strictEqual(await set({ sender: win.webContents }, 'openrouter', '', true), null);
   assert.strictEqual(store.data[FAVOURITES_KEY], undefined);
 });
 
@@ -112,7 +131,7 @@ test('a store whose update throws answers null rather than crashing the handler'
   const win = { webContents: {} };
   const store = { read: () => ({}), update: () => { throw new Error('EPERM'); } };
   registerFavouriteHandlers({ ipcMain, store, win });
-  const result = await ipcMain.handlers.get(TOGGLE_CHANNEL)({ sender: win.webContents }, 'openrouter', 'a/b');
+  const result = await ipcMain.handlers.get(SET_CHANNEL)({ sender: win.webContents }, 'openrouter', 'a/b', true);
   assert.strictEqual(result, null);
 });
 
@@ -124,7 +143,12 @@ const app = (f) => strip(fs.readFileSync(path.join(__dirname, '..', 'app', f), '
 test('the preload invokes both channels this module handles', () => {
   const preload = app('preload.js');
   assert.ok(preload.includes(`ipcRenderer.invoke('${GET_CHANNEL}')`), `preload.js must invoke '${GET_CHANNEL}'`);
-  assert.ok(preload.includes(`ipcRenderer.invoke('${TOGGLE_CHANNEL}'`), `preload.js must invoke '${TOGGLE_CHANNEL}'`);
+  assert.ok(preload.includes(`ipcRenderer.invoke('${SET_CHANNEL}'`), `preload.js must invoke '${SET_CHANNEL}'`);
+});
+
+test('the preload sends the desired state, not a bare toggle -- no favourites:toggle channel remains', () => {
+  const preload = app('preload.js');
+  assert.ok(!preload.includes("'favourites:toggle'"), 'the toggle channel must be fully retired, not left dangling');
 });
 
 test('main.js actually registers the handlers, against its own uiStore and window', () => {

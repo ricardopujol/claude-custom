@@ -28,7 +28,11 @@
  */
 (function (root) {
 
-const KINDS = ['openrouter', 'claude'];
+// Exported (Miguel, PR #60 review, S3): app/favourites-bridge.js used to keep
+// its own literal copy of this list, which is exactly the kind of thing that
+// silently drifts the day a third kind is added to one file and not the
+// other.
+const KINDS = Object.freeze(['openrouter', 'claude']);
 
 function emptyFavourites() {
   return { openrouter: [], claude: [] };
@@ -82,6 +86,35 @@ function toggleFavourite(favourites, kind, id) {
 }
 
 /**
+ * Set `id`'s favourited state to EXACTLY `on`, idempotently -- never flip
+ * whatever the store currently holds.
+ *
+ * Dexter, PR #60 review, Finding 6: two Electron main processes (two windows)
+ * share one store file, and each window's `modelFavourites` is only as fresh
+ * as its last read (at load, or its last own write's reply). A TOGGLE sent
+ * over IPC is computed against the STORE'S current value, not the value the
+ * user actually saw when they clicked -- so window B, still showing an empty
+ * star because it hasn't heard about window A's favourite yet, can send
+ * "toggle X" meaning "add it" and instead REMOVE the very favourite A just
+ * added, inverting the user's intent rather than losing to it. Sending the
+ * desired end state instead makes every click idempotent: "make X starred"
+ * can never accidentally un-star it, whichever window's click lands last.
+ *
+ * Same total/never-throws contract as `toggleFavourite`: an unrecognised
+ * `kind` or a non-string/empty `id` returns the input unchanged (normalized).
+ */
+function setFavourite(favourites, kind, id, on) {
+  const fav = normalizeFavourites(favourites);
+  if (KINDS.indexOf(kind) === -1 || typeof id !== 'string' || !id) return fav;
+  const list = fav[kind];
+  const has = list.includes(id);
+  const wants = !!on;
+  if (has === wants) return fav;
+  const nextList = wants ? [...list, id] : list.filter((x) => x !== id);
+  return { ...fav, [kind]: nextList };
+}
+
+/**
  * Split `items` into the ones `idOf` maps to a favourited id, and the rest --
  * BOTH IN THEIR ORIGINAL RELATIVE ORDER. This is the one primitive both
  * favourites features build on: the OpenRouter panel renders `favourites` as
@@ -116,14 +149,20 @@ function pinFavouritesFirst(items, favouriteIds, idOf) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    emptyFavourites, normalizeFavourites, isFavourite, toggleFavourite,
+    KINDS, emptyFavourites, normalizeFavourites, isFavourite, toggleFavourite, setFavourite,
     partitionFavourites, pinFavouritesFirst,
   };
 } else {
+  // KINDS is NOT published to the browser global scope: nothing in the
+  // renderer needs it (the two kind strings are literals at each call site
+  // already), and `KINDS` is generic enough that publishing it risks
+  // colliding with the next module that wants the same name. Only
+  // favourites-bridge.js (a `require()`r, via the branch above) needs it.
   root.emptyFavourites = emptyFavourites;
   root.normalizeFavourites = normalizeFavourites;
   root.isFavourite = isFavourite;
   root.toggleFavourite = toggleFavourite;
+  root.setFavourite = setFavourite;
   root.partitionFavourites = partitionFavourites;
   root.pinFavouritesFirst = pinFavouritesFirst;
 }

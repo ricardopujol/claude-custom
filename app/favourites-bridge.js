@@ -9,26 +9,34 @@
  * header carves out for `look-global`: a favourite is a personal UI
  * preference with no per-project meaning and no fact only the host knows, so
  * there is no reason to round-trip it through a host at all. Its own key,
- * regenerable, last-writer-wins by design -- two windows starring the same
- * model both land on whichever wrote last, same trade `look-global` makes.
+ * regenerable.
  *
  * Its own module, not inline in main.js, for the same reason
  * app/clipboard-bridge.js is: it can be tested without booting Electron, and
  * a probe can register the SHIPPED handlers rather than a copy.
  *
  * `add a bridge method, don't widen an existing one to arbitrary keys`
- * (BACKLOG E #5): this is why `favourites:get`/`favourites:toggle` are new
+ * (BACKLOG E #5): this is why `favourites:get`/`favourites:set` are new
  * channels rather than teaching `look:setDim` to accept any key -- a generic
  * "set arbitrary store key" handler reachable from the page would let a
  * compromised renderer overwrite `look-global` itself.
+ *
+ * `favourites:set`, NOT `favourites:toggle` (Dexter, PR #60 review, Finding
+ * 6). Two Electron main processes share this one store file, and a TOGGLE
+ * computed against the store's CURRENT value inverts the user's intent the
+ * moment a second window's view is even slightly stale: window B, still
+ * showing an empty star because it hasn't heard about window A's favourite
+ * yet, sends "toggle X" meaning "add it" and instead REMOVES the favourite A
+ * just added. Sending the desired end state (`on: true/false`) makes every
+ * click idempotent -- "make X starred" can never un-star it, whichever
+ * window's click the store sees last.
  */
 
-const { normalizeFavourites, toggleFavourite } = require('./models-favourites');
+const { normalizeFavourites, setFavourite, KINDS } = require('./models-favourites');
 
 const FAVOURITES_KEY = 'model-favourites-global';
 const GET_CHANNEL = 'favourites:get';
-const TOGGLE_CHANNEL = 'favourites:toggle';
-const KINDS = ['openrouter', 'claude'];
+const SET_CHANNEL = 'favourites:set';
 
 function emptyFavourites() {
   return { openrouter: [], claude: [] };
@@ -47,7 +55,7 @@ function readFavourites(store) {
 }
 
 /**
- * Registers `favourites:get` and `favourites:toggle` on `ipcMain`, gated to
+ * Registers `favourites:get` and `favourites:set` on `ipcMain`, gated to
  * `win`'s own webContents -- the same `fromWindow`-shaped boundary every
  * other main-process handler uses (secrets:*, clipboard:read, look:*): a
  * handler that answers anyone is not a boundary, even for state this
@@ -58,13 +66,13 @@ function registerFavouriteHandlers({ ipcMain, store, win }) {
 
   ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readFavourites(store) : emptyFavourites()));
 
-  ipcMain.handle(TOGGLE_CHANNEL, (e, kind, id) => {
+  ipcMain.handle(SET_CHANNEL, (e, kind, id, on) => {
     if (!fromWindow(e)) return null;
     if (KINDS.indexOf(kind) === -1 || typeof id !== 'string' || !id) return null;
     let next = null;
     try {
       store.update(FAVOURITES_KEY, {}, (prev) => {
-        next = toggleFavourite(prev, kind, id);
+        next = setFavourite(prev, kind, id, on);
         return next;
       });
     } catch (err) {
@@ -76,5 +84,5 @@ function registerFavouriteHandlers({ ipcMain, store, win }) {
 }
 
 module.exports = {
-  readFavourites, registerFavouriteHandlers, FAVOURITES_KEY, GET_CHANNEL, TOGGLE_CHANNEL,
+  readFavourites, registerFavouriteHandlers, FAVOURITES_KEY, GET_CHANNEL, SET_CHANNEL,
 };
