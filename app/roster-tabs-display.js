@@ -17,9 +17,17 @@
  * codebase (`Number(null)` is `0`), so `rosterTokenState`/`sortRosterRows`
  * both check with strict `typeof`/`Number.isFinite` rather than a coercing
  * comparison, and a never-used agent sorts LAST rather than tying with a
- * genuine zero (which cannot occur here in the first place: a resolved run
- * always has at least one token, so `tokens <= 0` and "never ran" are the same
- * fact, checked once, at the boundary between them).
+ * genuine zero.
+ *
+ * DELIBERATE, NOT A LAW OF NATURE (Dexter F9, PR #59 review): an earlier
+ * version of this comment claimed "a resolved run always has at least one
+ * token, so tokens <= 0 and 'never ran' are the same fact" -- false. A spawn
+ * aborted before its first API response, or a subagent transcript that
+ * vanished between listing and read, produces a genuine `total: 0` for a run
+ * that DID happen. This module still draws that the same as "never used"
+ * (rather than inventing a third visual state), a deliberate simplification
+ * pinned by its own test rather than justified by a premise that doesn't
+ * hold.
  *
  * REUSES app/career-display.js's LOWER-BOUND STATE, per the spec, rather than
  * inventing a new one: the same three-way idea (nothing to show / a real but

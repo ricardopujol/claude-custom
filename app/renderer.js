@@ -1109,9 +1109,18 @@ function inactiveRowHtml(row) {
   const tokenHtml = state.show
     ? `<div class="career" title="lifetime tokens across every project"><span class="career-tok">${state.prefix}${compactTokens(row.tokens)}</span></div>`
     : '';
+  // Dexter F3 / Miguel L1 (PR #59 review): an agent resolved only through an
+  // unresolved hook LABEL is still real history but is not a confirmed
+  // `subagent_type` -- the same "?" badge app/career-display.js already draws
+  // for the identical situation on the Active-tab career line, not a peer of
+  // a real type drawn identically.
+  const unresolvedHtml = entry && entry.resolved === false
+    ? '<span class="career-warn" title="identity unresolved, this is a label not an agent type">?</span>'
+    : '';
   return `<div class="agent" data-state="inactive">` +
       `<div class="face">${faceHtml(entry && entry.portrait)}</div>` +
-      `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}</div>` +
+      `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}` +
+        unresolvedHtml + `</div>` +
       `<div class="state">inactive</div>` +
       tokenHtml +
       `</div>` +

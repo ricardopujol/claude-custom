@@ -57,6 +57,15 @@ test('rosterTokenState: zero is absence too -- Number(null) is 0 and must not re
   assert.strictEqual(rosterTokenState(undefined, true).show, false);
 });
 
+test('rosterTokenState: a run that genuinely spent 0 tokens still draws as "never used" (Dexter F9, deliberate)', () => {
+  // Pinned rather than assumed: host/agent-stats-cache.js CAN produce a
+  // genuine `total: 0` for a run that really happened (an aborted spawn with
+  // no API response yet, or a transcript that vanished between listing and
+  // read). This module draws that identically to "never ran" -- a deliberate
+  // simplification, not because the two are the same fact.
+  assert.strictEqual(rosterTokenState(0, true).show, false);
+});
+
 test('rosterTokenState: a real total, scan complete, shows with no prefix', () => {
   const s = rosterTokenState(4200, true);
   assert.strictEqual(s.show, true);

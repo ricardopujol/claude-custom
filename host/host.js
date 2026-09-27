@@ -28,8 +28,8 @@ const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
-const { wholeRoster } = require('./roster-index');
-const { lifetimeAgentTokens } = require('./agent-stats-cache');
+const { wholeRoster, scanProjects } = require('./roster-index');
+const { lifetimeAgentTokens, readCacheSummary } = require('./agent-stats-cache');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
 const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
@@ -733,42 +733,91 @@ function refreshAgentStats() {
 // BACKGROUND, well after the pty and the ws server exist, and only ever
 // broadcast when it resolves -- never awaited by anything that could block
 // startup or the control channel.
+//
+// PR #59 review: `scanProjects` is computed ONCE per pass and handed to BOTH
+// `wholeRoster` and `lifetimeAgentTokens` (Dexter F5 perf half / Miguel M1) --
+// before this, each independently walked and identity-resolved every project,
+// reading every top-level session transcript on the machine TWICE per launch,
+// and the two walks could disagree if the tree changed between them (Dexter
+// F10). `wholeRoster` is the one that folds `scan.errors` into its own
+// `unreadable` (see its header); `lifetime.unreadable` never repeats them, so
+// the sum below double-counts nothing (Miguel L2).
 const ROSTER_LIFETIME_CACHE = path.join(HARNESS_DIR, 'state', 'roster-lifetime.json');
 let lastRosterIndex = { ok: false, agents: [], complete: false, unreadable: 0 };
 let rosterIndexPending = null;
 
+function rosterAgentRow(agent, lifetime, unresolvedNames) {
+  return {
+    agent,
+    // Never used shows NO count -- `null`, not a coerced zero (Number(null)
+    // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
+    // strict presence check that makes that hold.
+    tokens: lifetime.agents.has(agent) ? lifetime.agents.get(agent) : null,
+    portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+    // Dexter F3 / Miguel L1: an agent resolved only through an unresolved hook
+    // LABEL (in either the identity walk or the token sum -- a run can be
+    // orphaned in one project and confirmed in another) is flagged rather than
+    // drawn as an indistinguishable peer of a real `subagent_type`.
+    resolved: !unresolvedNames.has(agent) && !lifetime.unresolvedAgents.has(agent),
+  };
+}
+
 function refreshRosterIndex() {
   if (rosterIndexPending) return rosterIndexPending;
-  rosterIndexPending = Promise.all([
-    wholeRoster({ cwd: CWD }),
-    lifetimeAgentTokens({ cacheFile: ROSTER_LIFETIME_CACHE }),
-  ])
-    .then(([roster, lifetime]) => {
-      const agents = roster.names.map((agent) => ({
-        agent,
-        // Never used shows NO count -- `null`, not a coerced zero (Number(null)
-        // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
-        // strict presence check that makes that hold.
-        tokens: lifetime.agents.has(agent) ? lifetime.agents.get(agent) : null,
-        portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
-      }));
-      lastRosterIndex = {
-        ok: roster.unreadable === 0 && lifetime.unreadable === 0,
-        agents,
-        // TRUE the moment one full pass has resolved, however it went --
-        // `ok` (above) carries whether it was CLEAN, separately, the same
-        // split host/agent-stats.js and host/usage.js already make.
-        complete: true,
-        unreadable: roster.unreadable + lifetime.unreadable,
-      };
-      return lastRosterIndex;
-    })
+  rosterIndexPending = (async () => {
+    const scan = await scanProjects();
+    const [roster, lifetime] = await Promise.all([
+      wholeRoster({ cwd: CWD, scan }),
+      lifetimeAgentTokens({ cacheFile: ROSTER_LIFETIME_CACHE, scan }),
+    ]);
+    const agents = roster.names.map((agent) => rosterAgentRow(agent, lifetime, roster.unresolvedNames));
+    lastRosterIndex = {
+      ok: roster.unreadable === 0 && lifetime.unreadable === 0,
+      agents,
+      // TRUE the moment one full pass has resolved, however it went --
+      // `ok` (above) carries whether it was CLEAN, separately, the same
+      // split host/agent-stats.js and host/usage.js already make.
+      complete: true,
+      unreadable: roster.unreadable + lifetime.unreadable,
+    };
+    return lastRosterIndex;
+  })()
     .catch((err) => {
       console.error('[host] roster index failed:', err && err.message);
       return lastRosterIndex;
     })
     .finally(() => { rosterIndexPending = null; });
   return rosterIndexPending;
+}
+
+// Dexter F5 (lower-bound half, PR #59 review): before this, `lastRosterIndex`
+// stayed `{ agents: [] }` for the WHOLE ~14s first pass, so the "≥ until the
+// first full pass completes" state the spec calls for (item 4) was dead code
+// -- there was never a total on screen to prefix with "≥" until the pass had
+// already finished and stopped needing one. This reads the on-disk lifetime
+// SUMMARY left by the last successful scan (any previous host run) and
+// publishes it immediately, `complete: false`, so a client attaching during
+// this launch's own (still-running) scan sees last-known totals as a lower
+// bound rather than nothing at all. A cold install with no prior cache simply
+// has nothing to seed, which is the correct starting state, not a failure.
+async function seedRosterIndex() {
+  const summary = await readCacheSummary(ROSTER_LIFETIME_CACHE).catch(() => ({}));
+  const names = Object.keys(summary);
+  if (!names.length) return;
+  lastRosterIndex = {
+    ok: false, // a snapshot, not a verified-against-the-current-tree read
+    complete: false,
+    unreadable: 0,
+    agents: names.map((agent) => ({
+      agent,
+      tokens: Number.isFinite(summary[agent] && summary[agent].tokens) ? summary[agent].tokens : null,
+      portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+      // The seed doesn't carry identity provenance -- assume confirmed rather
+      // than flagging every row; `refreshRosterIndex`'s real pass corrects
+      // this within moments.
+      resolved: true,
+    })),
+  };
 }
 
 // The model each agent ACTUALLY used, read from its own transcript -- never
@@ -1212,7 +1261,16 @@ const broadcastControl = msg => { for (const ws of clients) sendControl(ws, msg)
 // no reason to delay it until a window happens to connect. Fire-and-forget --
 // the connection handler above already covers a client that attaches before
 // this lands, and a client already attached gets the broadcast when it does.
-refreshRosterIndex()
+//
+// `seedRosterIndex()` runs FIRST (Dexter F5, PR #59 review): it publishes
+// whatever the LAST successful scan knew, `complete: false`, so a client
+// attaching in the first seconds of this launch sees last-known totals as a
+// lower bound instead of nothing at all, while `refreshRosterIndex()`'s real
+// (still ~14s-cold) pass runs behind it and replaces the seed the moment it
+// resolves.
+seedRosterIndex()
+  .catch(() => { /* nothing cached yet, or unreadable: the real pass still lands */ })
+  .then(() => refreshRosterIndex())
   .then((rosterIndex) => broadcastControl({ type: 'rosterIndex', rosterIndex }))
   .catch(() => { /* lastRosterIndex already reflects the failure; the next attach retries */ });
 
