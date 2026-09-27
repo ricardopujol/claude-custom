@@ -224,6 +224,11 @@ function breakStale(lockPath, judged) {
  */
 function withFileLock(lockPath, fn, opts = {}) {
   const deadlineMs = Number.isFinite(opts.deadlineMs) ? opts.deadlineMs : DEADLINE_MS;
+  // `now` times THIS caller's deadline and nothing else. A lock's age -- the
+  // `at` we write and the one isStale judges -- is read by OTHER processes
+  // against their own clocks, so it is always wall clock (Dexter, PR #57 F2):
+  // an injected monotonic clock written into the file would make every
+  // competitor judge a live lock decades stale.
   const now = opts.now || Date.now;
   const giveUpAt = now() + deadlineMs;
 
@@ -244,7 +249,7 @@ function withFileLock(lockPath, fn, opts = {}) {
     let broke = false;
     if (seen.gone) {
       broke = true;                                // already free; retry at once
-    } else if (!seen.unreadable && (held === null || isStale(held, now()))) {
+    } else if (!seen.unreadable && (held === null || isStale(held, Date.now()))) {
       broke = breakStale(lockPath, seen.identity);
     }
 
@@ -279,7 +284,7 @@ function withFileLock(lockPath, fn, opts = {}) {
   }
 
   try {
-    fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: now() }));
+    fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
   } catch { /* the lock is held either way; its contents are only a hint */ }
   try { fs.closeSync(fd); } catch { /* already closed */ }
 

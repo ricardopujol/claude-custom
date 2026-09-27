@@ -617,6 +617,33 @@ test('without hard links, a wrongly taken live lock is still put back', () => {
   assert.deepStrictEqual(fs.readdirSync(dir), ['thing.json.lock'], 'no tombstone left behind');
 });
 
+// --- the injected clock times the DEADLINE, never the lock's age -------------
+//
+// Dexter, PR #57 review, F2. `opts.now` is a seam for how long THIS caller
+// waits. The lock's `at` is read by OTHER processes against their own
+// Date.now(), so it must always be wall clock. One clock for both meant an
+// injected monotonic clock (the standard fix for wall-clock jumps) would write
+// `at: ~12345`, and every competitor would judge a live lock 55 years stale.
+
+test('the lock we write carries WALL-CLOCK time, whatever clock the deadline uses', () => {
+  const lock = lockIn(tmpdir());
+  let seen = null;
+  withFileLock(lock, () => { seen = JSON.parse(fs.readFileSync(lock, 'utf8')); }, { now: () => 12345 });
+  assert.ok(Math.abs(seen.at - Date.now()) < 60000,
+    `the lock's age must be comparable across processes, got at=${seen.at}`);
+});
+
+test('a lock\'s age is judged on wall clock, not on the injected deadline clock', () => {
+  // An OLD lock with a live pid: only the age rule can break it. Judged on
+  // the injected clock (small numbers) its age comes out negative and it is
+  // never stale; judged on wall clock it is long past STALE_MS.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() - STALE_MS - 1000 }));
+  let calls = 0;
+  const now = () => (calls++ < 4 ? 1000 : 9999999);
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200, now }), 'took it');
+});
+
 test('breaking a stale lock leaves nothing behind in the directory', () => {
   // The break goes through a uniquely named tombstone; it must not litter.
   const dir = tmpdir();
