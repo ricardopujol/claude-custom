@@ -115,3 +115,21 @@ test('the @128 variant is not mistaken for a state', () => {
   fs.writeFileSync(path.join(dir, 'a', 'happy@128.png'), 'x');
   assert.strictEqual(portraitFor('a', 'happy', { portraitsDir: dir }).kind, 'placeholder');
 });
+
+test('an agent with no designed face gets the shared default portrait, not a coloured circle', () => {
+  // Covers both a roster agent whose portrait hasn't been generated yet AND a
+  // name Claude invents on the fly, which can never have one pre-generated.
+  const dir = portraits({ _default: ['working'] });
+  const p = portraitFor('some-invented-agent', 'working', { portraitsDir: dir });
+  assert.strictEqual(p.kind, 'file');
+  assert.ok(p.path.endsWith(path.join('_default', 'working.png')));
+  // The result still carries the REAL agent name, not "_default" -- callers
+  // key state and career tracking off this field.
+  assert.strictEqual(p.agent, 'some-invented-agent');
+});
+
+test('the coloured-circle placeholder is the last resort, only when even the shared default is missing', () => {
+  const dir = portraits({});
+  const p = portraitFor('some-invented-agent', 'working', { portraitsDir: dir });
+  assert.strictEqual(p.kind, 'placeholder');
+});

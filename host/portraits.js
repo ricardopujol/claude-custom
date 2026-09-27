@@ -59,6 +59,13 @@ function listStates({ portraitsDir } = {}) {
   return [...BUILTIN_STATES];
 }
 
+// Every agent without a designed face gets this instead of the coloured-
+// initials placeholder -- including any name Claude invents on the fly, which
+// can never have a pre-generated portrait because its name isn't known in
+// advance. Lives at <portraitsDir>/_default/<state>.png, same convention as
+// every other agent, so it needs no special-casing in the renderer.
+const DEFAULT_AGENT = '_default';
+
 function portraitFor(agent, state, { portraitsDir } = {}) {
   const safeAgent = safeSegment(agent);
   const safeState = safeSegment(state);
@@ -67,7 +74,12 @@ function portraitFor(agent, state, { portraitsDir } = {}) {
   const file = path.join(portraitsDir, safeAgent, safeState + '.png');
   try {
     if (fs.statSync(file).isFile()) return { kind: 'file', agent: safeAgent, state: safeState, path: file };
-  } catch { /* fall through to the placeholder */ }
+  } catch { /* fall through to the shared default, then the placeholder */ }
+
+  const defaultFile = path.join(portraitsDir, DEFAULT_AGENT, safeState + '.png');
+  try {
+    if (fs.statSync(defaultFile).isFile()) return { kind: 'file', agent: safeAgent, state: safeState, path: defaultFile };
+  } catch { /* the default itself hasn't been generated yet -- fall through */ }
 
   return placeholderFor(agent);
 }
