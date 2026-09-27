@@ -18,6 +18,15 @@
  * (NtSuspendProcess is probe-pause.js's own concern) -- a caller supplies
  * `resumeFn(pid)`; this module only tracks WHICH pids need it and WHEN to
  * call it.
+ *
+ * `resumeFn`'s CONTRACT (Dexter, PR #61 review round 2, finding 4): it must
+ * return a truthy value on a CONFIRMED successful resume, and a falsy value
+ * (not a throw) on failure. The first version of this module ignored the
+ * return value entirely -- probe-pause.js's real resumeFn wraps `ntAction`,
+ * which reports failure via `{code: 1, ...}` and never throws, so a failed
+ * emergency resume was silently reported as "resumed" and the pid was
+ * deleted from the registry regardless. A throw is still handled (treated as
+ * failure), for a resumeFn that does throw.
  */
 const { killPidTree } = require('../../host/kill-tree');
 
@@ -36,15 +45,33 @@ function createHygieneRegistry({ killFn = killPidTree } = {}) {
     const trees = [...spawnedTrees];
     console.error(`\n[cleanup:${reason}] resuming ${suspended.length} suspended pid(s), ` +
       `killing ${trees.length} spawned tree(s)`);
+    const resumed = [];
+    const failedToResume = [];
     for (const pid of suspended) {
-      try { if (resumeFn) resumeFn(pid); } catch (err) { console.error(`[cleanup:${reason}] resume ${pid} failed: ${err.message}`); }
-      suspendedPids.delete(pid);
+      let ok = false;
+      try { ok = !!(resumeFn && resumeFn(pid)); } catch (err) {
+        console.error(`[cleanup:${reason}] resume ${pid} THREW: ${err.message}`);
+      }
+      if (ok) {
+        resumed.push(pid);
+        // Only cleared on a CONFIRMED success -- this is finding 4's other
+        // half. Deleting unconditionally meant a resume that failed (or was
+        // itself interrupted mid-attempt by the very Ctrl+C that triggered
+        // this cleanup) still vanished from the registry, so nothing would
+        // retry it. Left registered, a second SIGINT (or the next uncaught
+        // exception) tries again.
+        suspendedPids.delete(pid);
+      } else {
+        failedToResume.push(pid);
+        console.error(`[cleanup:${reason}] resume ${pid} FAILED -- left registered as suspended, ` +
+          'process may remain frozen; will retry on the next cleanup');
+      }
     }
     for (const pid of trees) {
       try { killFn(pid); } catch (err) { console.error(`[cleanup:${reason}] kill ${pid} failed: ${err.message}`); }
       spawnedTrees.delete(pid);
     }
-    return { resumed: suspended, killed: trees };
+    return { resumed, failedToResume, killed: trees };
   }
 
   const registry = {

@@ -99,7 +99,14 @@
          Total across all real-session attempts while developing this
          probe (including two throwaway runs killed by since-fixed
          screen-scraping false positives, before any assistant reply
-         existed, hence $0 each): on the order of $0.10-$0.30.
+         existed, hence $0 each): on the order of $0.10-$0.30. CAVEAT (found
+         reviewing this PR): `cleanEnv()` did not strip `ANTHROPIC_API_KEY`
+         at the time these runs happened, and it was set globally in this
+         shell -- per documentation/CLAUDECUSTOM_BUILD_LOG.md's own Open
+         Problems, `claude` prefers an explicit API key over the Max login,
+         so this spend almost certainly landed on the API-key account, not
+         the Max subscription. `cleanEnv()` now strips it (and
+         ANTHROPIC_AUTH_TOKEN) for any future run.
      (b) inventory (all $0):
          `claude --help`: background session lifecycle is `--bg`/
          `--background` to start, `claude agents` (`--json` gives pid, cwd,
@@ -224,7 +231,23 @@ function ntAction(action, pid) {
 // guard at the bottom of this file -- NOT here at module load -- so a test
 // that requires this file to reuse its pure helpers does not silently hijack
 // its own process's SIGINT/uncaughtException handling as a side effect.
-hygiene.setResumeFn((pid) => ntAction('Resume', pid));
+//
+// Dexter, PR #61 review round 2, finding 4: `ntAction` NEVER throws -- a
+// failed OpenProcess/NtResumeProcess call comes back as `{code: 1, out:
+// 'OpenProcess FAILED, ...'}`, not an exception. The registry's contract
+// requires a truthy/falsy return to tell success from failure, so that
+// translation happens HERE, once, rather than pushing NtAction's specific
+// shape into the generic hygiene module. Logs loudly either way, so a
+// failed emergency resume is never silent.
+hygiene.setResumeFn((pid) => {
+  const r = ntAction('Resume', pid);
+  if (r.code === 0) {
+    console.error(`[hygiene] emergency resume OK for pid ${pid}: ${r.out}`);
+    return true;
+  }
+  console.error(`[hygiene] emergency resume FAILED for pid ${pid}: rc=${r.code} ${r.out || r.err}`);
+  return false;
+});
 
 async function detectSuspendPrimitive() {
   console.log('\n=== Part (a) step 1: suspend primitive ===');
@@ -273,7 +296,17 @@ async function detectSuspendPrimitive() {
     // leaning on the emergency path to notice.
     rRes = ntAction('Resume', child.pid);
     console.log(`NtResumeProcess: ${rRes.out || rRes.err}`);
-    hygiene.clearSuspended(child.pid);
+    // Dexter, PR #61 review round 2, finding 4: only clear on a CONFIRMED
+    // success (rc===0). Clearing unconditionally raced a Ctrl+C landing
+    // during this very resume attempt: the spawned powershell dies first
+    // (Ctrl+C is broadcast to the whole console process group), this
+    // `finally` still runs synchronously and would have cleared the pid
+    // BEFORE the SIGINT handler gets a turn on the event loop, so the
+    // handler would find nothing left to retry. Left registered on failure,
+    // the emergency handler's own resume attempt (a fresh spawnSync, outside
+    // the already-delivered signal's window) gets a real second try.
+    if (rRes.code === 0) hygiene.clearSuspended(child.pid);
+    else console.error(`[detectSuspendPrimitive] RESUME FAILED for pid ${child.pid} (rc=${rRes.code}) -- left registered as suspended`);
   }
   await sleep(1200);
   const after = lines();
@@ -313,6 +346,17 @@ const INHERITED_SESSION_VARS = ['CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSIO
 function cleanEnv() {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
+  // documentation/CLAUDECUSTOM_BUILD_LOG.md, Open Problems: "ANTHROPIC_API_KEY
+  // is set globally on this machine (both shells). `claude -p` prefers it over
+  // the Max login, so any probe ... bills the key unless it deletes the
+  // variable from the child env." Confirmed here the hard way (Paris,
+  // reviewing this PR): this probe's real `--model haiku` session inherited
+  // it unstripped, so it very likely billed whatever account that key
+  // belongs to, not the Max subscription. Deleted so a future run of this
+  // probe uses the Max login, like every other interactive `claude` session
+  // on this machine.
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
   for (const k of INHERITED_SESSION_VARS) delete env[k];
   return env;
 }
@@ -570,7 +614,11 @@ async function realSessionTest(suspendPrimitive) {
       rRes = ntAction('Resume', targetPid);
       console.log(`[${at()}] resume: ${rRes.out || rRes.err}`);
       record.resumeResult = rRes;
-      hygiene.clearSuspended(targetPid);
+      // Dexter, PR #61 review round 2, finding 4: only clear on a CONFIRMED
+      // success -- see the matching comment in detectSuspendPrimitive for the
+      // Ctrl+C-during-resume race this closes.
+      if (rRes.code === 0) hygiene.clearSuspended(targetPid);
+      else console.error(`[${at()}] RESUME FAILED for pid ${targetPid} (rc=${rRes.code}) -- left registered as suspended`);
     }
 
     await sleep(3000);
