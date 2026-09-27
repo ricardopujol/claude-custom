@@ -130,6 +130,11 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   const invs = [];
   const spawns = new Map();          // key -> invocation, including ended ones
   let serial = 0;
+  // Has this CLI ever said whose call is whose? The current CLI puts agent_id
+  // on every subagent call and on nothing of the main session's, so once one
+  // has arrived, a call WITHOUT one is the main session's own (Dexter, PR #56,
+  // #3). Before that, it may be an older CLI that labels nobody.
+  let saysWho = false;
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -256,7 +261,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       return;
     }
     const r = p.tool_response;
-    if (r && typeof r === 'object') adopt(inv, r.agentId);
+    if (r && typeof r === 'object' && r.agentId) { saysWho = true; adopt(inv, r.agentId); }
     if (isAsyncLaunch(r)) { inv.background = true; return; }
     if (isCompleted(r)) finish(inv);
   }
@@ -264,6 +269,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   function handle({ event, payload }) {
     const p = payload || {};
     const tool = p.tool_name;
+    if (p.agent_id) saysWho = true;
 
     if (event === 'PreToolUse' && AGENT_TOOLS.has(tool)) {
       const input = p.tool_input || {};
@@ -318,9 +324,15 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
         if (interrupted) cutOff(invs.filter(mainForeground));
         return;
       }
-      // PostToolUse with no agent_id keeps the current() fallback for older
-      // CLIs that send no agent_id at all.
-      const inv = p.agent_id ? bind(p.agent_id, p.agent_type) : current();
+      // A PostToolUse with no agent_id is the main session's own call on a CLI
+      // that labels subagent calls, and touches no subagent's state, errors
+      // or clocks (Dexter, PR #56, #3: every main-session call used to be
+      // pinned on the youngest open agent). Only a CLI that has never labelled
+      // anything keeps the old fallback, and then only onto the main
+      // session's own foreground work -- never a background run.
+      let inv;
+      if (p.agent_id) inv = bind(p.agent_id, p.agent_type);
+      else if (!saysWho) inv = [...invs].reverse().find(mainForeground);
       if (!inv) return;                       // no running agent to attribute to
       if (p.agent_id) refresh(inv); else refreshAll();
 

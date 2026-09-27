@@ -59,6 +59,14 @@ function harness(opts = {}) {
       m.handle({ event: 'SubagentStop', payload: { agent_id: agentId, agent_type: agentType } });
     },
     busy(name) { return h.m.stack().includes(name); },
+    // A MAIN-session call on the current CLI: no agent_id, no agent_type.
+    main(response = { exit_code: 0 }, input = { command: 'm' + Math.random() }) {
+      m.handle({ event: 'PostToolUse', payload: { tool_name: 'Bash', tool_input: input, tool_response: response } });
+    },
+    launchedAsync(key, agentId) {
+      m.handle({ event: 'PostToolUse', payload: { tool_name: 'Agent', tool_use_id: key,
+        tool_input: {}, tool_response: { isAsync: true, status: 'async_launched', agentId } } });
+    },
   };
   return h;
 }
@@ -314,4 +322,31 @@ test('replay: the real background agent survives the first Stop and ends with it
   assert.deepStrictEqual(seen, ['general-purpose:working', 'general-purpose:stressed',
     'general-purpose:working', 'general-purpose:stressed']);
   assert.deepStrictEqual(h.m.stack(), []);
+});
+
+// --- PR #56 review fixes (Dexter) --------------------------------------------
+
+test('Dexter #3: a main-session PostToolUse never touches a background agent', () => {
+  // The current CLI sends NO agent_id on every main-session call, so the old
+  // current() fallback pinned each one on the youngest open agent.
+  for (const [what, send] of [
+    ['interrupted', h => h.main({ interrupted: true })],
+    ['three identical calls', h => { for (let i = 0; i < 3; i++) h.main({ exit_code: 0 }, { file_path: 'x' }); }],
+    ['success:false', h => h.main({ success: false })],
+  ]) {
+    const h = harness();
+    h.spawn('bg', 't1');
+    h.launchedAsync('t1', 'b1');
+    send(h);
+    assert.strictEqual(h.m.stateOf('bg'), 'working', what);
+    assert.ok(h.busy('bg'), what);
+  }
+});
+
+test('Dexter #3: a main-session failure does not stress a foreground subagent on the current CLI', () => {
+  const h = harness();
+  h.spawn('paris', 't1');
+  h.call('p1', 'paris');               // this CLI says whose calls are whose
+  h.main({ exit_code: 1 });
+  assert.strictEqual(h.m.stateOf('paris'), 'working');
 });
