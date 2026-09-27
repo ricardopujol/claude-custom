@@ -15,9 +15,24 @@
  *     agents still running (measured: test/hooks-real-subagent-failure);
  *   - a background launch's own result arrives at once, naming its agentId
  *     (measured: `status: "async_launched"`);
- *   - each subagent speaks (a Bash call carrying its agent_id) before a
- *     same-type agent spawned after it does. That is the one assumption the
- *     machine's id binding rests on, so it is stated here rather than hidden.
+ *   - the main session makes its own calls, with no agent_id (Dexter, PR #56,
+ *     #3: the machine used to pin them on the youngest agent);
+ *   - a finished run's SubagentStop and its spawn's completed result arrive
+ *     in EITHER order, and SubagentStop may arrive twice (Dexter #4, #6);
+ *   - a subagent's PostToolUse may carry interrupted:true, and the run goes
+ *     on (Dexter #2).
+ *
+ * LATE FIRST SPEECH, and where it is allowed (Dexter #6). The machine binds
+ * an agent_id to the oldest unbound run of its type, so a run that speaks
+ * late can be bound CROSSWISE with a same-type sibling. Between SIBLINGS
+ * UNDER ONE PARENT that's harmless -- which one is which doesn't change the
+ * card -- and it's the shape of Dexter #1, so it's generated: runs of
+ * LATE_TYPE may speak late (or never), are always spawned by the main
+ * session, and never spawn anything themselves. Across DIFFERENT parents, or
+ * under a key-addressed Esc, a crosswise binding is the PR's documented
+ * known limitation (nothing in the payloads can tell the runs apart until
+ * the spawn's result arrives), so the generator doesn't ask for it: every
+ * other type speaks at once, and escSpawn never targets LATE_TYPE.
  *
  * Time only moves in small steps under the shipped defaults, so no backstop
  * fires and the simulation's notion of "alive" is exact. The backstops have
@@ -29,14 +44,21 @@ const fc = require('fast-check');
 const { createMoodMachine } = require('../host/mood-machine');
 
 const TYPES = ['paris', 'miguel', 'dexter'];
+const LATE_TYPE = 'dexter';
 const CALL_KINDS = ['ok', 'err', 'errFail', 'interruptFail', 'interruptPost'];
 const QUIET_KINDS = ['ok', 'interruptFail', 'interruptPost'];
+const MAIN_KINDS = ['ok', 'err', 'interruptPost', 'repeat'];
+const QUIET_MAIN_KINDS = ['ok', 'interruptPost'];
 
-function opArb(callKinds) {
+function opArb(callKinds, mainKinds = MAIN_KINDS) {
   return fc.oneof(
-    { weight: 4, arbitrary: fc.record({ op: fc.constant('spawn'), from: fc.nat(), type: fc.nat(), bg: fc.boolean(), flag: fc.boolean() }) },
+    { weight: 4, arbitrary: fc.record({ op: fc.constant('spawn'), from: fc.nat(), type: fc.nat(), bg: fc.boolean(),
+      flag: fc.boolean(), late: fc.boolean() }) },
     { weight: 5, arbitrary: fc.record({ op: fc.constant('call'), who: fc.nat(), kind: fc.constantFrom(...callKinds) }) },
-    { weight: 3, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat(), result: fc.boolean() }) },
+    { weight: 2, arbitrary: fc.record({ op: fc.constant('mainCall'), kind: fc.constantFrom(...mainKinds) }) },
+    { weight: 3, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat(), result: fc.boolean(),
+      resultFirst: fc.boolean(), dup: fc.boolean() }) },
+    { weight: 1, arbitrary: fc.record({ op: fc.constant('lateEcho'), who: fc.nat(), stop: fc.boolean() }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('escSpawn'), who: fc.nat() }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('escMain') }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('stop') }) },
@@ -57,24 +79,49 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
   const fgKids = a => agents.filter(c => c.alive && c.parent === a && !c.bg);
   const subtree = a => { const out = [a]; for (let k = 0; k < out.length; k++) out.push(...fgKids(out[k])); return out; };
   const mainFg = a => { for (let i = a; i; i = i.parent) if (i.bg) return false; return true; };
-  const by = a => (a ? { agent_id: a.id, agent_type: a.type } : {});
-  const send = (event, payload) => m.handle({ event, payload });
+  // Sending an agent's id is what lets the machine know it; `told` records it.
+  const by = a => { if (!a) return {}; a.told = true; return { agent_id: a.id, agent_type: a.type }; };
+  // Has any payload yet said whose call is whose? (see property 6)
+  let labelled = false;
+  const send = (event, payload) => {
+    if (payload.agent_id || (payload.tool_response && payload.tool_response.agentId)) labelled = true;
+    m.handle({ event, payload });
+  };
   const bash = (a, response) => send('PostToolUse', {
     tool_name: 'Bash', tool_input: { command: 'c' + (++n) }, tool_response: response, ...by(a) });
 
   for (const o of ops) {
+    const wasLabelled = labelled;
     const live = alive();
     const pick = i => (live.length ? live[i % live.length] : null);
     switch (o.op) {
       case 'spawn': {
-        const from = o.from % (live.length + 1) === 0 ? null : live[(o.from % (live.length + 1)) - 1];
-        const a = { id: 'ag' + (++n), key: 'tu' + n, type: TYPES[o.type % TYPES.length], parent: from, bg: o.bg, alive: true };
+        // Weighted toward LATE_TYPE, so silent same-type siblings -- the
+        // shape a crosswise or stolen binding needs -- are common.
+        const type = TYPES[Math.min(o.type % 6, TYPES.length - 1)];
+        const spawners = live.filter(x => x.type !== LATE_TYPE);    // LATE_TYPE never spawns
+        const at = o.from % (spawners.length + 1);
+        const from = type === LATE_TYPE || at === 0 ? null : spawners[at - 1];
+        const a = { id: 'ag' + (++n), key: 'tu' + n, type, parent: from, bg: o.bg, alive: true };
         agents.push(a);
         send('PreToolUse', { tool_name: 'Agent', tool_use_id: a.key,
           tool_input: { subagent_type: a.type, description: 'd' + a.key, ...(a.bg && o.flag ? { run_in_background: true } : {}) }, ...by(from) });
-        if (a.bg) send('PostToolUse', { tool_name: 'Agent', tool_use_id: a.key, tool_input: { subagent_type: a.type },
-          tool_response: { isAsync: true, status: 'async_launched', agentId: a.id }, ...by(from) });
-        bash(a, { exit_code: 0 });                                  // it speaks first
+        if (a.bg) {
+          a.told = true;
+          send('PostToolUse', { tool_name: 'Agent', tool_use_id: a.key, tool_input: { subagent_type: a.type },
+            tool_response: { isAsync: true, status: 'async_launched', agentId: a.id }, ...by(from) });
+        }
+        if (!(type === LATE_TYPE && o.late)) bash(a, { exit_code: 0 });   // speaks at once, or later
+        break;
+      }
+      case 'mainCall': {
+        // The main session's own call: no agent_id. Nothing alive changes.
+        const main = (response, input = { command: 'main' + (++n) }) =>
+          send('PostToolUse', { tool_name: 'Bash', tool_input: input, tool_response: response });
+        if (o.kind === 'ok') main({ exit_code: 0 });
+        else if (o.kind === 'err') main({ exit_code: 1 });
+        else if (o.kind === 'interruptPost') main({ interrupted: true });
+        else for (let i = 0; i < 3; i++) main({ exit_code: 0 }, { file_path: 'same' });
         break;
       }
       case 'call': {
@@ -97,13 +144,33 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         if (!a) break;
         while (fgKids(a).length) a = fgKids(a)[0];                  // blocked on its children
         a.alive = false;
-        send('SubagentStop', by(a));
-        if (!a.bg && o.result) send('PostToolUse', { tool_name: 'Agent', tool_use_id: a.key,
-          tool_input: { subagent_type: a.type }, tool_response: { status: 'completed', agentId: a.id }, ...by(a.parent) });
+        const stop = () => send('SubagentStop', by(a));
+        const result = () => {
+          if (!a.bg && o.result) send('PostToolUse', { tool_name: 'Agent', tool_use_id: a.key,
+            tool_input: { subagent_type: a.type }, tool_response: { status: 'completed', agentId: a.id }, ...by(a.parent) });
+        };
+        if (o.resultFirst) { result(); stop(); } else { stop(); result(); }
+        if (o.dup) stop();                                          // delivered twice
+        break;
+      }
+      case 'lateEcho': {
+        // A delayed or duplicated event from a run that has already ended.
+        // Nothing alive changes (Dexter, PR #56, #4).
+        //
+        // Only from a run whose id the machine was TOLD before it ended. A run
+        // that ended without ever sending its id (silent, then closed by Stop)
+        // can't be recognised later: its first event looks exactly like a
+        // silent same-type sibling speaking for the first time. That's the
+        // first-come binding limitation, not something #4 can fix.
+        const dead = agents.filter(x => !x.alive && x.told);
+        if (!dead.length) break;
+        const a = dead[o.who % dead.length];
+        if (o.stop) send('SubagentStop', by(a)); else bash(a, { exit_code: 1 });
         break;
       }
       case 'escSpawn': {
-        const a = live.filter(x => !x.bg)[o.who % Math.max(1, live.filter(x => !x.bg).length)];
+        const targets = live.filter(x => !x.bg && x.type !== LATE_TYPE);
+        const a = targets[o.who % Math.max(1, targets.length)];
         if (!a) break;
         send('PostToolUseFailure', { tool_name: 'Agent', tool_use_id: a.key, tool_input: { subagent_type: a.type },
           error: 'interrupted', is_interrupt: true, ...by(a.parent) });
@@ -128,13 +195,17 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         m.tick();
         break;
     }
-    if (onStep) onStep({ o, m, alive: alive(), agents, changes, mainFg });
+    if (onStep) onStep({ o, m, alive: alive(), agents, changes, mainFg, wasLabelled });
   }
   return { m, changes };
 }
 
 const RUNS = { numRuns: 300 };
-const opsArb = fc.array(opArb(CALL_KINDS), { maxLength: 80 });
+// fast-check's default `size: 'small'` keeps an array near ten ops however
+// high maxLength is, which is too short for a crosswise binding to form and
+// then bite. 'max' lets streams run to the full length.
+const LONG = { maxLength: 80, size: 'max' };
+const opsArb = fc.array(opArb(CALL_KINDS), LONG);
 const busyStates = new Set(['working', 'stressed']);
 
 test('property 1: after Stop only background work is working; after SessionEnd nothing is', () => {
@@ -185,9 +256,25 @@ test('property 3: a parent is never non-working while a live descendant runs', (
 test('property 4: interrupts never count as errors', () => {
   // With only clean calls and interrupts (every input unique, so no retry
   // loop), no card may ever be stressed.
-  fc.assert(fc.property(fc.array(opArb(QUIET_KINDS), { maxLength: 80 }), ops => {
+  fc.assert(fc.property(fc.array(opArb(QUIET_KINDS, QUIET_MAIN_KINDS), LONG), ops => {
     const { changes } = simulate(ops);
     assert.ok(!changes.some(c => c.state === 'stressed'), JSON.stringify(changes.filter(c => c.state === 'stressed')));
+  }), RUNS);
+});
+
+test('property 6: a main-session call never touches a subagent (Dexter, PR #56, #3)', () => {
+  // Once this CLI has labelled any call with an agent_id, a call WITHOUT one
+  // is the main session's own, so it changes no card and no run. Before the
+  // first label the machine can't tell a current CLI from an older one that
+  // labels nobody, and keeps that CLI's fallback onto main-session
+  // foreground work -- the one residual, stated here rather than hidden.
+  fc.assert(fc.property(opsArb, ops => {
+    let before = null;
+    simulate(ops, { onStep: ({ o, m, wasLabelled }) => {
+      const now = { roster: JSON.stringify(m.roster()), stack: JSON.stringify(m.stack()) };
+      if (o.op === 'mainCall' && wasLabelled && before) assert.deepStrictEqual(now, before, o.kind);
+      before = now;
+    } });
   }), RUNS);
 });
 
@@ -209,7 +296,7 @@ test('property 3, under the backstops: a reap never leaves a child open under an
     { weight: 4, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 250_000 }) }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 250_000, max: 400_000 }) }) },
     { weight: 1, arbitrary: opArb(CALL_KINDS) },
-  ), { maxLength: 80 });
+  ), LONG);
   fc.assert(fc.property(bigOps, ops => {
     simulate(ops, { machineOpts: { stallMs: 300_000, maxInvocationMs: 700_000, idleMs: 90_000 },
       onStep: ({ m }) => {
