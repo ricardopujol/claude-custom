@@ -233,7 +233,7 @@ function withFileLock(lockPath, fn, opts = {}) {
   const giveUpAt = now() + deadlineMs;
 
   let fd = null;
-  let lastTry = false;
+  let extraTryAfterBreak = false;
   for (;;) {
     try {
       fd = fs.openSync(lockPath, 'wx');
@@ -268,12 +268,13 @@ function withFileLock(lockPath, fn, opts = {}) {
     // just recovered whenever one slow pass (read, stat, pid probe, unlink)
     // outlasted the deadline -- the full-suite flake of 2026-09-26/27, and a
     // refused record in production on any host slow enough. Exactly one:
-    // `lastTry` keeps a path that is re-staled as fast as we clear it from
-    // looping past the deadline.
+    // `extraTryAfterBreak` keeps a path that is re-staled as fast as we clear
+    // it from looping past the deadline.
     if (now() >= giveUpAt) {
-      if (broke && !lastTry) { lastTry = true; continue; }
+      if (broke && !extraTryAfterBreak) { extraTryAfterBreak = true; continue; }
       throw new Error(
         `could not take the lock on ${lockPath} within ${deadlineMs}ms` +
+        `${extraTryAfterBreak ? ' and one more attempt after breaking a stale lock' : ''}` +
         `${held && held.pid ? ` (held by pid ${held.pid})` : ''}; nothing was written`);
     }
 

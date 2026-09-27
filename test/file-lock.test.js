@@ -532,6 +532,38 @@ test('past the deadline a break earns exactly ONE more attempt, not a loop', () 
   assert.strictEqual(opens, 2, `the first try plus one after the break, got ${opens}`);
 });
 
+test('a refusal after the extra try says so, rather than claiming the deadline alone', () => {
+  // Miguel, PR #57 review. "within 200ms" is not the whole truth when one more
+  // attempt was granted past the deadline; somebody diagnosing timing from
+  // the message deserves to know. Same competitor as the test above.
+  const lock = lockIn(tmpdir());
+  const stale = () => fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  stale();
+  const realOpen = fs.openSync;
+  let opens = 0;
+  fs.openSync = (...a) => {
+    if (String(a[0]) !== lock) return realOpen.apply(fs, a);
+    if (++opens > 20) throw new Error('looped past the deadline');
+    if (!fs.existsSync(lock)) stale();
+    const e = new Error('EEXIST'); e.code = 'EEXIST'; throw e;
+  };
+  let calls = 0;
+  const now = () => (calls++ === 0 ? 1000 : 9999999);
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 200, now }),
+      /within 200ms and one more attempt after breaking a stale lock/);
+  } finally {
+    fs.openSync = realOpen;
+  }
+});
+
+test('a plain refusal does not claim an extra attempt it never made', () => {
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0 }),
+    (err) => /within 0ms/.test(err.message) && !/one more attempt/.test(err.message));
+});
+
 test('a deadline of 0 still takes a STALE lock -- in exactly two opens, without waiting', () => {
   // Dexter, PR #57 F3. Before the extra try, a zero deadline refused a lock it
   // had just recovered. It no longer does, and that is the better contract: a
