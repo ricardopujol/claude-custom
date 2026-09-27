@@ -64,13 +64,26 @@ test('rosterIndex.ok and .unreadable fold both halves without double-owning the 
   assert.match(body, /complete:\s*true/);
 });
 
-test('seedRosterIndex reads the on-disk lifetime summary before the real scan runs', () => {
-  // Dexter F5, lower-bound half: the "≥ until the first full pass completes"
-  // state must be reachable BEFORE the (still ~14s-cold) real pass resolves.
+test('seedRosterIndex reads a stat-checked lower bound, not the raw summary (Dexter N1)', () => {
+  // Dexter N1, PR #59 R2: the raw per-agent summary alone is not a lower
+  // bound once a transcript can be deleted between host launches --
+  // `readCacheSeed` stat-checks the files behind each total.
   const body = slice('async function seedRosterIndex()', 'refreshAgentStats');
-  assert.match(body, /readCacheSummary\(ROSTER_LIFETIME_CACHE\)/);
+  assert.match(body, /readCacheSeed\(ROSTER_LIFETIME_CACHE\)/);
+  assert.doesNotMatch(body, /readCacheSummary\(/,
+    'seedRosterIndex must not seed from the un-stat-checked raw summary');
   assert.match(body, /complete:\s*false/);
   assert.match(body, /ok:\s*false/);
+});
+
+test('seedRosterIndex never overwrites an already-completed pass (Dexter N3)', () => {
+  const body = slice('async function seedRosterIndex()', 'refreshAgentStats');
+  assert.match(body, /if \(lastRosterIndex\.complete\) return;/,
+    'a finished pass must never be regressed by a slower-to-resolve seed read');
+});
+
+test('a roster row carries whether it ran but could not be read this pass (Dexter N2)', () => {
+  assert.match(HOST, /unreadable:\s*lifetime\.unreadableAgents\.has\(agent\)/);
 });
 
 test('the boot sequence seeds BEFORE firing the real background scan, exactly once', () => {

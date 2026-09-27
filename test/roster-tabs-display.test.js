@@ -130,3 +130,29 @@ test('sortRosterRows does not mutate its input', () => {
   sortRosterRows(rows);
   assert.deepStrictEqual(rows, copy);
 });
+
+// --- Dexter N2 (Medium), PR #59 R2: "ran, unreadable" is a THIRD tier ---------
+
+test('sortRosterRows puts a "ran but unreadable" row ABOVE a genuinely never-used one', () => {
+  const rows = [
+    { agent: 'never', tokens: null },
+    { agent: 'bar', tokens: null, unreadable: true },
+  ];
+  assert.deepStrictEqual(sortRosterRows(rows).map(r => r.agent), ['bar', 'never']);
+});
+
+test('sortRosterRows still puts any counted total above an unreadable row', () => {
+  const rows = [
+    { agent: 'bar', tokens: null, unreadable: true },
+    { agent: 'counted', tokens: 5 },
+  ];
+  assert.deepStrictEqual(sortRosterRows(rows).map(r => r.agent), ['counted', 'bar']);
+});
+
+test('sortRosterRows breaks a tie among unreadable rows alphabetically', () => {
+  const rows = [
+    { agent: 'zeta', tokens: null, unreadable: true },
+    { agent: 'alpha', tokens: null, unreadable: true },
+  ];
+  assert.deepStrictEqual(sortRosterRows(rows).map(r => r.agent), ['alpha', 'zeta']);
+});

@@ -78,20 +78,29 @@ function rosterTokenState(tokens, complete) {
 }
 
 /**
- * `rows`: `[{ agent, tokens }]`, `tokens` a positive finite number or
- * anything else (absence). Returns a NEW array, most tokens first; rows with
- * no usable tokens sort last, among themselves alphabetically, same as a tie
- * among counted rows -- so the order is always fully determined, never an
- * accident of whatever order the caller built the array in.
+ * `rows`: `[{ agent, tokens, unreadable }]`, `tokens` a positive finite number
+ * or anything else (absence); `unreadable` (Dexter N2, PR #59 R2) marks an
+ * agent that DID run but whose only transcript(s) this pass could not read --
+ * a third state between "counted" and "never used" that must not sort as if
+ * it were the latter. Returns a NEW array, in three tiers:
+ *
+ *   1. a genuine countable total, most tokens first
+ *   2. ran, but unreadable this pass (no total to sort by -- alphabetical)
+ *   3. never used at all (alphabetical)
+ *
+ * so the order is always fully determined, never an accident of whatever
+ * order the caller built the array in, and a "we don't know yet" row never
+ * reads identically to "this has never happened".
  */
 function sortRosterRows(rows) {
   const list = Array.isArray(rows) ? rows.slice() : [];
   const has = (r) => typeof r.tokens === 'number' && Number.isFinite(r.tokens) && r.tokens > 0;
+  const tier = (r) => (has(r) ? 0 : (r && r.unreadable ? 1 : 2));
   return list.sort((a, b) => {
-    const ah = has(a);
-    const bh = has(b);
-    if (ah !== bh) return ah ? -1 : 1; // a countable total always beats "never used"
-    if (ah) return b.tokens - a.tokens || a.agent.localeCompare(b.agent);
+    const ta = tier(a);
+    const tb = tier(b);
+    if (ta !== tb) return ta - tb;
+    if (ta === 0) return b.tokens - a.tokens || a.agent.localeCompare(b.agent);
     return a.agent.localeCompare(b.agent);
   });
 }

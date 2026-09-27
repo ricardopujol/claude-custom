@@ -29,7 +29,7 @@ const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { wholeRoster, scanProjects } = require('./roster-index');
-const { lifetimeAgentTokens, readCacheSummary } = require('./agent-stats-cache');
+const { lifetimeAgentTokens, readCacheSeed } = require('./agent-stats-cache');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
 const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
@@ -759,6 +759,11 @@ function rosterAgentRow(agent, lifetime, unresolvedNames) {
     // orphaned in one project and confirmed in another) is flagged rather than
     // drawn as an indistinguishable peer of a real `subagent_type`.
     resolved: !unresolvedNames.has(agent) && !lifetime.unresolvedAgents.has(agent),
+    // Dexter N2, PR #59 R2: an agent that DID run but whose only transcript(s)
+    // this pass could not read must not be pixel-identical to a definition
+    // that has never run at all -- `tokens` is `null` either way, so this is
+    // the ONLY signal that tells the two apart.
+    unreadable: lifetime.unreadableAgents.has(agent),
   };
 }
 
@@ -790,32 +795,48 @@ function refreshRosterIndex() {
   return rosterIndexPending;
 }
 
-// Dexter F5 (lower-bound half, PR #59 review): before this, `lastRosterIndex`
+// Dexter F5 (lower-bound half, PR #59 R1): before this, `lastRosterIndex`
 // stayed `{ agents: [] }` for the WHOLE ~14s first pass, so the "≥ until the
 // first full pass completes" state the spec calls for (item 4) was dead code
 // -- there was never a total on screen to prefix with "≥" until the pass had
-// already finished and stopped needing one. This reads the on-disk lifetime
-// SUMMARY left by the last successful scan (any previous host run) and
-// publishes it immediately, `complete: false`, so a client attaching during
-// this launch's own (still-running) scan sees last-known totals as a lower
-// bound rather than nothing at all. A cold install with no prior cache simply
-// has nothing to seed, which is the correct starting state, not a failure.
+// already finished and stopped needing one. This reads a LOWER-BOUND snapshot
+// left by the last successful scan (any previous host run) and publishes it
+// immediately, `complete: false`, so a client attaching during this launch's
+// own (still-running) scan sees last-known totals rather than nothing at all.
+// A cold install with no prior cache simply has nothing to seed, which is the
+// correct starting state, not a failure.
+//
+// USES `readCacheSeed`, NOT `readCacheSummary` (Dexter N1, PR #59 R2): the raw
+// summary alone is not a lower bound once a transcript can be DELETED between
+// host launches (Claude Code's own retention cleanup, for instance) --
+// `readCacheSeed` stat-checks the files behind each total and drops any that
+// vanished, so what this publishes can never be larger than the truth.
+//
+// NEVER OVERWRITES A COMPLETED PASS (Dexter N3, PR #59 R2): `seedRosterIndex`
+// and `refreshRosterIndex` both run at boot, and on a small install the real
+// pass can resolve BEFORE this cheap disk read does. Without the guard below,
+// this function would then unconditionally replace a `complete:true` result
+// with a stale `complete:false` snapshot, and a client attaching in that
+// window would see totals regress until the boot chain's second
+// `refreshRosterIndex()` call (test/host-roster-index.test.js) finishes.
 async function seedRosterIndex() {
-  const summary = await readCacheSummary(ROSTER_LIFETIME_CACHE).catch(() => ({}));
-  const names = Object.keys(summary);
+  const seed = await readCacheSeed(ROSTER_LIFETIME_CACHE).catch(() => ({}));
+  const names = Object.keys(seed);
   if (!names.length) return;
+  if (lastRosterIndex.complete) return; // Dexter N3: a finished pass is never regressed
   lastRosterIndex = {
     ok: false, // a snapshot, not a verified-against-the-current-tree read
     complete: false,
     unreadable: 0,
     agents: names.map((agent) => ({
       agent,
-      tokens: Number.isFinite(summary[agent] && summary[agent].tokens) ? summary[agent].tokens : null,
+      tokens: Number.isFinite(seed[agent] && seed[agent].tokens) ? seed[agent].tokens : null,
       portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
       // The seed doesn't carry identity provenance -- assume confirmed rather
       // than flagging every row; `refreshRosterIndex`'s real pass corrects
       // this within moments.
       resolved: true,
+      unreadable: false, // likewise unknown at seed time; not claimed either way
     })),
   };
 }

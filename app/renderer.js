@@ -1117,10 +1117,17 @@ function inactiveRowHtml(row) {
   const unresolvedHtml = entry && entry.resolved === false
     ? '<span class="career-warn" title="identity unresolved, this is a label not an agent type">?</span>'
     : '';
+  // Dexter N2 (PR #59 R2): "ran, but this pass could not read its transcript"
+  // must be VISIBLE, not pixel-identical to a definition that has never run
+  // at all -- same hedge-badge language as `unresolvedHtml` above, distinct
+  // title so hovering says which uncertainty this is.
+  const unreadableHtml = row.unreadable
+    ? '<span class="career-warn" title="ran, but a transcript could not be read this pass -- the total is unknown, not zero">?</span>'
+    : '';
   return `<div class="agent" data-state="inactive">` +
       `<div class="face">${faceHtml(entry && entry.portrait)}</div>` +
       `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}` +
-        unresolvedHtml + `</div>` +
+        unresolvedHtml + unreadableHtml + `</div>` +
       `<div class="state">inactive</div>` +
       tokenHtml +
       `</div>` +
@@ -1137,7 +1144,13 @@ function renderRoster() {
     }
     const rows = sortRosterRows(inactive.map((agent) => {
       const entry = rosterIndexEntry(agent);
-      return { agent, tokens: entry && typeof entry.tokens === 'number' ? entry.tokens : null };
+      return {
+        agent,
+        tokens: entry && typeof entry.tokens === 'number' ? entry.tokens : null,
+        // Dexter N2 (PR #59 R2): "ran, but unreadable this pass" must sort
+        // above a genuine never-used row, not tie with it.
+        unreadable: !!(entry && entry.unreadable),
+      };
     }));
     agentsEl.innerHTML = rows.map(inactiveRowHtml).join('');
     return;
