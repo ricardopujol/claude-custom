@@ -137,7 +137,12 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   //          turn (Stop fires while it runs -- measured), does not keep its
   //          spawner's card working, and is not ended with its spawner.
   const invs = [];
-  const spawns = new Map();          // key -> invocation, including ended ones
+  // key -> OPEN invocation. An entry leaves when its run ends and a bounded
+  // tombstone stays in `endedKeys`, so a repeated or late event for that
+  // tool_use_id is recognised without keeping every run the host has ever
+  // seen (Dexter #8 / Miguel M1, PR #56: it used to grow forever).
+  const spawns = new Map();
+  const endedKeys = new Set();
   let serial = 0;
   // Has this CLI ever said whose call is whose? The current CLI puts agent_id
   // on every subagent call and on nothing of the main session's, so once one
@@ -257,6 +262,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       if (at === -1) continue;
       invs.splice(at, 1);
       if (inv.agentId) remember(endedIds, inv.agentId);
+      if (inv.key !== null) { spawns.delete(inv.key); remember(endedKeys, inv.key); }
       names.set(inv.name, names.get(inv.name) || completed(inv));
     }
     for (const [name, finished] of names) {
@@ -282,7 +288,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // The spawn's own result: PostToolUse / PostToolUseFailure of the Agent
   // tool, matched by tool_use_id. It is the SPAWNER's call, never the child's.
   function spawnResult(inv, event, p, interrupted) {
-    if (!isOpen(inv)) return;
+    if (!inv || !isOpen(inv)) return;       // a tombstoned spawn: its run is over
     if (interrupted) { cutOff(subtree(inv)); return; }
     if (event === 'PostToolUseFailure') {
       ensure(inv.name).errors++;
@@ -307,6 +313,10 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const input = p.tool_input || {};
       const agent = input.subagent_type;
       if (!agent) return;                     // nothing identifiable to light up
+      // The same spawn delivered twice, or echoed after it ended, is not a
+      // second run.
+      const key = p.tool_use_id ?? null;
+      if (key !== null && (spawns.has(key) || endedKeys.has(key))) return;
       const a = ensure(agent);
       // "A fresh run starts clean" -- but only if it IS a fresh run (Dexter
       // F4): a parallel second instance must not wipe the first's errors.
@@ -319,7 +329,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       a.lastActivity = now();
       const parent = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
       const inv = {
-        id: ++serial, key: p.tool_use_id ?? null, name: agent, agentId: null, parent,
+        id: ++serial, key, name: agent, agentId: null, parent,
         // A spawner that names itself but can't be found (reaped, ended,
         // never seen -- or the host restarted) is some AGENT, not the main
         // session. "Unknown" used to be merged into "main session", so Stop
@@ -352,8 +362,9 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const callInterrupted = !failureEvent && !!p.tool_response
         && typeof p.tool_response === 'object' && p.tool_response.interrupted === true;
 
-      const spawned = AGENT_TOOLS.has(tool) && p.tool_use_id != null ? spawns.get(p.tool_use_id) : undefined;
-      if (spawned) {
+      const spawnKey = AGENT_TOOLS.has(tool) && p.tool_use_id != null ? p.tool_use_id : null;
+      const spawned = spawnKey !== null ? spawns.get(spawnKey) : undefined;
+      if (spawned || (spawnKey !== null && endedKeys.has(spawnKey))) {
         const spawner = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
         if (spawner) refresh(spawner);
         spawnResult(spawned, event, p, interrupted);
@@ -508,6 +519,8 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // app/agent-card-display.js counts it for the ×N badge).
   machine.stack = () => invs.map(i => i.name);
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state }));
+  // Sizes of the per-host bookkeeping, for the test that it stays bounded.
+  machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size });
   // The live invocation tree, read-only, for tests and diagnostics.
   machine.invocations = () => invs.map(i => ({
     id: i.id, name: i.name, key: i.key, agentId: i.agentId,

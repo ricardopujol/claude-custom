@@ -451,6 +451,33 @@ test('Dexter #7: an ambiguous name-only match binds nobody', () => {
   assert.notStrictEqual(h.m.stateOf('miguel'), 'stressed');
 });
 
+test('Dexter #8 / Miguel M1: bookkeeping stays bounded over a long-lived host', () => {
+  const h = harness();
+  for (let i = 0; i < 3000; i++) {
+    h.spawn('miguel', 'k' + i);
+    h.call('a' + i, 'miguel');
+    h.subStop('a' + i, 'miguel');
+  }
+  h.spawn('paris', 'open1');
+  const b = h.m.bookkeeping();
+  assert.strictEqual(b.spawns, 1, 'only the open spawn is kept');
+  assert.ok(b.endedKeys <= 1024, `endedKeys ${b.endedKeys}`);
+  assert.ok(b.endedIds <= 1024, `endedIds ${b.endedIds}`);
+  h.m.handle({ event: 'SessionEnd', payload: {} });
+  assert.strictEqual(h.m.bookkeeping().spawns, 0, 'SessionEnd clears it');
+});
+
+test('Dexter #8: a repeated tool_use_id never opens a second run', () => {
+  const h = harness();
+  h.spawn('miguel', 'k1');
+  h.spawn('miguel', 'k1');                                // duplicate delivery
+  assert.deepStrictEqual(h.m.stack(), ['miguel']);
+  h.call('a', 'miguel');
+  h.subStop('a', 'miguel');
+  h.spawn('miguel', 'k1');                                // echo after it ended
+  assert.deepStrictEqual(h.m.stack(), [], 'the ended spawn is remembered, not reopened');
+});
+
 test('Dexter #4: a duplicate SubagentStop for an ended id does not end a silent sibling', () => {
   const h = harness();
   h.spawn('miguel', 't1');
