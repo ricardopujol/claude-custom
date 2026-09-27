@@ -131,6 +131,36 @@ test('the renderer sends pastes through pasteFrame, never term.paste', () => {
   assert.match(fn.slice(0, fn.indexOf('\n}')), /send\(\s*pasteFrame\(|pasteFrame\([^)]*term\.modes\.bracketedPasteMode\)/);
 });
 
+// --- Miguel, PR #55, S2: a failed read is said out loud ---------------------
+
+const { pasteFailureNote } = require('../app/paste-action');
+
+test('a clipboard read that threw says so on screen, with the reason', () => {
+  const note = pasteFailureNote(new Error('locked by another app'));
+  assert.match(note.name, /Ctrl\+V/);
+  assert.match(note.name, /clipboard/);
+  assert.match(note.name, /locked by another app/);
+  assert.strictEqual(typeof note.icon, 'string');
+  assert.ok(note.icon.length > 0);
+});
+
+test('a missing bridge is a failure too, named without "null" or "undefined"', () => {
+  for (const why of [null, undefined, {}]) {
+    const note = pasteFailureNote(why);
+    assert.match(note.name, /clipboard/);
+    assert.doesNotMatch(note.name, /null|undefined|object/);
+  }
+});
+
+test('the renderer shows the note when the bridge is missing or throws', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const fn = src.slice(src.indexOf('async function pasteFromClipboard'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.strictEqual((body.match(/flourish\(\s*pasteFailureNote\(/g) || []).length, 2,
+    'both the missing-bridge and the thrown-read paths must surface the note');
+});
+
 test("line endings become CR exactly as xterm's own paste makes them", () => {
   // xterm 5.5: e.replace(/\r?\n/g, "\r"). Several lines stay ONE paste.
   assert.strictEqual(JSON.parse(pasteFrame('a\r\nb\nc', true)).data, '\x1b[200~a\rb\rc\x1b[201~');

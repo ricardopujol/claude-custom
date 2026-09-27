@@ -2697,9 +2697,21 @@ term.attachCustomKeyEventHandler((e) => {
 // lines arrive as ONE paste. An image is ESC+v: `claude` reads the clipboard
 // itself.
 async function pasteFromClipboard() {
-  if (!(window.harness && window.harness.readClipboard)) return;
+  // Never silent (Miguel, PR #55, S2): a Ctrl+V that does nothing reads as
+  // "paste is broken". Same on-screen note the drop gesture uses.
+  if (!(window.harness && window.harness.readClipboard)) {
+    console.warn('[paste] no clipboard bridge (window.harness.readClipboard)');
+    flourish(pasteFailureNote(null));
+    return;
+  }
   let clip;
-  try { clip = await window.harness.readClipboard(); } catch { return; }
+  try {
+    clip = await window.harness.readClipboard();
+  } catch (err) {
+    console.warn('[paste] clipboard read failed:', err);
+    flourish(pasteFailureNote(err));
+    return;
+  }
   const action = pasteAction(clip);
   if (action.kind === 'text') {
     const frame = pasteFrame(action.text, term.modes.bracketedPasteMode);

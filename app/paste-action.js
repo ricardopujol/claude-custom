@@ -65,12 +65,21 @@ function pasteFrame(text, bracketed) {
   return JSON.stringify({ type: 'input', data });
 }
 
+// The on-screen note (renderer's flourish) for a Ctrl+V that could not read
+// the clipboard. Miguel, PR #55, S2: silence here reads as "Ctrl+V doesn't
+// work", the exact state #12 exists to end. `why` is an Error or nothing.
+function pasteFailureNote(why) {
+  const reason = why && typeof why.message === 'string' && why.message ? ': ' + why.message : '';
+  return { icon: '⛔', name: 'Ctrl+V could not read the clipboard' + reason };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { pasteAction, isPasteKey, pasteFrame, IMAGE_PASTE_BYTES };
+  module.exports = { pasteAction, isPasteKey, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
 } else {
   root.pasteAction = pasteAction;
   root.isPasteKey = isPasteKey;
   root.pasteFrame = pasteFrame;
+  root.pasteFailureNote = pasteFailureNote;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);
