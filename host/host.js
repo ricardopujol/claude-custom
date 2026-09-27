@@ -1295,9 +1295,9 @@ wss.on('connection', (ws) => {
     cwd: CWD,
     // FF21. `project` is the same source of truth as the OS window title
     // (FF3, `projectLabel`) rather than a second guess at the same string.
-    // `branch` is null for "not a git repo" and for a detached HEAD it is a
-    // short SHA -- the renderer shows project alone rather than inventing a
-    // branch name.
+    // `branch` is null for "not a git repo"; for a detached HEAD it is a
+    // `~`-prefixed short SHA (see host/git-branch.js) rather than a bare one,
+    // so it can never read as a real branch of the same name.
     project: projectLabel(CWD),
     branch: branchWas,
     theme: styleResolved.theme,

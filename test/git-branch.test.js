@@ -58,12 +58,42 @@ test('a branch name containing a slash survives whole', () => {
   assert.strictEqual(currentBranch(dir), 'feat/header-project-branch');
 });
 
-test('detached HEAD reports a short SHA, not a branch name', () => {
+test('detached HEAD (SHA-1) reports a ~-prefixed short SHA, not a branch name', () => {
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, '.git'));
   const sha = 'a'.repeat(40);
   fs.writeFileSync(path.join(dir, '.git', 'HEAD'), sha + '\n');
-  assert.strictEqual(currentBranch(dir), 'a'.repeat(7));
+  assert.strictEqual(currentBranch(dir), '~' + 'a'.repeat(7));
+});
+
+// Dexter, Finding 2: a SHA-256 repo's object ids are 64 hex characters, not 40.
+test('detached HEAD (SHA-256) also reports a ~-prefixed short SHA', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, '.git'));
+  const sha = 'b'.repeat(64);
+  fs.writeFileSync(path.join(dir, '.git', 'HEAD'), sha + '\n');
+  assert.strictEqual(currentBranch(dir), '~' + 'b'.repeat(7));
+});
+
+// Dexter, Finding 4: a branch that happens to be NAMED like a short SHA must
+// never be confused with a detached HEAD -- `~` is illegal in a real branch
+// name, so the two can never collide.
+test('a branch literally named like a short SHA is still a real branch, not detached', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, '.git'));
+  fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/a1b2c3d\n');
+  assert.strictEqual(currentBranch(dir), 'a1b2c3d');
+});
+
+// Dexter, Finding 1: reftable's compatibility stub. The real branch lives in
+// the reftable binary tables this module does not parse -- the correct answer
+// is "unknown", not the literal placeholder string, and definitely not a
+// value that never changes again once written.
+test('reftable\'s ref: refs/heads/.invalid placeholder reports no branch', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, '.git'));
+  fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/.invalid\n');
+  assert.strictEqual(currentBranch(dir), null);
 });
 
 test('a worktree resolves its gitdir pointer before reading HEAD', () => {
@@ -96,6 +126,21 @@ test('a relative gitdir pointer resolves against the worktree, not cwd', () => {
 test('not a git repo at all reports no branch', () => {
   const dir = tempDir();
   assert.strictEqual(currentBranch(dir), null);
+});
+
+// Dexter, Finding 3: an empty (or otherwise incomplete) directory named
+// `.git` is not a repo boundary -- real git keeps climbing past it rather
+// than stopping there and reporting nothing, because it has no HEAD to read.
+test('an empty .git directory in a subdirectory is skipped, climbing to the real repo above', () => {
+  const root = tempDir();
+  fs.mkdirSync(path.join(root, '.git'));
+  fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+
+  const sub = path.join(root, 'sub');
+  fs.mkdirSync(sub);
+  fs.mkdirSync(path.join(sub, '.git'));   // present, but empty -- no HEAD inside
+
+  assert.strictEqual(currentBranch(sub), 'main');
 });
 
 test('a .git file with no gitdir line reports no branch, not a throw', () => {
