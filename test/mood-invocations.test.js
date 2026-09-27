@@ -209,12 +209,26 @@ test('an interrupted call inside a subagent ends THAT subagent, not its parent',
   assert.strictEqual(h.m.stateOf('paris'), 'working');
 });
 
-test('both interrupt paths agree: PostToolUse interrupted:true is not an error either', () => {
+test('Dexter #2: PostToolUse interrupted:true ends that CALL, not the run, and is not an error', () => {
+  // Dexter's counterexample: a subagent's Bash is killed (a timeout, say),
+  // a PostToolUse ARRIVES -- so the agent's turn goes on -- and it carries on
+  // working. Real cancellation comes through PostToolUseFailure is_interrupt,
+  // Stop, SessionEnd or SubagentStop.
+  //
+  // Evidence, read-only, 2026-09-27: across every transcript under
+  // ~/.claude/projects, 32,137 Bash results carry interrupted:false and NONE
+  // carry true. A timed-out command came back as an error string ("Error:
+  // Exit code 143 / Command timed out after 2m 0s", the failure path) and an
+  // Esc as "[Request interrupted by user for tool use]". Nothing shows the
+  // flag means the agent ended, so it doesn't end it.
   const h = harness();
   h.spawn('paris', 't1');
-  h.call('p1', 'paris', { interrupted: true });
-  assert.notStrictEqual(h.m.stateOf('paris'), 'stressed');
-  assert.strictEqual(h.busy('paris'), false, 'and it ends the interrupted run, like the failure path');
+  h.call('p1', 'paris', { stdout: '', stderr: '', interrupted: true });
+  assert.strictEqual(h.m.stateOf('paris'), 'working');
+  assert.ok(h.busy('paris'), 'the run continues');
+  h.call('p1', 'paris');
+  h.subStop('p1', 'paris');
+  assert.strictEqual(h.m.stateOf('paris'), 'happy', 'and finishes clean: an interrupt was never an error');
 });
 
 test('Esc on a MAIN-session call ends the main session\'s foreground chain', () => {

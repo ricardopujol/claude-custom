@@ -300,13 +300,19 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
 
     const failureEvent = event === 'PostToolUseFailure';
     if (event === 'PostToolUse' || failureEvent) {
-      // AN INTERRUPT IS NOBODY'S FAILURE, on either path. The user pressed Esc
-      // (Dexter F4). It used to count as a failure when it arrived as
-      // PostToolUse `interrupted: true` and not when it arrived as
-      // PostToolUseFailure `is_interrupt` -- the same act, two faces.
-      const interrupted = failureEvent
-        ? p.is_interrupt === true
-        : !!p.tool_response && typeof p.tool_response === 'object' && p.tool_response.interrupted === true;
+      // AN INTERRUPT IS NOBODY'S FAILURE, on either path (Dexter F4).
+      //
+      // Only PostToolUseFailure `is_interrupt` CUTS A RUN OFF: the call was
+      // aborted and its result never came. A PostToolUse carrying
+      // `interrupted: true` did arrive, so the agent's turn goes on -- only
+      // that command was killed (Dexter, PR #56, #2). Measured, read-only,
+      // 2026-09-27: 32,137 real Bash results carry interrupted:false and none
+      // carry true; a timeout comes back as an error, an Esc as "[Request
+      // interrupted by user for tool use]". So the flag ends the call, is
+      // never an error, and the run continues.
+      const interrupted = failureEvent && p.is_interrupt === true;
+      const callInterrupted = !failureEvent && !!p.tool_response
+        && typeof p.tool_response === 'object' && p.tool_response.interrupted === true;
 
       const spawned = AGENT_TOOLS.has(tool) && p.tool_use_id != null ? spawns.get(p.tool_use_id) : undefined;
       if (spawned) {
@@ -341,7 +347,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
 
       const agent = inv.name;
       const a = ensure(agent);
-      if (failureEvent || isFailure(p.tool_response)) {
+      if (!callInterrupted && (failureEvent || isFailure(p.tool_response))) {
         a.errors++;
         a.repeats = 0;
         a.lastSignature = null;

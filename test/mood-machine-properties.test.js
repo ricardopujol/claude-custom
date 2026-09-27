@@ -85,7 +85,11 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         else if (o.kind === 'interruptPost') bash(a, { interrupted: true });
         else send('PostToolUseFailure', { tool_name: 'Bash', tool_input: { command: 'f' + (++n) },
           error: 'x', is_interrupt: o.kind === 'interruptFail', ...by(a) });
-        if (o.kind.startsWith('interrupt')) for (const d of subtree(a)) d.alive = false;
+        // Only an ABORTED call (PostToolUseFailure is_interrupt) ends the run.
+        // A PostToolUse interrupted:true arrived, so the agent carries on
+        // (Dexter, PR #56, #2 -- this oracle used to share the machine's
+        // premise that it ended the run, so it could not find that bug).
+        if (o.kind === 'interruptFail') for (const d of subtree(a)) d.alive = false;
         break;
       }
       case 'finish': {

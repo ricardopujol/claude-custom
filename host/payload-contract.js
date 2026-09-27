@@ -83,7 +83,10 @@ const CONTRACT = {
     //     "completed", agentId } at the end. Absent on older CLIs and on
     //     truncated captures, so the machine falls back to binding a new
     //     agent_id to the oldest unbound invocation of its type;
-    //   tool_response.interrupted -- an interrupt, never a failure.
+    //   tool_response.interrupted -- that call was killed; never a failure,
+    //     and the run continues. Never yet observed true (32,137 real Bash
+    //     results, all false, 2026-09-27); cancellation is
+    //     PostToolUseFailure.is_interrupt.
   },
   // A failed call fires this INSTEAD of PostToolUse. Measured 2026-09-25.
   PostToolUseFailure: {
