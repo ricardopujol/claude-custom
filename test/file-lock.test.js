@@ -504,27 +504,124 @@ test('a stale lock broken just as the deadline passes is still taken', () => {
 test('past the deadline a break earns exactly ONE more attempt, not a loop', () => {
   // The liveness half. "Retry after a break" must not become "retry forever"
   // when something keeps re-creating a stale lock as fast as we remove it.
-  // Every open reports EEXIST, every unlink succeeds, and the lock always
-  // reads as held by a dead pid -- a pass that breaks every single time.
+  // A competitor beats every open we make and leaves a dead-pid lock behind
+  // each time -- so every pass finds a stale lock and breaks it.
   const lock = lockIn(tmpdir());
-  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const stale = () => fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  stale();
   const realOpen = fs.openSync;
-  const realUnlink = fs.unlinkSync;
   let opens = 0;
   fs.openSync = (...a) => {
     if (String(a[0]) !== lock) return realOpen.apply(fs, a);
     // A backstop so a looping mutant fails instead of hanging the suite.
     if (++opens > 20) throw new Error('looped past the deadline');
+    if (!fs.existsSync(lock)) stale();
     const e = new Error('EEXIST'); e.code = 'EEXIST'; throw e;
   };
-  fs.unlinkSync = (...a) => { if (String(a[0]) !== lock) return realUnlink.apply(fs, a); };
   let calls = 0;
   const now = () => (calls++ === 0 ? 1000 : 9999999);
   try {
     assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 200, now }), /could not take the lock/);
   } finally {
     fs.openSync = realOpen;
-    fs.unlinkSync = realUnlink;
   }
   assert.strictEqual(opens, 2, `the first try plus one after the break, got ${opens}`);
+});
+
+// --- breaking removes EXACTLY the lock that was judged stale ------------------
+//
+// Dexter, PR #57 review, Finding 1 (High). Two waiters read the same dead-pid
+// lock L0. W1 unlinks it and takes a fresh lock L1; W2, a moment behind,
+// unlinks BY PATH -- which now names L1 -- takes the lock itself, and both run
+// fn. One irreplaceable record is lost with no error. `unlinkSync(path)`
+// deletes whatever is there NOW, not what readLock inspected.
+
+test('a lock replaced between being judged stale and being broken survives', () => {
+  // W1 winning in the gap, simulated in one process: the first stat of the
+  // lock path (inside readLock, AFTER the read of L0) swaps in a fresh, live
+  // lock. The waiter judged L0 stale; it must not delete L1.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const fresh = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const realStat = fs.statSync;
+  let swapped = false;
+  fs.statSync = (...a) => {
+    if (!swapped && String(a[0]) === lock) {
+      swapped = true;
+      fs.unlinkSync(lock);
+      fs.writeFileSync(lock, fresh);
+    }
+    return realStat.apply(fs, a);
+  };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 200 }), /lock/i);
+  } finally {
+    fs.statSync = realStat;
+  }
+  assert.strictEqual(ran, false, 'the work ran alongside the live holder');
+  assert.strictEqual(fs.existsSync(lock) && fs.readFileSync(lock, 'utf8'), fresh,
+    'the fresh lock was deleted by a waiter that had judged a different file');
+});
+
+test('a lock that cannot be READ is not judged, so it is not broken', () => {
+  // The same rule from the other side: a transient read failure (a scanner's
+  // sharing violation) tells us nothing about the holder, and a waiter that
+  // judged nothing must delete nothing. It waits out its deadline instead.
+  const lock = lockIn(tmpdir());
+  const fresh = JSON.stringify({ pid: process.pid, at: Date.now() });
+  fs.writeFileSync(lock, fresh);
+  const realRead = fs.readFileSync;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) { const e = new Error('EBUSY'); e.code = 'EBUSY'; throw e; }
+    return realRead.apply(fs, a);
+  };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 100 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(ran, false);
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), fresh);
+});
+
+test('without hard links, a wrongly taken live lock is still put back', () => {
+  // The restore is a create-or-fail link; on a volume with no hard links it
+  // falls back to an exclusive copy. Either way the live lock must return.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const fresh = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const realStat = fs.statSync;
+  const realLink = fs.linkSync;
+  let swapped = false;
+  fs.statSync = (...a) => {
+    if (!swapped && String(a[0]) === lock) {
+      swapped = true;
+      fs.unlinkSync(lock);
+      fs.writeFileSync(lock, fresh);
+    }
+    return realStat.apply(fs, a);
+  };
+  fs.linkSync = () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 100 }), /lock/i);
+  } finally {
+    fs.statSync = realStat;
+    fs.linkSync = realLink;
+  }
+  assert.strictEqual(ran, false);
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), fresh);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['thing.json.lock'], 'no tombstone left behind');
+});
+
+test('breaking a stale lock leaves nothing behind in the directory', () => {
+  // The break goes through a uniquely named tombstone; it must not litter.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
 });
