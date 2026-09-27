@@ -65,7 +65,7 @@ test('agentDefinitions reads name: from frontmatter', async () => {
   writeAgentMd(path.join(home, '.claude', 'agents'), 'reviewer.md',
     '---' + NL + 'name: code-reviewer' + NL + 'description: reviews code' + NL + '---' + NL + 'body');
 
-  const names = await agentDefinitions({ homeDir: home });
+  const { names } = await agentDefinitions({ homeDir: home });
   assert.deepStrictEqual([...names], ['code-reviewer']);
 });
 
@@ -73,7 +73,7 @@ test('agentDefinitions falls back to the filename when there is no frontmatter n
   const home = tmpDir('cc-roster-home-');
   writeAgentMd(path.join(home, '.claude', 'agents'), 'miguel.md', 'just a body, no frontmatter at all');
 
-  const names = await agentDefinitions({ homeDir: home });
+  const { names } = await agentDefinitions({ homeDir: home });
   assert.deepStrictEqual([...names], ['miguel']);
 });
 
@@ -82,7 +82,7 @@ test('agentDefinitions falls back to the filename when frontmatter has no name: 
   writeAgentMd(path.join(home, '.claude', 'agents'), 'dexter.md',
     '---' + NL + 'description: logic review' + NL + '---' + NL + 'body');
 
-  const names = await agentDefinitions({ homeDir: home });
+  const { names } = await agentDefinitions({ homeDir: home });
   assert.deepStrictEqual([...names], ['dexter']);
 });
 
@@ -94,7 +94,7 @@ test('agentDefinitions merges the global and per-project agent directories', asy
   writeAgentMd(path.join(cwd, '.claude', 'agents'), 'local.md',
     '---' + NL + 'name: local-agent' + NL + '---');
 
-  const names = await agentDefinitions({ homeDir: home, cwd });
+  const { names } = await agentDefinitions({ homeDir: home, cwd });
   assert.deepStrictEqual([...names].sort(), ['global-agent', 'local-agent']);
 });
 
@@ -102,7 +102,7 @@ test('agentDefinitions ignores non-.md files and tolerates a missing directory',
   const home = tmpDir('cc-roster-home-');
   writeAgentMd(path.join(home, '.claude', 'agents'), 'notes.txt', 'not an agent');
 
-  const names = await agentDefinitions({ homeDir: home, cwd: path.join(home, 'no-such-project') });
+  const { names } = await agentDefinitions({ homeDir: home, cwd: path.join(home, 'no-such-project') });
   assert.deepStrictEqual([...names], []);
 });
 
@@ -112,8 +112,38 @@ test('agentDefinitions de-dupes a name defined in both places', async () => {
   writeAgentMd(path.join(home, '.claude', 'agents'), 'a.md', '---' + NL + 'name: shared' + NL + '---');
   writeAgentMd(path.join(cwd, '.claude', 'agents'), 'b.md', '---' + NL + 'name: shared' + NL + '---');
 
-  const names = await agentDefinitions({ homeDir: home, cwd });
+  const { names } = await agentDefinitions({ homeDir: home, cwd });
   assert.deepStrictEqual([...names], ['shared']);
+});
+
+// --- Dexter N6 (definitions half) / F8 residual, PR #59 R2 ----------------------
+
+test('agentDefinitions counts a REAL failure to list an agents directory, not just ENOENT', async () => {
+  const home = tmpDir('cc-roster-home-');
+  // A FILE where the agents directory should be: readdir throws ENOTDIR, a
+  // real failure, never the ordinary "no such directory" case.
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'agents'), 'not a directory');
+
+  const { names, unreadable } = await agentDefinitions({ homeDir: home });
+  assert.deepStrictEqual([...names], []);
+  assert.strictEqual(unreadable, 1);
+});
+
+test('agentDefinitions counts an unreadable definition file rather than silently falling back uncounted', async () => {
+  const home = tmpDir('cc-roster-home-');
+  writeAgentMd(path.join(home, '.claude', 'agents'), 'weird.md', 'irrelevant -- readFile is injected below');
+
+  // A real EACCES/EPERM on a genuine `.md` FILE isn't reliably reproducible
+  // across platforms in a test without admin/root tricks, so the failing read
+  // is injected (Dexter F8 residual) -- the same DI pattern
+  // host/agent-stats-cache.js's `lifetimeAgentTokens` already uses for its own
+  // `readFile`.
+  const throwing = async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+
+  const { names, unreadable } = await agentDefinitions({ homeDir: home, readFile: throwing });
+  assert.deepStrictEqual([...names], ['weird'], 'the fallback-to-filename behaviour must still apply');
+  assert.strictEqual(unreadable, 1);
 });
 
 // --- history, across every project ---------------------------------------------
@@ -300,4 +330,66 @@ test('historyNames counts a corrupt meta.json as unreadable rather than silently
 
   const { unreadable } = await historyNames({ projectsDir: root });
   assert.strictEqual(unreadable, 1);
+});
+
+// --- Dexter N6, PR #59 R2: a real failure to enumerate the projects root ------
+
+test('scanProjects counts a REAL failure to list the projects root, not just ENOENT', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  // A FILE where the projects root should be: readdir throws ENOTDIR.
+  const notADir = path.join(root, 'not-a-dir');
+  fs.writeFileSync(notADir, 'x');
+
+  const { projects, errors } = await scanProjects(notADir);
+  assert.deepStrictEqual(projects, []);
+  assert.strictEqual(errors, 1);
+});
+
+test('a real projects-root failure gives ok:false through wholeRoster, never a confident empty roster', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const notADir = path.join(root, 'not-a-dir');
+  fs.writeFileSync(notADir, 'x');
+  // An isolated, empty homeDir -- this repo's real `~/.claude/agents` must not
+  // leak into a test asserting the roster is EMPTY.
+  const home = tmpDir('cc-roster-home-');
+
+  const { names, unreadable } = await wholeRoster({ homeDir: home, projectsDir: notADir });
+  assert.deepStrictEqual(names, []);
+  assert.ok(unreadable >= 1, 'a real enumeration failure must never report as zero unreadable');
+});
+
+test('scanProjects still treats a genuinely missing projects root as zero errors', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const { errors } = await scanProjects(path.join(root, 'absent'));
+  assert.strictEqual(errors, 0);
+});
+
+// --- Dexter N5 (L2 residual), PR #59 R2: identity resolved ONCE, not twice ----
+
+test('scanProjects resolves each subagent identity once, shared by both consumers', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  subagent(dir, 's1', 'agent-a', { agentType: 'paris', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+
+  const { projects } = await scanProjects(root);
+  const file = projects[0].files.find(f => f.subagent);
+  assert.ok(projects[0].resolved instanceof Map);
+  assert.deepStrictEqual(projects[0].resolved.get(file.file), { agent: 'paris', source: 'tool-use' });
+});
+
+test('a corrupt meta.json is counted exactly ONCE in the whole roster, not once per consumer (Dexter N5)', async () => {
+  const root = tmpDir('cc-roster-projects-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'agent-a.meta.json'), 'null'); // valid JSON, no identity
+  fs.writeFileSync(path.join(sd, 'agent-a.jsonl'), JSON.stringify(turn(0, U(10, 0))) + NL);
+  // An isolated, empty homeDir -- this repo's real `~/.claude/agents` must not
+  // contribute a surprise unreadable count of its own.
+  const home = tmpDir('cc-roster-home-');
+
+  const { unreadable } = await wholeRoster({ homeDir: home, projectsDir: root });
+  assert.strictEqual(unreadable, 1, 'one corrupt file must cost exactly one, not one per consumer');
 });
