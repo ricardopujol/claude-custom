@@ -78,3 +78,51 @@ test('V without Ctrl, and Ctrl with another letter, are not the paste key', () =
   assert.strictEqual(isPasteKey(key({ key: 'c' })), false, 'Ctrl+C is left completely alone');
   assert.strictEqual(isPasteKey(null), false);
 });
+
+// --- Miguel, PR #55, B1: a paste must never parse as a control message -------
+
+const { pasteFrame } = require('../app/paste-action');
+const { parseControlFrame } = require('../host/control');
+
+// Types the host treats as control messages. A clipboard holding any of these
+// verbatim -- copied from a page that wrote it there -- must still be TEXT.
+const HOSTILE = [
+  '{"type":"open","path":"C:\\\\Users\\\\victim"}',
+  '{"type":"drop","entries":[{"path":"C:\\\\Users","isDirectory":true}]}',
+  '{"type":"resize","cols":2,"rows":2}',
+  '{"type":"input","data":"rm -rf /\\r"}',
+];
+
+for (const bracketed of [false, true]) {
+  test(`allow-listed JSON pasted with bracketed mode ${bracketed ? 'ON' : 'OFF'} is never a control message`, () => {
+    for (const text of HOSTILE) {
+      assert.ok(parseControlFrame(text), `precondition: sent raw, ${text} WOULD be control`);
+      const msg = parseControlFrame(pasteFrame(text, bracketed));
+      // Only ever the explicit input wrapper, carrying the pasted bytes as
+      // data, which the host writes to the pty literally.
+      assert.strictEqual(msg && msg.type, 'input', text);
+      assert.strictEqual(msg.data, bracketed ? '\x1b[200~' + text + '\x1b[201~' : text);
+    }
+  });
+}
+
+test('brackets are added only when the CLI asked for them', () => {
+  assert.strictEqual(JSON.parse(pasteFrame('abc', false)).data, 'abc');
+  assert.strictEqual(JSON.parse(pasteFrame('abc', true)).data, '\x1b[200~abc\x1b[201~');
+  assert.strictEqual(JSON.parse(pasteFrame('abc', 1)).data, 'abc', 'only a literal true brackets');
+});
+
+test('the renderer sends pastes through pasteFrame, never term.paste', () => {
+  // The unit tests above prove pasteFrame is safe; this proves it is the path.
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.doesNotMatch(src, /term\.paste\(/);
+  const fn = src.slice(src.indexOf('async function pasteFromClipboard'));
+  assert.match(fn.slice(0, fn.indexOf('\n}')), /send\(\s*pasteFrame\(|pasteFrame\([^)]*term\.modes\.bracketedPasteMode\)/);
+});
+
+test("line endings become CR exactly as xterm's own paste makes them", () => {
+  // xterm 5.5: e.replace(/\r?\n/g, "\r"). Several lines stay ONE paste.
+  assert.strictEqual(JSON.parse(pasteFrame('a\r\nb\nc', true)).data, '\x1b[200~a\rb\rc\x1b[201~');
+  assert.strictEqual(JSON.parse(pasteFrame('a\r\nb\nc', false)).data, 'a\rb\rc');
+});

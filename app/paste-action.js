@@ -41,11 +41,33 @@ function isPasteKey(e) {
     && typeof e.key === 'string' && e.key.toLowerCase() === 'v';
 }
 
+// The WebSocket frame a text paste travels in. Miguel, PR #55, B1.
+//
+// NOT term.paste(). That sends the text RAW when the CLI hasn't turned on
+// bracketed paste (xterm's default, and the state at boot or under some Ink
+// screens), and host/control.js reads any raw frame that is JSON with an
+// allow-listed `type` as a CONTROL MESSAGE. A clipboard holding exactly
+// `{"type":"open","path":...}` -- which any web page can put there -- would
+// have run as a host action instead of being typed. Before #12 no single frame
+// could carry clipboard contents; this PR opened that path, so it closes it.
+//
+// So the text always rides in the explicit `{type:'input', data}` wrapper the
+// top-bar switch already uses, which the host writes to the pty literally.
+// The bytes inside are exactly what xterm's own paste would produce: line
+// endings to CR, and brackets ONLY when the CLI asked for them -- forcing
+// them on a process that didn't enable the mode would type control junk.
+function pasteFrame(text, bracketed) {
+  const body = String(text).replace(/\r?\n/g, '\r');
+  const data = bracketed === true ? '\x1b[200~' + body + '\x1b[201~' : body;
+  return JSON.stringify({ type: 'input', data });
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { pasteAction, isPasteKey, IMAGE_PASTE_BYTES };
+  module.exports = { pasteAction, isPasteKey, pasteFrame, IMAGE_PASTE_BYTES };
 } else {
   root.pasteAction = pasteAction;
   root.isPasteKey = isPasteKey;
+  root.pasteFrame = pasteFrame;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

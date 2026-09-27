@@ -2691,17 +2691,20 @@ term.attachCustomKeyEventHandler((e) => {
 });
 
 // What the clipboard holds decides what Ctrl+V does (app/paste-action.js).
-// Text goes through term.paste, which brackets it when the CLI has asked for
-// bracketed paste -- so several lines arrive as ONE paste, not a submit per
-// line. An image is ESC+v: `claude` reads the clipboard itself.
+// Text goes in pasteFrame's `{type:'input'}` wrapper, NEVER term.paste: raw,
+// a clipboard holding allow-listed JSON would run as a host control message
+// (Miguel, PR #55, B1). Bracketed when the CLI has asked for it, so several
+// lines arrive as ONE paste. An image is ESC+v: `claude` reads the clipboard
+// itself.
 async function pasteFromClipboard() {
   if (!(window.harness && window.harness.readClipboard)) return;
   let clip;
   try { clip = await window.harness.readClipboard(); } catch { return; }
   const action = pasteAction(clip);
   if (action.kind === 'text') {
-    pendingKeyDesc = 'Ctrl+V';
-    term.paste(action.text);
+    const frame = pasteFrame(action.text, term.modes.bracketedPasteMode);
+    logLine('Ctrl+V', JSON.parse(frame).data);
+    send(frame);
   } else if (action.kind === 'image') {
     logLine('Ctrl+V (image)', action.data);
     send(action.data);

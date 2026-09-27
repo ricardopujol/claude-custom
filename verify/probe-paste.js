@@ -29,6 +29,10 @@
      after #12   text/keys sends exactly one frame, "\x1b[200~PASTE-A first
                  line\rPASTE-B second line\x1b[201~" -- no \x16, no second copy,
                  not submitted. image/keys sends "\x1bv" and "[Image #1]" shows.
+     after B1    (Miguel, PR #55) the text frame is {"type":"input","data":
+                 "\x1b[200~...\x1b[201~"}, and json/keys -- a clipboard holding
+                 '{"type":"resize",...}' -- is wrapped as input and typed into
+                 the prompt, not run as a resize.
 
    Is sendInputEvent a fair stand-in for a real key press? For the one thing
    that matters here -- does an UNHANDLED key reach the application menu's
@@ -205,6 +209,26 @@ app.on('ready', async () => {
       results[name] = { sent: esc(bytes), clipboardHadImage: hasImage, attached: !!attached,
         evidence: attached || (await screen()).split('\n').filter(l => l.trim()).slice(-6) };
       console.log(`[${at()}] ${name} attached=${!!attached} ${attached ? JSON.stringify(attached) : ''}`);
+      await clearDraft();
+    }
+
+    // --- shipped wiring, when present: allow-listed JSON on the clipboard ------
+    // Miguel, PR #55, B1: sent raw, this is a host control message (a resize
+    // to 2x2). Through the shipped path it must travel as {type:'input'} and
+    // land in the prompt as text.
+    if (bridge) {
+      const JSON_TEXT = '{"type":"resize","cols":2,"rows":2} PASTE-J';
+      clipboard.writeText(JSON_TEXT);
+      await js(`term.focus(); true`);
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
+      await sleep(1500);
+      const f = await frames();
+      const wrapped = f.length > 0 && f.every(x => { try { return JSON.parse(x).type === 'input'; } catch { return false; } });
+      const shown = (await box()).some(l => l.includes('PASTE-J'));
+      results.jsonKeys = { frames: f.map(esc), wrappedAsInput: wrapped, typedIntoPrompt: shown,
+        bracketedModeWas: await js(`term.modes.bracketedPasteMode`) };
+      console.log(`[${at()}] json/keys  wrappedAsInput=${wrapped} typedIntoPrompt=${shown}`);
       await clearDraft();
     }
 
