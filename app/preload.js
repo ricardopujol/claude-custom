@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld('harness', {
     try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
   },
 
+  // Ctrl+V (BACKLOG #12, #8). Main reads the OS clipboard and answers
+  // { text, hasImage } -- see app/clipboard-bridge.js. Read-only: nothing is
+  // ever written to the clipboard through this.
+  readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+
   // The secret store. Every call crosses into main, where the vault lives --
   // the window never holds the file, the key, or more than one secret at a
   // time, and the host (which owns the pty) never sees any of it at all.

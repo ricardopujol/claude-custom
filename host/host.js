@@ -37,7 +37,8 @@ const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
-const { setBackground, resetBackground, resolveStyle, setLook } = require('./style');
+const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook } = require('./style');
+const { hasClaudeHistory } = require('./recent');
 const { applyLook } = require('./look');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
@@ -401,6 +402,18 @@ const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent,
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
 const background = backgroundFor(CWD, { dir: BACKGROUNDS_DIR });
 console.log('[host] background     :', path.basename(background.path), background.created ? '(new)' : '(existing)');
+
+// Backlog #15: a NEW project -- no look.json and no Claude history for the
+// folder -- gets a random, contrast-checked look, once, here at startup and
+// before the CLI is spawned (the spawn is what creates the history). Every
+// other state is left exactly as found; host/style.js seedLookIfNew decides.
+try {
+  const seeded = seedLookIfNew({ cwd: CWD, hasHistory: () => hasClaudeHistory(CWD),
+    terminalForeground: theme.terminal && theme.terminal.foreground });
+  console.log('[host] look seed      :', seeded.seeded ? `new project, generated ${seeded.look.appColor}` : seeded.reason);
+} catch (err) {
+  console.log('[host] look seed failed:', err && err.message);
+}
 
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
@@ -1542,7 +1555,7 @@ wss.on('connection', (ws) => {
       return;
     }
     if (msg.type === 'style') {
-      // set-background / reset-background / set-look. A refusal answers ONLY the asking
+      // set-background / reset-background / set-look / reroll-look. A refusal answers ONLY the asking
       // client -- it is that action failing, not a state change anyone else
       // needs to hear about, the same distinction host/host.js already draws
       // for the project picker's 'open' errors. A successful change IS
@@ -1576,6 +1589,17 @@ wss.on('connection', (ws) => {
           resetBackground({ cwd: CWD });
         } catch (err) {
           refuse(`could not reset: ${err.message}`);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'reroll-look') {
+        // The Style tab's "Random colours": host/style.js generates and saves,
+        // with the same refusals set-look has.
+        const r = rerollLook({ cwd: CWD, terminalForeground: theme.terminal && theme.terminal.foreground });
+        if (!r.ok) {
+          refuse(r.reason);
           return;
         }
         announce();
