@@ -744,9 +744,18 @@ const sessionModels = createSessionModelRefresher({
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
-// which is why the browser works today and the council does not. Loaded lazily
-// on the first request rather than at boot: a session that never opens the
-// panel should not make a network call at all.
+// which is why the browser works today and the council does not.
+//
+// BACKLOG E #5, step 2 (Ricardo, 2026-09-27): warmed once at boot below,
+// rather than staying lazy-on-first-request as this comment used to say. A
+// session that opens the Models tab should not sit through a cold network
+// round trip the host had the whole boot sequence to start already. Still
+// exactly ONE request in flight at a time -- `cataloguePending` below dedupes
+// the boot warm-up against a tab opened while it is still in the air -- and
+// still no INTERVAL timer anywhere: this fires once, and every later
+// freshness check is `loadCatalogue`'s own FRESH_MS comparison, driven by a
+// client asking (see the 'models' branch further down) or by a Refresh
+// click's `force`.
 const CATALOGUE_CACHE = path.join(HARNESS_DIR, 'state', 'openrouter-catalogue.json');
 let cataloguePending = null;
 
@@ -1266,6 +1275,17 @@ refreshUsage().then(usage => {
 refreshAgentStats().then((stats) => {
   broadcastControl({ type: 'agentStats', stats });
 }).catch(() => {});
+
+// BACKLOG E #5, step 2: warm the OpenRouter catalogue's disk cache at boot,
+// same reasoning as usage/agentStats above -- a Models tab opened moments
+// after launch should find a cache already fresh rather than starting a
+// network round trip itself. NOT broadcast: nothing needs the catalogue until
+// a client asks for it (the 'models' branch), so this only needs to have
+// WRITTEN the cache by then, which currentCatalogue()'s own writeCache does.
+// Swallowed on failure exactly like its siblings -- offline at launch is not
+// fatal, `loadCatalogue` already reports it as `stale`/`error` to whichever
+// client asks next.
+currentCatalogue().catch(() => {});
 
 term.onExit(({ exitCode, signal }) => {
   console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
