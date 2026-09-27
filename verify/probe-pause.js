@@ -100,13 +100,17 @@
          probe (including two throwaway runs killed by since-fixed
          screen-scraping false positives, before any assistant reply
          existed, hence $0 each): on the order of $0.10-$0.30. CAVEAT (found
-         reviewing this PR): `cleanEnv()` did not strip `ANTHROPIC_API_KEY`
-         at the time these runs happened, and it was set globally in this
-         shell -- per documentation/CLAUDECUSTOM_BUILD_LOG.md's own Open
-         Problems, `claude` prefers an explicit API key over the Max login,
-         so this spend almost certainly landed on the API-key account, not
-         the Max subscription. `cleanEnv()` now strips it (and
-         ANTHROPIC_AUTH_TOKEN) for any future run.
+         reviewing this PR): `cleanEnv()` did not strip `ANTHROPIC_API_KEY` at
+         the time these runs happened, and it was set globally in this shell.
+         Checked (Paris): `~/.claude.json`'s `customApiKeyResponses.rejected`
+         contains exactly that key's tail (approved: none), and `claude auth
+         status` reports `loggedIn: true, authMethod: claude.ai, apiProvider:
+         firstParty` -- the CLI had already rejected the inherited key, so the
+         session billed the claude.ai Max subscription, not the key's account;
+         the $0.1001 cost-state figure is the CLI's estimate, not a charge
+         against the key. `cleanEnv()` now strips the key (and
+         ANTHROPIC_AUTH_TOKEN) regardless, since a future machine's rejected
+         list is not this one's.
      (b) inventory (all $0):
          `claude --help`: background session lifecycle is `--bg`/
          `--background` to start, `claude agents` (`--json` gives pid, cwd,
@@ -349,12 +353,14 @@ function cleanEnv() {
   // documentation/CLAUDECUSTOM_BUILD_LOG.md, Open Problems: "ANTHROPIC_API_KEY
   // is set globally on this machine (both shells). `claude -p` prefers it over
   // the Max login, so any probe ... bills the key unless it deletes the
-  // variable from the child env." Confirmed here the hard way (Paris,
-  // reviewing this PR): this probe's real `--model haiku` session inherited
-  // it unstripped, so it very likely billed whatever account that key
-  // belongs to, not the Max subscription. Deleted so a future run of this
-  // probe uses the Max login, like every other interactive `claude` session
-  // on this machine.
+  // variable from the child env." This probe's real `--model haiku` session
+  // inherited it unstripped -- but checked (Paris, reviewing this PR): the
+  // CLI's own `~/.claude.json` had that key on its `customApiKeyResponses.
+  // rejected` list, and `claude auth status` showed `authMethod: claude.ai`,
+  // so on THIS machine it fell through to the Max login anyway and billed the
+  // subscription, not the key. Still deleted here regardless: a future
+  // machine's rejected list is not this one's, and this probe has no reason
+  // to depend on it.
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
   for (const k of INHERITED_SESSION_VARS) delete env[k];
