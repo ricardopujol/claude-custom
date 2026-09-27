@@ -142,6 +142,9 @@ function listRecentProjects({ projectsDir, limit = 12, cache, onRead } = {}) {
   return out;
 }
 
+// Longest transcript-folder name trusted to be unshortened (Dexter F6).
+const MAX_UNSHORTENED_NAME = 200;
+
 /**
  * Has Claude Code ever run in `cwd`? True when its transcript folder
  * (host/project-dir.js names it) holds at least one .jsonl.
@@ -161,6 +164,10 @@ function listRecentProjects({ projectsDir, limit = 12, cache, onRead } = {}) {
 function hasClaudeHistory(cwd, { projectsDir, env = process.env, homeDir = os.homedir() } = {}) {
   if (typeof cwd !== 'string' || !cwd.trim()) return true;
   const want = projectDirName(cwd).toLowerCase();
+  // Past this length the CLI may shorten the folder name and add a hash
+  // (Dexter F6, unmeasured -- the longest name on this machine is 137), which
+  // projectDirName can't reproduce. Not knowing the name is doubt.
+  if (want.length > MAX_UNSHORTENED_NAME) return true;
   return historyRoots({ projectsDir, env, homeDir }).some(root => rootHasHistory(root, want));
 }
 

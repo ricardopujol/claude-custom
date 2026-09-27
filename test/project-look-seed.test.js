@@ -76,6 +76,18 @@ test('hasClaudeHistory: no cwd is no answer to write on', () => {
   assert.strictEqual(hasClaudeHistory('', { projectsDir: tmpDir('cc-seed-x-') }), true);
 });
 
+test('Dexter F6: a path whose folder name would pass 200 chars counts as history -- the CLI may shorten it', () => {
+  // Unmeasured: the CLI may truncate long names and add a hash, which
+  // projectDirName can't reproduce. So never seed there.
+  const root = tmpDir('cc-seed-long-');
+  const long = 'C:/' + 'a'.repeat(198);                    // encodes to exactly 201 chars
+  assert.strictEqual(projectDirName(long).length, 201);
+  assert.strictEqual(hasClaudeHistory(long, { projectsDir: root }), true);
+  const edge = 'C:/' + 'a'.repeat(197);                    // exactly 200: still looked up normally
+  assert.strictEqual(projectDirName(edge).length, 200);
+  assert.strictEqual(hasClaudeHistory(edge, { projectsDir: root }), false);
+});
+
 test('Dexter F4: a transcript folder that is a junction (moved to another drive) is still history', () => {
   const cwd = 'C:/Users/x/linked';
   const real = tmpDir('cc-seed-real-');
