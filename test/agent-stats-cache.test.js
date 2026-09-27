@@ -18,7 +18,10 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { incrementalScan, readCacheFile, writeCacheFile, lifetimeAgentTokens } = require('../host/agent-stats-cache');
+const {
+  incrementalScan, readCacheFile, writeCacheFile, readCacheSummary, lifetimeAgentTokens, CACHE_VERSION,
+} = require('../host/agent-stats-cache');
+const { scanProjects } = require('../host/roster-index');
 const { projectDirName } = require('../host/project-dir');
 const { tmpDir } = require('./tmp-dir');
 
@@ -122,6 +125,47 @@ test('a file that vanishes between listing and stat contributes nothing', async 
   assert.strictEqual(reread, 0);
 });
 
+// --- Dexter F1 (High): a per-file read failure must never abort the scan -----
+
+test('incrementalScan counts a thrown read failure rather than rejecting the whole scan', async () => {
+  const dir = tmpDir('cc-cache-');
+  const good = path.join(dir, 'good.jsonl');
+  const bad = path.join(dir, 'bad.jsonl');
+  fs.writeFileSync(good, 'hello');
+  fs.writeFileSync(bad, 'hello');
+
+  const readFile = async (file) => {
+    if (file === bad) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return { total: 7 };
+  };
+
+  const { entries, failures } = await incrementalScan([good, bad], readFile, {});
+  assert.strictEqual(failures, 1);
+  assert.strictEqual(entries[good].value.total, 7);
+  assert.strictEqual(entries[bad], undefined, 'a failed read must not be cached under a fabricated value');
+});
+
+test('a file whose read fails is retried on the next scan, not cached as permanently unreadable', async () => {
+  const dir = tmpDir('cc-cache-');
+  const file = path.join(dir, 'flaky.jsonl');
+  fs.writeFileSync(file, 'hello');
+
+  let attempt = 0;
+  const readFile = async () => {
+    attempt++;
+    if (attempt === 1) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return { total: 9 };
+  };
+
+  const first = await incrementalScan([file], readFile, {});
+  assert.strictEqual(first.failures, 1);
+  assert.deepStrictEqual(first.entries, {});
+
+  const second = await incrementalScan([file], readFile, first.entries);
+  assert.strictEqual(second.failures, 0);
+  assert.strictEqual(second.entries[file].value.total, 9);
+});
+
 test('readCacheFile tolerates a missing or corrupt cache file', async () => {
   const dir = tmpDir('cc-cache-');
   const missing = await readCacheFile(path.join(dir, 'nope.json'));
@@ -145,12 +189,63 @@ test('writeCacheFile then readCacheFile round-trips the entries', async () => {
   assert.deepStrictEqual(read, entries);
 });
 
-test('writeCacheFile writes via a temp file and rename, leaving no .tmp behind', async () => {
+test('writeCacheFile writes via a PER-PID temp file and rename, leaving no debris behind', async () => {
+  // Dexter F7: two host processes sharing this install-wide cache file
+  // (host.js: HARNESS_DIR is install-wide) both writing a FIXED `.tmp` name
+  // could interleave -- B's write landing mid-A's-write, then A's rename
+  // committing a file that is neither snapshot. A tmp name keyed on
+  // `process.pid` keeps concurrent writers from two different processes from
+  // colliding with EACH OTHER.
   const dir = tmpDir('cc-cache-');
   const cacheFile = path.join(dir, 'cache.json');
   await writeCacheFile(cacheFile, { x: { stat: { size: 1, mtimeMs: 1 }, value: 1 } });
   assert.ok(fs.existsSync(cacheFile));
-  assert.ok(!fs.existsSync(cacheFile + '.tmp'), 'the temp file must be cleaned up by the rename');
+  assert.ok(!fs.existsSync(cacheFile + `.${process.pid}.tmp`),
+    'the per-pid temp file must be cleaned up by the rename');
+  // No OTHER leftover file beside the real cache either -- catches a
+  // regression back to a shared fixed name just as well as the exact check
+  // above.
+  const leftovers = fs.readdirSync(dir).filter(f => f !== 'cache.json');
+  assert.deepStrictEqual(leftovers, []);
+});
+
+// --- Dexter F6 (Low, fixed as cheap): a schema version, and no NaN from a --
+// --- cache entry that predates a shape change -----------------------------
+
+test('a cache file written by this module carries a version', async () => {
+  const dir = tmpDir('cc-cache-');
+  const cacheFile = path.join(dir, 'cache.json');
+  await writeCacheFile(cacheFile, { x: { stat: { size: 1, mtimeMs: 1 }, value: 1 } });
+  const raw = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  assert.strictEqual(raw.version, CACHE_VERSION);
+});
+
+test('readCacheFile treats a cache from a DIFFERENT version as empty, not as trusted stale data', async () => {
+  const dir = tmpDir('cc-cache-');
+  const cacheFile = path.join(dir, 'cache.json');
+  fs.writeFileSync(cacheFile, JSON.stringify({
+    version: CACHE_VERSION + 1,
+    entries: { '/a/b.jsonl': { stat: { size: 1, mtimeMs: 1 }, value: { total: 999 } } },
+  }));
+  const entries = await readCacheFile(cacheFile);
+  assert.deepStrictEqual(entries, {});
+});
+
+test('readCacheSummary round-trips a per-agent lifetime summary written alongside the entries', async () => {
+  const dir = tmpDir('cc-cache-');
+  const cacheFile = path.join(dir, 'cache.json');
+  await writeCacheFile(cacheFile, {}, { agents: { paris: { tokens: 42, ms: 100 } } });
+  const summary = await readCacheSummary(cacheFile);
+  assert.deepStrictEqual(summary, { paris: { tokens: 42, ms: 100 } });
+});
+
+test('readCacheSummary tolerates a missing cache file or a stale version', async () => {
+  const dir = tmpDir('cc-cache-');
+  assert.deepStrictEqual(await readCacheSummary(path.join(dir, 'nope.json')), {});
+
+  const stale = path.join(dir, 'stale.json');
+  fs.writeFileSync(stale, JSON.stringify({ version: CACHE_VERSION + 1, agents: { x: { tokens: 1 } } }));
+  assert.deepStrictEqual(await readCacheSummary(stale), {});
 });
 
 // --- lifetimeAgentTokens: the concrete use of incrementalScan for the roster ----
@@ -255,4 +350,112 @@ test('lifetimeAgentTokens counts an unreadable project directory rather than hid
   const r = await lifetimeAgentTokens({ projectsDir: root });
   assert.strictEqual(r.agents.get('paris'), 10);
   assert.strictEqual(r.unreadable, 0);
+});
+
+// --- Dexter F1 (High), integrated: one unreadable transcript must not empty --
+// --- the whole roster --------------------------------------------------------
+
+test('lifetimeAgentTokens resolves and reports unreadable when one of two transcripts throws EBUSY', async () => {
+  const root = tmpDir('cc-lifetime-');
+  const dirA = project(root, 'C:/w/proj-a');
+  session(dirA, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  subagent(dirA, 's1', 'agent-a', { agentType: 'paris', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+
+  const dirB = project(root, 'C:/w/proj-b');
+  session(dirB, 's1', [{ id: 'toolu_1', type: 'dexter' }]);
+  subagent(dirB, 's1', 'agent-a', { agentType: 'dexter', toolUseId: 'toolu_1' }, [turn(0, U(5, 0))]);
+  const busyFile = path.join(dirB, 's1', 'subagents', 'agent-a.jsonl');
+
+  const cacheDir = tmpDir('cc-lifetime-cache-');
+  const cacheFile = path.join(cacheDir, 'roster-lifetime.json');
+  const flakyReader = async (file) => {
+    if (file === busyFile) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return require('../host/agent-stats').readTranscript(file);
+  };
+
+  const r = await lifetimeAgentTokens({ projectsDir: root, cacheFile, readFile: flakyReader });
+  assert.strictEqual(r.agents.get('paris'), 10, 'the OTHER project\'s total must still resolve');
+  assert.ok(r.unreadable >= 1, 'the EBUSY transcript must count as unreadable, never silently dropped');
+  assert.ok(fs.existsSync(cacheFile), 'the cache must still be written for what DID succeed');
+});
+
+// --- Dexter F4, integrated: a corrupt meta.json must count, not vanish -------
+
+test('lifetimeAgentTokens counts a corrupt meta.json as unreadable rather than dropping the run', async () => {
+  const root = tmpDir('cc-lifetime-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'agent-a.meta.json'), '{"agentType":'); // truncated
+  fs.writeFileSync(path.join(sd, 'agent-a.jsonl'), JSON.stringify(turn(0, U(10, 0))) + NL);
+
+  const r = await lifetimeAgentTokens({ projectsDir: root });
+  assert.strictEqual(r.unreadable, 1);
+});
+
+// --- Dexter F3 / Miguel L1, integrated -----------------------------------------
+
+test('lifetimeAgentTokens marks an unresolved label rather than treating it as a confirmed type', async () => {
+  const root = tmpDir('cc-lifetime-');
+  const dir = project(root, 'C:/w/proj-a');
+  // No parent session at all -- the name can never be resolved.
+  subagent(dir, 's1', 'agent-a', { agentType: 'miguel-usage', requestShape: 'background' },
+    [turn(0, U(10, 0))]);
+
+  const r = await lifetimeAgentTokens({ projectsDir: root });
+  assert.strictEqual(r.agents.get('miguel-usage'), 10, 'the tokens are still real and still counted');
+  assert.ok(r.unresolvedAgents.has('miguel-usage'), 'but it must be flagged, not drawn as a confirmed type');
+});
+
+// --- Dexter F5 / Miguel M1: a shared scan is accepted rather than re-walked --
+
+test('lifetimeAgentTokens accepts a pre-computed scan instead of walking the tree again', async () => {
+  const root = tmpDir('cc-lifetime-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  subagent(dir, 's1', 'agent-a', { agentType: 'paris', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+
+  const scan = await scanProjects(root);
+  const r = await lifetimeAgentTokens({ scan });
+  assert.strictEqual(r.agents.get('paris'), 10);
+});
+
+// --- Dexter F6, integrated: a schema-drifted cache entry sums as 0, not NaN --
+
+test('a cache entry with no usable value sums as 0 rather than poisoning the agent total with NaN', async () => {
+  const root = tmpDir('cc-lifetime-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  subagent(dir, 's1', 'agent-a', { agentType: 'paris', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+  const file = path.join(dir, 's1', 'subagents', 'agent-a.jsonl');
+  const stat = fs.statSync(file);
+
+  // A cache entry whose stat still matches but whose value predates today's
+  // shape (as if written by an older version) -- must not survive `readCacheFile`
+  // at all once a version is enforced, but `incrementalScan`'s own summing must
+  // also not trust a malformed `value` blindly.
+  const poisoned = { [file]: { stat: { size: stat.size, mtimeMs: stat.mtimeMs }, value: {} } };
+
+  const r = await lifetimeAgentTokens({ projectsDir: root, prevEntries: poisoned });
+  assert.strictEqual(r.agents.get('paris'), 0);
+  assert.ok(!Number.isNaN(r.agents.get('paris')));
+});
+
+// --- Dexter F5: the "≥ until the first full pass" lower bound must be reachable
+
+test('readCacheSummary lets a caller seed a lower-bound roster before the pass resolves', async () => {
+  const root = tmpDir('cc-lifetime-');
+  const dir = project(root, 'C:/w/proj-a');
+  session(dir, 's1', [{ id: 'toolu_1', type: 'paris' }]);
+  subagent(dir, 's1', 'agent-a', { agentType: 'paris', toolUseId: 'toolu_1' }, [turn(0, U(10, 0))]);
+
+  const cacheDir = tmpDir('cc-lifetime-cache-');
+  const cacheFile = path.join(cacheDir, 'roster-lifetime.json');
+  await lifetimeAgentTokens({ projectsDir: root, cacheFile });
+
+  // A LATER launch, before its own scan has resolved, can read the cache
+  // file's summary directly and have SOMETHING to show immediately.
+  const summary = await readCacheSummary(cacheFile);
+  assert.strictEqual(summary.paris.tokens, 10);
 });
