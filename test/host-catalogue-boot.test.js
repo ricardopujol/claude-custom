@@ -27,7 +27,7 @@ test('the catalogue is fetched once at boot, at module level (not inside a reque
 test('the boot warm-up is a single call, never an interval timer', () => {
   // The spec is explicit: "NO interval timer." A setInterval anywhere near
   // the catalogue would silently reintroduce a background poll.
-  const section = HOST.slice(HOST.indexOf('const CATALOGUE_CACHE'), HOST.indexOf('function currentCatalogue') + 400);
+  const section = HOST.slice(HOST.indexOf('const CATALOGUE_CACHE'), HOST.indexOf('const currentCatalogue') + 400);
   assert.doesNotMatch(section, /setInterval/, 'no polling timer belongs anywhere near the catalogue');
 });
 
@@ -38,10 +38,17 @@ test('the boot fetch failure is swallowed, same as usage/agentStats -- offline a
   assert.match(line, /catch\(\(\) => \{\}\)/, 'a boot-time catalogue failure must not throw or crash the host');
 });
 
-test('currentCatalogue still dedupes: a tab opened while the boot fetch is in flight reuses it', () => {
-  // Not a NEW property (loadCatalogue.test.js covers loadCatalogue itself),
-  // but a regression this boot call could break if `force` defaulted wrong.
-  const fn = HOST.slice(HOST.indexOf('function currentCatalogue'), HOST.indexOf('function currentCatalogue') + 300);
-  assert.match(fn, /if \(cataloguePending && !force\) return cataloguePending;/,
-    'the boot warm-up must share the same in-flight promise a tab-open request would reuse');
+test('the in-flight dedupe itself lives in host/catalogue-cache.js, not reimplemented inline', () => {
+  // Dexter/Miguel, PR #60 review, F5/S1: the dedupe bookkeeping used to live
+  // inline here, untestable, and shipped a real bug (a settling promise could
+  // null the shared slot out from under a still-running one). It moved to its
+  // own module so host/catalogue-cache.test.js can pin the actual behaviour;
+  // this only pins that host.js still WIRES it rather than growing a second,
+  // divergent copy.
+  assert.match(HOST, /require\(['"]\.\/catalogue-cache['"]\)/,
+    'host.js must delegate the catalogue in-flight dedupe to host/catalogue-cache.js');
+  assert.match(HOST, /createCatalogueCache\(\s*\{[^}]*loadCatalogue[^}]*cacheFile[^}]*normalize[^}]*\}\s*\)/,
+    'currentCatalogue must be built from createCatalogueCache, wired to loadCatalogue/normalizeCatalogue');
+  assert.doesNotMatch(HOST, /let cataloguePending/,
+    'the old inline pending-promise variable must be gone, not left dangling alongside the new module');
 });

@@ -35,6 +35,7 @@ const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
+const { createCatalogueCache } = require('./catalogue-cache');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook } = require('./style');
@@ -750,22 +751,24 @@ const sessionModels = createSessionModelRefresher({
 // rather than staying lazy-on-first-request as this comment used to say. A
 // session that opens the Models tab should not sit through a cold network
 // round trip the host had the whole boot sequence to start already. Still
-// exactly ONE request in flight at a time -- `cataloguePending` below dedupes
-// the boot warm-up against a tab opened while it is still in the air -- and
-// still no INTERVAL timer anywhere: this fires once, and every later
-// freshness check is `loadCatalogue`'s own FRESH_MS comparison, driven by a
-// client asking (see the 'models' branch further down) or by a Refresh
+// exactly ONE request in flight at a time -- host/catalogue-cache.js dedupes
+// the boot warm-up against a tab opened while it is still in the air, and a
+// forced (Refresh) call against any OTHER forced or non-forced call still
+// running -- and still no INTERVAL timer anywhere: this fires once, and every
+// later freshness check is `loadCatalogue`'s own FRESH_MS comparison, driven
+// by a client asking (see the 'models' branch further down) or by a Refresh
 // click's `force`.
+//
+// Pulled into its own module (Dexter/Miguel, PR #60 review, F5/S1): the
+// dedupe bookkeeping had a bug (a settling promise could null the shared slot
+// out from under a still-running one) that shipped untested because host.js
+// itself cannot be `require()`d into a unit test. See
+// host/catalogue-cache.js's header for the bug and the fix.
 const CATALOGUE_CACHE = path.join(HARNESS_DIR, 'state', 'openrouter-catalogue.json');
-let cataloguePending = null;
-
-function currentCatalogue({ force = false } = {}) {
-  if (cataloguePending && !force) return cataloguePending;
-  cataloguePending = loadCatalogue({ cacheFile: CATALOGUE_CACHE, force })
-    .then(r => ({ ...r, models: normalizeCatalogue(r.rows), rows: undefined }))
-    .finally(() => { cataloguePending = null; });
-  return cataloguePending;
-}
+const catalogueCache = createCatalogueCache({
+  loadCatalogue, cacheFile: CATALOGUE_CACHE, normalize: normalizeCatalogue,
+});
+const currentCatalogue = (opts) => catalogueCache.current(opts);
 
 // Seats persist, so a council survives a restart. Stored as the thin shape
 // seats.js produces -- id, name, provider -- never a whole catalogue row, which
