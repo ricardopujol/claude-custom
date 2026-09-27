@@ -13,8 +13,29 @@
 const params = new URLSearchParams(location.search);
 const PORT = params.get('port') || '7681';
 const CWD = params.get('cwd') || '';
+const PROJECT = params.get('project') || '';
 
 document.getElementById('cwd').textContent = CWD;
+
+// FF21: "project/branch" in the top-left, replacing the static "claude-custom"
+// label. `currentProjectName` paints immediately from the window's own query
+// params (same source as the OS window title) so there is never a blank
+// header before the host answers, then follows `hello.project` -- NOT held
+// fixed at the query param, since a project switch (see the `projects`
+// message / `cwd` update just above) changes the host this window is
+// attached to and must relabel the header too, not just the cwd line under
+// it. `branch` arrives the same way and also updates live off host.js's
+// `branch` broadcasts. No project name at all (should not happen once a
+// window has a cwd) falls back to the original static label.
+let currentProjectName = PROJECT;
+let currentBranchName = null;
+function renderTitle() {
+  const el = document.getElementById('title');
+  if (!el) return;
+  const project = currentProjectName || 'claude-custom';
+  el.textContent = currentBranchName ? `${project}/${currentBranchName}` : project;
+}
+renderTitle();
 
 // --- terminal ---------------------------------------------------------------
 const term = new Terminal({
@@ -2243,6 +2264,9 @@ function handleControl(msg) {
     // is already on screen and the session appears twice.
     term.reset();
     document.getElementById('cwd').textContent = msg.cwd || '';
+    if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
+    currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
+    renderTitle();
     // `msg.background` is already resolved through host/style.js (the
     // project's own copy wins over generated art) and `msg.theme` already has
     // the project's look merged in; `msg.style` carries WHY, for the panel.
@@ -2293,6 +2317,11 @@ function handleControl(msg) {
   if (msg.type === 'mood') {
     roster.set(msg.agent, msg);
     renderRoster();
+    return;
+  }
+  if (msg.type === 'branch') {
+    currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
+    renderTitle();
     return;
   }
   if (msg.type === 'processes') {

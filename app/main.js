@@ -184,6 +184,9 @@ function createWindow(spawnedHost) {
 
   win.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { port: String(PORT), cwd: PROJECT_CWD,
+             // FF21: the header's project name, painted before the host even
+             // answers -- same source of truth as the OS window title above.
+             project: projectLabel(PROJECT_CWD),
              // The token the host will demand. Read back from disk when we
              // reattached to a host that was already running and therefore
              // generated its own.

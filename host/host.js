@@ -31,6 +31,8 @@ const { readAgentStats } = require('./agent-stats');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
 const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
+const { projectLabel } = require('./project-path');
+const { currentBranch } = require('./git-branch');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
@@ -366,6 +368,13 @@ const vaultPayload = () => bugVault.payload();
 // broadcast too. Without it the panel is never told the list emptied and the
 // final row stays on screen.
 let cooldownsWere = 0;
+
+// FF21: the header's "project/branch" label. Polled rather than watched -- a
+// checkout is a human-paced action, and `fs.watch` on `.git/HEAD` fires on
+// every commit too, which is not a branch change. Tracks the last VALUE, not
+// just truthiness, so a branch-to-branch switch broadcasts (cooldowns only
+// needed the falling edge; this needs every edge).
+let branchWas = currentBranch(CWD);
 
 const attention = createAttention({
   project: path.basename(CWD),
@@ -1167,6 +1176,20 @@ const moodTimer = setInterval(() => {
 }, 1000);
 moodTimer.unref();
 
+// FF21: 3s rather than the 1s mood cadence -- a `git checkout` is a deliberate,
+// human-paced action, not a per-second tick like elapsed time, and reading a
+// tiny file three times a second for that would be pure waste. Broadcasts on
+// every CHANGE of value, not just a falling edge -- checking out a second
+// branch must update the header too, not just clear it.
+const branchTimer = setInterval(() => {
+  const branch = currentBranch(CWD);
+  if (branch !== branchWas) {
+    branchWas = branch;
+    broadcastControl({ type: 'branch', branch });
+  }
+}, 3000);
+branchTimer.unref();
+
 // Usage is re-read from the transcripts on a timer rather than tracked here:
 // the transcripts are authoritative, and they already account for spend this
 // harness never saw. Polled rather than watched because the file is appended to
@@ -1270,6 +1293,13 @@ wss.on('connection', (ws) => {
   sendControl(ws, {
     type: 'hello',
     cwd: CWD,
+    // FF21. `project` is the same source of truth as the OS window title
+    // (FF3, `projectLabel`) rather than a second guess at the same string.
+    // `branch` is null for "not a git repo"; for a detached HEAD it is a
+    // `~`-prefixed short SHA (see host/git-branch.js) rather than a bare one,
+    // so it can never read as a real branch of the same name.
+    project: projectLabel(CWD),
+    branch: branchWas,
     theme: styleResolved.theme,
     hooks: helperExists,
     background: styleResolved.background,
