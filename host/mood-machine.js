@@ -200,12 +200,34 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   //     to swap with.
   // Acting on it then ended a live run (Dexter, PR #56, #1): the result is
   // ignored instead, and that run ends on its own SubagentStop.
+  //
+  // A swap moves each record's CHILDREN along with its id. A child attached
+  // through its spawner's agent_id, so it belongs to that RUN, not to the
+  // record the run was guessed onto. Moving the id alone left A's child on
+  // the record that then finished as B, cutting a live child off (Dexter,
+  // PR #56, R1).
+  //
+  // Nobody holding the named id is not proof `inv`'s id is right, either. If
+  // the named run never spoke, the id `inv` holds was a first-come guess that
+  // belongs to an UNBOUND sibling of its type, and that sibling takes it. With
+  // no such sibling there's nothing to swap with, and the result is refused.
+  // (Found by the property generator once it could drop a SubagentStop: the
+  // result was refused, and the finished run showed working until the stall.)
   function adopt(inv, agentId) {
     if (inv.agentId === agentId) return true;
     if (endedIds.has(agentId)) return false;
-    const other = invs.find(i => i.agentId === agentId);
-    if (!other && inv.agentId) return false;
-    if (other) other.agentId = inv.agentId;
+    let other = invs.find(i => i.agentId === agentId);
+    if (!other && inv.agentId) {
+      other = invs.find(i => i !== inv && !i.agentId && i.name === inv.name);
+      if (!other) return false;
+    }
+    if (other) {
+      for (const c of invs) {
+        if (c.parent === inv) c.parent = other;
+        else if (c.parent === other) c.parent = inv;
+      }
+      other.agentId = inv.agentId;
+    }
     inv.agentId = agentId;
     return true;
   }
@@ -285,10 +307,27 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   const finish = inv => end(subtree(inv), i => i === inv);
   const cutOff = list => end(list, () => false);
 
+  // A completed result for a spawn whose RECORD already closed. Usually an
+  // echo of a run that's over (its id is in endedIds), and ignored. But a
+  // crosswise binding can close the record under the OTHER run's
+  // SubagentStop, and the run the result names then lives on another record,
+  // bound to it when it spoke late. The result names that id for certain, so
+  // its holder finishes. Without this, a run whose own SubagentStop was
+  // dropped stayed working until the stall reaper (property generator, once
+  // it could drop a SubagentStop). A run that never spoke is held by nobody,
+  // and is left to the reapers: any unbound record of its type could be a
+  // different live run.
+  function lateResult(event, p) {
+    const r = p.tool_response;
+    if (event !== 'PostToolUse' || !isCompleted(r) || !r.agentId) return;
+    const holder = invs.find(i => i.agentId === r.agentId);
+    if (holder) finish(holder);
+  }
+
   // The spawn's own result: PostToolUse / PostToolUseFailure of the Agent
   // tool, matched by tool_use_id. It is the SPAWNER's call, never the child's.
   function spawnResult(inv, event, p, interrupted) {
-    if (!inv || !isOpen(inv)) return;       // a tombstoned spawn: its run is over
+    if (!inv || !isOpen(inv)) { lateResult(event, p); return; }
     if (interrupted) { cutOff(subtree(inv)); return; }
     if (event === 'PostToolUseFailure') {
       ensure(inv.name).errors++;

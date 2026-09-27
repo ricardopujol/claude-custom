@@ -383,6 +383,88 @@ test('Dexter #1: a late agentId "correction" never ends a run bound to a differe
   assert.deepStrictEqual(h.m.stack(), []);
 });
 
+test('Dexter R1: correcting a crosswise pair moves the children with the run, so a live sibling\'s child is not cut off', () => {
+  // #1's steps with B's SubagentStop DROPPED (31 times in 35, host/usage.js).
+  // Both records are still open when k2's result names `b`, so the ids swap.
+  // Children hang on the RUN (they attached through its agent_id), so they
+  // must follow the id: finishing k2's record used to take A's child U with
+  // it, and U showed asleep for the rest of its run.
+  const h = harness();
+  h.spawn('T', 'k1');                                   // run A
+  h.spawn('T', 'k2');                                   // run B
+  h.call('b', 'T');                                     // B speaks first: crosswise
+  h.call('a', 'T');
+  h.spawn('U', 'k3', { by: 'a', byType: 'T' });         // A's child
+  h.spawn('V', 'k4', { by: 'b', byType: 'T' });         // B's child
+  // B finishes; its SubagentStop is dropped. Its result names it.
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 'k2', tool_input: { subagent_type: 'T' },
+    tool_response: { status: 'completed', agentId: 'b' } } });
+  assert.ok(h.busy('T'), 'A is still running');
+  assert.ok(h.busy('U'), 'and so is its child');
+  assert.strictEqual(h.m.stateOf('U'), 'working');
+  assert.ok(!h.busy('V'), "B's child ended with B");
+  const invs = h.m.invocations();
+  const a = invs.find(i => i.agentId === 'a');
+  const u = invs.find(i => i.name === 'U');
+  assert.strictEqual(u.parentId, a.id, "U hangs on the record now holding `a`");
+  h.call('u', 'U');
+  assert.strictEqual(h.m.stateOf('U'), 'working', "U's own calls still reach it");
+  h.subStop('a', 'T');
+  assert.deepStrictEqual(h.m.stack(), [], 'A ending takes its child with it');
+});
+
+test('a result naming a silent run moves the guessed id to the unbound sibling it belongs to', () => {
+  // A never speaks; B speaks and first-come binding puts `b` on A's record.
+  // A finishes and its SubagentStop is dropped, so k1's result naming `a`
+  // is all there is. Nobody holds `a`, but `b` was a guess: it belongs to
+  // the unbound sibling. Refusing the result left A working until the stall.
+  const h = harness();
+  h.spawn('T', 'k1');                                   // run A, silent
+  h.spawn('T', 'k2');                                   // run B
+  h.call('b', 'T');                                     // lands on k1's record
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 'k1', tool_input: { subagent_type: 'T' },
+    tool_response: { status: 'completed', agentId: 'a' } } });
+  const invs = h.m.invocations();
+  assert.strictEqual(invs.length, 1, 'A is over');
+  assert.strictEqual(invs[0].agentId, 'b', 'B keeps its id, on its own record');
+  h.subStop('b', 'T');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('a result for a record closed crosswise finishes the run it names, wherever that run now is', () => {
+  // A speaks late. B's first call lands on A's record (k1), and B's
+  // SubagentStop closes k1. A then speaks, and binds to k2's record. A
+  // finishes with its SubagentStop dropped: k1's result names `a`. k1 is
+  // tombstoned, but `a` is held by an open record, so that record finishes.
+  const h = harness();
+  h.spawn('T', 'k1');                                   // run A
+  h.spawn('T', 'k2');                                   // run B
+  h.call('b', 'T');                                     // crosswise: on k1
+  h.subStop('b', 'T');                                  // closes k1
+  h.call('a', 'T');                                     // binds k2
+  assert.ok(h.busy('T'), 'A is running');
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 'k1', tool_input: { subagent_type: 'T' },
+    tool_response: { status: 'completed', agentId: 'a' } } });
+  assert.deepStrictEqual(h.m.stack(), [], 'A finished');
+  assert.strictEqual(h.m.stateOf('T'), 'happy');
+});
+
+test('a late result naming a run that never spoke ends nothing', () => {
+  // Nobody holds `a`, and the only open record of its type may be a
+  // different live run: a guess here could end it. Left to the reapers.
+  const h = harness();
+  h.spawn('T', 'k1');
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [] } });   // k1 lost its close
+  h.spawn('T', 'k2');                                   // a new, live, silent run
+  h.m.handle({ event: 'PostToolUse', payload: {
+    tool_name: 'Agent', tool_use_id: 'k1', tool_input: { subagent_type: 'T' },
+    tool_response: { status: 'completed', agentId: 'a' } } });
+  assert.ok(h.busy('T'), 'the live run is untouched');
+});
+
 test('Dexter #1: a correction naming an id nobody holds does not re-key a run bound to a live id', () => {
   const h = harness();
   h.spawn('T', 'k1');

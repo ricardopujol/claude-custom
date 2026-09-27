@@ -27,8 +27,13 @@
  * late can be bound CROSSWISE with a same-type sibling. Between SIBLINGS
  * UNDER ONE PARENT that's harmless -- which one is which doesn't change the
  * card -- and it's the shape of Dexter #1, so it's generated: runs of
- * LATE_TYPE may speak late (or never), are always spawned by the main
- * session, and never spawn anything themselves. Across DIFFERENT parents, or
+ * LATE_TYPE may speak late (or never) and are always spawned by the main
+ * session. They may spawn children of their own -- speaking at that moment,
+ * since the spawn carries their agent_id -- and a foreground run's
+ * SubagentStop may be DROPPED, leaving only its spawn's result: together
+ * that's the shape of Dexter R1, where correcting a crosswise pair left a
+ * live sibling's child on the record that finished. (A run that never spoke
+ * doesn't get its SubagentStop dropped: see `finish`.) Across DIFFERENT parents, or
  * under a key-addressed Esc, a crosswise binding is the PR's documented
  * known limitation (nothing in the payloads can tell the runs apart until
  * the spawn's result arrives), so the generator doesn't ask for it: every
@@ -57,7 +62,7 @@ function opArb(callKinds, mainKinds = MAIN_KINDS) {
     { weight: 5, arbitrary: fc.record({ op: fc.constant('call'), who: fc.nat(), kind: fc.constantFrom(...callKinds) }) },
     { weight: 2, arbitrary: fc.record({ op: fc.constant('mainCall'), kind: fc.constantFrom(...mainKinds) }) },
     { weight: 3, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat(), result: fc.boolean(),
-      resultFirst: fc.boolean(), dup: fc.boolean() }) },
+      resultFirst: fc.boolean(), dup: fc.boolean(), drop: fc.boolean() }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('lateEcho'), who: fc.nat(), stop: fc.boolean() }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('escSpawn'), who: fc.nat() }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('escMain') }) },
@@ -99,7 +104,7 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         // Weighted toward LATE_TYPE, so silent same-type siblings -- the
         // shape a crosswise or stolen binding needs -- are common.
         const type = TYPES[Math.min(o.type % 6, TYPES.length - 1)];
-        const spawners = live.filter(x => x.type !== LATE_TYPE);    // LATE_TYPE never spawns
+        const spawners = live;
         const at = o.from % (spawners.length + 1);
         const from = type === LATE_TYPE || at === 0 ? null : spawners[at - 1];
         const a = { id: 'ag' + (++n), key: 'tu' + n, type, parent: from, bg: o.bg, alive: true };
@@ -149,6 +154,14 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
           if (!a.bg && o.result) send('PostToolUse', { tool_name: 'Agent', tool_use_id: a.key,
             tool_input: { subagent_type: a.type }, tool_response: { status: 'completed', agentId: a.id }, ...by(a.parent) });
         };
+        // A dropped SubagentStop (31 times in 35, host/usage.js) leaves only
+        // the result to say the run ended, so it's only dropped when one comes
+        // -- and only for a run that has SPOKEN. A run that never made a call
+        // and lost its SubagentStop is held by no record the machine can pick
+        // for certain (after a Stop or a reap, an unbound record of its type
+        // may be a different live run), so it's left to the stall reaper: a
+        // documented limitation, like the crosswise Esc below.
+        if (o.drop && !a.bg && o.result && a.told) { result(); break; }
         if (o.resultFirst) { result(); stop(); } else { stop(); result(); }
         if (o.dup) stop();                                          // delivered twice
         break;
