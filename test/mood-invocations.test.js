@@ -357,6 +357,31 @@ test('Dexter #3: a main-session PostToolUse never touches a background agent', (
   }
 });
 
+test('Dexter #4: a duplicate SubagentStop for an ended id does not end a silent sibling', () => {
+  const h = harness();
+  h.spawn('miguel', 't1');
+  h.spawn('miguel', 't2');
+  h.call('a', 'miguel');               // A speaks; B has not yet
+  h.subStop('a', 'miguel');
+  h.subStop('a', 'miguel');            // the duplicate
+  assert.deepStrictEqual(h.m.stack(), ['miguel']);
+  assert.strictEqual(h.m.stateOf('miguel'), 'working');
+  h.call('b', 'miguel');
+  h.subStop('b', 'miguel');
+  assert.strictEqual(h.m.stateOf('miguel'), 'happy', 'B keeps its own identity to the end');
+});
+
+test('Dexter #4: a late call from an ended agent is ignored, not bound to a sibling', () => {
+  const h = harness();
+  h.spawn('miguel', 't1');
+  h.spawn('miguel', 't2');
+  h.call('a', 'miguel');
+  h.subStop('a', 'miguel');
+  h.call('a', 'miguel', { exit_code: 1 });   // late
+  assert.strictEqual(h.m.stateOf('miguel'), 'working', 'nobody is blamed for a run that has ended');
+  assert.strictEqual(h.m.invocations()[0].agentId, null, 'and the sibling is still unbound');
+});
+
 test('Dexter #3: a main-session failure does not stress a foreground subagent on the current CLI', () => {
   const h = harness();
   h.spawn('paris', 't1');

@@ -93,6 +93,15 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
 const isAsyncLaunch = r => !!r && typeof r === 'object' && (r.isAsync === true || r.status === 'async_launched');
 const isCompleted = r => !!r && typeof r === 'object' && r.status === 'completed';
 
+// How many ended identities are remembered. A late echo arrives within
+// seconds; this is hundreds of spawns of headroom, not a history.
+const REMEMBER_MAX = 1024;
+function remember(set, value) {
+  set.delete(value);
+  set.add(value);
+  if (set.size > REMEMBER_MAX) set.delete(set.values().next().value);
+}
+
 function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS,
                             maxInvocationMs = MAX_INVOCATION_MS, flashMs = 8_000 } = {}) {
   const machine = new EventEmitter();
@@ -135,6 +144,12 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // has arrived, a call WITHOUT one is the main session's own (Dexter, PR #56,
   // #3). Before that, it may be an older CLI that labels nobody.
   let saysWho = false;
+  // agent_ids whose run has ENDED here. "Ended" and "never seen" are
+  // different facts: without this, a duplicate or late event from an ended
+  // run took the next unbound sibling of its type and ended THAT (Dexter,
+  // PR #56, #4). Bounded, oldest out: ids are unique per session, so only a
+  // late echo needs remembering, not the whole history.
+  const endedIds = new Set();
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -161,7 +176,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // bound crosswise the CARD is unaffected -- both are the same name -- and
   // the spawn's result, which names its agentId, corrects it (see adopt()).
   function bind(agentId, agentType) {
-    if (!agentId) return null;
+    if (!agentId || endedIds.has(agentId)) return null;   // over: not a new run
     const known = invs.find(i => i.agentId === agentId);
     if (known) return known;
     const free = agentType ? invs.find(i => !i.agentId && i.name === agentType) : undefined;
@@ -228,6 +243,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const at = invs.indexOf(inv);
       if (at === -1) continue;
       invs.splice(at, 1);
+      if (inv.agentId) remember(endedIds, inv.agentId);
       names.set(inv.name, names.get(inv.name) || completed(inv));
     }
     for (const [name, finished] of names) {
