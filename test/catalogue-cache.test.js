@@ -96,3 +96,26 @@ test('the rows are normalized and never leak the raw `rows` key', async () => {
   assert.deepStrictEqual(r.models, [{ id: 'a/b', normalized: true }]);
   assert.strictEqual(r.rows, undefined);
 });
+
+// Dexter, PR #60 round 2, N4 (latent): `promise.finally(...)`'s own return
+// value re-rejects if `promise` does, and nothing was attached to catch it --
+// an unhandled rejection that Node's default config turns into a crashed
+// process. Unreachable today (loadCatalogue/normalizeCatalogue are both
+// total) but fixed anyway, since "unreachable" is a claim about the CALLERS
+// this module has today, not a guarantee about the ones it will have.
+test('N4: a rejecting loader never produces an unhandled rejection', async () => {
+  let unhandled = null;
+  const onUnhandled = (err) => { unhandled = err; };
+  process.once('unhandledRejection', onUnhandled);
+  try {
+    const cache = createCatalogueCache({ loadCatalogue: () => Promise.reject(new Error('boom')), cacheFile: 'x' });
+    await assert.rejects(cache.current(), /boom/, 'the caller must still see the real rejection');
+    // Unhandled rejections are reported asynchronously, after the microtask
+    // queue this test's own await already drained -- one more tick is enough
+    // for Node to have fired the event if it was going to.
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(unhandled, null, 'the derived .finally() promise must not surface as unhandled');
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled);
+  }
+});

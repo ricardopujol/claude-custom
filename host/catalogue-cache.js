@@ -31,7 +31,17 @@ function createCatalogueCache({ loadCatalogue, cacheFile, normalize = (x) => x }
     const promise = loadCatalogue({ cacheFile, force })
       .then((r) => ({ ...r, models: normalize(r.rows), rows: undefined }));
     pending = promise;
-    promise.finally(() => { if (pending === promise) pending = null; });
+    // Dexter, PR #60 round 2, N4 (latent): `.finally()` returns a NEW promise
+    // that re-rejects with `promise`'s own reason if `promise` rejects, and
+    // nothing else holds a reference to THIS one. `promise` itself is
+    // returned to the caller, who is expected to handle it -- but this
+    // derived one is not, and with no `.catch` it is an unhandled rejection,
+    // which Node's default `--unhandled-rejections=throw` turns into a
+    // crashed host. Unreachable TODAY (`loadCatalogue` is total: readCache,
+    // fetch and writeCache all catch; `normalize` is defensive) -- exactly
+    // why this is Low, and exactly why it is fixed anyway rather than relied
+    // on staying unreachable forever.
+    promise.finally(() => { if (pending === promise) pending = null; }).catch(() => {});
     return promise;
   }
 
