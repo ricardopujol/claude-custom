@@ -424,7 +424,16 @@ function setTab(tab) {
   // restore of a saved tab on launch. Hanging it off the click alone meant a
   // window that reopened with the panel already showing never asked for
   // anything and sat on "loading" forever.
-  if (tab === 'models' && !catalogueMeta) requestModels(false);
+  //
+  // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one ever
+  // (`!catalogueMeta` used to gate this, so a window kept open past one
+  // FRESH_MS window silently stopped re-checking and its "just now" label
+  // froze there for good). `host/openrouter.js`'s `loadCatalogue` already
+  // knows how to answer this cheaply -- a fresh cache is returned with no
+  // network call at all -- so asking every time costs nothing when there is
+  // nothing to refresh, and it is the host, not a client-side copy of
+  // FRESH_MS, that decides.
+  if (tab === 'models') requestModels(false);
   if (tab === 'vault') {
     renderVault();
     setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -1139,10 +1148,14 @@ let councilWarnings = [];
 // BACKLOG E #5. Favourites: app/models-favourites.js decides shape and
 // ordering; this is only the last answer main handed back (or the empty
 // shape until it does). Refresh: true from the click that sent `force`
-// until the next 'models' message clears it -- app/models-refresh.js decides
-// what the button says from this one flag.
+// until the REPLY THAT ANSWERS IT clears it (app/models-catalogue.js's
+// shouldClearPending, Dexter PR #60 F4) -- app/models-refresh.js decides
+// what the button says from this one flag. `refreshRequestedAt` is that
+// click's timestamp, the only thing that lets a later reply be told apart
+// from an older, unrelated one still in flight.
 let modelFavourites = emptyFavourites();
 let modelsRefreshPending = false;
+let refreshRequestedAt = null;
 
 const money = (perM) => {
   if (perM === null || perM === undefined) return null;
@@ -1297,12 +1310,21 @@ function renderModels() {
   // whole list, ahead of the provider grouping -- a star must never end up
   // buried inside its provider's own price/context position. Sorted by the
   // same comparator as everything else, so "cheapest" orders this section too.
+  //
+  // Miguel, PR #60 review, S2: capped by the SAME `LIMIT` as the grouped
+  // section below, not exempt from it -- 200+ favourited rows would stutter a
+  // keystroke exactly as 200+ ungrouped ones would, and the cap exists for
+  // the DOM cost, which does not care which section a row is in.
   const { favourites: favRows, rest: restRows } = partitionFavourites(rows, modelFavourites.openrouter, (m) => m.id);
   if (favRows.length) {
     favRows.sort(within);
     out.push('<div class="provider"><span class="p-name">★ favourites</span>' +
       '<span class="p-count">' + favRows.length + '</span></div>');
-    for (const m of favRows) { out.push(renderRow(m)); drawn++; }
+    for (const m of favRows) {
+      if (drawn >= LIMIT) break;
+      out.push(renderRow(m));
+      drawn++;
+    }
   }
 
   // GROUPED BY PROVIDER. 445 flat rows is a wall; the provider is also the unit
@@ -1339,20 +1361,30 @@ function requestModels(force) {
   try { ws.send(JSON.stringify({ type: 'models', force: !!force })); } catch (e) {}
 }
 
-// BACKLOG E #5, #3. Toggles `kind`/`id` both locally (so the star flips at
-// once) and through the bridge (so it survives a restart) -- see
-// app/favourites-bridge.js. The bridge's answer still wins once it arrives:
-// a second window's toggle landing in between must not be clobbered by this
-// window's optimistic guess.
+// BACKLOG E #5, #3. Flips `kind`/`id` locally (so the star responds at once)
+// and sends the DESIRED end state through the bridge -- see
+// app/favourites-bridge.js. Dexter, PR #60 review, F6: sending "toggle"
+// instead of the state this click actually wants would let a second window's
+// staler view invert the click the moment the two windows disagree, since a
+// toggle is computed against whatever the STORE currently holds rather than
+// what this window is reacting to.
 function toggleModelFavourite(kind, id) {
-  modelFavourites = toggleFavourite(modelFavourites, kind, id);
+  const before = modelFavourites;
+  const on = !isFavourite(before, kind, id);
+  modelFavourites = setFavourite(before, kind, id, on);
   if (kind === 'claude') renderClaudeChoices(); else renderModels();
   if (!(window.harness && window.harness.favourites)) return;
-  window.harness.favourites.toggle(kind, id).then((f) => {
-    if (!f) return;
-    modelFavourites = normalizeFavourites(f);
+  window.harness.favourites.set(kind, id, on).then((f) => {
+    // Dexter F7: a save that could not be written (disk full, EPERM) answers
+    // `null`. Rolling the optimistic star back to what it was before this
+    // click keeps the screen honest -- a star nobody could save must not
+    // outlive the click that drew it, only to silently vanish on restart.
+    modelFavourites = f ? normalizeFavourites(f) : before;
     if (kind === 'claude') renderClaudeChoices(); else renderModels();
-  }).catch(() => {});
+  }).catch(() => {
+    modelFavourites = before;
+    if (kind === 'claude') renderClaudeChoices(); else renderModels();
+  });
 }
 
 function wireModelPanel() {
@@ -1399,6 +1431,7 @@ function wireModelPanel() {
     refreshBtn.addEventListener('click', () => {
       if (modelsRefreshPending) return;
       modelsRefreshPending = true;
+      refreshRequestedAt = Date.now();
       renderRefreshButton();
       requestModels(true);
     });
@@ -2541,14 +2574,25 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'models') {
-    catalogue = Array.isArray(msg.models) ? msg.models : [];
-    catalogueMeta = { source: msg.source, fetchedAt: msg.fetchedAt, stale: msg.stale, error: msg.error };
+    // Dexter, PR #60, F1 + F4: NOT authoritative on its own. Reconciled
+    // against what is already shown -- a failed refresh must never blank the
+    // rows on screen, and a reply older than what is displayed must never
+    // clobber it, whichever request (boot warm-up, tab open, Refresh) it
+    // answers. See app/models-catalogue.js for the whole reasoning.
+    const merged = mergeCatalogueReply({ rows: catalogue, meta: catalogueMeta }, msg);
+    catalogue = merged.rows;
+    catalogueMeta = merged.meta;
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (Array.isArray(msg.warnings)) councilWarnings = msg.warnings;
     if (msg.max) seatMax = msg.max;
-    // Whatever asked for this (a tab open, a stale re-check, or a Refresh
-    // click) has its answer now -- the button can be clicked again.
-    modelsRefreshPending = false;
+    // F4 (second half): only the reply that actually answers the outstanding
+    // Refresh click clears its `pending` flag -- an older, unrelated reply
+    // landing first must not re-enable the button while the real answer is
+    // still in flight.
+    if (modelsRefreshPending && shouldClearPending(refreshRequestedAt, msg)) {
+      modelsRefreshPending = false;
+      refreshRequestedAt = null;
+    }
     renderSeats();
     renderProvenance();
     renderModels();
@@ -2644,6 +2688,16 @@ function connect() {
     // load is thrown away. Ask again once there is somewhere to ask.
     if (activeTab === 'fog') requestFog();
     if (activeTab === 'projects') requestProjects();
+    // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
+    // `ws.send` throws (InvalidStateError) while the socket is still
+    // CONNECTING -- e.g. a Refresh click, or a tab reopen, during the 1s
+    // reattach loop below -- and that throw is swallowed, same as
+    // requestFog's comment above says fog's used to be. Left uncaught, the
+    // Refresh button would stay disabled "Refreshing..." forever, since
+    // nothing else ever re-asks. Reusing whatever `force` a stuck click had
+    // set carries the user's actual request forward rather than silently
+    // downgrading it to a plain re-check.
+    if (activeTab === 'models') requestModels(modelsRefreshPending);
   };
 
   // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.

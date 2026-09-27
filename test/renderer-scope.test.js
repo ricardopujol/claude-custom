@@ -77,10 +77,12 @@ const ALLOWED_GLOBALS = new Set([
   // renderer.js's key handler, like isPanelToggle.
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote',
   // app/models-favourites.js (BACKLOG E #5, #3)
-  'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'toggleFavourite',
+  'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'toggleFavourite', 'setFavourite',
   'partitionFavourites', 'pinFavouritesFirst',
   // app/models-refresh.js (BACKLOG E #5, #2)
   'refreshButtonState',
+  // app/models-catalogue.js (BACKLOG E #5, PR #60 review: Dexter F1/F4)
+  'mergeCatalogueReply', 'shouldClearPending',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules
@@ -192,8 +194,9 @@ test('the display modules the renderer needs are actually defined after loading'
                     'rosterWidth', 'faceSize', 'bugVaultDisplay',
                     'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry',
                     'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote',
-                    'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'toggleFavourite',
-                    'partitionFavourites', 'pinFavouritesFirst', 'refreshButtonState']) {
+                    'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'setFavourite',
+                    'partitionFavourites', 'pinFavouritesFirst', 'refreshButtonState',
+                    'mergeCatalogueReply', 'shouldClearPending']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });
