@@ -14,9 +14,10 @@
  * and caches whatever that function returns, keyed on the file's own
  * path+size+mtime. `lifetimeAgentTokens` is the concrete use (readTranscript
  * from host/agent-stats.js, identity resolution shared with
- * host/roster-index.js). Kept generic because the REQUIRED property (BACKLOG:
- * "the cached total equals a from-scratch total for any sequence of file
- * adds/grows") is a property of the CACHE, not of transcripts specifically.
+ * host/roster-index.js's `scanProjects`). Kept generic because the REQUIRED
+ * property (BACKLOG: "the cached total equals a from-scratch total for any
+ * sequence of file adds/grows") is a property of the CACHE, not of transcripts
+ * specifically.
  *
  * NEVER SILENTLY GOES DOWN. A file that shrank or changed in any way that
  * moves its size or mtime is re-read, never left at its old (possibly larger)
@@ -27,17 +28,26 @@
  * serve both "the file was deleted" and "the file was outside the scan this
  * time" without either being confused for the other.
  *
- * A FAILED READ (PR #59 review, Dexter F1 -- High) IS NOT A STALE READ, and the
- * two used to be handled identically wrong: `readTranscript` (and any other
+ * A FAILED READ (Dexter F1, PR #59 R1 -- High) IS NOT A STALE READ, and the two
+ * used to be handled identically wrong: `readTranscript` (and any other
  * `readFile`) THROWS on anything but ENOENT, by design -- its own callers are
  * supposed to catch and count (host/agent-stats.js does, for its one-project
  * career panel). `incrementalScan` used to call `readFile` with no try/catch at
  * all, so a single EBUSY/EPERM/EISDIR among 1232 real transcripts rejected the
- * WHOLE roster scan, the cache was never written, and every attach re-paid the
- * full ~14s cold pass for as long as the fault lasted. A per-file failure now
- * counts (`failures`) and is deliberately NOT cached -- caching it under the
- * file's current stat would skip retrying it once the transient hazard clears,
- * even though nothing about the file itself changed.
+ * WHOLE roster scan. A per-file failure now counts (`failures`/`failedFiles`)
+ * and is deliberately NOT cached -- caching it under the file's current stat
+ * would skip retrying it once the transient hazard clears. Logged, once, with
+ * the path and error code (Dexter N4, PR #59 R2): before this a DETERMINISTIC
+ * bug (a `TypeError` on an unexpected line shape, say) looked identical to a
+ * transient antivirus lock -- silently retried forever, "≥" shown on every
+ * launch, with nothing anywhere naming which file or why.
+ *
+ * AN AGENT WHOSE ONLY TRANSCRIPT FAILED TO READ IS NOT "NEVER USED" (Dexter N2,
+ * PR #59 R2): a run that genuinely happened but couldn't be measured this pass
+ * must stay distinguishable from a definition that has never run at all --
+ * `unreadableAgents` carries exactly that set, resolved via the SAME identity
+ * lookup as a successful run (a failed content read says nothing about
+ * identity, which lives in `.meta.json`, a separate file).
  *
  * PERSISTED THE SAME WAY host/openrouter.js's catalogue cache is: write to a
  * `.tmp` sibling, then `renameWithRetryAsync` -- host/atomic-write.js's own
@@ -52,6 +62,16 @@
  * apply to every transcript touched from now on but never to one whose
  * size+mtime stop changing. Bumping `CACHE_VERSION` invalidates the whole
  * cache at once rather than serving stale values forever.
+ *
+ * THE SEED IS A LOWER BOUND ONLY IF ITS FILES STILL EXIST (Dexter N1, PR #59
+ * R2): the per-agent SUMMARY alone (`readCacheSummary`) is NOT safe to publish
+ * as "≥" -- Claude Code's own transcript retention can delete an OLD
+ * transcript between host launches, and a summary built while that file still
+ * existed can then be LARGER than the true current total, which is the
+ * opposite of what "≥" is allowed to claim. `readCacheSeed` fixes this by
+ * persisting a per-FILE `agent` attribution (`files`) alongside the per-file
+ * `entries`, and re-summing ONLY the files that still exist (a cheap `stat`,
+ * no content read) at seed time -- a genuine lower bound, never an overstatement.
  */
 
 const fsp = require('fs/promises');
@@ -59,7 +79,7 @@ const path = require('path');
 const os = require('os');
 const { renameWithRetryAsync } = require('./atomic-write');
 const { readTranscript } = require('./agent-stats');
-const { scanProjects, resolveSubagentEntry } = require('./roster-index');
+const { scanProjects } = require('./roster-index');
 
 function defaultProjectsDir() { return path.join(os.homedir(), '.claude', 'projects'); }
 
@@ -78,27 +98,32 @@ function sameStat(a, b) {
  * re-using `prevEntries[file]` whenever that file's on-disk size+mtime still
  * match what was cached, and calling `readFile(file)` for everything else.
  *
- * Returns `{ entries, reread, failures }`:
- *   entries   Map-shaped plain object, `file -> { stat: {size, mtimeMs}, value }`,
- *             where `value` is whatever `readFile` resolved to. Contains ONLY
- *             the files in `filePaths` that could be stat'd AND read
- *             successfully -- a file absent from `filePaths`, one that
- *             vanished between listing and stat, and one whose read THREW are
- *             all simply not a key here, never a stale carry-over and never a
- *             fabricated value.
- *   reread    how many files were actually read this pass (successfully or
- *             not), so a caller (or a test) can assert the cache is doing its
- *             job rather than quietly re-reading everything every time.
- *   failures  how many of those reads THREW (Dexter F1) -- the file exists
- *             (it was just stat'd) but could not be read: EBUSY/EPERM/EISDIR,
- *             the same transient hazard host/atomic-write.js documents on
- *             this machine. Counted, never rethrown: one bad file among
- *             thousands must not abort the whole scan.
+ * Returns `{ entries, reread, failures, failedFiles }`:
+ *   entries      Map-shaped plain object, `file -> { stat: {size, mtimeMs},
+ *                value }`, where `value` is whatever `readFile` resolved to.
+ *                Contains ONLY the files in `filePaths` that could be stat'd
+ *                AND read successfully -- a file absent from `filePaths`, one
+ *                that vanished between listing and stat, and one whose read
+ *                THREW are all simply not a key here, never a stale
+ *                carry-over and never a fabricated value.
+ *   reread       how many files were actually read this pass (successfully or
+ *                not), so a caller (or a test) can assert the cache is doing
+ *                its job rather than quietly re-reading everything every time.
+ *   failures     how many of those reads THREW (Dexter F1) -- the file exists
+ *                (it was just stat'd) but could not be read: EBUSY/EPERM/
+ *                EISDIR, the same transient hazard host/atomic-write.js
+ *                documents on this machine. Counted, never rethrown: one bad
+ *                file among thousands must not abort the whole scan. Each is
+ *                logged once, with its path and error code/message (Dexter N4).
+ *   failedFiles  the SPECIFIC paths that threw (Dexter N2) -- a caller needs
+ *                to know WHICH file failed, not just how many, to attribute
+ *                the failure to the right agent rather than only to a global
+ *                count.
  */
 async function incrementalScan(filePaths, readFile, prevEntries = {}) {
   const entries = {};
   let reread = 0;
-  let failures = 0;
+  const failedFiles = [];
   for (const file of filePaths) {
     let stat;
     try {
@@ -116,14 +141,18 @@ async function incrementalScan(filePaths, readFile, prevEntries = {}) {
     try {
       const value = await readFile(file);
       entries[file] = { stat: key, value };
-    } catch {
+    } catch (err) {
       // Deliberately NOT cached under this stat: the file didn't change, the
       // READ failed, and caching the failure would skip retrying it once
       // whatever is holding it (antivirus, an indexer) lets go.
-      failures++;
+      failedFiles.push(file);
+      // Dexter N4: named, once, so a deterministic bug (retried forever,
+      // otherwise silent) can be told apart from a transient lock by reading
+      // the log rather than guessing.
+      console.warn('[agent-stats-cache] could not read', file, '-', err && (err.code || err.message));
     }
   }
-  return { entries, reread, failures };
+  return { entries, reread, failures: failedFiles.length, failedFiles };
 }
 
 /**
@@ -147,12 +176,13 @@ async function readCacheFile(file) {
 }
 
 /**
- * The per-agent LIFETIME SUMMARY persisted alongside `entries` (Dexter F5): a
- * quick, cheap read of "what we knew last time", so a caller can publish a
- * lower-bound roster THE MOMENT the host boots, before the full incremental
- * scan (which still has to re-walk every project's identity tables) resolves.
- * Same absence rule as `readCacheFile`: missing, corrupt, or version-mismatched
- * is `{}`, never a throw.
+ * The per-agent LIFETIME SUMMARY persisted alongside `entries` -- a raw
+ * aggregate with no per-file attribution. NOT a safe lower bound on its own
+ * (Dexter N1): a caller wanting to SEED a display before a real scan finishes
+ * should use `readCacheSeed` instead, which stat-checks the files behind each
+ * total. Kept and exported because it is still useful for anything that
+ * doesn't need the lower-bound guarantee (diagnostics, tests). Same absence
+ * rule as `readCacheFile`: missing, corrupt, or version-mismatched is `{}`.
  */
 async function readCacheSummary(file) {
   try {
@@ -168,7 +198,49 @@ async function readCacheSummary(file) {
 }
 
 /**
- * Persist `entries` (plus whatever else `extra` carries, e.g. `{ agents }`)
+ * A STAT-CHECKED lower bound built from the on-disk cache (Dexter N1, PR #59
+ * R2): for every file the cache remembers contributing to an agent, only
+ * counted if that file STILL EXISTS right now. The raw `agents` summary alone
+ * is not safe to publish as "≥" once a transcript can be deleted between host
+ * launches (Claude Code's own retention cleanup, for instance) -- a total
+ * built from a file that is now gone can be LARGER than the true current
+ * total, which is the opposite of what "≥" may claim.
+ *
+ * Cheap: a `stat` per remembered file, no content re-read. Returns
+ * `{ agent: { tokens, ms } }`, the same shape as `readCacheSummary`, but
+ * computed from only the files that survived, so summing it is always a
+ * genuine lower bound. Missing, corrupt, or version-mismatched cache is `{}`.
+ */
+async function readCacheSeed(file) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || parsed.version !== CACHE_VERSION
+      || !parsed.files || typeof parsed.files !== 'object' || Array.isArray(parsed.files)) {
+    return {};
+  }
+  const tokens = {};
+  const ms = {};
+  for (const [filePath, info] of Object.entries(parsed.files)) {
+    if (!info || typeof info !== 'object' || typeof info.agent !== 'string' || !info.agent) continue;
+    try {
+      await fsp.stat(filePath); // existence only -- a stale stat is still fine for a LOWER bound
+    } catch {
+      continue; // Dexter N1: a vanished file must never inflate the seed
+    }
+    tokens[info.agent] = (tokens[info.agent] || 0) + numOrZero(info.total);
+    ms[info.agent] = (ms[info.agent] || 0) + numOrZero(info.ms);
+  }
+  const agents = {};
+  for (const agent of Object.keys(tokens)) agents[agent] = { tokens: tokens[agent], ms: ms[agent] || 0 };
+  return agents;
+}
+
+/**
+ * Persist `entries` (plus whatever else `extra` carries, e.g. `{ agents, files }`)
  * atomically. A write that fails degrades to "the next launch re-reads
  * everything", never a throw -- same policy host/openrouter.js's catalogue
  * cache states for the identical reason, but SAID rather than silent.
@@ -208,30 +280,36 @@ function numOrZero(v) {
 /**
  * Lifetime tokens per agent, across EVERY project under `~/.claude/projects/`
  * -- the concrete use `incrementalScan` exists for. Only SUBAGENT transcripts
- * are cached and summed; identity (which project-scan and which subagent
- * belongs to which resolved type) is shared with host/roster-index.js's
- * `scanProjects`/`resolveSubagentEntry` rather than re-derived, so this module
- * and the whole-roster identity walk can never disagree (Dexter F10) and never
- * read the SAME top-level session transcripts twice per launch (Dexter F5 /
- * Miguel M1) when a caller passes the SAME `scan` to both.
+ * are cached and summed; identity is resolved ONCE, inside
+ * host/roster-index.js's `scanProjects` (Dexter N5, PR #59 R2 -- this module
+ * used to call `resolveSubagentEntry` a second time itself, which resolved
+ * every file's identity twice per scan and double-counted a corrupt
+ * meta.json's failure, the exact double-count Miguel's original L2 finding was
+ * about, just moved one level down instead of closed).
  *
  * Returns `{ agents: Map(agent -> tokens), ms: Map(agent -> ms),
- * unresolvedAgents: Set<string>, unreadable, entries }`.
+ * unresolvedAgents: Set<string>, unreadableAgents: Set<string>, unreadable,
+ * entries }`.
  *
  *   unresolvedAgents (Dexter F3 / Miguel L1) -- agents whose tokens include at
  *   least one run resolved only to a hook LABEL, never confirmed against a
- *   real `subagent_type`. The tokens are still real and still counted (the
- *   same choice host/roster-index.js's `historyNames` makes for its `names`),
- *   but a caller drawing the roster can hedge instead of treating the row as a
- *   confirmed peer of a real type.
+ *   real `subagent_type`.
  *
- *   unreadable -- this pass's own per-file failures (a thrown read, Dexter F1;
- *   a corrupt meta.json, Dexter F4). Deliberately EXCLUDES the shared scan's
- *   own enumeration/identity errors when a `scan` is supplied by the caller --
- *   see host/roster-index.js's `wholeRoster` comment for why exactly one of
- *   the two consumers of a shared scan owns reporting those (Miguel L2). When
- *   NO `scan` is given, this function builds its own and DOES fold that scan's
- *   errors in, so a standalone call is still a complete count on its own.
+ *   unreadableAgents (Dexter N2, PR #59 R2) -- agents who DID run, but whose
+ *   contribution this pass includes at least one transcript that could not be
+ *   read (Dexter F1's per-file failure). Without this, a run that genuinely
+ *   happened but is unmeasurable THIS PASS produced `tokens: null` exactly
+ *   like a definition that has never run at all -- a third state ("ran, but
+ *   unreadable") collapsed into "never used". A caller can now draw and sort
+ *   these differently.
+ *
+ *   unreadable -- this pass's own per-file CONTENT-read failures (Dexter F1).
+ *   Identity-resolution failures (a corrupt meta.json) are counted inside
+ *   `scanProjects` itself now and reach this module through `scan.errors`
+ *   only when this function built its OWN scan (`ownScan`); when a caller
+ *   shares one `scan` with host/roster-index.js's `wholeRoster`, ONLY
+ *   `wholeRoster` adds `scan.errors` to its total (Miguel L2), so this
+ *   function's contribution in that case is content-read failures alone.
  *
  * `readFile`, `prevEntries`, and `scan` are all overridable for tests -- the
  * real caller (host/host.js) supplies `scan` (shared with `wholeRoster`) and
@@ -246,23 +324,35 @@ async function lifetimeAgentTokens({
   const agents = new Map();
   const ms = new Map();
   const unresolvedAgents = new Set();
+  const unreadableAgents = new Set();
   let unreadable = ownScan ? resolvedScan.errors : 0;
   const merged = {};
+  const fileTotals = {}; // Dexter N1: per-file agent attribution, for a future stat-checked seed
 
-  for (const { files, tables } of resolvedScan.projects) {
+  for (const { files, resolved } of resolvedScan.projects) {
     const subagentFiles = files.filter(f => f.subagent);
-    const { entries, failures } = await incrementalScan(subagentFiles.map(f => f.file), readFile, carried);
+    const { entries, failures, failedFiles } = await incrementalScan(subagentFiles.map(f => f.file), readFile, carried);
     Object.assign(merged, entries);
     unreadable += failures; // Dexter F1
+    const failedSet = new Set(failedFiles);
 
     for (const f of subagentFiles) {
-      const cached = entries[f.file];
-      if (!cached) continue; // vanished, or its read failed this pass: nothing to count
-      const { agent, source, readError } = await resolveSubagentEntry(f, tables);
-      if (readError) unreadable++; // Dexter F4
+      const { agent, source } = resolved.get(f.file); // Dexter N5: resolved ONCE, in scanProjects
       if (!agent) continue;
-      agents.set(agent, (agents.get(agent) || 0) + numOrZero(cached.value && cached.value.total));
-      ms.set(agent, (ms.get(agent) || 0) + numOrZero(cached.value && cached.value.ms));
+      const cached = entries[f.file];
+      if (!cached) {
+        // Either vanished between listing and stat (nothing to attribute --
+        // the same as it never having existed this pass) or its READ failed
+        // (Dexter N2: a run that happened, but is unmeasurable right now --
+        // must not be indistinguishable from "never used").
+        if (failedSet.has(f.file)) unreadableAgents.add(agent);
+        continue;
+      }
+      const total = numOrZero(cached.value && cached.value.total);
+      const spentMs = numOrZero(cached.value && cached.value.ms);
+      agents.set(agent, (agents.get(agent) || 0) + total);
+      ms.set(agent, (ms.get(agent) || 0) + spentMs);
+      fileTotals[f.file] = { agent, total, ms: spentMs };
       if (source === 'unresolved') unresolvedAgents.add(agent); // Dexter F3
     }
   }
@@ -270,12 +360,12 @@ async function lifetimeAgentTokens({
   if (cacheFile) {
     const agentsSummary = {};
     for (const [agent, tokens] of agents) agentsSummary[agent] = { tokens, ms: ms.get(agent) || 0 };
-    await writeCacheFile(cacheFile, merged, { agents: agentsSummary });
+    await writeCacheFile(cacheFile, merged, { agents: agentsSummary, files: fileTotals });
   }
-  return { agents, ms, unresolvedAgents, unreadable, entries: merged };
+  return { agents, ms, unresolvedAgents, unreadableAgents, unreadable, entries: merged };
 }
 
 module.exports = {
-  incrementalScan, readCacheFile, writeCacheFile, readCacheSummary,
+  incrementalScan, readCacheFile, writeCacheFile, readCacheSummary, readCacheSeed,
   statKey, sameStat, lifetimeAgentTokens, CACHE_VERSION,
 };
