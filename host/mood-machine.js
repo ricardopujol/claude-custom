@@ -215,9 +215,11 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     return out;
   }
 
-  // Foreground all the way up to the main session: the work a turn owns.
+  // Foreground all the way up to the main session: the work a turn owns. An
+  // ORPHAN root -- spawned by an agent we can't place -- is not the main
+  // session's either (Dexter, PR #56, #5).
   function mainForeground(inv) {
-    for (let i = inv; i; i = i.parent) if (i.background) return false;
+    for (let i = inv; i; i = i.parent) if (i.background || i.orphan) return false;
     return true;
   }
 
@@ -318,6 +320,12 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const parent = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
       const inv = {
         id: ++serial, key: p.tool_use_id ?? null, name: agent, agentId: null, parent,
+        // A spawner that names itself but can't be found (reaped, ended,
+        // never seen -- or the host restarted) is some AGENT, not the main
+        // session. "Unknown" used to be merged into "main session", so Stop
+        // and a main-session Esc ended a run that wasn't the turn's. An
+        // orphan ends only on its own events, SessionEnd and the reapers.
+        orphan: !!p.agent_id && !parent,
         background: input.run_in_background === true, description: input.description,
         startedAt: now(), lastActivity: now(),
       };

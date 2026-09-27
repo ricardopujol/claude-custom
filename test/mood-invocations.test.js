@@ -395,6 +395,32 @@ test('Dexter #1: a correction naming an id nobody holds does not re-key a run bo
   assert.strictEqual(h.m.stateOf('T'), 'stressed', 'its calls still reach it');
 });
 
+test('Dexter #5: a spawn from an unknown agent is an orphan root, not main-session work', () => {
+  // Its spawner is some agent we can't place (reaped, dropped, or the host
+  // restarted mid-session) -- NOT the main session, so neither Stop nor a
+  // main-session Esc may end it. SessionEnd and the reapers still do.
+  const h = harness({ stallMs: 600_000, maxInvocationMs: 900_000 });
+  h.spawn('miguel', 't1', { by: 'ghost', byType: 'paris' });
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [] } });
+  assert.strictEqual(h.m.stateOf('miguel'), 'working', 'Stop spares it');
+  h.fail(null, null, { is_interrupt: true });
+  assert.ok(h.busy('miguel'), 'so does Esc on the main session');
+  h.advance(600_001);
+  assert.strictEqual(h.busy('miguel'), false, 'the stall reaper still takes it');
+});
+
+test('Dexter #5: a spawn from an ENDED agent is an orphan too, and SessionEnd ends it', () => {
+  const h = harness();
+  h.spawn('paris', 't1', { background: true });
+  h.call('p', 'paris');
+  h.subStop('p', 'paris');
+  h.spawn('miguel', 't2', { by: 'p', byType: 'paris' });   // a late spawn from p
+  h.m.handle({ event: 'Stop', payload: {} });
+  assert.ok(h.busy('miguel'));
+  h.m.handle({ event: 'SessionEnd', payload: {} });
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
 test('Dexter #4: a duplicate SubagentStop for an ended id does not end a silent sibling', () => {
   const h = harness();
   h.spawn('miguel', 't1');
