@@ -178,18 +178,29 @@ function drawLook(rng) {
 }
 
 /**
- * A look that passes lookFailures, or SAFE_LOOK after MAX_ATTEMPTS draws that
- * did not. `candidate` replaces the draw -- for tests of the retry itself.
+ * A look that passes lookFailures for THIS terminal foreground: a draw, or
+ * SAFE_LOOK after MAX_ATTEMPTS draws that didn't -- or null when SAFE_LOOK
+ * fails too. It's only proven safe for the default theme's light CLI text; a
+ * light-background terminal theme (dark text) can carry no dark app colour at
+ * all, and the caller must write nothing rather than a look that fails
+ * (Dexter F1). `candidate` replaces the draw -- for tests of the retry itself.
  */
 function generateLook(rng = Math.random, { terminalForeground = DEFAULT_TERMINAL_FG, candidate = drawLook } = {}) {
+  const passes = (look) => lookFailures(look, { terminalForeground }).length === 0;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     const look = candidate(rng);
-    if (lookFailures(look, { terminalForeground }).length === 0) return look;
+    if (passes(look)) return look;
   }
-  return { ...SAFE_LOOK };
+  return passes(SAFE_LOOK) ? { ...SAFE_LOOK } : null;
+}
+
+// Why generateLook came back empty, in words for the Style tab and the log.
+function noLookReason(terminalForeground) {
+  return `no random look reads against this theme's terminal text (${terminalForeground}) -- ` +
+    'random looks are dark, and this terminal text needs a light background';
 }
 
 module.exports = {
-  generateLook, drawLook, lookFailures, oklchToHex, SAFE_LOOK, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
+  generateLook, drawLook, lookFailures, noLookReason, oklchToHex, SAFE_LOOK, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
   MIN_TEXT_CONTRAST, MIN_CONTROL_CONTRAST, MAX_BG_LUMINANCE,
 };

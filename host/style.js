@@ -31,7 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
 const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
-const { generateLook } = require('./palette-gen');
+const { generateLook, noLookReason, DEFAULT_TERMINAL_FG } = require('./palette-gen');
 
 // 25MB, per the FF6 brief. Pinned by an explicit boundary test, the way
 // host/control.js's MAX_TERMINAL_DIM is.
@@ -244,7 +244,9 @@ function seedLookIfNew({ cwd, hasHistory, rng, terminalForeground, fsImpl = fs }
   if (typeof hasHistory !== 'function' || hasHistory() !== false) {
     return { seeded: false, reason: 'the folder has Claude history' };
   }
-  const r = setLook({ cwd, patch: generateLook(rng, { terminalForeground }), fsImpl });
+  const look = generateLook(rng, { terminalForeground });
+  if (!look) return { seeded: false, reason: noLookReason(terminalForeground || DEFAULT_TERMINAL_FG) };
+  const r = setLook({ cwd, patch: look, fsImpl });
   return r.ok ? { seeded: true, look: r.look } : { seeded: false, reason: r.reason };
 }
 
@@ -255,7 +257,9 @@ function seedLookIfNew({ cwd, hasHistory, rng, terminalForeground, fsImpl = fs }
  * folder is refused and the background image is kept.
  */
 function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
-  return setLook({ cwd, patch: generateLook(rng, { terminalForeground }), fsImpl });
+  const look = generateLook(rng, { terminalForeground });
+  if (!look) return { ok: false, reason: noLookReason(terminalForeground || DEFAULT_TERMINAL_FG) };
+  return setLook({ cwd, patch: look, fsImpl });
 }
 
 function tryUnlink(fsImpl, file) {

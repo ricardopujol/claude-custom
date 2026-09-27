@@ -181,12 +181,25 @@ test('generateLook gives up after MAX_ATTEMPTS and falls back to SAFE_LOOK', () 
 });
 
 test('generateLook passes the terminal foreground through to the check', () => {
-  // With a foreground no dark background can carry, nothing passes: fallback.
   let calls = 0;
-  const look = generateLook(mulberry32(7), {
+  generateLook(mulberry32(7), {
     terminalForeground: '#000000',
     candidate: () => { calls++; return { ...SAFE_LOOK }; },
   });
-  assert.strictEqual(calls, MAX_ATTEMPTS);
-  assert.deepStrictEqual(look, { ...SAFE_LOOK });
+  assert.strictEqual(calls, MAX_ATTEMPTS, 'SAFE_LOOK fails under black CLI text, so every draw is refused');
+});
+
+test('Dexter F1: the fallback is re-checked -- under a theme SAFE_LOOK fails, the answer is null, never a failing look', () => {
+  // A light-background terminal theme: no dark app colour carries its text.
+  for (const fg of ['#202020', '#000000']) {
+    assert.ok(lookFailures(SAFE_LOOK, { terminalForeground: fg }).length > 0, `premise: SAFE_LOOK fails on ${fg}`);
+    assert.strictEqual(generateLook(mulberry32(3), { terminalForeground: fg }), null, fg);
+  }
+});
+
+test('Dexter F1: whatever generateLook returns passes for the foreground it was given', () => {
+  fc.assert(fc.property(fc.integer(), fc.stringMatching(/^#[0-9a-f]{6}$/), (seed, fg) => {
+    const look = generateLook(mulberry32(seed), { terminalForeground: fg });
+    if (look !== null) assert.deepStrictEqual(lookFailures(look, { terminalForeground: fg }), []);
+  }), { numRuns: 200 });
 });

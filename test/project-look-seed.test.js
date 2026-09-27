@@ -125,12 +125,14 @@ test('a foreign (linked) look folder is never written through by a seed', () => 
   assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
 });
 
-test('seedLookIfNew hands the terminal foreground to the generator', () => {
-  // No dark background carries black CLI text, so the generator falls back.
+test('Dexter F1: under a theme no generated look reads on, seeding writes NOTHING', () => {
+  // A light-background terminal theme: every dark app colour, SAFE_LOOK
+  // included, would hide the CLI's own text.
   const cwd = tmpDir('cc-seed-fg-');
-  const r = seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(1), terminalForeground: '#000000' });
-  assert.strictEqual(r.seeded, true);
-  assert.strictEqual(readLook(cwd).appColor, SAFE_LOOK.appColor);
+  const r = seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(1), terminalForeground: '#202020' });
+  assert.strictEqual(r.seeded, false);
+  assert.match(r.reason, /terminal/);
+  assert.strictEqual(fs.existsSync(path.join(cwd, LOOK_DIR_NAME)), false);
 });
 
 test('seedLookIfNew with no project open writes nothing', () => {
@@ -193,8 +195,12 @@ test('rerollLook refuses a corrupt look.json, like every other write', () => {
   assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), '{oops');
 });
 
-test('rerollLook hands the terminal foreground to the generator', () => {
+test('Dexter F1: under a theme no generated look reads on, re-roll REFUSES and says why', () => {
   const cwd = tmpDir('cc-reroll-fg-');
-  rerollLook({ cwd, rng: mulberry32(1), terminalForeground: '#000000' });
-  assert.strictEqual(readLook(cwd).appColor, SAFE_LOOK.appColor);
+  setLook({ cwd, patch: { appColor: '#102030' } });
+  const before = fs.readFileSync(lookFile(cwd), 'utf8');
+  const r = rerollLook({ cwd, rng: mulberry32(1), terminalForeground: '#202020' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /terminal/);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
 });
