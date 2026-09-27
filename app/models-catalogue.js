@@ -3,36 +3,37 @@
  * BACKLOG E #5 -- reconciling an incoming `models` reply with what the panel
  * already shows.
  *
- * Dexter, PR #60 review, Findings 1 and 4. The renderer used to treat every
- * `models` message as authoritative and simply overwrite `catalogue` /
- * `catalogueMeta` with whatever arrived (app/renderer.js, old line 2544).
- * That is exactly wrong for two real sequences this feature now creates on
- * purpose by asking more often (the boot warm-up, a tab reopen, and a
- * Refresh click can all have a request in flight at once):
+ * Dexter, PR #60 review (round 1, Findings 1/4; round 2, N1/N2). The
+ * renderer used to treat every `models` message as authoritative and simply
+ * overwrite `catalogue` / `catalogueMeta` with whatever arrived. That is
+ * exactly wrong for the sequences this feature's own extra asking (boot
+ * warm-up, tab reopen, Refresh) creates: several requests can be in flight at
+ * once, and their replies can arrive in EITHER order, or fail.
  *
- *   F1: a forced refresh fails with no usable disk cache (the cache was never
- *       written, or a Windows rename lost the race -- host/openrouter.js's
- *       own header documents this exact failure). The reply is
- *       `{models: [], source: 'none', stale: true}`. Applied naively, 445
- *       on-screen rows the user was just looking at vanish into an empty
- *       "could not reach OpenRouter" panel -- the ONE thing this whole
- *       feature exists to prevent, just moved from the disk cache (which
- *       already gets this right) into the renderer (which didn't).
+ * ROUND 1 fixed the easy half with `fetchedAt` ordering: a reply with no rows
+ * never blanks rows already shown, and an older reply never clobbers a
+ * fresher one. ROUND 2 (N1/N2) found that `fetchedAt` is THE WRONG SIGNAL for
+ * "is this reply older than what I'm holding": a FAILED reply that fell back
+ * to a disk cache reports the CACHE's age, not the age of the request that
+ * just ran -- so an offline Refresh with a real cache on disk looked
+ * "older than the click" and left the button stuck on "Refreshing..."
+ * forever (N1), and conversely an unrelated, genuinely OLDER request (the
+ * boot warm-up, a stale tab-open still in flight) can still resolve or fail
+ * AFTER a newer click was made, and nothing about its DATA says so (N2).
  *
- *   F4: two requests can be in flight at once (a tab-open's non-forced ask
- *       and a Refresh's forced one, or the boot warm-up and either of those),
- *       and their replies can arrive in EITHER order. Whichever lands LAST
- *       wins today, so a slow, stale answer can clobber a fresh one that
- *       already rendered.
+ * THE FIX: `seq`. Every request app/renderer.js sends now carries a fresh,
+ * strictly-increasing number; host.js's 'models' branch echoes it back
+ * verbatim in the reply, unexamined. Once both sides of a comparison carry a
+ * `seq`, that is the ONLY thing this module trusts for "older" -- exact
+ * request/reply correlation, not a guess from the data's own timestamp. A
+ * message without `seq` (an old shape, a hand-built test, a message from
+ * something else that shares this channel) falls back to the round-1
+ * `fetchedAt` heuristic, which is what the pre-`seq` tests in this module's
+ * test file still pin.
  *
- * THE RULE, both findings at once: a reply only replaces what is shown if it
- * is not older than it (`fetchedAt` ordering), and a reply with NO rows never
- * blanks out rows already on screen -- it only updates the staleness banner,
- * because "no answer" is never evidence that the list is actually empty.
- *
- * Pure: no DOM, no clock, no network. renderer.js owns calling this from the
- * `'models'` message handler and writing the result to `catalogue` /
- * `catalogueMeta`.
+ * Pure: no DOM, no clock, no network. renderer.js owns generating `seq`,
+ * calling this from the `'models'` message handler, and writing the result
+ * to `catalogue` / `catalogueMeta`.
  *
  * WRAPPED IN AN IIFE for the trap this codebase has already paid for twice:
  * renderer.html loads these as plain <script> tags sharing ONE global scope
@@ -42,9 +43,8 @@
 
 /**
  * `state` is `{ rows, meta }` -- `rows` the array currently shown, `meta`
- * `{ source, fetchedAt, stale, error }` or `null` before the first reply ever
- * arrives. `reply` is the raw `models` message (`{ models, source, fetchedAt,
- * stale, error }`).
+ * `{ source, fetchedAt, stale, error, seq }` or `null` before the first reply
+ * ever arrives. `reply` is the raw `models` message.
  *
  * Returns the next `{ rows, meta }`. TOTAL: a garbage `state` or `reply`
  * degrades to sensible defaults rather than throwing, so a malformed message
@@ -60,18 +60,36 @@ function mergeCatalogueReply(state, reply) {
     fetchedAt: reply && reply.fetchedAt,
     stale: !!(reply && reply.stale),
     error: (reply && reply.error) || null,
+    seq: reply && reply.seq,
   };
 
   const replyFetchedAt = Number.isFinite(replyMeta.fetchedAt) ? replyMeta.fetchedAt : null;
   const prevFetchedAt = prevMeta && Number.isFinite(prevMeta.fetchedAt) ? prevMeta.fetchedAt : null;
+  const replySeq = Number.isFinite(replyMeta.seq) ? replyMeta.seq : null;
+  const prevSeq = prevMeta && Number.isFinite(prevMeta.seq) ? prevMeta.seq : null;
 
-  // F1: a reply with NO rows must never blank out rows already on screen. It
-  // still updates the banner -- always STALE, since "nothing came back" is
-  // never grounds to call the list current -- and keeps the error the reply
-  // gave, so the reason reaches the user. The rows' own provenance timestamp
-  // (`prevFetchedAt`) is kept too: it is still true information about how old
-  // THOSE rows are, and a failed refresh does not change that.
+  // N2 (round 2): with a `seq` on BOTH sides, that is the whole answer to
+  // "older" -- not `fetchedAt`, which for a FAILED reply is the age of a
+  // fallback cache, unrelated to how old the REQUEST is. Without a `seq` on
+  // one side (an older message shape), fall back to the round-1 `fetchedAt`
+  // ordering.
+  const haveSeq = replySeq !== null && prevSeq !== null;
+  const isOlder = haveSeq
+    ? replySeq < prevSeq
+    : (prevFetchedAt !== null && replyFetchedAt !== null && replyFetchedAt < prevFetchedAt);
+
+  // F1 + N2: a reply with NO rows must never blank out rows already on
+  // screen. An OLDER one (by `seq` when known, else by `fetchedAt`) is a full
+  // NO-OP: it answers a request that predates what is already shown, so it
+  // is not evidence about the CURRENT data at all, and must not flip an
+  // accurate, fresh banner to "stale" over a list it has nothing to do with.
+  // A reply at least as new DOES update the banner -- always STALE, since
+  // "nothing came back" for a CURRENT attempt is never grounds to call the
+  // list current -- and keeps the error, so the reason reaches the user. The
+  // rows' own provenance timestamp (`prevFetchedAt`) is kept too: it is still
+  // true information about how old THOSE rows are.
   if (replyRows.length === 0 && prevRows.length > 0) {
+    if (isOlder) return { rows: prevRows, meta: prevMeta };
     return {
       rows: prevRows,
       meta: {
@@ -79,6 +97,7 @@ function mergeCatalogueReply(state, reply) {
         fetchedAt: prevFetchedAt,
         stale: true,
         error: replyMeta.error,
+        seq: prevSeq,
       },
     };
   }
@@ -88,7 +107,7 @@ function mergeCatalogueReply(state, reply) {
   // an empty state to begin with (nothing to protect), so this never blocks
   // the very first reply -- including the very first one being empty, which
   // is a real "could not reach OpenRouter" the user must still be told.
-  if (prevFetchedAt !== null && replyFetchedAt !== null && replyFetchedAt < prevFetchedAt) {
+  if (isOlder) {
     return { rows: prevRows, meta: prevMeta };
   }
 
@@ -97,29 +116,39 @@ function mergeCatalogueReply(state, reply) {
 
 /**
  * Should a still-outstanding Refresh click's `pending` flag clear on this
- * reply? Dexter, Finding 4 (second half): `pending` used to clear on ANY
- * `models` message, so an unrelated, older, already-in-flight request's
- * answer landing before the forced one re-enabled the button while the
- * forced fetch was still running -- a second click then started a THIRD
- * concurrent request, exactly what the pending flag exists to prevent.
+ * reply?
  *
- * No wire-protocol change (no request ids) needed: a definitive failure
- * (empty rows) always resolves whatever attempt is outstanding, and a
- * successful reply resolves it only if its `fetchedAt` is not older than the
- * moment the click fired -- a reply from a request that started BEFORE the
- * click cannot be that click's answer.
- *
- * `requestedAt`: `Date.now()` at the moment Refresh was clicked, or `null`/
+ * `pendingSeq`: the `seq` app/renderer.js's Refresh click sent, or `null`/
  * not-a-number if nothing is pending (always clears, harmlessly, since the
  * caller only acts on this when `pending` is already true).
  */
-function shouldClearPending(requestedAt, reply) {
-  if (typeof requestedAt !== 'number' || !Number.isFinite(requestedAt)) return true;
+function shouldClearPending(pendingSeq, reply) {
+  if (typeof pendingSeq !== 'number' || !Number.isFinite(pendingSeq)) return true;
+
+  const replySeq = reply && reply.seq;
+  // N1/N2 (round 2): with an id to go on, that is ALL that matters, exactly
+  // matched -- a different `seq` means a different request answered,
+  // whatever the reply's own data looks like. This is what actually
+  // distinguishes N1 (a FAILED forced reply, `stale`+`error`, but IS this
+  // click's own answer) from N2 (an unrelated OLDER request's reply, which
+  // can also be empty/stale, but is NOT this click's answer).
+  if (Number.isFinite(replySeq)) return replySeq === pendingSeq;
+
+  // No `seq` on this reply (an older message shape, or a hand-built test):
+  // fall back to the round-1 data-shaped heuristic. Dexter, round 2, N1: a
+  // FAILED forced request -- `stale: true` with a real `error` -- is a
+  // definitive answer REGARDLESS of its `fetchedAt`, because a failure that
+  // fell back to a disk cache reports the CACHE's age, not the age of the
+  // attempt that just ran. Treating an old `fetchedAt` as "this must be some
+  // other, older request" left the Refresh button stuck on "Refreshing..."
+  // forever on the single most common failure path Refresh has: offline,
+  // with a cache already on disk.
   const rows = reply && Array.isArray(reply.models) ? reply.models : [];
   if (rows.length === 0) return true;
+  if (reply && reply.stale && reply.error) return true;
   const fetchedAt = reply && Number.isFinite(reply.fetchedAt) ? reply.fetchedAt : null;
   if (fetchedAt === null) return true;
-  return fetchedAt >= requestedAt;
+  return fetchedAt >= pendingSeq;
 }
 
 if (typeof module !== 'undefined' && module.exports) {

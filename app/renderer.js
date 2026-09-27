@@ -1149,13 +1149,22 @@ let councilWarnings = [];
 // ordering; this is only the last answer main handed back (or the empty
 // shape until it does). Refresh: true from the click that sent `force`
 // until the REPLY THAT ANSWERS IT clears it (app/models-catalogue.js's
-// shouldClearPending, Dexter PR #60 F4) -- app/models-refresh.js decides
-// what the button says from this one flag. `refreshRequestedAt` is that
-// click's timestamp, the only thing that lets a later reply be told apart
-// from an older, unrelated one still in flight.
+// shouldClearPending) -- app/models-refresh.js decides what the button says
+// from this one flag.
+//
+// `modelsRequestSeq` / `refreshRequestSeq`: Dexter, PR #60 round 2, N1/N2.
+// Every `requestModels()` call carries a fresh, strictly-increasing `seq`,
+// echoed back verbatim by the host in its reply (host.js's 'models' branch).
+// That is the ONLY thing `shouldClearPending`/`mergeCatalogueReply` trust to
+// tell "the reply to MY click" apart from "some other request's reply" --
+// fetchedAt cannot do this, because a FAILED reply's fetchedAt is the age of
+// a fallback cache, not the age of the request that just ran (N1), and an
+// unrelated OLDER request (the boot warm-up, a stale tab-open) can still
+// resolve or fail AFTER a newer click was made (N2).
 let modelFavourites = emptyFavourites();
 let modelsRefreshPending = false;
-let refreshRequestedAt = null;
+let modelsRequestSeq = 0;
+let refreshRequestSeq = null;
 
 const money = (perM) => {
   if (perM === null || perM === undefined) return null;
@@ -1357,8 +1366,16 @@ function renderModels() {
   el.innerHTML = out.join('');
 }
 
+// Returns the `seq` this request was tagged with -- the caller (the Refresh
+// click, ws.onopen's resume) uses it to know which reply, if any, is really
+// its answer. Assigned and sent even if the socket turns out to be closed:
+// the seq is spent either way, and a caller tracking it as "the request I'm
+// waiting on" is correct even for a send that never left the client (F3's
+// resume path re-requests with a fresh seq of its own, superseding this one).
 function requestModels(force) {
-  try { ws.send(JSON.stringify({ type: 'models', force: !!force })); } catch (e) {}
+  const seq = ++modelsRequestSeq;
+  try { ws.send(JSON.stringify({ type: 'models', force: !!force, seq })); } catch (e) {}
+  return seq;
 }
 
 // BACKLOG E #5, #3. Flips `kind`/`id` locally (so the star responds at once)
@@ -1431,9 +1448,8 @@ function wireModelPanel() {
     refreshBtn.addEventListener('click', () => {
       if (modelsRefreshPending) return;
       modelsRefreshPending = true;
-      refreshRequestedAt = Date.now();
       renderRefreshButton();
-      requestModels(true);
+      refreshRequestSeq = requestModels(true);
     });
   }
 }
@@ -2585,13 +2601,12 @@ function handleControl(msg) {
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (Array.isArray(msg.warnings)) councilWarnings = msg.warnings;
     if (msg.max) seatMax = msg.max;
-    // F4 (second half): only the reply that actually answers the outstanding
-    // Refresh click clears its `pending` flag -- an older, unrelated reply
-    // landing first must not re-enable the button while the real answer is
-    // still in flight.
-    if (modelsRefreshPending && shouldClearPending(refreshRequestedAt, msg)) {
+    // F4/N1/N2 (Dexter, PR #60 rounds 1+2): only the reply that actually
+    // answers the outstanding Refresh click clears its `pending` flag --
+    // matched by `seq`, not by the reply's data shape or fetchedAt.
+    if (modelsRefreshPending && shouldClearPending(refreshRequestSeq, msg)) {
       modelsRefreshPending = false;
-      refreshRequestedAt = null;
+      refreshRequestSeq = null;
     }
     renderSeats();
     renderProvenance();
@@ -2697,7 +2712,19 @@ function connect() {
     // nothing else ever re-asks. Reusing whatever `force` a stuck click had
     // set carries the user's actual request forward rather than silently
     // downgrading it to a plain re-check.
-    if (activeTab === 'models') requestModels(modelsRefreshPending);
+    //
+    // N3 (round 2): resumed whenever a Refresh is PENDING, not only when the
+    // Models tab happens to still be active. `modelsRefreshPending` is
+    // WINDOW state, not tab state -- a click made just before the user
+    // switched to Fog, then the socket reconnecting, must not depend on them
+    // switching back before this fires, or the button stays stuck exactly
+    // as if this fix did not exist. The resend gets its OWN fresh `seq`,
+    // which supersedes the original click's seq -- that request never
+    // reached the host at all, so nothing will ever answer it.
+    if (activeTab === 'models' || modelsRefreshPending) {
+      const seq = requestModels(modelsRefreshPending);
+      if (modelsRefreshPending) refreshRequestSeq = seq;
+    }
   };
 
   // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.

@@ -1519,10 +1519,15 @@ wss.on('connection', (ws) => {
       // `.then(ok, err)` -- Dexter, 2026-09-15: the two-argument form does
       // NOT catch a throw from `ok` itself, which would become an unhandled
       // rejection.
+      // `seq` is echoed back VERBATIM, whatever it is (a number, absent,
+      // garbage) -- Dexter, PR #60 round 2, N1/N2. The client tags every
+      // request with one and uses the echo to tell "the reply to MY click"
+      // apart from an unrelated request's reply; the host has no reason to
+      // interpret it, only to hand it straight back.
       currentCatalogue({ force: !!msg.force }).then(
         (c) => ws.send(JSON.stringify({
           type: 'models', models: c.models, source: c.source,
-          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
+          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error, seq: msg.seq,
           seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
         }))
       ).catch((err) => {
@@ -1533,7 +1538,7 @@ wss.on('connection', (ws) => {
         try {
           ws.send(JSON.stringify({
             type: 'models', models: [], source: 'none', stale: true,
-            error: err && err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
+            error: err && err.message, seq: msg.seq, seats: readSeats(), max: MAX_SEATS, warnings: [],
           }));
         } catch { /* the socket went away */ }
       });
