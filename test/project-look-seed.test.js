@@ -76,6 +76,23 @@ test('hasClaudeHistory: no cwd is no answer to write on', () => {
   assert.strictEqual(hasClaudeHistory('', { projectsDir: tmpDir('cc-seed-x-') }), true);
 });
 
+test('Dexter F4: a transcript folder that is a junction (moved to another drive) is still history', () => {
+  const cwd = 'C:/Users/x/linked';
+  const real = tmpDir('cc-seed-real-');
+  fs.writeFileSync(path.join(real, 'abc.jsonl'), '{}\n');
+  const root = tmpDir('cc-seed-linkroot-');
+  fs.symlinkSync(real, path.join(root, projectDirName(cwd)), 'junction');
+  assert.strictEqual(hasClaudeHistory(cwd, { projectsDir: root }), true);
+});
+
+test('Dexter F4: a dangling link where the transcript folder should be counts as history -- doubt never writes', () => {
+  const cwd = 'C:/Users/x/dangling';
+  const gone = path.join(tmpDir('cc-seed-gone-'), 'nowhere');
+  const root = tmpDir('cc-seed-danglingroot-');
+  fs.symlinkSync(gone, path.join(root, projectDirName(cwd)), 'junction');
+  assert.strictEqual(hasClaudeHistory(cwd, { projectsDir: root }), true);
+});
+
 test('Dexter F3: history under CLAUDE_CONFIG_DIR is found when the default folder does not exist', () => {
   const cwd = 'C:/Users/x/oldproj';
   const config = path.dirname(historyFor(cwd, { root: path.join(tmpDir('cc-seed-cfg-'), 'projects') }));

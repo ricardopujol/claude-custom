@@ -188,7 +188,11 @@ function rootHasHistory(root, want) {
     return !(err && err.code === 'ENOENT');
   }
   for (const d of entries) {
-    if (!d.isDirectory() || d.name.toLowerCase() !== want) continue;
+    // Only a plain file can be skipped. A junction or symlink (a transcript
+    // folder moved to another drive and linked back) is not isDirectory() on
+    // its Dirent, and skipping it said "no history" -- the unsafe direction
+    // (Dexter F4). readdirSync follows the link; a dangling one throws: doubt.
+    if (d.isFile() || d.name.toLowerCase() !== want) continue;
     try {
       if (fs.readdirSync(path.join(root, d.name)).some(f => f.endsWith('.jsonl'))) return true;
     } catch {
