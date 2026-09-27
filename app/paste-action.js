@@ -49,11 +49,32 @@ function isPasteKey(e) {
 // Windows Terminal's rule (Ricardo, 2026-09-27). `selection` is
 // term.getSelection(): '' when nothing is selected. Any whitespace the user
 // selected is copied as-is; only an empty or non-string selection passes.
-function copyKeyAction(e, selection) {
+//
+// `visible` says whether the selection is on screen (selectionVisible). xterm
+// anchors a selection to the buffer, so an old one can sit scrolled out of
+// sight, and Ctrl+C then copied it silently while the ^C the user meant --
+// to stop a runaway claude -- never went out (Miguel, PR #58, I1). A
+// selection the user can't see is 'stale': the renderer drops it and lets
+// ^C through.
+function copyKeyAction(e, selection, visible) {
   const plainCtrlC = !!e && e.type === 'keydown' && e.ctrlKey === true && !e.shiftKey && !e.altKey && !e.metaKey
     && typeof e.key === 'string' && e.key.toLowerCase() === 'c';
   if (!plainCtrlC || typeof selection !== 'string' || selection === '') return { kind: 'pass' };
+  if (visible !== true) return { kind: 'stale' };
   return { kind: 'copy', text: selection };
+}
+
+// Does a selection touch the viewport? `range` is term.getSelectionPosition(),
+// whose rows are 0-based buffer lines -- measured in the real window
+// (verify/probe-paste.js, copy/rows), whatever xterm.d.ts says. `viewportY`
+// is the buffer line at the top of the screen, `rows` the screen height.
+// Anything missing or not a number is not visible: the safe answer is ^C.
+function selectionVisible(range, viewportY, rows) {
+  const num = n => typeof n === 'number' && Number.isFinite(n);
+  if (!range || !range.start || !range.end) return false;
+  const a = range.start.y, b = range.end.y;
+  if (!num(a) || !num(b) || !num(viewportY) || !num(rows)) return false;
+  return Math.min(a, b) <= viewportY + rows - 1 && Math.max(a, b) >= viewportY;
 }
 
 // The WebSocket frame a text paste travels in. Miguel, PR #55, B1.
@@ -86,11 +107,12 @@ function pasteFailureNote(why) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { pasteAction, isPasteKey, copyKeyAction, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
+  module.exports = { pasteAction, isPasteKey, copyKeyAction, selectionVisible, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
 } else {
   root.pasteAction = pasteAction;
   root.isPasteKey = isPasteKey;
   root.copyKeyAction = copyKeyAction;
+  root.selectionVisible = selectionVisible;
   root.pasteFrame = pasteFrame;
   root.pasteFailureNote = pasteFailureNote;
 }

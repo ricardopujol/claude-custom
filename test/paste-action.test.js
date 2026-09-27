@@ -10,7 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { pasteAction, isPasteKey, copyKeyAction, IMAGE_PASTE_BYTES } = require('../app/paste-action');
+const { pasteAction, isPasteKey, copyKeyAction, selectionVisible, IMAGE_PASTE_BYTES } = require('../app/paste-action');
 
 test('text on the clipboard is pasted as text', () => {
   assert.deepStrictEqual(pasteAction({ text: 'hello', hasImage: false }), { kind: 'text', text: 'hello' });
@@ -174,32 +174,88 @@ test("line endings become CR exactly as xterm's own paste makes them", () => {
 const ctrlC = (over) => key({ key: 'c', ...over });
 
 test('Ctrl+C with a selection copies it', () => {
-  assert.deepStrictEqual(copyKeyAction(ctrlC(), 'some text'), { kind: 'copy', text: 'some text' });
+  assert.deepStrictEqual(copyKeyAction(ctrlC(), 'some text', true), { kind: 'copy', text: 'some text' });
 });
 
 test('Ctrl+C with nothing selected passes through to the CLI as ^C', () => {
   for (const none of ['', undefined, null]) {
-    assert.deepStrictEqual(copyKeyAction(ctrlC(), none), { kind: 'pass' }, String(none));
+    assert.deepStrictEqual(copyKeyAction(ctrlC(), none, true), { kind: 'pass' }, String(none));
   }
 });
 
 test('a selection of only whitespace is still what the user selected, and is copied', () => {
-  assert.deepStrictEqual(copyKeyAction(ctrlC(), '   '), { kind: 'copy', text: '   ' });
+  assert.deepStrictEqual(copyKeyAction(ctrlC(), '   ', true), { kind: 'copy', text: '   ' });
 });
 
 test('Caps Lock does not break the copy key', () => {
-  assert.deepStrictEqual(copyKeyAction(ctrlC({ key: 'C' }), 'x'), { kind: 'copy', text: 'x' });
+  assert.deepStrictEqual(copyKeyAction(ctrlC({ key: 'C' }), 'x', true), { kind: 'copy', text: 'x' });
 });
 
 test('only a plain Ctrl+C keydown copies', () => {
   for (const over of [{ type: 'keyup' }, { shiftKey: true }, { altKey: true }, { metaKey: true },
                       { ctrlKey: false }, { key: 'v' }]) {
-    assert.deepStrictEqual(copyKeyAction(ctrlC(over), 'x'), { kind: 'pass' }, JSON.stringify(over));
+    assert.deepStrictEqual(copyKeyAction(ctrlC(over), 'x', true), { kind: 'pass' }, JSON.stringify(over));
   }
 });
 
 test('a non-string selection is never copied', () => {
   for (const bad of [42, {}, ['x']]) {
-    assert.deepStrictEqual(copyKeyAction(ctrlC(), bad), { kind: 'pass' }, JSON.stringify(bad));
+    assert.deepStrictEqual(copyKeyAction(ctrlC(), bad, true), { kind: 'pass' }, JSON.stringify(bad));
   }
+});
+
+// Miguel, PR #58, I1: xterm anchors a selection to the BUFFER, so one made
+// earlier can sit scrolled out of sight. Ctrl+C then silently copied it and
+// the ^C the user meant -- to stop a runaway claude -- never went out. A
+// selection the user can't see is STALE: it's dropped, and ^C goes through.
+
+test('Ctrl+C with a selection that is out of sight is stale, not a copy', () => {
+  assert.deepStrictEqual(copyKeyAction(ctrlC(), 'old text', false), { kind: 'stale' });
+});
+
+test('visibility must be literally true to copy', () => {
+  for (const v of [undefined, null, 1, 'yes']) {
+    assert.deepStrictEqual(copyKeyAction(ctrlC(), 'x', v), { kind: 'stale' }, String(v));
+  }
+});
+
+test('with nothing selected, visibility does not matter: it is ^C', () => {
+  assert.deepStrictEqual(copyKeyAction(ctrlC(), '', false), { kind: 'pass' });
+});
+
+// selectionVisible(range, viewportY, rows): range rows are 0-based buffer
+// lines, as measured in the real window (verify/probe-paste.js, copy/rows).
+const range = (sy, ey) => ({ start: { x: 0, y: sy }, end: { x: 5, y: ey } });
+
+test('a selection inside the viewport is visible', () => {
+  assert.strictEqual(selectionVisible(range(12, 14), 10, 30), true);
+});
+
+test('a selection on the first or last viewport row is visible', () => {
+  assert.strictEqual(selectionVisible(range(10, 10), 10, 30), true);
+  assert.strictEqual(selectionVisible(range(39, 39), 10, 30), true);
+});
+
+test('a selection just above or just below the viewport is not', () => {
+  assert.strictEqual(selectionVisible(range(9, 9), 10, 30), false);
+  assert.strictEqual(selectionVisible(range(40, 40), 10, 30), false);
+  assert.strictEqual(selectionVisible(range(0, 5), 10, 30), false);
+});
+
+test('a selection that straddles the viewport edge is visible', () => {
+  assert.strictEqual(selectionVisible(range(5, 12), 10, 30), true);
+  assert.strictEqual(selectionVisible(range(35, 60), 10, 30), true);
+});
+
+test('a backwards selection (end before start) is judged the same', () => {
+  assert.strictEqual(selectionVisible(range(14, 12), 10, 30), true);
+  assert.strictEqual(selectionVisible(range(5, 0), 10, 30), false);
+});
+
+test('no range, or anything not a number, is not visible', () => {
+  for (const bad of [undefined, null, {}, { start: { y: 1 } }, range('1', 2), range(NaN, 2)]) {
+    assert.strictEqual(selectionVisible(bad, 0, 30), false, JSON.stringify(bad));
+  }
+  assert.strictEqual(selectionVisible(range(1, 2), undefined, 30), false);
+  assert.strictEqual(selectionVisible(range(1, 2), 0, null), false);
 });

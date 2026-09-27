@@ -38,6 +38,12 @@
                  selection is cleared. copy/none: ^C is sent and the clipboard
                  is untouched. Before this, Ctrl+C was always ^C: a selection
                  could not be copied at all.
+     after I1    (Miguel, PR #58) copy/stale: a selection scrolled out of
+                 sight is dropped and ^C IS sent, clipboard untouched.
+                 copy/typing: a keypress clears the selection. copy/rows:
+                 getSelectionPosition() rows are 0-BASED buffer lines
+                 (start.y === viewportY for the top row), not 1-based as
+                 xterm.d.ts says -- selectionVisible() relies on this.
 
    Is sendInputEvent a fair stand-in for a real key press? For the one thing
    that matters here -- does an UNHANDLED key reach the application menu's
@@ -262,6 +268,28 @@ app.on('ready', async () => {
         win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: ['control'] });
         win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: ['control'] });
       };
+      const hasSel = async () => js(`term.hasSelection()`);
+
+      // copy/typing: typing drops a selection (Miguel, PR #58, I1).
+      await js(`term.focus(); term.select(0, term.buffer.active.viewportY, 3); true`);
+      const selBeforeTyping = await hasSel();
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'X' });
+      win.webContents.sendInputEvent({ type: 'char', keyCode: 'x' });
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'X' });
+      await sleep(700);
+      results.copyTyping = { selectedBefore: selBeforeTyping, clearedByTyping: !(await hasSel()) };
+      console.log(`[${at()}] copy/typing selectedBefore=${selBeforeTyping} clearedByTyping=${results.copyTyping.clearedByTyping}`);
+      await clearDraft();
+      await sleep(4000);            // let "Ctrl-C again to exit" lapse
+
+      // copy/rows: is getSelectionPosition() 0- or 1-based? (xterm.d.ts says 1)
+      const rowsProbe = JSON.parse(await js(`term.select(0, term.buffer.active.viewportY, 3);
+        JSON.stringify({ vy: term.buffer.active.viewportY, pos: term.getSelectionPosition() })`));
+      results.copyRows = { viewportY: rowsProbe.vy, startY: rowsProbe.pos && rowsProbe.pos.start.y,
+        base: rowsProbe.pos ? rowsProbe.pos.start.y - rowsProbe.vy : null };
+      console.log(`[${at()}] copy/rows viewportY=${rowsProbe.vy} startY=${results.copyRows.startY} base=${results.copyRows.base}`);
+      await js(`term.clearSelection(); true`);
+
       clipboard.writeText('BEFORE-COPY');
       await js(`term.focus(); term.selectAll(); true`);
       const sel = await js(`term.getSelection()`);
@@ -274,6 +302,23 @@ app.on('ready', async () => {
         frames: f.map(esc) };
       console.log(`[${at()}] copy/selected clipboardIsSelection=${results.copySelected.clipboardIsSelection} `
         + `interruptSent=${results.copySelected.interruptSent} selectionCleared=${results.copySelected.selectionCleared}`);
+
+      // copy/stale: a selection scrolled out of sight is dropped and ^C goes
+      // through. Scrollback is made locally (renderer-only writes, nothing
+      // reaches the pty) if claude hasn't produced any yet.
+      await js(`if (term.buffer.active.length <= term.rows) term.write('\\r\\n'.repeat(term.rows * 2)); true`);
+      await sleep(500);
+      clipboard.writeText('KEEP-STALE');
+      await js(`term.select(0, 0, 5); term.scrollToBottom(); term.focus(); true`);
+      const staleVis = await js(`selectionVisible(term.getSelectionPosition(), term.buffer.active.viewportY, term.rows)`);
+      ctrlC();
+      await sleep(1000);
+      const st = await frames();
+      results.copyStale = { selectionWasVisible: staleVis, interruptSent: st.some(isInterrupt),
+        clipboardUnchanged: clipboard.readText() === 'KEEP-STALE', selectionCleared: !(await hasSel()) };
+      console.log(`[${at()}] copy/stale visible=${staleVis} interruptSent=${results.copyStale.interruptSent} `
+        + `clipboardUnchanged=${results.copyStale.clipboardUnchanged} selectionCleared=${results.copyStale.selectionCleared}`);
+      await sleep(4000);            // let "Ctrl-C again to exit" lapse
 
       clipboard.writeText('KEEP-ME');
       await js(`term.clearSelection(); term.focus(); true`);
