@@ -1795,6 +1795,11 @@ const tbNoticeIsTimeout = { model: false, effort: false };
 // Vim mode seen on this session: its INSERT marker has been on screen. Only
 // then can a box without the marker be read as NORMAL (verify/probe-vim-mode.js).
 let vimSeen = false;
+// Fed from the terminal's OUTPUT (Dexter #51 F1): learned only on a click,
+// "vim on, Esc, first click" still read 'ready'. Once latched it costs nothing.
+term.onWriteParsed(() => {
+  if (!vimSeen && vimInsertShown(screenLines())) vimSeen = true;
+});
 const NOTICE_MS = 12000;
 
 const currentModel = () => liveModel || sessionModelFallback;
@@ -1897,10 +1902,11 @@ function requestSwitch(kind, raw) {
   // one would always time out (Dexter #6). The command is still sent -- an
   // alias can move within its family, e.g. opus 4.8 -> opus 5.5, and the live
   // model then reports that like any other change.
+  let request = null;
   if (plan.alreadyRunning) {
     setPending(kind, null);
   } else {
-    const request = { kind, value: plan.value, startedAt: Date.now() };
+    request = { kind, value: plan.value, startedAt: Date.now() };
     setPending(kind, request);
     schedulePendingTimeout(kind, request);
   }
@@ -1922,8 +1928,12 @@ function requestSwitch(kind, raw) {
     if (commandTyped(screenLines(), plan.command, { vim: vimSeen })) { input('\r'); return; }
     input('\x05');
     setTimeout(() => input('\x15'), PTY_STEP_MS);
+    // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
+    if (plan.enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
+    // Only THIS request: a newer one for the same value may already have run
+    // (Dexter #51 F5).
     const pending = kind === 'model' ? pendingModel : pendingEffort;
-    if (pending && pending.value === plan.value) setPending(kind, null);
+    if (request && pending === request) setPending(kind, null);
     setTopBarNotice(kind, switchNotice({ kind, result: 'refused',
       notice: `didn't send ${plan.command}: the input line changed before Enter` }));
     renderTopBar();

@@ -177,3 +177,25 @@ test('a truth clears a TIMEOUT notice it has made stale (Dexter r2 N5)', () => {
   assert.match(branch('liveModel'), /clearStaleNotice\('model'\)/);
   assert.match(branch('effort'), /clearStaleNotice\('effort'\)/);
 });
+
+// --- PR #51 review ------------------------------------------------------------
+
+test('the vim latch is fed by terminal OUTPUT, not only at click time (Dexter #51 F1)', () => {
+  // Learned only on a click, "vim on, Esc, FIRST click" still read 'ready' and
+  // typed the command into NORMAL mode as motions.
+  const i = JS.indexOf('term.onWriteParsed(');
+  assert.ok(i !== -1, 'a write hook feeds the latch');
+  assert.match(JS.slice(i, JS.indexOf('});', i)), /vimInsertShown\(/);
+});
+
+test('a refused read-back clears only ITS OWN pending request (Dexter #51 F5)', () => {
+  const body = fnBody('requestSwitch');
+  assert.match(body, /pending === request/);
+  assert.doesNotMatch(body, /pending\.value === plan\.value/);
+});
+
+test('a refused read-back puts vim back in NORMAL if it left it (Miguel #51 3)', () => {
+  const body = fnBody('requestSwitch');
+  const refusal = body.slice(body.indexOf('commandTyped('));
+  assert.match(refusal, /if \(plan\.enterInsert\)[^\n]*input\('\\x1b'\)/);
+});

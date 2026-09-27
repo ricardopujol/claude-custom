@@ -11,6 +11,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const fc = require('fast-check');
 
 const {
   modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
@@ -607,17 +608,19 @@ test('a menu with no room below opens above its chip', () => {
 });
 
 test('PROPERTY: a menu that fits the window is always placed wholly inside it', () => {
-  let seed = 7;
-  const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
-  for (let i = 0; i < 2000; i++) {
-    const view = { width: 200 + rnd(1600), height: 150 + rnd(900) };
-    const menu = { width: 20 + rnd(view.width - 28), height: 20 + rnd(view.height - 28) };
-    const a = chip(rnd(view.width), rnd(view.height), 1 + rnd(80), 1 + rnd(30));
-    const p = menuPlacement(a, menu, view);
-    const ctx = JSON.stringify({ view, menu, a, p });
-    assert.ok(p.left >= 4 && p.left + menu.width <= view.width - 4, ctx);
-    assert.ok(p.top >= 4 && p.top + menu.height <= view.height - 4, ctx);
-  }
+  // A view, a menu that fits inside its margins, and a chip anywhere in it.
+  const arb = fc.record({ vw: fc.integer({ min: 200, max: 1800 }), vh: fc.integer({ min: 150, max: 1050 }) })
+    .chain(({ vw, vh }) => fc.record({
+      view: fc.constant({ width: vw, height: vh }),
+      menu: fc.record({ width: fc.integer({ min: 20, max: vw - 8 }), height: fc.integer({ min: 20, max: vh - 8 }) }),
+      x: fc.integer({ min: 0, max: vw }), y: fc.integer({ min: 0, max: vh }),
+      w: fc.integer({ min: 1, max: 80 }), h: fc.integer({ min: 1, max: 30 }),
+    }));
+  fc.assert(fc.property(arb, ({ view, menu, x, y, w, h }) => {
+    const p = menuPlacement(chip(x, y, w, h), menu, view);
+    return p.left >= 4 && p.left + menu.width <= view.width - 4
+      && p.top >= 4 && p.top + menu.height <= view.height - 4;
+  }), { numRuns: 2000 });
 });
 
 test('menuPlacement never throws on missing measurements', () => {

@@ -110,7 +110,15 @@ async function waitFor(pred, ms) {
     await type('\x15', 800);           // clear the draft
     show('after Ctrl-E, Ctrl-U in INSERT');
 
-    await type('', 1200);          // NORMAL, empty box
+    // Dexter #51 F2: with a slash command typed, is the INSERT marker still
+    // under the box, or does the suggestion list push it away? FF12's
+    // read-back needs it there before it sends the CR.
+    await type('/model sonnet', 1500);
+    show('INSERT with /model sonnet typed (not sent)');
+    await type('\x05', 300);
+    await type('\x15', 800);
+
+    await type('\x1b', 1200);          // NORMAL, empty box
     show('NORMAL mode, empty box');
   } catch (err) {
     failed = true;

@@ -26,14 +26,17 @@ const FORWARD_TIMEOUT_MS = 300;
 // re-fire left one more of it behind.
 const USER_TIMEOUT_MS = 5000;
 
-// The whole tree: with shell:true the user's command runs UNDER a shell, and
-// killing only the shell leaves the command itself running.
+// The whole tree on Windows: with shell:true the user's command runs UNDER
+// cmd.exe, and killing only cmd.exe leaves the command itself running. On
+// POSIX the child stays in the relay's own process group (Dexter #51 F7), so
+// a CLI that kills the group still reaches it; `sh -c` execs a single command,
+// so killing the child is killing the command.
 function killTree(child) {
   try {
     if (process.platform === 'win32') {
       spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     } else {
-      process.kill(-child.pid, 'SIGKILL');
+      child.kill('SIGKILL');
     }
   } catch { /* already gone */ }
 }
@@ -77,12 +80,7 @@ function runUser(encoded, input, { timeoutMs = USER_TIMEOUT_MS } = {}) {
     if (!command) { resolve(0); return; }
     let child;
     try {
-      // detached on POSIX makes the shell a process-group leader, so killTree
-      // can reach its children; on Windows taskkill /T walks the tree instead.
-      child = spawn(command, {
-        shell: true, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true,
-        detached: process.platform !== 'win32',
-      });
+      child = spawn(command, { shell: true, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true });
     } catch {
       resolve(1);
       return;
@@ -107,7 +105,9 @@ if (require.main === module) {
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (d) => { input += d; });
   process.stdin.on('end', () => {
-    relay(process.argv.slice(2), input).then((code) => { process.exitCode = code; });
+    // Exit explicitly: if killTree failed, the child would otherwise hold the
+    // event loop and the relay would hang with it (Miguel #51 2).
+    relay(process.argv.slice(2), input).then((code) => { process.exit(code); });
   });
 }
 
