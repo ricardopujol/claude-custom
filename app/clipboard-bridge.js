@@ -9,6 +9,7 @@
  */
 
 const CLIPBOARD_READ = 'clipboard:read';
+const CLIPBOARD_WRITE = 'clipboard:write';
 const EMPTY = Object.freeze({ text: '', hasImage: false });
 
 // { text, hasImage }. The image is only looked at when there is no text:
@@ -28,12 +29,30 @@ function readClipboard(clipboard) {
   }
 }
 
+// Ctrl+C with a selection: put it on the clipboard. Only a non-empty string
+// is written -- an empty write would wipe what the user had copied, for
+// nothing. A clipboard another app has locked throws on Windows; that's
+// reported, never a crashed handler.
+function writeClipboard(clipboard, text) {
+  if (typeof text !== 'string' || text === '') return { ok: false, error: 'nothing to copy' };
+  try {
+    clipboard.writeText(text);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
 // Same `fromWindow` gate as every secrets:* handler in main.js: a clipboard
 // routinely holds a password, and a handler that answers anyone is not a
 // boundary.
 function registerClipboardHandlers({ ipcMain, clipboard, win }) {
   ipcMain.handle(CLIPBOARD_READ, (event) =>
     (event && event.sender === win.webContents ? readClipboard(clipboard) : { ...EMPTY }));
+  // Writing is gated too: a page that could set the clipboard could plant a
+  // command for the user's next Ctrl+V.
+  ipcMain.handle(CLIPBOARD_WRITE, (event, text) =>
+    (event && event.sender === win.webContents ? writeClipboard(clipboard, text) : { ok: false, error: 'not this window' }));
 }
 
-module.exports = { readClipboard, registerClipboardHandlers, CLIPBOARD_READ };
+module.exports = { readClipboard, writeClipboard, registerClipboardHandlers, CLIPBOARD_READ, CLIPBOARD_WRITE };

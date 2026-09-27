@@ -10,7 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { pasteAction, isPasteKey, IMAGE_PASTE_BYTES } = require('../app/paste-action');
+const { pasteAction, isPasteKey, copyKeyAction, IMAGE_PASTE_BYTES } = require('../app/paste-action');
 
 test('text on the clipboard is pasted as text', () => {
   assert.deepStrictEqual(pasteAction({ text: 'hello', hasImage: false }), { kind: 'text', text: 'hello' });
@@ -165,4 +165,41 @@ test("line endings become CR exactly as xterm's own paste makes them", () => {
   // xterm 5.5: e.replace(/\r?\n/g, "\r"). Several lines stay ONE paste.
   assert.strictEqual(JSON.parse(pasteFrame('a\r\nb\nc', true)).data, '\x1b[200~a\rb\rc\x1b[201~');
   assert.strictEqual(JSON.parse(pasteFrame('a\r\nb\nc', false)).data, 'a\rb\rc');
+});
+
+// --- Ctrl+C: copy when there's a selection, interrupt when there isn't ------
+// Windows Terminal's rule (Ricardo, 2026-09-27). The CLI's ^C is untouched
+// whenever nothing is selected, so Esc/interrupt/exit behave exactly as before.
+
+const ctrlC = (over) => key({ key: 'c', ...over });
+
+test('Ctrl+C with a selection copies it', () => {
+  assert.deepStrictEqual(copyKeyAction(ctrlC(), 'some text'), { kind: 'copy', text: 'some text' });
+});
+
+test('Ctrl+C with nothing selected passes through to the CLI as ^C', () => {
+  for (const none of ['', undefined, null]) {
+    assert.deepStrictEqual(copyKeyAction(ctrlC(), none), { kind: 'pass' }, String(none));
+  }
+});
+
+test('a selection of only whitespace is still what the user selected, and is copied', () => {
+  assert.deepStrictEqual(copyKeyAction(ctrlC(), '   '), { kind: 'copy', text: '   ' });
+});
+
+test('Caps Lock does not break the copy key', () => {
+  assert.deepStrictEqual(copyKeyAction(ctrlC({ key: 'C' }), 'x'), { kind: 'copy', text: 'x' });
+});
+
+test('only a plain Ctrl+C keydown copies', () => {
+  for (const over of [{ type: 'keyup' }, { shiftKey: true }, { altKey: true }, { metaKey: true },
+                      { ctrlKey: false }, { key: 'v' }]) {
+    assert.deepStrictEqual(copyKeyAction(ctrlC(over), 'x'), { kind: 'pass' }, JSON.stringify(over));
+  }
+});
+
+test('a non-string selection is never copied', () => {
+  for (const bad of [42, {}, ['x']]) {
+    assert.deepStrictEqual(copyKeyAction(ctrlC(), bad), { kind: 'pass' }, JSON.stringify(bad));
+  }
 });

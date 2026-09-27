@@ -2668,6 +2668,16 @@ term.attachCustomKeyEventHandler((e) => {
     return false;
   }
 
+  // Ctrl+C with a selection copies it (app/paste-action.js); with none, it
+  // falls through and xterm sends ^C to the CLI as before. Left to xterm, a
+  // selection was never copied: the keydown became ^C and interrupted claude.
+  const copy = copyKeyAction(e, term.getSelection());
+  if (copy.kind === 'copy') {
+    e.preventDefault();
+    copySelection(copy.text);
+    return false;
+  }
+
   const mods =
     (e.ctrlKey ? 'Ctrl+' : '') +
     (e.shiftKey ? 'Shift+' : '') +
@@ -2700,6 +2710,22 @@ term.attachCustomKeyEventHandler((e) => {
 // (Miguel, PR #55, B1). Bracketed when the CLI has asked for it, so several
 // lines arrive as ONE paste. An image is ESC+v: `claude` reads the clipboard
 // itself.
+// Never silent, like Ctrl+V: a copy that failed says so. The selection is
+// cleared only once the text is really on the clipboard, so a failed copy
+// can be retried.
+async function copySelection(text) {
+  let res;
+  try {
+    res = window.harness && window.harness.writeClipboard
+      ? await window.harness.writeClipboard(text)
+      : { ok: false, error: 'no clipboard bridge' };
+  } catch (err) {
+    res = { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+  if (res && res.ok) { term.clearSelection(); return; }
+  flourish({ icon: '⛔', name: 'Ctrl+C could not copy: ' + ((res && res.error) || 'unknown error') });
+}
+
 async function pasteFromClipboard() {
   // Never silent (Miguel, PR #55, S2): a Ctrl+V that does nothing reads as
   // "paste is broken". Same on-screen note the drop gesture uses.

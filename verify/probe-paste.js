@@ -33,6 +33,11 @@
                  "\x1b[200~...\x1b[201~"}, and json/keys -- a clipboard holding
                  '{"type":"resize",...}' -- is wrapped as input and typed into
                  the prompt, not run as a resize.
+     Ctrl+C      (2026-09-27, feat/ctrl-c-copy) copy/selected: the clipboard
+                 holds exactly term.getSelection(), no ^C frame is sent, the
+                 selection is cleared. copy/none: ^C is sent and the clipboard
+                 is untouched. Before this, Ctrl+C was always ^C: a selection
+                 could not be copied at all.
 
    Is sendInputEvent a fair stand-in for a real key press? For the one thing
    that matters here -- does an UNHANDLED key reach the application menu's
@@ -244,6 +249,41 @@ app.on('ready', async () => {
       results.imageKeys = { frames: f.map(esc), attached: !!attached, evidence: attached || null };
       console.log(`[${at()}] image/keys attached=${!!attached} frames=${results.imageKeys.frames.join(' ')}`);
       await clearDraft();
+    }
+
+    // --- shipped wiring, when present: Ctrl+C copies a selection ---------------
+    // Windows Terminal's rule (Ricardo, 2026-09-27): with text selected Ctrl+C
+    // copies it and sends nothing to the CLI; with nothing selected it is ^C.
+    // Last on purpose: the no-selection case sends one real ^C to an empty
+    // prompt, and nothing may follow it that could read as a second (exit).
+    if (bridge && bridge.CLIPBOARD_WRITE) {
+      const isInterrupt = x => x.includes('\x03') || x.includes('\\u0003');
+      const ctrlC = () => {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: ['control'] });
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: ['control'] });
+      };
+      clipboard.writeText('BEFORE-COPY');
+      await js(`term.focus(); term.selectAll(); true`);
+      const sel = await js(`term.getSelection()`);
+      ctrlC();
+      await sleep(1000);
+      const f = await frames();
+      const copied = clipboard.readText();
+      results.copySelected = { selectionLength: sel.length, clipboardIsSelection: sel !== '' && copied === sel,
+        interruptSent: f.some(isInterrupt), selectionCleared: (await js(`term.getSelection()`)) === '',
+        frames: f.map(esc) };
+      console.log(`[${at()}] copy/selected clipboardIsSelection=${results.copySelected.clipboardIsSelection} `
+        + `interruptSent=${results.copySelected.interruptSent} selectionCleared=${results.copySelected.selectionCleared}`);
+
+      clipboard.writeText('KEEP-ME');
+      await js(`term.clearSelection(); term.focus(); true`);
+      ctrlC();
+      await sleep(1000);
+      const g = await frames();
+      results.copyNone = { interruptSent: g.some(isInterrupt), clipboardUnchanged: clipboard.readText() === 'KEEP-ME',
+        frames: g.map(esc) };
+      console.log(`[${at()}] copy/none interruptSent=${results.copyNone.interruptSent} `
+        + `clipboardUnchanged=${results.copyNone.clipboardUnchanged}`);
     }
 
     await finish(0);

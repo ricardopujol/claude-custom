@@ -44,6 +44,18 @@ function isPasteKey(e) {
     && typeof e.key === 'string' && e.key.toLowerCase() === 'v';
 }
 
+// What Ctrl+C does: copy the terminal's selection when there is one, else
+// pass through so the CLI gets ^C (interrupt, exit) exactly as before --
+// Windows Terminal's rule (Ricardo, 2026-09-27). `selection` is
+// term.getSelection(): '' when nothing is selected. Any whitespace the user
+// selected is copied as-is; only an empty or non-string selection passes.
+function copyKeyAction(e, selection) {
+  const plainCtrlC = !!e && e.type === 'keydown' && e.ctrlKey === true && !e.shiftKey && !e.altKey && !e.metaKey
+    && typeof e.key === 'string' && e.key.toLowerCase() === 'c';
+  if (!plainCtrlC || typeof selection !== 'string' || selection === '') return { kind: 'pass' };
+  return { kind: 'copy', text: selection };
+}
+
 // The WebSocket frame a text paste travels in. Miguel, PR #55, B1.
 //
 // NOT term.paste(). That sends the text RAW when the CLI hasn't turned on
@@ -74,10 +86,11 @@ function pasteFailureNote(why) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { pasteAction, isPasteKey, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
+  module.exports = { pasteAction, isPasteKey, copyKeyAction, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
 } else {
   root.pasteAction = pasteAction;
   root.isPasteKey = isPasteKey;
+  root.copyKeyAction = copyKeyAction;
   root.pasteFrame = pasteFrame;
   root.pasteFailureNote = pasteFailureNote;
 }
