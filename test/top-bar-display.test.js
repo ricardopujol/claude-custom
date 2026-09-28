@@ -304,6 +304,16 @@ test('an alias from the menu matches any id of its own family', () => {
   assert.strictEqual(modelMatches('claude-opus-5-5', 'sonnet'), false);
 });
 
+// Miguel, PR #62, #1: modelMatches is what decides whether a switch to fable
+// CONFIRMS. Without the fable family it read as 'other' and the switch timed
+// out as refused although the CLI had made it.
+test('a switch to fable confirms on a fable id, and on nothing else', () => {
+  assert.strictEqual(modelMatches('claude-fable-5-1', 'fable'), true);
+  assert.strictEqual(modelMatches('claude-fable-5-1', 'FABLE'), true);
+  assert.strictEqual(modelMatches('claude-opus-5-5', 'fable'), false);
+  assert.strictEqual(modelMatches('claude-fable-5-1', 'opus'), false);
+});
+
 test('a free-typed id matches only EXACTLY, never by family (Dexter #1, #5)', () => {
   assert.strictEqual(modelMatches('claude-opus-4-7', 'claude-opus-4-7'), true);
   assert.strictEqual(modelMatches('Claude-Opus-4-7', 'claude-opus-4-7'), true);
