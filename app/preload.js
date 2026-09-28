@@ -54,6 +54,13 @@ contextBridge.exposeInMainWorld('harness', {
     try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
   },
 
+  // Ctrl+V (BACKLOG #12, #8). Main reads the OS clipboard and answers
+  // { text, hasImage } -- see app/clipboard-bridge.js. Read-only: nothing is
+  // ever written to the clipboard through this.
+  readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+  // Ctrl+C with a selection: main writes it (app/clipboard-bridge.js).
+  writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
+
   // The secret store. Every call crosses into main, where the vault lives --
   // the window never holds the file, the key, or more than one secret at a
   // time, and the host (which owns the pty) never sees any of it at all.
@@ -89,5 +96,19 @@ contextBridge.exposeInMainWorld('harness', {
   look: {
     getDim: () => ipcRenderer.invoke('look:getDim'),
     setDim: (value) => ipcRenderer.invoke('look:setDim', value),
+  },
+
+  // Model favourites (BACKLOG E #5, #3): a star on an OpenRouter row or a
+  // Claude choice, persisted install-wide -- see app/favourites-bridge.js.
+  // Its own two channels, not a widened look:setDim: a generic "set any key"
+  // handler reachable from the page could overwrite look-global itself.
+  // `set`, not `toggle` (Dexter, PR #60 review, F6): the page always knows
+  // the state it wants (it just decided which way the star should go), so it
+  // sends THAT rather than asking main to flip whatever the store currently
+  // holds -- a toggle computed against a second window's fresher state
+  // inverts the click's intent instead of losing to it.
+  favourites: {
+    get: () => ipcRenderer.invoke('favourites:get'),
+    set: (kind, id, on) => ipcRenderer.invoke('favourites:set', kind, id, on),
   },
 });

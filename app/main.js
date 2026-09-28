@@ -10,6 +10,8 @@
 const { app, BrowserWindow, Notification, clipboard, ipcMain, safeStorage, shell } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
+const { registerClipboardHandlers } = require('./clipboard-bridge');
+const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -354,6 +356,14 @@ function createWindow(spawnedHost) {
   ipcMain.handle('secrets:lock', (e) => (fromWindow(e) ? secrets.lock() : { ok: false }));
   ipcMain.handle('secrets:removeKey', (e) => (fromWindow(e) ? secrets.removeKey() : { ok: false }));
   ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
+
+  // Ctrl+V (BACKLOG #12, #8): the page asks, main reads the clipboard.
+  registerClipboardHandlers({ ipcMain, clipboard, win });
+
+  // Model favourites (BACKLOG E #5, #3): a star on an OpenRouter row or a
+  // Claude choice, persisted GLOBALLY next to look-global -- see
+  // favourites-bridge.js's header for why main owns this store directly.
+  registerFavouriteHandlers({ ipcMain, store: uiStore, win });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
   // not project-scoped, so it lives here rather than going to the host.

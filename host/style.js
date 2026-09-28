@@ -31,6 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
 const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
+const { generateLook, noLookReason, DEFAULT_TERMINAL_FG } = require('./palette-gen');
 
 // 25MB, per the FF6 brief. Pinned by an explicit boundary test, the way
 // host/control.js's MAX_TERMINAL_DIM is.
@@ -225,6 +226,68 @@ function setLook({ cwd, patch, fsImpl = fs } = {}) {
   }
 }
 
+/**
+ * Backlog #15: give a NEW project a random, readable look, once.
+ *
+ * "New" is two facts, both required: look.json is MISSING (not 'ok', not
+ * 'corrupt' -- the person's data in a state we don't understand -- and not
+ * 'foreign'), AND the folder has no Claude history. `hasHistory` is a
+ * function so it's only asked when the look is missing: a project that
+ * already has a look never pays for the transcript-folder scan. The write
+ * is create-only (createLook), so a look that appears during the scan is
+ * kept rather than patched over. `rng` and `terminalForeground` pass straight to the generator.
+ */
+function seedLookIfNew({ cwd, hasHistory, rng, terminalForeground, fsImpl = fs } = {}) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return { seeded: false, reason: 'no project is open' };
+  const state = readLookState(cwd, fsImpl);
+  if (state.status !== 'missing') return { seeded: false, reason: `look is ${state.status}` };
+  if (typeof hasHistory !== 'function' || hasHistory() !== false) {
+    return { seeded: false, reason: 'the folder has Claude history' };
+  }
+  const look = generateLook(rng, { terminalForeground });
+  if (!look) return { seeded: false, reason: noLookReason(terminalForeground || DEFAULT_TERMINAL_FG) };
+  try {
+    return { seeded: true, look: createLook(cwd, { ...state.look, ...look }, { fsImpl }) };
+  } catch (err) {
+    if (err && err.code === 'EEXIST') return { seeded: false, reason: 'a look was saved meanwhile -- kept it' };
+    return { seeded: false, reason: `could not save the look: ${err && err.message}` };
+  }
+}
+
+/**
+ * writeLook's create-only twin, for the seed (Dexter F5, Miguel #3). "Missing"
+ * was read BEFORE the history scan; a look someone saves in that gap must win.
+ * So the complete file is written to a temp name and then hard-linked into
+ * place: link() refuses an existing destination (EEXIST) atomically, and a
+ * reader never sees a half-written look.json. A filesystem without hard links
+ * fails the seed, which writes nothing -- the safe direction.
+ */
+function createLook(cwd, look, { fsImpl = fs } = {}) {
+  const clean = sanitizeLook(look);
+  const dir = ensureLookDir(cwd, fsImpl);
+  const file = path.join(dir, LOOK_FILE);
+  const temp = `${file}.seed${process.pid}`;
+  try {
+    fsImpl.writeFileSync(temp, JSON.stringify(clean, null, 2) + '\n');
+    fsImpl.linkSync(temp, file);
+  } finally {
+    tryUnlink(fsImpl, temp);
+  }
+  return clean;
+}
+
+/**
+ * The Style tab's re-roll: a fresh generated look over this project's
+ * colours. An explicit ask, so unlike seedLookIfNew it doesn't care whether
+ * a look exists -- but it's still a setLook, so a corrupt or foreign look
+ * folder is refused and the background image is kept.
+ */
+function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
+  const look = generateLook(rng, { terminalForeground });
+  if (!look) return { ok: false, reason: noLookReason(terminalForeground || DEFAULT_TERMINAL_FG) };
+  return setLook({ cwd, patch: look, fsImpl });
+}
+
 function tryUnlink(fsImpl, file) {
   try { fsImpl.unlinkSync(file); } catch { /* best effort */ }
 }
@@ -330,4 +393,5 @@ function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
 module.exports = {
   planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
   readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, LOOK_DIR_NAME,
+  seedLookIfNew, rerollLook,
 };

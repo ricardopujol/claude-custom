@@ -424,7 +424,16 @@ function setTab(tab) {
   // restore of a saved tab on launch. Hanging it off the click alone meant a
   // window that reopened with the panel already showing never asked for
   // anything and sat on "loading" forever.
-  if (tab === 'models' && !catalogueMeta) requestModels(false);
+  //
+  // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one ever
+  // (`!catalogueMeta` used to gate this, so a window kept open past one
+  // FRESH_MS window silently stopped re-checking and its "just now" label
+  // froze there for good). `host/openrouter.js`'s `loadCatalogue` already
+  // knows how to answer this cheaply -- a fresh cache is returned with no
+  // network call at all -- so asking every time costs nothing when there is
+  // nothing to refresh, and it is the host, not a client-side copy of
+  // FRESH_MS, that decides.
+  if (tab === 'models') requestModels(false);
   if (tab === 'vault') {
     renderVault();
     setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -453,6 +462,19 @@ document.getElementById('side-hint').addEventListener('click', () => {
 
 window.addEventListener('DOMContentLoaded', () => {
   wireModelPanel();
+  renderClaudeChoices();
+  renderRefreshButton();
+  // BACKLOG E #5, #3: the saved favourites, read once through the bridge --
+  // see app/favourites-bridge.js. Absent on a build with no bridge (a
+  // headless probe's window, an older preload) leaves modelFavourites at its
+  // empty default rather than throwing.
+  if (window.harness && window.harness.favourites) {
+    window.harness.favourites.get().then((f) => {
+      modelFavourites = normalizeFavourites(f);
+      renderClaudeChoices();
+      renderModels();
+    }).catch(() => {});
+  }
   // Restored per window, so a collapsed sidebar stays collapsed across a
   // restart rather than springing back every launch.
   let saved = DEFAULT_TAB;
@@ -1069,7 +1091,93 @@ function countBadgeHtml(agent, counts) {
   return n >= 2 ? `<span class="agent-count" title="${n} running now">×${n}</span>` : '';
 }
 
+// --- Active/Inactive roster tabs (BACKLOG D #16) -----------------------------
+// The split and sort are pure decisions in app/roster-tabs-display.js; this is
+// only wiring and HTML assembly, the same division as careerHtml/agentModelHtml
+// above.
+let activeRosterTab = 'active';
+// The WHOLE roster, from the host's background scan across every project --
+// `{ ok, agents: [{agent, tokens, portrait}], complete, unreadable }`. `null`
+// until the first `hello` or `rosterIndex` message lands.
+let rosterIndexPayload = null;
+
+function wholeRosterEntries() {
+  return rosterIndexPayload && Array.isArray(rosterIndexPayload.agents) ? rosterIndexPayload.agents : [];
+}
+
+function rosterIndexEntry(agent) {
+  return wholeRosterEntries().find(a => a.agent === agent);
+}
+
+function setRosterTab(tab) {
+  activeRosterTab = tab === 'inactive' ? 'inactive' : 'active';
+  for (const b of document.querySelectorAll('#roster-subtabs button')) {
+    b.classList.toggle('on', b.dataset.rosterTab === activeRosterTab);
+  }
+  renderRoster();
+}
+
+for (const b of document.querySelectorAll('#roster-subtabs button')) {
+  b.addEventListener('click', () => setRosterTab(b.dataset.rosterTab));
+}
+
+function inactiveRowHtml(row) {
+  const entry = rosterIndexEntry(row.agent);
+  // The scan is complete AND clean before a total stops being a lower bound --
+  // the same "ok, not just done" distinction host/agent-stats.js already draws
+  // for the per-project career panel.
+  const complete = !!(rosterIndexPayload && rosterIndexPayload.complete && rosterIndexPayload.ok);
+  const state = rosterTokenState(row.tokens, complete);
+  const tokenHtml = state.show
+    ? `<div class="career" title="lifetime tokens across every project"><span class="career-tok">${state.prefix}${compactTokens(row.tokens)}</span></div>`
+    : '';
+  // Dexter F3 / Miguel L1 (PR #59 review): an agent resolved only through an
+  // unresolved hook LABEL is still real history but is not a confirmed
+  // `subagent_type` -- the same "?" badge app/career-display.js already draws
+  // for the identical situation on the Active-tab career line, not a peer of
+  // a real type drawn identically.
+  const unresolvedHtml = entry && entry.resolved === false
+    ? '<span class="career-warn" title="identity unresolved, this is a label not an agent type">?</span>'
+    : '';
+  // Dexter N2 (PR #59 R2): "ran, but this pass could not read its transcript"
+  // must be VISIBLE, not pixel-identical to a definition that has never run
+  // at all -- same hedge-badge language as `unresolvedHtml` above, distinct
+  // title so hovering says which uncertainty this is.
+  const unreadableHtml = row.unreadable
+    ? '<span class="career-warn" title="ran, but a transcript could not be read this pass -- the total is unknown, not zero">?</span>'
+    : '';
+  return `<div class="agent" data-state="inactive">` +
+      `<div class="face">${faceHtml(entry && entry.portrait)}</div>` +
+      `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}` +
+        unresolvedHtml + unreadableHtml + `</div>` +
+      `<div class="state">inactive</div>` +
+      tokenHtml +
+      `</div>` +
+    `</div>`;
+}
+
 function renderRoster() {
+  const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
+
+  if (activeRosterTab === 'inactive') {
+    if (inactive.length === 0) {
+      agentsEl.innerHTML = '<div class="empty">No other agents known yet.</div>';
+      return;
+    }
+    const rows = sortRosterRows(inactive.map((agent) => {
+      const entry = rosterIndexEntry(agent);
+      return {
+        agent,
+        tokens: entry && typeof entry.tokens === 'number' ? entry.tokens : null,
+        // Dexter N2 (PR #59 R2): "ran, but unreadable this pass" must sort
+        // above a genuine never-used row, not tie with it.
+        unreadable: !!(entry && entry.unreadable),
+      };
+    }));
+    agentsEl.innerHTML = rows.map(inactiveRowHtml).join('');
+    return;
+  }
+
   if (roster.size === 0) {
     // Three different situations, not one sentence. "No agents yet" is a
     // positive claim about history and must not be made on a read that failed.
@@ -1095,6 +1203,12 @@ function renderRoster() {
       `</div>` +
     `</div>`
   ).join('');
+}
+
+function renderRosterIndex(rosterIndex) {
+  if (!rosterIndex) return;
+  rosterIndexPayload = rosterIndex;
+  renderRoster();
 }
 
 function renderAgentStats(stats) {
@@ -1123,6 +1237,26 @@ let catalogueMeta = null;
 let councilSeats = [];
 let seatMax = 3;
 let councilWarnings = [];
+// BACKLOG E #5. Favourites: app/models-favourites.js decides shape and
+// ordering; this is only the last answer main handed back (or the empty
+// shape until it does). Refresh: true from the click that sent `force`
+// until the REPLY THAT ANSWERS IT clears it (app/models-catalogue.js's
+// shouldClearPending) -- app/models-refresh.js decides what the button says
+// from this one flag.
+//
+// `modelsRequestSeq` / `refreshRequestSeq`: Dexter, PR #60 round 2, N1/N2.
+// Every `requestModels()` call carries a fresh, strictly-increasing `seq`,
+// echoed back verbatim by the host in its reply (host.js's 'models' branch).
+// That is the ONLY thing `shouldClearPending`/`mergeCatalogueReply` trust to
+// tell "the reply to MY click" apart from "some other request's reply" --
+// fetchedAt cannot do this, because a FAILED reply's fetchedAt is the age of
+// a fallback cache, not the age of the request that just ran (N1), and an
+// unrelated OLDER request (the boot warm-up, a stale tab-open) can still
+// resolve or fail AFTER a newer click was made (N2).
+let modelFavourites = emptyFavourites();
+let modelsRefreshPending = false;
+let modelsRequestSeq = 0;
+let refreshRequestSeq = null;
 
 const money = (perM) => {
   if (perM === null || perM === undefined) return null;
@@ -1157,26 +1291,41 @@ function renderSeats() {
 
 function renderProvenance() {
   const el = document.getElementById('model-provenance');
-  if (!el || !catalogueMeta) return;
-  el.classList.toggle('stale', !!catalogueMeta.stale);
-
-  if (catalogueMeta.source === 'none') {
-    el.textContent = 'could not reach OpenRouter - ' + (catalogueMeta.error || 'no catalogue');
-    return;
+  const textEl = el && el.querySelector('.prov-text');
+  if (el && catalogueMeta) {
+    el.classList.toggle('stale', !!catalogueMeta.stale);
+    if (textEl) {
+      if (catalogueMeta.source === 'none') {
+        textEl.textContent = 'could not reach OpenRouter - ' + (catalogueMeta.error || 'no catalogue');
+      } else {
+        const mins = catalogueMeta.fetchedAt
+          ? Math.max(0, Math.round((Date.now() - catalogueMeta.fetchedAt) / 60000))
+          : null;
+        const when = mins === null ? 'unknown age'
+          : mins < 1 ? 'just now'
+            : mins < 60 ? mins + ' min ago'
+              : Math.round(mins / 60) + ' h ago';
+        // Staleness is STATED, never implied. A month-old price shown as
+        // current is the failure here that actually costs money.
+        textEl.textContent = catalogueMeta.stale
+          ? 'PRICES MAY BE OUT OF DATE - cached ' + when + ', could not refresh (' +
+            (catalogueMeta.error || 'offline') + ')'
+          : catalogue.length + ' models, ' + when;
+      }
+    }
   }
-  const mins = catalogueMeta.fetchedAt
-    ? Math.max(0, Math.round((Date.now() - catalogueMeta.fetchedAt) / 60000))
-    : null;
-  const when = mins === null ? 'unknown age'
-    : mins < 1 ? 'just now'
-      : mins < 60 ? mins + ' min ago'
-        : Math.round(mins / 60) + ' h ago';
-  // Staleness is STATED, never implied. A month-old price shown as current is
-  // the failure here that actually costs money.
-  el.textContent = catalogueMeta.stale
-    ? 'PRICES MAY BE OUT OF DATE - cached ' + when + ', could not refresh (' +
-      (catalogueMeta.error || 'offline') + ')'
-    : catalogue.length + ' models, ' + when;
+  renderRefreshButton();
+}
+
+// BACKLOG E #5, step 2. Pure decision lives in app/models-refresh.js; this is
+// the DOM write, same split as renderTopBar/topBarDisplay.
+function renderRefreshButton() {
+  const btn = document.getElementById('model-refresh');
+  if (!btn) return;
+  const state = refreshButtonState({ pending: modelsRefreshPending, catalogueMeta });
+  btn.disabled = state.disabled;
+  btn.textContent = state.label;
+  btn.title = state.title;
 }
 
 function renderModels() {
@@ -1229,23 +1378,27 @@ function renderModels() {
     return byId(a, b);
   };
 
-  // GROUPED BY PROVIDER. 445 flat rows is a wall; the provider is also the unit
-  // the council actually cares about, since two models from one vendor share
-  // failure modes. Groups are ordered by their best member under the chosen
-  // sort, so "cheapest" still puts the cheapest provider first rather than
-  // alphabetising them and burying it.
-  const groups = new Map();
-  for (const m of rows) {
-    const key = m.provider || 'other';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(m);
-  }
-  for (const list of groups.values()) list.sort(within);
-
-  const ordered = [...groups.entries()].sort((a, b) => within(a[1][0], b[1][0]));
-
   const seated = {};
   for (const st of councilSeats) seated[st.id] = true;
+
+  const renderRow = (m) => {
+    const price = m.priced ? money(m.promptPerM) + ' / ' + money(m.completionPerM) : 'price unknown';
+    // The short name inside a provider group: the prefix is the heading.
+    const short = m.id.indexOf('/') > 0 ? m.id.slice(m.id.indexOf('/') + 1) : m.id;
+    const tip = m.name + ' -- ' + m.id + ' -- ' +
+      (m.tools ? 'supports tools' : 'NO tool support, cannot drive the main session');
+    const starred = isFavourite(modelFavourites, 'openrouter', m.id);
+    return '<div class="model' + (seated[m.id] ? ' seated' : '') + '" data-model="' +
+      escapeHtml(m.id) + '" title="' + escapeHtml(tip) + '">' +
+      '<button type="button" class="m-star' + (starred ? ' starred' : '') + '" data-star="' +
+        escapeHtml(m.id) + '" title="' + (starred ? 'unfavourite' : 'favourite') + ' ' + escapeHtml(m.id) + '">' +
+        (starred ? '★' : '☆') + '</button>' +
+      '<span class="m-id">' + escapeHtml(short) + '</span>' +
+      (m.tools ? '' : '<span class="m-notools">no tools</span>') +
+      '<span class="m-ctx">' + ctxLabel(m.context) + '</span>' +
+      '<span class="m-price' + (m.priced ? '' : ' unknown') + '">' + escapeHtml(price) + '</span>' +
+      '</div>';
+  };
 
   // Capped across the whole list, not per group: 445 rows of DOM per keystroke
   // stutters. The line underneath says what is hidden rather than letting the
@@ -1253,26 +1406,51 @@ function renderModels() {
   const LIMIT = 200;
   let drawn = 0;
   const out = [];
+
+  // Favourites (BACKLOG E #5, #3): their OWN section at the very top of the
+  // whole list, ahead of the provider grouping -- a star must never end up
+  // buried inside its provider's own price/context position. Sorted by the
+  // same comparator as everything else, so "cheapest" orders this section too.
+  //
+  // Miguel, PR #60 review, S2: capped by the SAME `LIMIT` as the grouped
+  // section below, not exempt from it -- 200+ favourited rows would stutter a
+  // keystroke exactly as 200+ ungrouped ones would, and the cap exists for
+  // the DOM cost, which does not care which section a row is in.
+  const { favourites: favRows, rest: restRows } = partitionFavourites(rows, modelFavourites.openrouter, (m) => m.id);
+  if (favRows.length) {
+    favRows.sort(within);
+    out.push('<div class="provider"><span class="p-name">★ favourites</span>' +
+      '<span class="p-count">' + favRows.length + '</span></div>');
+    for (const m of favRows) {
+      if (drawn >= LIMIT) break;
+      out.push(renderRow(m));
+      drawn++;
+    }
+  }
+
+  // GROUPED BY PROVIDER. 445 flat rows is a wall; the provider is also the unit
+  // the council actually cares about, since two models from one vendor share
+  // failure modes. Groups are ordered by their best member under the chosen
+  // sort, so "cheapest" still puts the cheapest provider first rather than
+  // alphabetising them and burying it. Built from `restRows`, not `rows` --
+  // a favourited model lives ONLY in the favourites section above, never
+  // duplicated into its provider's group too.
+  const groups = new Map();
+  for (const m of restRows) {
+    const key = m.provider || 'other';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
+  }
+  for (const list of groups.values()) list.sort(within);
+  const ordered = [...groups.entries()].sort((a, b) => within(a[1][0], b[1][0]));
+
   for (const [provider, list] of ordered) {
     if (drawn >= LIMIT) break;
     const take = list.slice(0, LIMIT - drawn);
     drawn += take.length;
     out.push('<div class="provider"><span class="p-name">' + escapeHtml(provider) +
       '</span><span class="p-count">' + list.length + '</span></div>');
-    for (const m of take) {
-      const price = m.priced ? money(m.promptPerM) + ' / ' + money(m.completionPerM) : 'price unknown';
-      // The short name inside a provider group: the prefix is the heading.
-      const short = m.id.indexOf('/') > 0 ? m.id.slice(m.id.indexOf('/') + 1) : m.id;
-      const tip = m.name + ' -- ' + m.id + ' -- ' +
-        (m.tools ? 'supports tools' : 'NO tool support, cannot drive the main session');
-      out.push('<div class="model' + (seated[m.id] ? ' seated' : '') + '" data-model="' +
-        escapeHtml(m.id) + '" title="' + escapeHtml(tip) + '">' +
-        '<span class="m-id">' + escapeHtml(short) + '</span>' +
-        (m.tools ? '' : '<span class="m-notools">no tools</span>') +
-        '<span class="m-ctx">' + ctxLabel(m.context) + '</span>' +
-        '<span class="m-price' + (m.priced ? '' : ' unknown') + '">' + escapeHtml(price) + '</span>' +
-        '</div>');
-    }
+    for (const m of take) out.push(renderRow(m));
   }
   if (rows.length > drawn) {
     out.push('<div class="none">' + (rows.length - drawn) + ' more, narrow the search</div>');
@@ -1280,8 +1458,42 @@ function renderModels() {
   el.innerHTML = out.join('');
 }
 
+// Returns the `seq` this request was tagged with -- the caller (the Refresh
+// click, ws.onopen's resume) uses it to know which reply, if any, is really
+// its answer. Assigned and sent even if the socket turns out to be closed:
+// the seq is spent either way, and a caller tracking it as "the request I'm
+// waiting on" is correct even for a send that never left the client (F3's
+// resume path re-requests with a fresh seq of its own, superseding this one).
 function requestModels(force) {
-  try { ws.send(JSON.stringify({ type: 'models', force: !!force })); } catch (e) {}
+  const seq = ++modelsRequestSeq;
+  try { ws.send(JSON.stringify({ type: 'models', force: !!force, seq })); } catch (e) {}
+  return seq;
+}
+
+// BACKLOG E #5, #3. Flips `kind`/`id` locally (so the star responds at once)
+// and sends the DESIRED end state through the bridge -- see
+// app/favourites-bridge.js. Dexter, PR #60 review, F6: sending "toggle"
+// instead of the state this click actually wants would let a second window's
+// staler view invert the click the moment the two windows disagree, since a
+// toggle is computed against whatever the STORE currently holds rather than
+// what this window is reacting to.
+function toggleModelFavourite(kind, id) {
+  const before = modelFavourites;
+  const on = !isFavourite(before, kind, id);
+  modelFavourites = setFavourite(before, kind, id, on);
+  if (kind === 'claude') renderClaudeChoices(); else renderModels();
+  if (!(window.harness && window.harness.favourites)) return;
+  window.harness.favourites.set(kind, id, on).then((f) => {
+    // Dexter F7: a save that could not be written (disk full, EPERM) answers
+    // `null`. Rolling the optimistic star back to what it was before this
+    // click keeps the screen honest -- a star nobody could save must not
+    // outlive the click that drew it, only to silently vanish on restart.
+    modelFavourites = f ? normalizeFavourites(f) : before;
+    if (kind === 'claude') renderClaudeChoices(); else renderModels();
+  }).catch(() => {
+    modelFavourites = before;
+    if (kind === 'claude') renderClaudeChoices(); else renderModels();
+  });
 }
 
 function wireModelPanel() {
@@ -1293,6 +1505,10 @@ function wireModelPanel() {
   const list = document.getElementById('model-list');
   if (list) {
     list.addEventListener('click', (e) => {
+      // Checked FIRST: the star sits INSIDE the `.model` row, so
+      // `closest('[data-model]')` would also match a click on the star.
+      const star = e.target.closest('[data-star]');
+      if (star) { toggleModelFavourite('openrouter', star.dataset.star); return; }
       const row = e.target.closest('[data-model]');
       if (!row) return;
       const m = catalogue.find(x => x.id === row.dataset.model);
@@ -1313,6 +1529,19 @@ function wireModelPanel() {
       const b = e.target.closest('[data-unseat]');
       if (!b) return;
       try { ws.send(JSON.stringify({ type: 'seat', action: 'remove', id: b.dataset.unseat })); } catch (err) {}
+    });
+  }
+  // BACKLOG E #5, step 2: the Refresh button. Guarded against a second click
+  // while the first request is still in flight -- app/models-refresh.js's
+  // refreshButtonState already disables the DOM button for the same reason,
+  // this is the belt to that braces in case a click lands before the render.
+  const refreshBtn = document.getElementById('model-refresh');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      if (modelsRefreshPending) return;
+      modelsRefreshPending = true;
+      renderRefreshButton();
+      refreshRequestSeq = requestModels(true);
     });
   }
 }
@@ -1940,6 +2169,24 @@ function requestSwitch(kind, raw) {
   }, PTY_STEP_MS * (lead + 5));
 }
 
+// BACKLOG E #5, #3. The Claude choices, redrawn with a star per choice and
+// favourited ones first -- app/models-favourites.js's pinFavouritesFirst
+// decides the order, this only rewrites the container's markup to match.
+// Rebuilt (not diffed) because there are only ever a handful of choices.
+function renderClaudeChoices() {
+  const el = document.getElementById('tb-model-choices');
+  if (!el) return;
+  const order = pinFavouritesFirst(MODEL_CHOICES, modelFavourites.claude, (id) => id);
+  el.innerHTML = order.map((id) => {
+    const starred = isFavourite(modelFavourites, 'claude', id);
+    return '<span class="tb-model-choice">' +
+      '<button type="button" data-model="' + escapeHtml(id) + '">' + escapeHtml(id) + '</button>' +
+      '<button type="button" class="star' + (starred ? ' starred' : '') + '" data-star-claude="' +
+        escapeHtml(id) + '" title="' + (starred ? 'unfavourite' : 'favourite') + ' ' + escapeHtml(id) + '">' +
+        (starred ? '★' : '☆') + '</button></span>';
+  }).join('');
+}
+
 // The menus sit at body level, position:fixed (renderer.html says why), so
 // each one is placed against its chip when it opens: shown first, so it has a
 // size to measure.
@@ -1979,6 +2226,11 @@ if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu,
 if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMenu, tbModelMenu, tbEffortEl));
 if (tbModelMenu) {
   tbModelMenu.addEventListener('click', (e) => {
+    // Checked first, same reason as the Models panel's star: it is a sibling
+    // of the `[data-model]` button inside the same choice, and a favourite
+    // click must never also submit a model switch.
+    const star = e.target.closest('[data-star-claude]');
+    if (star) { toggleModelFavourite('claude', star.dataset.starClaude); return; }
     const row = e.target.closest('[data-model]');
     if (row) { closeTopBarMenus(); requestSwitch('model', row.dataset.model); return; }
     if (e.target.id === 'tb-model-custom-go') submitCustomModel();
@@ -2118,6 +2370,7 @@ function renderStyleSection(section) {
       colourRow('Accent', v.accent, 'id="style-accent"', 'id="style-accent-hex"', 'id="style-accent-reset"') +
       colourRow('Secondary text', v.secondary, 'id="style-secondary"', 'id="style-secondary-hex"',
         'id="style-secondary-reset"') +
+      `<button type="button" id="style-reroll" title="A new random look for this project, checked for contrast">Random colours</button>` +
       (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
       `</section>`
     );
@@ -2203,6 +2456,9 @@ function bindStyleSections() {
       fileInput.value = '';      // so picking the SAME file twice still fires 'change'
     });
   }
+
+  const reroll = document.getElementById('style-reroll');
+  if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
 
   const resetBtn = document.getElementById('style-bg-reset');
   if (resetBtn) {
@@ -2358,6 +2614,7 @@ function handleControl(msg) {
     // Before renderRoster, so the first paint already carries the careers and
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
+    rosterIndexPayload = msg.rosterIndex || null;
     renderAgentStats(msg.agentStats);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -2479,12 +2736,29 @@ function handleControl(msg) {
     renderAgentStats(msg.stats);
     return;
   }
+  if (msg.type === 'rosterIndex') {
+    renderRosterIndex(msg.rosterIndex);
+    return;
+  }
   if (msg.type === 'models') {
-    catalogue = Array.isArray(msg.models) ? msg.models : [];
-    catalogueMeta = { source: msg.source, fetchedAt: msg.fetchedAt, stale: msg.stale, error: msg.error };
+    // Dexter, PR #60, F1 + F4: NOT authoritative on its own. Reconciled
+    // against what is already shown -- a failed refresh must never blank the
+    // rows on screen, and a reply older than what is displayed must never
+    // clobber it, whichever request (boot warm-up, tab open, Refresh) it
+    // answers. See app/models-catalogue.js for the whole reasoning.
+    const merged = mergeCatalogueReply({ rows: catalogue, meta: catalogueMeta }, msg);
+    catalogue = merged.rows;
+    catalogueMeta = merged.meta;
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (Array.isArray(msg.warnings)) councilWarnings = msg.warnings;
     if (msg.max) seatMax = msg.max;
+    // F4/N1/N2 (Dexter, PR #60 rounds 1+2): only the reply that actually
+    // answers the outstanding Refresh click clears its `pending` flag --
+    // matched by `seq`, not by the reply's data shape or fetchedAt.
+    if (modelsRefreshPending && shouldClearPending(refreshRequestSeq, msg)) {
+      modelsRefreshPending = false;
+      refreshRequestSeq = null;
+    }
     renderSeats();
     renderProvenance();
     renderModels();
@@ -2581,6 +2855,28 @@ function connect() {
     // load is thrown away. Ask again once there is somewhere to ask.
     if (activeTab === 'fog') requestFog();
     if (activeTab === 'projects') requestProjects();
+    // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
+    // `ws.send` throws (InvalidStateError) while the socket is still
+    // CONNECTING -- e.g. a Refresh click, or a tab reopen, during the 1s
+    // reattach loop below -- and that throw is swallowed, same as
+    // requestFog's comment above says fog's used to be. Left uncaught, the
+    // Refresh button would stay disabled "Refreshing..." forever, since
+    // nothing else ever re-asks. Reusing whatever `force` a stuck click had
+    // set carries the user's actual request forward rather than silently
+    // downgrading it to a plain re-check.
+    //
+    // N3 (round 2): resumed whenever a Refresh is PENDING, not only when the
+    // Models tab happens to still be active. `modelsRefreshPending` is
+    // WINDOW state, not tab state -- a click made just before the user
+    // switched to Fog, then the socket reconnecting, must not depend on them
+    // switching back before this fires, or the button stays stuck exactly
+    // as if this fix did not exist. The resend gets its OWN fresh `seq`,
+    // which supersedes the original click's seq -- that request never
+    // reached the host at all, so nothing will ever answer it.
+    if (activeTab === 'models' || modelsRefreshPending) {
+      const seq = requestModels(modelsRefreshPending);
+      if (modelsRefreshPending) refreshRequestSeq = seq;
+    }
   };
 
   // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
@@ -2619,6 +2915,12 @@ function sendResize() {
 }
 
 // Everything xterm translates from a keypress flows through here.
+// Typing drops the selection, as in Windows Terminal: a selection left
+// behind is the one a later Ctrl+C would copy instead of interrupting
+// (Miguel, PR #58, I1). onKey, not onData: onData also carries focus and
+// mouse reports, which must not clear a selection the user is still using.
+term.onKey(() => { if (term.hasSelection()) term.clearSelection(); });
+
 term.onData((data) => {
   logLine(pendingKeyDesc || 'input', data);
   pendingKeyDesc = null;
@@ -2707,6 +3009,32 @@ term.attachCustomKeyEventHandler((e) => {
     return false;
   }
 
+  // Ctrl+V (BACKLOG #12, #8). Taken here for the same reason as Ctrl+B:
+  // left to xterm, it sent \x16 to the pty and pasted nothing -- xterm cancels
+  // the keydown, so the default Edit menu's accelerator never ran either
+  // (verify/probe-paste.js). Returning false with preventDefault keeps it that
+  // way, which is what makes this the ONLY paste a press produces.
+  if (isPasteKey(e)) {
+    hit.add('paste'); renderChecks();
+    e.preventDefault();
+    pasteFromClipboard();
+    return false;
+  }
+
+  // Ctrl+C with a selection copies it (app/paste-action.js); with none, it
+  // falls through and xterm sends ^C to the CLI as before. Left to xterm, a
+  // selection was never copied: the keydown became ^C and interrupted claude.
+  // A selection scrolled out of sight is dropped, and ^C goes through
+  // (Miguel, PR #58, I1).
+  const copy = copyKeyAction(e, term.getSelection(),
+    selectionVisible(term.getSelectionPosition(), term.buffer.active.viewportY, term.rows));
+  if (copy.kind === 'copy') {
+    e.preventDefault();
+    copySelection(copy.text);
+    return false;
+  }
+  if (copy.kind === 'stale') term.clearSelection();
+
   const mods =
     (e.ctrlKey ? 'Ctrl+' : '') +
     (e.shiftKey ? 'Shift+' : '') +
@@ -2729,10 +3057,64 @@ term.attachCustomKeyEventHandler((e) => {
   if (e.key === 'Escape')            { hit.add('esc'); renderChecks(); }
   if (e.ctrlKey && e.key === 'c')    { hit.add('ctrlC'); renderChecks(); }
   if (e.ctrlKey && e.key === 'r')    { hit.add('ctrlR'); renderChecks(); }
-  if (e.ctrlKey && e.key === 'v')    { hit.add('paste'); renderChecks(); }
 
   return true;
 });
+
+// What the clipboard holds decides what Ctrl+V does (app/paste-action.js).
+// Text goes in pasteFrame's `{type:'input'}` wrapper, NEVER term.paste: raw,
+// a clipboard holding allow-listed JSON would run as a host control message
+// (Miguel, PR #55, B1). Bracketed when the CLI has asked for it, so several
+// lines arrive as ONE paste. An image is ESC+v: `claude` reads the clipboard
+// itself.
+// Never silent, like Ctrl+V: a copy that failed says so. The selection is
+// cleared only once the text is really on the clipboard, so a failed copy
+// can be retried.
+async function copySelection(text) {
+  let res;
+  try {
+    res = window.harness && window.harness.writeClipboard
+      ? await window.harness.writeClipboard(text)
+      : { ok: false, error: 'no clipboard bridge' };
+  } catch (err) {
+    res = { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+  // Seen, not silent: a copy that swallowed a Ctrl+C says what it did
+  // (Miguel, PR #58, I1).
+  if (res && res.ok) {
+    term.clearSelection();
+    flourish({ icon: '📋', name: `Copied ${text.length} character${text.length === 1 ? '' : 's'}` });
+    return;
+  }
+  flourish({ icon: '⛔', name: 'Ctrl+C could not copy: ' + ((res && res.error) || 'unknown error') });
+}
+
+async function pasteFromClipboard() {
+  // Never silent (Miguel, PR #55, S2): a Ctrl+V that does nothing reads as
+  // "paste is broken". Same on-screen note the drop gesture uses.
+  if (!(window.harness && window.harness.readClipboard)) {
+    console.warn('[paste] no clipboard bridge (window.harness.readClipboard)');
+    flourish(pasteFailureNote(null));
+    return;
+  }
+  let clip;
+  try {
+    clip = await window.harness.readClipboard();
+  } catch (err) {
+    console.warn('[paste] clipboard read failed:', err);
+    flourish(pasteFailureNote(err));
+    return;
+  }
+  const action = pasteAction(clip);
+  if (action.kind === 'text') {
+    const frame = pasteFrame(action.text, term.modes.bracketedPasteMode);
+    logLine('Ctrl+V', JSON.parse(frame).data);
+    send(frame);
+  } else if (action.kind === 'image') {
+    logLine('Ctrl+V (image)', action.data);
+    send(action.data);
+  }
+}
 
 // --- sizing -----------------------------------------------------------------
 // Resize must propagate on window resize AND on font change, or the Ink layout

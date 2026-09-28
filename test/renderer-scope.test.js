@@ -50,6 +50,8 @@ const ALLOWED_GLOBALS = new Set([
   'vaultLockDisplay',
   'cacheWriteOf',
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
+  // app/roster-tabs-display.js (BACKLOG D #16: Active/Inactive roster tabs)
+  'splitActiveInactive', 'rosterTokenState', 'sortRosterRows',
   'quotaDisplay', 'formatQuotaCountdown',
   // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
   // IIFE-wrapped module, not leaks -- checked before allowlisting them, since
@@ -73,6 +75,16 @@ const ALLOWED_GLOBALS = new Set([
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
+  // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
+  // renderer.js's key handler, like isPanelToggle.
+  'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',
+  // app/models-favourites.js (BACKLOG E #5, #3)
+  'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'toggleFavourite', 'setFavourite',
+  'partitionFavourites', 'pinFavouritesFirst',
+  // app/models-refresh.js (BACKLOG E #5, #2)
+  'refreshButtonState',
+  // app/models-catalogue.js (BACKLOG E #5, PR #60 review: Dexter F1/F4)
+  'mergeCatalogueReply', 'shouldClearPending',
 ]);
 
 // The scripts renderer.html loads from ./, in document order. node_modules
@@ -182,7 +194,12 @@ test('the display modules the renderer needs are actually defined after loading'
   // module that has already been caught once.
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
                     'rosterWidth', 'faceSize', 'bugVaultDisplay',
-                    'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry']) {
+                    'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry',
+                    'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote',
+                    'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'setFavourite',
+                    'partitionFavourites', 'pinFavouritesFirst', 'refreshButtonState',
+                    'mergeCatalogueReply', 'shouldClearPending',
+                    'splitActiveInactive', 'rosterTokenState', 'sortRosterRows']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
   }
 });

@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { projectDirName } = require('./project-dir');
 
 const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -141,4 +142,71 @@ function listRecentProjects({ projectsDir, limit = 12, cache, onRead } = {}) {
   return out;
 }
 
-module.exports = { listRecentProjects, defaultProjectsDir };
+// Longest transcript-folder name trusted to be unshortened (Dexter F6).
+const MAX_UNSHORTENED_NAME = 200;
+
+/**
+ * Has Claude Code ever run in `cwd`? True when its transcript folder
+ * (host/project-dir.js names it) holds at least one .jsonl.
+ *
+ * Used to decide whether a folder is a NEW project (backlog #15), which is
+ * the one case a look may be written unasked. So every doubt answers TRUE:
+ * a projects root that exists but can't be read, or no cwd at all, is "maybe
+ * it has history", and a maybe never gets a look written over it. Only a root
+ * that is not there at all (Claude has never run on this machine) is a
+ * confident "no".
+ *
+ * Compared case-insensitively: the same folder is recorded as both `C--...`
+ * and `c--...` on this machine, depending on how the session was started.
+ * The encoding is lossy (`a-b` and `a/b` collide), and a collision can only
+ * report history that isn't there -- the safe direction.
+ */
+function hasClaudeHistory(cwd, { projectsDir, env = process.env, homeDir = os.homedir() } = {}) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return true;
+  const want = projectDirName(cwd).toLowerCase();
+  // Past this length the CLI may shorten the folder name and add a hash
+  // (Dexter F6, unmeasured -- the longest name on this machine is 137), which
+  // projectDirName can't reproduce. Not knowing the name is doubt.
+  if (want.length > MAX_UNSHORTENED_NAME) return true;
+  return historyRoots({ projectsDir, env, homeDir }).some(root => rootHasHistory(root, want));
+}
+
+/**
+ * Every folder Claude Code may keep transcripts in (Dexter F3). Claude honours
+ * CLAUDE_CONFIG_DIR, and a missing ~/.claude/projects proves nothing when it's
+ * set, so both are checked. History in EITHER counts. This is the only
+ * reader here that honours it: the launcher's lists still read the default,
+ * and a missed row there is cosmetic, where a missed history here writes a look.
+ */
+function historyRoots({ projectsDir, env, homeDir }) {
+  if (projectsDir) return [projectsDir];
+  const roots = [];
+  const configDir = env && typeof env.CLAUDE_CONFIG_DIR === 'string' ? env.CLAUDE_CONFIG_DIR.trim() : '';
+  if (configDir) roots.push(path.join(configDir, 'projects'));
+  roots.push(path.join(homeDir, '.claude', 'projects'));
+  return roots;
+}
+
+function rootHasHistory(root, want) {
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch (err) {
+    return !(err && err.code === 'ENOENT');
+  }
+  for (const d of entries) {
+    // Only a plain file can be skipped. A junction or symlink (a transcript
+    // folder moved to another drive and linked back) is not isDirectory() on
+    // its Dirent, and skipping it said "no history" -- the unsafe direction
+    // (Dexter F4). readdirSync follows the link; a dangling one throws: doubt.
+    if (d.isFile() || d.name.toLowerCase() !== want) continue;
+    try {
+      if (fs.readdirSync(path.join(root, d.name)).some(f => f.endsWith('.jsonl'))) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+module.exports = { listRecentProjects, defaultProjectsDir, hasClaudeHistory };
