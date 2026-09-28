@@ -652,6 +652,29 @@
     .provider .p-count { opacity: .6; }
     .model { padding-left: 10px; }
 
+    /* Favourites (BACKLOG E #5, #3): a star on any OpenRouter row, pinned to
+       its own section at the very top of the whole list -- ahead of the
+       provider grouping, so a star is never buried inside its provider's own
+       price/context position. */
+    .model .m-star { order: -1; background: none; border: none; cursor: pointer;
+      font-size: 12px; line-height: 1; padding: 0 2px; color: var(--dim); }
+    .model .m-star.starred { color: var(--accent); }
+    .model .m-star:hover { color: var(--accent); }
+    #model-provenance { display: flex; align-items: baseline; gap: 6px; }
+    #model-provenance .prov-text { flex: 1; }
+    #model-refresh { font: inherit; font-size: 10px; padding: 2px 7px; cursor: pointer;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+    #model-refresh:disabled { opacity: .5; cursor: default; }
+
+    /* The Claude choices (top-bar model menu): each gets its own star, and
+       favouriting one reorders the row to the front -- app/models-favourites.js
+       decides the order, renderer.js only rewrites this container's markup. */
+    .tb-model-choice { display: inline-flex; align-items: stretch; }
+    .tb-model-choice .star { font: inherit; font-size: 11px; background: none; border: none;
+      cursor: pointer; color: var(--dim); padding: 0 3px; }
+    .tb-model-choice .star.starred { color: var(--accent); }
+    .tb-model-choice .star:hover { color: var(--accent); }
+
     /* State is carried by opacity and a ring, so it still reads when the
        portrait itself is a placeholder. */
     .agent[data-state="sleeping"] { opacity: .42; }
@@ -788,9 +811,14 @@
       <span id="top-bar">
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
         <div id="tb-model-menu" class="tb-menu" hidden>
-          <button type="button" data-model="opus">opus</button>
-          <button type="button" data-model="sonnet">sonnet</button>
-          <button type="button" data-model="haiku">haiku</button>
+          <!-- BACKLOG E #5, #3: rewritten by app/renderer.js's renderClaudeChoices()
+               on load and whenever a favourite changes, so favourited choices sort
+               first -- this static markup is only the pre-JS fallback shape. -->
+          <div id="tb-model-choices">
+            <span class="tb-model-choice"><button type="button" data-model="opus">opus</button></span>
+            <span class="tb-model-choice"><button type="button" data-model="sonnet">sonnet</button></span>
+            <span class="tb-model-choice"><button type="button" data-model="haiku">haiku</button></span>
+          </div>
           <div class="custom">
             <input id="tb-model-custom" type="text" placeholder="full model id…" autocomplete="off" />
             <button type="button" id="tb-model-custom-go">Go</button>
@@ -917,7 +945,10 @@
             </div>
             <label class="check"><input type="checkbox" id="model-free" /> free only</label>
           </div>
-          <div id="model-provenance" class="dim"></div>
+          <div id="model-provenance" class="dim">
+            <span class="prov-text"></span>
+            <button type="button" id="model-refresh" title="force a fresh fetch from OpenRouter">Refresh</button>
+          </div>
           <div id="model-list"><div class="none">loading the catalogue…</div></div>
         </div>
         <div class="panel" data-panel="fog" id="fog-body">
@@ -961,6 +992,9 @@
   <script src="./style-display.js"></script>
   <script src="./agent-card-display.js"></script>
   <script src="./top-bar-display.js"></script>
+  <script src="./models-favourites.js"></script>
+  <script src="./models-refresh.js"></script>
+  <script src="./models-catalogue.js"></script>
   <script src="./paste-action.js"></script>
   <script src="./renderer.js"></script>
 </body>

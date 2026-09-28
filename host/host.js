@@ -38,6 +38,7 @@ const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
+const { createCatalogueCache } = require('./catalogue-cache');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook } = require('./style');
@@ -845,19 +846,30 @@ const sessionModels = createSessionModelRefresher({
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
-// which is why the browser works today and the council does not. Loaded lazily
-// on the first request rather than at boot: a session that never opens the
-// panel should not make a network call at all.
+// which is why the browser works today and the council does not.
+//
+// BACKLOG E #5, step 2 (Ricardo, 2026-09-27): warmed once at boot below,
+// rather than staying lazy-on-first-request as this comment used to say. A
+// session that opens the Models tab should not sit through a cold network
+// round trip the host had the whole boot sequence to start already. Still
+// exactly ONE request in flight at a time -- host/catalogue-cache.js dedupes
+// the boot warm-up against a tab opened while it is still in the air, and a
+// forced (Refresh) call against any OTHER forced or non-forced call still
+// running -- and still no INTERVAL timer anywhere: this fires once, and every
+// later freshness check is `loadCatalogue`'s own FRESH_MS comparison, driven
+// by a client asking (see the 'models' branch further down) or by a Refresh
+// click's `force`.
+//
+// Pulled into its own module (Dexter/Miguel, PR #60 review, F5/S1): the
+// dedupe bookkeeping had a bug (a settling promise could null the shared slot
+// out from under a still-running one) that shipped untested because host.js
+// itself cannot be `require()`d into a unit test. See
+// host/catalogue-cache.js's header for the bug and the fix.
 const CATALOGUE_CACHE = path.join(HARNESS_DIR, 'state', 'openrouter-catalogue.json');
-let cataloguePending = null;
-
-function currentCatalogue({ force = false } = {}) {
-  if (cataloguePending && !force) return cataloguePending;
-  cataloguePending = loadCatalogue({ cacheFile: CATALOGUE_CACHE, force })
-    .then(r => ({ ...r, models: normalizeCatalogue(r.rows), rows: undefined }))
-    .finally(() => { cataloguePending = null; });
-  return cataloguePending;
-}
+const catalogueCache = createCatalogueCache({
+  loadCatalogue, cacheFile: CATALOGUE_CACHE, normalize: normalizeCatalogue,
+});
+const currentCatalogue = (opts) => catalogueCache.current(opts);
 
 // Seats persist, so a council survives a restart. Stored as the thin shape
 // seats.js produces -- id, name, provider -- never a whole catalogue row, which
@@ -1386,6 +1398,17 @@ refreshAgentStats().then((stats) => {
   broadcastControl({ type: 'agentStats', stats });
 }).catch(() => {});
 
+// BACKLOG E #5, step 2: warm the OpenRouter catalogue's disk cache at boot,
+// same reasoning as usage/agentStats above -- a Models tab opened moments
+// after launch should find a cache already fresh rather than starting a
+// network round trip itself. NOT broadcast: nothing needs the catalogue until
+// a client asks for it (the 'models' branch), so this only needs to have
+// WRITTEN the cache by then, which currentCatalogue()'s own writeCache does.
+// Swallowed on failure exactly like its siblings -- offline at launch is not
+// fatal, `loadCatalogue` already reports it as `stale`/`error` to whichever
+// client asks next.
+currentCatalogue().catch(() => {});
+
 term.onExit(({ exitCode, signal }) => {
   console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
   for (const ws of clients) {
@@ -1632,10 +1655,15 @@ wss.on('connection', (ws) => {
       // `.then(ok, err)` -- Dexter, 2026-09-15: the two-argument form does
       // NOT catch a throw from `ok` itself, which would become an unhandled
       // rejection.
+      // `seq` is echoed back VERBATIM, whatever it is (a number, absent,
+      // garbage) -- Dexter, PR #60 round 2, N1/N2. The client tags every
+      // request with one and uses the echo to tell "the reply to MY click"
+      // apart from an unrelated request's reply; the host has no reason to
+      // interpret it, only to hand it straight back.
       currentCatalogue({ force: !!msg.force }).then(
         (c) => ws.send(JSON.stringify({
           type: 'models', models: c.models, source: c.source,
-          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
+          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error, seq: msg.seq,
           seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
         }))
       ).catch((err) => {
@@ -1646,7 +1674,7 @@ wss.on('connection', (ws) => {
         try {
           ws.send(JSON.stringify({
             type: 'models', models: [], source: 'none', stale: true,
-            error: err && err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
+            error: err && err.message, seq: msg.seq, seats: readSeats(), max: MAX_SEATS, warnings: [],
           }));
         } catch { /* the socket went away */ }
       });
