@@ -7,7 +7,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { readClipboard, registerClipboardHandlers, CLIPBOARD_READ } = require('../app/clipboard-bridge');
+const { readClipboard, writeClipboard, registerClipboardHandlers, CLIPBOARD_READ, CLIPBOARD_WRITE } = require('../app/clipboard-bridge');
 
 function fakeClipboard({ text = '', image = false } = {}) {
   const calls = { readImage: 0 };
@@ -87,4 +87,53 @@ test('main.js actually registers the handlers for its window', () => {
   const main = app('main.js');
   assert.match(main, /require\(['"]\.\/clipboard-bridge['"]\)/);
   assert.match(main, /registerClipboardHandlers\(\s*\{[^}]*ipcMain[^}]*clipboard[^}]*win[^}]*\}\s*\)/);
+});
+
+// --- Ctrl+C copy: main writes the selection for the window, and only for it -
+
+function fakeWritable() {
+  const writes = [];
+  return { writes, writeText: (t) => writes.push(t), readText: () => '', readImage: () => ({ isEmpty: () => true }) };
+}
+
+test('writeClipboard puts the text on the clipboard and says so', () => {
+  const cb = fakeWritable();
+  assert.deepStrictEqual(writeClipboard(cb, 'copied'), { ok: true });
+  assert.deepStrictEqual(cb.writes, ['copied']);
+});
+
+test('writeClipboard refuses anything but a non-empty string, and writes nothing', () => {
+  // An empty write would wipe what the user had copied, for nothing.
+  for (const bad of ['', undefined, null, 42, {}]) {
+    const cb = fakeWritable();
+    assert.strictEqual(writeClipboard(cb, bad).ok, false, JSON.stringify(bad));
+    assert.deepStrictEqual(cb.writes, [], JSON.stringify(bad));
+  }
+});
+
+test('a clipboard that throws is reported, never a crashed handler', () => {
+  const cb = { writeText: () => { throw new Error('locked'); } };
+  assert.deepStrictEqual(writeClipboard(cb, 'x'), { ok: false, error: 'locked' });
+});
+
+test('the write handler writes for its own window', async () => {
+  const ipcMain = fakeIpc();
+  const win = { webContents: {} };
+  const cb = fakeWritable();
+  registerClipboardHandlers({ ipcMain, clipboard: cb, win });
+  assert.deepStrictEqual(await ipcMain.handlers.get(CLIPBOARD_WRITE)({ sender: win.webContents }, 'sel'), { ok: true });
+  assert.deepStrictEqual(cb.writes, ['sel']);
+});
+
+test('any other sender cannot write the clipboard', async () => {
+  const ipcMain = fakeIpc();
+  const cb = fakeWritable();
+  registerClipboardHandlers({ ipcMain, clipboard: cb, win: { webContents: {} } });
+  assert.strictEqual((await ipcMain.handlers.get(CLIPBOARD_WRITE)({ sender: {} }, 'evil')).ok, false);
+  assert.deepStrictEqual(cb.writes, []);
+});
+
+test('the preload invokes the write channel with the text', () => {
+  assert.ok(app('preload.js').includes(`ipcRenderer.invoke('${CLIPBOARD_WRITE}', text)`),
+    `preload.js must invoke '${CLIPBOARD_WRITE}' with the text`);
 });
