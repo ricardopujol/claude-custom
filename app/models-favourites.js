@@ -11,8 +11,8 @@
  *
  * TWO KINDS, ONE SHAPE. 'openrouter' rows are keyed by the OpenRouter model
  * id (`google/gemini-2.5-pro`); 'claude' choices are keyed by the alias
- * top-bar-display.js's MODEL_CHOICES already uses ('opus', 'sonnet',
- * 'haiku'). They are stored as two separate lists rather than one merged set
+ * top-bar-display.js's MODEL_CHOICES already uses ('fable', 'opus',
+ * 'sonnet', 'haiku'). They are stored as two separate lists rather than one merged set
  * so an OpenRouter id that happens to collide with a future Claude alias
  * (or vice versa) can never cross-favourite the wrong picker.
  *
