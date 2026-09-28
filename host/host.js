@@ -23,11 +23,14 @@ const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
+const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { wholeRoster, scanProjects } = require('./roster-index');
+const { lifetimeAgentTokens, readCacheSeed } = require('./agent-stats-cache');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
 const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
@@ -161,29 +164,10 @@ const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
 // called blocker-grade for pytest, reintroduced for the default runner.
 const HEALTH_OUTPUT_CAP = 64 * 1024;
 
-function killTree(child) {
-  if (!child || child.exitCode !== null) return;
-  if (process.platform === 'win32') {
-    // The try/catch below does NOT catch this: a ChildProcess reports a failed
-    // spawn through an ASYNC 'error' event, and an EventEmitter with no 'error'
-    // listener THROWS -- an uncaught exception that kills the host and the
-    // user's live Claude session with it. Reproduced: taskkill missing from
-    // PATH exits the host with ENOENT.
-    //
-    // Worst on the timeout path, which runs precisely when a suite has hung and
-    // the timeout is the user's only way out.
-    try {
-      const killer = require('child_process').spawn(
-        'taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-      killer.on('error', (err) => {
-        console.log('[host] taskkill failed:', err.code || err.message, '- falling back');
-        try { child.kill('SIGTERM'); } catch {}
-      });
-      return;
-    } catch { /* fall through to the portable kill */ }
-  }
-  try { child.kill('SIGTERM'); } catch {}
-}
+// killTree moved to host/kill-tree.js (Miguel, PR #61 review H3): a probe
+// needed the exact same "kill the whole tree, not just the top pid" guarantee
+// and was about to reimplement a thinner copy of it. That module is now the
+// single source of truth; both this file and verify/ probes require it.
 
 let healthChild = null;
 
@@ -723,6 +707,123 @@ function refreshAgentStats() {
   return agentStatsPending;
 }
 
+// The WHOLE roster (BACKLOG D #16): Active/Inactive tabs need every agent
+// definition and history entry ACROSS EVERY PROJECT, not just this one, sorted
+// by lifetime tokens. Both halves -- host/roster-index.js's identity walk and
+// host/agent-stats-cache.js's cached, incremental token sum -- read every
+// project under ~/.claude/projects/, which MEASURED at 1232 transcripts across
+// 48 projects (~1.2GB) taking ~14s cold. So this is fired once, in the
+// BACKGROUND, well after the pty and the ws server exist, and only ever
+// broadcast when it resolves -- never awaited by anything that could block
+// startup or the control channel.
+//
+// PR #59 review: `scanProjects` is computed ONCE per pass and handed to BOTH
+// `wholeRoster` and `lifetimeAgentTokens` (Dexter F5 perf half / Miguel M1) --
+// before this, each independently walked and identity-resolved every project,
+// reading every top-level session transcript on the machine TWICE per launch,
+// and the two walks could disagree if the tree changed between them (Dexter
+// F10). `wholeRoster` is the one that folds `scan.errors` into its own
+// `unreadable` (see its header); `lifetime.unreadable` never repeats them, so
+// the sum below double-counts nothing (Miguel L2).
+const ROSTER_LIFETIME_CACHE = path.join(HARNESS_DIR, 'state', 'roster-lifetime.json');
+let lastRosterIndex = { ok: false, agents: [], complete: false, unreadable: 0 };
+let rosterIndexPending = null;
+
+function rosterAgentRow(agent, lifetime, unresolvedNames) {
+  return {
+    agent,
+    // Never used shows NO count -- `null`, not a coerced zero (Number(null)
+    // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
+    // strict presence check that makes that hold.
+    tokens: lifetime.agents.has(agent) ? lifetime.agents.get(agent) : null,
+    portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+    // Dexter F3 / Miguel L1: an agent resolved only through an unresolved hook
+    // LABEL (in either the identity walk or the token sum -- a run can be
+    // orphaned in one project and confirmed in another) is flagged rather than
+    // drawn as an indistinguishable peer of a real `subagent_type`.
+    resolved: !unresolvedNames.has(agent) && !lifetime.unresolvedAgents.has(agent),
+    // Dexter N2, PR #59 R2: an agent that DID run but whose only transcript(s)
+    // this pass could not read must not be pixel-identical to a definition
+    // that has never run at all -- `tokens` is `null` either way, so this is
+    // the ONLY signal that tells the two apart.
+    unreadable: lifetime.unreadableAgents.has(agent),
+  };
+}
+
+function refreshRosterIndex() {
+  if (rosterIndexPending) return rosterIndexPending;
+  rosterIndexPending = (async () => {
+    const scan = await scanProjects();
+    const [roster, lifetime] = await Promise.all([
+      wholeRoster({ cwd: CWD, scan }),
+      lifetimeAgentTokens({ cacheFile: ROSTER_LIFETIME_CACHE, scan }),
+    ]);
+    const agents = roster.names.map((agent) => rosterAgentRow(agent, lifetime, roster.unresolvedNames));
+    lastRosterIndex = {
+      ok: roster.unreadable === 0 && lifetime.unreadable === 0,
+      agents,
+      // TRUE the moment one full pass has resolved, however it went --
+      // `ok` (above) carries whether it was CLEAN, separately, the same
+      // split host/agent-stats.js and host/usage.js already make.
+      complete: true,
+      unreadable: roster.unreadable + lifetime.unreadable,
+    };
+    return lastRosterIndex;
+  })()
+    .catch((err) => {
+      console.error('[host] roster index failed:', err && err.message);
+      return lastRosterIndex;
+    })
+    .finally(() => { rosterIndexPending = null; });
+  return rosterIndexPending;
+}
+
+// Dexter F5 (lower-bound half, PR #59 R1): before this, `lastRosterIndex`
+// stayed `{ agents: [] }` for the WHOLE ~14s first pass, so the "≥ until the
+// first full pass completes" state the spec calls for (item 4) was dead code
+// -- there was never a total on screen to prefix with "≥" until the pass had
+// already finished and stopped needing one. This reads a LOWER-BOUND snapshot
+// left by the last successful scan (any previous host run) and publishes it
+// immediately, `complete: false`, so a client attaching during this launch's
+// own (still-running) scan sees last-known totals rather than nothing at all.
+// A cold install with no prior cache simply has nothing to seed, which is the
+// correct starting state, not a failure.
+//
+// USES `readCacheSeed`, NOT `readCacheSummary` (Dexter N1, PR #59 R2): the raw
+// summary alone is not a lower bound once a transcript can be DELETED between
+// host launches (Claude Code's own retention cleanup, for instance) --
+// `readCacheSeed` stat-checks the files behind each total and drops any that
+// vanished, so what this publishes can never be larger than the truth.
+//
+// NEVER OVERWRITES A COMPLETED PASS (Dexter N3, PR #59 R2): `seedRosterIndex`
+// and `refreshRosterIndex` both run at boot, and on a small install the real
+// pass can resolve BEFORE this cheap disk read does. Without the guard below,
+// this function would then unconditionally replace a `complete:true` result
+// with a stale `complete:false` snapshot, and a client attaching in that
+// window would see totals regress until the boot chain's second
+// `refreshRosterIndex()` call (test/host-roster-index.test.js) finishes.
+async function seedRosterIndex() {
+  const seed = await readCacheSeed(ROSTER_LIFETIME_CACHE).catch(() => ({}));
+  const names = Object.keys(seed);
+  if (!names.length) return;
+  if (lastRosterIndex.complete) return; // Dexter N3: a finished pass is never regressed
+  lastRosterIndex = {
+    ok: false, // a snapshot, not a verified-against-the-current-tree read
+    complete: false,
+    unreadable: 0,
+    agents: names.map((agent) => ({
+      agent,
+      tokens: Number.isFinite(seed[agent] && seed[agent].tokens) ? seed[agent].tokens : null,
+      portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+      // The seed doesn't carry identity provenance -- assume confirmed rather
+      // than flagging every row; `refreshRosterIndex`'s real pass corrects
+      // this within moments.
+      resolved: true,
+      unreadable: false, // likewise unknown at seed time; not claimed either way
+    })),
+  };
+}
+
 // The model each agent ACTUALLY used, read from its own transcript -- never
 // the Agent tool_input's REQUESTED model, which is a different fact. See
 // host/session-model.js. Recomputed on SessionStart (the session id just
@@ -1170,6 +1271,24 @@ const sendControl = (ws, msg) => {
 };
 const broadcastControl = msg => { for (const ws of clients) sendControl(ws, msg); };
 
+// Kicked off once, here, rather than waiting for the first attach: the
+// whole-roster scan is install-wide (every project, not this one), so there is
+// no reason to delay it until a window happens to connect. Fire-and-forget --
+// the connection handler above already covers a client that attaches before
+// this lands, and a client already attached gets the broadcast when it does.
+//
+// `seedRosterIndex()` runs FIRST (Dexter F5, PR #59 review): it publishes
+// whatever the LAST successful scan knew, `complete: false`, so a client
+// attaching in the first seconds of this launch sees last-known totals as a
+// lower bound instead of nothing at all, while `refreshRosterIndex()`'s real
+// (still ~14s-cold) pass runs behind it and replaces the seed the moment it
+// resolves.
+seedRosterIndex()
+  .catch(() => { /* nothing cached yet, or unreadable: the real pass still lands */ })
+  .then(() => refreshRosterIndex())
+  .then((rosterIndex) => broadcastControl({ type: 'rosterIndex', rosterIndex }))
+  .catch(() => { /* lastRosterIndex already reflects the failure; the next attach retries */ });
+
 term.onData((data) => {
   termState.write(data);
   const frame = Buffer.from(data, 'utf8');
@@ -1358,6 +1477,10 @@ wss.on('connection', (ws) => {
     vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
+    // The WHOLE roster (BACKLOG D #16) -- still `complete: false` on a fast
+    // attach, before the first background scan across every project has
+    // finished. The renderer draws every total as a lower bound until then.
+    rosterIndex: lastRosterIndex,
     // May still be `{model:null,...}` on a fast attach, before SessionStart's
     // read lands -- the renderer draws "—" for that, never a guessed model.
     sessionModel: sessionModels.current(),
@@ -1393,6 +1516,19 @@ wss.on('connection', (ws) => {
         if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'agentStats', stats });
       })
       .catch(() => { /* the next finish will carry it */ });
+  }
+
+  // The whole-roster scan is install-wide, not per-project, so it is kicked
+  // off once at boot (below, near `wss`'s creation) rather than per
+  // connection -- but a client attaching before that first pass has landed
+  // still deserves the update the moment it does, same reasoning as usage and
+  // agentStats above.
+  if (!lastRosterIndex.complete) {
+    refreshRosterIndex()
+      .then((rosterIndex) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'rosterIndex', rosterIndex });
+      })
+      .catch(() => { /* the next attach will carry it */ });
   }
 
   // A milestone reached while nothing was attached is delivered now rather than

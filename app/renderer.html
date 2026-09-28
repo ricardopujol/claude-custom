@@ -861,6 +861,15 @@
           <button data-tab="style" title="How the harness looks">Style</button>
         </nav>
         <div class="panel" data-panel="agents">
+          <!-- BACKLOG D #16: Active is today's roster (unchanged); Inactive is
+               the whole roster (every agent definition plus every name ever
+               seen in a transcript, across every project) minus Active,
+               sorted by lifetime tokens. The split and sort are pure and live
+               in app/roster-tabs-display.js -- this is markup only. -->
+          <nav id="roster-subtabs">
+            <button type="button" data-roster-tab="active" class="on" title="Working in this host's lifetime">Active</button>
+            <button type="button" data-roster-tab="inactive" title="Every other agent this project or account has ever used">Inactive</button>
+          </nav>
           <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
           <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
           <div id="cooldowns"></div>
@@ -976,6 +985,7 @@
   <script src="./roster-width.js"></script>
   <script src="./vault-lock-display.js"></script>
   <script src="./career-display.js"></script>
+  <script src="./roster-tabs-display.js"></script>
   <script src="./quota-display.js"></script>
   <script src="./bugvault-display.js"></script>
   <script src="./projects-display.js"></script>

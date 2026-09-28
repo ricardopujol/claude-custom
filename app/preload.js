@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('harness', {
   // { text, hasImage } -- see app/clipboard-bridge.js. Read-only: nothing is
   // ever written to the clipboard through this.
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+  // Ctrl+C with a selection: main writes it (app/clipboard-bridge.js).
+  writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
 
   // The secret store. Every call crosses into main, where the vault lives --
   // the window never holds the file, the key, or more than one secret at a
