@@ -52,3 +52,17 @@ test('the in-flight dedupe itself lives in host/catalogue-cache.js, not reimplem
   assert.doesNotMatch(HOST, /let cataloguePending/,
     'the old inline pending-promise variable must be gone, not left dangling alongside the new module');
 });
+
+// Dexter, PR #60 round 2, N1/N2: the client tells the reply to ITS click apart
+// from an unrelated request's reply by the `seq` it sent. Without the echo the
+// client silently falls back to guessing from fetchedAt, and an older
+// request's reply clears a newer click's pending state again (N2). A hand
+// mutation deleting the echo failed no test before this one.
+test("the 'models' reply echoes the request's seq, on success AND on failure", () => {
+  const start = HOST.indexOf("if (msg.type === 'models')");
+  assert.ok(start !== -1, "precondition: the 'models' handler must exist");
+  const handler = HOST.slice(start, HOST.indexOf('return;', start));
+  const replies = handler.match(/ws\.send\(JSON\.stringify\(\{[\s\S]*?\}\)\)/g) || [];
+  assert.strictEqual(replies.length, 2, 'expected exactly the success reply and the failure reply');
+  for (const r of replies) assert.match(r, /\bseq:\s*msg\.seq\b/, `reply must echo seq: ${r.slice(0, 80)}`);
+});
