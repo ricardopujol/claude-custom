@@ -52,7 +52,7 @@ test('modelFamily is TOTAL and never throws on garbage', () => {
     {}, [], [1, 2], () => {}, Symbol('x'), new Date(), /re/,
     '   ', '\n\t', 'OPUS'.repeat(1000), null, undefined,
   ];
-  const allowed = new Set(['opus', 'sonnet', 'haiku', 'other', null]);
+  const allowed = new Set(['fable', 'opus', 'sonnet', 'haiku', 'other', null]);
   for (const g of garbage) {
     let result;
     assert.doesNotThrow(() => { result = modelFamily(g); }, `threw on ${String(g)}`);
@@ -69,10 +69,11 @@ test('cueColour maps each known family to its fixed colour, independent of theme
   const sonnet = cueColour('sonnet', THEME);
   const haiku = cueColour('haiku', THEME);
   const other = cueColour('other', THEME);
-  // All four are distinct, and none of them is the theme's accent -- the cue
+  const fable = cueColour('fable', THEME);
+  // All five are distinct, and none of them is the theme's accent -- the cue
   // is supposed to mean the same thing in every project.
-  const set = new Set([opus, sonnet, haiku, other]);
-  assert.strictEqual(set.size, 4, 'the four family colours must be distinct');
+  const set = new Set([fable, opus, sonnet, haiku, other]);
+  assert.strictEqual(set.size, 5, 'the five family colours must be distinct');
   for (const c of set) assert.notStrictEqual(c, THEME.chrome.accent);
 });
 
@@ -256,8 +257,9 @@ test('topBarDisplay tolerates missing elements, e.g. before the DOM is ready', (
 test('MODEL_CHOICES and EFFORT_LEVELS are the measured, in-session vocabularies', () => {
   // Measured 2026-09-23 against claude 2.1.280: aliases opus/sonnet/haiku plus
   // a free-text id for /model; the six /effort levels (ultracode is gated and
-  // deliberately excluded here).
-  assert.deepStrictEqual(MODEL_CHOICES, ['opus', 'sonnet', 'haiku']);
+  // deliberately excluded here). `fable` added 2026-09-28: claude 2.1.283
+  // accepts it as an alias (verify/probe-model-list.js), newest first.
+  assert.deepStrictEqual(MODEL_CHOICES, ['fable', 'opus', 'sonnet', 'haiku']);
   assert.deepStrictEqual(EFFORT_LEVELS, ['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 });
 
@@ -300,6 +302,16 @@ test('an alias from the menu matches any id of its own family', () => {
   assert.strictEqual(modelMatches('claude-opus-5-5', 'opus'), true);
   assert.strictEqual(modelMatches('claude-haiku-4-5-20251001', 'HAIKU'), true);
   assert.strictEqual(modelMatches('claude-opus-5-5', 'sonnet'), false);
+});
+
+// Miguel, PR #62, #1: modelMatches is what decides whether a switch to fable
+// CONFIRMS. Without the fable family it read as 'other' and the switch timed
+// out as refused although the CLI had made it.
+test('a switch to fable confirms on a fable id, and on nothing else', () => {
+  assert.strictEqual(modelMatches('claude-fable-5-1', 'fable'), true);
+  assert.strictEqual(modelMatches('claude-fable-5-1', 'FABLE'), true);
+  assert.strictEqual(modelMatches('claude-opus-5-5', 'fable'), false);
+  assert.strictEqual(modelMatches('claude-fable-5-1', 'opus'), false);
 });
 
 test('a free-typed id matches only EXACTLY, never by family (Dexter #1, #5)', () => {
@@ -514,4 +526,10 @@ test('topBarState carries a notice onto its chip, and topBarDisplay marks and ti
   assert.strictEqual(el.textContent, 'claude-opus-5-5', 'the label still reports the truth');
   topBarDisplay({ modelEl: el }, topBarState({ model: 'claude-opus-5-5', theme: THEME }));
   assert.ok(!classes.has('notice'), 'the mark clears with the notice');
+});
+
+test('a fable model id is its own family, not "other"', () => {
+  assert.strictEqual(modelFamily('fable'), 'fable');
+  assert.strictEqual(modelFamily('claude-fable-5-1'), 'fable');
+  assert.strictEqual(modelFamily('Claude-Fable-5'), 'fable');
 });

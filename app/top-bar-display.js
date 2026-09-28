@@ -18,10 +18,11 @@
 (function (root) {
 
 // Approved 2026-09-23 (Ricardo): a PERSISTENT recognition cue, independent of
-// theme. Unlike --accent, which is chosen per project, these four colours are
+// theme. Unlike --accent, which is chosen per project, these colours are
 // meant to mean the same model everywhere -- so they are fixed, not derived
 // from the active theme.
 const FAMILY_COLOURS = {
+  fable: '#2bb5a8',    // teal (added 2026-09-28 with the fable alias)
   opus: '#e0a030',     // amber
   sonnet: '#4c8bf5',   // blue
   haiku: '#4caf6a',    // green
@@ -30,8 +31,9 @@ const FAMILY_COLOURS = {
 
 // MEASURED 2026-09-23 against `claude` 2.1.280 (see the PR-B brief). `/model`
 // accepts these aliases plus a full model id typed as free text; `ultracode`
-// is gated out of `/effort` on purpose.
-const MODEL_CHOICES = ['opus', 'sonnet', 'haiku'];
+// is gated out of `/effort` on purpose. `fable` added 2026-09-28: claude
+// 2.1.283 accepts it as an alias (verify/probe-model-list.js). Newest first.
+const MODEL_CHOICES = ['fable', 'opus', 'sonnet', 'haiku'];
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'auto'];
 
 // How long a picker waits for the truth before it gives up and says the
@@ -51,7 +53,7 @@ const PENDING_TIMEOUT_MS = 15000;
  *
  * `null`   -- no model known yet; there is nothing to name, so nothing is
  *             guessed.
- * 'other'  -- a real, non-empty id that matched none of the three families.
+ * 'other'  -- a real, non-empty id that matched none of the known families.
  *             This is deliberately a real answer, not an absence: an
  *             OpenRouter model seated in the council is not Anthropic and
  *             that is worth a colour of its own (magenta), not silence.
@@ -61,6 +63,7 @@ function modelFamily(id) {
   const trimmed = id.trim();
   if (!trimmed) return null;
   const lower = trimmed.toLowerCase();
+  if (lower.indexOf('fable') !== -1) return 'fable';
   if (lower.indexOf('opus') !== -1) return 'opus';
   if (lower.indexOf('sonnet') !== -1) return 'sonnet';
   if (lower.indexOf('haiku') !== -1) return 'haiku';
