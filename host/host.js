@@ -23,6 +23,7 @@ const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
+const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
@@ -160,29 +161,10 @@ const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
 // called blocker-grade for pytest, reintroduced for the default runner.
 const HEALTH_OUTPUT_CAP = 64 * 1024;
 
-function killTree(child) {
-  if (!child || child.exitCode !== null) return;
-  if (process.platform === 'win32') {
-    // The try/catch below does NOT catch this: a ChildProcess reports a failed
-    // spawn through an ASYNC 'error' event, and an EventEmitter with no 'error'
-    // listener THROWS -- an uncaught exception that kills the host and the
-    // user's live Claude session with it. Reproduced: taskkill missing from
-    // PATH exits the host with ENOENT.
-    //
-    // Worst on the timeout path, which runs precisely when a suite has hung and
-    // the timeout is the user's only way out.
-    try {
-      const killer = require('child_process').spawn(
-        'taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-      killer.on('error', (err) => {
-        console.log('[host] taskkill failed:', err.code || err.message, '- falling back');
-        try { child.kill('SIGTERM'); } catch {}
-      });
-      return;
-    } catch { /* fall through to the portable kill */ }
-  }
-  try { child.kill('SIGTERM'); } catch {}
-}
+// killTree moved to host/kill-tree.js (Miguel, PR #61 review H3): a probe
+// needed the exact same "kill the whole tree, not just the top pid" guarantee
+// and was about to reimplement a thinner copy of it. That module is now the
+// single source of truth; both this file and verify/ probes require it.
 
 let healthChild = null;
 
