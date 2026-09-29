@@ -173,6 +173,7 @@ function createLogSession({
       c.everFound = true;
       c.tail = agentLog.createTail(r.file);
       c.first = true;
+      c.tracked = want.startsWith('id:');
     }
 
     for (;;) {
@@ -194,12 +195,22 @@ function createLogSession({
       c.tail = r.state;
       const reset = c.first || r.reset === true;
       c.first = false;
-      const done = !running && !r.more;
+      // "FINISHED" IS A CLAIM ABOUT THE RUN, and this host only knows a run is
+      // over when it WATCHED it end. So:
+      //   - a transcript found by NAME is one this host does not track (another
+      //     window's host may be writing it; the stall reaper may have cut off
+      //     a run that is still going): never `done`, drawn as "latest run";
+      //   - a tracked run is `done` only on a poll that is caught up AND brought
+      //     nothing new. A run the reaper ended that keeps appending flips back
+      //     to "reading" with its next line, instead of streaming under
+      //     "finished".
+      // (Dexter F4, PR #63.)
+      const done = c.tracked && !running && !r.more && r.entries.length === 0 && !reset;
       if (r.entries.length > 0 || reset || running !== c.lastRunning || done !== c.lastDone) {
         c.lastNone = null;
         send({
           type: 'agent-log', agent: c.agent, source: r.state.file,
-          entries: r.entries, reset, running, done, unknown: r.state.unknown,
+          entries: r.entries, reset, running, done, tracked: c.tracked, unknown: r.state.unknown,
         });
       }
       c.lastRunning = running;
@@ -231,7 +242,7 @@ function createLogSession({
     if (typeof agent !== 'string' || !agent) return;
     const c = {
       agent, timer: null, busy: false, want: null, resolved: false, everFound: false,
-      tail: null, first: false, lastNone: null, lastRunning: null, lastDone: null,
+      tail: null, first: false, tracked: false, lastNone: null, lastRunning: null, lastDone: null,
     };
     cur = c;
     c.timer = setIntervalFn(() => { poll().catch(() => {}); }, intervalMs);

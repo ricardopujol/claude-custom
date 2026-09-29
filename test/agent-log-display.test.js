@@ -102,6 +102,16 @@ test('the status says live, finished, or neither -- from the frame, never guesse
   assert.match(mid, /alog-status[^>]*>reading</);
 });
 
+test('F4: a run this host does not track is "latest run", never "finished"', () => {
+  const m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], running: false, done: false, tracked: false }));
+  assert.strictEqual(m.tracked, false);
+  assert.match(d.renderAgentLog(m), /alog-status[^>]*>latest run</);
+  // A tracked, quiet, over run is "finished"; a frame that says nothing about tracking is treated as tracked.
+  const fin = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], done: true, tracked: true }));
+  assert.match(d.renderAgentLog(fin), /alog-status[^>]*>finished</);
+  assert.strictEqual(d.applyFrame(d.openLog('rev'), frame({ tracked: undefined })).tracked, true);
+});
+
 test('the log is capped, and says how many earlier entries are not shown', () => {
   const many = Array.from({ length: d.MAX_ENTRIES + 25 }, (_, i) => entry({ summary: 'n' + i }));
   const m = d.applyFrame(d.openLog('rev'), frame({ entries: many }));

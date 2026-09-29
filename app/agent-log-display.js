@@ -49,7 +49,7 @@ function emptyLog() {
     open: false, agent: null, waiting: false,
     source: null, reason: null,
     entries: [], dropped: 0, unknown: 0,
-    running: false, done: false,
+    running: false, done: false, tracked: true,
   };
 }
 
@@ -108,6 +108,9 @@ function applyFrame(model, frame) {
     unknown: isCount(frame.unknown) ? frame.unknown : (reset ? 0 : model.unknown),
     running: frame.running === true,
     done: frame.done === true,
+    // Only an explicit `false` marks a run this host does not track (a
+    // transcript picked by name): its status is "latest run", never "finished".
+    tracked: frame.tracked !== false,
   };
 }
 
@@ -155,7 +158,7 @@ function renderAgentLog(model) {
 
   let status = '';
   if (model.source !== null) {
-    status = model.running ? 'live' : model.done ? 'finished' : 'reading';
+    status = model.running ? 'live' : model.done ? 'finished' : model.tracked === false ? 'latest run' : 'reading';
   }
   const head =
     `<div class="alog-head">` +

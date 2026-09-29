@@ -142,7 +142,7 @@ test('opening an agent with no transcript says so, once, explicitly', async () =
   assert.strictEqual(h.frames.length, 1, 'the same absence is not re-announced every poll');
 });
 
-test('a finished agent: one reset frame with its whole log, done = true', async () => {
+test('an agent found by name: one reset frame with its whole log, untracked and never claimed finished', async () => {
   const { root, dir } = project();
   const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one'), textLine('two')]);
   const h = harness({ root });
@@ -153,11 +153,57 @@ test('a finished agent: one reset frame with its whole log, done = true', async 
   assert.strictEqual(f.agent, 'rev');
   assert.strictEqual(f.source, file);
   assert.strictEqual(f.reset, true);
-  assert.strictEqual(f.done, true);
+  assert.strictEqual(f.done, false);
+  assert.strictEqual(f.tracked, false);
   assert.strictEqual(f.running, false);
   assert.deepStrictEqual(f.entries.map(e => e.summary), ['one', 'two']);
   await h.session.poll();
   assert.strictEqual(h.frames.length, 1, 'nothing new, nothing sent');
+});
+
+// ---- Dexter F4, PR #63: "finished" is only said about a run this host watched end ----
+
+test('F4: a transcript picked by name that another host is still writing is never "finished"', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'r2', { agentType: 'rev' }, [textLine('one')]);
+  const h = harness({ root });                    // this host has no invocation of rev
+  await h.session.open('rev');
+  for (let i = 0; i < 3; i++) {
+    fs.appendFileSync(file, textLine('more' + i) + NL);
+    await h.session.poll();
+  }
+  assert.strictEqual(h.frames.length, 4, 'every new line still streams');
+  assert.ok(h.frames.every(f => f.done === false && f.tracked === false), JSON.stringify(h.frames.map(f => [f.done, f.tracked])));
+});
+
+test('F4: a run this host watched end is "finished" on the first poll that brings nothing new', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'live1', { agentType: 'rev' }, [textLine('x')]);
+  const h = harness({ root, invocations: [{ name: 'rev', agentId: 'live1' }] });
+  await h.session.open('rev');
+  assert.strictEqual(h.frames[0].tracked, true);
+  h.state.invocations = [];
+  await h.session.poll();
+  const last = h.frames[h.frames.length - 1];
+  assert.strictEqual(last.done, true);
+  assert.strictEqual(last.tracked, true);
+});
+
+test('F4: a run the stall reaper ended that KEEPS WRITING goes back to not-finished with its next line', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'live1', { agentType: 'rev' }, [textLine('x')]);
+  const h = harness({ root, invocations: [{ name: 'rev', agentId: 'live1' }] });
+  await h.session.open('rev');
+  h.state.invocations = [];                       // reaped
+  await h.session.poll();
+  assert.strictEqual(h.frames[h.frames.length - 1].done, true);
+  fs.appendFileSync(file, textLine('still going') + NL);
+  await h.session.poll();
+  const last = h.frames[h.frames.length - 1];
+  assert.deepStrictEqual(last.entries.map(e => e.summary), ['still going']);
+  assert.strictEqual(last.done, false, 'new entries arriving are not "finished"');
+  await h.session.poll();
+  assert.strictEqual(h.frames[h.frames.length - 1].done, true, 'and it settles once it goes quiet');
 });
 
 test('a running agent streams what is appended, and a partial line waits for its newline', async () => {
@@ -257,7 +303,7 @@ test('a big backlog goes out in several frames, the first one a reset, none of t
   assert.strictEqual(h.frames[0].reset, true);
   assert.ok(h.frames.slice(1).every(f => !f.reset));
   assert.deepStrictEqual(h.frames.flatMap(f => f.entries).map(e => e.summary), lines.map((_, i) => 'n' + i));
-  assert.deepStrictEqual(h.frames.map(f => f.done), h.frames.map((_, i) => i === h.frames.length - 1));
+  assert.ok(h.frames.every(f => f.done === false), 'found by name: never claimed finished');
 });
 
 test('unknown-line count travels with the frames', async () => {
