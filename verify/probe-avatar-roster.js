@@ -56,7 +56,7 @@ function freePort() {
 
 const mainSource = (port) => `
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
-const path = require('path');
+const path = require('path'); const fs = require('fs');
 const ROOT = ${JSON.stringify(ROOT)};
 const { registerAvatarHandlers } = require(path.join(ROOT, 'app', 'avatar-bridge'));
 const { createStore } = require(path.join(ROOT, 'host', 'store'));
@@ -149,6 +149,13 @@ app.whenReady().then(async () => {
 
     await js('window.harness.avatar.setImagesEnabled(true)');
     check('turning images back on restores the videos', await until('document.querySelectorAll("#agents .face video").length > 2'));
+
+    // Dexter F3 (PR #64): a change made by ANOTHER window's host (here: the file
+    // removed straight from disk, not through this window's socket) must reach
+    // this window, or its idle faces point at a deleted file.
+    fs.rmSync(path.join(${JSON.stringify(path.join(tmp, 'uploads'))}, '_global', 'default.webm'), { force: true });
+    check('a Reset made by another window (file removed on disk) reaches this window: placeholders, no dangling video',
+      await until('document.querySelectorAll("#agents video").length === 0 && document.querySelectorAll("#agents .face-placeholder").length > 2', 15000));
 
     await wsSend({ type: 'portrait', action: 'reset-global' });
     check('Reset removes the default: no videos, placeholder faces again',

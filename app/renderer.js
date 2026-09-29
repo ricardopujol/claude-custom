@@ -3028,6 +3028,7 @@ function handleControl(msg) {
     // Style row and the "was it accepted, and if not, why" note.
     styleState = reduceAvatars(styleState, msg);
     renderStylePanel();
+    if (msg.quiet) return;     // another window's change: the row is current, no announcement
     flourish({ icon: msg.ok ? '🖼️' : '⛔',
       name: msg.ok ? 'default agent picture updated'
         : `default agent picture refused: ${msg.reason || 'unknown reason'}` });

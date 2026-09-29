@@ -22,6 +22,7 @@
  * Its own module so it can be tested without booting Electron.
  */
 
+const fs = require('fs');
 const { MEDIA_EXTENSIONS } = require('../host/portraits');
 
 const AVATAR_KEY = 'avatar-global';
@@ -85,7 +86,29 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog }) {
   });
 }
 
+/**
+ * The toggle is install-wide but every project window is its own Electron main
+ * (Dexter F3, PR #64): a change made by ANOTHER main lands in the shared store
+ * file and never reaches this window's renderer, whose videos keep playing.
+ * Polls the store file (fs.watchFile survives the store's temp+rename writes)
+ * and pushes when the value differs from the last one this window was told.
+ * Returns stop(). A window that has gone away is not an error.
+ */
+function watchImagesEnabled({
+  store, file, win, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile,
+}) {
+  let last = readImagesEnabled(store);
+  const listener = () => {
+    const now = readImagesEnabled(store);
+    if (now === last) return;
+    last = now;
+    try { win.webContents.send(PUSH_CHANNEL, now); } catch { /* window is going away */ }
+  };
+  watchFile(file, { interval: intervalMs, persistent: false }, listener);
+  return () => unwatchFile(file, listener);
+}
+
 module.exports = {
-  readImagesEnabled, registerAvatarHandlers, pickerOptions,
+  readImagesEnabled, registerAvatarHandlers, pickerOptions, watchImagesEnabled,
   AVATAR_KEY, GET_CHANNEL, SET_CHANNEL, PICK_CHANNEL, PUSH_CHANNEL,
 };

@@ -12,7 +12,7 @@ const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
-const { registerAvatarHandlers } = require('./avatar-bridge');
+const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -370,6 +370,11 @@ function createWindow(spawnedHost) {
   // install-wide "show agent images" toggle, persisted GLOBALLY next to
   // look-global -- see avatar-bridge.js.
   registerAvatarHandlers({ ipcMain, store: uiStore, win, dialog });
+  // Other project windows are other mains sharing this store: follow their toggle.
+  watchImagesEnabled({
+    store: uiStore, win,
+    file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
+  });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
   // not project-scoped, so it lives here rather than going to the host.

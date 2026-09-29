@@ -28,6 +28,7 @@ const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
+const { watchGlobalDir } = require('./global-watch');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { wholeRoster, scanProjects } = require('./roster-index');
@@ -733,6 +734,16 @@ function repaintAllPortraits() {
   };
   broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
 }
+
+// Every project window is its own host, but the uploads folder is install-wide:
+// a change to the global picture made in ANOTHER window must reach this one, or
+// its idle faces keep pointing at a deleted file (Dexter F3, PR #64). `quiet`
+// tells the renderer to update the Style row without announcing a change this
+// window's user did not make.
+watchGlobalDir(path.join(UPLOADS_DIR, '_global'), () => {
+  broadcastControl({ type: 'portrait', global: true, ok: true, quiet: true, globalPortrait: globalPortraitInfo() });
+  repaintAllPortraits();
+});
 
 // {type:'portrait', action:'set-global'|'reset-global'[, path]}: the user's
 // default picture for every agent (BACKLOG C #3). BROADCAST for the same
