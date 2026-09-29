@@ -1103,6 +1103,26 @@ function agentModelHtml(agent) {
   return `<div class="agent-model" title="${escapeHtml(m.title)}">${escapeHtml(m.text)}</div>`;
 }
 
+// The tool belt (BACKLOG #17): every decision, and the HTML, lives in
+// app/loadout-display.js. `running` is what lets the picker say the CURRENT run
+// isn't affected -- an equip changes the next spawn only.
+let loadoutState = loadoutDisplay.emptyState();
+function beltHtml(agent) {
+  const running = (instanceCounts(latestParty).get(agent) || 0) > 0;
+  return loadoutDisplay.html(loadoutDisplay.view(loadoutState, agent, { running }));
+}
+agentsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('button[data-loadout-toggle], button[data-loadout-act]');
+  const action = btn && loadoutDisplay.clickAction(btn.dataset);
+  if (!action) return;
+  if (action.kind === 'toggle') {
+    loadoutState = loadoutDisplay.toggle(loadoutState, action.agent);
+    renderRoster();
+    return;
+  }
+  try { ws.send(JSON.stringify(loadoutDisplay.controlMessage(action))); } catch { /* not attached */ }
+});
+
 function countBadgeHtml(agent, counts) {
   // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
   // concurrent run is news.
@@ -1173,6 +1193,7 @@ function inactiveRowHtml(row) {
         unresolvedHtml + unreadableHtml + `</div>` +
       `<div class="state">inactive</div>` +
       tokenHtml +
+      beltHtml(row.agent) +
       `</div>` +
     `</div>`;
 }
@@ -1221,6 +1242,7 @@ function renderRoster() {
       `<div class="state">${r.state}</div>` +
       agentModelHtml(r.agent) +
       careerHtml(r.agent) +
+      beltHtml(r.agent) +
       `</div>` +
     `</div>`
   ).join('');
@@ -2636,6 +2658,7 @@ function handleControl(msg) {
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
     rosterIndexPayload = msg.rosterIndex || null;
+    loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     renderAgentStats(msg.agentStats);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -2643,6 +2666,11 @@ function handleControl(msg) {
     councilWarnings = [];
     renderSeats();
     if (!msg.hooks) console.warn('[renderer] host reports no hook helper — moods will not update');
+    return;
+  }
+  if (msg.type === 'loadout') {
+    loadoutState = loadoutDisplay.reduce(loadoutState, msg);
+    renderRoster();
     return;
   }
   if (msg.type === 'mood') {

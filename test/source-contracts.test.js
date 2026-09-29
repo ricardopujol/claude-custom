@@ -126,6 +126,17 @@ test('host.js wires the tool belt: the hook, the handshake and both control type
     'the answer must reach every window, and must not be reduced to a per-client reply');
 });
 
+test('renderer.js wires the tool belt: hello seeds it, loadout frames update it, only <button>s act (BACKLOG #17)', () => {
+  const r = read('app/renderer.js');
+  assert.match(r, /loadoutState = loadoutDisplay\.reduce\(loadoutState, msg\);\s*renderAgentStats/,
+    'hello must seed the belts before the first roster paint');
+  assert.match(r, /msg\.type === 'loadout'\)\s*\{\s*loadoutState = loadoutDisplay\.reduce/);
+  assert.match(r, /closest\('button\[data-loadout-toggle\], button\[data-loadout-act\]'\)/,
+    'only real <button>s act -- a control inside a card must never open the card');
+  assert.strictEqual((r.match(/beltHtml\(/g) || []).length, 3, 'defined once, drawn on both the Active and Inactive card');
+  assert.ok(read('app/renderer.html').includes('<script src="./loadout-display.js"></script>'));
+});
+
 test('the tool belt hook stays cheap to start: it requires only the loadout core and the payload contract', () => {
   // Node startup is paid per Agent spawn (~55 ms measured). This pins the
   // require graph so a future import of the store or the host does not quietly
