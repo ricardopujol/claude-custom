@@ -1201,15 +1201,25 @@ function hideButtonHtml(r) {
     : '';
 }
 
+// The ONE place #agents' markup is written (Dexter F1). A `processes` frame
+// re-renders the roster every second while anything runs; replacing identical
+// markup detached a button between its mousedown and mouseup and lost the click.
+// `repaintNeeded` (app/hidden-agents-display.js) leaves unchanged markup alone.
+let lastAgentsHtml = null;
+function paintAgents(html) {
+  if (!repaintNeeded(lastAgentsHtml, html)) return;
+  lastAgentsHtml = html;
+  agentsEl.innerHTML = html;
+}
+
 // Delegated on #agents. No stopPropagation: test/renderer-mouse-passthrough.test.js
-// forbids it on any mouse listener. Nothing above #agents listens for a click, and
-// a card-click handler on `.agent` must ignore a click whose target is inside
-// `.agent-hide`.
+// forbids it on any mouse listener. THE CONTRACT for any other click handler on
+// the roster (e.g. open-the-log on a card): call `rosterActionFromClick(e.target)`
+// first and do nothing if it returns non-null -- the hide control is a
+// `<button class="agent-hide">` inside the card.
 agentsEl.addEventListener('click', (e) => {
-  const btn = e.target && e.target.closest && e.target.closest('.agent-hide');
-  const row = btn && btn.closest('.agent');
-  if (!btn || !row || !row.dataset.agent) return;
-  sendRosterAction(btn.dataset.rosterAction === 'unhide' ? 'unhide' : 'hide', row.dataset.agent);
+  const act = rosterActionFromClick(e.target);
+  if (act) sendRosterAction(act.action, act.agent);
 });
 
 document.getElementById('roster-show-hidden').addEventListener('click', () => {
@@ -1224,7 +1234,7 @@ function renderRoster() {
 
   if (activeRosterTab === 'inactive') {
     if (inactive.length === 0) {
-      agentsEl.innerHTML = '<div class="empty">No other agents known yet.</div>';
+      paintAgents('<div class="empty">No other agents known yet.</div>');
       return;
     }
     const rows = sortRosterRows(inactive.map((agent) => {
@@ -1237,15 +1247,14 @@ function renderRoster() {
         unreadable: !!(entry && entry.unreadable),
       };
     }));
-    agentsEl.innerHTML = rows.map(inactiveRowHtml).join('');
+    paintAgents(rows.map(inactiveRowHtml).join(''));
     return;
   }
 
   if (roster.size === 0) {
     // Three different situations, not one sentence. "No agents yet" is a
     // positive claim about history and must not be made on a read that failed.
-    agentsEl.innerHTML =
-      `<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`;
+    paintAgents(`<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`);
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -1262,15 +1271,16 @@ function renderRoster() {
   const nHidden = hiddenCount(rows, hiddenAgentNames);
   if (nHidden === 0) showHiddenAgents = false;   // nothing left to reveal
   const shown = visibleRows(rows, hiddenAgentNames, showHiddenAgents);
-  const showBtn = document.getElementById('roster-show-hidden');
-  showBtn.hidden = nHidden === 0;
-  showBtn.textContent = showHiddenAgents ? `hide hidden (${nHidden})` : `show hidden (${nHidden})`;
+  showBtnEl.hidden = nHidden === 0;
+  showBtnEl.textContent = showHiddenAgents ? `hide hidden (${nHidden})` : `show hidden (${nHidden})`;
   if (shown.length === 0) {
-    agentsEl.innerHTML = '<div class="empty">Every agent here is asleep and hidden.</div>';
+    // True only because awake rows are always in `shown`: what is left is
+    // sleeping AND hidden.
+    paintAgents('<div class="empty">Every agent here is asleep and hidden.</div>');
     return;
   }
 
-  agentsEl.innerHTML = shown.map(r =>
+  paintAgents(shown.map(r =>
     `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
@@ -1282,7 +1292,7 @@ function renderRoster() {
       careerHtml(r.agent) +
       `</div>` +
     `</div>`
-  ).join('');
+  ).join(''));
 }
 
 function renderRosterIndex(rosterIndex) {

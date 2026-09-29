@@ -53,7 +53,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/roster-tabs-display.js (BACKLOG D #16: Active/Inactive roster tabs)
   'splitActiveInactive', 'rosterTokenState', 'sortRosterRows',
   // app/hidden-agents-display.js (BACKLOG #14)
-  'reconcileHidden', 'visibleRows', 'hideButtonFor', 'hiddenCount',
+  'reconcileHidden', 'visibleRows', 'hideButtonFor', 'hiddenCount', 'rosterActionFromClick', 'repaintNeeded',
   'quotaDisplay', 'formatQuotaCountdown',
   // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
   // IIFE-wrapped module, not leaks -- checked before allowlisting them, since

@@ -751,8 +751,20 @@ function handlePortraitUpload(msg) {
 function broadcastHidden() {
   broadcastControl({ type: 'hidden', hidden: hiddenAgents.list() });
 }
+// The set a new window starts with, reconciled first. If that cleared anything
+// the OTHER open windows are told too, as the mood path does (Miguel M6).
+function hiddenAtAttach() {
+  if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
+  return hiddenAgents.list();
+}
 function handleRosterMessage(msg) {
-  if (!validRosterMsg(msg)) return;
+  if (!validRosterMsg(msg)) {
+    // Logged and answered with the truth, never dropped in silence (Dexter F4):
+    // the asking window redraws to what the host actually holds.
+    console.log('[host] roster message refused: malformed');
+    broadcastHidden();
+    return;
+  }
   if (msg.action === 'hide') {
     const out = hiddenAgents.hide(msg.agent, mood.roster());
     if (!out.ok) console.log('[host] hide refused:', msg.agent, '-', out.reason);
@@ -1544,7 +1556,7 @@ wss.on('connection', (ws) => {
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
-    hidden: (hiddenAgents.reconcile(mood.roster()), hiddenAgents.list()),
+    hidden: hiddenAtAttach(),
     running: processes.list(),
     party: mood.stack(),
     // The scrape wins once it has anything; permission_mode off the hook

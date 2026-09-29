@@ -15,17 +15,23 @@
  * been seen yet, and dropping the persisted set at that moment would forget
  * everything the user hid. The name is cleared only when its row shows up awake.
  *
- * host/hidden-agents.js applies the same rule host-side (the host persists and
- * re-broadcasts; this end also applies it locally so a frame ordering never
- * flashes a wrong row). They cannot import each other -- this file loads as a
- * plain <script> -- so test/hidden-agents.test.js pins that the two agree.
+ * ONE RULE, ONE PLACE (Miguel M1, PR #66). host/hidden-agents.js `require`s this
+ * file and calls `reconcileHidden` / `cleanNames` / `HIDDEN_NAME_MAX` rather
+ * than restating them: the module.exports branch below is what lets it. The
+ * host persists and re-broadcasts; the renderer also applies the rule locally
+ * so a frame ordering never flashes a wrong row.
  */
 
 (function (root) {
 
 const SLEEPING = 'sleeping';
 
-const nameOf = (v) => (typeof v === 'string' && v ? v : null);
+// The longest agent name either end will act on. The host's control-frame
+// check uses this same number (Dexter F4), so the button is never offered for
+// a click the host would silently refuse.
+const HIDDEN_NAME_MAX = 200;
+
+const nameOf = (v) => (typeof v === 'string' && v && v.length <= HIDDEN_NAME_MAX ? v : null);
 
 /** Rows that are usable: objects with a string name. */
 function usableRows(rows) {
@@ -79,12 +85,45 @@ function hiddenCount(rows, hidden) {
   return list.length - visibleRows(list, hidden, false).length;
 }
 
+/**
+ * Read a click on the roster: `{ action, agent }` if `target` is inside a
+ * `.agent-hide` button on a named card, else null (Dexter F5, Miguel M3).
+ * Every click handler on the roster asks THIS before acting on a card click, so
+ * a hide click can never also be an open-the-log click -- the repo forbids
+ * stopPropagation on mouse listeners, so the guard is "ask first". Any value
+ * other than 'unhide' reads as 'hide': there is no third action to smuggle in.
+ */
+function rosterActionFromClick(target) {
+  if (!target || typeof target.closest !== 'function') return null;
+  const btn = target.closest('.agent-hide');
+  if (!btn) return null;
+  const card = typeof btn.closest === 'function' ? btn.closest('.agent') : null;
+  const agent = card && card.dataset ? nameOf(card.dataset.agent) : null;
+  if (!agent) return null;
+  return { action: btn.dataset && btn.dataset.rosterAction === 'unhide' ? 'unhide' : 'hide', agent };
+}
+
+/**
+ * Whether the roster's markup has to be replaced (Dexter F1). A `processes`
+ * frame arrives every second while anything runs and used to rebuild every
+ * card through innerHTML, detaching a button between its mousedown and its
+ * mouseup and losing the click. Identical markup is left alone.
+ */
+function repaintNeeded(lastHtml, nextHtml) {
+  return !(typeof lastHtml === 'string' && typeof nextHtml === 'string' && lastHtml === nextHtml);
+}
+
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system. IIFE-wrapped for the reason in
 // CLAUDE.md's first trap (one shared global scope).
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { reconcileHidden, visibleRows, hideButtonFor, hiddenCount };
+  module.exports = {
+    reconcileHidden, visibleRows, hideButtonFor, hiddenCount,
+    rosterActionFromClick, repaintNeeded, cleanNames, HIDDEN_NAME_MAX,
+  };
 } else {
+  root.rosterActionFromClick = rosterActionFromClick;
+  root.repaintNeeded = repaintNeeded;
   root.reconcileHidden = reconcileHidden;
   root.visibleRows = visibleRows;
   root.hideButtonFor = hideButtonFor;
