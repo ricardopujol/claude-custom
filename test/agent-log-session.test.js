@@ -97,6 +97,14 @@ test('a project folder that does not exist is "no-transcript" too', async () => 
     { file: null, reason: 'no-transcript' });
 });
 
+test('with no projectsDir given it falls back to the same default agent-stats uses, and does not throw', async () => {
+  const os = require('os');
+  const { defaultProjectsDir } = require('../host/agent-stats');
+  assert.strictEqual(defaultProjectsDir(), path.join(os.homedir(), '.claude', 'projects'));
+  const r = await findTranscript({ cwd: 'Z:/definitely/not/a/project-' + process.pid, agent: 'nobody' });
+  assert.deepStrictEqual(r, { file: null, reason: 'no-transcript' });
+});
+
 test('an unreadable meta does not hide the other agents\' transcripts', async () => {
   const { root, dir } = project();
   const sd = path.join(dir, 's1', 'subagents');

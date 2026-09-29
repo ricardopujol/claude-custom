@@ -389,4 +389,7 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
 // mutation of it was measured surviving the whole suite when it was private.
 module.exports = {
   readAgentStats, resolveAgent, identityTables, readTranscript, SUBAGENTS, IDLE_GAP_MS,
+  // Shared with host/agent-log-session.js so "where are the transcripts" is
+  // stated once (it was module-private; the log's default depended on it).
+  defaultProjectsDir,
 };
