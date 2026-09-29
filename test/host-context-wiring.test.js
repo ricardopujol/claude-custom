@@ -24,3 +24,20 @@ test('host.js: the context is broadcast on change and carried in the hello hands
   assert.match(HOST, /broadcastControl\(\{ type: 'context', context: lastContext/);
   assert.match(HOST, /^\s*context: lastContext,/m);
 });
+
+test('host.js: SessionStart with source clear or compact resets the context to unknown (Dexter F3)', () => {
+  const start = HOST.indexOf("ev.event === 'SessionStart'");
+  assert.ok(start !== -1);
+  const guard = HOST.slice(start, HOST.indexOf("ev.event === 'SessionStart' && ev.payload && ev.payload.session_id"));
+  assert.match(guard, /source === 'clear'/);
+  assert.match(guard, /source === 'compact'/);
+  assert.match(guard, /setContext\(null\)/);
+  // setContext(null) broadcasts { type: 'context', context: null } on a change.
+  assert.match(HOST, /function setContext\(ctx\)[\s\S]*?broadcastControl\(\{ type: 'context', context: lastContext/);
+});
+
+test('host.js: a plain startup or resume does NOT clear the fill', () => {
+  const start = HOST.indexOf("ev.event === 'SessionStart'");
+  const guard = HOST.slice(start, HOST.indexOf("ev.event === 'SessionStart' && ev.payload && ev.payload.session_id"));
+  assert.doesNotMatch(guard, /'startup'|'resume'/);
+});

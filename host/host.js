@@ -959,6 +959,13 @@ if (helperExists) {
       if (status.effort !== undefined) setEffort(status.effort);
       return;
     }
+    // The context was just replaced (/clear) or summarised (compaction): the
+    // last fill is no longer true, whether or not the CLI re-fires the
+    // statusLine right after. Unknown until a document says otherwise.
+    if (ev.event === 'SessionStart' && ev.payload
+        && (ev.payload.source === 'clear' || ev.payload.source === 'compact')) {
+      setContext(null);
+    }
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);

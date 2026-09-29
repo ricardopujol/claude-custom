@@ -53,9 +53,8 @@ test('the CSS has one class per step and its own unknown class, and no colour is
   assert.ok(!/\b200000\b|\b1000000\b|200_000/.test(JS.replace(/\/\/.*$/gm, '')), 'no window size in renderer.js');
 });
 
-test('renderer.js renders through contextFill/contextFillTitle, and a live "context" message repaints', () => {
-  assert.match(JS, /contextFill\(/);
-  assert.match(JS, /contextFillTitle\(/);
+test('renderer.js renders through applyContextFill, and a live "context" message repaints', () => {
+  assert.match(fnBody('renderContextFill'), /applyContextFill\(tbContextEl, ctx\)/);
   assert.match(branch('context'), /renderContextFill\(/);
 });
 
@@ -65,14 +64,18 @@ test('hello sets the context from the handshake; a doc without one is unknown', 
   assert.match(hello, /renderContextFill\(/);
 });
 
-test('renderContextFill sets exactly one class (never a step AND unknown) and the title from the module', () => {
-  const start = JS.indexOf('function renderContextFill(');
-  assert.ok(start !== -1);
-  const body = JS.slice(start, JS.indexOf('\n}', start));
-  assert.match(body, /CONTEXT_UNKNOWN_CLASS/);
-  assert.match(body, /CONTEXT_STEP_CLASSES/);
-  assert.match(body, /\.title = contextFillTitle\(/);
-  assert.match(body, /classList\.remove\(/);
+function fnBody(name) {
+  const start = JS.indexOf(`function ${name}(`);
+  assert.ok(start !== -1, `${name} must exist`);
+  return JS.slice(start, JS.indexOf('\n}', start));
+}
+
+test('renderContextFill hands the element and the host value to applyContextFill (behaviour is tested on a fake element)', () => {
+  assert.match(fnBody('renderContextFill'), /applyContextFill\(tbContextEl, ctx\)/);
+});
+
+test('the circle has an accessible name from the start: role="img" and an aria-label', () => {
+  assert.match(HTML, /id="tb-context"[^>]*role="img"[^>]*aria-label="context: unknown"/);
 });
 
 test('each step class paints exactly its PALETTE colour (CSS and module cannot drift apart)', () => {

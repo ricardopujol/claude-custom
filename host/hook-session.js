@@ -61,31 +61,56 @@ function readStatus(doc) {
   return { model: id, effort: typeof level === 'string' && level !== '' ? level : null };
 }
 
-// A strict finite positive number. `typeof`, never a coercion: Number(null) is
-// 0, and "the CLI has not counted yet" must not become a confident 0%.
+// Strict number checks. `typeof`, never a coercion: Number(null) is 0, and
+// "the CLI has not counted yet" must not become a confident 0%.
 const positive = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const nonNegative = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+
+// Tokens the context window is holding, from statusLine's `current_usage`
+// object: input + cache_creation + cache_read (output is not context). These
+// field names come from Claude Code's statusLine documentation and are NOT
+// measured here (a populated one needs a billed turn). Anything but a
+// well-formed object -- all three present, each a finite number >= 0 -- is
+// null, so the caller falls through instead of guessing.
+function usageTokens(cu) {
+  if (!cu || typeof cu !== 'object' || Array.isArray(cu)) return null;
+  const { input_tokens: i, cache_creation_input_tokens: c, cache_read_input_tokens: r } = cu;
+  if (!nonNegative(i) || !nonNegative(c) || !nonNegative(r)) return null;
+  const sum = i + c + r;
+  return Number.isFinite(sum) ? sum : null;
+}
 
 /**
  * How full the context window is, from the statusLine document: `{ used, size }`
  * in tokens, or null when the document cannot say.
  *
  * MEASURED (verify/probe-context-window.js, claude 2.1.284): `context_window`
- * carries `context_window_size` (200000, or 1000000 on a [1m] model) and
- * `used_percentage`. Before the first turn used_percentage is null -- the CLI's
- * own "not counted yet" -- so a fresh session is unknown here, not 0. `used` is
- * the CLI's own percentage applied to its own window: the harness counts
- * nothing itself. null whenever either number is missing or is not a finite
- * positive number (a percentage that rounds to zero tokens included).
+ * carries `context_window_size` (200000, or 1000000 on a [1m] model), and BEFORE
+ * the first turn `used_percentage` and `current_usage` are null -- the CLI's own
+ * "not counted yet" -- so a fresh session is unknown here, not 0.
+ * NOT MEASURED: their populated forms. So this fails toward unknown:
+ *   1. a well-formed `current_usage` wins (absolute tokens: no percent scale to
+ *      get wrong, and no stale-window recompute after a mid-session /model);
+ *   2. else `used_percentage` (assumed 0..100) x the current window;
+ *   3. else null.
+ * A COUNTED zero is a known, empty context (used: 0); only `size` must be
+ * strictly positive. No `model.id` -> null: the same trust rule as readStatus
+ * (without one it is not the document we measured).
  */
 function readContext(doc) {
   if (!doc || typeof doc !== 'object') return null;
+  const id = doc.model && typeof doc.model === 'object' ? doc.model.id : null;
+  if (typeof id !== 'string' || !id) return null;
   const cw = doc.context_window;
   if (!cw || typeof cw !== 'object') return null;
   const size = cw.context_window_size;
+  if (!positive(size)) return null;
+  const counted = usageTokens(cw.current_usage);
+  if (counted !== null) return { used: counted, size };
   const pct = cw.used_percentage;
-  if (!positive(size) || !positive(pct)) return null;
+  if (!nonNegative(pct)) return null;
   const used = Math.round((pct * size) / 100);
-  return positive(used) ? { used, size } : null;
+  return Number.isFinite(used) ? { used, size } : null;
 }
 
 module.exports = { readSessionHook, cliModeToKey, readStatus, readContext, CLI_MODE_KEYS };

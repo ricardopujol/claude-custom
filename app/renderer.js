@@ -2059,12 +2059,10 @@ const currentModel = () => liveModel || sessionModelFallback;
 // trust) draws as UNKNOWN, a class of its own, never as a colour. Colours and
 // step edges live in app/context-fill-display.js and the .ctx-* CSS.
 const tbContextEl = document.getElementById('tb-context');
+// (the class/title/aria painting is app/context-fill-display.js's
+// applyContextFill, so a fake element can test it)
 function renderContextFill(ctx) {
-  if (!tbContextEl) return;
-  const fill = contextFill(ctx);
-  tbContextEl.classList.remove(...CONTEXT_STEP_CLASSES, CONTEXT_UNKNOWN_CLASS);
-  tbContextEl.classList.add(fill.state === 'known' ? CONTEXT_STEP_CLASSES[fill.step] : CONTEXT_UNKNOWN_CLASS);
-  tbContextEl.title = contextFillTitle(fill);
+  applyContextFill(tbContextEl, ctx);
 }
 
 function renderTopBar() {

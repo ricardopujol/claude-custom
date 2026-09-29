@@ -53,6 +53,7 @@ if (process.argv[2] === '--status') {
 const pty = require('node-pty');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { killPidTree } = require('../host/kill-tree');
+const { createSettingsGuard } = require('./lib/settings-guard');
 
 const COLS = 110;
 const ROWS = 34;
@@ -70,17 +71,12 @@ const guarded = [
   path.join(REPO, '.claude', 'settings.json'),
   path.join(REPO, '.claude', 'settings.local.json'),
 ];
-const snapshot = new Map(guarded.map(f => [f, fs.existsSync(f) ? fs.readFileSync(f) : null]));
-function restore() {
-  const changed = [];
-  for (const [f, before] of snapshot) {
-    const now = fs.existsSync(f) ? fs.readFileSync(f) : null;
-    if (before === null ? now === null : (now !== null && before.equals(now))) continue;
-    changed.push(f);
-    if (before === null) fs.rmSync(f, { force: true }); else fs.writeFileSync(f, before);
-  }
-  return changed;
-}
+// Restored on 'exit' as well as in the finally below: process-hygiene's SIGINT
+// handler ends in process.exit(130), which skips a finally (Miguel, PR #67 M1).
+// Installed here, before claude is spawned or /model is typed.
+const guard = createSettingsGuard(guarded);
+guard.installExitRestore();
+const restore = guard.restore;
 
 const hygiene = createHygieneRegistry();
 hygiene.setResumeFn(() => true);
