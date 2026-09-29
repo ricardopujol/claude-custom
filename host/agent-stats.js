@@ -46,7 +46,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const { projectDirName } = require('./project-dir');
-const { transcriptFiles, SUBAGENTS } = require('./transcripts');
+const { transcriptFiles, readMeta, SUBAGENTS } = require('./transcripts');
 
 const PARSE_BATCH = 500;
 
@@ -301,29 +301,14 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
     if (!entry.subagent) continue;
 
     // The meta sits beside the transcript, same basename.
-    const metaPath = entry.file.replace(/\.jsonl$/, '.meta.json');
-    let meta = null;
-    try {
-      const parsed = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
-      // PARSING IS NOT UNDERSTANDING. `JSON.parse('null')` succeeds, and so do
-      // `0`, `""` and `[]` -- a truncated or schema-drifted meta can be
-      // perfectly valid JSON carrying no identity at all. Dexter, 2026-09-15:
-      // that fell through as `meta = null`, the run was dropped by the
-      // `if (!agent) continue` below, and NOTHING counted it. The file exists
-      // and holds no identity, which is corruption, not absence.
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        meta = parsed;
-      } else {
-        readErrors++;
-      }
-    } catch (err) {
-      // ENOENT -- no meta was ever written for this run -- is the ordinary
-      // case a caller relies on (a transcript with no identity still has
-      // tokens worth counting, filed as an unresolved label below). Anything
-      // else -- the file exists but is truncated, corrupt, or unreadable --
-      // is a failure: the run's true identity may be lost, not merely absent.
-      if (!err || err.code !== 'ENOENT') readErrors++;
-    }
+    // PARSING IS NOT UNDERSTANDING (Dexter, 2026-09-15): `JSON.parse('null')`
+    // succeeds, and so do `0`, `""` and `[]` -- valid JSON carrying no identity
+    // is corruption, not absence. ENOENT (no meta was ever written) is the
+    // ordinary case, and a transcript with no identity still has tokens worth
+    // counting, filed as an unresolved label below. Anything else is a failure.
+    // The rule lives in host/transcripts.js's readMeta, shared with the log.
+    const { meta, error: metaError } = await readMeta(entry.file);
+    if (metaError) readErrors++;
 
     const { agent, source } = resolveAgent(meta, tables, entry.session);
     if (!agent) continue;                 // nothing to file it under

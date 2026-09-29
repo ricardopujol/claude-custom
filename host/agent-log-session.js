@@ -34,7 +34,7 @@
 const fsp = require('fs/promises');
 const path = require('path');
 const { projectDirName } = require('./project-dir');
-const { transcriptFiles } = require('./transcripts');
+const { transcriptFiles, readMeta } = require('./transcripts');
 const { identityTables, resolveAgent, defaultProjectsDir } = require('./agent-stats');
 const agentLog = require('./agent-log');
 
@@ -43,50 +43,68 @@ const POLL_MS = 750;
 // stream of modest frames rather than one that stalls the socket.
 const FRAME_ENTRIES = 500;
 
-async function readMeta(file) {
-  try {
-    const parsed = JSON.parse(await fsp.readFile(file.replace(/\.jsonl$/, '.meta.json'), 'utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    // Absent or corrupt: the run simply resolves by nothing but its label. The
-    // stats module counts these; a log has no total to under-report.
-    return null;
-  }
-}
-
 /**
  * The transcript for one agent in one project.
  *
+ * "NOTHING ON DISK" IS ONLY SAID WHEN WE LOOKED. Every way the search can be
+ * blind -- the project folder or a session's subagents folder that would not
+ * list, a meta that exists and is corrupt, a parent transcript the identity
+ * tables could not read, a stat that failed -- comes back as `unreadable`, never
+ * `no-transcript`. These are the same counts host/transcripts.js and
+ * host/agent-stats.js keep so that a failure is not reported as an absence; this
+ * module had dropped all of them (Dexter F3, PR #63).
+ *
  * @param agentId  when given, the exact run (`agent-<agentId>.jsonl`)
- * @returns `{ file }` or `{ file: null, reason: 'no-transcript' }`
+ * @param listFiles / tablesFor  injectable for tests
+ * @returns `{ file }`, or `{ file: null, reason: 'no-transcript' | 'unreadable' }`
  */
-async function findTranscript({ cwd, projectsDir, agent, agentId } = {}) {
+async function findTranscript({
+  cwd, projectsDir, agent, agentId,
+  listFiles = transcriptFiles, tablesFor = identityTables,
+} = {}) {
   const dir = path.join(projectsDir || defaultProjectsDir(), projectDirName(cwd));
-  const { files } = await transcriptFiles(dir);
+  const { files, errors } = await listFiles(dir);
   const none = { file: null, reason: 'no-transcript' };
-  if (files === null) return none;
+  const unreadable = { file: null, reason: 'unreadable' };
+
+  if (files === null) {
+    // `transcriptFiles` returns null for "absent" AND "could not list". Only a
+    // folder that is genuinely not there is an absence.
+    try { await fsp.stat(dir); } catch (err) {
+      return err && err.code === 'ENOENT' ? none : unreadable;
+    }
+    return unreadable;
+  }
 
   const subagents = files.filter(f => f.subagent);
 
   if (typeof agentId === 'string' && agentId) {
     const wanted = `agent-${agentId}.jsonl`;
     const hit = subagents.find(f => path.basename(f.file) === wanted);
-    return hit ? { file: hit.file } : none;
+    if (hit) return { file: hit.file };
+    return errors > 0 ? unreadable : none;
   }
 
-  const tables = await identityTables(files);
+  const tables = await tablesFor(files);
+  let blind = (errors || 0) + (tables.errors || 0);
   let best = null;
   for (const f of subagents) {
-    const { agent: who } = resolveAgent(await readMeta(f.file), tables, f.session);
+    const { meta, error } = await readMeta(f.file);
+    if (error) blind++;
+    const { agent: who } = resolveAgent(meta, tables, f.session);
     if (who !== agent) continue;
     let mtime;
-    try { mtime = (await fsp.stat(f.file)).mtimeMs; } catch { continue; }
+    try { mtime = (await fsp.stat(f.file)).mtimeMs; } catch (err) {
+      if (!err || err.code !== 'ENOENT') blind++;
+      continue;
+    }
     // Newest wins; the path breaks a tie so the pick never depends on readdir order.
     if (!best || mtime > best.mtime || (mtime === best.mtime && f.file > best.file)) {
       best = { file: f.file, mtime };
     }
   }
-  return best ? { file: best.file } : none;
+  if (best) return { file: best.file };
+  return blind > 0 ? unreadable : none;
 }
 
 /**
@@ -144,9 +162,12 @@ function createLogSession({
       if (c.resolved && want === 'name') return;
       const r = await find({ cwd, projectsDir, agent: c.agent, agentId: bound ? bound.agentId : undefined });
       if (cur !== c) return;
-      c.resolved = true;
+      // An `unreadable` search is not an answer, so it is looked at again on
+      // the next tick rather than remembered as "nothing here".
+      c.resolved = r.reason !== 'unreadable';
       if (!r.file) {
-        none(c, want === 'name' || c.everFound ? 'no-transcript' : 'pending', running);
+        none(c, r.reason === 'unreadable' ? 'unreadable'
+          : want === 'name' || c.everFound ? 'no-transcript' : 'pending', running);
         return;
       }
       c.everFound = true;

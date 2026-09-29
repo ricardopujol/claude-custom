@@ -87,4 +87,30 @@ async function transcriptFiles(dir) {
   return { files: out, errors };
 }
 
-module.exports = { transcriptFiles, SUBAGENTS };
+/**
+ * The `.meta.json` beside one subagent transcript, with its failures COUNTED
+ * rather than swallowed.
+ *
+ * Returns `{ meta, error }`:
+ *   meta   the parsed object, or null
+ *   error  true when the file EXISTS and holds no usable identity -- unreadable,
+ *          not JSON, or valid JSON that is not an object (`null`, `0`, `[]`
+ *          all parse, and none names an agent). Absent (ENOENT) is the ordinary
+ *          case for a run whose identity was never recorded: `error` false.
+ *
+ * ONE COPY, shared by host/agent-stats.js and host/agent-log-session.js. The
+ * second had forked it and dropped the accounting, so a corrupt meta became a
+ * confident "no transcript found" (Dexter F3 / Miguel S1, PR #63).
+ */
+async function readMeta(transcriptFile) {
+  const metaPath = transcriptFile.replace(/\.jsonl$/, '.meta.json');
+  try {
+    const parsed = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { meta: parsed, error: false };
+    return { meta: null, error: true };
+  } catch (err) {
+    return { meta: null, error: !(err && err.code === 'ENOENT') };
+  }
+}
+
+module.exports = { transcriptFiles, readMeta, SUBAGENTS };

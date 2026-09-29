@@ -307,6 +307,69 @@ test('a poll that is still running is not started again on top of itself', async
   assert.strictEqual(h.frames.length, 1);
 });
 
+// ---- Dexter F3, PR #63: a search that could not look is never "nothing on disk" ----
+
+test('F3: an unlistable subagents folder is unreadable, in name mode and in id mode', async () => {
+  const { root } = project();
+  const listFiles = async () => ({ files: [], errors: 1 });
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x', listFiles }),
+    { file: null, reason: 'unreadable' });
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x', agentId: 'zz', listFiles }),
+    { file: null, reason: 'unreadable' });
+});
+
+test('F3: a project folder that exists but cannot be listed is unreadable; one that is not there is not', async () => {
+  const { root } = project();                     // the project folder exists
+  const listFiles = async () => ({ files: null, errors: 0 });
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x', listFiles }),
+    { file: null, reason: 'unreadable' });
+  const empty = tmpDir('cc-agent-log-');          // no project folder at all
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: empty, agent: 'x', listFiles }),
+    { file: null, reason: 'no-transcript' });
+});
+
+test('F3: a corrupt meta beside the only candidate is unreadable, not "no transcript"', async () => {
+  const { root, dir } = project();
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'agent-only.jsonl'), textLine('x') + NL);
+  fs.writeFileSync(path.join(sd, 'agent-only.meta.json'), '{not json');
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x' }),
+    { file: null, reason: 'unreadable' });
+  // Valid JSON that is not an object carries no identity either.
+  fs.writeFileSync(path.join(sd, 'agent-only.meta.json'), 'null');
+  assert.strictEqual((await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x' })).reason, 'unreadable');
+});
+
+test('F3: identity tables that could not read a parent session make the miss unreadable', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'a1', { agentType: 'other' }, [textLine('x')]);
+  const tablesFor = async () => ({ byToolUse: new Map(), byName: new Map(), errors: 1 });
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x', tablesFor }),
+    { file: null, reason: 'unreadable' });
+});
+
+test('F3: a transcript with no meta at all is ordinary -- it does not make an honest miss "unreadable"', async () => {
+  const { root, dir } = project();
+  const sd = path.join(dir, 's1', 'subagents');
+  fs.mkdirSync(sd, { recursive: true });
+  fs.writeFileSync(path.join(sd, 'agent-nometa.jsonl'), textLine('x') + NL);
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x' }),
+    { file: null, reason: 'no-transcript' });
+});
+
+test('F3: the session says "unreadable" for such a search, and looks again on the next tick', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('here')]);
+  let calls = 0;
+  const find = async () => (++calls === 1 ? { file: null, reason: 'unreadable' } : { file });
+  const h = harness({ root, find });
+  await h.session.open('rev');
+  assert.strictEqual(h.frames[0].reason, 'unreadable');
+  await h.session.poll();
+  assert.strictEqual(h.frames[h.frames.length - 1].source, file, 'a blind search is retried, not remembered as a miss');
+});
+
 // ---- Dexter F1, PR #63: a transient read error must not lose or hide the log ----
 
 const agentLog = require('../host/agent-log');
