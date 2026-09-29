@@ -26,8 +26,9 @@ const { createTerminalState } = require('./terminal-state');
 const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
-const { portraitFor } = require('./portraits');
-const { handlePortraitMessage } = require('./portrait-upload');
+const { portraitFor, globalPortrait } = require('./portraits');
+const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
+const { watchGlobalDir } = require('./global-watch');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
@@ -334,7 +335,9 @@ const PORTRAITS_DIR =
 // app/assets/portrait-default.* does not exist on disk
 // today, deliberately, so most installs land on the text placeholder until
 // someone adds one.
-const UPLOADS_DIR = path.join(HARNESS_DIR, 'portraits');
+// CLAUDE_CUSTOM_UPLOADS lets a probe point the uploads at a throwaway folder
+// instead of the developer's real pictures (Miguel I1, PR #64).
+const UPLOADS_DIR = process.env.CLAUDE_CUSTOM_UPLOADS || path.join(HARNESS_DIR, 'portraits');
 const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
 const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
@@ -715,10 +718,53 @@ function handleDrop(msg, ws) {
 // dispatchControl -- two windows on one project share a roster, and one of
 // them silently disagreeing about whose upload just landed, or why one was
 // refused, is worse than a redraw.
+// What the Style tab's "Default agent picture" row shows: set or not, never
+// blank, and the file's own name so the row can say where the picture came from.
+function globalPortraitInfo() {
+  const g = globalPortrait(UPLOADS_DIR);
+  return g ? { set: true, file: g.file, media: g.media } : { set: false, file: null, media: null };
+}
+
+// A file-tier change under _global alters what EVERY face without its own
+// picture resolves to, so re-describe all of them rather than guessing which.
+function repaintAllPortraits() {
+  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state) });
+  lastRosterIndex = {
+    ...lastRosterIndex,
+    agents: lastRosterIndex.agents.map(a => ({ ...a, portrait: portraitOf(a.agent, 'sleeping') })),
+  };
+  broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
+}
+
+// Every project window is its own host, but the uploads folder is install-wide:
+// a change to the global picture made in ANOTHER window must reach this one, or
+// its idle faces keep pointing at a deleted file (Dexter F3, PR #64). `quiet`
+// tells the renderer to update the Style row without announcing a change this
+// window's user did not make.
+watchGlobalDir(path.join(UPLOADS_DIR, '_global'), () => {
+  broadcastControl({ type: 'portrait', global: true, ok: true, quiet: true, globalPortrait: globalPortraitInfo() });
+  repaintAllPortraits();
+});
+
+// {type:'portrait', action:'set-global'|'reset-global'[, path]}: the user's
+// default picture for every agent (BACKLOG C #3). BROADCAST for the same
+// reason as the per-agent upload above.
+function handleGlobalPortrait(msg) {
+  const out = handleGlobalPortraitMessage(msg, {
+    uploadsDir: UPLOADS_DIR,
+    stat: (p) => fs.lstatSync(p),
+    resolve: () => (globalPortrait(UPLOADS_DIR) || {}).path || null,
+  });
+  if (!out.reply.ok) console.log('[host] global portrait refused:', msg && msg.action, '-', out.reply.reason);
+  broadcastControl({ type: 'portrait', ...out.reply, globalPortrait: globalPortraitInfo() });
+  if (out.changed) repaintAllPortraits();
+}
+
 function handlePortraitUpload(msg) {
   const out = handlePortraitMessage(msg, {
     uploadsDir: UPLOADS_DIR,
-    stat: (p) => fs.statSync(p),
+    // lstat, not stat: a symlink is refused, never followed (Miguel S1, PR #64).
+    stat: (p) => fs.lstatSync(p),
     resolve: (agent, state) => portraitOf(agent, state).path,
     liveState: (agent) => {
       const row = mood.roster().find(r => r.agent === agent);
@@ -1514,6 +1560,7 @@ wss.on('connection', (ws) => {
     style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
+    globalPortrait: globalPortraitInfo(),
     running: processes.list(),
     party: mood.stack(),
     // The scrape wins once it has anything; permission_mode off the hook
@@ -1780,7 +1827,8 @@ wss.on('connection', (ws) => {
       return;
     }
     if (msg.type === 'portrait') {
-      handlePortraitUpload(msg);
+      if (msg.action === 'set-global' || msg.action === 'reset-global') handleGlobalPortrait(msg);
+      else handlePortraitUpload(msg);
       return;
     }
     if (msg.type === 'fog') {
