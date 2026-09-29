@@ -14,8 +14,9 @@ const os = require('os');
 const path = require('path');
 
 const { loadCatalogue, FRESH_MS } = require('../host/openrouter');
+const { tmpDir } = require('./tmp-dir');
 
-const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-or-')), 'catalogue.json');
+const tmp = () => path.join(tmpDir('cc-or-'), 'catalogue.json');
 const rows = n => Array.from({ length: n }, (_, i) => ({ id: `p/model-${i}` }));
 
 // --- the happy path -----------------------------------------------------------

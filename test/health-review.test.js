@@ -19,6 +19,7 @@ const os = require('os');
 const path = require('path');
 
 const { parseResults, healthFrom, detectRunner, RUNNERS } = require('../host/health');
+const { tmpDir } = require('./tmp-dir');
 
 // --- pytest: failed comes FIRST ----------------------------------------------
 // Real output, captured 2026-09-14 from `python -m pytest -q` over a suite with
@@ -169,7 +170,7 @@ test('AGREES WITH THE REAL RUNNER ON A SUITE THAT FAILS', () => {
   // both ran a GREEN suite, so the failing-tests block -- where both Criticals
   // live -- was never in the bytes being parsed.
   const { execFileSync } = require('child_process');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hp-red-'));
+  const dir = tmpDir('cc-hp-red-');
   fs.writeFileSync(path.join(dir, 'sample.test.js'), [
     "const test = require('node:test');",
     "const assert = require('node:assert');",
@@ -217,7 +218,7 @@ test('ANY failure means not healthy, however small the fraction', () => {
 // --- smaller findings ---------------------------------------------------------
 
 test('the placeholder script is rejected whatever its case', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hp-ph-'));
+  const dir = tmpDir('cc-hp-ph-');
   fs.writeFileSync(path.join(dir, 'package.json'),
     JSON.stringify({ scripts: { test: 'echo "Error: No Test Specified" && exit 1' } }), 'utf8');
   assert.strictEqual(detectRunner(dir), null);
@@ -226,7 +227,7 @@ test('the placeholder script is rejected whatever its case', () => {
 test('the runner command is a copy, not the shared constant', () => {
   // `command` was a reference to the module-level literal, so one push() or
   // shift() anywhere corrupted it for the life of the process.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hp-cmd-'));
+  const dir = tmpDir('cc-hp-cmd-');
   fs.writeFileSync(path.join(dir, 'package.json'),
     JSON.stringify({ scripts: { test: 'node --test' } }), 'utf8');
   const runner = detectRunner(dir);

@@ -14,19 +14,57 @@ const { createSecretService } = require('../app/secret-service');
 function service(overrides = {}) {
   const store = new Map();
   const clipboard = { value: '', writes: [] };
+  // EVERY CALL RECORDS ITS SCOPE. Miguel, PR #40, B1: the previous fake took no
+  // scope parameter at all, so the argument the service passes could not be
+  // OBSERVED -- and stripping `project` from all five vault calls left the
+  // whole suite green. Measured: 1068 pass, 0 fail, with the containment
+  // boundary deleted. A fake that cannot see an argument cannot test it.
+  const seen = { list: [], add: [], get: [], remove: [],
+                 lockState: [], setKey: [], unlock: [], lock: [], removeKey: [], melt: [] };
+  let lockStateValue = { hasKey: false, locked: false };
   const vault = {
     available: () => true,
-    list: () => [...store.values()].map(e => ({ id: e.id, label: e.label, note: '', createdAt: 0 })),
-    add: ({ label, secret }) => {
-      const id = 'id' + store.size;
-      store.set(id, { id, label, secret });
-      return { id, label, note: '', createdAt: 0 };
+    list: (opts) => {
+      seen.list.push(opts);
+      return [...store.values()].map(e => ({ id: e.id, label: e.label, note: '', createdAt: 0 }));
     },
-    get: (id) => (store.get(id) ? store.get(id).secret : null),
-    remove: (id) => store.delete(id),
+    add: (entry) => {
+      seen.add.push(entry);
+      const id = 'id' + store.size;
+      store.set(id, { id, label: entry.label, secret: entry.secret });
+      return { id, label: entry.label, note: '', createdAt: 0 };
+    },
+    get: (id, opts) => {
+      seen.get.push(opts);
+      return store.get(id) ? store.get(id).secret : null;
+    },
+    // The lock, recorded the same way. Miguel's B1 was that a fake which cannot
+    // observe a call cannot test it; the lock has six more calls that would
+    // have had the same hole.
+    lockState: () => { seen.lockState.push(true); return lockStateValue; },
+    // The REAL contract, not a boolean. After PR #42's review these report
+    // rather than return a bare true: `unlock` distinguishes a wrong key from a
+    // damaged header (Dexter F1), `setKey`/`removeKey` carry the entries a rekey
+    // could not move (F3), and `melt` carries the copies it could not delete
+    // (F2). A fake still returning booleans would let the service quietly drop
+    // every one of those and stay green -- which is the same hole as Miguel's B1
+    // on #40, one layer up.
+    setKey: (k) => { seen.setKey.push(k); return { ok: true, failed: [] }; },
+    unlock: (k) => { seen.unlock.push(k); return k === 'right' ? { ok: true } : { ok: false, wrongKey: true }; },
+    lock: () => { seen.lock.push(true); return true; },
+    removeKey: () => { seen.removeKey.push(true); return { ok: true, failed: [] }; },
+    melt: () => { seen.melt.push(true); return { ok: true, leftovers: [] }; },
+    remove: (id, opts) => {
+      seen.remove.push(opts);
+      return store.delete(id);
+    },
   };
   return {
+    seen,
     svc: createSecretService({
+      // The service now refuses to exist without one: a default project is a
+      // silent grant (Dexter, PR #40, Finding 1).
+      project: 'C:/work/test-project',
       vault,
       clipboard: {
         writeText: (t) => { clipboard.value = t; clipboard.writes.push(t); },
@@ -110,7 +148,7 @@ test('reveal returns the secret, because that is what it is for', () => {
 
 test('list is free of secrets', () => {
   const { svc } = service();
-  svc.add({ label: 'k', secret: 'sk-live-123' });
+  svc.add({ label: 'k', secret: 'sk-live-123' , shared: true});
   assert.ok(!JSON.stringify(svc.list()).includes('sk-live-123'));
 });
 
@@ -118,26 +156,145 @@ test('search matches labels only, never secret values', () => {
   // A search that matched secret text would put a secret on screen for a typo,
   // and the person typing would not know they had done it.
   const { svc } = service();
-  svc.add({ label: 'github', secret: 'correct-horse' });
+  svc.add({ label: 'github', secret: 'correct-horse' , shared: true});
   assert.strictEqual(svc.list({ query: 'github' }).length, 1);
   assert.strictEqual(svc.list({ query: 'correct-horse' }).length, 0);
 });
 
 test('search is case-insensitive, since labels are typed casually', () => {
   const { svc } = service();
-  svc.add({ label: 'GitHub Token', secret: 's' });
+  svc.add({ label: 'GitHub Token', secret: 's' , shared: true});
   assert.strictEqual(svc.list({ query: 'github' }).length, 1);
 });
 
 test('an unavailable vault reports why rather than failing silently', () => {
   const { svc } = service();
   const broken = createSecretService({
+    project: 'C:/work/test-project',
     vault: { available: () => false, list: () => [], add: () => { throw new Error('encryption is unavailable'); } },
     clipboard: { writeText() {}, readText: () => '', clear() {} },
   });
   assert.strictEqual(broken.available(), false);
-  const res = broken.add({ label: 'k', secret: 's' });
+  const res = broken.add({ label: 'k', secret: 's' , shared: true});
   assert.strictEqual(res.ok, false);
   assert.ok(/encryption/i.test(res.error), res.error);
   assert.strictEqual(svc.available(), true);
+});
+
+// --- the service must actually thread the scope ------------------------------
+//
+// Miguel, PR #40, B1. The eight new tests on this branch were all on the
+// VAULT; nothing asserted that the service passes the project INTO it. He
+// measured the consequence: strip `project` from all five vault calls in
+// app/secret-service.js and the entire suite stays green -- 1068 pass, 0 fail,
+// with the containment boundary deleted.
+//
+// A boundary nothing observes is a boundary nobody is keeping.
+
+test('every vault call carries the project this service was built for', () => {
+  const h = service();
+  const P = 'C:/work/test-project';
+
+  h.svc.list({});
+  h.svc.add({ label: 'k', secret: 's' });
+  const id = [...h.seen.add].length ? 'id0' : null;
+  h.svc.reveal(id);
+  h.svc.remove(id);
+
+  assert.deepStrictEqual(h.seen.list.at(-1), { project: P }, 'list must be scoped');
+  assert.strictEqual(h.seen.add.at(-1).project, P, 'add must record the scope');
+  assert.deepStrictEqual(h.seen.get.at(-1), { project: P }, 'reveal must be scoped');
+  assert.deepStrictEqual(h.seen.remove.at(-1), { project: P }, 'remove must be scoped');
+});
+
+test('copy is scoped too -- it reads the secret like reveal does', () => {
+  // The path that puts a secret on the clipboard. Missing the scope here would
+  // let a window copy a secret it is not allowed to see, which is the same
+  // harm as revealing it with an extra step.
+  const h = service();
+  h.svc.add({ label: 'k', secret: 's' });
+  h.svc.copy('id0');
+  assert.deepStrictEqual(h.seen.get.at(-1), { project: 'C:/work/test-project' });
+});
+
+test('the shared flag reaches the vault, and is not invented by the service', () => {
+  const h = service();
+  h.svc.add({ label: 'g', secret: 's', shared: true });
+  assert.strictEqual(h.seen.add.at(-1).shared, true);
+  h.svc.add({ label: 'l', secret: 's' });
+  assert.notStrictEqual(h.seen.add.at(-1).shared, true, 'absent must not become shared');
+});
+
+// --- the lock reaches the vault ---------------------------------------------
+//
+// Miguel, PR #40, B1, applied before it can happen again: six new methods that
+// the service only forwards. Forwarding is exactly the kind of code that can
+// be deleted with a green suite when nothing observes the call.
+
+test('every lock operation reaches the vault', () => {
+  const h = service();
+  h.svc.lockState();
+  h.svc.setKey('k');
+  h.svc.unlock('right');
+  h.svc.lock();
+  h.svc.removeKey();
+  h.svc.melt();
+
+  assert.strictEqual(h.seen.lockState.length, 1);
+  assert.deepStrictEqual(h.seen.setKey, ['k'], 'the key must arrive verbatim');
+  assert.deepStrictEqual(h.seen.unlock, ['right']);
+  assert.strictEqual(h.seen.lock.length, 1);
+  assert.strictEqual(h.seen.removeKey.length, 1);
+  assert.strictEqual(h.seen.melt.length, 1);
+});
+
+test('a wrong key is reported as ok:false, not as a thrown failure', () => {
+  // A wrong key is an ORDINARY event. If it arrived as an exception the panel
+  // could not tell "you typed it wrong" from "the vault is broken", and would
+  // have to guess -- which in this panel means guessing about a lock.
+  //
+  // And this test's own rationale is what Dexter quoted back at me in F1: the
+  // caller STILL could not tell those apart, because the vault collapsed a
+  // damaged header and a wrong password into one `false`. The service now
+  // carries the distinction through, so the assertion names it.
+  const h = service();
+  assert.deepStrictEqual(h.svc.unlock('wrong'), { ok: false, wrongKey: true });
+  assert.deepStrictEqual(h.svc.unlock('right'), { ok: true });
+});
+
+test('a DAMAGED lock header does not reach the user as a wrong key', () => {
+  // Dexter F1, at the service boundary. This is the one that decides whether
+  // the panel tells someone to melt: "wrong key" means try again, and a damaged
+  // header means the secrets are probably still recoverable and melting them
+  // would be the mistake.
+  const h = service({
+    vault: { unlock: () => ({ ok: false, damaged: true, error: 'checksum mismatch' }) },
+  });
+  const res = h.svc.unlock('the right key, as it happens');
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.damaged, true);
+  assert.notStrictEqual(res.wrongKey, true);
+  assert.match(res.error, /checksum/);
+});
+
+test('a throwing vault becomes a reportable error, never an unhandled rejection', () => {
+  // Across the bridge an unhandled rejection shows the user nothing at all,
+  // which in a lock panel reads as "the button does nothing".
+  const h = service({ vault: { lockState: () => { throw new Error('boom'); },
+                               setKey: () => { throw new Error('disk full'); } } });
+
+  // FAILS CLOSED. Dexter F6 / Miguel A2, and this assertion is the finding:
+  // I had written `{ hasKey: false, locked: false }` here, which PINNED the
+  // fail-open default as correct -- so anyone fixing the service would have been
+  // stopped by this test. `{locked: false}` is not a neutral guess, it is the
+  // most permissive of the four states: fed to vaultLockDisplay it draws
+  // "no key set, anyone at this machine can read the vault", over a vault whose
+  // state we just failed to read.
+  //
+  // A vault that cannot answer is closed.
+  assert.deepStrictEqual(h.svc.lockState(), { hasKey: true, locked: true, count: null });
+
+  const res = h.svc.setKey('k');
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /disk full/);
 });

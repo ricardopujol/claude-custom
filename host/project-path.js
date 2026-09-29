@@ -26,6 +26,50 @@
  * UNC-vs-mapped right in one move -- but it needs BOTH paths to exist, and
  * this is called on paths that may not. That is a design change rather than a
  * patch, and it is left as a follow-up instead of guessed at.
+ *
+ * ===========================================================================
+ * TWO OF THOSE GAPS FAIL OPEN, AND THE COST CHANGED UNDER THEM. Dexter, PR #40,
+ * Finding 4. This paragraph is the acceptance; read it before trusting the list
+ * above, because the list was calibrated for a different blast radius.
+ *
+ * This header was written for `decideAttach`, where a wrong answer misroutes a
+ * PORT. PR #40 made `samePath` decide **who can read a credential**
+ * (app/secret-vault.js, `visibleFrom`). Every gap named above still fails
+ * CLOSED in that role -- trailing dots and spaces, 8.3 names, UNC versus mapped
+ * drive and the \\?\ prefix all make two spellings of ONE folder compare
+ * UNEQUAL, so the user loses sight of their own secret. Annoying, and safe.
+ *
+ * These two do not. They make two DIFFERENT folders compare EQUAL, so project B
+ * can list, reveal and copy project A's secrets:
+ *
+ *   1. UNICODE FOLDING. `C:\work\İstanbul` (U+0130) and `C:\work\i̇stanbul`
+ *      (ASCII i + U+0307) are distinct NTFS directories -- the upcase table does
+ *      not equate them -- and `toLowerCase` collapses both to one string.
+ *      PINNED by a running test in test/project-path.test.js, asserting the
+ *      wrong-and-current answer, so closing the gap turns that test red.
+ *
+ *   2. A CASE-SENSITIVE-FLAGGED DIRECTORY. `C:\work\Proj` and `C:\work\proj`
+ *      are two folders under the Windows per-directory case-sensitivity flag --
+ *      i.e. any WSL-created tree, which is ordinary on a developer machine.
+ *      **This one cannot be pinned by any string-level test, and not because
+ *      nobody wrote it:** `samePath('C:/work/Proj', 'C:/work/proj') === true` is
+ *      CORRECT on an ordinary directory and WRONG under the flag. The predicate
+ *      is not incorrect, it is missing information it cannot get without
+ *      touching disk. It is also the MORE REACHABLE of the two.
+ *
+ * WHY THE CHEAP FIX IS REFUSED. Folding only ASCII closes (1), but it makes
+ * every non-ASCII comparison case-SENSITIVE -- and this predicate still routes
+ * window attach, where a false negative means `decideAttach` says
+ * "other-project", `resolvePort` steps, and a second permission-bypassed
+ * `claude` starts in a folder that already has one (see the note above on what
+ * a false negative costs there). That trades a near-unreachable credential leak
+ * for a reachable double-session, and it does not even close (2).
+ *
+ * So the choice is accept, or do the device+file-id change properly with its own
+ * tests for the path-does-not-exist case. Accepted here, deliberately, and
+ * recorded downstream in app/secret-vault.js as well -- but this is the
+ * load-bearing copy, because this is the module that owns the gap.
+ * ===========================================================================
  */
 
 const path = require('path');

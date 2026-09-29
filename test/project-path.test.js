@@ -105,6 +105,81 @@ test('the unfixed Win32 cases are DOCUMENTED, not silently believed to work', ()
   // this test failing is the prompt to update the header.
   assert.strictEqual(samePath('C:/proj.', 'C:/proj'), false, 'trailing dot: NOT handled');
   assert.strictEqual(samePath('C:/proj ', 'C:/proj'), false, 'trailing space: NOT handled');
+
+  // DEXTER, PR #40, F4, and he spotted the asymmetry in this very test: the
+  // prose above names FOUR unfixed cases and the body pinned TWO -- and the two
+  // it left unpinned are exactly the pair that fails OPEN. A test named
+  // "DOCUMENTED, not silently believed to work" was characterizing only the
+  // harmless direction.
+  //
+  // `toLowerCase` is Unicode folding, not the NTFS upcase table. U+0130 (LATIN
+  // CAPITAL LETTER I WITH DOT ABOVE) lowercases to `i` + U+0307, so
+  // `C:\work\İstanbul` and `C:\work\i̇stanbul` -- two GENUINELY DISTINCT NTFS
+  // directories, since the upcase table does not equate them -- normalize to one
+  // string. `samePath` says true.
+  //
+  // That was a display limitation when this only routed window attach. PR #40
+  // made the same predicate decide who can read a CREDENTIAL, so the second
+  // project's window lists, reveals and copies the first project's secret.
+  //
+  // PINNED, RUNNING, NOT SKIPPED. My plan was `.skip` and both reviewers
+  // rejected it for the same reason, which is this session's own lesson: a skip
+  // is an absence reported as a pass. `ℹ skipped 1` inside 1100 is invisible
+  // forever -- the same shape as the `\b` written as 0x08, and as
+  // `dirsToAdd: []` being true for two opposite reasons. This form goes RED the
+  // day someone closes the gap, deliberately or through a Node/ICU upgrade, and
+  // hands them the header paragraph to delete.
+  assert.strictEqual(
+    samePath('C:/work/\u0130stanbul', 'C:/work/i\u0307stanbul'), true,
+    'U+0130 folds two DIFFERENT directories together: NOT handled, and this one '
+    + 'FAILS OPEN -- if this now returns false, delete the acceptance from '
+    + 'host/project-path.js and from secret-vault.js');
+
+  // The premise, measured rather than reasoned -- test/fog-review.test.js
+  // already records the same folding, so this is consistent with the repo.
+  assert.strictEqual('\u0130'.toLowerCase(), 'i\u0307',
+    'the precondition for the case above: JS folds U+0130 into two code units');
+});
+
+test('the SECOND fail-open case cannot be pinned as a string property, and that is the finding', () => {
+  // Dexter, PR #40, F4, the half that must not be implied to be covered by the
+  // test above -- and the reason is sharper than "nobody wrote it".
+  //
+  // Under a per-directory case-sensitivity flag (any WSL-created tree, which is
+  // ordinary for a developer on this machine), `C:\work\Proj` and `C:\work\proj`
+  // are TWO directories with one normalized string. But:
+  //
+  //     samePath('C:/work/Proj', 'C:/work/proj') === true
+  //
+  // is CORRECT on an ordinary Windows directory and WRONG under the flag. The
+  // predicate is not incorrect -- it is missing information it cannot obtain
+  // without touching disk. No string-level assertion can distinguish the two
+  // worlds, so there is nothing to pin, and a test claiming to cover it would be
+  // worse than this comment.
+  //
+  // It also kills the cheap fix. Folding only ASCII would close the U+0130 hole,
+  // but it makes every non-ASCII comparison case-SENSITIVE -- and `samePath`
+  // still routes window attach, where a false negative means `decideAttach` says
+  // "other-project", `resolvePort` steps, and a second permission-bypassed
+  // `claude` starts in a folder that already has one (host/project-path.js
+  // records that cost). Trading a near-unreachable credential leak for that is a
+  // bad trade, and it would not even finish the job.
+  //
+  // So: the acceptance covers TWO cases, only ONE is testable as a string
+  // property, and the untestable one is the MORE reachable of the two.
+  assert.strictEqual(samePath('C:/work/Proj', 'C:/work/proj'), true,
+    'case folding: correct on ordinary NTFS, wrong under a case-sensitive flag, '
+    + 'and indistinguishable from here');
+
+  // The acceptance must also be WRITTEN DOWN where the next reader will look, and
+  // that assertion lives in test/source-contracts.test.js rather than here.
+  //
+  // Mortimer, PR #42: this file is in the mutation command, and reading a mutated
+  // module's source inside a command-listed test is what aborted a whole dry run
+  // when the assertion was on code shape. This one is on COMMENT text, which
+  // survives Stryker's instrumentation -- so it passed, by luck rather than by
+  // rule, and nothing guarantees comments keep being preserved. Moved for the same
+  // reason the shared-scope allow-list is excluded: its subject is the repository.
 });
 
 test('deleting a separator must not merge two DIFFERENT projects', () => {

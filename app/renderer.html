@@ -17,6 +17,19 @@
       --accent: #d08c4a;
       --ok: #5fb07a;
       --bad: #cc5f5f;
+      /* Used by the models and projects panels but never defined until now,
+         so their hover and seated states painted nothing. Derived, so it
+         follows a project's app colour like everything else. */
+      --panel: color-mix(in srgb, var(--chrome) 60%, var(--border));
+      /* The project's background-image darkness and the install-wide
+         unfocused-window dim. Both set from JS; these are the defaults. */
+      --bg-darkness: 0.5;
+      --unfocused-dim: 0.45;
+      /* FF12: the model's persistent colour cue. Defaults to the same value
+         as --accent so an unresolved model (no sessionModel yet) changes
+         nothing about how the header already looks -- see
+         app/top-bar-display.js's cueColour(null, theme). */
+      --model-accent: #d08c4a;
     }
     * { box-sizing: border-box; }
     /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
@@ -58,6 +71,28 @@
     }
     #app > * { position: relative; z-index: 1; }
 
+    /* A project's OWN image is not pre-dimmed the way the generated art is, so
+       it gets a veil at the chosen darkness. The veil is mostly BLACK with a
+       quarter of the app colour: "darkness" has to mean darker for every app
+       colour -- a pure app-colour veil washed an image out to white under a
+       white app colour (Dexter F8) -- while still tinting toward the project. */
+    body.has-custom-bg #bg::after {
+      content: ''; position: absolute; inset: 0;
+      background: color-mix(in srgb, var(--bg) 25%, #000); opacity: var(--bg-darkness);
+    }
+
+    /* The unfocused-window dim: the window you are NOT typing into goes dark,
+       so the one you are is unmistakable. Below the attention cue's z-index on
+       purpose -- that cue exists for unfocused windows and must stay bright. */
+    #focus-veil {
+      position: fixed; inset: 0; z-index: 9998;
+      background: #000; opacity: 0;
+      pointer-events: none;       /* a click must still focus the window */
+      transition: opacity 150ms ease-out;
+    }
+    body.unfocused #focus-veil { opacity: var(--unfocused-dim); }
+    @media (prefers-reduced-motion: reduce) { #focus-veil { transition: none; } }
+
     /* The terminal and panels must NOT paint an opaque background or the art
        behind them is invisible. Transparency here is what makes it a
        background rather than a border decoration. */
@@ -74,7 +109,7 @@
     #vault-body { padding: 10px 12px; gap: 10px; }
     #vault-body input, #vault-body button {
       font: inherit; font-size: 12px;
-      background: #1b1f2a; color: var(--text);
+      background: var(--panel); color: var(--text);
       border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px;
     }
     #vault-body button { cursor: pointer; }
@@ -103,7 +138,7 @@
     .fog-row .n { margin-left: auto; font-size: 9.5px; opacity: .5; }
     /* Never touched. Dimmer than anything explored, and the only row with no
        brightness of its own -- which is what "unexplored" has to look like. */
-    .fog-row.dark .name { color: #3a4050; }
+    .fog-row.dark .name { color: color-mix(in srgb, var(--dim) 55%, var(--bg)); }
     .fog-row.edited .name { color: var(--ok); }
     .fog-row.read .name { color: var(--text); }
     #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
@@ -120,7 +155,7 @@
     .sec .shown {
       margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 11px;
       word-break: break-all; color: var(--accent);
-      background: #12151d; border-radius: 4px; padding: 5px 6px;
+      background: color-mix(in srgb, var(--bg) 80%, black); border-radius: 4px; padding: 5px 6px;
     }
     .sec .said { margin-top: 5px; font-size: 10.5px; color: var(--ok); }
     /* The reveal toggle sits INSIDE the field's row, so it reads as part of the
@@ -129,6 +164,35 @@
     .secret-field input { flex: 1; min-width: 0; }
     .secret-field button { flex: 0 0 auto; font-size: 11px; padding: 6px 8px; }
     #vault-secret[type="text"] { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+    #vault-lock { display: flex; flex-direction: column; gap: 6px; }
+    /* `lock-note`, not `locked-note`: the same element carries the "unlocked"
+       text in open-with-key, so the old name lied on the one screen where the
+       state is the whole point (Miguel, PR #42, minors). */
+    #vault-lock .lock-note { font-size: 11px; color: var(--accent); }
+    /* A label that is present for a screen reader and absent on screen. The
+       three password fields had placeholders only, which is a WCAG 3.3.2
+       failure on a field holding a vault key (Miguel A7). */
+    #vault-lock .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+    #vault-lock .lock-row { display: flex; gap: 6px; align-items: center; }
+    #vault-lock input { flex: 1; min-width: 0; }
+    /* Melt is destructive and irreversible, so it does not look like the rest.
+       It is also not offered until the second click. */
+    #vault-lock .melt { color: #e0674f; border-color: #e0674f; }
+    #vault-lock .melt-warn { font-size: 10.5px; color: #e0674f; line-height: 1.45; }
+    #vault-lock .keyless { font-size: 10.5px; color: var(--dim); }
+    #vault-shared-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px;
+      color: var(--dim); cursor: pointer; }
+    #vault-shared-row input { margin: 0; }
+    /* A shared secret must announce itself in the list. The original defect
+       was a scope nobody could see -- and this selector named a class that does
+       not exist (`.vault-row`); the rows are `.sec`. Miguel, PR #40, A1: the
+       marker rendered completely unstyled, which is the same invisibility in a
+       new place. Caught by reading the markup, because nothing here renders. */
+    #vault-list .sec .scope { font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--accent); opacity: .8; margin-left: 6px; }
     #vault-add { display: flex; flex-direction: column; gap: 6px;
                  border-top: 1px solid var(--border); padding-top: 10px; }
     #vault-body .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
@@ -185,7 +249,7 @@
     #hp.show { display: flex; }
     #hp .track {
       width: 64px; height: 7px; border-radius: 4px;
-      background: #262b38; overflow: hidden; border: 1px solid var(--border);
+      background: var(--border); overflow: hidden; border: 1px solid var(--border);
     }
     #hp .fill { height: 100%; width: 0; transition: width .4s ease, background .4s ease; }
     #hp.healthy  .fill { background: var(--ok); }
@@ -194,7 +258,7 @@
     /* Unknown is NOT an empty bar -- an empty bar reads as "everything is
        broken", which is a false accusation against a project with no tests. */
     #hp.unknown .track { background: repeating-linear-gradient(
-      45deg, #262b38, #262b38 3px, #2f3545 3px, #2f3545 6px); }
+      45deg, var(--border), var(--border) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 6px); }
     #hp.unknown .fill { width: 0; }
     #hp.running .track { animation: hp-pulse 1.1s ease-in-out infinite; }
     @keyframes hp-pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
@@ -215,7 +279,7 @@
     }
     .cool .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cool .left { font-variant-numeric: tabular-nums; color: var(--accent); }
-    .cool .bar { width: 38px; height: 3px; border-radius: 2px; background: #262b38; overflow: hidden; }
+    .cool .bar { width: 38px; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
     .cool .bar i { display: block; height: 100%; background: var(--accent); opacity: .7; }
     /* --- token spend ------------------------------------------------------- */
     #usage {
@@ -260,7 +324,7 @@
     }
     #quota .meter .track {
       width: 34px; height: 5px; border-radius: 3px;
-      background: #262b38; overflow: hidden; border: 1px solid var(--border);
+      background: var(--border); overflow: hidden; border: 1px solid var(--border);
     }
     #quota .meter .fill { display: block; height: 100%; transition: width .6s ease, background .4s ease; }
     #quota .meter .pct { font-variant-numeric: tabular-nums; font-size: 10.5px; opacity: .9; }
@@ -273,7 +337,7 @@
        used", which is the one thing we specifically do not know. Hatched, the
        same way the HP bar says unknown. */
     #quota .tone-unknown .track {
-      background: repeating-linear-gradient(45deg, #262b38, #262b38 3px, #2f3545 3px, #2f3545 6px);
+      background: repeating-linear-gradient(45deg, var(--border), var(--border) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 6px);
     }
     #quota .tone-unknown .fill { width: 0 !important; }
     /* Absence draws NO bars at all, only why. Three bars at zero would be a
@@ -293,7 +357,7 @@
     #usage .milestone .icon { font-size: 12px; line-height: 1; }
     #usage .milestone .track {
       width: 46px; height: 4px; border-radius: 3px;
-      background: #262b38; overflow: hidden; border: 1px solid var(--border);
+      background: var(--border); overflow: hidden; border: 1px solid var(--border);
     }
     #usage .milestone .fill {
       display: block; height: 100%;
@@ -350,7 +414,7 @@
       -webkit-app-region: no-drag;
     }
     header kbd {
-      background: #222735; border: 1px solid var(--border);
+      background: var(--panel); border: 1px solid var(--border);
       border-radius: 3px; padding: 1px 5px; font-size: 11px;
       font-family: ui-monospace, monospace;
     }
@@ -385,7 +449,7 @@
       font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
       font-size: 11px; line-height: 1.6;
     }
-    #log .row { padding: 2px 0; border-bottom: 1px solid #1d212c; }
+    #log .row { padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, var(--chrome)); }
     #log .k { color: var(--accent); }
     #log .b { color: var(--text); }
     #log .n { color: var(--dim); }
@@ -428,7 +492,12 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #side-tabs button:hover { color: var(--text); }
-    #side-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+    /* FF12: the active-tab underline carries the model's colour cue, not the
+       theme's own --accent -- one of the two surfaces (with the xterm
+       cursor) Ricardo approved for the persistent per-model tint. Untinted,
+       --model-accent is byte-equal to --accent, so this is a no-op look
+       until a model is known. */
+    #side-tabs button.on { color: var(--model-accent); border-bottom-color: var(--model-accent); }
 
     /* Only the selected panel is in the layout at all -- a hidden panel that
        still occupies space is the usual way a tab strip goes wrong. */
@@ -474,6 +543,13 @@
     }
     .agent .career-sep { opacity: 0.5; }
     .agent .career-warn { color: var(--accent); font-weight: 600; cursor: help; }
+    /* The model an agent ACTUALLY used (host/session-model.js), and how many
+       instances of it are running right now (mood.stack() via `party`). */
+    .agent .agent-model { font-size: 10px; color: var(--dim); opacity: 0.6;
+      font-variant-numeric: tabular-nums; margin-top: 1px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    .agent .agent-count { font-size: 10px; font-weight: 700; color: var(--accent);
+      opacity: .85; margin-left: 4px; }
 
     /* --- model browser ---------------------------------------------------- */
     #models-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
@@ -519,6 +595,45 @@
     .proj.current .proj-name::after { content: ' — you are here'; opacity: 0.6; font-size: 10px; }
     .proj-approx .proj-name::after { content: ' ~'; opacity: 0.6; }
 
+    /* The Style tab -- a container that GROWS. One section today (background
+       image); app/style-display.js's STYLE_SECTIONS registry is what makes a
+       second one later a markup-free addition. */
+    #style-sections { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding: 10px 12px; }
+    .style-section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; margin: 0 0 6px; }
+    .style-current { font-size: 11px; color: var(--dim); margin-bottom: 8px; }
+    .style-dropzone {
+      border: 1px dashed var(--border); border-radius: 6px; padding: 16px 10px;
+      text-align: center; font-size: 11px; color: var(--dim); margin-bottom: 8px;
+    }
+    .style-dropzone.dropping { border-color: var(--accent); color: var(--accent); }
+    .style-browse { color: var(--accent); cursor: pointer; text-decoration: underline; }
+    .style-error { color: var(--bad); font-size: 11px; margin-top: 6px; }
+    /* Label ABOVE its controls, so a row is only the controls and fits the
+       narrow, resizable sidebar on one line. */
+    .style-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; min-width: 0; }
+    .style-label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 3px; }
+    .style-row input[type=color] {
+      width: 32px; height: 22px; padding: 0; flex: none; cursor: pointer;
+      border: 1px solid var(--border); border-radius: 4px; background: none;
+    }
+    .style-hex {
+      /* Never shrinks: a narrowed sidebar (or its scrollbar) cut "#3a1418" to
+         "#3a141". The Reset button gives up width instead. */
+      width: calc(7ch + 14px); flex: none; font: 11px Consolas, monospace; padding: 3px 5px;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+    }
+    .style-hex.bad { border-color: var(--bad); }
+    .style-note { font-size: 10.5px; color: var(--dim); margin: -6px 0 10px; }
+    .style-row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+    .style-val { width: 34px; text-align: right; font-size: 11px; color: var(--dim); flex: none; }
+    .style-section button {
+      font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+    }
+    .style-section button:disabled { opacity: .45; cursor: default; }
+
     .model:hover { background: var(--panel); border-color: var(--border); }
     .model.seated { border-color: var(--accent); background: var(--panel); }
     .model .m-id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -537,6 +652,29 @@
     .provider .p-count { opacity: .6; }
     .model { padding-left: 10px; }
 
+    /* Favourites (BACKLOG E #5, #3): a star on any OpenRouter row, pinned to
+       its own section at the very top of the whole list -- ahead of the
+       provider grouping, so a star is never buried inside its provider's own
+       price/context position. */
+    .model .m-star { order: -1; background: none; border: none; cursor: pointer;
+      font-size: 12px; line-height: 1; padding: 0 2px; color: var(--dim); }
+    .model .m-star.starred { color: var(--accent); }
+    .model .m-star:hover { color: var(--accent); }
+    #model-provenance { display: flex; align-items: baseline; gap: 6px; }
+    #model-provenance .prov-text { flex: 1; }
+    #model-refresh { font: inherit; font-size: 10px; padding: 2px 7px; cursor: pointer;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+    #model-refresh:disabled { opacity: .5; cursor: default; }
+
+    /* The Claude choices (top-bar model menu): each gets its own star, and
+       favouriting one reorders the row to the front -- app/models-favourites.js
+       decides the order, renderer.js only rewrites this container's markup. */
+    .tb-model-choice { display: inline-flex; align-items: stretch; }
+    .tb-model-choice .star { font: inherit; font-size: 11px; background: none; border: none;
+      cursor: pointer; color: var(--dim); padding: 0 3px; }
+    .tb-model-choice .star.starred { color: var(--accent); }
+    .tb-model-choice .star:hover { color: var(--accent); }
+
     /* State is carried by opacity and a ring, so it still reads when the
        portrait itself is a placeholder. */
     .agent[data-state="sleeping"] { opacity: .42; }
@@ -549,6 +687,47 @@
     .agent[data-state="working"] .state { color: var(--accent); }
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
+
+    /* --- top bar: model / effort ---------------------------------------------
+       FF12. Model and effort are CONTROLS, not labels -- clicking either opens
+       a small picker that types the matching /model or /effort command into
+       the pty, exactly as a human would (see app/renderer.js requestModel /
+       requestEffort). The tint is app/top-bar-display.js's cueColour: fixed
+       per model family, so it means the same thing in every themed project;
+       untinted (no model known yet) it is byte-equal to the theme's own
+       --accent, so the panel changes nothing about the header until PR-A's
+       sessionModel lands. */
+    #top-bar { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag;
+               position: relative; }
+    .tb-chip { background: var(--chrome); color: var(--text); border: 1px solid var(--model-accent);
+               border-radius: 999px; padding: 2px 9px; font-size: 10.5px; line-height: 1.5;
+               cursor: pointer; font: inherit;
+               /* The chip shows a FULL id ("claude-sonnet-5"); wrapped, the
+                  pill became a three-line circle (seen in the live probe). */
+               white-space: nowrap; }
+    .tb-chip:hover { background: color-mix(in srgb, var(--model-accent) 14%, var(--chrome)); }
+    /* Pending never claims success -- see app/top-bar-display.js's
+       pendingResolver. It only ever LOOKS unsettled until the truth (or the
+       timeout) says otherwise. */
+    .tb-chip.pending { opacity: .68; animation: pulse 1.2s ease-in-out infinite; }
+    /* A switch that did not take, or was not sent. The label still reports
+       the truth; the dashed border says "look at the tooltip". */
+    .tb-chip.notice { border-style: dashed; }
+    .tb-menu .note { font-size: 10px; opacity: .6; padding: 3px 7px 0; max-width: 170px; }
+    .tb-menu { position: absolute; top: 26px; z-index: 30; display: flex; flex-direction: column;
+               gap: 2px; background: var(--chrome); border: 1px solid var(--border);
+               border-radius: 8px; padding: 5px; min-width: 128px;
+               box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+    .tb-menu[hidden] { display: none; }
+    .tb-menu button { background: transparent; border: none; color: var(--text); text-align: left;
+                      padding: 4px 7px; border-radius: 5px; cursor: pointer; font-size: 11px; }
+    .tb-menu button:hover { background: var(--bg); color: var(--model-accent); }
+    .tb-menu .custom { display: flex; gap: 3px; margin-top: 2px; padding-top: 4px;
+                        border-top: 1px solid var(--border); }
+    .tb-menu .custom input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+                              border: 1px solid var(--border); border-radius: 4px;
+                              padding: 2px 5px; font-size: 11px; }
+    .tb-menu .custom button { border: 1px solid var(--border); }
 
     /* --- permission mode ---------------------------------------------------
        Five modes, measured by cycling shift+tab. Bypass is flagged because
@@ -571,7 +750,7 @@
     #party { padding: 6px 8px; border-top: 1px solid var(--border); font-size: 10.5px; }
     #party .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
     #party .who { background: rgba(255,255,255,.06); border-radius: 4px; padding: 1px 5px; }
-    #party .who.inner { background: var(--accent); color: #12141c; font-weight: 600; }
+    #party .who.inner { background: var(--accent); color: var(--on-accent, #12141c); font-weight: 600; }
     #party .arrow { color: var(--dim); }
     #party .none { color: var(--dim); opacity: .7; }
 
@@ -591,6 +770,10 @@
     .proc .el { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
     /* Anything past a minute is worth noticing rather than assuming hung. */
     .proc.slow .el { color: var(--accent); }
+    /* Ended without its own close event: not running, so no pulse. */
+    .proc.stale { opacity: .55; }
+    .proc.stale .dot { animation: none; background: var(--dim); }
+    .proc.stale .lbl { text-decoration: line-through; }
 
     /* Scrollbars follow the theme. The default chrome scrollbar is a bright
        grey slab that ignores the palette entirely and is the one element that
@@ -614,13 +797,48 @@
 </head>
 <body>
   <div id="bg"></div>
+  <div id="focus-veil"></div>
   <div id="app">
     <header>
       <span class="dot" id="dot"></span>
-      <span class="title">claude-custom</span>
+      <span class="title" id="title">claude-custom</span>
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
       <span id="hp" title="Project HP — click to run the test suite"></span>
+      <!-- FF12: model + effort, the two things that change how the NEXT turn
+           behaves. Working directory is FF3 (window title); spend/quota are
+           status, not controls, and stay in #usage/#quota below. -->
+      <span id="top-bar">
+        <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
+        <div id="tb-model-menu" class="tb-menu" hidden>
+          <!-- BACKLOG E #5, #3: rewritten by app/renderer.js's renderClaudeChoices()
+               on load and whenever a favourite changes, so favourited choices sort
+               first -- this static markup is only the pre-JS fallback shape. -->
+          <div id="tb-model-choices">
+            <span class="tb-model-choice"><button type="button" data-model="fable">fable</button></span>
+            <span class="tb-model-choice"><button type="button" data-model="opus">opus</button></span>
+            <span class="tb-model-choice"><button type="button" data-model="sonnet">sonnet</button></span>
+            <span class="tb-model-choice"><button type="button" data-model="haiku">haiku</button></span>
+          </div>
+          <div class="custom">
+            <input id="tb-model-custom" type="text" placeholder="full model id…" autocomplete="off" />
+            <button type="button" id="tb-model-custom-go">Go</button>
+          </div>
+          <!-- MEASURED (verify/probe-top-bar-truth.js): /model saves the pick as
+               the default for new sessions. Approved 2026-09-26: say so. -->
+          <div class="note">also becomes your default for new sessions</div>
+        </div>
+        <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
+        <div id="tb-effort-menu" class="tb-menu" hidden>
+          <button type="button" data-effort="low">low</button>
+          <button type="button" data-effort="medium">medium</button>
+          <button type="button" data-effort="high">high</button>
+          <button type="button" data-effort="xhigh">xhigh</button>
+          <button type="button" data-effort="max">max</button>
+          <button type="button" data-effort="auto">auto</button>
+          <div class="note">also becomes your default for new sessions</div>
+        </div>
+      </span>
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
@@ -641,8 +859,18 @@
           <button data-tab="fog" title="What this project has actually been read">Map</button>
           <button data-tab="models" title="Browse every model OpenRouter offers, and seat the council">Models</button>
           <button data-tab="projects" title="Switch to another project, each in its own window">Projects</button>
+          <button data-tab="style" title="How the harness looks">Style</button>
         </nav>
         <div class="panel" data-panel="agents">
+          <!-- BACKLOG D #16: Active is today's roster (unchanged); Inactive is
+               the whole roster (every agent definition plus every name ever
+               seen in a transcript, across every project) minus Active,
+               sorted by lifetime tokens. The split and sort are pure and live
+               in app/roster-tabs-display.js -- this is markup only. -->
+          <nav id="roster-subtabs">
+            <button type="button" data-roster-tab="active" class="on" title="Working in this host's lifetime">Active</button>
+            <button type="button" data-roster-tab="inactive" title="Every other agent this project or account has ever used">Inactive</button>
+          </nav>
           <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
           <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
           <div id="cooldowns"></div>
@@ -652,6 +880,10 @@
           </div>
         </div>
         <div class="panel" data-panel="vault" id="vault-body">
+          <!-- The lock. Rendered from main's authoritative state, never from a
+               guess held here: a padlock the window decides is a padlock the
+               window can be wrong about. -->
+          <div id="vault-lock"></div>
           <input id="vault-search" type="search" placeholder="search labels" autocomplete="off" />
           <div id="vault-list"></div>
           <form id="vault-add" autocomplete="off">
@@ -660,6 +892,13 @@
               <input id="vault-secret" type="password" placeholder="secret" autocomplete="new-password" />
               <button type="button" id="vault-mask" title="Show or hide what you are typing">Show</button>
             </div>
+            <!-- Scope, stated at the moment of storing. The vault file is
+                 per-INSTALL, so before this every secret was reachable from
+                 every project and nothing said so. Default is this project. -->
+            <label id="vault-shared-row" title="Shared secrets are visible from every project on this machine">
+              <input id="vault-shared" type="checkbox" />
+              <span>share with all projects</span>
+            </label>
             <button type="submit">Store</button>
           </form>
           <p class="warn">Pasting a secret into the session writes it to the
@@ -707,7 +946,10 @@
             </div>
             <label class="check"><input type="checkbox" id="model-free" /> free only</label>
           </div>
-          <div id="model-provenance" class="dim"></div>
+          <div id="model-provenance" class="dim">
+            <span class="prov-text"></span>
+            <button type="button" id="model-refresh" title="force a fresh fetch from OpenRouter">Refresh</button>
+          </div>
           <div id="model-list"><div class="none">loading the catalogue…</div></div>
         </div>
         <div class="panel" data-panel="fog" id="fog-body">
@@ -717,6 +959,12 @@
         <div class="panel" data-panel="projects" id="projects-body">
           <div id="projects-note" class="dim">reading your projects…</div>
           <div id="projects-list"></div>
+        </div>
+        <!-- A container that GROWS: one section today (background image), more
+             later. app/style-display.js renders one entry per STYLE_SECTIONS,
+             so adding a section is a one-element array change, not a new panel. -->
+        <div class="panel" data-panel="style" id="style-body">
+          <div id="style-sections"></div>
         </div>
       </aside>
       <aside id="diag">
@@ -736,10 +984,19 @@
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
   <script src="./roster-width.js"></script>
+  <script src="./vault-lock-display.js"></script>
   <script src="./career-display.js"></script>
+  <script src="./roster-tabs-display.js"></script>
   <script src="./quota-display.js"></script>
   <script src="./bugvault-display.js"></script>
   <script src="./projects-display.js"></script>
+  <script src="./style-display.js"></script>
+  <script src="./agent-card-display.js"></script>
+  <script src="./top-bar-display.js"></script>
+  <script src="./models-favourites.js"></script>
+  <script src="./models-refresh.js"></script>
+  <script src="./models-catalogue.js"></script>
+  <script src="./paste-action.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

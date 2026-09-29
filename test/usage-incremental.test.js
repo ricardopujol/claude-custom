@@ -33,6 +33,7 @@ const path = require('path');
 const { readUsage, projectDirName , FINGERPRINT_BYTES } = require('../host/usage');
 
 const fsp = require('fs/promises');
+const { tmpDir } = require('./tmp-dir');
 
 // --- counting the bytes a read actually consumes ------------------------------
 //
@@ -74,7 +75,7 @@ const drain = (bytes) => bytes.splice(0).reduce((a, b) => a + b, 0);
 const NL = String.fromCharCode(10);
 
 function project(cwd) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-usage-inc-'));
+  const root = tmpDir('cc-usage-inc-');
   const dir = path.join(root, projectDirName(cwd));
   fs.mkdirSync(dir, { recursive: true });
   return { root, dir };

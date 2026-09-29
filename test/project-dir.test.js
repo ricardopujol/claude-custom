@@ -21,6 +21,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const { projectDirName } = require('../host/project-dir');
 
@@ -84,7 +85,18 @@ test('AGREES WITH THE REAL DIRECTORIES ON THIS MACHINE', () => {
   assert.deepStrictEqual(bad, [],
     'Claude Code used characters the encoder does not produce: ' + bad.join(', '));
 
-  // And this project's own directory must be exactly what we compute.
-  const mine = projectDirName(process.cwd());
+  // And this project's own directory must be exactly what we compute. "This
+  // project" is the MAIN checkout, not process.cwd(): a git worktree is a
+  // folder Claude Code may never have run in, and CLAUDE.md mandates worktrees
+  // for parallel agents -- so a cwd-based check failed for every one of them.
+  let commonDir;
+  try {
+    commonDir = execFileSync('git',
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd: __dirname, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return;                       // no git, or not a clone: same as no projects dir
+  }
+  const mine = projectDirName(path.dirname(commonDir));
   assert.ok(dirs.includes(mine), `${mine} is not among the real project dirs`);
 });

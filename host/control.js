@@ -60,7 +60,7 @@ const CONTROL_TYPES = new Set([
   // a session running --dangerously-skip-permissions. That has happened
   // twice in this repo already (#24's `drop`, #29's `bugvault`), both times
   // by resolving this exact list in favour of one side.
-  'bugvault', 'projects', 'open',
+  'bugvault', 'projects', 'open', 'style',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed

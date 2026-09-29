@@ -6,8 +6,9 @@ const os = require('os');
 const path = require('path');
 
 const { writeIdentity, readIdentity } = require('../host/host-identity');
+const { tmpDir } = require('./tmp-dir');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-ident-'));
+const tmp = () => tmpDir('cc-ident-');
 const ALIVE = () => true;
 
 test('a host publishes which project it serves, and it reads back', () => {

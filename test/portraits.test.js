@@ -6,9 +6,10 @@ const os = require('os');
 const path = require('path');
 
 const { portraitFor, listStates, placeholderFor } = require('../host/portraits');
+const { tmpDir } = require('./tmp-dir');
 
 function portraits(tree) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-portraits-'));
+  const dir = tmpDir('cc-portraits-');
   for (const [agent, states] of Object.entries(tree)) {
     fs.mkdirSync(path.join(dir, agent), { recursive: true });
     for (const s of states) fs.writeFileSync(path.join(dir, agent, s + '.png'), 'x');
@@ -60,7 +61,7 @@ test('placeholder initials come from the agent name', () => {
 
 test('state list is read from config, not hardcoded to four', () => {
   // "thinking" and "waiting on you" are expected to follow.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-portraits-'));
+  const dir = tmpDir('cc-portraits-');
   fs.writeFileSync(path.join(dir, 'states.json'),
     JSON.stringify(['sleeping', 'working', 'happy', 'stressed', 'thinking']));
   assert.deepStrictEqual(listStates({ portraitsDir: dir }),
@@ -91,7 +92,7 @@ test('finds a portrait at the path the FORGE actually writes', () => {
   // READER expected. A fixture that encodes the reader's assumption cannot
   // catch a disagreement with the writer -- so this one is built to mirror the
   // forge's output, including the sibling folders it leaves behind.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-forge-'));
+  const dir = tmpDir('cc-forge-');
   const agentDir = path.join(dir, 'code-reviewer');
   fs.mkdirSync(path.join(agentDir, 'candidates'), { recursive: true });
   fs.mkdirSync(path.join(agentDir, 'states'), { recursive: true });
@@ -109,7 +110,7 @@ test('finds a portrait at the path the FORGE actually writes', () => {
 });
 
 test('the @128 variant is not mistaken for a state', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-forge-'));
+  const dir = tmpDir('cc-forge-');
   fs.mkdirSync(path.join(dir, 'a'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'a', 'happy@128.png'), 'x');
   assert.strictEqual(portraitFor('a', 'happy', { portraitsDir: dir }).kind, 'placeholder');

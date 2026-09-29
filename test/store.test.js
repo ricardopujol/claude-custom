@@ -6,8 +6,9 @@ const os = require('os');
 const path = require('path');
 
 const { createStore } = require('../host/store');
+const { tmpDir } = require('./tmp-dir');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-store-'));
+const tmp = () => tmpDir('cc-store-');
 
 test('reading an absent file returns the default', () => {
   const s = createStore({ dir: tmp() });
