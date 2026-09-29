@@ -81,13 +81,17 @@ function container(root) {
   return { kind: 'container', root, dev: path.join(root, 'dev') };
 }
 
+// Climb from `p` to the first folder that is either a container or a repo
+// boundary. Checking for a container at every level is what folds a plain
+// folder inside the container (`<container>\notes`) to the project instead of
+// climbing past it to some enclosing repo.
 function projectOf(p) {
   if (typeof p !== 'string' || !p) return null;
-  const start = path.resolve(p);
-  if (layoutOf(start) === 'container') return container(start);
 
-  let repo = start;
-  while (!isRepoBoundary(repo)) {
+  let repo = path.resolve(p);
+  for (;;) {
+    if (layoutOf(repo) === 'container') return container(repo);
+    if (isRepoBoundary(repo)) break;
     const parent = path.dirname(repo);
     if (parent === repo) return null;   // reached the filesystem root
     repo = parent;

@@ -162,6 +162,27 @@ test('projectOf folds the container, dev, anything under dev and a sibling workt
   }
 });
 
+// Dexter F7: a plain folder inside the container is in no repo of its own,
+// but it is still in the project -- and must not climb past the container to
+// some enclosing repo (a home dotfiles repo, say).
+test('projectOf folds a plain folder inside the container to the container', () => {
+  const c = makeContainer();
+  const notes = path.join(c.root, 'notes', 'deep');
+  fs.mkdirSync(notes, { recursive: true });
+  const expected = { kind: 'container', root: c.root, dev: c.dev };
+  assert.deepStrictEqual(projectOf(path.join(c.root, 'notes')), expected);
+  assert.deepStrictEqual(projectOf(notes), expected);
+});
+
+test('a container inside an enclosing repo still wins for paths under it', () => {
+  const outer = makeFlat();
+  const inner = path.join(outer, 'box');
+  makeRepo(path.join(inner, 'dev'));
+  fs.mkdirSync(path.join(inner, 'notes'));
+  assert.deepStrictEqual(projectOf(path.join(inner, 'notes')),
+    { kind: 'container', root: inner, dev: path.join(inner, 'dev') });
+});
+
 test('projectOf gives a flat repo and its subfolders as flat, with dev = root', () => {
   const flat = makeFlat();
   const expected = { kind: 'flat', root: flat, dev: flat };
@@ -217,8 +238,10 @@ function fixturePathArb() {
   const outer = makeFlat();
   makeRepo(path.join(outer, 'dev'));
   const plain = tmpDir('project-layout-test-');
+  const box = path.join(outer, 'box');
+  makeRepo(path.join(box, 'dev'));
   const bases = [c.root, c.dev, path.join(c.dev, 'src', 'deep'), c.wt, flat, path.join(flat, 'sub'),
-    outer, path.join(outer, 'dev'), plain];
+    outer, path.join(outer, 'dev'), plain, path.join(c.root, 'notes'), box, path.join(box, 'dev')];
   return fc.tuple(
     fc.constantFrom(...bases),
     fc.array(fc.constantFrom('zz', 'new folder', 'dev'), { maxLength: 2 }),
