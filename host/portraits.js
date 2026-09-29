@@ -45,6 +45,9 @@ const mediaKindFor = ext => (VIDEO_EXTENSIONS.has(ext) ? 'video' : 'image');
 function safeSegment(name) {
   if (!name || typeof name !== 'string') return null;
   if (name.includes('/') || name.includes('\\') || name.includes('..')) return null;
+  // "." joins to the parent itself: an upload for agent "." would land in the
+  // shared uploads root (Dexter F5, PR #35).
+  if (name === '.') return null;
   if (path.isAbsolute(name)) return null;
   return name;
 }

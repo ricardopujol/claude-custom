@@ -107,13 +107,36 @@ function applyPortraitUpload({ source, dest }, {
 } = {}) {
   mkdirSync(path.dirname(dest), { recursive: true });
   const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
-  copyFile(source, tmp);
   try {
+    // Inside the try (Dexter F4, PR #35): a copy that dies partway -- ENOSPC
+    // on a large video -- has already created the temp file.
+    copyFile(source, tmp);
     rename(tmp, dest);
   } catch (err) {
-    // Best-effort cleanup; the rename's own error is the one that matters.
+    // Best-effort cleanup; the copy's or rename's own error is the one that matters.
     try { unlinkSync(tmp); } catch { /* already gone, or never landed */ }
     throw err;
+  }
+  removeOtherFormats(dest, unlinkSync);
+}
+
+// The resolver picks between formats by a fixed extension order, so a stale
+// working.png would keep beating a freshly uploaded working.webm (Dexter F1 /
+// Miguel B1, PR #35). Once the new file is in place, every other format for
+// the same <state> goes. A leftover that cannot be removed would still win,
+// so that is a failed upload, never a quiet success.
+function removeOtherFormats(dest, unlinkSync) {
+  const ext = extensionOf(dest);
+  const base = dest.slice(0, -(ext.length + 1));
+  for (const other of UPLOAD_EXTENSIONS) {
+    if (other === ext) continue;
+    const stale = `${base}.${other}`;
+    try {
+      unlinkSync(stale);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') continue;
+      throw new Error(`the new portrait was saved, but the old ${path.basename(stale)} could not be removed and would still be shown (${err && err.message})`);
+    }
   }
 }
 

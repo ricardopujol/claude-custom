@@ -205,3 +205,94 @@ test('applyPortraitUpload overwrites an existing portrait for the same agent and
 
   assert.strictEqual(fs.readFileSync(dest, 'utf8'), 'new portrait');
 });
+
+// --- replacing an upload in a DIFFERENT format (Dexter F1 / Miguel B1, PR #35) --
+//
+// findAsset picks by a fixed extension order, so a leftover working.png beat
+// a freshly uploaded working.webm: "portrait set" was reported while the old
+// still kept showing, labelled "your upload". The new file must be the one
+// that resolves, for every (old, new) pair.
+
+const { portraitFor } = require('../host/portraits');
+
+function uploadFile(src, uploadsDir, agent, state, ext, body) {
+  const sourceFile = path.join(src, `drop-${ext}.${ext}`);
+  fs.writeFileSync(sourceFile, body);
+  const plan = planPortraitUpload({
+    source: sourceFile, agent, state, uploadsDir, size: fs.statSync(sourceFile).size,
+  });
+  assert.ok(plan.ok, plan.reason);
+  applyPortraitUpload({ source: sourceFile, dest: plan.dest });
+  return plan.dest;
+}
+
+test('a new upload in ANY other format is the one that resolves, for every (old, new) pair', () => {
+  for (const oldExt of UPLOAD_EXTENSIONS) {
+    for (const newExt of UPLOAD_EXTENSIONS) {
+      if (oldExt === newExt) continue;
+      const src = tmpdir('cc-src-');
+      const uploadsDir = tmpdir('cc-uploads-');
+      uploadFile(src, uploadsDir, 'a', 'working', oldExt, 'old');
+      const dest = uploadFile(src, uploadsDir, 'a', 'working', newExt, 'new');
+
+      const p = portraitFor('a', 'working', { uploadsDir });
+      assert.strictEqual(p.path, dest, `${oldExt} -> ${newExt}: the old upload still resolves`);
+      assert.deepStrictEqual(fs.readdirSync(path.join(uploadsDir, 'a')), [`working.${newExt}`],
+        `${oldExt} -> ${newExt}: the replaced file was left behind`);
+    }
+  }
+});
+
+test('replacing one state\'s upload leaves every OTHER state\'s files alone', () => {
+  const src = tmpdir('cc-src-');
+  const uploadsDir = tmpdir('cc-uploads-');
+  uploadFile(src, uploadsDir, 'a', 'working', 'png', 'w');
+  uploadFile(src, uploadsDir, 'a', 'default', 'gif', 'd');
+  uploadFile(src, uploadsDir, 'a', 'happy', 'png', 'old');
+  uploadFile(src, uploadsDir, 'a', 'happy', 'webm', 'new');
+
+  assert.deepStrictEqual(fs.readdirSync(path.join(uploadsDir, 'a')).sort(),
+    ['default.gif', 'happy.webm', 'working.png']);
+});
+
+test('an old format that cannot be removed fails the upload, never reports it as set', () => {
+  // If the stale file survives, it still wins the lookup -- so "portrait set"
+  // would be a lie. The failure must surface as a throw (host.js turns it into
+  // ok:false with this message as the reason).
+  const src = tmpdir('cc-src-');
+  const uploadsDir = tmpdir('cc-uploads-');
+  uploadFile(src, uploadsDir, 'a', 'working', 'png', 'old');
+  const sourceFile = path.join(src, 'new.webm');
+  fs.writeFileSync(sourceFile, 'new');
+  const dest = path.join(uploadsDir, 'a', 'working.webm');
+
+  assert.throws(() => applyPortraitUpload({ source: sourceFile, dest }, {
+    unlinkSync: (p) => {
+      if (p.endsWith('working.png')) throw Object.assign(new Error('EPERM, simulated'), { code: 'EPERM' });
+      fs.unlinkSync(p);
+    },
+  }), /working\.png/);
+});
+
+test('applyPortraitUpload cleans up a PARTIAL temp file when the copy itself fails (Dexter F4)', () => {
+  // The old stub threw before creating anything, so a copy that dies midway
+  // (ENOSPC on a 24 MB video) leaving its temp file behind went unseen.
+  const src = tmpdir('cc-src-');
+  const uploadsDir = tmpdir('cc-uploads-');
+  const sourceFile = path.join(src, 'photo.mp4');
+  fs.writeFileSync(sourceFile, 'x');
+  const dest = path.join(uploadsDir, 'a', 'working.mp4');
+
+  assert.throws(() => applyPortraitUpload({ source: sourceFile, dest }, {
+    copyFile: (from, to) => { fs.writeFileSync(to, 'half'); throw new Error('ENOSPC, simulated'); },
+  }), /ENOSPC/);
+  assert.deepStrictEqual(fs.readdirSync(path.join(uploadsDir, 'a')), [],
+    'a copy that failed partway left its temp file behind');
+});
+
+test('"." is not an agent or state segment -- it would land in the shared uploads root (Dexter F5)', () => {
+  const { safeSegment } = require('../host/portraits');
+  assert.strictEqual(safeSegment('.'), null);
+  const plan = planPortraitUpload({ source: path.join(os.tmpdir(), 'p.png'), agent: '.', state: 'working', uploadsDir: path.join(os.tmpdir(), 'u'), size: 1 });
+  assert.strictEqual(plan.ok, false);
+});
