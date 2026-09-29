@@ -11,10 +11,12 @@ const HELPER = 'C:/tools/claude-custom-hook.exe';
 const PIPE = '\\\\.\\pipe\\claude-custom-abc123';
 const opts = { helperPath: HELPER, pipeName: PIPE };
 
-test('supplies exactly one top-level key: hooks', () => {
+test('without a status relay, supplies exactly one top-level key: hooks', () => {
   // Load-bearing. --settings replaces single-valued keys WHOLESALE, so any
   // extra key here would silently destroy the user's version of it. Measured:
-  // a partial statusLine object wiped the user's statusLine.command.
+  // a partial statusLine object wiped the user's statusLine.command. The one
+  // deliberate exception, statusLine as a chaining relay, is pinned in
+  // test/status-relay.test.js.
   const s = buildHarnessSettings(opts);
   assert.deepStrictEqual(Object.keys(s), ['hooks']);
 });
@@ -69,8 +71,27 @@ test('hooks only the events the harness actually consumes', () => {
   const s = buildHarnessSettings(opts);
   assert.deepStrictEqual(
     Object.keys(s.hooks).sort(),
-    ['Notification', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']
+    ['Notification', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'SessionEnd', 'SessionStart',
+     'Stop', 'SubagentStop']
   );
+});
+
+test('PostToolUseFailure is hooked with exactly the PostToolUse matcher', () => {
+  // A failed call fires PostToolUseFailure INSTEAD of PostToolUse (measured by
+  // verify/probe-failure-payloads.js). Unhooked, every non-zero Bash exit was
+  // left "running" in the panel. Same matcher, or a tool closes on success and
+  // leaks on failure.
+  const s = buildHarnessSettings(opts);
+  assert.ok(Array.isArray(s.hooks.PostToolUseFailure) && s.hooks.PostToolUseFailure.length === 1);
+  assert.strictEqual(s.hooks.PostToolUseFailure[0].matcher, s.hooks.PostToolUse[0].matcher);
+  assert.match(s.hooks.PostToolUseFailure[0].hooks[0].command, /--event PostToolUseFailure$/);
+});
+
+test('SessionEnd is hooked so a finished session leaves nothing running', () => {
+  const s = buildHarnessSettings(opts);
+  assert.ok(Array.isArray(s.hooks.SessionEnd) && s.hooks.SessionEnd.length === 1);
+  assert.strictEqual(s.hooks.SessionEnd[0].matcher, '');
+  assert.match(s.hooks.SessionEnd[0].hooks[0].command, /--event SessionEnd$/);
 });
 
 test('SessionStart is hooked so the host learns the session id', () => {
@@ -112,7 +133,7 @@ test('every hook carries a timeout so a wedged helper cannot hang a tool call', 
 });
 
 test('writeHarnessSettings writes parseable JSON and returns its path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-writer-'));
+  const dir = tmpDir('cc-writer-');
   const p = writeHarnessSettings(dir, opts);
   assert.ok(fs.existsSync(p), 'file not written');
   const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -121,7 +142,7 @@ test('writeHarnessSettings writes parseable JSON and returns its path', () => {
 });
 
 test('writeHarnessSettings creates the directory if absent', () => {
-  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-writer-')), 'nested', 'deep');
+  const dir = path.join(tmpDir('cc-writer-'), 'nested', 'deep');
   const p = writeHarnessSettings(dir, opts);
   assert.ok(fs.existsSync(p));
   fs.rmSync(path.dirname(path.dirname(dir)), { recursive: true, force: true });
@@ -138,6 +159,7 @@ test('rejects a missing pipe name', () => {
 // --- claude argv construction -------------------------------------------
 
 const { buildClaudeArgs } = require('../host/settings-writer');
+const { tmpDir } = require('./tmp-dir');
 
 test('omits --settings entirely when the native helper is absent', () => {
   // The helper arrives in step 2. Until it exists, pointing hooks at a missing
@@ -233,7 +255,7 @@ test('two hosts get two settings FILES, so neither can redirect the other\'s hoo
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
+  const dir = tmpDir('cc-settings-');
 
   const a = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-A' }, 7701);
   const b = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-B' }, 7702);
@@ -252,7 +274,7 @@ test('the shared settings file is STILL written, because probes read it by that 
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
+  const dir = tmpDir('cc-settings-');
 
   writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'PIPE-A' }, 7701);
   assert.ok(fs.existsSync(path.join(dir, 'harness-settings.json')),

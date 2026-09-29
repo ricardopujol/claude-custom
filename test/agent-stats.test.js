@@ -17,12 +17,13 @@ const path = require('path');
 const { readAgentStats, resolveAgent, identityTables, readTranscript } =
   require('../host/agent-stats');
 const { projectDirName } = require('../host/project-dir');
+const { tmpDir } = require('./tmp-dir');
 
 const NL = String.fromCharCode(10);
 const CWD = 'C:/w/proj';
 
 function project() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-agents-'));
+  const root = tmpDir('cc-agents-');
   const dir = path.join(root, projectDirName(CWD));
   fs.mkdirSync(dir, { recursive: true });
   return { root, dir };
@@ -435,7 +436,7 @@ test('readTranscript treats a VANISHED file as nothing, and an unreadable one as
   // all 24 tests stayed green -- the mutant survived, so the "gone between
   // the listing and the read IS the correct total" half of the split was
   // pinned by nothing. These two assertions kill it.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-rt-'));
+  const dir = tmpDir('cc-rt-');
   assert.strictEqual(await readTranscript(path.join(dir, 'never-existed.jsonl')), null,
     'a file that vanished contributes nothing, and that is correct -- not an error');
 
@@ -450,7 +451,7 @@ test('identityTables reports unreadable transcripts instead of swallowing them',
   // is read ONLY here, so its failure was invisible by construction -- and
   // when it fails, every NAMED spawn recorded in it loses its identity and
   // scatters under its label, while `ok` still reported the roster complete.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-id-'));
+  const dir = tmpDir('cc-id-');
   const asDir = path.join(dir, 's1.jsonl');
   fs.mkdirSync(asDir);
 
@@ -459,7 +460,7 @@ test('identityTables reports unreadable transcripts instead of swallowing them',
 });
 
 test('identityTables does not count a transcript that simply vanished', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-id2-'));
+  const dir = tmpDir('cc-id2-');
   const r = await identityTables([{ file: path.join(dir, 'gone.jsonl'), session: 's1' }]);
   assert.strictEqual(r.errors, 0);
 });

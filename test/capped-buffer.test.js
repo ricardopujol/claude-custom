@@ -12,6 +12,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { createCappedBuffer } = require('../host/capped-buffer');
+const { tmpDir } = require('./tmp-dir');
 
 const NL = String.fromCharCode(10);
 
@@ -114,7 +115,7 @@ test('a REAL red node:test run still parses as critical after capping', () => {
   const { execFileSync } = require('child_process');
   const { parseResults, healthFrom } = require('../host/health');
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cap-real-'));
+  const dir = tmpDir('cc-cap-real-');
   const lines = ["const test=require('node:test');const assert=require('node:assert');"];
   for (let i = 0; i < 5; i++) lines.push(`test('ok ${i}', () => assert.ok(true));`);
   for (let i = 0; i < 120; i++) {

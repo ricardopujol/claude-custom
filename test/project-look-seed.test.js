@@ -1,0 +1,281 @@
+'use strict';
+/**
+ * Backlog #15: a NEW project gets a random look, once; the Style tab can
+ * re-roll it. "New" is two facts at once -- no look.json of its own AND no
+ * Claude history for the folder -- and only a missing look may be written.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+
+const { seedLookIfNew, rerollLook, readLook, setLook, LOOK_DIR_NAME } = require('../host/style');
+const { hasClaudeHistory } = require('../host/recent');
+const { projectDirName } = require('../host/project-dir');
+const { lookFailures, SAFE_LOOK } = require('../host/palette-gen');
+const { DEFAULT_LOOK } = require('../host/look');
+const { tmpDir } = require('./tmp-dir');
+
+const lookFile = (cwd) => path.join(cwd, LOOK_DIR_NAME, 'look.json');
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// A projects root holding a transcript folder for `cwd`, as Claude Code names it.
+function historyFor(cwd, { name = projectDirName(cwd), withTranscript = true, root = tmpDir('cc-seed-projects-') } = {}) {
+  fs.mkdirSync(root, { recursive: true });
+  const dir = path.join(root, name);
+  fs.mkdirSync(dir);
+  if (withTranscript) fs.writeFileSync(path.join(dir, 'abc.jsonl'), '{}\n');
+  return root;
+}
+
+// --- hasClaudeHistory ------------------------------------------------------------
+
+test('hasClaudeHistory: a transcript in the folder Claude Code names for this cwd is history', () => {
+  const cwd = 'C:\\Users\\x\\My Project.v2';
+  assert.strictEqual(hasClaudeHistory(cwd, { projectsDir: historyFor(cwd) }), true);
+});
+
+test('hasClaudeHistory: another project\'s transcripts are not this one\'s history', () => {
+  const root = historyFor('C:\\Users\\x\\other');
+  assert.strictEqual(hasClaudeHistory('C:\\Users\\x\\fresh', { projectsDir: root }), false);
+});
+
+test('hasClaudeHistory: a folder with no transcript in it is not history', () => {
+  const cwd = 'C:\\Users\\x\\empty';
+  assert.strictEqual(hasClaudeHistory(cwd, { projectsDir: historyFor(cwd, { withTranscript: false }) }), false);
+});
+
+test('hasClaudeHistory: the drive letter\'s case does not hide history (c-- vs C--)', () => {
+  const cwd = 'C:\\Users\\x\\proj';
+  const root = historyFor(cwd, { name: projectDirName(cwd).toLowerCase() });
+  assert.strictEqual(hasClaudeHistory(cwd, { projectsDir: root }), true);
+});
+
+test('hasClaudeHistory: no projects folder at all is "no history" (Claude never ran)', () => {
+  const root = path.join(tmpDir('cc-seed-none-'), 'does-not-exist');
+  assert.strictEqual(hasClaudeHistory('C:\\a', { projectsDir: root }), false);
+});
+
+test('hasClaudeHistory: a projects folder that cannot be read counts AS history -- never write on doubt', () => {
+  const file = path.join(tmpDir('cc-seed-file-'), 'projects');
+  fs.writeFileSync(file, 'not a directory');
+  assert.strictEqual(hasClaudeHistory('C:\\a', { projectsDir: file }), true);
+});
+
+test('hasClaudeHistory: no cwd is no answer to write on', () => {
+  assert.strictEqual(hasClaudeHistory('', { projectsDir: tmpDir('cc-seed-x-') }), true);
+});
+
+test('Dexter F6: a path whose folder name would pass 200 chars counts as history -- the CLI may shorten it', () => {
+  // Unmeasured: the CLI may truncate long names and add a hash, which
+  // projectDirName can't reproduce. So never seed there.
+  const root = tmpDir('cc-seed-long-');
+  const long = 'C:/' + 'a'.repeat(198);                    // encodes to exactly 201 chars
+  assert.strictEqual(projectDirName(long).length, 201);
+  assert.strictEqual(hasClaudeHistory(long, { projectsDir: root }), true);
+  const edge = 'C:/' + 'a'.repeat(197);                    // exactly 200: still looked up normally
+  assert.strictEqual(projectDirName(edge).length, 200);
+  assert.strictEqual(hasClaudeHistory(edge, { projectsDir: root }), false);
+});
+
+test('Dexter F4: a transcript folder that is a junction (moved to another drive) is still history', () => {
+  const cwd = 'C:/Users/x/linked';
+  const real = tmpDir('cc-seed-real-');
+  fs.writeFileSync(path.join(real, 'abc.jsonl'), '{}\n');
+  const root = tmpDir('cc-seed-linkroot-');
+  fs.symlinkSync(real, path.join(root, projectDirName(cwd)), 'junction');
+  assert.strictEqual(hasClaudeHistory(cwd, { projectsDir: root }), true);
+});
+
+test('Dexter F4: a dangling link where the transcript folder should be counts as history -- doubt never writes', () => {
+  const cwd = 'C:/Users/x/dangling';
+  const gone = path.join(tmpDir('cc-seed-gone-'), 'nowhere');
+  const root = tmpDir('cc-seed-danglingroot-');
+  fs.symlinkSync(gone, path.join(root, projectDirName(cwd)), 'junction');
+  assert.strictEqual(hasClaudeHistory(cwd, { projectsDir: root }), true);
+});
+
+test('Dexter F3: history under CLAUDE_CONFIG_DIR is found when the default folder does not exist', () => {
+  const cwd = 'C:/Users/x/oldproj';
+  const config = path.dirname(historyFor(cwd, { root: path.join(tmpDir('cc-seed-cfg-'), 'projects') }));
+  const home = tmpDir('cc-seed-home-');                    // no .claude/projects at all
+  assert.strictEqual(hasClaudeHistory(cwd, { env: { CLAUDE_CONFIG_DIR: config }, homeDir: home }), true);
+});
+
+test('Dexter F3: with CLAUDE_CONFIG_DIR set, history in the default folder still counts', () => {
+  const cwd = 'C:/Users/x/oldproj';
+  const home = path.dirname(path.dirname(historyFor(cwd, { root: path.join(tmpDir('cc-seed-home2-'), '.claude', 'projects') })));
+  const config = path.join(tmpDir('cc-seed-cfg2-'), 'missing');
+  assert.strictEqual(hasClaudeHistory(cwd, { env: { CLAUDE_CONFIG_DIR: config }, homeDir: home }), true);
+});
+
+test('Dexter F3: neither folder holding this project is still a confident "no history"', () => {
+  const home = tmpDir('cc-seed-home3-');
+  const config = tmpDir('cc-seed-cfg3-');
+  assert.strictEqual(hasClaudeHistory('C:/fresh', { env: { CLAUDE_CONFIG_DIR: config }, homeDir: home }), false);
+  assert.strictEqual(hasClaudeHistory('C:/fresh', { env: {}, homeDir: home }), false);
+});
+
+// --- seedLookIfNew: the gate ---------------------------------------------------------
+
+test('missing look + no history -> a generated look is written, and it passes every contrast check', () => {
+  const cwd = tmpDir('cc-seed-new-');
+  const r = seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(5) });
+  assert.strictEqual(r.seeded, true);
+  const look = readLook(cwd);
+  assert.deepStrictEqual(lookFailures(look), []);
+  assert.strictEqual(look.appColor, r.look.appColor);
+  assert.notStrictEqual(look.appColor, null);
+});
+
+test('missing look + history -> nothing written, not even the folder', () => {
+  const cwd = tmpDir('cc-seed-old-');
+  const r = seedLookIfNew({ cwd, hasHistory: () => true, rng: mulberry32(5) });
+  assert.strictEqual(r.seeded, false);
+  assert.strictEqual(fs.existsSync(path.join(cwd, LOOK_DIR_NAME)), false);
+});
+
+test('an existing look is never replaced, and history is not even asked about', () => {
+  const cwd = tmpDir('cc-seed-ok-');
+  setLook({ cwd, patch: { appColor: '#102030' } });
+  const before = fs.readFileSync(lookFile(cwd), 'utf8');
+  let asked = false;
+  const r = seedLookIfNew({ cwd, hasHistory: () => { asked = true; return false; } });
+  assert.strictEqual(r.seeded, false);
+  assert.strictEqual(asked, false);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
+});
+
+test('Dexter F5 / Miguel #3: a look that appears between the check and the write is NOT overwritten', () => {
+  // The history scan runs between reading "missing" and writing. Another
+  // window (or the person) saves a look in that gap: the seed must lose.
+  const cwd = tmpDir('cc-seed-race-');
+  let theirs = null;
+  const r = seedLookIfNew({
+    cwd,
+    rng: mulberry32(4),
+    hasHistory: () => {
+      setLook({ cwd, patch: { appColor: '#300010' } });
+      theirs = fs.readFileSync(lookFile(cwd), 'utf8');
+      return false;
+    },
+  });
+  assert.strictEqual(r.seeded, false);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), theirs, 'byte-identical to what they saved');
+  assert.strictEqual(readLook(cwd).appColor, '#300010');
+});
+
+test('a seed leaves only look.json and .gitignore behind -- no temp file', () => {
+  const cwd = tmpDir('cc-seed-clean-');
+  assert.strictEqual(seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(8) }).seeded, true);
+  assert.deepStrictEqual(fs.readdirSync(path.join(cwd, LOOK_DIR_NAME)).sort(), ['.gitignore', 'look.json']);
+});
+
+test('a corrupt look.json is never overwritten by a seed', () => {
+  const cwd = tmpDir('cc-seed-corrupt-');
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  const corrupt = '{"appColor": "#102030",}';
+  fs.writeFileSync(lookFile(cwd), corrupt);
+  const r = seedLookIfNew({ cwd, hasHistory: () => false });
+  assert.strictEqual(r.seeded, false);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), corrupt);
+});
+
+test('a foreign (linked) look folder is never written through by a seed', () => {
+  const cwd = tmpDir('cc-seed-foreign-');
+  const elsewhere = tmpDir('cc-seed-elsewhere-');
+  fs.symlinkSync(elsewhere, path.join(cwd, LOOK_DIR_NAME), 'junction');
+  const r = seedLookIfNew({ cwd, hasHistory: () => false });
+  assert.strictEqual(r.seeded, false);
+  assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
+});
+
+test('Dexter F1: under a theme no generated look reads on, seeding writes NOTHING', () => {
+  // A light-background terminal theme: every dark app colour, SAFE_LOOK
+  // included, would hide the CLI's own text.
+  const cwd = tmpDir('cc-seed-fg-');
+  const r = seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(1), terminalForeground: '#202020' });
+  assert.strictEqual(r.seeded, false);
+  assert.match(r.reason, /terminal/);
+  assert.strictEqual(fs.existsSync(path.join(cwd, LOOK_DIR_NAME)), false);
+});
+
+test('seedLookIfNew with no project open writes nothing', () => {
+  assert.strictEqual(seedLookIfNew({ cwd: '', hasHistory: () => false }).seeded, false);
+});
+
+// --- rerollLook: the Style tab's button -------------------------------------------------
+
+test('rerollLook replaces the colours with a fresh, readable look', () => {
+  const cwd = tmpDir('cc-reroll-');
+  setLook({ cwd, patch: { appColor: '#102030', textColor: '#f0f0f0' } });
+  const r = rerollLook({ cwd, rng: mulberry32(9) });
+  assert.strictEqual(r.ok, true);
+  const look = readLook(cwd);
+  assert.notStrictEqual(look.appColor, '#102030');
+  assert.deepStrictEqual(lookFailures(look), []);
+});
+
+test('rerollLook works on a project with no look yet (it is an explicit ask)', () => {
+  const cwd = tmpDir('cc-reroll-new-');
+  assert.strictEqual(rerollLook({ cwd, rng: mulberry32(2) }).ok, true);
+  assert.deepStrictEqual(lookFailures(readLook(cwd)), []);
+});
+
+test('rerollLook keeps the background image', () => {
+  const cwd = tmpDir('cc-reroll-bg-');
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  fs.writeFileSync(path.join(cwd, LOOK_DIR_NAME, 'background.png'), 'x');
+  fs.writeFileSync(lookFile(cwd), JSON.stringify({ background: { file: 'background.png', setAt: null } }));
+  assert.strictEqual(rerollLook({ cwd, rng: mulberry32(3) }).ok, true);
+  assert.deepStrictEqual(readLook(cwd).background, { file: 'background.png', setAt: null });
+});
+
+test('rerollLook keeps the darkness a person set for their image (Dexter F2)', () => {
+  const cwd = tmpDir('cc-reroll-dark-');
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  fs.writeFileSync(path.join(cwd, LOOK_DIR_NAME, 'background.png'), 'x');
+  fs.writeFileSync(lookFile(cwd), JSON.stringify({ darkness: 0.9, background: { file: 'background.png', setAt: null } }));
+  for (let seed = 0; seed < 20; seed++) {
+    assert.strictEqual(rerollLook({ cwd, rng: mulberry32(seed) }).ok, true);
+    assert.strictEqual(readLook(cwd).darkness, 0.9, `seed ${seed}`);
+  }
+});
+
+test('a seeded look keeps the default darkness -- there is no image to veil yet', () => {
+  for (let seed = 0; seed < 20; seed++) {
+    const cwd = tmpDir('cc-seed-dark-');
+    seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(seed) });
+    assert.strictEqual(readLook(cwd).darkness, DEFAULT_LOOK.darkness, `seed ${seed}`);
+  }
+});
+
+test('rerollLook refuses a corrupt look.json, like every other write', () => {
+  const cwd = tmpDir('cc-reroll-corrupt-');
+  fs.mkdirSync(path.join(cwd, LOOK_DIR_NAME));
+  fs.writeFileSync(lookFile(cwd), '{oops');
+  const r = rerollLook({ cwd });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /can't be read/);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), '{oops');
+});
+
+test('Dexter F1: under a theme no generated look reads on, re-roll REFUSES and says why', () => {
+  const cwd = tmpDir('cc-reroll-fg-');
+  setLook({ cwd, patch: { appColor: '#102030' } });
+  const before = fs.readFileSync(lookFile(cwd), 'utf8');
+  const r = rerollLook({ cwd, rng: mulberry32(1), terminalForeground: '#202020' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /terminal/);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
+});

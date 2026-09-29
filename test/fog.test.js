@@ -17,6 +17,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { readFog, TIERS, TIER_PEAK, brightness, relativeTo,
         DECAY_HALFLIFE_MS, MIN_BRIGHTNESS, FLOOR_FOR } = require('../host/fog');
@@ -26,7 +27,7 @@ const iso = ms => new Date(ms).toISOString();
 const CWD = 'C:/Users/ricar/VibeCode/proj';
 
 function transcriptDir(entries) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-fog-'));
+  const dir = tmpDir('cc-fog-');
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   fs.writeFileSync(path.join(project, 'session-a.jsonl'),
@@ -132,7 +133,7 @@ test('a missing project directory yields an empty map, not a throw', async () =>
 
 test('a truncated final line does not lose the rest of the session', async () => {
   // Transcripts are appended live, so a half-written last line is normal.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-fog-'));
+  const dir = tmpDir('cc-fog-');
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   fs.writeFileSync(path.join(project, 's.jsonl'),
@@ -143,7 +144,7 @@ test('a truncated final line does not lose the rest of the session', async () =>
 });
 
 test('spans every session in the project, not just the current one', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-fog-'));
+  const dir = tmpDir('cc-fog-');
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   for (const pair of [['a.jsonl', 'one.js'], ['b.jsonl', 'two.js']]) {
@@ -254,7 +255,7 @@ test('with no tracked list it reports only what was touched', async () => {
 // events. So a re-read must not re-parse files that have not changed.
 
 test('an unchanged transcript is not parsed twice', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-fog-'));
+  const dir = tmpDir('cc-fog-');
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   fs.writeFileSync(path.join(project, 's.jsonl'),
@@ -270,7 +271,7 @@ test('an unchanged transcript is not parsed twice', async () => {
 });
 
 test('a changed transcript IS re-parsed, or the map goes stale', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-fog-'));
+  const dir = tmpDir('cc-fog-');
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   const file = path.join(project, 's.jsonl');

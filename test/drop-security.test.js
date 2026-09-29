@@ -176,23 +176,37 @@ test('system directories are refused', () => {
 // --- Miguel B1 (second half) + I3: real backslashes, not vacuous ones ------------
 
 test('Windows separators are normalised -- with REAL backslashes', () => {
-  // Miguel I3: the original tests wrote 'C:\TMP.txt' in single quotes, where
-  // \T and  are not escapes, so the JS string was actually "C:TMPa.txt" and
+  // Miguel I3: the original tests wrote 'C:\TMP\a.txt' in single quotes, where
+  // \T and \a are not escapes, so the JS string was actually "C:TMPa.txt" and
   // the assertions passed for entirely the wrong reason. Deleting the backslash
   // normalisation from canon left all 17 tests green.
   const p = planDrop({
-    entries: [{ path: String.raw`C:\TMP
-otes.txt` }],
+    entries: [{ path: String.raw`C:\TMP\notes\a.txt` }],
     cwd: CWD, home: HOME, alreadyGranted: ['C:/tmp/notes'],
   });
-  assert.deepStrictEqual(p.dirsToAdd, [], 'C:\TMP\notes is C:/tmp/notes already granted');
+  // BOTH halves, because `dirsToAdd: []` alone is true for two OPPOSITE
+  // reasons -- "already granted, nothing to add" and "refused outright, so
+  // nothing was added". Measured 2026-09-23: with backslash normalisation
+  // deleted from `normSlashes`, this fixture comes back
+  // `refused: [{ why: 'a drive, share or filesystem root is never granted' }]`
+  // with `dirsToAdd: []`, so the assertion below stayed green while the
+  // normalisation it exists to pin was gone.
+  //
+  // That is I3's own failure mode surviving I3's fix. The fixture was repaired
+  // and the ASSERTION was not, so the test went on passing for a new wrong
+  // reason. An assertion that something is ABSENT needs a companion saying the
+  // operation happened at all.
+  assert.deepStrictEqual(p.refused, [], 'it must be ACCEPTED, not refused as a root');
+  assert.deepStrictEqual(p.dirsToAdd, [], 'C:/tmp/notes is already granted, so nothing to add');
 });
 
 test('a path inside the project is recognised through real backslashes', () => {
   const p = planDrop({
-    entries: [{ path: String.raw`C:\projpp\src.js` }], cwd: String.raw`C:\projpp`, home: HOME,
+    entries: [{ path: String.raw`C:\proj\app\src\a.js` }], cwd: String.raw`C:\proj\app`, home: HOME,
   });
-  assert.deepStrictEqual(p.dirsToAdd, []);
+  // Same pair as above, same reason.
+  assert.deepStrictEqual(p.refused, [], 'a file inside the project must not be refused');
+  assert.deepStrictEqual(p.dirsToAdd, [], 'and needs no new grant, being inside cwd');
 });
 
 // --- a relative path is not something we can judge -------------------------------

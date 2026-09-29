@@ -19,7 +19,9 @@ detach/reattach — so the probes exercise the real component, not a mock.
 | `probe-hook-e2e.js` | Does a helper invocation reach the running host? | Yes, `subagent_type` round-trips |
 | `measure-hook-latency.js` | What does a hook actually cost? | 23.3ms mean; only 2.2ms is the pipe |
 | `probe-protocol.js` | Full attach protocol: hello, theme, replay, mood | All pass |
+| `probe-paste.js` | What does Ctrl+V put on the pty? Does `claude` take an image on Alt+V? | 2026-09-27: before #12 Ctrl+V sent `\x16` and pasted nothing; `\x1bv` attaches a clipboard image (`[Image #1]`), `\x16` does not. After: one bracketed frame per press |
 | `probe-gui.js` | Does the real Electron GUI render correctly? | Writes a PNG to `.harness/` |
+| `probe-memory-footprint.js` | What does the app cost in memory? (BACKLOG #20 baseline) | 2026-09-26, 4 runs: harness 280–408 MB private (idle / 24 agents / long session; three runs sat at 280–292, one at 337–408, so compare medians of several runs, not one); `claude` + its MCP servers ≈ 800–970 MB on top. No video-avatar scenario yet (#13/#18 unbuilt). Samples in `.harness/memory-footprint.json` |
 
 ## Seeing the GUI
 

@@ -6,16 +6,20 @@ const os = require('os');
 const path = require('path');
 
 const { resolveLaunchTarget, launchEnv } = require('../host/launch-target');
+const { tmpDir } = require('./tmp-dir');
 
-const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-'));
+// This file's own helper was already called `tmpDir`, so the shared one would
+// have shadowed itself into infinite recursion. Renamed rather than aliased on
+// import, because the call sites below read better as `dir()`.
+const dir_ = () => tmpDir('cc-launch-');
 
 test('no argument means the folder you are standing in', () => {
-  const dir = tmpDir();
+  const dir = dir_();
   assert.strictEqual(resolveLaunchTarget(undefined, { cwd: dir }), path.resolve(dir));
 });
 
 test('a relative argument resolves against where you ran it', () => {
-  const dir = tmpDir();
+  const dir = dir_();
   fs.mkdirSync(path.join(dir, 'sub'));
   assert.strictEqual(
     resolveLaunchTarget('sub', { cwd: dir }),
@@ -28,7 +32,7 @@ test('a folder that is not there is refused, and named', () => {
   // way to get it wrong. Refusing here means one clear line; accepting means a
   // window opens on a folder that does not exist and claude fails inside the
   // pty, where the message is buried in a TUI.
-  const dir = tmpDir();
+  const dir = dir_();
   assert.throws(
     () => resolveLaunchTarget('nope', { cwd: dir }),
     /nope/,
@@ -36,7 +40,7 @@ test('a folder that is not there is refused, and named', () => {
 });
 
 test('a FILE is not a project', () => {
-  const dir = tmpDir();
+  const dir = dir_();
   fs.writeFileSync(path.join(dir, 'notes.txt'), 'x');
   assert.throws(
     () => resolveLaunchTarget('notes.txt', { cwd: dir }),

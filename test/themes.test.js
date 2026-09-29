@@ -6,9 +6,10 @@ const os = require('os');
 const path = require('path');
 
 const { resolveTheme, FALLBACK_FONTS } = require('../host/themes');
+const { tmpDir } = require('./tmp-dir');
 
 function registry(projects, themes = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-themes-'));
+  const dir = tmpDir('cc-themes-');
   fs.mkdirSync(path.join(dir, 'themes'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'projects.json'), JSON.stringify(projects, null, 2));
   for (const [name, body] of Object.entries(themes)) {
@@ -68,7 +69,7 @@ test('a missing registry directory yields the default rather than throwing', () 
 });
 
 test('malformed projects.json yields the default rather than crashing the host', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-themes-'));
+  const dir = tmpDir('cc-themes-');
   fs.writeFileSync(path.join(dir, 'projects.json'), '{ this is not json');
   const t = resolveTheme('C:/anywhere', { registryDir: dir });
   assert.strictEqual(t.name, 'default');

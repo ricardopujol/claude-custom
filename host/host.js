@@ -20,22 +20,36 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
-const { writeHarnessSettings, buildClaudeArgs } = require('./settings-writer');
+const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
+const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { planPortraitUpload, applyPortraitUpload } = require('./portrait-upload');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { wholeRoster, scanProjects } = require('./roster-index');
+const { lifetimeAgentTokens, readCacheSeed } = require('./agent-stats-cache');
+const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
+const { createProcessesBroadcast } = require('./processes-broadcast');
+const { projectDirName } = require('./project-dir');
+const { projectLabel } = require('./project-path');
+const { currentBranch } = require('./git-branch');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
+const { createCatalogueCache } = require('./catalogue-cache');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
+const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook } = require('./style');
+const { hasClaudeHistory } = require('./recent');
+const { applyLook } = require('./look');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
+const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
+const { readSessionHook, readStatus } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { validResizeDims, handleFrame } = require('./control');
@@ -151,29 +165,10 @@ const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
 // called blocker-grade for pytest, reintroduced for the default runner.
 const HEALTH_OUTPUT_CAP = 64 * 1024;
 
-function killTree(child) {
-  if (!child || child.exitCode !== null) return;
-  if (process.platform === 'win32') {
-    // The try/catch below does NOT catch this: a ChildProcess reports a failed
-    // spawn through an ASYNC 'error' event, and an EventEmitter with no 'error'
-    // listener THROWS -- an uncaught exception that kills the host and the
-    // user's live Claude session with it. Reproduced: taskkill missing from
-    // PATH exits the host with ENOENT.
-    //
-    // Worst on the timeout path, which runs precisely when a suite has hung and
-    // the timeout is the user's only way out.
-    try {
-      const killer = require('child_process').spawn(
-        'taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-      killer.on('error', (err) => {
-        console.log('[host] taskkill failed:', err.code || err.message, '- falling back');
-        try { child.kill('SIGTERM'); } catch {}
-      });
-      return;
-    } catch { /* fall through to the portable kill */ }
-  }
-  try { child.kill('SIGTERM'); } catch {}
-}
+// killTree moved to host/kill-tree.js (Miguel, PR #61 review H3): a probe
+// needed the exact same "kill the whole tree, not just the top pid" guarantee
+// and was about to reimplement a thinner copy of it. That module is now the
+// single source of truth; both this file and verify/ probes require it.
 
 let healthChild = null;
 
@@ -296,9 +291,19 @@ async function currentFog() {
 // be this host's too -- otherwise a second host starting during this one's
 // module init redirects our claude's hooks into its bridge. See the header of
 // writeHarnessSettings; the shared copy is still written for the probes.
+//
+// The statusLine relay is FF12's truth source (see host/status-relay.js). It
+// runs under `node` from PATH -- this process's execPath is electron, which
+// is only node with ELECTRON_RUN_AS_NODE set, and that must not be relied on
+// in the pty. Under plain node (the probes) the exact binary is used instead.
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
   pipeName: PIPE_NAME,
+  statusRelay: {
+    nodePath: process.versions.electron ? 'node' : process.execPath,
+    scriptPath: path.join(__dirname, 'status-relay.js'),
+    userStatusLine: findUserStatusLine({ home: os.homedir(), cwd: CWD }),
+  },
 }, PORT);
 
 // Attached only once the native helper exists (step 2). Wiring hooks to a
@@ -334,12 +339,36 @@ const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
+// One record per distinct bug CLASS, so a recurring defect category is a
+// visible count instead of a memory hand-carried between review rounds in PR
+// comments. Persisted through the shared store under `vault.json`, same as
+// every other feature -- this module invents no file format of its own.
+// `project: CWD` stamps each record with where it was filed from. The vault
+// itself stays install-wide -- the seed data settles that, since four of its
+// six entries come from another project entirely -- but a record with no
+// attribution cannot be given one later, so the field goes in now while it is
+// one line rather than an archaeology problem.
+const bugVault = createBugVault({ store, project: CWD });
+// Dexter F2: this is called while building the `hello` frame inside
+// `wss.on('connection')`, which has NO catch above it -- unlike control-frame
+// dispatch, which `handleFrame` wraps. The host owns the pty, so a throw here
+// killed the running Claude session, and because it is on the attach path the
+// shape was "every window you open kills the session". `payload()` is total by
+// construction; see host/bugvault.js.
+const vaultPayload = () => bugVault.payload();
 // The agent list comes from the mood stack, so a finished turn can say how
 // many agents ran rather than just that something ended.
 // Tracks whether a cooldown list was last non-empty, so the falling edge is
 // broadcast too. Without it the panel is never told the list emptied and the
 // final row stays on screen.
 let cooldownsWere = 0;
+
+// FF21: the header's "project/branch" label. Polled rather than watched -- a
+// checkout is a human-paced action, and `fs.watch` on `.git/HEAD` fires on
+// every commit too, which is not a branch change. Tracks the last VALUE, not
+// just truthiness, so a branch-to-branch switch broadcasts (cooldowns only
+// needed the falling edge; this needs every edge).
+let branchWas = currentBranch(CWD);
 
 const attention = createAttention({
   project: path.basename(CWD),
@@ -371,6 +400,32 @@ const describe = (agent, state) => ({
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
 const background = backgroundFor(CWD, { dir: BACKGROUNDS_DIR });
 console.log('[host] background     :', path.basename(background.path), background.created ? '(new)' : '(existing)');
+
+// Backlog #15: a NEW project -- no look.json and no Claude history for the
+// folder -- gets a random, contrast-checked look, once, here at startup and
+// before the CLI is spawned (the spawn is what creates the history). Every
+// other state is left exactly as found; host/style.js seedLookIfNew decides.
+try {
+  const seeded = seedLookIfNew({ cwd: CWD, hasHistory: () => hasClaudeHistory(CWD),
+    terminalForeground: theme.terminal && theme.terminal.foreground });
+  console.log('[host] look seed      :', seeded.seeded ? `new project, generated ${seeded.look.appColor}` : seeded.reason);
+} catch (err) {
+  console.log('[host] look seed failed:', err && err.message);
+}
+
+// The project's own look -- colours, darkness and an optional background copy
+// in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
+// look edited from another window of the same folder is what this one sends.
+// Falls back to the generated background above whenever there is no copy.
+// `theme` is the registry theme with the look merged in (host/look.js), so the
+// view paints a look with the same applyTheme it paints a registry theme with.
+function currentStyle() {
+  const r = resolveStyle(CWD, background.path);
+  return {
+    background: r.background, source: r.source, setAt: r.setAt, look: r.look,
+    theme: applyLook(theme, r.look),
+  };
+}
 
 // The session id arrives on the SessionStart hook. Until it does, only the
 // project total is knowable -- readUsage handles that rather than blocking.
@@ -715,22 +770,169 @@ function refreshAgentStats() {
   return agentStatsPending;
 }
 
+// The WHOLE roster (BACKLOG D #16): Active/Inactive tabs need every agent
+// definition and history entry ACROSS EVERY PROJECT, not just this one, sorted
+// by lifetime tokens. Both halves -- host/roster-index.js's identity walk and
+// host/agent-stats-cache.js's cached, incremental token sum -- read every
+// project under ~/.claude/projects/, which MEASURED at 1232 transcripts across
+// 48 projects (~1.2GB) taking ~14s cold. So this is fired once, in the
+// BACKGROUND, well after the pty and the ws server exist, and only ever
+// broadcast when it resolves -- never awaited by anything that could block
+// startup or the control channel.
+//
+// PR #59 review: `scanProjects` is computed ONCE per pass and handed to BOTH
+// `wholeRoster` and `lifetimeAgentTokens` (Dexter F5 perf half / Miguel M1) --
+// before this, each independently walked and identity-resolved every project,
+// reading every top-level session transcript on the machine TWICE per launch,
+// and the two walks could disagree if the tree changed between them (Dexter
+// F10). `wholeRoster` is the one that folds `scan.errors` into its own
+// `unreadable` (see its header); `lifetime.unreadable` never repeats them, so
+// the sum below double-counts nothing (Miguel L2).
+const ROSTER_LIFETIME_CACHE = path.join(HARNESS_DIR, 'state', 'roster-lifetime.json');
+let lastRosterIndex = { ok: false, agents: [], complete: false, unreadable: 0 };
+let rosterIndexPending = null;
+
+function rosterAgentRow(agent, lifetime, unresolvedNames) {
+  return {
+    agent,
+    // Never used shows NO count -- `null`, not a coerced zero (Number(null)
+    // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
+    // strict presence check that makes that hold.
+    tokens: lifetime.agents.has(agent) ? lifetime.agents.get(agent) : null,
+    portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+    // Dexter F3 / Miguel L1: an agent resolved only through an unresolved hook
+    // LABEL (in either the identity walk or the token sum -- a run can be
+    // orphaned in one project and confirmed in another) is flagged rather than
+    // drawn as an indistinguishable peer of a real `subagent_type`.
+    resolved: !unresolvedNames.has(agent) && !lifetime.unresolvedAgents.has(agent),
+    // Dexter N2, PR #59 R2: an agent that DID run but whose only transcript(s)
+    // this pass could not read must not be pixel-identical to a definition
+    // that has never run at all -- `tokens` is `null` either way, so this is
+    // the ONLY signal that tells the two apart.
+    unreadable: lifetime.unreadableAgents.has(agent),
+  };
+}
+
+function refreshRosterIndex() {
+  if (rosterIndexPending) return rosterIndexPending;
+  rosterIndexPending = (async () => {
+    const scan = await scanProjects();
+    const [roster, lifetime] = await Promise.all([
+      wholeRoster({ cwd: CWD, scan }),
+      lifetimeAgentTokens({ cacheFile: ROSTER_LIFETIME_CACHE, scan }),
+    ]);
+    const agents = roster.names.map((agent) => rosterAgentRow(agent, lifetime, roster.unresolvedNames));
+    lastRosterIndex = {
+      ok: roster.unreadable === 0 && lifetime.unreadable === 0,
+      agents,
+      // TRUE the moment one full pass has resolved, however it went --
+      // `ok` (above) carries whether it was CLEAN, separately, the same
+      // split host/agent-stats.js and host/usage.js already make.
+      complete: true,
+      unreadable: roster.unreadable + lifetime.unreadable,
+    };
+    return lastRosterIndex;
+  })()
+    .catch((err) => {
+      console.error('[host] roster index failed:', err && err.message);
+      return lastRosterIndex;
+    })
+    .finally(() => { rosterIndexPending = null; });
+  return rosterIndexPending;
+}
+
+// Dexter F5 (lower-bound half, PR #59 R1): before this, `lastRosterIndex`
+// stayed `{ agents: [] }` for the WHOLE ~14s first pass, so the "≥ until the
+// first full pass completes" state the spec calls for (item 4) was dead code
+// -- there was never a total on screen to prefix with "≥" until the pass had
+// already finished and stopped needing one. This reads a LOWER-BOUND snapshot
+// left by the last successful scan (any previous host run) and publishes it
+// immediately, `complete: false`, so a client attaching during this launch's
+// own (still-running) scan sees last-known totals rather than nothing at all.
+// A cold install with no prior cache simply has nothing to seed, which is the
+// correct starting state, not a failure.
+//
+// USES `readCacheSeed`, NOT `readCacheSummary` (Dexter N1, PR #59 R2): the raw
+// summary alone is not a lower bound once a transcript can be DELETED between
+// host launches (Claude Code's own retention cleanup, for instance) --
+// `readCacheSeed` stat-checks the files behind each total and drops any that
+// vanished, so what this publishes can never be larger than the truth.
+//
+// NEVER OVERWRITES A COMPLETED PASS (Dexter N3, PR #59 R2): `seedRosterIndex`
+// and `refreshRosterIndex` both run at boot, and on a small install the real
+// pass can resolve BEFORE this cheap disk read does. Without the guard below,
+// this function would then unconditionally replace a `complete:true` result
+// with a stale `complete:false` snapshot, and a client attaching in that
+// window would see totals regress until the boot chain's second
+// `refreshRosterIndex()` call (test/host-roster-index.test.js) finishes.
+async function seedRosterIndex() {
+  const seed = await readCacheSeed(ROSTER_LIFETIME_CACHE).catch(() => ({}));
+  const names = Object.keys(seed);
+  if (!names.length) return;
+  if (lastRosterIndex.complete) return; // Dexter N3: a finished pass is never regressed
+  lastRosterIndex = {
+    ok: false, // a snapshot, not a verified-against-the-current-tree read
+    complete: false,
+    unreadable: 0,
+    agents: names.map((agent) => ({
+      agent,
+      tokens: Number.isFinite(seed[agent] && seed[agent].tokens) ? seed[agent].tokens : null,
+      portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+      // The seed doesn't carry identity provenance -- assume confirmed rather
+      // than flagging every row; `refreshRosterIndex`'s real pass corrects
+      // this within moments.
+      resolved: true,
+      unreadable: false, // likewise unknown at seed time; not claimed either way
+    })),
+  };
+}
+
+// The model each agent ACTUALLY used, read from its own transcript -- never
+// the Agent tool_input's REQUESTED model, which is a different fact. See
+// host/session-model.js. Recomputed on SessionStart (the session id just
+// became known) and on SubagentStop (a subagent's transcript just landed).
+//
+// The coalescing, the merge that keeps known models through a failed read, and
+// the "broadcast only on a CHANGE" rule all live in createSessionModelRefresher,
+// where they are tested (Dexter, PR #34, Findings 3 and 4). A payload that reads
+// identically to what clients already have is not news -- same as quota.js.
+const sessionModels = createSessionModelRefresher({
+  read: (id) => readSessionModel({
+    projectsDir: defaultProjectsDir(),
+    projectDir: projectDirName(CWD),
+    sessionId: id,
+  }),
+  currentSessionId: () => sessionId,
+  onChange: (m) => broadcastControl({ type: 'sessionModel', ...m }),
+});
+
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
-// which is why the browser works today and the council does not. Loaded lazily
-// on the first request rather than at boot: a session that never opens the
-// panel should not make a network call at all.
+// which is why the browser works today and the council does not.
+//
+// BACKLOG E #5, step 2 (Ricardo, 2026-09-27): warmed once at boot below,
+// rather than staying lazy-on-first-request as this comment used to say. A
+// session that opens the Models tab should not sit through a cold network
+// round trip the host had the whole boot sequence to start already. Still
+// exactly ONE request in flight at a time -- host/catalogue-cache.js dedupes
+// the boot warm-up against a tab opened while it is still in the air, and a
+// forced (Refresh) call against any OTHER forced or non-forced call still
+// running -- and still no INTERVAL timer anywhere: this fires once, and every
+// later freshness check is `loadCatalogue`'s own FRESH_MS comparison, driven
+// by a client asking (see the 'models' branch further down) or by a Refresh
+// click's `force`.
+//
+// Pulled into its own module (Dexter/Miguel, PR #60 review, F5/S1): the
+// dedupe bookkeeping had a bug (a settling promise could null the shared slot
+// out from under a still-running one) that shipped untested because host.js
+// itself cannot be `require()`d into a unit test. See
+// host/catalogue-cache.js's header for the bug and the fix.
 const CATALOGUE_CACHE = path.join(HARNESS_DIR, 'state', 'openrouter-catalogue.json');
-let cataloguePending = null;
-
-function currentCatalogue({ force = false } = {}) {
-  if (cataloguePending && !force) return cataloguePending;
-  cataloguePending = loadCatalogue({ cacheFile: CATALOGUE_CACHE, force })
-    .then(r => ({ ...r, models: normalizeCatalogue(r.rows), rows: undefined }))
-    .finally(() => { cataloguePending = null; });
-  return cataloguePending;
-}
+const catalogueCache = createCatalogueCache({
+  loadCatalogue, cacheFile: CATALOGUE_CACHE, normalize: normalizeCatalogue,
+});
+const currentCatalogue = (opts) => catalogueCache.current(opts);
 
 // Seats persist, so a council survives a restart. Stored as the thin shape
 // seats.js produces -- id, name, provider -- never a whole catalogue row, which
@@ -744,20 +946,53 @@ function seatPayload(seats) {
   return { type: 'seats', seats, max: MAX_SEATS, warnings: seatWarnings(seats) };
 }
 
+// Running processes and the party, from hook events and from the tick. Owns the
+// falling edge the tick used to miss -- see host/processes-broadcast.js.
+// A closure, not `broadcastControl` itself: that is a const declared further
+// down, and reading it here at startup is a TDZ ReferenceError that stops the
+// host before it serves anything. The closure reads it at first send, by which
+// point the whole module has run.
+const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
+
 let hookBridge = null;
 if (helperExists) {
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
   hookBridge.on('event', (ev) => {
+    // The statusLine document, forwarded by host/status-relay.js on every
+    // status redraw. Not a hook: handled here and ONLY here, so the mood
+    // engine, the process panel and the [hook] log never see it.
+    if (ev.event === 'Status') {
+      const status = readStatus(ev.payload);
+      if (status.model !== undefined) setLiveModel(status.model);
+      if (status.effort !== undefined) setEffort(status.effort);
+      return;
+    }
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      sessionModels.refresh().catch(() => { /* the next SubagentStop will carry it */ });
     }
     if (ev.event === 'SubagentStop') {
       // The transcript is on disk by the time this fires, so its tokens and
-      // timestamps are already there to read.
+      // timestamps are already there to read. Refresh both the agent stats panel
+      // AND the token count — before this change only agentStats was refreshed,
+      // so the session token display lagged up to 5 seconds after each agent
+      // finished (the timer eventually caught it, but the agents panel updated
+      // instantly while the token headline stayed stale).
       refreshAgentStats()
         .then((stats) => broadcastControl({ type: 'agentStats', stats }))
         .catch(() => { /* the next finish will carry it */ });
+      // The milestone rides along, or the headline crosses a rung while the
+      // flourish waits for the next tick. announcer.see dedupes the timer's call.
+      refreshUsage()
+        .then((usage) => {
+          broadcastControl({ type: 'usage', usage });
+          checkMilestone(usage);
+        })
+        .catch(() => { /* the timer will carry it */ });
+      // Same reasoning: the subagent's own transcript, including its true
+      // model, is on disk by the time this fires.
+      sessionModels.refresh().catch(() => { /* the next finish will carry it */ });
       // agent_type when the payload carries it; the top of the stack only as a
       // fallback. Cooldowns applied to the wrong agent are worse than none.
       const finished = (ev.payload && ev.payload.agent_type)
@@ -769,6 +1004,14 @@ if (helperExists) {
         broadcastControl({ type: 'cooldowns', cooldowns: cooldowns.list() });
       }
     }
+    // Main-session permission mode and effort, read by host/hook-session.js:
+    // subagent payloads and SessionEnd say nothing (undefined), and a missing
+    // effort.level is ABSENT (null) -- Haiku has none. permission_mode is a
+    // handshake fallback only -- see its declaration below. effort IS
+    // broadcast, gated on a change, including a change to absent.
+    const said = readSessionHook(ev.payload);
+    if (said.permissionMode !== undefined) lastHookPermissionMode = said.permissionMode;
+    if (said.effort !== undefined) setEffort(said.effort);
     // Logged because the roster silently showed nothing when agents ran, and
     // there was no way to tell whether hooks were arriving at all.
     const what = ev.payload && (ev.payload.tool_input?.subagent_type || ev.payload.tool_name);
@@ -790,8 +1033,12 @@ if (helperExists) {
     }
     attention.handle(ev);
     mood.handle(ev);
-    processes.handle(ev);
-    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
+    // A backstop ending a call means that call's own close never arrived --
+    // logged, because a lost event nobody can see is how PostToolUseFailure
+    // went unhooked.
+    const ended = processes.handle(ev);
+    if (ended) console.log(`[processes] ${ev.event} ended ${ended} call(s) whose own close never arrived`);
+    processesBroadcast.send(processes.list(), mood.stack());
   });
   hookBridge.on('parse-error', e => console.log('[hook!] unparseable line:', e.line.slice(0, 80)));
   hookBridge.on('error', e => console.log('[hook!] bridge error:', e.message));
@@ -1040,6 +1287,45 @@ function refreshPermissionMode() {
   }
 }
 
+// `permission_mode` also arrives on every hook payload but SessionEnd, mapped
+// onto a MODES key by host/hook-session.js -- kept only as a HANDSHAKE
+// fallback for the window that attaches before the TUI has drawn its first
+// status line, when the scrape above is still null. The scrape stays authoritative once it has anything:
+// FF12's brief is explicit that this must not replace it.
+let lastHookPermissionMode = null;
+
+// Effort is session-scoped (`/effort <level>`, never persisted) and arrives
+// on main-session hook payloads as `effort.level` -- but only for a model
+// that HAS effort levels: on Haiku it is absent from every event (measured).
+// This is the truth source FF12's top-bar picker resolves a pending `/effort`
+// switch against -- see app/top-bar-display.js's pendingResolver. `null`
+// until a hook event carries it, and again whenever one stops carrying it;
+// the top bar renders that as "—", never a guessed default.
+let lastEffort = null;
+
+// The main session's model as the statusLine reports it: the exact id, fresh
+// ~1s after a /model. #34's sessionModel.session.model is the LAST ASSISTANT
+// LINE of the transcript, so it cannot see a switch until the next reply
+// (Dexter #2); this can. null until the first status document.
+let lastLiveModel = null;
+
+// Both broadcast only on a change, stamped with the host's clock: a pending
+// switch in the renderer is confirmed only by a truth no older than itself
+// (app/top-bar-display.js's pendingResolver).
+function setEffort(level) {
+  if (level === lastEffort) return;
+  lastEffort = level;
+  console.log('[host] effort         :', lastEffort);
+  broadcastControl({ type: 'effort', level: lastEffort, at: Date.now() });
+}
+
+function setLiveModel(model) {
+  if (model === lastLiveModel) return;
+  lastLiveModel = model;
+  console.log('[host] live model     :', lastLiveModel);
+  broadcastControl({ type: 'liveModel', model: lastLiveModel, at: Date.now() });
+}
+
 // Protocol: BINARY frames are raw pty bytes, TEXT frames are control JSON.
 // Distinguishing by content would be wrong -- terminal output can contain
 // anything, including a leading '{'.
@@ -1047,6 +1333,24 @@ const sendControl = (ws, msg) => {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 };
 const broadcastControl = msg => { for (const ws of clients) sendControl(ws, msg); };
+
+// Kicked off once, here, rather than waiting for the first attach: the
+// whole-roster scan is install-wide (every project, not this one), so there is
+// no reason to delay it until a window happens to connect. Fire-and-forget --
+// the connection handler above already covers a client that attaches before
+// this lands, and a client already attached gets the broadcast when it does.
+//
+// `seedRosterIndex()` runs FIRST (Dexter F5, PR #59 review): it publishes
+// whatever the LAST successful scan knew, `complete: false`, so a client
+// attaching in the first seconds of this launch sees last-known totals as a
+// lower bound instead of nothing at all, while `refreshRosterIndex()`'s real
+// (still ~14s-cold) pass runs behind it and replaces the seed the moment it
+// resolves.
+seedRosterIndex()
+  .catch(() => { /* nothing cached yet, or unreadable: the real pass still lands */ })
+  .then(() => refreshRosterIndex())
+  .then((rosterIndex) => broadcastControl({ type: 'rosterIndex', rosterIndex }))
+  .catch(() => { /* lastRosterIndex already reflects the failure; the next attach retries */ });
 
 term.onData((data) => {
   termState.write(data);
@@ -1063,11 +1367,11 @@ const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
-  // own a clock of its own.
+  // own a clock of its own -- and on both falling edges: a sweep that removed
+  // the last row, and a party that shrank with nothing left running.
+  // host/processes-broadcast.js owns both.
   refreshPermissionMode();
-  if (processes.list().length) {
-    broadcastControl({ type: 'processes', running: processes.list(), party: mood.stack() });
-  }
+  processesBroadcast.tick(processes.list(), mood.stack());
   // The FALLING EDGE matters as much as the rising one. Broadcasting only a
   // non-empty list means the panel is never told the last cooldown expired, so
   // the final row stays on screen claiming an agent is still unavailable.
@@ -1078,6 +1382,20 @@ const moodTimer = setInterval(() => {
   cooldownsWere = cooling.length;
 }, 1000);
 moodTimer.unref();
+
+// FF21: 3s rather than the 1s mood cadence -- a `git checkout` is a deliberate,
+// human-paced action, not a per-second tick like elapsed time, and reading a
+// tiny file three times a second for that would be pure waste. Broadcasts on
+// every CHANGE of value, not just a falling edge -- checking out a second
+// branch must update the header too, not just clear it.
+const branchTimer = setInterval(() => {
+  const branch = currentBranch(CWD);
+  if (branch !== branchWas) {
+    branchWas = branch;
+    broadcastControl({ type: 'branch', branch });
+  }
+}, 3000);
+branchTimer.unref();
 
 // Usage is re-read from the transcripts on a timer rather than tracked here:
 // the transcripts are authoritative, and they already account for spend this
@@ -1143,6 +1461,17 @@ refreshAgentStats().then((stats) => {
   broadcastControl({ type: 'agentStats', stats });
 }).catch(() => {});
 
+// BACKLOG E #5, step 2: warm the OpenRouter catalogue's disk cache at boot,
+// same reasoning as usage/agentStats above -- a Models tab opened moments
+// after launch should find a cache already fresh rather than starting a
+// network round trip itself. NOT broadcast: nothing needs the catalogue until
+// a client asks for it (the 'models' branch), so this only needs to have
+// WRITTEN the cache by then, which currentCatalogue()'s own writeCache does.
+// Swallowed on failure exactly like its siblings -- offline at launch is not
+// fatal, `loadCatalogue` already reports it as `stale`/`error` to whichever
+// client asks next.
+currentCatalogue().catch(() => {});
+
 term.onExit(({ exitCode, signal }) => {
   console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
   for (const ws of clients) {
@@ -1174,22 +1503,50 @@ wss.on('connection', (ws) => {
   // Attach handshake: everything the view needs to draw itself, then the
   // current screen. The view holds no session state of its own, so this is the
   // only place it learns the theme, the roster or what is on the terminal.
+  // `background` used to be `background.path` unconditionally -- resolved
+  // through style.js instead, so a per-project override (FF6) wins over the
+  // generated art without the Style panel needing a second round trip just to
+  // learn what is already showing.
+  const styleResolved = currentStyle();
   sendControl(ws, {
     type: 'hello',
     cwd: CWD,
-    theme,
+    // FF21. `project` is the same source of truth as the OS window title
+    // (FF3, `projectLabel`) rather than a second guess at the same string.
+    // `branch` is null for "not a git repo"; for a detached HEAD it is a
+    // `~`-prefixed short SHA (see host/git-branch.js) rather than a bare one,
+    // so it can never read as a real branch of the same name.
+    project: projectLabel(CWD),
+    branch: branchWas,
+    theme: styleResolved.theme,
     hooks: helperExists,
-    background: background.path,
+    background: styleResolved.background,
+    style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     running: processes.list(),
     party: mood.stack(),
-    mode: permissionMode,
+    // The scrape wins once it has anything; permission_mode off the hook
+    // payload only fills the gap before the TUI has drawn a status line at
+    // all -- see lastHookPermissionMode's declaration above.
+    mode: permissionMode || lastHookPermissionMode,
     modes: MODES,
     provider,
+    // FF12's top bar: null until the first hook payload carries effort.level,
+    // which the panel renders as "—" rather than a guessed default.
+    effort: lastEffort,
+    liveModel: lastLiveModel,
     cooldowns: cooldowns.list(),
+    vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
+    // The WHOLE roster (BACKLOG D #16) -- still `complete: false` on a fast
+    // attach, before the first background scan across every project has
+    // finished. The renderer draws every total as a lower bound until then.
+    rosterIndex: lastRosterIndex,
+    // May still be `{model:null,...}` on a fast attach, before SessionStart's
+    // read lands -- the renderer draws "—" for that, never a guessed model.
+    sessionModel: sessionModels.current(),
     // May still be null on a fast attach; the renderer draws "reading…" for
     // that, never three bars at zero.
     quota: lastQuota,
@@ -1222,6 +1579,19 @@ wss.on('connection', (ws) => {
         if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'agentStats', stats });
       })
       .catch(() => { /* the next finish will carry it */ });
+  }
+
+  // The whole-roster scan is install-wide, not per-project, so it is kicked
+  // off once at boot (below, near `wss`'s creation) rather than per
+  // connection -- but a client attaching before that first pass has landed
+  // still deserves the update the moment it does, same reasoning as usage and
+  // agentStats above.
+  if (!lastRosterIndex.complete) {
+    refreshRosterIndex()
+      .then((rosterIndex) => {
+        if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'rosterIndex', rosterIndex });
+      })
+      .catch(() => { /* the next attach will carry it */ });
   }
 
   // A milestone reached while nothing was attached is delivered now rather than
@@ -1295,6 +1665,31 @@ wss.on('connection', (ws) => {
       handleDrop(msg, ws);
       return;
     }
+    // RE-HOMED during the develop merge, and this is the second time this
+    // exact conflict has hidden this exact defect. This handler lived in the
+    // ws message handler's inline if-chain, which is the shape #18 replaced
+    // with parseControlFrame + dispatchControl. Taking develop's side of the
+    // conflict wholesale -- the obviously correct resolution, since that side
+    // IS the newer architecture -- silently deletes this branch's only
+    // feature, and a `bugvault` frame then falls through to `term.write` and
+    // is TYPED, verbatim JSON and all, into a session running
+    // --dangerously-skip-permissions. #24's `drop` handler was lost and
+    // recovered the same way.
+    if (msg.type === 'bugvault') {
+      // Synchronous JSON, unlike fog's git walk -- answered inline, then
+      // broadcast, same as the seat protocol: two windows on one project
+      // share a vault, so one of them silently disagreeing about what is
+      // recorded is worse than a redraw.
+      // Routing lives in host/bugvault.js so it can be tested without a pty.
+      // Dexter F4: the if-chain that used to stand here initialised `result`
+      // to `{ ok: true }`, so an unrecognised action was broadcast as a
+      // SUCCESS -- fail-open, in the dispatcher. F5: it also passed
+      // `msg.fixed === true`, collapsing "explicitly false" and "absent" into
+      // the same value before the vault could tell them apart.
+      const result = applyVaultAction(bugVault, msg);
+      broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
+      return;
+    }
     if (msg.type === 'projects') {
       sendProjects(ws);
       return;
@@ -1323,10 +1718,15 @@ wss.on('connection', (ws) => {
       // `.then(ok, err)` -- Dexter, 2026-09-15: the two-argument form does
       // NOT catch a throw from `ok` itself, which would become an unhandled
       // rejection.
+      // `seq` is echoed back VERBATIM, whatever it is (a number, absent,
+      // garbage) -- Dexter, PR #60 round 2, N1/N2. The client tags every
+      // request with one and uses the echo to tell "the reply to MY click"
+      // apart from an unrelated request's reply; the host has no reason to
+      // interpret it, only to hand it straight back.
       currentCatalogue({ force: !!msg.force }).then(
         (c) => ws.send(JSON.stringify({
           type: 'models', models: c.models, source: c.source,
-          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error,
+          fetchedAt: c.fetchedAt, stale: c.stale, error: c.error, seq: msg.seq,
           seats: readSeats(), max: MAX_SEATS, warnings: seatWarnings(readSeats()),
         }))
       ).catch((err) => {
@@ -1337,7 +1737,7 @@ wss.on('connection', (ws) => {
         try {
           ws.send(JSON.stringify({
             type: 'models', models: [], source: 'none', stale: true,
-            error: err && err.message, seats: readSeats(), max: MAX_SEATS, warnings: [],
+            error: err && err.message, seq: msg.seq, seats: readSeats(), max: MAX_SEATS, warnings: [],
           }));
         } catch { /* the socket went away */ }
       });
@@ -1383,6 +1783,70 @@ wss.on('connection', (ws) => {
             status: { failed: true, error: err && err.message } }));
         } catch { /* the client went away */ }
       });
+      return;
+    }
+    if (msg.type === 'style') {
+      // set-background / reset-background / set-look / reroll-look. A refusal answers ONLY the asking
+      // client -- it is that action failing, not a state change anyone else
+      // needs to hear about, the same distinction host/host.js already draws
+      // for the project picker's 'open' errors. A successful change IS
+      // broadcast: two windows can attach to one host and one of them silently
+      // disagreeing about what is showing is worse than a redraw.
+      //
+      // `ask` names the Style-tab section that asked, echoed on the refusal and
+      // on the broadcast, so the view files a refusal under the request it
+      // ANSWERS rather than whichever was sent last (Dexter F2). Only known
+      // section names are echoed.
+      const ask = msg.ask === 'colours' || msg.ask === 'background' ? msg.ask : undefined;
+      const refuse = (error) => ws.send(JSON.stringify({ type: 'style', ask, error }));
+      const announce = () => broadcastControl({ type: 'style', ask, ...currentStyle() });
+      if (msg.action === 'set-background') {
+        const asked = msg && msg.path;
+        if (typeof asked !== 'string' || !asked.trim()) {
+          refuse('no file was given');
+          return;
+        }
+        const r = setBackground({ source: asked, cwd: CWD });
+        if (!r.ok) {
+          console.log('[host] style refused :', r.reason);
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'reset-background') {
+        try {
+          resetBackground({ cwd: CWD });
+        } catch (err) {
+          refuse(`could not reset: ${err.message}`);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'reroll-look') {
+        // The Style tab's "Random colours": host/style.js generates and saves,
+        // with the same refusals set-look has.
+        const r = rerollLook({ cwd: CWD, terminalForeground: theme.terminal && theme.terminal.foreground });
+        if (!r.ok) {
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'set-look') {
+        // Colours and darkness only -- host/style.js refuses any other key, so
+        // this cannot point the background at a file it did not copy in.
+        const r = setLook({ cwd: CWD, patch: msg.look });
+        if (!r.ok) {
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
       return;
     }
   }

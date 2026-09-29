@@ -22,9 +22,14 @@
 const TABS = [
   { id: 'agents', label: 'Agents', title: 'Who is working, and on what' },
   { id: 'vault', label: 'Vault', title: 'Local encrypted secrets' },
+  // 'bugvault', not 'vault' or 'bugs': 'vault' is already the secret-clipboard
+  // tab above, and 'bugs' would collide with nothing today but reads as too
+  // generic once a project also tracks, say, GitHub issues.
+  { id: 'bugvault', label: 'Bug vault', title: 'Recurring defect classes, grouped by category and by how they were found' },
   { id: 'fog', label: 'Map', title: 'What this project has actually been read' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
   { id: 'projects', label: 'Projects', title: 'Switch to another project, each in its own window' },
+  { id: 'style', label: 'Style', title: 'How the harness looks' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to
@@ -42,7 +47,7 @@ const known = id => TABS.some(t => t.id === id);
  * Pure, and it lives here rather than inline in renderer.js because of how it
  * failed: the toggle was a `document` keydown listener, and xterm's textarea
  * always has focus, so the event was consumed by the terminal and Ctrl+B went
- * to the pty as  -- readline's backward-char. The keybinding appeared to
+ * to the pty as \x02 -- readline's backward-char. The keybinding appeared to
  * "not work" while silently editing the user's command line.
  *
  * That alone would be a nuisance. Combined with a collapsed sidebar -- which

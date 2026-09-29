@@ -88,11 +88,17 @@ const seen = () => (log.match(/\[hook:full\] .*/g) || [])
   // Notification is the exception: it fires only when the session is BLOCKED
   // waiting for you, which cannot happen in the bypass mode the harness runs.
   // Calling that a failure reports on the scenario, not on the contract.
-  const NOT_EXERCISED_HERE = new Set(['Notification']);
+  // PostToolUseFailure needs a FAILING call and SessionEnd a session that ends;
+  // this scenario has neither. verify/probe-failure-payloads.js measures both.
+  const NOT_EXERCISED_HERE = new Map([
+    ['Notification', 'cannot fire in bypass mode — nothing ever asks permission'],
+    ['PostToolUseFailure', 'needs a failing call — see verify/probe-failure-payloads.js'],
+    ['SessionEnd', 'needs the session to end — see verify/probe-failure-payloads.js'],
+  ]);
   for (const event of Object.keys(CONTRACT)) {
     const got = byEvent.get(event) || [];
     if (!got.length && NOT_EXERCISED_HERE.has(event)) {
-      console.log(`SKIP  ${event} cannot fire in bypass mode — nothing ever asks permission`);
+      console.log(`SKIP  ${event} ${NOT_EXERCISED_HERE.get(event)}`);
       continue;
     }
     check(`${event} was observed`, got.length > 0, got.length ? `${got.length}x` : 'never fired');
@@ -122,6 +128,26 @@ const seen = () => (log.match(/\[hook:full\] .*/g) || [])
   check('an agent launch was seen, and its tool_name is one the host accepts',
     launches.length > 0 && launches.every(p => CONTRACT.PreToolUse.agentTools.includes(p.tool_name)),
     launches.map(p => `${p.tool_name}/${p.tool_input.subagent_type}`).join(', ') || 'no agent launch observed');
+
+  // FF12 (2026-09-23): effort.level and permission_mode are hooks.md "common
+  // input fields". Pinned by NAME here, not folded into the generic "carries
+  // every field" check above, so a rename of either shows up as its own line
+  // rather than a combined MISSING list someone has to go parse.
+  // effort.level is checked on MAIN-session payloads only, and only because
+  // this probe runs the default model: on Haiku (so also a Haiku subagent) no
+  // event carries it -- see host/hook-session.js. SessionEnd carries neither.
+  for (const [event, list] of byEvent) {
+    if (!CONTRACT[event] || event === 'SessionEnd') continue;
+    const main = list.filter(p => !p.agent_id);
+    if (main.length) {
+      check(`${event} carries effort.level on every main-session payload`,
+        main.every(p => p.effort && typeof p.effort.level === 'string'),
+        main.map(p => p.effort && p.effort.level).join(', ') || 'no effort field observed');
+    }
+    check(`${event} carries permission_mode on every observed payload`,
+      list.every(p => typeof p.permission_mode === 'string'),
+      list.map(p => p.permission_mode).join(', ') || 'no permission_mode field observed');
+  }
 
   // Fields that arrive and are NOT in the contract. Not failures -- but this is
   // where an upstream addition worth using shows up. agent_type was found this

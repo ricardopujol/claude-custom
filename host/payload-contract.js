@@ -21,10 +21,29 @@
 // Agent; older versions called it Task. This is the exact field that moved.
 const AGENT_TOOLS = ['Agent', 'Task'];
 
+// hooks.md's "common input fields". permission_mode is present on every
+// hooked event but SessionEnd (measured 2026-09-23 and 2026-09-25), so it is
+// spread into every entry below rather than listed once and hoped for. It is
+// read only as a HANDSHAKE fallback (see host.js) -- the TUI scrape in
+// host/mode.js remains authoritative once it has drawn anything, by design.
+//
+// NOT required, though read: `effort.level`, FF12's truth source for a pending
+// /effort switch. It is ABSENT on every event when the model has no effort
+// levels -- measured on `--model haiku` (test/hooks-real-subagent-failure
+// .fixture.jsonl) -- and host/hook-session.js reads that absence as "no effort",
+// not as a missing field.
+const COMMON_FIELDS = {
+  permission_mode: {
+    used: 'host.js -> hello handshake fallback for the mode badge, before the '
+        + 'TUI has drawn a status line for host/mode.js to scrape',
+  },
+};
+
 const CONTRACT = {
   SessionStart: {
     fields: {
       session_id: { used: 'host.js -> usage.js, to read this session\'s transcript for token spend' },
+      ...COMMON_FIELDS,
     },
   },
   PreToolUse: {
@@ -39,6 +58,7 @@ const CONTRACT = {
         used: 'processes.js, the label shown in the Running panel',
         onlyWhen: p => (p && p.tool_name) === 'Bash',
       },
+      ...COMMON_FIELDS,
     },
   },
   PostToolUse: {
@@ -46,7 +66,38 @@ const CONTRACT = {
     fields: {
       tool_name: { used: 'processes.js, to close the running entry this completes' },
       tool_response: { used: 'mood-machine.js isFailure(), which decides stressed vs happy' },
+      ...COMMON_FIELDS,
     },
+    // Also read, but legitimately ABSENT on a main-session call, so it cannot
+    // be a required field here: agent_id, the owner processes.js ends a call
+    // with when its subagent stops. verify/probe-failure-payloads.js checks it
+    // arrives on a subagent's calls and matches that subagent's SubagentStop.
+    //
+    // Also read by mood-machine.js (backlog #7), optional by nature:
+    //   agent_id / agent_type -- which invocation made the call, so activity
+    //     keeps THAT run and its parents alive, not every running agent;
+    //   tool_use_id + tool_response.agentId on the Agent tool's own result --
+    //     the only field that joins a spawn to the subagent's agent_id.
+    //     Measured shapes: background { isAsync: true, status:
+    //     "async_launched", agentId } at once; foreground { status:
+    //     "completed", agentId } at the end. Absent on older CLIs and on
+    //     truncated captures, so the machine falls back to binding a new
+    //     agent_id to the oldest unbound invocation of its type;
+    //   tool_response.interrupted -- that call was killed; never a failure,
+    //     and the run continues. Never yet observed true (32,137 real Bash
+    //     results, all false, 2026-09-27); cancellation is
+    //     PostToolUseFailure.is_interrupt.
+  },
+  // A failed call fires this INSTEAD of PostToolUse. Measured 2026-09-25.
+  PostToolUseFailure: {
+    fields: {
+      tool_name: { used: 'processes.js label fallback + mood-machine.js attribution' },
+      tool_use_id: { used: 'processes.js, to close the running entry this failure ends' },
+      is_interrupt: { used: 'mood-machine.js: an Esc interrupt is not the agent failing' },
+      ...COMMON_FIELDS,
+    },
+    // agent_id / agent_type: read by mood-machine.js to credit the failing
+    // subagent; ABSENT on a main-session call, so not required here.
   },
   SubagentStop: {
     fields: {
@@ -54,20 +105,32 @@ const CONTRACT = {
         used: 'mood-machine.js + cooldowns, to credit the agent that ACTUALLY '
             + 'finished rather than the top of the delegation stack',
       },
+      agent_id: { used: 'processes.js, to end every call that subagent still has open; '
+                      + 'mood-machine.js, to end THAT invocation and its foreground children' },
+      ...COMMON_FIELDS,
     },
     // Also arrives, unread for now, and worth knowing about:
-    //   permission_mode  -- authoritative hazard level, currently scraped from
-    //                       the TUI text instead. Every payload carries it.
     //   last_assistant_message -- what the agent concluded; would make the
     //                       "finished" notification say what it finished.
     //   agent_transcript_path  -- per-agent token spend, per agent.
   },
   Stop: {
-    fields: {},   // likewise: the turn ended, which is the whole message
+    fields: { ...COMMON_FIELDS },   // otherwise: the turn ended, which is the whole message
+    // Also read, optional: background_tasks [{ id: <agent_id>, agent_type,
+    // description, status }]. mood-machine.js ends the main session's
+    // FOREGROUND runs on Stop and spares the ones listed here -- measured,
+    // Stop fires while a background agent is still running
+    // (test/hooks-real-subagent-failure.fixture.jsonl).
+  },
+  SessionEnd: {
+    // The session is over; processes.js clears everything. No COMMON_FIELDS:
+    // measured, it carries no permission_mode.
+    fields: {},
   },
   Notification: {
     fields: {
       message: { used: 'attention-summary.js, to say what is being asked for' },
+      ...COMMON_FIELDS,
     },
   },
 };

@@ -30,12 +30,52 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { readUsage, projectDirName } = require('../host/usage');
+const { readUsage, projectDirName , FINGERPRINT_BYTES } = require('../host/usage');
+
+const fsp = require('fs/promises');
+const { tmpDir } = require('./tmp-dir');
+
+// --- counting the bytes a read actually consumes ------------------------------
+//
+// Through `openFile`, which host/usage.js ALREADY accepts and already documents
+// as existing so tests can reach this code. Miguel, PR #32: my first version
+// added an `onRead` callback threaded through four functions to obtain exactly
+// this, and he measured the two approaches as byte-identical --
+// `coldBytes 2760064, warmBytes 266, calls [64,138,64]` either way. Five
+// parameters of production code for a measurement the existing injection point
+// already provided, in a project whose founding bet is to drive the mechanism
+// that exists rather than add one.
+//
+// A Proxy rather than `{ read, close }`: a hand-rolled object breaks confusingly
+// the day readFileUsage calls any other method on the handle, and the Proxy
+// costs the same line.
+function countingOpen(bytes) {
+  return async (file, flags) => {
+    const fh = await fsp.open(file, flags);
+    return new Proxy(fh, {
+      get(target, prop) {
+        if (prop === 'read') {
+          return async (...args) => {
+            const r = await target.read(...args);
+            bytes.push(r.bytesRead);
+            return r;
+          };
+        }
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+  };
+}
+
+// Consume and total. Named, because `bytes.splice(0).reduce(...)` inline reads
+// as arithmetic and is actually a side effect.
+const drain = (bytes) => bytes.splice(0).reduce((a, b) => a + b, 0);
 
 const NL = String.fromCharCode(10);
 
 function project(cwd) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-usage-inc-'));
+  const root = tmpDir('cc-usage-inc-');
   const dir = path.join(root, projectDirName(cwd));
   fs.mkdirSync(dir, { recursive: true });
   return { root, dir };
@@ -275,49 +315,118 @@ test('the read yields to the event loop instead of blocking it', async () => {
   assert.ok(turns > 5, `the loop got ${turns} turns during the read`);
 });
 
-test('a warm read of a large unchanged project is much cheaper than a cold one', async () => {
-  // The headline. Asserted as a ratio rather than a wall-clock figure so it
-  // means the same thing on a slower machine.
+test('a warm read of a large unchanged project reads NOTHING AT ALL', async () => {
+  // THE HEADLINE, and it deserves an exact assertion rather than a ratio. This
+  // was `warm < cold / 4` on wall clock -- the same unsound comparison this PR
+  // was opened to remove from one test, left in place ninety lines above it
+  // (Miguel B2). Fixing the instance I was pointed at rather than the class I
+  // had just diagnosed.
+  //
+  // And a ratio was never the claim here anyway. An unchanged file takes the
+  // mtime+size fast path and returns BEFORE openFile is ever called, so the
+  // warm read performs no I/O whatsoever (Dexter, Finding C). Exactly zero is
+  // available, with no constant, no ratio and no coupling to fixture size --
+  // and it fails the instant the fast path stops being taken.
   const { root, dir } = project(CWD);
   const many = [];
   for (let i = 0; i < 8000; i++) many.push(line(U(1, 1)));
   const body = many.join('');
   for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(dir, `s${i}.jsonl`), body);
 
+  const bytes = [];
+  const openFile = countingOpen(bytes);
   const cache = new Map();
-  const t0 = process.hrtime.bigint();
-  await readUsage({ cwd: CWD, sessionId: 's0', projectsDir: root, cache });
-  const cold = Number(process.hrtime.bigint() - t0) / 1e6;
 
-  const t1 = process.hrtime.bigint();
-  await readUsage({ cwd: CWD, sessionId: 's0', projectsDir: root, cache });
-  const warm = Number(process.hrtime.bigint() - t1) / 1e6;
+  await readUsage({ cwd: CWD, sessionId: 's0', projectsDir: root, cache, openFile });
+  const coldBytes = drain(bytes);
+  assert.ok(coldBytes > 0, 'a cold read must actually read');
 
-  assert.ok(warm < cold / 4, `cold ${cold.toFixed(1)}ms, warm ${warm.toFixed(1)}ms`);
+  await readUsage({ cwd: CWD, sessionId: 's0', projectsDir: root, cache, openFile });
+  assert.strictEqual(drain(bytes), 0,
+    'an unchanged project must not be opened at all on a warm read');
 });
 
-test('appending one line to a huge file costs about what one line costs', async () => {
+test('appending one line to a huge file costs EXACTLY one line plus two fingerprints', async () => {
   // The measurement that actually decides the design: the active session is
   // 52.8MB of this project's 64.4MB and changes every turn, so an mtime cache
   // alone would still re-parse all of it on every single tick.
+  //
+  // MEASURED IN BYTES, NOT MILLISECONDS. This asserted `grown < cold / 4` on
+  // wall clock and flaked -- observed as "cold 18.7ms, after one append
+  // 11.6ms". Nothing was wrong with the cache: the cold read is fast enough in
+  // absolute terms that scheduler noise can put the warm read within a factor
+  // of four of it, so the test failed for a reason unrelated to its own name.
+  //
+  // AND THE COST IS EXACT, not a ratio. Miguel measured it as invariant over
+  // ten runs: the verify read in prefixIntact (64), the appended line in the
+  // chunk loop (138), and the re-cache read in readFingerprint (64). My first
+  // rewrite asserted `warmBytes < coldBytes / 100`, which is 103x of slack on a
+  // number that never moves -- a regression resuming from a wrong offset and
+  // re-reading 200 lines passed it silently. Only total loss of resume failed.
+  //
+  // The companion bound `warmBytes >= appended.length` was worse: its message
+  // said "it must still read the appended 138 bytes" while it actually checked
+  // that the TOTAL of all reads was at least 138 -- and 128 of those come from
+  // the fingerprints. It bit only because 138 > 128, by ten bytes. Shorten the
+  // fixture line at all and it passes having read NONE of the append, with its
+  // failure message still claiming it verified them.
   const { root, dir } = project(CWD);
   const f = path.join(dir, 's1.jsonl');
   const many = [];
   for (let i = 0; i < 20000; i++) many.push(line(U(1, 1)));
   fs.writeFileSync(f, many.join(''));
 
+  const bytes = [];
+  const openFile = countingOpen(bytes);
   const cache = new Map();
-  const t0 = process.hrtime.bigint();
-  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
-  const cold = Number(process.hrtime.bigint() - t0) / 1e6;
 
-  fs.appendFileSync(f, line(U(3, 4)));
-  const t1 = process.hrtime.bigint();
-  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
-  const grown = Number(process.hrtime.bigint() - t1) / 1e6;
+  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, openFile });
+  const coldBytes = drain(bytes);
+  const fileSize = fs.statSync(f).size;
+  // EXACT, not `>=`. Dexter, Finding G: `coldBytes >= fileSize` carries 64 bytes
+  // of slack it does not know it has -- a cold read that started at pos 64
+  // instead of 0 consumes fileSize-64 in the loop plus 64 in the fingerprint,
+  // totals exactly fileSize, and PASSES. The fingerprint read pays for the
+  // bytes that were skipped. Today only the totals assertion catches that,
+  // because the dropped first line has no id.
+  //
+  // The exact value is determined: on a cold cache `grown` is falsy so
+  // prefixIntact short-circuits and never reads, the loop consumes stat.size,
+  // and readFingerprint reads min(64, size).
+  assert.strictEqual(coldBytes, fileSize + FINGERPRINT_BYTES,
+    `a cold read must read the whole file exactly once: ${coldBytes} vs ${fileSize}`);
+
+  const appended = line(U(3, 4));
+  fs.appendFileSync(f, appended);
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, openFile });
+  const warmBytes = drain(bytes);
 
   assert.strictEqual(r.session.total, 20000 * 2 + 7);
-  assert.ok(grown < cold / 4, `cold ${cold.toFixed(1)}ms, after one append ${grown.toFixed(1)}ms`);
+  // Buffer.byteLength, NOT .length. Dexter, Finding H: `.length` is a count of
+  // UTF-16 units and this assertion's units are BYTES. It is correct today only
+  // because the fixture line happens to be ASCII -- and this very file already
+  // uses Buffer.byteLength at :152, in a test that exists precisely because a
+  // character offset and a byte offset are different numbers and confusing them
+  // corrupts the resume point. The file knew; the new measurement forgot.
+  //
+  // Put one emoji in the fixture and `.length` and the byte count diverge. As an
+  // EQUALITY this fails loudly rather than silently weakening, which is the only
+  // reason it is a Medium and not a High.
+  assert.strictEqual(warmBytes, Buffer.byteLength(appended) + 2 * FINGERPRINT_BYTES,
+    `a resumed read must cost the appended line plus two fingerprint reads, not ${warmBytes}`);
+
+  // A THIRD READ, because two cannot see the hazard Dexter found. A throw in
+  // readFingerprint is invisible on the tick it happens -- the read and the
+  // chunk loop have already run -- and then stores `fingerprint: null`, after
+  // which `!cached.fingerprint` forces a full re-read on EVERY subsequent tick,
+  // permanently, with every total still exactly correct. Cold-then-warm cannot
+  // reach it; cold-warm-warm can.
+  const second = line(U(5, 6));
+  fs.appendFileSync(f, second);
+  const r3 = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, openFile });
+  assert.strictEqual(drain(bytes), Buffer.byteLength(second) + 2 * FINGERPRINT_BYTES,
+    'the second resumed read must be cheap too -- the fingerprint must persist');
+  assert.strictEqual(r3.session.total, 20000 * 2 + 7 + 11);
 });
 
 // --- the failure semantics, which milestones depend on ------------------------
@@ -408,24 +517,34 @@ test('a genuine append still takes the fast path, so the guard is not just "alwa
   // The other half. A guard that re-reads everything would pass the test above
   // and silently undo the entire optimisation -- which is the failure mode that
   // looks like success.
+  //
+  // BYTES, for the same reason as its twin. This carried the SAME unsound
+  // `warm < cold / 4` that this PR was opened to remove, in the same file,
+  // ninety lines further down, and my first pass left it -- fixing the instance
+  // I was pointed at rather than the class I had just diagnosed (Miguel B2).
   const { root, dir } = project(CWD);
   const f = path.join(dir, 's1.jsonl');
   const many = [];
   for (let i = 0; i < 20000; i++) many.push(line(U(1, 1)));
   fs.writeFileSync(f, many.join(''));
 
+  const bytes = [];
+  const openFile = countingOpen(bytes);
   const cache = new Map();
-  const t0 = process.hrtime.bigint();
-  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
-  const cold = Number(process.hrtime.bigint() - t0) / 1e6;
 
-  fs.appendFileSync(f, line(U(3, 4)));
-  const t1 = process.hrtime.bigint();
-  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache });
-  const warm = Number(process.hrtime.bigint() - t1) / 1e6;
+  await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, openFile });
+  const coldBytes = drain(bytes);
+  assert.ok(coldBytes >= fs.statSync(f).size, 'the cold read must be a real full read');
+
+  const appended = line(U(3, 4));
+  fs.appendFileSync(f, appended);
+  const r = await readUsage({ cwd: CWD, sessionId: 's1', projectsDir: root, cache, openFile });
+  const warmBytes = drain(bytes);
 
   assert.strictEqual(r.session.total, 20000 * 2 + 7);
-  assert.ok(warm < cold / 4, `the fast path was lost: cold ${cold.toFixed(1)}ms, append ${warm.toFixed(1)}ms`);
+  // Buffer.byteLength, not .length -- see the twin above (Dexter, Finding H).
+  assert.strictEqual(warmBytes, Buffer.byteLength(appended) + 2 * FINGERPRINT_BYTES,
+    `the fast path was lost: a resumed read cost ${warmBytes} bytes`);
 });
 
 test('a rewrite that PRESERVES the prefix is still resumed, not re-read', async () => {

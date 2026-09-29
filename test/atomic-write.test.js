@@ -127,7 +127,7 @@ const os = require('os');
 const path = require('path');
 
 function tmpdir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'cc-atomic-'));
+  return tmpDir('cc-atomic-');
 }
 
 test('with no options it renames a real file using the real fs', () => {
@@ -193,6 +193,7 @@ test('a nonsense attempts count is REFUSED, not looped on forever', () => {
 // all, and the graceful catch is exactly what hides that.
 
 const { renameWithRetryAsync } = require('../host/atomic-write');
+const { tmpDir } = require('./tmp-dir');
 
 const flakyAsync = (codes) => {
   const calls = [];

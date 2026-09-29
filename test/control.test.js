@@ -173,6 +173,22 @@ test('a portrait frame is CONTROL, and is never typed into the session', () => {
   assert.strictEqual(dispatchedWith.agent, 'code-reviewer');
 });
 
+test('a style frame is CONTROL, and is never typed into the session', () => {
+  // The same shape as the drop-frame test above, for the FF6 style tab: a
+  // set-background or reset-background action must be dispatched, not typed
+  // as literal JSON into a session that may be running with permissions
+  // bypassed.
+  const written = [];
+  let dispatchedWith = null;
+  const text = '{"type":"style","action":"set-background","path":"C:\\\\pic.png"}';
+  const result = handleFrame(text, (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+
+  assert.strictEqual(result.handled, true, 'a style frame must be handled as control');
+  assert.deepStrictEqual(written, [], 'a style frame must NEVER reach the terminal');
+  assert.strictEqual(dispatchedWith.type, 'style');
+  assert.strictEqual(dispatchedWith.action, 'set-background');
+});
+
 test('every type host.js dispatches is on the control allow-list', () => {
   // The general form of the bug above, so the next feature to add a control
   // frame cannot reproduce it. Any `msg.type === 'x'` branch in
