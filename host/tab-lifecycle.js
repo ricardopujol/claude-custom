@@ -92,13 +92,18 @@ function reconcile(state, observation) {
     }
   }
 
-  // 5. dev first.
+  // 5. Dismissing is about THAT worktree: once git stops listing the path, a
+  //    worktree created there again is a new tab.
+  const dismissed = state.dismissed.filter(k => worktrees.some(w => normPath(w.path) === k));
+
+  // 6. dev first.
   tabs = [...tabs.filter(t => t.isDev), ...tabs.filter(t => !t.isDev)];
-  return { state: { tabs, dismissed: state.dismissed }, actions };
+  return { state: { tabs, dismissed }, actions };
 }
 
 // Closing by hand keeps the folder, merged or not (`/merged --sweep` cleans
-// it), and keeps the tab closed for as long as this window lives.
+// it), and keeps the tab closed while this window lives and git still lists
+// that worktree.
 function closeByHand(state, p) {
   const tab = state.tabs.find(t => samePath(t.path, p));
   if (!tab || tab.isDev) return unchanged(state);

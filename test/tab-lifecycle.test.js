@@ -337,6 +337,30 @@ test('closing a tab by hand stops it, closes it, and keeps it closed while the w
   assert.deepStrictEqual(reconcile(r.state, o).actions, [], 'the poll must not reopen it');
 });
 
+// Dexter F3 / Miguel F2: dismissing is about THAT worktree. Once git stops
+// listing the path, a new worktree created there is a new tab (W3), e.g.
+// feat-x merged and removed, then feat-x created again with `+`.
+test('a worktree removed and re-created at the same folder gets a tab again', () => {
+  let s = removeResult(removingState(), A, { ok: true }).state;
+  s = reconcile(s, obs([DEV_WT, A_WT])).state;                     // prune lag: still listed
+  assert.deepStrictEqual(s.dismissed, [normPath(A)]);
+  s = reconcile(s, obs([DEV_WT])).state;                           // git no longer lists it
+  assert.deepStrictEqual(s.dismissed, []);
+  const { actions } = reconcile(s, obs([DEV_WT, A_WT]));           // created again
+  assert.deepStrictEqual(actions, [{ type: 'open', path: A, branch: 'feat/a' }]);
+});
+
+test('a hand-closed tab stays closed while git lists it, even across polls', () => {
+  const o = obs([DEV_WT, A_WT]);
+  let s = closeByHand(reconcile(initial(), o).state, A).state;
+  for (let i = 0; i < 3; i++) {
+    const r = reconcile(s, o);
+    assert.deepStrictEqual(r.actions, []);
+    s = r.state;
+  }
+  assert.deepStrictEqual(s.dismissed, [normPath(A)]);
+});
+
 test('closing a merged tab by hand keeps its folder: no remove', () => {
   const WTS = [DEV_WT, A_WT];
   const s = run([
@@ -476,13 +500,18 @@ test('PROPERTY: dev is never stopped, closed or removed', () => {
   }));
 });
 
-test('PROPERTY: a dismissed path is never opened again', () => {
+test('PROPERTY: a dismissed path is never opened while dismissed, and stays dismissed while listed', () => {
   fc.assert(fc.property(eventsArb, (events) => {
-    walk(events, (prev, _, r) => {
+    walk(events, (prev, e, r) => {
       for (const a of r.actions.filter(x => x.type === 'open')) {
         assert.ok(!prev.dismissed.includes(normPath(a.path)), a.path);
       }
-      for (const d of prev.dismissed) assert.ok(r.state.dismissed.includes(d), 'dismissed only grows');
+      // A path leaves `dismissed` only in a poll where git doesn't list it.
+      for (const d of prev.dismissed) {
+        if (r.state.dismissed.includes(d)) continue;
+        assert.strictEqual(e.kind, 'obs', 'only a poll un-dismisses');
+        assert.ok(!e.o.worktrees.some(w => normPath(w.path) === d), `${d} un-dismissed while listed`);
+      }
     });
   }));
 });
