@@ -42,6 +42,14 @@
      - Not measured: whether clicks work in permission prompts, /config, or the
        yes/no menus (no free way to raise a permission prompt).
 
+   SIDE EFFECT OF THE 2026-09-29 MEASUREMENT: the click step WROTE
+   "model": "haiku" INTO THE REAL ~/.claude/settings.json (it was "opus").
+   Anyone who ran it then must restore their default with /model.
+
+   CONSEQUENCE: BACKLOG #11 needs no code. Clicks already work; a synthesised
+   arrows+Enter would double-act. test/renderer-mouse-passthrough.test.js pins
+   that renderer.js never eats mouse events before xterm sees them.
+
    PROBE_MOUSE_COMMIT=1 re-runs the click step. It COMMITS a /model choice into
    the user's real settings, so it is opt-in; the default run is read-only. */
 const { spawn } = require('child_process');
