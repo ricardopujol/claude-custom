@@ -79,6 +79,16 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnWithTimeout } = require('./lib/spawn-with-timeout');
+const { createHygieneRegistry } = require('./lib/process-hygiene');
+
+// Every temp dir this probe makes, removed on EVERY exit path (PR #68, Miguel
+// S4): the SKIP returns, a throw, and Ctrl+C used to leak cc-loadout-probe-*.
+const tempDirs = [];
+const removeTempDirs = () => {
+  for (const d of tempDirs.splice(0)) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+};
+const hygiene = createHygieneRegistry();
+hygiene.addCleanup(removeTempDirs);
 
 const T0 = Date.now();
 const at = () => `${Math.round((Date.now() - T0) / 1000)}s`;
@@ -198,6 +208,7 @@ function timeHook(hookPath, stateDir, runs = 5) {
 // content of <state>/loadout.json.
 async function runScenario(label, hookPath, loadout) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-loadout-probe-'));
+  tempDirs.push(tmp);
   const stateDir = path.join(tmp, 'state');
   fs.mkdirSync(stateDir);
   fs.writeFileSync(path.join(stateDir, 'loadout.json'), JSON.stringify(loadout));
@@ -293,12 +304,14 @@ async function main() {
 
   console.log('\n=== RESULTS ===');
   lines.forEach(l => console.log(l));
-  for (const s of [equipped, control]) { try { fs.rmSync(s.tmp, { recursive: true, force: true }); } catch { /* best effort */ } }
-  process.exit(0);
+  return lines.some(l => l.startsWith('FAIL')) ? 1 : 0;      // a failed claim fails the process (Miguel S4)
 }
 
 if (require.main === module) {
-  main().catch(err => { console.error('probe failed:', err && err.stack); process.exit(1); });
+  hygiene.install();      // Ctrl+C removes the temp dirs too
+  main()
+    .then((code) => { removeTempDirs(); process.exit(code || 0); })
+    .catch((err) => { console.error('probe failed:', err && err.stack); removeTempDirs(); process.exit(1); });
 }
 
 module.exports = { firstUserTexts, toolResultTexts, METHOD_PREFIX };

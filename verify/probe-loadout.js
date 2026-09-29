@@ -33,7 +33,12 @@
 
    Cost: no model prompt is ever sent. The host starts the CLI in a pty, as it
    always does, and this probe types nothing into it. It writes
-   .harness/state/loadout.json and removes it at the end.
+   .harness/state/loadout.json -- the checkout's REAL one (host.js hardcodes its
+   state dir) -- so it snapshots the exact bytes first and restores them on
+   every exit path, Ctrl+C included (verify/lib/process-hygiene.js +
+   verify/lib/file-snapshot.js; PR #68, Miguel B1). While it runs, real spawns
+   on this checkout would see the probe's belt: run it on a checkout you are not
+   working in.
 
    Prints PASS / FAIL per claim; SKIP with the reason when Electron or the host
    cannot start. Exit code is the number of FAILs. */
@@ -44,7 +49,8 @@ const net = require('net');
 const http = require('http');
 const path = require('path');
 const WebSocket = require('ws');
-const { killPidTree } = require('../host/kill-tree');
+const { createHygieneRegistry } = require('./lib/process-hygiene');
+const { snapshotFile } = require('./lib/file-snapshot');
 
 const REPO = path.join(__dirname, '..');
 const PORT = Number(process.env.PROBE_PORT) || 7793;
@@ -147,6 +153,15 @@ async function main() {
   try { electronExe = require('electron'); } catch { console.log('SKIP: the electron package is not installed'); return -1; }
   if (typeof electronExe !== 'string') { console.log('SKIP: require("electron") did not give an executable path'); return -1; }
 
+  // HYGIENE FIRST, before anything spawns or is touched (PR #68, Miguel B1).
+  // The state dir is the checkout's REAL one -- host.js hardcodes HARNESS_DIR --
+  // so whatever belt is there is somebody's. Snapshot its exact bytes, put them
+  // back on every exit path (normal, SIGINT, uncaught), and kill the trees.
+  const hygiene = createHygieneRegistry();
+  const snapshot = snapshotFile(LOADOUT_FILE);
+  hygiene.addCleanup(() => snapshot.restore());
+  hygiene.install();
+  if (snapshot.existed) console.log('note: a real .harness/state/loadout.json exists; it is restored when this probe ends');
   try { fs.unlinkSync(LOADOUT_FILE); } catch { /* nothing to remove */ }
   try { fs.unlinkSync(SHOT); } catch { /* nothing to remove */ }
 
@@ -157,14 +172,15 @@ async function main() {
   let hostLog = '';
   host.stdout.on('data', d => { hostLog += d; });
   host.stderr.on('data', d => { hostLog += d; });
+  if (host.pid) hygiene.registerSpawnedTree(host.pid);
 
   let app = null;
   let cdp = null;
   const cleanup = async () => {
     try { if (cdp) cdp.close(); } catch { /* already gone */ }
-    if (app && app.pid) { try { killPidTree(app.pid); } catch { /* best effort */ } }
-    if (host.pid) { try { killPidTree(host.pid); } catch { /* best effort */ } }
-    try { fs.unlinkSync(LOADOUT_FILE); } catch { /* nothing to remove */ }
+    // The registry kills the trees FIRST and restores the file after, so a
+    // host that is still alive cannot rewrite what is being put back.
+    hygiene._emergencyCleanup('finally');
   };
 
   try {
@@ -179,6 +195,7 @@ async function main() {
     app = spawn(electronExe, [REPO, `--remote-debugging-port=${CDP}`], {
       env: { ...env, CLAUDE_CUSTOM_SIDE_TAB: 'agents' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
+    if (app.pid) hygiene.registerSpawnedTree(app.pid);
     let appLog = '';
     app.stdout.on('data', d => { appLog += d; });
     app.stderr.on('data', d => { appLog += d; });
