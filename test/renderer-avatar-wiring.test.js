@@ -23,20 +23,29 @@ function body(start) {
 
 test('every roster paint goes through setRosterHtml: nothing else assigns #agents innerHTML', () => {
   const sites = SRC.match(/agentsEl\.innerHTML\s*=/g) || [];
-  assert.strictEqual(sites.length, 1, 'only setRosterHtml may assign agentsEl.innerHTML');
-  assert.ok(body('function setRosterHtml').includes('agentsEl.innerHTML = html'));
+  assert.strictEqual(sites.length, 0, 'only setRosterHtml may replace the roster, via replaceChildren');
+  assert.strictEqual((SRC.match(/agentsEl\.replaceChildren/g) || []).length, 1);
 });
 
-test('setRosterHtml unloads the old videos BEFORE replacing them', () => {
+test('setRosterHtml keeps a live video whose key is unchanged instead of recreating it (Dexter F1)', () => {
   const b = body('function setRosterHtml');
-  assert.ok(b.indexOf('portraitMedia.unloadVideo') !== -1, 'old videos must be stopped and unloaded');
-  assert.ok(b.indexOf('portraitMedia.unloadVideo') < b.indexOf('agentsEl.innerHTML = html'),
-    'unloading after the swap would find nothing to unload');
+  assert.match(b, /portraitMedia\.planVideoReuse/);
+  assert.match(b, /fresh\.replaceWith\(old\)/, 'the live node must replace the staged copy');
+  assert.ok(b.indexOf('fresh.replaceWith(old)') < b.indexOf('agentsEl.replaceChildren'),
+    'the swap must happen before the roster is replaced, in the same task');
+});
+
+test('setRosterHtml unloads only what is still in the old roster AFTER the reuse swap, and BEFORE the replace', () => {
+  const b = body('function setRosterHtml');
+  const unload = b.indexOf('portraitMedia.unloadVideo');
+  assert.ok(unload !== -1, 'old videos must be stopped and unloaded');
+  assert.ok(b.indexOf('fresh.replaceWith(old)') < unload, 'reused nodes must have left the old roster first');
+  assert.ok(unload < b.indexOf('agentsEl.replaceChildren'), 'unloading after the swap would find nothing to unload');
 });
 
 test('setRosterHtml pauses a fresh video at once (a hidden window never delivers an observer callback)', () => {
   const b = body('function setRosterHtml');
-  assert.ok(b.indexOf('applyFaceVideo(v)') > b.indexOf('agentsEl.innerHTML = html'),
+  assert.ok(b.indexOf('applyFaceVideo(v)') > b.indexOf('agentsEl.replaceChildren'),
     'without it the autoplay attribute starts every video in a hidden window');
 });
 

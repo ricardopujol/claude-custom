@@ -93,12 +93,39 @@ function mediaElementFor(result, opts) {
   return { tag: 'placeholder', attrs: placeholderAttrs(r, tierTitle(r || { tier: 'text' })) };
 }
 
+/**
+ * Identity of a video face across repaints: the agent plus the exact URL (which
+ * carries the file's version). `null` for anything that is not a playing video.
+ * A roster repaint runs about once a second while anything is running; a video
+ * that is unloaded and recreated each time restarts from frame 0 and never
+ * loops (Dexter F1 / Miguel I2, PR #64).
+ */
+function videoKey(result, opts) {
+  const d = mediaElementFor(result, opts);
+  if (d.tag !== 'video') return null;
+  return `${result.agent}|${d.attrs.src}`;
+}
+
+/**
+ * Which existing video nodes survive a repaint: `reuse` (keys present before
+ * and after) stay in the DOM untouched; `drop` (keys that went away or
+ * changed) are the only ones to unload.
+ */
+function planVideoReuse(oldKeys, newKeys) {
+  const before = new Set(Array.isArray(oldKeys) ? oldKeys : []);
+  const after = new Set(Array.isArray(newKeys) ? newKeys : []);
+  const reuse = new Set();
+  const drop = [];
+  for (const k of before) (after.has(k) ? reuse.add(k) : drop.push(k));
+  return { reuse, drop };
+}
+
 /** The descriptor as markup. Every interpolated value is escaped or forced numeric. */
 function faceMediaHtml(result, opts) {
   const d = mediaElementFor(result, opts);
   const a = d.attrs;
   if (d.tag === 'video') {
-    return `<video class="face-media" src="${esc(a.src)}" title="${esc(a.title)}" autoplay loop muted playsinline></video>`;
+    return `<video class="face-media" data-face-key="${esc(videoKey(result, opts))}" src="${esc(a.src)}" title="${esc(a.title)}" autoplay loop muted playsinline></video>`;
   }
   if (d.tag === 'img') {
     return `<img class="face-media" src="${esc(a.src)}" alt="" title="${esc(a.title)}" />`;
@@ -125,7 +152,7 @@ function unloadVideo(el) {
   try { if (typeof el.load === 'function') el.load(); } catch { /* detached */ }
 }
 
-const API = { mediaElementFor, faceMediaHtml, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
+const API = { mediaElementFor, faceMediaHtml, videoKey, planVideoReuse, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.portraitMedia = API;

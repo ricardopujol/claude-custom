@@ -96,6 +96,15 @@ app.whenReady().then(async () => {
     const playing = v.filter(x => !x.paused && x.t > 0).length;
     check('the visible videos are actually PLAYING', playing > 0, { playing, total: v.length });
 
+    // Dexter F1 / Miguel I2 (PR #64): a repaint runs about once a second while
+    // anything is running; the SAME <video> node must survive it and keep going.
+    await js('(() => { const v = [...document.querySelectorAll("#agents video")].find(x => !x.paused); window.__kept = v; v.__mark = "kept"; })()');
+    for (let i = 0; i < 3; i++) { await js('renderRoster()'); await sleep(700); }
+    const kept = await js('({ same: !!window.__kept && window.__kept.__mark === "kept" && document.contains(window.__kept), playing: !window.__kept.paused, src: !!window.__kept.getAttribute("src") })');
+    check('repaints keep the same <video> node, still loaded and playing (no restart)', kept.same && kept.playing && kept.src, kept);
+    const progress = await js('(async () => { const v = window.__kept; const a = v.currentTime; await new Promise(r => setTimeout(r, 900)); return { a, b: v.currentTime }; })()');
+    check('and its clock keeps moving across repaints', progress.b !== progress.a, progress);
+
     const memOn = rendererMem();
 
     win.hide();

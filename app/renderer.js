@@ -1056,11 +1056,30 @@ function applyFaceVideo(v) {
 }
 
 function setRosterHtml(html) {
+  // A repaint runs about once a second while anything is running. A video that
+  // is unloaded and recreated each time restarts from frame 0 and never loops
+  // (Dexter F1 / Miguel I2, PR #64), so a face whose key (agent + exact URL) is
+  // unchanged KEEPS its node: the fresh copy in the staged markup is swapped for
+  // the live one before the roster is replaced, and only nodes that go away or
+  // change are unloaded. The move is synchronous, so the browser's "removed from
+  // the document" pause never runs.
+  const oldByKey = new Map();
+  for (const v of agentsEl.querySelectorAll('video[data-face-key]')) {
+    if (!oldByKey.has(v.dataset.faceKey)) oldByKey.set(v.dataset.faceKey, v);
+  }
+  const stage = document.createElement('div');
+  stage.innerHTML = html;
+  const plan = portraitMedia.planVideoReuse([...oldByKey.keys()],
+    [...stage.querySelectorAll('video[data-face-key]')].map(v => v.dataset.faceKey));
+  for (const fresh of [...stage.querySelectorAll('video[data-face-key]')]) {
+    const old = plan.reuse.has(fresh.dataset.faceKey) ? oldByKey.get(fresh.dataset.faceKey) : null;
+    if (old) { oldByKey.delete(fresh.dataset.faceKey); fresh.replaceWith(old); }
+  }
   for (const v of agentsEl.querySelectorAll('video')) {
     if (faceVideoObserver) faceVideoObserver.unobserve(v);
     portraitMedia.unloadVideo(v);
   }
-  agentsEl.innerHTML = html;
+  agentsEl.replaceChildren(...stage.childNodes);
   for (const v of agentsEl.querySelectorAll('video')) {
     if (faceVideoObserver) faceVideoObserver.observe(v);
     // Applied at once, not left to the observer's first callback: a hidden
