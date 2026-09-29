@@ -1,0 +1,320 @@
+'use strict';
+/**
+ * `git worktree list --porcelain` into tab candidates. Design:
+ * documentation/PLAN_WORKTREE_TABS.md (tab = git worktree, `dev` first).
+ *
+ * The sample is the real output of this repo on 2026-09-29, rewritten under a
+ * fake container, plus the record kinds it happened not to contain (detached,
+ * prunable, bare, locked). Pure: no fs, no git.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const path = require('path');
+const fc = require('fast-check');
+
+const { parsePorcelain, tabWorktrees, removalCommands } = require('../host/worktree-list');
+const { samePath, isInside } = require('../host/project-layout');
+
+const C = path.resolve('/fake/proj');
+const DEV = path.join(C, 'dev');
+const git = (p) => p.replace(/\\/g, '/');          // git prints forward slashes
+const at = (...parts) => git(path.join(C, ...parts));
+
+const SAMPLE = [
+  `worktree ${at('dev')}`,
+  'HEAD 765ee008ee548055970882a0062f31933838d8ce',
+  'branch refs/heads/develop',
+  '',
+  `worktree ${at('dev', '.claude', 'worktrees', 'agent-a170cc9475319264e')}`,
+  'HEAD 03263a79c0236152213afb800252f994c63b65a0',
+  'branch refs/heads/feat/vault-format-2',
+  '',
+  `worktree ${at('feat-worktree-model')}`,
+  'HEAD 167d27e7914c1b067c799d2d90dc870785cc619c',
+  'branch refs/heads/feat/worktree-model',
+  '',
+  `worktree ${at('fix-resumed-agent')}`,
+  'HEAD a8b08a634eb10ffacd4937345dd739e7c24f6c4c',
+  'branch refs/heads/fix/resumed-agent-activity',
+  '',
+  `worktree ${at('gate-2026-09-28')}`,
+  'HEAD 765ee008ee548055970882a0062f31933838d8ce',
+  'detached',
+  '',
+].join('\n');
+
+function record(p, lines) {
+  return [`worktree ${git(p)}`, 'HEAD 765ee008ee548055970882a0062f31933838d8ce', ...lines, ''].join('\n');
+}
+const devRecord = record(DEV, ['branch refs/heads/develop']);
+
+// ---------------------------------------------------------------------------
+// parsePorcelain
+
+test('parsePorcelain reads every field of the real sample', () => {
+  const entries = parsePorcelain(SAMPLE);
+  assert.strictEqual(entries.length, 5);
+  assert.deepStrictEqual(entries[0], {
+    path: at('dev'), head: '765ee008ee548055970882a0062f31933838d8ce', branch: 'refs/heads/develop',
+    bare: false, detached: false, locked: false, prunable: false,
+  });
+  assert.deepStrictEqual(entries[4], {
+    path: at('gate-2026-09-28'), head: '765ee008ee548055970882a0062f31933838d8ce', branch: null,
+    bare: false, detached: true, locked: false, prunable: false,
+  });
+});
+
+test('parsePorcelain accepts CRLF exactly as LF', () => {
+  assert.deepStrictEqual(parsePorcelain(SAMPLE.replace(/\n/g, '\r\n')), parsePorcelain(SAMPLE));
+});
+
+test('parsePorcelain reads bare, and locked / prunable with or without a reason', () => {
+  const text = [
+    record(path.join(C, 'a'), ['bare']),
+    record(path.join(C, 'b'), ['branch refs/heads/b', 'locked']),
+    record(path.join(C, 'c'), ['branch refs/heads/c', 'locked moved to a USB drive']),
+    record(path.join(C, 'd'), ['branch refs/heads/d', 'prunable gitdir file points to non-existent location']),
+  ].join('\n');
+  const [a, b, c, d] = parsePorcelain(text);
+  assert.strictEqual(a.bare, true);
+  assert.strictEqual(b.locked, true);
+  assert.strictEqual(c.locked, true);
+  assert.strictEqual(d.prunable, true);
+  assert.strictEqual(d.locked, false);
+});
+
+test('parsePorcelain keeps the last record when the text has no trailing blank line', () => {
+  const entries = parsePorcelain(SAMPLE.trimEnd());
+  assert.strictEqual(entries.length, 5);
+  assert.strictEqual(entries[4].detached, true);
+});
+
+test('parsePorcelain ignores unknown lines and drops a record with no worktree line', () => {
+  const text = [
+    'HEAD 03263a79c0236152213afb800252f994c63b65a0',
+    'branch refs/heads/orphan',
+    '',
+    `worktree ${at('dev')}`,
+    'some-future-attribute yes',
+    'branch refs/heads/develop',
+    '',
+  ].join('\n');
+  const entries = parsePorcelain(text);
+  assert.strictEqual(entries.length, 1);
+  assert.strictEqual(entries[0].path, at('dev'));
+  assert.strictEqual(entries[0].branch, 'refs/heads/develop');
+});
+
+test('parsePorcelain drops a worktree line with no path', () => {
+  const text = ['worktree ', 'branch refs/heads/a', '', devRecord].join('\n');
+  const entries = parsePorcelain(text);
+  assert.strictEqual(entries.length, 1);
+  assert.strictEqual(entries[0].path, at('dev'));
+});
+
+// path.resolve('') is the cwd; an empty path must never become "wherever the
+// host happens to run" and land a tab there.
+test('an entry with an empty path gets no tab even when the cwd is a sibling', (t) => {
+  const fs = require('fs');
+  const { tmpDir } = require('./tmp-dir');
+  const container = tmpDir('worktree-list-test-');
+  const sibling = path.join(container, 'feat-cwd');
+  fs.mkdirSync(sibling);
+  const before = process.cwd();
+  process.chdir(sibling);
+  t.after(() => process.chdir(before));
+  const entries = [
+    { path: git(path.join(container, 'dev')), branch: 'refs/heads/develop' },
+    { path: '', branch: 'refs/heads/a' },
+  ];
+  assert.deepStrictEqual(tabWorktrees(entries, container).map(x => x.isDev), [true]);
+  assert.deepStrictEqual(removalCommands(container, ''), []);
+});
+
+test('parsePorcelain keeps a path with spaces whole', () => {
+  const [e] = parsePorcelain(record(path.join(C, 'feat x y'), ['branch refs/heads/x']));
+  assert.strictEqual(e.path, at('feat x y'));
+});
+
+test('parsePorcelain returns [] for anything that is not a string', () => {
+  for (const v of [null, undefined, 42, {}, [], true]) assert.deepStrictEqual(parsePorcelain(v), []);
+  assert.deepStrictEqual(parsePorcelain(''), []);
+  assert.deepStrictEqual(parsePorcelain('garbage\nmore garbage\n'), []);
+});
+
+// ---------------------------------------------------------------------------
+// tabWorktrees
+
+test('tabWorktrees on the real sample: dev first, then the sibling worktrees in list order', () => {
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(SAMPLE), C), [
+    { path: DEV, branch: 'develop', isDev: true },
+    { path: path.join(C, 'feat-worktree-model'), branch: 'feat/worktree-model', isDev: false },
+    { path: path.join(C, 'fix-resumed-agent'), branch: 'fix/resumed-agent-activity', isDev: false },
+  ]);
+});
+
+test('a detached worktree gets no tab, but a detached dev is still the anchor', () => {
+  const text = [
+    record(DEV, ['detached']),
+    record(path.join(C, 'gate-2026-09-28'), ['detached']),
+  ].join('\n');
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [{ path: DEV, branch: null, isDev: true }]);
+});
+
+test('prunable, bare, subagent, outside, nested and non-branch-ref worktrees get no tab', () => {
+  const text = [
+    devRecord,
+    record(path.join(C, 'gone'), ['branch refs/heads/gone', 'prunable gitdir file points to non-existent location']),
+    record(path.join(C, 'bare-one'), ['bare']),
+    record(path.join(DEV, '.claude', 'worktrees', 'agent-x'), ['branch refs/heads/agent']),
+    record(path.resolve('/elsewhere/other'), ['branch refs/heads/other']),
+    record(path.join(C, 'feat-x', 'inner'), ['branch refs/heads/inner']),
+    record(path.join(C, 'odd-ref'), ['branch refs/remotes/origin/x']),
+    record(C, ['branch refs/heads/container-itself']),
+  ].join('\n');
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [{ path: DEV, branch: 'develop', isDev: true }]);
+});
+
+test('a locked worktree still gets a tab', () => {
+  const text = [devRecord, record(path.join(C, 'feat-l'), ['branch refs/heads/feat/l', 'locked'])].join('\n');
+  assert.strictEqual(tabWorktrees(parsePorcelain(text), C).length, 2);
+});
+
+test('a path with spaces gets a tab', () => {
+  const text = [devRecord, record(path.join(C, 'feat x y'), ['branch refs/heads/feat/x'])].join('\n');
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C)[1],
+    { path: path.join(C, 'feat x y'), branch: 'feat/x', isDev: false });
+});
+
+// Reftable's HEAD stub; see host/git-branch.js, point 4.
+test('an invalid branch name gets no tab, and leaves dev with no branch name', () => {
+  const text = [
+    record(DEV, ['branch refs/heads/.invalid']),
+    record(path.join(C, 'feat-bad'), ['branch refs/heads/.invalid']),
+  ].join('\n');
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [{ path: DEV, branch: null, isDev: true }]);
+});
+
+test('dev is first even when git lists it later', () => {
+  const text = [record(path.join(C, 'feat-a'), ['branch refs/heads/a']), devRecord].join('\n');
+  const tabs = tabWorktrees(parsePorcelain(text), C);
+  assert.deepStrictEqual(tabs.map(t => t.isDev), [true, false]);
+});
+
+test('the same worktree spelled twice is one tab', { skip: process.platform !== 'win32' }, () => {
+  const text = [
+    devRecord,
+    record(path.join(C, 'feat-a'), ['branch refs/heads/a']),
+    record(path.join(C, 'FEAT-A').replace(/\//g, '\\'), ['branch refs/heads/a']),
+    record(DEV.toUpperCase(), ['branch refs/heads/develop']),
+  ].join('\n');
+  assert.strictEqual(tabWorktrees(parsePorcelain(text), C).length, 2);
+});
+
+test('tabWorktrees is [] when dev is missing, or the input is not usable', () => {
+  const noDev = record(path.join(C, 'feat-a'), ['branch refs/heads/a']);
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(noDev), C), []);
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(SAMPLE), null), []);
+  for (const v of [null, undefined, 'x', {}]) assert.deepStrictEqual(tabWorktrees(v, C), []);
+  assert.deepStrictEqual(tabWorktrees([null, 42, { path: 7 }], C), []);
+});
+
+// ---------------------------------------------------------------------------
+// removalCommands
+
+test('removalCommands removes then prunes, run from dev, never forced', () => {
+  const wt = path.join(C, 'feat-a');
+  assert.deepStrictEqual(removalCommands(C, wt), [
+    ['git', ['-C', DEV, 'worktree', 'remove', wt]],
+    ['git', ['-C', DEV, 'worktree', 'prune']],
+  ]);
+});
+
+test('removalCommands refuses dev, the container, and anything not directly inside it', () => {
+  for (const p of [DEV, C, path.join(C, 'feat-x', 'inner'), path.join(DEV, '.claude', 'worktrees', 'agent-x'),
+    path.resolve('/elsewhere/other'), null, '', 42]) {
+    assert.deepStrictEqual(removalCommands(C, p), [], String(p));
+  }
+  assert.deepStrictEqual(removalCommands(null, path.join(C, 'feat-a')), []);
+});
+
+// ---------------------------------------------------------------------------
+// Properties over generated worktree lists.
+
+const nameArb = fc.array(fc.constantFrom('a', 'b', 'feat', '-', 'x y', '2'), { minLength: 1, maxLength: 4 })
+  .map(parts => parts.join(''));
+const pathArb = fc.oneof(
+  fc.constant(DEV),
+  nameArb.map(n => path.join(C, n)),                                  // a sibling worktree
+  nameArb.map(n => path.join(C, n, 'inner')),                         // nested
+  nameArb.map(n => path.join(DEV, '.claude', 'worktrees', n)),        // subagent
+  nameArb.map(n => path.resolve('/elsewhere', n)),                    // another folder
+  fc.constant(C),
+);
+const refArb = fc.oneof(
+  nameArb.map(n => `branch refs/heads/feat/${n}`),
+  fc.constant('branch refs/heads/.invalid'),
+  fc.constant('branch refs/remotes/origin/x'),
+  fc.constant('detached'),
+  fc.constant('bare'),
+);
+const recordArb = fc.record({
+  p: pathArb,
+  ref: refArb,
+  locked: fc.boolean(),
+  prunable: fc.boolean(),
+  upper: fc.boolean(),
+});
+const listArb = fc.tuple(fc.array(recordArb, { maxLength: 8 }), fc.boolean()).map(([recs, crlf]) => {
+  const text = recs.map(r => {
+    let p = r.p;
+    if (process.platform === 'win32' && r.upper) p = p.toUpperCase();
+    const lines = [r.ref];
+    if (r.locked) lines.push('locked');
+    if (r.prunable) lines.push('prunable gone');
+    return record(p, lines);
+  }).join('\n');
+  return { recs, text: crlf ? text.replace(/\n/g, '\r\n') : text };
+});
+
+test('PROPERTY: dev is first and exactly once when listed; otherwise there are no tabs', () => {
+  fc.assert(fc.property(listArb, ({ recs, text }) => {
+    const tabs = tabWorktrees(parsePorcelain(text), C);
+    const devListed = recs.some(r => samePath(r.p, DEV));
+    if (!devListed) return tabs.length === 0;
+    return tabs[0].isDev && samePath(tabs[0].path, DEV) && tabs.filter(t => t.isDev).length === 1;
+  }));
+});
+
+test('PROPERTY: no two tabs are the same folder', () => {
+  fc.assert(fc.property(listArb, ({ text }) => {
+    const tabs = tabWorktrees(parsePorcelain(text), C);
+    return tabs.every((t, i) => tabs.every((u, j) => i === j || !samePath(t.path, u.path)));
+  }));
+});
+
+test('PROPERTY: every non-dev tab is a direct child of the container, on a named branch', () => {
+  fc.assert(fc.property(listArb, ({ text }) => {
+    const tabs = tabWorktrees(parsePorcelain(text), C);
+    return tabs.filter(t => !t.isDev).every(t =>
+      samePath(path.dirname(t.path), C) && !isInside(t.path, DEV)
+      && typeof t.branch === 'string' && t.branch.length > 0);
+  }));
+});
+
+test('PROPERTY: removalCommands never forces, whatever path it is given', () => {
+  const anyPath = fc.oneof(pathArb, fc.string(), fc.constantFrom('-f', '--force', '-ff', '--force --force'));
+  fc.assert(fc.property(anyPath, (p) => {
+    const args = removalCommands(C, p).flatMap(([, a]) => a);
+    return !args.includes('--force') && !args.includes('-f') && !args.some(a => /^-f+$/.test(a));
+  }));
+});
+
+test('PROPERTY: removalCommands only ever targets a direct, non-dev child of the container', () => {
+  fc.assert(fc.property(pathArb, (p) => {
+    const cmds = removalCommands(C, p);
+    if (cmds.length === 0) return true;
+    const target = cmds[0][1][4];
+    return samePath(path.dirname(target), C) && !samePath(target, DEV);
+  }));
+});
