@@ -15,11 +15,16 @@
  * marker still reads as merged AND its host is not listening (strictly
  * `false`: missing is not "stopped") AND that host was seen listening since
  * the tab was marked merged. The last condition is what tells "the session
- * ended" from "a session hasn't started yet": opening a window on an
- * already-merged worktree, or pressing Restart after an exit, must not delete
- * the folder while a host is coming up. A session that had already ended
- * before the merge is never removed automatically; closing the tab by hand
- * keeps the folder for `/merged --sweep`.
+ * ended" from "no session has run since the merge": opening a window on an
+ * already-merged worktree, or a Restart pressed before the marker lands, can't
+ * delete the folder while a host is coming up, even if that host is misreported
+ * as `false`. What it can NOT tell apart on its own is an exit after the merge
+ * followed by a Restart inside one poll -- that is why the contract below says
+ * a starting host is missing, not false, and a finishing tab has no Restart
+ * (Dexter R2 N1). A session that had already ended before the merge is never
+ * removed automatically; closing the tab by hand keeps the folder for
+ * `/merged --sweep`. A finishing tab keeps its "merged" label even if its
+ * marker stops reading on the same branch; it just isn't removed.
  *
  * What the caller (the shell, PR 2) must hold up, because nothing here can
  * check it:
@@ -28,11 +33,25 @@
  *     reads as "not merged" / "not known", silently.
  *   - Read each marker with the branch from the SAME poll's worktrees, never a
  *     tab's stored branch (host/merged-marker.js compares it strictly).
- *   - `listening: false` means the host is confirmed gone, not "a probe timed
- *     out": one false poll after the host was seen is enough to remove.
+ *   - `listening: true` = the host answers. `false` = the host is confirmed
+ *     gone after running, never "a probe timed out" and never "still starting"
+ *     -- a starting or unknown host is left out of the map. One false poll after
+ *     the host was seen is enough to remove.
+ *   - A finishing tab offers no Restart: its work has merged and its folder is
+ *     on the way out.
+ *   - Observations are reconciled in the order they were captured, one at a
+ *     time. A stale poll delivered after a fresher one can reopen a path whose
+ *     dismissal the fresher one pruned (Dexter R2 N2).
+ *   - Run git with LC_ALL=C: `git worktree add`'s lock reason "initializing"
+ *     is translated, and a localized git would make a half-created worktree
+ *     openable (Dexter R2 N5).
  *   - Every `remove` action gets exactly one removeResult, success or not; a
  *     tab left in 'removing' stays there. The shell renders labels from
  *     state.tabs after every call; actions are the side effects to run.
+ *   - A worktree absent from ONE poll is closed. git also leaves out a worktree
+ *     whose admin `gitdir` file reads empty for a moment; if that shows up in
+ *     practice, the shell debounces "gone" over two polls (Dexter R2 N4) --
+ *     not the reducer, whose reconcile must stay idempotent.
  */
 
 const { normPath, samePath } = require('./project-layout');

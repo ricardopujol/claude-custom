@@ -264,6 +264,8 @@ test('a host never seen listening is not "stopped": no remove', () => {
 // Dexter F2: the session ran and ended, Ricardo pressed Restart, and the
 // marker lands while the NEW host is still starting. "Seen listening" must
 // mean seen after the merge, or this removes the folder under the new host.
+// The contract says a starting host is left out of `listening`; this pins the
+// guard even when the shell misreports it as false.
 test('restart after exit: the marker landing while the new host starts does not remove', () => {
   const WTS = [DEV_WT, A_WT];
   let r = run([
