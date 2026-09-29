@@ -122,8 +122,10 @@ test('the @128 variant is not mistaken for a state', () => {
 // four states stay in the data model. Only the DEFAULT asset collapses to one
 // image reused across all four when nothing per-state exists yet.
 
+// Through test/tmp-dir.js, which cleans up after the run: a bare mkdtempSync
+// leaks a directory per call (test/tmp-dir-hygiene.test.js).
 function tmpdir(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return tmpDir(prefix);
 }
 
 function writeTree(dir, tree) {

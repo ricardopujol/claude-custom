@@ -4,12 +4,15 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { planPortraitUpload, applyPortraitUpload, MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS } =
   require('../host/portrait-upload');
 
+// Through test/tmp-dir.js, which cleans up after the run: a bare mkdtempSync
+// leaks a directory per call (test/tmp-dir-hygiene.test.js).
 function tmpdir(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return tmpDir(prefix);
 }
 
 // --- planPortraitUpload: pure decision, no filesystem access of its own ----
