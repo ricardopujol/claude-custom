@@ -255,10 +255,9 @@ test('replacing one state\'s upload leaves every OTHER state\'s files alone', ()
     ['default.gif', 'happy.webm', 'working.png']);
 });
 
-test('an old format that cannot be removed fails the upload, never reports it as set', () => {
-  // If the stale file survives, it still wins the lookup -- so "portrait set"
-  // would be a lie. The failure must surface as a throw (host.js turns it into
-  // ok:false with this message as the reason).
+test('an old format that cannot be removed is REPORTED, not thrown -- the new file is already saved', () => {
+  // Throwing here made the host reply "copy failed" about a file that had in
+  // fact landed, and skip the redraw (Miguel R2 #1, Dexter R2-2).
   const src = tmpdir('cc-src-');
   const uploadsDir = tmpdir('cc-uploads-');
   uploadFile(src, uploadsDir, 'a', 'working', 'png', 'old');
@@ -266,12 +265,43 @@ test('an old format that cannot be removed fails the upload, never reports it as
   fs.writeFileSync(sourceFile, 'new');
   const dest = path.join(uploadsDir, 'a', 'working.webm');
 
-  assert.throws(() => applyPortraitUpload({ source: sourceFile, dest }, {
+  const result = applyPortraitUpload({ source: sourceFile, dest }, {
     unlinkSync: (p) => {
       if (p.endsWith('working.png')) throw Object.assign(new Error('EPERM, simulated'), { code: 'EPERM' });
       fs.unlinkSync(p);
     },
-  }), /working\.png/);
+  });
+  assert.deepStrictEqual(result.leftovers, ['working.png']);
+  assert.strictEqual(fs.readFileSync(dest, 'utf8'), 'new');
+});
+
+test('with a stuck old format, the reply says what the face ACTUALLY shows, and every window redraws', () => {
+  // Which file wins depends on the extension order, so the only honest reply
+  // is the one read back from the resolver after the copy (Dexter R2-2).
+  const stuckUnlink = (stuckName) => (p) => {
+    if (path.basename(p) === stuckName) throw Object.assign(new Error('EBUSY, simulated'), { code: 'EBUSY' });
+    fs.unlinkSync(p);
+  };
+  for (const [oldExt, newExt, newWins] of [['png', 'webm', false], ['webm', 'png', true]]) {
+    const src = tmpdir('cc-src-');
+    const uploadsDir = tmpdir('cc-uploads-');
+    uploadFile(src, uploadsDir, 'a', 'working', oldExt, 'old');
+    const sourceFile = path.join(src, `new.${newExt}`);
+    fs.writeFileSync(sourceFile, 'new');
+
+    const { handlePortraitMessage: handle } = require('../host/portrait-upload');
+    const out = handle({ type: 'portrait', action: 'set', agent: 'a', state: 'working', path: sourceFile }, {
+      uploadsDir,
+      stat: (p) => fs.statSync(p),
+      apply: (plan) => applyPortraitUpload(plan, { unlinkSync: stuckUnlink(`working.${oldExt}`) }),
+      resolve: (agent, state) => portraitFor(agent, state, { uploadsDir }).path,
+      liveState: () => 'working',
+    });
+    assert.strictEqual(out.reply.ok, newWins, `${oldExt} stuck, ${newExt} dropped: ${out.reply.reason}`);
+    if (!newWins) assert.match(out.reply.reason, new RegExp(`working\\.${oldExt}`));
+    assert.doesNotMatch(String(out.reply.reason), /copy failed/);
+    assert.deepStrictEqual(out.mood, { agent: 'a', state: 'working' }, 'a saved file must redraw every window');
+  }
 });
 
 test('applyPortraitUpload cleans up a PARTIAL temp file when the copy itself fails (Dexter F4)', () => {
@@ -303,8 +333,9 @@ test('"." is not an agent or state segment -- it would land in the shared upload
 // is in NOW may already differ (Dexter F3). The file lands under the state
 // the person saw, but the mood re-broadcast carries the CURRENT state, and a
 // state that is not one of the four is never trusted. A drop on an Inactive-
-// tab row (Miguel I1) sets that agent's default.<ext> and repaints the
-// Inactive list instead of inventing a live roster row.
+// tab row (Miguel I1) replaces the picture that row SHOWS -- its sleeping one
+// (Ricardo, 2026-09-28, after Dexter R2-1) -- and repaints the Inactive list
+// instead of inventing a live roster row.
 
 const { handlePortraitMessage } = require('../host/portrait-upload');
 
@@ -315,7 +346,8 @@ function hostDeps(overrides = {}) {
     deps: {
       uploadsDir: path.join(os.tmpdir(), 'cc-never-written'),
       stat: () => ({ size: 10, isFile: () => true }),
-      apply: (plan) => applied.push(plan.dest),
+      apply: (plan) => { applied.push(plan.dest); },
+      resolve: () => applied[applied.length - 1],
       liveState: () => null,
       ...overrides,
     },
@@ -343,11 +375,23 @@ test('a live agent: a state that is not one of the four is refused, not written 
   }
 });
 
-test('a drop on an Inactive-tab row sets the agent\'s default portrait and repaints that list (Miguel I1)', () => {
-  const { deps, applied } = hostDeps({ liveState: () => null });
-  const out = handlePortraitMessage(setMsg({ state: 'inactive' }), deps);
+test('a drop on an Inactive-tab row replaces the picture that row SHOWS, even over an earlier upload (Dexter R2-1)', () => {
+  // The Inactive face resolves `sleeping`. Writing `default` lost to an
+  // existing sleeping.png behind an ok:true. Real apply, real resolver.
+  const src = tmpdir('cc-src-');
+  const uploadsDir = tmpdir('cc-uploads-');
+  uploadFile(src, uploadsDir, 'a', 'sleeping', 'png', 'old');
+  const sourceFile = path.join(src, 'new.gif');
+  fs.writeFileSync(sourceFile, 'new');
+
+  const out = handlePortraitMessage(setMsg({ state: 'inactive', path: sourceFile }), {
+    uploadsDir,
+    stat: (p) => fs.statSync(p),
+    resolve: (agent, state) => portraitFor(agent, state, { uploadsDir }).path,
+    liveState: () => null,
+  });
   assert.strictEqual(out.reply.ok, true, out.reply.reason);
-  assert.ok(applied[0].endsWith(path.join('a', 'default.png')));
+  assert.strictEqual(portraitFor('a', 'sleeping', { uploadsDir }).path, path.join(uploadsDir, 'a', 'sleeping.gif'));
   assert.strictEqual(out.mood, null, 'an inactive agent must not get a live roster row');
   assert.strictEqual(out.repaintIndex, true);
 });
@@ -367,12 +411,14 @@ test('the host refuses what it cannot or must not copy, and says why', () => {
     ['an unreadable file', setMsg({ state: 'working' }), { stat: () => { throw new Error('ENOENT, simulated'); } }],
     ['a directory', setMsg({ state: 'working' }), { stat: () => ({ size: 4096, isFile: () => false }) }],
     ['a failed copy', setMsg({ state: 'working' }), { apply: () => { throw new Error('EPERM, simulated'); } }],
+    ['no state at all', setMsg({}), {}],
   ];
   for (const [label, msg, over] of cases) {
     const { deps } = hostDeps({ liveState: () => 'working', ...over });
     const out = handlePortraitMessage(msg, deps);
     assert.strictEqual(out.reply.ok, false, `${label} was accepted`);
     assert.ok(typeof out.reply.reason === 'string' && out.reply.reason, `${label} gave no reason`);
+    assert.doesNotMatch(out.reply.reason, /undefined/, `${label}: the reason leaks "undefined" (Miguel R2 #3)`);
     assert.strictEqual(out.mood, null, `${label} re-broadcast a mood`);
     assert.strictEqual(out.repaintIndex, false, `${label} repainted the index`);
   }

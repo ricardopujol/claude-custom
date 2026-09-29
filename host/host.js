@@ -325,9 +325,12 @@ const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, 
 const PORTRAITS_DIR =
   process.env.CLAUDE_CUSTOM_PORTRAITS ||
   'C:\\Users\\ricar\\VibeCode\\agent-creator\\portraits';
-// FF7's other two tiers. UPLOADS_DIR is per-project (it lives beside the
-// other .harness state this project already keeps out of git); SHIPPED_DIR
-// is per-install -- app/assets/portrait-default.* does not exist on disk
+// FF7's other two tiers. Both are PER-INSTALL: HARNESS_DIR sits beside this
+// file, not in the project folder, so an upload made in one project shows in
+// every project -- an agent is the same character everywhere (Ricardo,
+// 2026-09-28, after Dexter F7 / Miguel I3 caught this comment claiming
+// "per-project"). Each worktree checkout has its own. SHIPPED_DIR's
+// app/assets/portrait-default.* does not exist on disk
 // today, deliberately, so most installs land on the text placeholder until
 // someone adds one.
 const UPLOADS_DIR = path.join(HARNESS_DIR, 'portraits');
@@ -715,6 +718,7 @@ function handlePortraitUpload(msg) {
   const out = handlePortraitMessage(msg, {
     uploadsDir: UPLOADS_DIR,
     stat: (p) => fs.statSync(p),
+    resolve: (agent, state) => portraitOf(agent, state).path,
     liveState: (agent) => {
       const row = mood.roster().find(r => r.agent === agent);
       return row ? row.state : null;

@@ -117,27 +117,31 @@ function applyPortraitUpload({ source, dest }, {
     try { unlinkSync(tmp); } catch { /* already gone, or never landed */ }
     throw err;
   }
-  removeOtherFormats(dest, unlinkSync);
+  return { leftovers: removeOtherFormats(dest, unlinkSync) };
 }
 
 // The resolver picks between formats by a fixed extension order, so a stale
 // working.png would keep beating a freshly uploaded working.webm (Dexter F1 /
 // Miguel B1, PR #35). Once the new file is in place, every other format for
-// the same <state> goes. A leftover that cannot be removed would still win,
-// so that is a failed upload, never a quiet success.
+// the same <state> goes. One that cannot be removed is RETURNED, not thrown:
+// the new file has already landed, so "copy failed" would be false, and
+// whether the leftover still wins depends on the extension order -- the
+// caller reads that back from the resolver (Miguel R2 #1, Dexter R2-2).
 function removeOtherFormats(dest, unlinkSync) {
   const ext = extensionOf(dest);
+  if (!ext) return []; // Dexter R2 L2: never slice a name that has no extension
   const base = dest.slice(0, -(ext.length + 1));
+  const leftovers = [];
   for (const other of UPLOAD_EXTENSIONS) {
     if (other === ext) continue;
     const stale = `${base}.${other}`;
     try {
       unlinkSync(stale);
     } catch (err) {
-      if (err && err.code === 'ENOENT') continue;
-      throw new Error(`the new portrait was saved, but the old ${path.basename(stale)} could not be removed and would still be shown (${err && err.message})`);
+      if (!err || err.code !== 'ENOENT') leftovers.push(path.basename(stale));
     }
   }
+  return leftovers;
 }
 
 /**
@@ -152,11 +156,23 @@ function removeOtherFormats(dest, unlinkSync) {
  * The state the renderer sends is what the person SAW. The file lands under
  * it, but only if it is one of the four real states, and the mood re-broadcast
  * uses the state the machine is in NOW (Dexter F3). A drop on an Inactive-tab
- * row (state 'inactive', Miguel I1) sets the agent's default.<ext>, which
- * covers every state with no file of its own. An agent that is not live gets
- * no mood broadcast -- that would invent a live roster row for it.
+ * row (state 'inactive', Miguel I1) replaces the picture that row shows, its
+ * `sleeping` one (Ricardo, 2026-09-28, after Dexter R2-1 found that writing
+ * default.<ext> lost to an existing sleeping upload). An agent that is not
+ * live gets no mood broadcast -- that would invent a live roster row for it.
+ * (That split relies on the mood machine never dropping an agent from its
+ * roster; it only ever sets -- Dexter R2 L1.)
+ *
+ * `reply.state` is the state the file was saved under ('sleeping' for an
+ * Inactive drop); a refusal echoes the state that was sent. Only the flourish
+ * text reads it.
+ *
+ * Success is read back, not assumed: after the copy, `resolve(agent, state)`
+ * says which file the face now shows. If a stale format that could not be
+ * removed still wins, the reply says so -- and the mood/repaint still goes
+ * out either way, because the saved file changed what some window resolves.
  */
-function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpload, liveState }) {
+function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpload, resolve, liveState }) {
   const agent = msg && msg.agent;
   const seen = msg && msg.state;
   const source = msg && msg.path;
@@ -166,8 +182,9 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
 
   if (!msg || msg.action !== 'set') return refuse(`unsupported portrait action: ${msg && msg.action}`);
 
-  const target = seen === 'inactive' ? 'default' : seen;
-  if (seen !== 'inactive' && !BUILTIN_STATES.includes(seen)) {
+  if (typeof seen !== 'string' || !seen) return refuse('no state was given for the portrait');
+  const target = seen === 'inactive' ? 'sleeping' : seen;
+  if (!BUILTIN_STATES.includes(target)) {
     return refuse(`"${seen}" is not a state a portrait can be set for`);
   }
 
@@ -184,15 +201,21 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
   const plan = planPortraitUpload({ source, agent, state: target, uploadsDir, size: info.size });
   if (!plan.ok) return refuse(plan.reason);
 
+  let leftovers;
   try {
-    apply({ source, dest: plan.dest });
+    leftovers = ((apply({ source, dest: plan.dest }) || {}).leftovers) || [];
   } catch (err) {
     return refuse(`copy failed: ${err && err.message}`);
   }
 
+  const shown = resolve(agent, target) === plan.dest;
+  const reason = shown ? null
+    : leftovers.length
+      ? `the new portrait was saved, but the old ${leftovers.join(', ')} could not be removed and is still shown`
+      : 'the new portrait was saved, but another file is still shown';
   const now = liveState(agent);
   return {
-    reply: { ok: true, agent, state: target, reason: null },
+    reply: { ok: shown, agent, state: target, reason },
     mood: now ? { agent, state: now } : null,
     repaintIndex: !now,
   };
