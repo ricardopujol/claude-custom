@@ -146,6 +146,32 @@ function createLogSession({
     send({ type: 'agent-log', agent: c.agent, source: null, reason, running });
   }
 
+  // Open `file` for reading, or say why not -- and leave the session able to
+  // TRY AGAIN. `resolved` is the "a name search already came up empty" latch;
+  // it is set when a search finishes, so a failed OPEN must clear it again, or
+  // the next tick returns at the latch and the session never touches the disk
+  // for this agent again (Dexter R2-1, PR #63: one EBUSY at open, or a second
+  // one on the recovery reopen, pinned the panel on "couldn't read" forever).
+  //   ENOENT      the file went away: `no-transcript`, and the next tick searches
+  //   any other   `unreadable`, and the next tick reopens THIS file
+  // Returns the tail, or null (also when the window moved on to another log).
+  async function tryOpen(c, file, running) {
+    try {
+      const tail = await openTail(file);
+      return cur === c ? tail : null;
+    } catch (err) {
+      if (cur !== c) return null;
+      c.resolved = false;
+      if (err && err.code === 'ENOENT') {
+        none(c, 'no-transcript', running);
+      } else {
+        c.restartFile = file;
+        none(c, 'unreadable', running);
+      }
+      return null;
+    }
+  }
+
   async function step(c) {
     const runs = (typeof invocations === 'function' ? invocations() : []).filter(i => i && i.name === c.agent);
     const running = runs.length > 0;
@@ -174,8 +200,8 @@ function createLogSession({
       // again, as a reset (see none()). No new search -- the file is known.
       const file = c.restartFile;
       c.restartFile = null;
-      const tail = await openTail(file);
-      if (cur !== c) return;
+      const tail = await tryOpen(c, file, running);
+      if (!tail) return;
       c.tail = tail;
       c.first = true;
     }
@@ -196,15 +222,8 @@ function createLogSession({
         return;
       }
       c.everFound = true;
-      let tail;
-      try {
-        tail = await openTail(r.file);
-      } catch (err) {
-        if (cur !== c) return;
-        none(c, err && err.code === 'ENOENT' ? 'no-transcript' : 'unreadable', running);
-        return;
-      }
-      if (cur !== c) return;
+      const tail = await tryOpen(c, r.file, running);
+      if (!tail) return;
       c.tail = tail;
       c.first = true;
       c.tracked = want.startsWith('id:');

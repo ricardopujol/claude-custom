@@ -117,12 +117,12 @@ test('an unreadable meta does not hide the other agents\' transcripts', async ()
 
 // ---- the session ------------------------------------------------------------
 
-function harness({ invocations = [], root, intervalMs = 750, read, find, now } = {}) {
+function harness({ invocations = [], root, intervalMs = 750, read, find, now, openTail } = {}) {
   const frames = [];
   const timers = [];
   const state = { invocations };
   const session = createLogSession({
-    cwd: CWD, projectsDir: root, read, find, now,
+    cwd: CWD, projectsDir: root, read, find, now, openTail,
     invocations: () => state.invocations,
     send: f => frames.push(f),
     intervalMs,
@@ -505,6 +505,15 @@ function flaky(failOn, code = 'EBUSY') {
     : agentLog.readMore(state, opts));
 }
 
+// An `openTail` that rejects on the given 1-based calls and otherwise opens for real.
+function flakyOpen(failOn, code = 'EBUSY') {
+  const bad = new Set([].concat(failOn));
+  let n = 0;
+  return (file, opts) => (bad.has(++n)
+    ? Promise.reject(Object.assign(new Error('busy'), { code }))
+    : agentLog.openTail(file, opts));
+}
+
 function reduce(agent, frames) {
   return frames.reduce((m, f) => display.applyFrame(m, f), display.openLog(agent));
 }
@@ -536,6 +545,58 @@ test('F1: after a transient EBUSY a RUNNING agent keeps its history: 3 + 1 new i
   const m = reduce('rev', h.frames);
   assert.deepStrictEqual(m.entries.map(e => e.summary), ['one', 'two', 'three', 'four']);
   assert.strictEqual(m.dropped, 0);
+});
+
+// ---- Dexter R2-1, PR #63: a failed OPEN must not pin the panel on "couldn't read" ----
+
+test('R2-1: one EBUSY when a name-mode log is OPENED is retried on the next tick', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one'), textLine('two')]);
+  const h = harness({ root, openTail: flakyOpen(1) });
+  await h.session.open('rev');
+  assert.strictEqual(h.frames[h.frames.length - 1].reason, 'unreadable');
+  await h.session.poll();
+  const last = h.frames[h.frames.length - 1];
+  assert.strictEqual(last.source, file, 'the log came back');
+  assert.strictEqual(last.reset, true);
+  assert.deepStrictEqual(last.entries.map(e => e.summary), ['one', 'two']);
+});
+
+test('R2-1: a second EBUSY on the RECOVERY reopen still recovers, two polls later', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one'), textLine('two'), textLine('three')]);
+  const h = harness({ root, read: flaky(2), openTail: flakyOpen(2) });
+  await h.session.open('rev');                     // openTail #1, read #1
+  await h.session.poll();                          // read #2: EBUSY
+  await h.session.poll();                          // recovery reopen (openTail #2): EBUSY again
+  assert.strictEqual(h.frames[h.frames.length - 1].reason, 'unreadable');
+  await h.session.poll();                          // reopen succeeds
+  const last = h.frames[h.frames.length - 1];
+  assert.strictEqual(last.source, file);
+  assert.strictEqual(last.reset, true);
+  assert.deepStrictEqual(reduce('rev', h.frames).entries.map(e => e.summary), ['one', 'two', 'three']);
+});
+
+test('R2-1: ENOENT on the recovery reopen is "no-transcript", not "unreadable"', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one')]);
+  const h = harness({ root, read: flaky(2), openTail: flakyOpen(2, 'ENOENT') });
+  await h.session.open('rev');
+  await h.session.poll();                          // EBUSY
+  await h.session.poll();                          // reopen: the file is gone
+  assert.strictEqual(h.frames[h.frames.length - 1].reason, 'no-transcript');
+});
+
+test('R2-1: a failed open does not leave the name search latched', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one')]);
+  let finds = 0;
+  const find = async (a) => { finds++; return require('../host/agent-log-session').findTranscript(a); };
+  const h = harness({ root, find, openTail: flakyOpen(1, 'ENOENT') });
+  await h.session.open('rev');                     // find #1 ok, open ENOENT
+  await h.session.poll();                          // must search again, not sit at the latch
+  assert.ok(finds >= 2, `searched ${finds} time(s)`);
+  assert.notStrictEqual(h.frames[h.frames.length - 1].source, null);
 });
 
 test('F1: an absence frame forgets the status dedupe, so a status the window lost is sent again', async () => {
