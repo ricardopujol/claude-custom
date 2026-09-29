@@ -156,6 +156,23 @@ test('a drop frame is CONTROL, and is never typed into the session', () => {
   assert.strictEqual(dispatchedWith.entries[0].path, 'C:' + BS + 'w' + BS + 'notes.txt');
 });
 
+test('a portrait frame is CONTROL, and is never typed into the session', () => {
+  // FF7: dropping a file onto an agent's face sends {type:'portrait', ...,
+  // path: 'C:\\Users\\ricar\\Desktop\\photo.png'} -- a real filesystem path,
+  // exactly the shape #18/#24 already fixed for `drop`. Missing from
+  // CONTROL_TYPES, that path would be typed verbatim into a session running
+  // --dangerously-skip-permissions instead of reaching the upload handler.
+  const written = [];
+  let dispatchedWith = null;
+  const text = '{"type":"portrait","action":"set","agent":"code-reviewer","state":"working","path":"C:\\\\Users\\\\ricar\\\\Desktop\\\\photo.png"}';
+  const result = handleFrame(text, (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+
+  assert.strictEqual(result.handled, true, 'a portrait frame must be handled as control');
+  assert.deepStrictEqual(written, [], 'a portrait frame must NEVER reach the terminal');
+  assert.strictEqual(dispatchedWith.type, 'portrait');
+  assert.strictEqual(dispatchedWith.agent, 'code-reviewer');
+});
+
 test('a style frame is CONTROL, and is never typed into the session', () => {
   // The same shape as the drop-frame test above, for the FF6 style tab: a
   // set-background or reset-background action must be dispatched, not typed

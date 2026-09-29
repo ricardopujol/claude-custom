@@ -27,6 +27,7 @@ const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
+const { handlePortraitMessage } = require('./portrait-upload');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { wholeRoster, scanProjects } = require('./roster-index');
@@ -324,6 +325,16 @@ const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, 
 const PORTRAITS_DIR =
   process.env.CLAUDE_CUSTOM_PORTRAITS ||
   'C:\\Users\\ricar\\VibeCode\\agent-creator\\portraits';
+// FF7's other two tiers. Both are PER-INSTALL: HARNESS_DIR sits beside this
+// file, not in the project folder, so an upload made in one project shows in
+// every project -- an agent is the same character everywhere (Ricardo,
+// 2026-09-28, after Dexter F7 / Miguel I3 caught this comment claiming
+// "per-project"). Each worktree checkout has its own. SHIPPED_DIR's
+// app/assets/portrait-default.* does not exist on disk
+// today, deliberately, so most installs land on the text placeholder until
+// someone adds one.
+const UPLOADS_DIR = path.join(HARNESS_DIR, 'portraits');
+const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
 const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
@@ -381,7 +392,13 @@ try {
   console.log('[host] provider config invalid, using default:', err.message);
 }
 console.log('[host] provider      :', provider.label, provider.metered ? '(metered)' : '(subscription)');
-const describe = (agent, state) => ({ agent, state, portrait: portraitFor(agent, state, { portraitsDir: PORTRAITS_DIR }) });
+// The ONE portrait lookup in this file, carrying all three tiers: the Inactive
+// tab's call sites once passed only portraitsDir, so an upload showed there as
+// "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
+const portraitOf = (agent, state) => portraitFor(agent, state, {
+  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
+});
+const describe = (agent, state) => ({ agent, state, portrait: portraitOf(agent, state) });
 
 // Generated once per project folder and reused by every context window on it.
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
@@ -688,6 +705,41 @@ function handleDrop(msg, ws) {
   void ws;
 }
 
+// Dropping a file on an agent's face uploads a portrait for its CURRENT
+// state: {type:'portrait', action:'set', agent, state, path}. The decision
+// (extension, size, path safety) and the copy itself both live in
+// host/portrait-upload.js, tested in isolation; this is only the wiring.
+//
+// BROADCAST, like the drop note above and the seat result below it in
+// dispatchControl -- two windows on one project share a roster, and one of
+// them silently disagreeing about whose upload just landed, or why one was
+// refused, is worse than a redraw.
+function handlePortraitUpload(msg) {
+  const out = handlePortraitMessage(msg, {
+    uploadsDir: UPLOADS_DIR,
+    stat: (p) => fs.statSync(p),
+    resolve: (agent, state) => portraitOf(agent, state).path,
+    liveState: (agent) => {
+      const row = mood.roster().find(r => r.agent === agent);
+      return row ? row.state : null;
+    },
+  });
+  if (!out.reply.ok) console.log('[host] portrait upload refused:', out.reply.agent, out.reply.state, '-', out.reply.reason);
+  broadcastControl({ type: 'portrait', ...out.reply });
+  // Re-describe rather than assuming the tier that now applies -- describe()
+  // re-reads the real filesystem, so a stale idea of "the upload obviously
+  // won" can never disagree with what portraitFor actually resolves.
+  if (out.mood) broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state) });
+  if (out.repaintIndex) {
+    lastRosterIndex = {
+      ...lastRosterIndex,
+      agents: lastRosterIndex.agents.map(a => (a.agent === out.reply.agent
+        ? { ...a, portrait: portraitOf(a.agent, 'sleeping') } : a)),
+    };
+    broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
+  }
+}
+
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
 // every session on the folder. Cached and refreshed when an agent finishes
 // rather than polled -- it reads every transcript in the project, so a timer
@@ -736,7 +788,7 @@ function rosterAgentRow(agent, lifetime, unresolvedNames) {
     // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
     // strict presence check that makes that hold.
     tokens: lifetime.agents.has(agent) ? lifetime.agents.get(agent) : null,
-    portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+    portrait: portraitOf(agent, 'sleeping'),
     // Dexter F3 / Miguel L1: an agent resolved only through an unresolved hook
     // LABEL (in either the identity walk or the token sum -- a run can be
     // orphaned in one project and confirmed in another) is flagged rather than
@@ -814,7 +866,7 @@ async function seedRosterIndex() {
     agents: names.map((agent) => ({
       agent,
       tokens: Number.isFinite(seed[agent] && seed[agent].tokens) ? seed[agent].tokens : null,
-      portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+      portrait: portraitOf(agent, 'sleeping'),
       // The seed doesn't carry identity provenance -- assume confirmed rather
       // than flagging every row; `refreshRosterIndex`'s real pass corrects
       // this within moments.
@@ -1698,6 +1750,10 @@ wss.on('connection', (ws) => {
       }
       if (seats !== before) store.write('council', { seats });
       broadcastControl({ ...seatPayload(seats), error });
+      return;
+    }
+    if (msg.type === 'portrait') {
+      handlePortraitUpload(msg);
       return;
     }
     if (msg.type === 'fog') {
