@@ -26,8 +26,8 @@ const { createTerminalState } = require('./terminal-state');
 const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
-const { portraitFor } = require('./portraits');
-const { handlePortraitMessage } = require('./portrait-upload');
+const { portraitFor, globalPortrait } = require('./portraits');
+const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { wholeRoster, scanProjects } = require('./roster-index');
@@ -714,6 +714,38 @@ function handleDrop(msg, ws) {
 // dispatchControl -- two windows on one project share a roster, and one of
 // them silently disagreeing about whose upload just landed, or why one was
 // refused, is worse than a redraw.
+// What the Style tab's "Default agent picture" row shows: set or not, never
+// blank, and the file's own name so the row can say where the picture came from.
+function globalPortraitInfo() {
+  const g = globalPortrait(UPLOADS_DIR);
+  return g ? { set: true, file: g.file, media: g.media } : { set: false, file: null, media: null };
+}
+
+// A file-tier change under _global alters what EVERY face without its own
+// picture resolves to, so re-describe all of them rather than guessing which.
+function repaintAllPortraits() {
+  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state) });
+  lastRosterIndex = {
+    ...lastRosterIndex,
+    agents: lastRosterIndex.agents.map(a => ({ ...a, portrait: portraitOf(a.agent, 'sleeping') })),
+  };
+  broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
+}
+
+// {type:'portrait', action:'set-global'|'reset-global'[, path]}: the user's
+// default picture for every agent (BACKLOG C #3). BROADCAST for the same
+// reason as the per-agent upload above.
+function handleGlobalPortrait(msg) {
+  const out = handleGlobalPortraitMessage(msg, {
+    uploadsDir: UPLOADS_DIR,
+    stat: (p) => fs.statSync(p),
+    resolve: () => (globalPortrait(UPLOADS_DIR) || {}).path || null,
+  });
+  if (!out.reply.ok) console.log('[host] global portrait refused:', msg && msg.action, '-', out.reply.reason);
+  broadcastControl({ type: 'portrait', ...out.reply, globalPortrait: globalPortraitInfo() });
+  if (out.changed) repaintAllPortraits();
+}
+
 function handlePortraitUpload(msg) {
   const out = handlePortraitMessage(msg, {
     uploadsDir: UPLOADS_DIR,
@@ -1513,6 +1545,7 @@ wss.on('connection', (ws) => {
     style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
+    globalPortrait: globalPortraitInfo(),
     running: processes.list(),
     party: mood.stack(),
     // The scrape wins once it has anything; permission_mode off the hook
@@ -1753,7 +1786,8 @@ wss.on('connection', (ws) => {
       return;
     }
     if (msg.type === 'portrait') {
-      handlePortraitUpload(msg);
+      if (msg.action === 'set-global' || msg.action === 'reset-global') handleGlobalPortrait(msg);
+      else handlePortraitUpload(msg);
       return;
     }
     if (msg.type === 'fog') {

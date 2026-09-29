@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES } = require('./portraits');
+const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES, GLOBAL_AGENT } = require('./portraits');
 const { renameWithRetry } = require('./atomic-write');
 
 // The upload tier accepts the same media as the resolver serves. Named
@@ -182,6 +182,11 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
 
   if (!msg || msg.action !== 'set') return refuse(`unsupported portrait action: ${msg && msg.action}`);
 
+  // `_global` is the folder of the global default picture (handleGlobalPortraitMessage);
+  // an agent sharing the name would write into it.
+  if (agent === GLOBAL_AGENT) {
+    return refuse(`"${GLOBAL_AGENT}" is reserved for the global default picture and cannot be an agent's name`);
+  }
   if (typeof seen !== 'string' || !seen) return refuse('no state was given for the portrait');
   const target = seen === 'inactive' ? 'sleeping' : seen;
   if (!BUILTIN_STATES.includes(target)) {
@@ -221,6 +226,73 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
   };
 }
 
+/**
+ * The GLOBAL default picture (BACKLOG C #3): {type:'portrait', action:
+ * 'set-global', path} copies a file to <uploads>/_global/default.<ext> through
+ * the same plan/apply as a per-agent upload; {action:'reset-global'} removes
+ * every _global default. Same shape as handlePortraitMessage: every side
+ * effect is injected, success is read back from the resolver, and a refusal is
+ * a sentence.
+ *
+ *   reply    -> broadcast as {type:'portrait', global: true, ...reply}
+ *   changed  -> true when files on disk changed, i.e. every face must be
+ *               re-resolved (the host does that; this module only decides)
+ */
+function handleGlobalPortraitMessage(msg, {
+  uploadsDir, stat, apply = applyPortraitUpload, resolve, unlink = fs.unlinkSync,
+} = {}) {
+  const refuse = (reason) => ({ reply: { ok: false, global: true, reason }, changed: false });
+  const action = msg && msg.action;
+
+  if (action === 'reset-global') {
+    const dir = uploadsDir ? path.join(uploadsDir, GLOBAL_AGENT) : null;
+    if (!dir) return refuse('no uploads directory is configured');
+    let removed = 0;
+    const stuck = [];
+    for (const ext of UPLOAD_EXTENSIONS) {
+      const file = path.join(dir, `default.${ext}`);
+      try {
+        unlink(file);
+        removed += 1;
+      } catch (err) {
+        if (!err || err.code !== 'ENOENT') stuck.push(path.basename(file));
+      }
+    }
+    if (stuck.length) {
+      return { reply: { ok: false, global: true, reason: `could not remove ${stuck.join(', ')}` }, changed: removed > 0 };
+    }
+    return { reply: { ok: true, global: true, reason: null }, changed: removed > 0 };
+  }
+
+  if (action !== 'set-global') return refuse(`unsupported portrait action: ${action}`);
+
+  const source = msg.path;
+  let info;
+  try {
+    info = stat(source);
+  } catch (err) {
+    return refuse(`could not read the chosen file: ${err && err.message}`);
+  }
+  if (!info || typeof info.isFile !== 'function' || !info.isFile()) return refuse('the chosen item is not a file');
+
+  const plan = planPortraitUpload({ source, agent: GLOBAL_AGENT, state: 'default', uploadsDir, size: info.size });
+  if (!plan.ok) return refuse(plan.reason);
+
+  let leftovers;
+  try {
+    leftovers = ((apply({ source, dest: plan.dest }) || {}).leftovers) || [];
+  } catch (err) {
+    return refuse(`copy failed: ${err && err.message}`);
+  }
+  const shown = resolve() === plan.dest;
+  const reason = shown ? null
+    : leftovers.length
+      ? `the new picture was saved, but the old ${leftovers.join(', ')} could not be removed and is still shown`
+      : 'the new picture was saved, but another file is still shown';
+  return { reply: { ok: shown, global: true, reason }, changed: true };
+}
+
 module.exports = {
-  planPortraitUpload, applyPortraitUpload, handlePortraitMessage, MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS,
+  planPortraitUpload, applyPortraitUpload, handlePortraitMessage, handleGlobalPortraitMessage,
+  MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS,
 };
