@@ -213,6 +213,9 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
   } catch (err) {
     return refuse(`could not read the dropped file: ${err && err.message}`);
   }
+  if (info && typeof info.isSymbolicLink === 'function' && info.isSymbolicLink()) {
+    return refuse('the dropped item is a symbolic link; drop the real file instead');
+  }
   if (!info || typeof info.isFile !== 'function' || !info.isFile()) {
     return refuse('the dropped item is not a file');
   }
@@ -286,6 +289,9 @@ function handleGlobalPortraitMessage(msg, {
     info = stat(source);
   } catch (err) {
     return refuse(`could not read the chosen file: ${err && err.message}`);
+  }
+  if (info && typeof info.isSymbolicLink === 'function' && info.isSymbolicLink()) {
+    return refuse('the chosen item is a symbolic link; choose the real file instead');
   }
   if (!info || typeof info.isFile !== 'function' || !info.isFile()) return refuse('the chosen item is not a file');
 

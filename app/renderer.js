@@ -1030,7 +1030,9 @@ function faceHtml(portrait) {
 // `portrait set` message a drop sends. NOT the plain card click -- that opens
 // the agent's activity log.
 function faceEditHtml() {
-  return (window.harness && window.harness.avatar)
+  // Hidden while images are off or unknown: a picture saved then changes nothing
+  // visible, which reads as a broken button (Miguel S7, PR #64).
+  return (window.harness && window.harness.avatar && agentImagesEnabled === true)
     ? '<button type="button" class="face-edit" title="Choose a picture, GIF or video for this agent">✎</button>'
     : '';
 }

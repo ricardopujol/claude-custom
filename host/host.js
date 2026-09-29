@@ -738,7 +738,7 @@ function repaintAllPortraits() {
 function handleGlobalPortrait(msg) {
   const out = handleGlobalPortraitMessage(msg, {
     uploadsDir: UPLOADS_DIR,
-    stat: (p) => fs.statSync(p),
+    stat: (p) => fs.lstatSync(p),
     resolve: () => (globalPortrait(UPLOADS_DIR) || {}).path || null,
   });
   if (!out.reply.ok) console.log('[host] global portrait refused:', msg && msg.action, '-', out.reply.reason);
@@ -749,7 +749,8 @@ function handleGlobalPortrait(msg) {
 function handlePortraitUpload(msg) {
   const out = handlePortraitMessage(msg, {
     uploadsDir: UPLOADS_DIR,
-    stat: (p) => fs.statSync(p),
+    // lstat, not stat: a symlink is refused, never followed (Miguel S1, PR #64).
+    stat: (p) => fs.lstatSync(p),
     resolve: (agent, state) => portraitOf(agent, state).path,
     liveState: (agent) => {
       const row = mood.roster().find(r => r.agent === agent);

@@ -63,8 +63,7 @@ function esc(v) {
  */
 function fileUrl(p, mtimeMs) {
   const clean = String(p).replace(/\\/g, '/')
-    .replace(/[^A-Za-z0-9\-._~!$&'()*+,;=:@/]/gu, (c) => encodeURIComponent(c))
-    .replace(/\?/g, '%3F');
+    .replace(/[^A-Za-z0-9\-._~!$&'()*+,;=:@/]/gu, (c) => encodeURIComponent(c));
   const v = typeof mtimeMs === 'number' && Number.isFinite(mtimeMs) ? `?v=${Math.trunc(mtimeMs)}` : '';
   return `file:///${clean}${v}`;
 }
