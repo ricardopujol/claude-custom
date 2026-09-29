@@ -108,6 +108,16 @@ function createLogSession({
     const key = `${reason}|${running}`;
     if (c.lastNone === key) return;
     c.lastNone = key;
+    // An absence frame WIPES what the window holds (the reducer clears its
+    // entries), so recovery cannot pick up where the tail left off: the offset
+    // is already past everything that was wiped. Restart the file from the top
+    // and make the next data frame a reset, and forget the status dedupe -- the
+    // window has forgotten what those statuses were. (Dexter F1, PR #63: one
+    // EBUSY left a finished agent's panel on "couldn't read" forever, and made
+    // a running agent's history vanish with `dropped: 0`.)
+    c.lastRunning = null;
+    c.lastDone = null;
+    if (c.tail) { c.tail = agentLog.createTail(c.tail.file); c.first = true; }
     send({ type: 'agent-log', agent: c.agent, source: null, reason, running });
   }
 

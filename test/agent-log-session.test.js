@@ -117,12 +117,12 @@ test('an unreadable meta does not hide the other agents\' transcripts', async ()
 
 // ---- the session ------------------------------------------------------------
 
-function harness({ invocations = [], root, intervalMs = 750 } = {}) {
+function harness({ invocations = [], root, intervalMs = 750, read, find, now } = {}) {
   const frames = [];
   const timers = [];
   const state = { invocations };
   const session = createLogSession({
-    cwd: CWD, projectsDir: root,
+    cwd: CWD, projectsDir: root, read, find, now,
     invocations: () => state.invocations,
     send: f => frames.push(f),
     intervalMs,
@@ -305,4 +305,64 @@ test('a poll that is still running is not started again on top of itself', async
   await h.session.open('rev');
   await Promise.all([h.session.poll(), h.session.poll(), h.session.poll()]);
   assert.strictEqual(h.frames.length, 1);
+});
+
+// ---- Dexter F1, PR #63: a transient read error must not lose or hide the log ----
+
+const agentLog = require('../host/agent-log');
+const display = require('../app/agent-log-display');
+
+// A `read` that behaves like the real one except that call number `failOn`
+// (1-based) rejects with the given errno -- what an AV scanner or an indexer
+// holding the file produces on Windows.
+function flaky(failOn, code = 'EBUSY') {
+  let n = 0;
+  return (state, opts) => (++n === failOn
+    ? Promise.reject(Object.assign(new Error('busy'), { code }))
+    : agentLog.readMore(state, opts));
+}
+
+function reduce(agent, frames) {
+  return frames.reduce((m, f) => display.applyFrame(m, f), display.openLog(agent));
+}
+
+test('F1: after a transient EBUSY a FINISHED agent\'s log comes back, it does not sit on "couldn\'t read"', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one'), textLine('two'), textLine('three')]);
+  const h = harness({ root, read: flaky(2) });
+  await h.session.open('rev');
+  await h.session.poll();                         // EBUSY
+  assert.strictEqual(h.frames[h.frames.length - 1].reason, 'unreadable');
+  await h.session.poll();                         // the file reads fine again
+  const last = h.frames[h.frames.length - 1];
+  assert.strictEqual(last.reset, true, 'recovery re-sends from the top');
+  assert.deepStrictEqual(last.entries.map(e => e.summary), ['one', 'two', 'three']);
+  const m = reduce('rev', h.frames);
+  assert.strictEqual(m.source, last.source);
+  assert.strictEqual(m.entries.length, 3);
+});
+
+test('F1: after a transient EBUSY a RUNNING agent keeps its history: 3 + 1 new is 4, not 1', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one'), textLine('two'), textLine('three')]);
+  const h = harness({ root, read: flaky(2), invocations: [{ name: 'rev', agentId: 'a1' }] });
+  await h.session.open('rev');
+  fs.appendFileSync(file, textLine('four') + NL);
+  await h.session.poll();                         // EBUSY
+  await h.session.poll();                         // recovered
+  const m = reduce('rev', h.frames);
+  assert.deepStrictEqual(m.entries.map(e => e.summary), ['one', 'two', 'three', 'four']);
+  assert.strictEqual(m.dropped, 0);
+});
+
+test('F1: an absence frame forgets the status dedupe, so a status the window lost is sent again', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'a1', { agentType: 'rev' }, []);   // an empty transcript: nothing but status to send
+  const h = harness({ root, read: flaky(2), invocations: [{ name: 'rev', agentId: 'a1' }] });
+  await h.session.open('rev');
+  await h.session.poll();                         // EBUSY
+  await h.session.poll();
+  const last = h.frames[h.frames.length - 1];
+  assert.notStrictEqual(last.source, null, 'the recovery is announced even though nothing new was read');
+  assert.strictEqual(last.running, true);
 });
