@@ -469,6 +469,29 @@ test('F3: identity tables that could not read a parent session make the miss unr
     { file: null, reason: 'unreadable' });
 });
 
+test('R2-3: a pick made while part of the search was blind carries `blind`; a clean pick does not', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'x' }, [textLine('x')]);
+  const blindList = async (d) => { const r = await require('../host/transcripts').transcriptFiles(d); return { ...r, errors: 1 }; };
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x', listFiles: blindList }),
+    { file, blind: true });
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x' }), { file });
+  // An exact id is exact: blindness elsewhere does not make it a guess.
+  assert.deepStrictEqual(await findTranscript({ cwd: CWD, projectsDir: root, agent: 'x', agentId: 'a1', listFiles: blindList }), { file });
+});
+
+test('R2-3: the session passes `blind` to the window, which qualifies "latest run"', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('x')]);
+  const h = harness({ root, find: async () => ({ file, blind: true }) });
+  await h.session.open('rev');
+  assert.strictEqual(h.frames[0].blind, true);
+  assert.match(display.renderAgentLog(reduce('rev', h.frames)), /latest run found \(search incomplete\)/);
+  const clean = harness({ root, find: async () => ({ file }) });
+  await clean.session.open('rev');
+  assert.strictEqual(clean.frames[0].blind, false);
+});
+
 test('F3: a transcript with no meta at all is ordinary -- it does not make an honest miss "unreadable"', async () => {
   const { root, dir } = project();
   const sd = path.join(dir, 's1', 'subagents');

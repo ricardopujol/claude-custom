@@ -108,7 +108,11 @@ async function findTranscript({
       best = { file: f.file, mtime };
     }
   }
-  if (best) return { file: best.file };
+  // A pick made while part of the search was blind may not be the newest run:
+  // the run in the folder that would not list could be. `blind` travels with the
+  // answer so the window does not call it "the latest run" unqualified
+  // (Dexter R2-3, PR #63).
+  if (best) return blind > 0 ? { file: best.file, blind: true } : { file: best.file };
   return blind > 0 ? unreadable : none;
 }
 
@@ -228,6 +232,7 @@ function createLogSession({
       const tail = await tryOpen(c, r.file, running);
       if (!tail) return;
       c.tail = tail;
+      c.blind = r.blind === true;
       c.first = true;
       c.tracked = want.startsWith('id:');
     }
@@ -266,7 +271,7 @@ function createLogSession({
         c.lastNone = null;
         send({
           type: 'agent-log', agent: c.agent, source: r.state.file,
-          entries: r.entries, reset, running, done, tracked: c.tracked, unknown: r.state.unknown,
+          entries: r.entries, reset, running, done, tracked: c.tracked, blind: c.blind, unknown: r.state.unknown,
           skippedBytes: r.state.skippedBytes || 0,
         });
       }
@@ -303,7 +308,7 @@ function createLogSession({
     close();
     if (typeof agent !== 'string' || !agent) return;
     const c = {
-      agent, timer: null, busy: false, idle: false, lastPollAt: 0, want: null, resolved: false, everFound: false,
+      agent, timer: null, busy: false, idle: false, blind: false, lastPollAt: 0, want: null, resolved: false, everFound: false,
       tail: null, first: false, tracked: false, lastNone: null, lastRunning: null, lastDone: null,
     };
     cur = c;

@@ -49,7 +49,7 @@ function emptyLog() {
     open: false, agent: null, waiting: false,
     source: null, reason: null,
     entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
-    running: false, done: false, tracked: true,
+    running: false, done: false, tracked: true, blind: false,
     render: 'rebuild', added: 0,
   };
 }
@@ -128,6 +128,9 @@ function applyFrame(model, frame) {
     // Only an explicit `false` marks a run this host does not track (a
     // transcript picked by name): its status is "latest run", never "finished".
     tracked: frame.tracked !== false,
+    // The host's search for this transcript could not read part of the project,
+    // so it may not be the newest run.
+    blind: frame.blind === true,
   };
 }
 
@@ -178,7 +181,7 @@ function plural(n, one, many) { return n === 1 ? one : many; }
 /** The status word beside the agent's name: '' when there is no transcript. */
 function statusText(model) {
   if (!model || !model.open || model.source === null) return '';
-  return model.running ? 'live' : model.done ? 'finished' : model.tracked === false ? 'latest run' : 'reading';
+  return model.running ? 'live' : model.done ? 'finished' : model.tracked === false ? (model.blind ? 'latest run found (search incomplete)' : 'latest run') : 'reading';
 }
 
 /** The rows for these entries (also what an append adds). */
