@@ -20,6 +20,19 @@
  * the folder while a host is coming up. A session that had already ended
  * before the merge is never removed automatically; closing the tab by hand
  * keeps the folder for `/merged --sweep`.
+ *
+ * What the caller (the shell, PR 2) must hold up, because nothing here can
+ * check it:
+ *   - `merged` and `listening` are keyed by normPath(path) -- lowercased on
+ *     Windows -- while tabs keep git's spelling. A key spelled any other way
+ *     reads as "not merged" / "not known", silently.
+ *   - Read each marker with the branch from the SAME poll's worktrees, never a
+ *     tab's stored branch (host/merged-marker.js compares it strictly).
+ *   - `listening: false` means the host is confirmed gone, not "a probe timed
+ *     out": one false poll after the host was seen is enough to remove.
+ *   - Every `remove` action gets exactly one removeResult, success or not; a
+ *     tab left in 'removing' stays there. The shell renders labels from
+ *     state.tabs after every call; actions are the side effects to run.
  */
 
 const { normPath, samePath } = require('./project-layout');
