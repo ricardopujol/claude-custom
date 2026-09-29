@@ -201,7 +201,7 @@ async function readAt(fh, offset, length) {
  * `maxEntries` caps LINES consumed per call, so a huge transcript is handed
  * over in steps rather than as one enormous frame.
  */
-async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES } = {}) {
+async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes = WINDOW_BYTES } = {}) {
   const fh = await fsp.open(state.file, 'r');
   try {
     const { size } = await fh.stat();
@@ -219,7 +219,7 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES } = {}) {
     const want = size - offset;
     if (want > 0) {
       // A window, grown until it holds a whole line or the whole remainder.
-      let win = Math.min(want, WINDOW_BYTES);
+      let win = Math.min(want, windowBytes);
       let buf = await readAt(fh, offset, win);
       while (buf.indexOf(10) === -1 && win < want) {
         win = Math.min(want, win * 2);
@@ -237,7 +237,13 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES } = {}) {
           entries.push(e);
         }
       }
-      more = buf.indexOf(10, consumed) !== -1 || (win < want && lines === maxEntries);
+      // Caught up means nothing complete is left UNREAD -- not "nothing complete
+      // is left in this window". A window that ended before EOF may end
+      // mid-line, with the rest of the file (and its newlines) beyond it. The
+      // old test only counted the line cap, so a 4 MB window holding 41 of 50
+      // 100 KB lines reported caught-up and the session called it "finished"
+      // (Dexter F2 / Miguel M2, PR #63).
+      more = buf.indexOf(10, consumed) !== -1 || win < want;
     }
     return {
       entries,

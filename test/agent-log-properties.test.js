@@ -150,3 +150,33 @@ test('P3: a per-call cap never changes the union, and always terminates', async 
     },
   ), { numRuns: 100 });
 });
+
+test('P4: with ANY window size, "caught up" is never claimed while a complete line is unread', async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'agent-p4.jsonl');
+  await fc.assert(fc.asyncProperty(
+    transcriptArb,
+    fc.integer({ min: 1, max: 300 }),
+    fc.integer({ min: 1, max: 6 }),
+    async ([lines, trailing], windowBytes, cap) => {
+      const bytes = Buffer.from(render(lines, trailing));
+      fs.writeFileSync(file, bytes);
+      const lastNewline = bytes.lastIndexOf(10);          // -1 when there is no complete line
+      let state = log.createTail(file);
+      const got = [];
+      for (let calls = 0; ; calls++) {
+        assert.ok(calls <= bytes.length + lines.length + 2, 'reading must make progress');
+        const r = await log.readMore(state, { windowBytes, maxEntries: cap });
+        got.push(...r.entries);
+        state = r.state;
+        if (!r.more) {
+          // done is derived from !more, so this IS "done is never true while offset < size":
+          // the only bytes left may be a partial line with no newline.
+          assert.strictEqual(state.offset, lastNewline + 1, 'more=false with a complete line still unread');
+          break;
+        }
+      }
+      assert.deepStrictEqual(got, wholeParse(bytes.toString('utf8')).entries);
+    },
+  ), { numRuns: 150 });
+});

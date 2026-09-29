@@ -242,3 +242,35 @@ test('tool names carry across reads: a result arriving in a later call still fin
   const second = await log.readMore(first.state);
   assert.strictEqual(second.entries[0].name, 'Grep');
 });
+
+// ---- Dexter F2 / Miguel M2, PR #63: `more` false means caught up, not "this window is spent" ----
+
+test('45 lines of 100 KB: the default 4 MB window ends mid-line, and more stays true until line 45', async () => {
+  const big = i => assistant({ type: 'text', text: ('L' + i + ' ').padEnd(100000, 'x') });
+  const f = fileWith(Array.from({ length: 45 }, (_, i) => big(i)).join('\n') + '\n');
+  assert.ok(fs.statSync(f).size > 4 * 1024 * 1024, 'the fixture must exceed the window');
+  let state = log.createTail(f);
+  const seen = [];
+  let calls = 0;
+  for (;;) {
+    const r = await log.readMore(state);
+    calls++;
+    seen.push(...r.entries);
+    state = r.state;
+    if (!r.more) break;
+    assert.ok(seen.length < 45, 'more must not be true once everything is delivered');
+  }
+  assert.ok(calls >= 2, 'the first call cannot have delivered the whole file');
+  assert.strictEqual(seen.length, 45);
+  assert.strictEqual(state.offset, fs.statSync(f).size);
+});
+
+test('with a small window, a window that ends mid-line reports more, and the last call reports none', async () => {
+  const lines = Array.from({ length: 6 }, (_, i) => assistant({ type: 'text', text: 'row' + i }));
+  const f = fileWith(lines.join('\n') + '\n');
+  const lineBytes = Buffer.byteLength(lines[0] + '\n');
+  // Room for one and a half lines: the window always ends inside a line.
+  const r = await log.readMore(log.createTail(f), { windowBytes: Math.floor(lineBytes * 1.5) });
+  assert.strictEqual(r.entries.length, 1);
+  assert.strictEqual(r.more, true);
+});
