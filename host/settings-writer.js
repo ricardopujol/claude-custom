@@ -83,11 +83,20 @@ function buildStatusLine({ nodePath, scriptPath, userStatusLine }, pipeName) {
 const LOADOUT_MATCHER = 'Agent|Task';
 const LOADOUT_TIMEOUT_SECONDS = 5;
 
+// Inside double quotes a POSIX shell still expands `$name` and backticks and
+// ends the string at a bare `"`, so an install under `D:\$work` reaches node as
+// `D://...` (PR #68, Dexter F7 / Miguel S5). Those three are backslash-escaped.
+// A path without them is quoted exactly as before, so the common case is
+// byte-identical; the escape assumes the POSIX shell this file already assumes
+// for the backslash trap. (The two older entries still use plain `quote`.)
+const quotePosixSafe = (s) => `"${String(s).replace(/(["$`])/g, '\\$1')}"`;
+
 /** The tool belt entry, or null when it is not fully specified. */
 function buildLoadoutEntry(loadoutHook) {
   const h = loadoutHook && typeof loadoutHook === 'object' ? loadoutHook : null;
   if (!h || !h.nodePath || !h.scriptPath || !h.stateDir) return null;
-  const command = `${quote(slashes(h.nodePath))} ${quote(slashes(h.scriptPath))} --state ${quote(slashes(h.stateDir))}`;
+  const q = (p) => quotePosixSafe(slashes(p));
+  const command = `${q(h.nodePath)} ${q(h.scriptPath)} --state ${q(h.stateDir)}`;
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 

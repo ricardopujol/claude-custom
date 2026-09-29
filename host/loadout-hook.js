@@ -23,6 +23,13 @@
  * Bash. It requires only the pure core and the payload contract; a test pins
  * that, because an accidental require of the store would add to every spawn.
  *
+ * "Always exits 0" is true of THIS SCRIPT, not of the command line that runs it:
+ * inside Electron the host registers the hook as `node <script>` (the same
+ * node-from-PATH choice as host/status-relay.js, because Electron's own
+ * execPath is not plain node). If `node` is not on the hook shell's PATH the
+ * shell exits 127 and the CLI shows a non-blocking hook error on each Agent
+ * spawn; the spawn itself still runs unmodified (PR #68, Miguel S6).
+ *
  * The file is read on EVERY invocation, so an equip lands on the very next
  * spawn with no restart. Reading it is a plain fs read of `loadout.json`
  * (host/store.js's key 'loadout'); the store writes it atomically by rename, so

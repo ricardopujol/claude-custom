@@ -342,6 +342,33 @@ test('a half-specified loadoutHook adds nothing rather than a broken command', (
   }
 });
 
+test('F7/S5: a $, backtick or quote in the install path reaches node verbatim under a POSIX hook shell', () => {
+  // Inside double quotes a POSIX shell expands $work and `cmd` and ends the
+  // string at a bare ". `slashes` fixes the backslash trap but not these.
+  const { spawnSync } = require('child_process');
+  const probe = spawnSync('bash', ['-c', 'printf ok'], { encoding: 'utf8' });
+  if (probe.status !== 0 || probe.stdout !== 'ok') return;          // no POSIX shell here: nothing to be an oracle
+  const hard = 'D:\\$work\\`id`\\a"b\\claude-custom';
+  const entry = buildHarnessSettings({ ...opts, loadoutHook: {
+    nodePath: 'node', scriptPath: `${hard}\\host\\loadout-hook.js`, stateDir: `${hard}\\.harness\\state`,
+  } }).hooks.PreToolUse[1];
+  const r = spawnSync('bash', ['-c', `printf '%s\\n' ${entry.hooks[0].command}`], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
+  const words = r.stdout.split('\n').slice(0, 4);
+  assert.deepStrictEqual(words, [
+    'node',
+    'D:/$work/`id`/a"b/claude-custom/host/loadout-hook.js',
+    '--state',
+    'D:/$work/`id`/a"b/claude-custom/.harness/state',
+  ]);
+});
+
+test('an ordinary path is quoted exactly as before (no escapes added where none are needed)', () => {
+  const s = buildHarnessSettings({ ...opts, loadoutHook });
+  assert.strictEqual(s.hooks.PreToolUse[1].hooks[0].command,
+    '"C:/Program Files/nodejs/node.exe" "C:/proj/claude-custom/host/loadout-hook.js" --state "C:/proj/claude-custom/.harness/state"');
+});
+
 test('the tool belt hook survives being written to disk and read back', () => {
   const dir = tmpDir('cc-settings-');
   const file = writeHarnessSettings(dir, { ...opts, loadoutHook }, 7701);
