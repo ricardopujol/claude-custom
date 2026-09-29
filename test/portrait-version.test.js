@@ -79,7 +79,7 @@ test('the stamp is applied to the destination after the rename, and a failing st
     utimesSync: () => { calls.push('utimes'); throw new Error('EPERM'); },
     now: () => 10_000,
   });
-  assert.deepStrictEqual(calls, ['copy', 'rename', 'utimes']);
+  assert.deepStrictEqual(calls, ['copy', 'rename', 'utimes', 'utimes', 'utimes']);
   assert.deepStrictEqual(out.leftovers, []);
 });
 

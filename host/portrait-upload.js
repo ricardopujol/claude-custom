@@ -22,6 +22,7 @@ const { renameWithRetry } = require('./atomic-write');
 // does not require touching two unrelated lists to express.
 const UPLOAD_EXTENSIONS = MEDIA_EXTENSIONS;
 
+const STALE_REASON = 'the new picture was saved, but its version could not be updated, so the previous picture may still be shown until the app is restarted';
 const RESERVED_REASON = `"${GLOBAL_AGENT}" is reserved for the global default picture and cannot be an agent's name`;
 
 // 25 MB. Ricardo, 2026-09-22: refuse by extension and size, with a visible
@@ -121,19 +122,32 @@ function applyPortraitUpload({ source, dest }, {
   let previous = 0;
   try { previous = statSync(dest).mtimeMs; } catch { /* first upload */ }
   const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
+  let stamped = false;
+  let versionMoved = true;
   try {
     // Inside the try (Dexter F4, PR #35): a copy that dies partway -- ENOSPC
     // on a large video -- has already created the temp file.
     copyFile(source, tmp);
     rename(tmp, dest);
-    // Best effort: the file has landed, so a failed stamp must not read as a failed copy.
-    try { const stamp = Math.max(now(), previous + 1) / 1000; utimesSync(dest, stamp, stamp); } catch { /* keeps the copied mtime */ }
+    // Retried like the rename (an antivirus scan of the just-renamed file holds
+    // it for a moment). The file has landed, so a stamp that never succeeds must
+    // not read as a failed copy -- but it must not read as a clean success
+    // either: if the version did not move, the old picture may stay cached.
+    const stamp = Math.max(now(), previous + 1) / 1000;
+    for (let attempt = 0; attempt < 3 && !stamped; attempt++) {
+      try { utimesSync(dest, stamp, stamp); stamped = true; } catch { /* try again */ }
+    }
+    if (!stamped) {
+      let after = previous;
+      try { after = statSync(dest).mtimeMs; } catch { /* unknown counts as unmoved */ }
+      versionMoved = after !== previous;
+    }
   } catch (err) {
     // Best-effort cleanup; the copy's or rename's own error is the one that matters.
     try { unlinkSync(tmp); } catch { /* already gone, or never landed */ }
     throw err;
   }
-  return { leftovers: removeOtherFormats(dest, unlinkSync) };
+  return { leftovers: removeOtherFormats(dest, unlinkSync), versionStale: !stamped && !versionMoved };
 }
 
 // The resolver picks between formats by a fixed extension order, so a stale
@@ -224,20 +238,23 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
   if (!plan.ok) return refuse(plan.reason);
 
   let leftovers;
+  let versionStale = false;
   try {
-    leftovers = ((apply({ source, dest: plan.dest }) || {}).leftovers) || [];
+    const applied = apply({ source, dest: plan.dest }) || {};
+    leftovers = applied.leftovers || [];
+    versionStale = applied.versionStale === true;
   } catch (err) {
     return refuse(`copy failed: ${err && err.message}`);
   }
 
   const shown = resolve(agent, target) === plan.dest;
-  const reason = shown ? null
+  const reason = shown ? (versionStale ? STALE_REASON : null)
     : leftovers.length
       ? `the new portrait was saved, but the old ${leftovers.join(', ')} could not be removed and is still shown`
       : 'the new portrait was saved, but another file is still shown';
   const now = liveState(agent);
   return {
-    reply: { ok: shown, agent, state: target, reason },
+    reply: { ok: shown && !versionStale, agent, state: target, reason },
     mood: now ? { agent, state: now } : null,
     repaintIndex: !now,
   };
@@ -299,17 +316,20 @@ function handleGlobalPortraitMessage(msg, {
   if (!plan.ok) return refuse(plan.reason);
 
   let leftovers;
+  let versionStale = false;
   try {
-    leftovers = ((apply({ source, dest: plan.dest }) || {}).leftovers) || [];
+    const applied = apply({ source, dest: plan.dest }) || {};
+    leftovers = applied.leftovers || [];
+    versionStale = applied.versionStale === true;
   } catch (err) {
     return refuse(`copy failed: ${err && err.message}`);
   }
   const shown = resolve() === plan.dest;
-  const reason = shown ? null
+  const reason = shown ? (versionStale ? STALE_REASON : null)
     : leftovers.length
       ? `the new picture was saved, but the old ${leftovers.join(', ')} could not be removed and is still shown`
       : 'the new picture was saved, but another file is still shown';
-  return { reply: { ok: shown, global: true, reason }, changed: true };
+  return { reply: { ok: shown && !versionStale, global: true, reason }, changed: true };
 }
 
 module.exports = {
