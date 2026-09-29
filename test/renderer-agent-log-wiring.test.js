@@ -21,14 +21,18 @@ function handlerBody(after) {
   return src.slice(i, src.indexOf('\n});', i));
 }
 
-test('a click on a card opens the log, but a click on the FACE never does', () => {
+test('the card click handler opens a log ONLY for the agent cardClickAgent names', () => {
+  // The face / button / data-no-card-click decisions live in the display module
+  // and are tested behaviourally in agent-log-display.test.js; what only this
+  // file can pin is that the handler asks it, with the click's target, and
+  // opens nothing on its own.
   const body = handlerBody("agentsEl.addEventListener('click'");
-  const guard = body.indexOf("e.target.closest('.face')");
+  const ask = body.indexOf('cardClickAgent(e.target)');
   const open = body.indexOf('openAgentLog(');
-  assert.ok(guard !== -1, 'the face must be excluded');
-  assert.ok(open !== -1, 'the click must open the log');
-  assert.ok(guard < open, 'the face guard must come BEFORE the open');
-  assert.ok(/return;/.test(body.slice(guard, open)), 'the face guard must return');
+  assert.ok(ask !== -1, 'the handler must ask cardClickAgent about the click target');
+  assert.ok(open > ask, 'and open only after asking');
+  assert.ok(/if \(agent\) openAgentLog\(agent\)/.test(body), 'opening is conditional on its answer');
+  assert.ok(!body.includes('dataset.agent'), 'the handler must not decide for itself');
 });
 
 test('the close control and the incoming frames are wired', () => {
@@ -52,6 +56,6 @@ test('the panel markup and the module are in the page, the module before rendere
 test('renderer.js reaches the module only through its one published name', () => {
   const uses = src.match(/agentLogDisplay\.\w+/g) || [];
   assert.ok(uses.length > 0);
-  const known = new Set(['emptyLog', 'openLog', 'closeLog', 'applyFrame', 'renderAgentLog', 'shouldFollow', 'paint']);
+  const known = new Set(['emptyLog', 'openLog', 'closeLog', 'applyFrame', 'renderAgentLog', 'shouldFollow', 'paint', 'cardClickAgent']);
   for (const u of uses) assert.ok(known.has(u.split('.')[1]), u);
 });

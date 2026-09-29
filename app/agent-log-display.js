@@ -251,6 +251,28 @@ function shouldFollow(metrics) {
 }
 
 /**
+ * Which agent a click on the roster is FOR, or null when it is not a request to
+ * open a log. `target` is the click's event target.
+ *
+ * Not for:
+ *   - the portrait (`.face`): that is the drop / upload target;
+ *   - any control inside the card -- a `button`, or anything marked
+ *     `data-no-card-click` -- so a card can carry its own buttons (hide, ...)
+ *     without a click on them also opening a log. Generic on purpose: the next
+ *     control added to a card is covered without touching this.
+ * A control that merely CONTAINS the card does not count; only one inside it.
+ */
+function cardClickAgent(target) {
+  if (!target || typeof target.closest !== 'function') return null;
+  if (target.closest('.face')) return null;
+  const row = target.closest('.agent');
+  if (!row || !row.dataset || typeof row.dataset.agent !== 'string' || !row.dataset.agent) return null;
+  const control = target.closest('button, [data-no-card-click]');
+  if (control && (typeof row.contains !== 'function' || row.contains(control))) return null;
+  return row.dataset.agent;
+}
+
+/**
  * Where to scroll so the row a reader was looking at stays put after `dropped`
  * rows were removed from the top of the list (Dexter F9, PR #63: an absolute
  * scrollTop shifted the view forward by the dropped rows' height on every
@@ -339,7 +361,7 @@ function paint(el, model) {
 }
 
 const api = {
-  paint, emptyLog, openLog, closeLog, applyFrame, renderAgentLog, renderRows, renderNotes, statusText,
+  cardClickAgent, paint, emptyLog, openLog, closeLog, applyFrame, renderAgentLog, renderRows, renderNotes, statusText,
   shouldFollow, anchoredScrollTop, MAX_ENTRIES, FOLLOW_SLACK_PX,
 };
 

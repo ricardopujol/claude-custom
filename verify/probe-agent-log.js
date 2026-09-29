@@ -90,8 +90,18 @@ app.on('ready', async () => {
     r.sameRowsNode = document.querySelector('.alog-rows') === rowsBefore;
     r.selectionSurvived = selected.length > 0 && sel.toString() === selected;
     r.rowsAfterAppend = document.querySelectorAll('.alog-entry').length;
+    // Card clicks, on REAL elements: body opens, portrait and inner button do not.
+    const host = document.createElement('div');
+    host.innerHTML = '<div class="agent" data-agent="probe-agent"><div class="face"><img></div><div class="meta"><span class="nm">x</span></div><button class="agent-hide"><b>h</b></button></div>';
+    document.body.appendChild(host);
+    r.cardClicks = {
+      body: d.cardClickAgent(host.querySelector('.nm')),
+      face: d.cardClickAgent(host.querySelector('img')),
+      button: d.cardClickAgent(host.querySelector('button')),
+      insideButton: d.cardClickAgent(host.querySelector('button b')),
+    };
     r.entriesAfterEachFrame = snap;
-    r.imgElements = document.querySelectorAll('img').length;
+    r.imgElements = document.querySelectorAll('#agent-log img').length;
     r.titleTouched = document.title !== 'alog';
     r.firstCommandText = (document.querySelector('.alog-tool_use .alog-sum') || {}).textContent;
     r.errorRows = document.querySelectorAll('.alog-error').length;
@@ -124,6 +134,8 @@ app.on('ready', async () => {
   const ok = r.published === 'object' && r.leaks.length === 0 && r.imgElements === 0 && !r.titleTouched
     && r.firstCommandText === HOSTILE && r.errorRows === 1 && r.dimmedUnknown === 1
     && r.summaries[r.summaries.length - 2] === 'the second message'
+    && r.cardClicks.body === 'probe-agent' && r.cardClicks.face === null
+    && r.cardClicks.button === null && r.cardClicks.insideButton === null
     && r.appendMode === 'append' && r.sameRowsNode && r.selectionSurvived && r.rowsAfterAppend === 6;
   console.log(ok ? 'PASS' : 'FAIL');
   process.exit(ok ? 0 : 1);

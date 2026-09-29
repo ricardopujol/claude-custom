@@ -1281,10 +1281,10 @@ function closeAgentLog() {
 // A click anywhere on a card EXCEPT its face opens the log: the face is the
 // portrait drop/upload target (see the drop handler below).
 agentsEl.addEventListener('click', (e) => {
-  if (e.target.closest('.face')) return;
-  const row = e.target.closest('.agent');
-  if (!row || !row.dataset.agent) return;
-  openAgentLog(row.dataset.agent);
+  // Which agent (if any) this click is FOR -- not the portrait, not a control
+  // inside the card -- is decided in the display module, where it is tested.
+  const agent = window.agentLogDisplay.cardClickAgent(e.target);
+  if (agent) openAgentLog(agent);
 });
 
 if (agentLogEl) {

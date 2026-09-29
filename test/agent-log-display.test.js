@@ -339,6 +339,82 @@ test('M3: paint keeps following when at the bottom, and leaves a reader who scro
   assert.strictEqual(body.scrollTop, 200);
 });
 
+// ---- card clicks: a control inside a card (PR #66's hide button) must not open a log ----
+
+// A tiny DOM: nodes with a parent, a tag, attributes, and the two methods the
+// module uses. `closest` supports the selectors it is given here: `.class`,
+// `[attr]`, `tag`, and comma-separated lists of those.
+function node(tag, { cls = '', attrs = {}, dataset = {}, parent = null } = {}) {
+  const n = { tag, classes: cls.split(/\s+/).filter(Boolean), attrs, dataset, parent };
+  const matches = (el, sel) => sel.split(',').map(s => s.trim()).some((s) => {
+    if (s.startsWith('.')) return el.classes.includes(s.slice(1));
+    if (s.startsWith('[') && s.endsWith(']')) return s.slice(1, -1) in el.attrs;
+    return el.tag === s;
+  });
+  n.closest = (sel) => { for (let el = n; el; el = el.parent) if (matches(el, sel)) return el; return null; };
+  n.contains = (other) => { for (let el = other; el; el = el.parent) if (el === n) return true; return false; };
+  return n;
+}
+
+function card() {
+  const row = node('div', { cls: 'agent', dataset: { agent: 'rev', state: 'sleeping' } });
+  const face = node('div', { cls: 'face', parent: row });
+  const faceImg = node('img', { parent: face });
+  const meta = node('div', { cls: 'meta', parent: row });
+  const name = node('div', { cls: 'name', parent: meta });
+  const hide = node('button', { cls: 'agent-hide', parent: row });
+  const hideIcon = node('span', { parent: hide });
+  const marked = node('span', { attrs: { 'data-no-card-click': '' }, parent: meta });
+  const markedInner = node('i', { parent: marked });
+  return { row, face, faceImg, meta, name, hide, hideIcon, marked, markedInner };
+}
+
+// The renderer's handler, minus the socket: click -> maybe an `open` frame.
+function click(target) {
+  const sent = [];
+  const agent = d.cardClickAgent(target);
+  if (agent) sent.push({ type: 'agent-log', action: 'open', agent });
+  return sent;
+}
+
+test('a click on the card body opens that agent\'s log', () => {
+  const c = card();
+  for (const t of [c.row, c.meta, c.name]) {
+    assert.deepStrictEqual(click(t), [{ type: 'agent-log', action: 'open', agent: 'rev' }]);
+  }
+});
+
+test('a click on the portrait opens nothing: it is the drop / upload target', () => {
+  const c = card();
+  assert.deepStrictEqual(click(c.face), []);
+  assert.deepStrictEqual(click(c.faceImg), []);
+});
+
+test('a click on a BUTTON inside the card -- or on anything inside that button -- opens nothing', () => {
+  const c = card();
+  assert.deepStrictEqual(click(c.hide), []);
+  assert.deepStrictEqual(click(c.hideIcon), []);
+});
+
+test('a click inside a [data-no-card-click] region opens nothing, so future card controls need no change here', () => {
+  const c = card();
+  assert.deepStrictEqual(click(c.marked), []);
+  assert.deepStrictEqual(click(c.markedInner), []);
+});
+
+test('a control that merely CONTAINS the card does not swallow clicks on it', () => {
+  const wrapper = node('button');
+  const row = node('div', { cls: 'agent', dataset: { agent: 'rev' }, parent: wrapper });
+  assert.deepStrictEqual(click(row), [{ type: 'agent-log', action: 'open', agent: 'rev' }]);
+});
+
+test('clicks that are not on a card at all, or on a card with no agent, open nothing', () => {
+  assert.deepStrictEqual(click(node('div')), []);
+  assert.deepStrictEqual(click(node('div', { cls: 'agent', dataset: {} })), []);
+  assert.deepStrictEqual(click(node('div', { cls: 'agent', dataset: { agent: '' } })), []);
+  for (const junk of [null, undefined, {}, 'x', 7]) assert.deepStrictEqual(click(junk), [], String(junk));
+});
+
 // ---- Dexter F9, PR #63: a reader who scrolled up keeps their ROW when the cap drops rows ----
 
 test('F9: anchoredScrollTop finds the same row again after rows leave the top', () => {
