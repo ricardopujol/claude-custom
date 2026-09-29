@@ -11,11 +11,10 @@
  * "No unit test can see this. Render it in a real window."
  *
  * SAFE TO RUN. `claude` is replaced by cmd.exe (CLAUDE_CUSTOM_BIN), so no
- * session starts and nothing is billed. The toggle's store and Electron's
- * userData are throwaway temp folders; the forge portraits folder is an empty
- * temp folder so the global default is what every Inactive-tab face resolves
- * to. The only thing written under the repo is `.harness/portraits/_global`
- * (the host's real uploads folder), which the probe resets before exiting.
+ * session starts and nothing is billed. The toggle's store, Electron's
+ * userData, the forge portraits folder AND the host's uploads folder
+ * (CLAUDE_CUSTOM_UPLOADS) are throwaway temp folders, so the probe never
+ * touches a real global default picture in the repo's `.harness`.
  *
  * Needs ffmpeg on PATH to make a real, decodable webm.
  *
@@ -27,7 +26,13 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 
+const { createHygieneRegistry } = require('./lib/process-hygiene');
+
 const ROOT = path.join(__dirname, '..');
+// Both children are registered, so Ctrl+C or a crash kills their whole trees
+// instead of orphaning a host and an Electron (Miguel I1, PR #64).
+const hygiene = createHygieneRegistry();
+hygiene.install();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-avatar-probe-'));
 const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ } };
 
@@ -55,6 +60,7 @@ const path = require('path');
 const ROOT = ${JSON.stringify(ROOT)};
 const { registerAvatarHandlers } = require(path.join(ROOT, 'app', 'avatar-bridge'));
 const { createStore } = require(path.join(ROOT, 'host', 'store'));
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion'); // an occluded probe window would report hidden and pause every video
 app.setPath('userData', ${JSON.stringify(path.join(tmp, 'userData'))});
 const results = [];
 const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); console.log('[check]', ok ? 'PASS' : 'FAIL', name, detail === undefined ? '' : JSON.stringify(detail)); };
@@ -74,7 +80,7 @@ app.whenReady().then(async () => {
     return null;
   };
   const wsSend = (m) => js('ws.send(' + JSON.stringify(JSON.stringify(m)) + ')');
-  const vids = () => js('[...document.querySelectorAll("#agents video")].map(v => ({ paused: v.paused, t: v.currentTime, rs: v.readyState, src: v.getAttribute("src") }))');
+  const vids = () => js('[...document.querySelectorAll("#agents video")].map(v => ({ paused: v.paused, t: v.currentTime, rs: v.readyState, err: v.error && v.error.code, ns: v.networkState, src: v.getAttribute("src") }))');
   const rendererMem = () => app.getAppMetrics().filter(m => m.type === 'Tab').reduce((n, m) => n + m.memory.workingSetSize, 0);
 
   try {
@@ -94,7 +100,7 @@ app.whenReady().then(async () => {
     const style = await js('styleState.avatars.global');
     check('the Style row knows the global default', style && style.set === true && style.file === 'default.webm', style);
     const playing = v.filter(x => !x.paused && x.t > 0).length;
-    check('the visible videos are actually PLAYING', playing > 0, { playing, total: v.length });
+    check('the visible videos are actually PLAYING', playing > 0, { playing, total: v.length, first: v[0], vis: await js('document.visibilityState'), n: await js('document.querySelectorAll(\"#agents video\").length') });
 
     // Dexter F1 / Miguel I2 (PR #64): a repaint runs about once a second while
     // anything is running; the SAME <video> node must survive it and keep going.
@@ -166,11 +172,13 @@ app.whenReady().then(async () => {
     CLAUDE_CUSTOM_BIN: process.platform === 'win32' ? 'C:\\Windows\\System32\\cmd.exe' : '/bin/sh',
     CLAUDE_CUSTOM_CWD: tmp, CLAUDE_CUSTOM_PORT: port, CLAUDE_CUSTOM_TOKEN: 'probe-token',
     CLAUDE_CUSTOM_PORTRAITS: portraitsDir,
+    CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
   };
   // Claude Code is itself an Electron app: never let this leak into the children.
   delete env.ELECTRON_RUN_AS_NODE;
 
   const host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
+  hygiene.registerSpawnedTree(host.pid);
   let hostOut = '';
   host.stdout.on('data', d => { hostOut += d; });
   host.stderr.on('data', d => { hostOut += d; });
@@ -185,21 +193,21 @@ app.whenReady().then(async () => {
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
   const electron = spawn(require('electron'), [mainFile], { cwd: ROOT, env });
+  hygiene.registerSpawnedTree(electron.pid);
   let out = '';
   electron.stdout.on('data', d => { out += d; process.stdout.write(d); });
   electron.stderr.on('data', d => { if (/probe|Error/.test(String(d))) process.stderr.write(d); });
-  const killer = setTimeout(() => { console.log('FAIL: probe timed out after 150s'); try { electron.kill(); } catch { /* gone */ } }, 150000);
+  const killer = setTimeout(() => { console.log('FAIL: probe timed out after 150s'); hygiene._emergencyCleanup('timeout'); }, 150000);
   const code = await new Promise((resolve) => electron.on('exit', resolve));
   clearTimeout(killer);
-  try { host.kill(); } catch { /* gone */ }
-  // Whatever happened, leave the host's real uploads folder as we found it.
-  try { fs.rmSync(path.join(ROOT, '.harness', 'portraits', '_global'), { recursive: true, force: true }); } catch { /* best effort */ }
+  hygiene._emergencyCleanup('done');
   cleanup();
   if (code !== 0) console.log('---- host log (tail) ----\n' + hostOut.split('\n').slice(-25).join('\n'));
   console.log(code === 0 ? 'PASS: the avatar chain renders as designed' : `FAIL: exit ${code}`);
   process.exit(code === 0 ? 0 : 1);
 })().catch((err) => {
   console.log('FAIL: probe could not start:', err && err.message);
+  hygiene._emergencyCleanup('startup-failed');
   cleanup();
   process.exit(1);
 });

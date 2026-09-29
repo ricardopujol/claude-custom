@@ -333,7 +333,9 @@ const PORTRAITS_DIR =
 // app/assets/portrait-default.* does not exist on disk
 // today, deliberately, so most installs land on the text placeholder until
 // someone adds one.
-const UPLOADS_DIR = path.join(HARNESS_DIR, 'portraits');
+// CLAUDE_CUSTOM_UPLOADS lets a probe point the uploads at a throwaway folder
+// instead of the developer's real pictures (Miguel I1, PR #64).
+const UPLOADS_DIR = process.env.CLAUDE_CUSTOM_UPLOADS || path.join(HARNESS_DIR, 'portraits');
 const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
 const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
