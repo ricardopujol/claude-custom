@@ -1009,37 +1009,73 @@ function applyTheme(theme) {
 const agentsEl = document.getElementById('agents');
 const roster = new Map();
 
-// FF7: a portrait can now come from three tiers, and a display that can't say
+// FF7: a portrait can come from several tiers, and a display that can't say
 // WHICH one answered is this project's signature defect (absence read as a
-// confident answer). Every result from host/portraits.js carries `tier`; this
-// is only the wording for it.
-const PORTRAIT_TIER_TITLE = {
-  uploaded: 'your upload',
-  forge: 'generated',
-  shipped: 'default picture',
-  text: 'no picture yet',
-};
+// confident answer). Every result from host/portraits.js carries `tier`; the
+// wording, the choice of <img> / <video> / placeholder and the "agent images
+// off" override all live in app/portrait-media-display.js (`portraitMedia`),
+// where they are tested. This is only the wiring.
+//
+// The install-wide "show agent images" toggle (BACKLOG C #18) is Electron
+// main's. `null` = main has not answered yet, and nothing is loaded until
+// then (an unknown toggle is not "on"); without the bridge there is no
+// toggle and images are simply on.
+let agentImagesEnabled = (window.harness && window.harness.avatar) ? null : true;
 
 function faceHtml(portrait) {
-  const p = portrait || { kind: 'placeholder', tier: 'text', initials: '??', hue: 210 };
-  const title = PORTRAIT_TIER_TITLE[p.tier] || '';
-  if (p.kind === 'file') {
-    const src = `file:///${escapeHtml(p.path.replace(/\\/g, '/'))}`;
-    // Ricardo, 2026-09-22: the four states stay in the data model, and he will
-    // upload GIFs and video, not only stills -- `media` (set by
-    // host/portraits.js from the uploaded file's own extension) decides the
-    // tag, never the file extension re-sniffed here.
-    return p.media === 'video'
-      ? `<video class="face-media" src="${src}" title="${title}" autoplay loop muted playsinline></video>`
-      : `<img class="face-media" src="${src}" alt="" title="${title}" />`;
-  }
-  // Placeholder: stable per-agent hue so an agent stays recognisable until a
-  // portrait exists for it, at any tier. The initials come from the agent's
-  // name, which is a hook payload's, not ours -- escaped like the name itself
-  // (#49). The hue is forced numeric so it can't carry markup into the style.
-  return `<span class="face-media face-placeholder" title="${title}" style="width:100%;height:100%;display:flex;align-items:center;` +
-         `justify-content:center;background:hsl(${Number(p.hue) || 0} 42% 62%)">${escapeHtml(p.initials)}</span>`;
+  return portraitMedia.faceMediaHtml(portrait, { imagesEnabled: agentImagesEnabled });
 }
+
+// The hover pencil on a face (BACKLOG C #13): the file-picker route to the same
+// `portrait set` message a drop sends. NOT the plain card click -- that opens
+// the agent's activity log.
+function faceEditHtml() {
+  return (window.harness && window.harness.avatar)
+    ? '<button type="button" class="face-edit" title="Choose a picture, GIF or video for this agent">✎</button>'
+    : '';
+}
+
+// Every roster paint goes through here so a video that is about to be replaced
+// is STOPPED AND UNLOADED first (removing the element alone leaves the decoder
+// running until GC), and the new ones are watched for visibility.
+const faceVideoOnScreen = new WeakMap();
+const faceVideoObserver = typeof IntersectionObserver === 'function'
+  ? new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      faceVideoOnScreen.set(en.target, en.isIntersecting);
+      applyFaceVideo(en.target);
+    }
+  }, { root: agentsEl })
+  : null;
+
+function applyFaceVideo(v) {
+  const onScreen = faceVideoObserver ? faceVideoOnScreen.get(v) === true : true;
+  const action = portraitMedia.visibilityAction(onScreen, document.visibilityState === 'visible');
+  if (action === 'play') { const p = v.play(); if (p && p.catch) p.catch(() => { /* unloaded meanwhile */ }); }
+  else v.pause();
+}
+
+function setRosterHtml(html) {
+  for (const v of agentsEl.querySelectorAll('video')) {
+    if (faceVideoObserver) faceVideoObserver.unobserve(v);
+    portraitMedia.unloadVideo(v);
+  }
+  agentsEl.innerHTML = html;
+  for (const v of agentsEl.querySelectorAll('video')) {
+    if (faceVideoObserver) faceVideoObserver.observe(v);
+    // Applied at once, not left to the observer's first callback: a hidden
+    // window never delivers one, and the `autoplay` attribute would start the
+    // video anyway. pause() clears the element's autoplay flag; the observer
+    // calls play() when the face is really on screen. (Measured by
+    // verify/probe-avatar-roster.js: without this, a roster repaint while the
+    // window was hidden left every fresh video playing.)
+    applyFaceVideo(v);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  for (const v of agentsEl.querySelectorAll('video')) applyFaceVideo(v);
+});
 
 // Career stats per agent, keyed by agent type. Arrives with the handshake and
 // again whenever an agent finishes, so the figures move as work happens.
@@ -1130,13 +1166,13 @@ function rosterIndexEntry(agent) {
 
 function setRosterTab(tab) {
   activeRosterTab = tab === 'inactive' ? 'inactive' : 'active';
-  for (const b of document.querySelectorAll('#roster-subtabs button')) {
+  for (const b of document.querySelectorAll('#roster-subtabs button[data-roster-tab]')) {
     b.classList.toggle('on', b.dataset.rosterTab === activeRosterTab);
   }
   renderRoster();
 }
 
-for (const b of document.querySelectorAll('#roster-subtabs button')) {
+for (const b of document.querySelectorAll('#roster-subtabs button[data-roster-tab]')) {
   b.addEventListener('click', () => setRosterTab(b.dataset.rosterTab));
 }
 
@@ -1168,7 +1204,7 @@ function inactiveRowHtml(row) {
   // data-agent: a portrait dropped on this face reaches the host, which sets
   // the agent's default portrait for state "inactive" (Miguel I1, PR #35).
   return `<div class="agent" data-state="inactive" data-agent="${escapeHtml(row.agent)}">` +
-      `<div class="face">${faceHtml(entry && entry.portrait)}</div>` +
+      `<div class="face">${faceHtml(entry && entry.portrait)}${faceEditHtml()}</div>` +
       `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}` +
         unresolvedHtml + unreadableHtml + `</div>` +
       `<div class="state">inactive</div>` +
@@ -1182,7 +1218,7 @@ function renderRoster() {
 
   if (activeRosterTab === 'inactive') {
     if (inactive.length === 0) {
-      agentsEl.innerHTML = '<div class="empty">No other agents known yet.</div>';
+      setRosterHtml('<div class="empty">No other agents known yet.</div>');
       return;
     }
     const rows = sortRosterRows(inactive.map((agent) => {
@@ -1195,15 +1231,15 @@ function renderRoster() {
         unreadable: !!(entry && entry.unreadable),
       };
     }));
-    agentsEl.innerHTML = rows.map(inactiveRowHtml).join('');
+    setRosterHtml(rows.map(inactiveRowHtml).join(''));
     return;
   }
 
   if (roster.size === 0) {
     // Three different situations, not one sentence. "No agents yet" is a
     // positive claim about history and must not be made on a read that failed.
-    agentsEl.innerHTML =
-      `<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`;
+    setRosterHtml(
+      `<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`);
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -1213,9 +1249,9 @@ function renderRoster() {
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
   const counts = instanceCounts(latestParty);
 
-  agentsEl.innerHTML = rows.map(r =>
+  setRosterHtml(rows.map(r =>
     `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}">` +
-      `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}</div>` +
+      `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
       `<div class="meta"><div class="name" title="${escapeHtml(r.agent)}">${escapeHtml(r.agent)}` +
         countBadgeHtml(r.agent, counts) + `</div>` +
       `<div class="state">${r.state}</div>` +
@@ -1223,7 +1259,7 @@ function renderRoster() {
       careerHtml(r.agent) +
       `</div>` +
     `</div>`
-  ).join('');
+  ).join(''));
 }
 
 function renderRosterIndex(rosterIndex) {
@@ -2426,6 +2462,23 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'avatars' && v) {
+    const on = v.imagesEnabled;
+    return (
+      `<section class="style-section" data-section="avatars">${header}` +
+      `<span class="style-label">Default agent picture</span>` +
+      `<div class="style-current">${escapeHtml(v.globalDescription)}</div>` +
+      `<div class="style-dropzone" id="style-avatar-drop" tabindex="0">drop a picture, GIF or video here</div>` +
+      `<div class="style-row"><button type="button" id="style-avatar-pick">Choose file…</button>` +
+      `<button type="button" id="style-avatar-reset"${v.globalSet ? '' : ' disabled'} ` +
+      `title="Go back to the built-in placeholder">Reset</button></div>` +
+      `<label class="style-row"><input type="checkbox" id="style-images-on"${on === true ? ' checked' : ''}` +
+      `${on === null ? ' disabled' : ''}> Show agent images</label>` +
+      `<div class="style-note">${escapeHtml(v.imagesDescription)}</div>` +
+      (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
+      `</section>`
+    );
+  }
   // A future section with no view function yet still gets its title drawn,
   // rather than vanishing -- "say something rather than nothing", the same
   // rule the fog and projects panels follow for a failed read.
@@ -2478,6 +2531,8 @@ function bindStyleSections() {
     });
   }
 
+  bindAvatarSection();
+
   const reroll = document.getElementById('style-reroll');
   if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
 
@@ -2527,6 +2582,117 @@ function bindStyleSections() {
     });
   }
 }
+
+// The "Agent pictures" section (BACKLOG C #3, #18). Listeners sit directly on
+// the drop zone with stopPropagation for the same reason as the background
+// zone above: the window-wide drop handler would otherwise type the path into
+// the terminal as well.
+function sendGlobalPortrait(action, path) {
+  try { ws.send(JSON.stringify({ type: 'portrait', action, ...(path ? { path } : {}) })); }
+  catch { /* not attached */ }
+}
+
+function bindAvatarSection() {
+  const zone = document.getElementById('style-avatar-drop');
+  if (zone) {
+    zone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      zone.classList.add('dropping');
+    });
+    for (const leave of ['dragleave', 'dragend']) {
+      zone.addEventListener(leave, (e) => { e.stopPropagation(); zone.classList.remove('dropping'); });
+    }
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.remove('dropping');
+      const f = (e.dataTransfer.files || [])[0];
+      const path = f && window.harness && window.harness.pathForFile ? window.harness.pathForFile(f) : '';
+      if (path) sendGlobalPortrait('set-global', path);
+    });
+  }
+
+  const pick = document.getElementById('style-avatar-pick');
+  if (pick) {
+    pick.disabled = !(window.harness && window.harness.avatar);
+    pick.addEventListener('click', () => {
+      window.harness.avatar.pick().then((path) => { if (path) sendGlobalPortrait('set-global', path); });
+    });
+  }
+
+  const reset = document.getElementById('style-avatar-reset');
+  if (reset) reset.addEventListener('click', () => sendGlobalPortrait('reset-global'));
+
+  const images = document.getElementById('style-images-on');
+  if (images && window.harness && window.harness.avatar) {
+    images.addEventListener('change', () => setAgentImages(images.checked));
+  }
+}
+
+// The install-wide "show agent images" toggle (BACKLOG C #18). Sends the
+// DESIRED state; main persists it and answers what it stored. `null` (could
+// not save) re-reads main's truth instead of trusting the click.
+function setAgentImages(enabled) {
+  if (!(window.harness && window.harness.avatar)) return;
+  window.harness.avatar.setImagesEnabled(enabled).then((saved) => {
+    if (typeof saved === 'boolean') applyAgentImages(saved);
+    else refreshAgentImages();
+  }).catch(() => refreshAgentImages());
+}
+
+function applyAgentImages(enabled) {
+  if (typeof enabled !== 'boolean') return;
+  const changed = agentImagesEnabled !== enabled;
+  agentImagesEnabled = enabled;
+  styleState = reduceImagesEnabled(styleState, enabled);
+  const btn = document.getElementById('images-toggle');
+  if (btn) {
+    btn.classList.toggle('off', !enabled);
+    btn.setAttribute('aria-pressed', String(enabled));
+    btn.title = enabled ? 'Agent images are shown. Click to turn them off.'
+      : 'Agent images are off (initials only). Click to turn them on.';
+  }
+  if (changed) { renderRoster(); renderStylePanel(); }
+}
+
+function refreshAgentImages() {
+  if (!(window.harness && window.harness.avatar)) return;
+  window.harness.avatar.getImagesEnabled().then(applyAgentImages).catch(() => applyAgentImages(true));
+}
+
+const imagesToggleBtn = document.getElementById('images-toggle');
+if (imagesToggleBtn) {
+  if (!(window.harness && window.harness.avatar)) imagesToggleBtn.hidden = true;
+  imagesToggleBtn.addEventListener('click', () => {
+    if (typeof agentImagesEnabled === 'boolean') setAgentImages(!agentImagesEnabled);
+  });
+}
+if (window.harness && window.harness.avatar) {
+  window.harness.avatar.onImagesEnabled(applyAgentImages);
+  refreshAgentImages();
+}
+
+// The hover pencil on a roster face: pick a file, send it as the same
+// `portrait set` a drop sends, for the state the card is showing.
+agentsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('.face-edit');
+  if (!btn) return;
+  // Not a card click: a plain click on a card does something else (the
+  // activity log), and this button must never trigger it.
+  e.stopImmediatePropagation();
+  e.preventDefault();
+  const row = btn.closest('.agent');
+  const agent = row && row.dataset.agent;
+  const state = row && row.dataset.state;
+  if (!agent || !state || !(window.harness && window.harness.avatar)) return;
+  window.harness.avatar.pick().then((path) => {
+    if (!path) return;
+    try { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent, state, path })); }
+    catch { /* not attached */ }
+  });
+}, true);
 
 const HEX_INPUT = /^#[0-9a-f]{6}$/i;
 
@@ -2602,6 +2768,7 @@ function handleControl(msg) {
     // the project's look merged in; `msg.style` carries WHY, for the panel.
     applyStyleMessage(msg);
     styleState = reduceStyle(styleState, msg);
+    styleState = reduceAvatars(styleState, msg);
     renderStylePanel();
     renderUsage(msg.usage);
     // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
@@ -2823,6 +2990,17 @@ function handleControl(msg) {
   }
   if (msg.type === 'dropped') {
     renderDropNote(msg.note);
+    return;
+  }
+  if (msg.type === 'portrait' && msg.global) {
+    // The user's default picture for every agent (BACKLOG C #3). The mood and
+    // rosterIndex messages that follow a change redraw the faces; this is the
+    // Style row and the "was it accepted, and if not, why" note.
+    styleState = reduceAvatars(styleState, msg);
+    renderStylePanel();
+    flourish({ icon: msg.ok ? '🖼️' : '⛔',
+      name: msg.ok ? 'default agent picture updated'
+        : `default agent picture refused: ${msg.reason || 'unknown reason'}` });
     return;
   }
   if (msg.type === 'portrait') {

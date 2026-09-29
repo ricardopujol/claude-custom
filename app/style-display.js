@@ -26,6 +26,7 @@ const STYLE_SECTIONS = [
   { id: 'colours', title: 'Colours' },
   { id: 'background', title: 'Background image' },
   { id: 'inactive', title: 'Inactive windows' },
+  { id: 'avatars', title: 'Agent pictures' },
 ];
 
 const HEX_RE = /^#[0-9a-f]{6}$/i;
@@ -118,10 +119,43 @@ function backgroundSectionView(state) {
   };
 }
 
+/**
+ * The "Agent pictures" section (BACKLOG C #3, #18): the user-set default
+ * picture for every agent, and the install-wide "show agent images" toggle.
+ *
+ * Absence is never blank and never a confident answer: not-yet-read is
+ * "reading…", nothing-set says so, and only a well-formed `{ set: true }` from
+ * the host draws a file name. The toggle is strict -- only a real boolean is
+ * known; anything else is null ("not read yet").
+ */
+function avatarsSectionView(state) {
+  const g = state && state.global;
+  const known = !!g && typeof g === 'object' && typeof g.set === 'boolean';
+  let globalDescription = 'reading…';
+  if (known && g.set) {
+    globalDescription = typeof g.file === 'string' && g.file
+      ? `${g.file} (your global default picture, used for every agent without a picture of its own)`
+      : 'your global default picture (used for every agent without a picture of its own)';
+  } else if (known) {
+    globalDescription = 'none set (built-in placeholder)';
+  }
+  const imagesEnabled = state && typeof state.imagesEnabled === 'boolean' ? state.imagesEnabled : null;
+  return {
+    globalDescription,
+    globalSet: known && g.set === true,
+    imagesEnabled,
+    imagesDescription: imagesEnabled === null ? 'reading…'
+      : imagesEnabled ? 'Pictures, GIFs and video are shown on the agent cards.'
+        : 'Agent images are off: every card shows its initials, and no picture or video is loaded.',
+    error: errorOf(state),
+  };
+}
+
 const SECTION_VIEWS = {
   colours: coloursSectionView,
   background: backgroundSectionView,
   inactive: inactiveSectionView,
+  avatars: avatarsSectionView,
 };
 
 /**
@@ -148,6 +182,7 @@ function emptyStyleState() {
     colours: null,
     background: { source: null, setAt: null, error: null, darkness: null },
     inactive: { dim: null },
+    avatars: { global: null, imagesEnabled: null, error: null },
   };
 }
 
@@ -192,10 +227,44 @@ function reduceStyle(prev, msg) {
       darkness: look.darkness, error: keep('background'),
     },
     inactive: state.inactive,
+    avatars: state.avatars || emptyStyleState().avatars,
   };
 }
 
-const API = { reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent };
+/**
+ * The next state after a host message that concerns the GLOBAL default
+ * picture: `hello` (which carries the current one) and a `portrait` reply
+ * tagged `global`. A per-agent portrait reply returns the SAME object, so a
+ * caller can tell nothing changed. A refusal keeps the stored value and shows
+ * the reason -- it never repaints the row as though the change had landed.
+ */
+function reduceAvatars(prev, msg) {
+  const state = prev || emptyStyleState();
+  const m = msg || {};
+  const cur = state.avatars || emptyStyleState().avatars;
+  const wellFormed = (g) => !!g && typeof g === 'object' && typeof g.set === 'boolean';
+  if (m.type === 'hello') {
+    return { ...state, avatars: { ...cur, global: wellFormed(m.globalPortrait) ? m.globalPortrait : cur.global } };
+  }
+  if (m.type === 'portrait' && m.global === true) {
+    const global = wellFormed(m.globalPortrait) ? m.globalPortrait : cur.global;
+    const error = m.ok === true ? null : (typeof m.reason === 'string' && m.reason ? m.reason : 'the picture was not changed');
+    return { ...state, avatars: { ...cur, global, error } };
+  }
+  return state;
+}
+
+/** Records the desired "show agent images" state; anything but a boolean is ignored. */
+function reduceImagesEnabled(prev, enabled) {
+  const state = prev || emptyStyleState();
+  if (typeof enabled !== 'boolean') return state;
+  return { ...state, avatars: { ...(state.avatars || emptyStyleState().avatars), imagesEnabled: enabled } };
+}
+
+const API = {
+  reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
+  avatarsSectionView, reduceAvatars, reduceImagesEnabled,
+};
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else Object.assign(root, API);

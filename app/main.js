@@ -7,11 +7,12 @@
  * window pointed at it.
  */
 
-const { app, BrowserWindow, Notification, clipboard, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, Notification, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
+const { registerAvatarHandlers } = require('./avatar-bridge');
 const { spawn } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -364,6 +365,11 @@ function createWindow(spawnedHost) {
   // Claude choice, persisted GLOBALLY next to look-global -- see
   // favourites-bridge.js's header for why main owns this store directly.
   registerFavouriteHandlers({ ipcMain, store: uiStore, win });
+
+  // Agent pictures (BACKLOG C #13, #18): the file picker for a portrait and the
+  // install-wide "show agent images" toggle, persisted GLOBALLY next to
+  // look-global -- see avatar-bridge.js.
+  registerAvatarHandlers({ ipcMain, store: uiStore, win, dialog });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
   // not project-scoped, so it lives here rather than going to the host.
