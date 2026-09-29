@@ -162,25 +162,27 @@ test('projectOf folds the container, dev, anything under dev and a sibling workt
   }
 });
 
-// Dexter F7: a plain folder inside the container is in no repo of its own,
-// but it is still in the project -- and must not climb past the container to
-// some enclosing repo (a home dotfiles repo, say).
-test('projectOf folds a plain folder inside the container to the container', () => {
-  const c = makeContainer();
-  const notes = path.join(c.root, 'notes', 'deep');
-  fs.mkdirSync(notes, { recursive: true });
-  const expected = { kind: 'container', root: c.root, dev: c.dev };
-  assert.deepStrictEqual(projectOf(path.join(c.root, 'notes')), expected);
-  assert.deepStrictEqual(projectOf(notes), expected);
+// A plain folder in no repo is NOT folded up to a container above it. On disk,
+// "a notes folder in a container" and "any folder on a drive whose root holds
+// a `dev` repo" (C:\ with C:\dev) are the same shape; folding the first would
+// make a whole drive one project (Dexter R2 N3, reverting the F7 fix). Nothing
+// but worktrees lives in a container, so the plain folder is rare anyway.
+test('a folder in no repo is never folded to a container above it', () => {
+  const top = tmpDir('project-layout-test-');
+  makeRepo(path.join(top, 'dev'));                 // `top` has a container's shape, like C:\ with C:\dev
+  const scratch = path.join(top, 'Users', 'r', 'Desktop', 'scratch');
+  fs.mkdirSync(scratch, { recursive: true });
+  assert.strictEqual(layoutOf(top), 'container');
+  assert.strictEqual(projectOf(scratch), null);
+  assert.strictEqual(projectOf(path.join(top, 'notes')), null);
 });
 
-test('a container inside an enclosing repo still wins for paths under it', () => {
+test('a plain folder under a container inside an enclosing repo folds to the enclosing repo', () => {
   const outer = makeFlat();
-  const inner = path.join(outer, 'box');
-  makeRepo(path.join(inner, 'dev'));
-  fs.mkdirSync(path.join(inner, 'notes'));
-  assert.deepStrictEqual(projectOf(path.join(inner, 'notes')),
-    { kind: 'container', root: inner, dev: path.join(inner, 'dev') });
+  const box = path.join(outer, 'box');
+  makeRepo(path.join(box, 'dev'));
+  fs.mkdirSync(path.join(box, 'notes'));
+  assert.deepStrictEqual(projectOf(path.join(box, 'notes')), { kind: 'flat', root: outer, dev: outer });
 });
 
 test('projectOf gives a flat repo and its subfolders as flat, with dev = root', () => {

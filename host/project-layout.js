@@ -81,17 +81,18 @@ function container(root) {
   return { kind: 'container', root, dev: path.join(root, 'dev') };
 }
 
-// Climb from `p` to the first folder that is either a container or a repo
-// boundary. Checking for a container at every level is what folds a plain
-// folder inside the container (`<container>\notes`) to the project instead of
-// climbing past it to some enclosing repo.
+// A container is recognised only where it is asked about, or as the direct
+// parent of the repo the climb stops at -- never while climbing through plain
+// folders. On disk, "a notes folder in a container" and "any folder on a drive
+// whose root holds a `dev` repo" (C:\ with C:\dev) look the same, and folding
+// the first would make the whole drive one project (Dexter R2 N3).
 function projectOf(p) {
   if (typeof p !== 'string' || !p) return null;
+  const start = path.resolve(p);
+  if (layoutOf(start) === 'container') return container(start);
 
-  let repo = path.resolve(p);
-  for (;;) {
-    if (layoutOf(repo) === 'container') return container(repo);
-    if (isRepoBoundary(repo)) break;
+  let repo = start;
+  while (!isRepoBoundary(repo)) {
     const parent = path.dirname(repo);
     if (parent === repo) return null;   // reached the filesystem root
     repo = parent;
