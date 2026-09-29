@@ -14,6 +14,7 @@ const fc = require('fast-check');
 
 const { parsePorcelain, tabWorktrees, removalCommands } = require('../host/worktree-list');
 const { samePath, isInside } = require('../host/project-layout');
+const { isValidBranchName } = require('../host/git-branch');
 
 const C = path.resolve('/fake/proj');
 const DEV = path.join(C, 'dev');
@@ -56,11 +57,11 @@ test('parsePorcelain reads every field of the real sample', () => {
   assert.strictEqual(entries.length, 5);
   assert.deepStrictEqual(entries[0], {
     path: at('dev'), head: '765ee008ee548055970882a0062f31933838d8ce', branch: 'refs/heads/develop',
-    bare: false, detached: false, locked: false, prunable: false,
+    bare: false, detached: false, locked: false, lockReason: null, prunable: false,
   });
   assert.deepStrictEqual(entries[4], {
     path: at('gate-2026-09-28'), head: '765ee008ee548055970882a0062f31933838d8ce', branch: null,
-    bare: false, detached: true, locked: false, prunable: false,
+    bare: false, detached: true, locked: false, lockReason: null, prunable: false,
   });
 });
 
@@ -78,7 +79,9 @@ test('parsePorcelain reads bare, and locked / prunable with or without a reason'
   const [a, b, c, d] = parsePorcelain(text);
   assert.strictEqual(a.bare, true);
   assert.strictEqual(b.locked, true);
+  assert.strictEqual(b.lockReason, null);
   assert.strictEqual(c.locked, true);
+  assert.strictEqual(c.lockReason, 'moved to a USB drive');
   assert.strictEqual(d.prunable, true);
   assert.strictEqual(d.locked, false);
 });
@@ -145,54 +148,82 @@ test('parsePorcelain returns [] for anything that is not a string', () => {
 // ---------------------------------------------------------------------------
 // tabWorktrees
 
-test('tabWorktrees on the real sample: dev first, then the sibling worktrees in list order', () => {
+// Every entry is a worktree git still LISTS (so an open tab on it stays);
+// `openable` says whether a NEW tab may open for it. Keeping the two apart is
+// what stops a rebase (detached HEAD) from reading as "the worktree is gone"
+// and killing its session (Dexter F1 / Miguel F1, 2026-09-29).
+const openable = (p, branch) => ({ path: p, branch, isDev: false, openable: true });
+const listedOnly = (p, branch = null) => ({ path: p, branch, isDev: false, openable: false });
+const devTab = (branch = 'develop') => ({ path: DEV, branch, isDev: true, openable: true });
+
+test('tabWorktrees on the real sample: dev first, then the siblings in list order', () => {
   assert.deepStrictEqual(tabWorktrees(parsePorcelain(SAMPLE), C), [
-    { path: DEV, branch: 'develop', isDev: true },
-    { path: path.join(C, 'feat-worktree-model'), branch: 'feat/worktree-model', isDev: false },
-    { path: path.join(C, 'fix-resumed-agent'), branch: 'fix/resumed-agent-activity', isDev: false },
+    devTab(),
+    openable(path.join(C, 'feat-worktree-model'), 'feat/worktree-model'),
+    openable(path.join(C, 'fix-resumed-agent'), 'fix/resumed-agent-activity'),
+    listedOnly(path.join(C, 'gate-2026-09-28')),
   ]);
 });
 
-test('a detached worktree gets no tab, but a detached dev is still the anchor', () => {
+test('a detached sibling is listed but not openable; a detached dev is still the anchor', () => {
   const text = [
     record(DEV, ['detached']),
     record(path.join(C, 'gate-2026-09-28'), ['detached']),
   ].join('\n');
-  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [{ path: DEV, branch: null, isDev: true }]);
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C),
+    [devTab(null), listedOnly(path.join(C, 'gate-2026-09-28'))]);
 });
 
-test('prunable, bare, subagent, outside, nested and non-branch-ref worktrees get no tab', () => {
+test('prunable, bare and non-branch-ref siblings are listed but not openable', () => {
   const text = [
     devRecord,
     record(path.join(C, 'gone'), ['branch refs/heads/gone', 'prunable gitdir file points to non-existent location']),
     record(path.join(C, 'bare-one'), ['bare']),
+    record(path.join(C, 'odd-ref'), ['branch refs/remotes/origin/x']),
+  ].join('\n');
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [
+    devTab(),
+    listedOnly(path.join(C, 'gone'), 'gone'),
+    listedOnly(path.join(C, 'bare-one')),
+    listedOnly(path.join(C, 'odd-ref')),
+  ]);
+});
+
+test('subagent, outside, nested worktrees and the container itself are not listed at all', () => {
+  const text = [
+    devRecord,
     record(path.join(DEV, '.claude', 'worktrees', 'agent-x'), ['branch refs/heads/agent']),
     record(path.resolve('/elsewhere/other'), ['branch refs/heads/other']),
     record(path.join(C, 'feat-x', 'inner'), ['branch refs/heads/inner']),
-    record(path.join(C, 'odd-ref'), ['branch refs/remotes/origin/x']),
     record(C, ['branch refs/heads/container-itself']),
   ].join('\n');
-  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [{ path: DEV, branch: 'develop', isDev: true }]);
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [devTab()]);
 });
 
-test('a locked worktree still gets a tab', () => {
+test('a locked worktree is still openable', () => {
   const text = [devRecord, record(path.join(C, 'feat-l'), ['branch refs/heads/feat/l', 'locked'])].join('\n');
-  assert.strictEqual(tabWorktrees(parsePorcelain(text), C).length, 2);
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C)[1], openable(path.join(C, 'feat-l'), 'feat/l'));
 });
 
-test('a path with spaces gets a tab', () => {
+// `git worktree add` locks the new worktree with reason "initializing" until
+// its checkout is done: no host is spawned into a half-written folder (Dexter F6).
+test('a worktree still being created (locked initializing) is listed but not openable', () => {
+  const text = [devRecord, record(path.join(C, 'feat-new'), ['branch refs/heads/feat/new', 'locked initializing'])].join('\n');
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C)[1], listedOnly(path.join(C, 'feat-new'), 'feat/new'));
+});
+
+test('a path with spaces is openable', () => {
   const text = [devRecord, record(path.join(C, 'feat x y'), ['branch refs/heads/feat/x'])].join('\n');
-  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C)[1],
-    { path: path.join(C, 'feat x y'), branch: 'feat/x', isDev: false });
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C)[1], openable(path.join(C, 'feat x y'), 'feat/x'));
 });
 
 // Reftable's HEAD stub; see host/git-branch.js, point 4.
-test('an invalid branch name gets no tab, and leaves dev with no branch name', () => {
+test('an invalid branch name is not openable, and leaves dev with no branch name', () => {
   const text = [
     record(DEV, ['branch refs/heads/.invalid']),
     record(path.join(C, 'feat-bad'), ['branch refs/heads/.invalid']),
   ].join('\n');
-  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [{ path: DEV, branch: null, isDev: true }]);
+  assert.deepStrictEqual(tabWorktrees(parsePorcelain(text), C), [devTab(null), listedOnly(path.join(C, 'feat-bad'))]);
 });
 
 test('dev is first even when git lists it later', () => {
@@ -261,7 +292,7 @@ const refArb = fc.oneof(
 const recordArb = fc.record({
   p: pathArb,
   ref: refArb,
-  locked: fc.boolean(),
+  locked: fc.constantFrom(null, 'locked', 'locked initializing', 'locked on a USB drive'),
   prunable: fc.boolean(),
   upper: fc.boolean(),
 });
@@ -270,7 +301,7 @@ const listArb = fc.tuple(fc.array(recordArb, { maxLength: 8 }), fc.boolean()).ma
     let p = r.p;
     if (process.platform === 'win32' && r.upper) p = p.toUpperCase();
     const lines = [r.ref];
-    if (r.locked) lines.push('locked');
+    if (r.locked) lines.push(r.locked);
     if (r.prunable) lines.push('prunable gone');
     return record(p, lines);
   }).join('\n');
@@ -293,12 +324,36 @@ test('PROPERTY: no two tabs are the same folder', () => {
   }));
 });
 
-test('PROPERTY: every non-dev tab is a direct child of the container, on a named branch', () => {
+test('PROPERTY: every non-dev entry is a direct child of the container; an openable one is on a named branch', () => {
   fc.assert(fc.property(listArb, ({ text }) => {
     const tabs = tabWorktrees(parsePorcelain(text), C);
     return tabs.filter(t => !t.isDev).every(t =>
       samePath(path.dirname(t.path), C) && !isInside(t.path, DEV)
-      && typeof t.branch === 'string' && t.branch.length > 0);
+      && (!t.openable || (typeof t.branch === 'string' && t.branch.length > 0)));
+  }));
+});
+
+// The other half of F1: whatever state a sibling is in (detached mid-rebase,
+// prunable, bare, locked), while git lists it, it is in the result -- so the
+// reducer never reads it as gone.
+test('PROPERTY: every sibling git lists is in the result when dev is listed', () => {
+  fc.assert(fc.property(listArb, ({ recs, text }) => {
+    const tabs = tabWorktrees(parsePorcelain(text), C);
+    if (!recs.some(r => samePath(r.p, DEV))) return true;
+    return recs.filter(r => samePath(path.dirname(r.p), C))
+      .every(r => tabs.some(t => samePath(t.path, r.p)));
+  }));
+});
+
+test('PROPERTY: openable exactly when on a valid branch, not bare, not prunable, not initializing', () => {
+  fc.assert(fc.property(listArb, ({ recs, text }) => {
+    const tabs = tabWorktrees(parsePorcelain(text), C);
+    return tabs.filter(t => !t.isDev).every(t => {
+      // The first record for this folder is the one kept.
+      const r = recs.find(x => samePath(x.p, t.path));
+      const valid = r.ref.startsWith('branch refs/heads/') && isValidBranchName(r.ref.slice('branch refs/heads/'.length));
+      return t.openable === (valid && !r.prunable && r.locked !== 'locked initializing');
+    });
   }));
 });
 

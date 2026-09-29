@@ -7,8 +7,8 @@
  *
  *   state       = { tabs: [{ path, branch, isDev, phase, hostSeen, error? }], dismissed: [normPath] }
  *   phase       = 'live' | 'finishing' | 'removing' | 'remove-failed'
- *   observation = { worktrees: tabWorktrees(...), merged: { [normPath]: true },
- *                   listening: { [normPath]: bool } }
+ *   observation = { worktrees: tabWorktrees(...)  -- every listed worktree, `openable` or not,
+ *                   merged: { [normPath]: true }, listening: { [normPath]: bool } }
  *   action      = open | stop | close | mark-merged | remove | error, each with `path`
  *
  * A worktree's folder is removed only when, in the same observation, its
@@ -50,8 +50,9 @@ function reconcile(state, observation) {
 
   let tabs = state.tabs.map(t => ({ ...t }));
 
-  // 1. Every listed worktree that isn't a tab yet, and wasn't closed by hand.
+  // 1. Every openable worktree that isn't a tab yet, and wasn't closed by hand.
   for (const w of worktrees) {
+    if (!w.isDev && !w.openable) continue;
     if (tabs.some(t => samePath(t.path, w.path)) || state.dismissed.includes(normPath(w.path))) continue;
     tabs.push({ path: w.path, branch: w.branch, isDev: Boolean(w.isDev), phase: 'live', hostSeen: false });
     actions.push({ type: 'open', path: w.path, branch: w.branch });
@@ -61,8 +62,9 @@ function reconcile(state, observation) {
     if (listening[normPath(t.path)] === true) t.hostSeen = true;
   }
 
-  // 2. A worktree gone from the list: stop its host, close its tab. Not while
-  //    we are removing it ourselves -- removeResult closes that one.
+  // 2. A worktree git no longer lists AT ALL: stop its host, close its tab.
+  //    Listed-but-not-openable (detached mid-rebase, prunable) is still here.
+  //    Not while we are removing it ourselves -- removeResult closes that one.
   tabs = tabs.filter(t => {
     const gone = !t.isDev && t.phase !== 'removing' && !worktrees.some(w => samePath(w.path, t.path));
     if (gone) actions.push({ type: 'stop', path: t.path }, { type: 'close', path: t.path });

@@ -22,7 +22,7 @@ const DEV = path.join(C, 'dev');
 const A = path.join(C, 'feat-a');
 const B = path.join(C, 'feat-b');
 
-const wt = (p, branch, isDev = false) => ({ path: p, branch, isDev });
+const wt = (p, branch, isDev = false, openable = true) => ({ path: p, branch, isDev, openable });
 const DEV_WT = wt(DEV, 'develop', true);
 const A_WT = wt(A, 'feat/a');
 const B_WT = wt(B, 'feat/b');
@@ -106,6 +106,42 @@ test('a worktree that vanishes: its host is stopped and its tab closed', () => {
   const { state, actions } = reconcile(s1, obs([DEV_WT, B_WT]));
   assert.deepStrictEqual(actions, [{ type: 'stop', path: A }, { type: 'close', path: A }]);
   assert.deepStrictEqual(state.tabs.map(t => t.path), [DEV, B]);
+});
+
+// Dexter F1 / Miguel F1: `git rebase` detaches HEAD, so the worktree stops
+// being openable -- but it is still there, and so is the session in it.
+test('a tab whose worktree goes detached mid-session (rebase) is kept, not stopped', () => {
+  const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
+  const { state, actions } = reconcile(s1, obs([DEV_WT, wt(A, null, false, false)]));
+  assert.deepStrictEqual(actions, []);
+  assert.deepStrictEqual(state.tabs.map(t => t.path), [DEV, A]);
+});
+
+// Dexter's counterexample end to end, from git's own text: [DEV, A(feat/a)],
+// then A detaches during a rebase conflict. Must not emit `stop A`.
+test('end to end: a rebase in a worktree does not stop its session', () => {
+  const { parsePorcelain, tabWorktrees } = require('../host/worktree-list');
+  const g = (p) => p.replace(/\\/g, '/');
+  const poll = (aLines) => obs(tabWorktrees(parsePorcelain([
+    `worktree ${g(DEV)}`, 'HEAD 765ee008ee548055970882a0062f31933838d8ce', 'branch refs/heads/develop', '',
+    `worktree ${g(A)}`, 'HEAD 03263a79c0236152213afb800252f994c63b65a0', ...aLines, '',
+  ].join('\n')), C));
+  const s1 = reconcile(initial(), poll(['branch refs/heads/feat/a'])).state;
+  const { state, actions } = reconcile(s1, poll(['detached']));
+  assert.deepStrictEqual(actions, []);
+  assert.deepStrictEqual(state.tabs.map(t => t.path), [DEV, A]);
+});
+
+test('a listed but not openable worktree gets no new tab', () => {
+  const { state, actions } = reconcile(initial(), obs([DEV_WT, wt(A, null, false, false)]));
+  assert.deepStrictEqual(types(actions), ['open']);
+  assert.deepStrictEqual(state.tabs.map(t => t.path), [DEV]);
+});
+
+test('a worktree that finishes being created (becomes openable) gets its tab then', () => {
+  const s1 = reconcile(initial(), obs([DEV_WT, wt(A, 'feat/a', false, false)])).state;
+  const { actions } = reconcile(s1, obs([DEV_WT, A_WT]));
+  assert.deepStrictEqual(actions, [{ type: 'open', path: A, branch: 'feat/a' }]);
 });
 
 // A transient git failure must not read as "every worktree vanished" and
@@ -313,12 +349,15 @@ const obsArb = fc.record({
   kind: fc.constant('obs'),
   withDev: fc.boolean(),
   present: fc.subarray(POOL.slice(1)),
+  // Listed but not openable this time (detached mid-rebase, being created...).
+  notOpenable: fc.subarray(POOL.slice(1).map(w => w.path)),
   merged: fc.subarray(POOL.map(w => w.path)),
   listening: fc.array(fc.tuple(fc.constantFrom(...POOL.map(w => w.path)), fc.constantFrom(true, false, null)),
     { maxLength: 4 }),
   upper: fc.boolean(),
 }).map(e => {
   const worktrees = (e.withDev ? [DEV_WT, ...e.present] : e.present)
+    .map(w => (e.notOpenable.includes(w.path) ? { ...w, branch: null, openable: false } : w))
     .map(w => ({ ...w, path: spell(w.path, e.upper) }));
   const listening = {};
   for (const [p, v] of e.listening) if (v !== null) listening[p] = v;
@@ -368,6 +407,27 @@ test('PROPERTY: no remove unless the host was seen listening since the tab opene
       }
       if (e.kind === 'obs') {
         for (const [k, v] of Object.entries(e.o.listening)) if (v === true && seen.has(k)) seen.set(k, true);
+      }
+    });
+  }));
+});
+
+test('PROPERTY: a poll stops or closes a tab only when git no longer lists its worktree at all', () => {
+  fc.assert(fc.property(eventsArb, (events) => {
+    walk(events, (_, e, r) => {
+      if (e.kind !== 'obs') return;
+      for (const a of r.actions.filter(x => x.type === 'stop' || x.type === 'close')) {
+        assert.ok(!e.o.worktrees.some(w => samePath(w.path, a.path)), `${a.type} ${a.path} while listed`);
+      }
+    });
+  }));
+});
+
+test('PROPERTY: a poll opens a tab only for an openable worktree', () => {
+  fc.assert(fc.property(eventsArb, (events) => {
+    walk(events, (_, e, r) => {
+      for (const a of r.actions.filter(x => x.type === 'open')) {
+        assert.ok(e.o.worktrees.some(w => samePath(w.path, a.path) && w.openable), a.path);
       }
     });
   }));

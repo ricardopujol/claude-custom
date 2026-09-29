@@ -1,14 +1,16 @@
 'use strict';
 /**
- * `git -C <dev> worktree list --porcelain` into the worktrees that get a tab.
- * Design: documentation/PLAN_WORKTREE_TABS.md (window = project, tab = git
- * worktree).
+ * `git -C <dev> worktree list --porcelain` into the worktrees that have, or
+ * may get, a tab. Design: documentation/PLAN_WORKTREE_TABS.md (window =
+ * project, tab = git worktree).
  *
  * Porcelain format (measured on this repo, 2026-09-28): records separated by a
  * blank line; `worktree <path>` (forward slashes), `HEAD <sha>`, then
  * `branch refs/heads/<name>` or `detached`, optionally `bare`,
  * `locked [reason]`, `prunable [reason]`. Lines this module doesn't know are
- * ignored, so a newer git adding attributes doesn't break the list.
+ * ignored, so a newer git adding attributes doesn't break the list. Without
+ * `-z` git quotes only the lock / prunable REASONS, never the path, and a
+ * Windows path can't hold the newline that would need `-z`.
  *
  * Pure: the caller runs git and passes the text in.
  */
@@ -18,7 +20,9 @@ const { isValidBranchName } = require('./git-branch');
 const { normPath, samePath } = require('./project-layout');
 
 function emptyRecord(p) {
-  return { path: p, head: null, branch: null, bare: false, detached: false, locked: false, prunable: false };
+  return {
+    path: p, head: null, branch: null, bare: false, detached: false, locked: false, lockReason: null, prunable: false,
+  };
 }
 
 // `locked` and `prunable` come with or without a reason.
@@ -43,7 +47,10 @@ function parsePorcelain(text) {
       else if (line.startsWith('branch ')) cur.branch = line.slice('branch '.length);
       else if (line === 'bare') cur.bare = true;
       else if (line === 'detached') cur.detached = true;
-      else if (isFlag(line, 'locked')) cur.locked = true;
+      else if (isFlag(line, 'locked')) {
+        cur.locked = true;
+        cur.lockReason = line === 'locked' ? null : line.slice('locked '.length);
+      }
       else if (isFlag(line, 'prunable')) cur.prunable = true;
     }
     // Lines before any `worktree` line belong to no record: dropped.
@@ -69,6 +76,12 @@ function isSibling(container, p) {
   return n !== null && samePath(path.dirname(n), container);
 }
 
+// Every worktree git LISTS that could be a tab: dev, then each direct sibling
+// in list order, whatever state it is in. `openable` says whether a NEW tab
+// may open for it: a named branch, not bare, not prunable, and not still being
+// created (`git worktree add` holds the lock `initializing` until its checkout
+// is done). Listed-but-not-openable still counts as present: a worktree
+// detached mid-rebase is still there, and so is the session in it.
 function tabWorktrees(entries, container) {
   if (!Array.isArray(entries) || normPath(container) === null) return [];
   const dev = path.join(container, 'dev');
@@ -77,14 +90,15 @@ function tabWorktrees(entries, container) {
   // `dev` is the anchor: it gets the first tab even when detached.
   const devEntry = usable.find(e => samePath(e.path, dev));
   if (!devEntry) return [];
-  const tabs = [{ path: path.resolve(devEntry.path), branch: branchName(devEntry.branch), isDev: true }];
+  const tabs = [{ path: path.resolve(devEntry.path), branch: branchName(devEntry.branch), isDev: true, openable: true }];
 
   for (const e of usable) {
-    const branch = branchName(e.branch);
-    if (!branch || e.bare || e.prunable || !isSibling(container, e.path)) continue;
+    if (!isSibling(container, e.path)) continue;
     // Also what skips dev here: it is already tabs[0].
     if (tabs.some(t => samePath(t.path, e.path))) continue;
-    tabs.push({ path: path.resolve(e.path), branch, isDev: false });
+    const branch = branchName(e.branch);
+    const openable = Boolean(branch) && !e.bare && !e.prunable && e.lockReason !== 'initializing';
+    tabs.push({ path: path.resolve(e.path), branch, isDev: false, openable });
   }
   return tabs;
 }
