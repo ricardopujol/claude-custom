@@ -27,7 +27,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { createMoodMachine } = require('../host/mood-machine');
+const { createMoodMachine, REMEMBER_MAX } = require('../host/mood-machine');
 
 function harness(opts = {}) {
   let now = 1_000_000;
@@ -67,10 +67,29 @@ function harness(opts = {}) {
       m.handle({ event: 'PostToolUse', payload: { tool_name: 'Agent', tool_use_id: key,
         tool_input: {}, tool_response: { isAsync: true, status: 'async_launched', agentId } } });
     },
-    // The main session messaging an agent: how a finished agent is RESUMED.
-    message(to, key = 'sm' + Math.random()) {
-      m.handle({ event: 'PreToolUse', payload: { tool_name: 'SendMessage', tool_use_id: key,
-        tool_input: { to, summary: 's', message: 'm' } } });
+    // A SendMessage's own result, as the CLI sends it (measured,
+    // verify/probe-resume-queued-message.js). `to` is what the model wrote;
+    // the result names the run for certain in `pin.id`.
+    sent(response, { to = 'x', key = 'sm' + Math.random(), by, byType } = {}) {
+      m.handle({ event: 'PostToolUse', payload: { tool_name: 'SendMessage', tool_use_id: key,
+        tool_input: { to, summary: 's', message: 'm' }, tool_response: response,
+        ...(by ? { agent_id: by, agent_type: byType } : {}) } });
+    },
+    // ...to a run that had ended: the CLI RESUMES it on the same id.
+    resumed(agentId, opts = {}) {
+      h.sent({ success: true, message: 'Resuming agent ' + agentId, resumedAgentId: agentId,
+        pin: { id: agentId, name: opts.to || agentId, ref: 'r1' } }, { to: agentId, ...opts });
+    },
+    // ...to a run still going: queued until its next tool round.
+    queued(agentId, opts = {}) {
+      h.sent({ success: true, message: `Message queued for delivery to ${agentId} at its next tool round.`,
+        pin: { id: agentId, name: opts.to || agentId, ref: 'r1' } }, { to: agentId, ...opts });
+    },
+    // A subagent's PreToolUse for a non-Agent tool: the first thing a woken
+    // run sends.
+    pre(agentId, agentType, tool = 'Bash') {
+      m.handle({ event: 'PreToolUse', payload: { tool_name: tool, tool_input: { command: 'p' },
+        agent_id: agentId, agent_type: agentType } });
     },
   };
   return h;
@@ -613,10 +632,12 @@ test('watchedEnd: true only for a run this machine saw end, by its agent_id', ()
 });
 
 // --- a finished agent RESUMED with SendMessage ---------------------------------
-// Ricardo's hand check of PR #66, 2026-09-29, replayed from the host log and the
-// session transcript: one Agent spawn, then two SendMessage calls to the same
-// agent_id. No Agent call marks the resumes; its calls and SubagentStop carry
-// the old id, which used to be dropped as a late echo of the ended run.
+// The main session brings a finished agent back by MESSAGING it, with no Agent
+// call at all, and the CLI runs it again on its OLD agent_id, whose calls and
+// SubagentStop used to be dropped as a late echo of the ended run (found in the
+// hand check of PR #66). The resume opens on the SendMessage's own RESULT,
+// which names the run for certain however `to` addressed it. Every shape here
+// is measured with the real CLI: verify/probe-resume-queued-message.js.
 
 function endedRun(h, type = 'general-purpose', id = 'a6c') {
   h.spawn(type, 'k1', { background: true });
@@ -626,11 +647,20 @@ function endedRun(h, type = 'general-purpose', id = 'a6c') {
   return id;
 }
 
-test('resume: a message to an ended agent_id is a new run of that agent, working until its SubagentStop', () => {
+function liveRun(h, type = 'general-purpose', id = 'a6c') {
+  h.spawn(type, 'k1', { background: true });
+  h.launchedAsync('k1', id);
+  return id;
+}
+
+const spawnNamed = (h, type, key, name, extra = {}) => h.m.handle({ event: 'PreToolUse', payload: {
+  tool_name: 'Agent', tool_use_id: key, tool_input: { subagent_type: type, name, ...extra } } });
+
+test('resume: a result that resumed an ended run is a new run of that agent, working until its SubagentStop', () => {
   const h = harness();
   const id = endedRun(h);
   assert.notStrictEqual(h.m.stateOf('general-purpose'), 'working');
-  h.message(id);
+  h.resumed(id);
   assert.strictEqual(h.m.stateOf('general-purpose'), 'working');
   assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
   assert.strictEqual(h.m.invocations()[0].agentId, id, 'bound to the resumed id at once');
@@ -643,7 +673,7 @@ test('resume: a message to an ended agent_id is a new run of that agent, working
 test('resume: the resumed run\'s calls are its own, not dropped as a late echo', () => {
   const h = harness();
   const id = endedRun(h);
-  h.message(id);
+  h.resumed(id);
   h.call(id, 'general-purpose', { exit_code: 1, stderr: 'boom' });
   assert.strictEqual(h.m.stateOf('general-purpose'), 'stressed', 'the failure lands on the resumed run');
 });
@@ -651,42 +681,307 @@ test('resume: the resumed run\'s calls are its own, not dropped as a late echo',
 test('resume: it is background work, so the main turn ending does not end it', () => {
   const h = harness();
   const id = endedRun(h);
-  h.message(id);
+  h.resumed(id);
   h.m.handle({ event: 'Stop', payload: {} });
   assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
 });
 
-test('resume: a message to a run that is still going changes nothing', () => {
+test('resume: a message that was only SENT opens nothing: denied, blocked, failed or unreachable (Dexter F5, Miguel M1)', () => {
   const h = harness();
-  h.spawn('general-purpose', 'k1', { background: true });
-  h.launchedAsync('k1', 'live');
-  h.message('live');
-  assert.deepStrictEqual(h.m.stack(), ['general-purpose'], 'no second instance');
+  const id = endedRun(h);
+  // Denied at the prompt, blocked by a hook, or Esc'd: PreToolUse fires and no
+  // result ever comes. Opening on it left a phantom working card for 30 min.
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'SendMessage', tool_use_id: 'p1',
+    tool_input: { to: id, summary: 's', message: 'm' } } });
+  h.sent({ success: false, message: `No agent named '${id}' is reachable.` }, { to: id });
+  // `success` is the CLI's word that it happened, even if a failure named a run.
+  h.sent({ success: false, message: 'not resumed', resumedAgentId: id, pin: { id } }, { to: id });
+  h.m.handle({ event: 'PostToolUseFailure', payload: { tool_name: 'SendMessage', tool_use_id: 'f1',
+    tool_input: { to: id }, error: 'denied', is_interrupt: false } });
+  h.sent(undefined, { to: id });
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'sleeping');
+  assert.strictEqual(h.m.watchedEnd(id), true, 'still ended');
 });
 
-test('resume: a message to an id this host never saw end is not a run', () => {
+test('resume: a result naming an id this host never saw end is not a run', () => {
   const h = harness();
-  h.message('stranger');
-  h.message('');
-  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'SendMessage', tool_use_id: 'x', tool_input: {} } });
+  h.resumed('stranger');
+  h.sent({ success: true, resumedAgentId: '' });
+  h.sent({ success: true, resumedAgentId: 42 });
   assert.deepStrictEqual(h.m.stack(), []);
 });
 
-test('resume: the same SendMessage delivered twice is one run', () => {
+test('resume: a result naming a run still going is not a second run', () => {
   const h = harness();
-  const id = endedRun(h);
-  h.message(id, 'same');
-  h.message(id, 'same');
+  liveRun(h, 'general-purpose', 'live');
+  h.queued('live');
+  h.resumed('live');
   assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
 });
 
-test('resume: an agent spawned with a NAME is resumed by that name', () => {
+test('resume: the same result delivered twice is one run, before or after that run ends', () => {
   const h = harness();
-  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_use_id: 'k1',
-    tool_input: { subagent_type: 'code-reviewer', name: 'miguel', run_in_background: true } } });
-  h.launchedAsync('k1', 'm1');
-  h.subStop('m1', 'code-reviewer');
-  h.message('miguel');
-  assert.deepStrictEqual(h.m.stack(), ['code-reviewer']);
-  assert.strictEqual(h.m.invocations()[0].agentId, 'm1');
+  const id = endedRun(h);
+  h.resumed(id, { key: 'same' });
+  h.resumed(id, { key: 'same' });
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
+  h.subStop(id, 'general-purpose');
+  h.resumed(id, { key: 'same' });
+  assert.deepStrictEqual(h.m.stack(), [], 'a late duplicate after the resumed run ended');
+});
+
+test('resume: resume, finish, resume again: each resume is a run of its own (Miguel M2c)', () => {
+  const h = harness();
+  const id = endedRun(h);
+  h.resumed(id);
+  h.subStop(id, 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+  h.advance(10_000);
+  h.resumed(id);
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'working');
+  h.subStop(id, 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('resume: a resumed run starts clean: the ended run\'s errors are not its own (Miguel M2a)', () => {
+  const h = harness();
+  liveRun(h);
+  h.fail('a6c', 'general-purpose');
+  h.subStop('a6c', 'general-purpose');
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'stressed');
+  h.advance(10_000);
+  h.resumed('a6c');
+  h.subStop('a6c', 'general-purpose');
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'happy', 'the resumed run finished cleanly');
+});
+
+test('resume: a resumed run starts clean: the ended run\'s repeated calls are not a retry loop (Miguel M2a)', () => {
+  const h = harness();
+  liveRun(h);
+  const same = { command: 'same' };
+  h.call('a6c', 'general-purpose', { exit_code: 0 }, same);
+  h.call('a6c', 'general-purpose', { exit_code: 0 }, same);
+  h.subStop('a6c', 'general-purpose');
+  h.advance(10_000);
+  h.resumed('a6c');
+  h.call('a6c', 'general-purpose', { exit_code: 0 }, same);
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'working', 'one call, not a third repeat');
+});
+
+test('resume: while another instance of the name runs, its errors are kept', () => {
+  const h = harness();
+  h.spawn('paris', 'k1', { background: true });
+  h.launchedAsync('k1', 'P1');
+  h.spawn('paris', 'k2', { background: true });
+  h.launchedAsync('k2', 'P2');
+  h.subStop('P2', 'paris');
+  h.fail('P1', 'paris');
+  h.resumed('P2');
+  h.subStop('P2', 'paris');
+  h.subStop('P1', 'paris');
+  assert.strictEqual(h.m.stateOf('paris'), 'stressed', 'the failure shows until every instance has finished');
+});
+
+test('resume: inside the happy flash, the flash is over (Miguel M2d)', () => {
+  const h = harness();
+  liveRun(h);
+  h.subStop('a6c', 'general-purpose');           // happy flash, 8 s
+  h.resumed('a6c');
+  h.fail('a6c', 'general-purpose');
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'stressed');
+  h.advance(9_000);                               // past the old flash
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'stressed', 'the old flash expiring does not paper over a live failure');
+});
+
+test('resume: a SUBAGENT\'s SendMessage is its own call, and its result resumes the run it names', () => {
+  const h = harness();
+  const id = endedRun(h);
+  h.spawn('paris', 'k2', { background: true });
+  h.launchedAsync('k2', 'P');
+  h.resumed(id, { by: 'P', byType: 'paris' });
+  assert.deepStrictEqual(h.m.stack().slice().sort(), ['general-purpose', 'paris']);
+  h.sent({ success: false, message: 'No agent named \'x\' is reachable.' }, { by: 'P', byType: 'paris' });
+  assert.strictEqual(h.m.stateOf('paris'), 'stressed', 'a send that failed is the sender\'s failed call');
+});
+
+// Dexter F1 and F2 were about resolving `to` against the host's own
+// bookkeeping. The CLI resolves a name to the newest SPAWN that took it, and a
+// foreground pair can be bound crosswise until their results arrive, so the
+// host guessed wrong in both. There's nothing left to guess: the result names
+// the id the CLI resumed.
+
+test('Dexter F1: two spawns shared a name and the older is still running; the result says which one resumed', () => {
+  const h = harness();
+  spawnNamed(h, 'paris', 'k1', 'w', { run_in_background: true });
+  h.launchedAsync('k1', 'A');
+  spawnNamed(h, 'miguel', 'k2', 'w', { run_in_background: true });
+  h.launchedAsync('k2', 'B');
+  h.subStop('B', 'miguel');
+  h.resumed('B', { to: 'w' });
+  h.call('B', 'miguel');
+  assert.strictEqual(h.m.stateOf('miguel'), 'working');
+  assert.deepStrictEqual(h.m.stack().slice().sort(), ['miguel', 'paris']);
+});
+
+test('Dexter F1: two spawns shared a name and ended out of spawn order; the result says which one resumed', () => {
+  const h = harness();
+  spawnNamed(h, 'paris', 'k1', 'w', { run_in_background: true });
+  h.launchedAsync('k1', 'A');
+  spawnNamed(h, 'miguel', 'k2', 'w', { run_in_background: true });
+  h.launchedAsync('k2', 'B');
+  h.subStop('B', 'miguel');
+  h.subStop('A', 'paris');
+  h.advance(10_000);
+  h.resumed('B', { to: 'w' });
+  assert.deepStrictEqual(h.m.stack(), ['miguel']);
+  h.call('B', 'miguel');
+  assert.strictEqual(h.m.stateOf('miguel'), 'working');
+  assert.notStrictEqual(h.m.stateOf('paris'), 'working');
+  h.subStop('B', 'miguel');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('Dexter F2: a crosswise foreground pair resumes on the id the CLI names, and ends on that run\'s own events', () => {
+  const h = harness();
+  const completed = (key, agentId) => h.m.handle({ event: 'PostToolUse', payload: { tool_name: 'Agent',
+    tool_use_id: key, tool_input: {}, tool_response: { status: 'completed', agentId } } });
+  spawnNamed(h, 'dexter', 't1', 'alpha');
+  spawnNamed(h, 'dexter', 't2', 'beta');
+  h.call('B', 'dexter');           // beta speaks first: bound to t1 (alpha), crosswise
+  h.call('A', 'dexter');
+  h.subStop('A', 'dexter');
+  completed('t1', 'A');            // refused: A already ended
+  h.subStop('B', 'dexter');
+  completed('t2', 'B');
+  assert.deepStrictEqual(h.m.stack(), []);
+  h.advance(10_000);
+  h.resumed('A', { to: 'alpha' });
+  assert.strictEqual(h.m.invocations()[0].agentId, 'A');
+  h.call('A', 'dexter');
+  h.subStop('A', 'dexter');
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.notStrictEqual(h.m.stateOf('dexter'), 'working');
+});
+
+// Dexter F3: a message to a run that's still going is queued "at its next tool
+// round". If it has none left (it's writing its last reply), it ends, and the
+// message wakes it on the same id afterwards (measured: the probe's "late"
+// timing, where the woken run came at the main turn's end).
+
+test('Dexter F3: a message queued during a run\'s last reply wakes it after its SubagentStop, and the card shows it', () => {
+  const h = harness();
+  liveRun(h);
+  h.call('a6c', 'general-purpose');
+  h.queued('a6c');
+  h.subStop('a6c', 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+  h.advance(10_000);
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [] } });
+  h.pre('a6c', 'general-purpose');          // the woken run's first event
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'working');
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
+  h.call('a6c', 'general-purpose');
+  h.m.handle({ event: 'Stop', payload: { background_tasks: [
+    { id: 'a6c', type: 'subagent', status: 'running', agent_type: 'general-purpose' }] } });
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose'], 'background work: Stop spares it');
+  h.subStop('a6c', 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.strictEqual(h.m.watchedEnd('a6c'), true);
+});
+
+test('Dexter F3: a queued message drained at the run\'s next tool round wakes nothing once it ends', () => {
+  const h = harness();
+  liveRun(h);
+  h.queued('a6c');
+  h.call('a6c', 'general-purpose');         // drained here (the probe's "mid" timing)
+  h.subStop('a6c', 'general-purpose');
+  h.call('a6c', 'general-purpose');         // a late echo of the ended run
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.strictEqual(h.m.bookkeeping().queued, 0);
+});
+
+test('Dexter F3: a call that FAILED is a tool round too, and drains the message', () => {
+  const h = harness();
+  liveRun(h);
+  h.queued('a6c');
+  h.fail('a6c', 'general-purpose');
+  h.subStop('a6c', 'general-purpose');
+  h.call('a6c', 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('Dexter F3: a duplicate SubagentStop does not spend the wake', () => {
+  const h = harness();
+  liveRun(h);
+  h.queued('a6c');
+  h.subStop('a6c', 'general-purpose');
+  h.subStop('a6c', 'general-purpose');      // delivered twice
+  assert.deepStrictEqual(h.m.stack(), []);
+  h.call('a6c', 'general-purpose');         // the woken run
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
+});
+
+test('Dexter F3: a woken run whose first act is a spawn is that child\'s parent', () => {
+  const h = harness();
+  liveRun(h);
+  h.queued('a6c');
+  h.subStop('a6c', 'general-purpose');
+  h.spawn('miguel', 'k2', { by: 'a6c', byType: 'general-purpose' });
+  const invs = h.m.invocations();
+  assert.deepStrictEqual(invs.map(i => i.name), ['general-purpose', 'miguel']);
+  assert.strictEqual(invs[1].parentId, invs[0].id);
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'working');
+});
+
+test('Dexter F3: a queued message for a run that is not live here marks nothing', () => {
+  const h = harness();
+  const id = endedRun(h);
+  h.queued(id);
+  h.queued('stranger');
+  h.call(id, 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.strictEqual(h.m.bookkeeping().queued, 0);
+});
+
+test('Dexter F3: a resume takes the pending wake with it', () => {
+  // The run ended holding a message and was then resumed by another send: the
+  // resumed run is the one that drains it, so after it ends, a later event of
+  // that id is an echo again.
+  const h = harness();
+  liveRun(h);
+  h.queued('a6c');
+  h.subStop('a6c', 'general-purpose');
+  h.resumed('a6c');
+  h.subStop('a6c', 'general-purpose');
+  h.call('a6c', 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('Dexter F3: SessionEnd drops every pending wake (/clear kills background agents)', () => {
+  const h = harness();
+  liveRun(h);
+  h.queued('a6c');
+  h.subStop('a6c', 'general-purpose');
+  h.m.handle({ event: 'SessionEnd', payload: { reason: 'clear' } });
+  assert.strictEqual(h.m.bookkeeping().queued, 0);
+  h.call('a6c', 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('Dexter F7: a resume at the REMEMBER_MAX boundary does not cost the oldest remembered run its own resume', () => {
+  const h = harness();
+  for (let i = 0; i < REMEMBER_MAX; i++) {
+    h.spawn('p', 'k' + i, { background: true });
+    h.launchedAsync('k' + i, 'id' + i);
+    h.subStop('id' + i, 'p');
+  }
+  h.resumed('id500');
+  h.spawn('p', 'kW0', { background: true });
+  h.launchedAsync('kW0', 'W0');
+  h.subStop('W0', 'p');                     // one more ends
+  h.resumed('id0');                         // the oldest still remembered
+  assert.deepStrictEqual(h.m.invocations().map(i => i.agentId).sort(), ['id0', 'id500']);
+  assert.ok(h.m.bookkeeping().endedIds <= REMEMBER_MAX);
 });

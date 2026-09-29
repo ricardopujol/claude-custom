@@ -32,7 +32,7 @@ test('does NOT union the user hooks', () => {
   assert.ok(!commands.includes('sync-agent.ps1'), 'user hook command must not be copied in');
 });
 
-test('PreToolUse covers Task and Bash, and nothing else', () => {
+test('PreToolUse covers Task and Bash, and no read or edit tool', () => {
   // Hooks run synchronously in the critical path of tool execution, measured at
   // ~23ms each. A '*' matcher taxes every Read, Grep and edit.
   //
@@ -53,18 +53,17 @@ test('PreToolUse covers Task and Bash, and nothing else', () => {
   }
 });
 
-// Ricardo's hand check of PR #66, 2026-09-29: the main session RESUMED a
-// finished background agent with SendMessage (to: its agent_id) instead of
-// spawning a new one. Unhooked, the resume was invisible: the agent never
-// showed working, and a hidden card never came back. Only the START is
-// needed -- the resumed run ends on its own SubagentStop.
-test('PreToolUse also covers SendMessage, so a resumed agent is seen; PostToolUse does not', () => {
+// A message to a finished agent RESUMES it, with no Agent call; unhooked, the
+// resumed agent never showed working and a hidden card never came back. The
+// SendMessage RESULT names the run it resumed (host/mood-machine.js
+// message()); its PreToolUse is only intent, and a denied send never runs.
+test('SendMessage is hooked on its result, not on PreToolUse', () => {
   const s = buildHarnessSettings(opts);
-  assert.ok(/\bSendMessage\b/.test(s.hooks.PreToolUse[0].matcher), s.hooks.PreToolUse[0].matcher);
-  assert.ok(!/\bSendMessage\b/.test(s.hooks.PostToolUse[0].matcher), 'the resume ends on SubagentStop; no post hook needed');
+  assert.ok(/\bSendMessage\b/.test(s.hooks.PostToolUse[0].matcher), s.hooks.PostToolUse[0].matcher);
+  assert.ok(!/\bSendMessage\b/.test(s.hooks.PreToolUse[0].matcher), 'intent alone opens nothing');
 });
 
-test('PostToolUse is scoped to Task and Bash only', () => {
+test('PostToolUse covers Task and Bash, and no read or edit tool', () => {
   const s = buildHarnessSettings(opts);
   const matchers = s.hooks.PostToolUse.map(e => e.matcher);
   assert.strictEqual(matchers.length, 1);

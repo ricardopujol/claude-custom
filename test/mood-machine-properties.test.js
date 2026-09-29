@@ -20,7 +20,23 @@
  *   - a finished run's SubagentStop and its spawn's completed result arrive
  *     in EITHER order, and SubagentStop may arrive twice (Dexter #4, #6);
  *   - a subagent's PostToolUse may carry interrupted:true, and the run goes
- *     on (Dexter #2).
+ *     on (Dexter #2);
+ *   - a SendMessage to an ended run RESUMES it: a NEW run on the same id, a
+ *     background root, announced by the send's result (`resumedAgentId`); a
+ *     send may be refused (`success: false`, or a failed call), and then
+ *     nothing runs;
+ *   - a SendMessage to a live background run is queued and drains at that
+ *     run's next completed tool round; if the run ends first, the message
+ *     WAKES it afterwards, as another new run on the same id, whose first
+ *     event may be a call, a PreToolUse, or only its SubagentStop.
+ *   (All measured: verify/probe-resume-queued-message.js. Dexter, PR #69, F4:
+ *   the first version resumed the SAME simulated run, by id only, never
+ *   LATE_TYPE, and so shared every premise of the code it checked.)
+ *
+ * TWO SHAPES NO PAYLOAD CAN TELL APART, not generated: while a run's id is
+ * live again, a late echo of its PREVIOUS run (Dexter F6, accepted); and
+ * while a run holds an undrained message, a late CALL echo of it, which looks
+ * exactly like the woken run's first event.
  *
  * LATE FIRST SPEECH, and where it is allowed (Dexter #6). The machine binds
  * an agent_id to the oldest unbound run of its type, so a run that speaks
@@ -63,13 +79,16 @@ function opArb(callKinds, mainKinds = MAIN_KINDS) {
     { weight: 2, arbitrary: fc.record({ op: fc.constant('mainCall'), kind: fc.constantFrom(...mainKinds) }) },
     { weight: 3, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat(), result: fc.boolean(),
       resultFirst: fc.boolean(), dup: fc.boolean(), drop: fc.boolean() }) },
-    { weight: 1, arbitrary: fc.record({ op: fc.constant('lateEcho'), who: fc.nat(), stop: fc.boolean() }) },
+    { weight: 1, arbitrary: fc.record({ op: fc.constant('lateEcho'), who: fc.nat(), stop: fc.boolean(), send: fc.boolean() }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('escSpawn'), who: fc.nat() }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('escMain') }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('stop') }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('sessionEnd') }) },
     { weight: 2, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 20_000 }) }) },
-    { weight: 1, arbitrary: fc.record({ op: fc.constant('resume'), who: fc.nat() }) },
+    { weight: 1, arbitrary: fc.record({ op: fc.constant('resume'), who: fc.nat(), dup: fc.boolean(),
+      refused: fc.constantFrom('no', 'no', 'unreachable', 'failed'), byName: fc.boolean() }) },
+    { weight: 1, arbitrary: fc.record({ op: fc.constant('message'), who: fc.nat() }) },
+    { weight: 1, arbitrary: fc.record({ op: fc.constant('wake'), who: fc.nat(), first: fc.constantFrom('call', 'pre', 'stopOnly') }) },
   );
 }
 
@@ -91,7 +110,28 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
   let labelled = false;
   const send = (event, payload) => {
     if (payload.agent_id || (payload.tool_response && payload.tool_response.agentId)) labelled = true;
+    // A completed tool round of a run drains a message queued for it.
+    if ((event === 'PostToolUse' || event === 'PostToolUseFailure') && payload.agent_id) {
+      for (const x of agents) if (x.alive && x.id === payload.agent_id) x.pending = false;
+    }
     m.handle({ event, payload });
+  };
+  const liveId = id => agents.some(y => y.alive && y.id === id);
+  // Ended runs whose queued message will WAKE them.
+  const wakeable = new Set();
+  // Ids the machine still holds a message mark for: wakeable ones, and woken
+  // runs that ended without an event it could see them by. A late call echo
+  // of one of these is the woken run's first event, as far as any payload
+  // can tell, so none is generated (see the header).
+  const marked = new Set();
+  const sentResults = [];          // every resuming SendMessage result, to echo
+  // A run back on an old id, as a new simulated run.
+  const again = (from, key) => {
+    const b = { id: from.id, key, type: from.type, parent: null, bg: true, alive: true, told: true };
+    agents.push(b);
+    wakeable.delete(from.id);
+    marked.delete(from.id);
+    return b;
   };
   const bash = (a, response) => send('PostToolUse', {
     tool_name: 'Bash', tool_input: { command: 'c' + (++n) }, tool_response: response, ...by(a) });
@@ -162,6 +202,8 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         // for certain (after a Stop or a reap, an unbound record of its type
         // may be a different live run), so it's left to the stall reaper: a
         // documented limitation, like the crosswise Esc below.
+        // Ending with a message still queued: it wakes the run later.
+        if (a.pending) { a.pending = false; wakeable.add(a.id); marked.add(a.id); }
         if (o.drop && !a.bg && o.result && a.told) { result(); break; }
         if (o.resultFirst) { result(); stop(); } else { stop(); result(); }
         if (o.dup) stop();                                          // delivered twice
@@ -176,7 +218,13 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         // can't be recognised later: its first event looks exactly like a
         // silent same-type sibling speaking for the first time. That's the
         // first-come binding limitation, not something #4 can fix.
-        const dead = agents.filter(x => !x.alive && x.told);
+        //
+        // Not while the id is live again (Dexter F6), and no call echo while
+        // it holds a message mark: see the header.
+        //
+        // Or a SendMessage result delivered again, at any later point.
+        if (o.send && sentResults.length) { sentResults[o.who % sentResults.length](); break; }
+        const dead = agents.filter(x => !x.alive && x.told && !liveId(x.id) && (o.stop || !marked.has(x.id)));
         if (!dead.length) break;
         const a = dead[o.who % dead.length];
         if (o.stop) send('SubagentStop', by(a)); else bash(a, { exit_code: 1 });
@@ -201,7 +249,10 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
           { id: a.id, type: 'subagent', status: 'running', agent_type: a.type, description: 'd' + a.key })) });
         break;
       case 'sessionEnd':
+        // /clear kills background agents: no queued message wakes anything.
         for (const a of live) a.alive = false;
+        wakeable.clear();
+        marked.clear();
         send('SessionEnd', { reason: 'clear' });
         break;
       case 'advance':
@@ -209,19 +260,64 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         m.tick();
         break;
       case 'resume': {
-        // The main session brings an ended agent back with SendMessage to its
-        // agent_id (Ricardo's hand check of PR #66). It runs again as its own
-        // background root, on the SAME id, until its next SubagentStop. Only a
-        // run the machine could know by id: one that spoke before it ended,
-        // and not LATE_TYPE, whose ids may be bound crosswise (see the header).
-        const dead = agents.filter(x => !x.alive && x.told && x.type !== LATE_TYPE);
+        // The main session sends an ended agent a message, by id or by the
+        // name it was spawned with, and the CLI RESUMES it: a new run on the
+        // same id, its own background root, until its next SubagentStop. Any
+        // type, LATE_TYPE included: the result names the id, so a crosswise
+        // binding can't mislead it. Only a run whose id was told (the main
+        // session learns an id from the spawn's result, which says it).
+        const dead = agents.filter(x => !x.alive && x.told && !liveId(x.id));
         if (!dead.length) break;
         const a = dead[o.who % dead.length];
-        a.alive = true;
-        a.bg = true;
-        a.parent = null;
-        send('PreToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm' + (++n),
-          tool_input: { to: a.id, summary: 's', message: 'm' } });
+        const key = 'sm' + (++n);
+        const to = o.byName ? 'name-' + a.key : a.id;
+        if (o.refused === 'unreachable') {
+          send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: key, tool_input: { to, message: 'm' },
+            tool_response: { success: false, message: `No agent named '${to}' is reachable.` } });
+          break;
+        }
+        if (o.refused === 'failed') {
+          send('PostToolUseFailure', { tool_name: 'SendMessage', tool_use_id: key, tool_input: { to, message: 'm' },
+            error: 'denied', is_interrupt: false });
+          break;
+        }
+        again(a, key);
+        const result = () => send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: key,
+          tool_input: { to, summary: 's', message: 'm' },
+          tool_response: { success: true, message: 'Resuming agent ' + to, resumedAgentId: a.id, pin: { id: a.id, name: to, ref: 'r' } } });
+        result();
+        if (o.dup) result();                                        // delivered twice
+        sentResults.push(result);
+        break;
+      }
+      case 'message': {
+        // A message to a live BACKGROUND run (the main session isn't blocked on
+        // it, so it can send): queued, and drained at its next tool round.
+        const targets = live.filter(x => x.bg && x.told);
+        if (!targets.length) break;
+        const a = targets[o.who % targets.length];
+        send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm' + (++n), tool_input: { to: a.id, message: 'm' },
+          tool_response: { success: true, message: `Message queued for delivery to ${a.id} at its next tool round.`,
+            pin: { id: a.id, name: a.id, ref: 'r' } } });
+        a.pending = true;
+        break;
+      }
+      case 'wake': {
+        // The CLI runs an ended run again with the message it never drained.
+        const ids = [...wakeable].filter(id => !liveId(id));
+        if (!ids.length) break;
+        const id = ids[o.who % ids.length];
+        const from = agents.filter(x => x.id === id).pop();
+        const b = again(from, null);
+        if (o.first === 'call') bash(b, { exit_code: 0 });
+        else if (o.first === 'pre') send('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'w' + (++n) }, ...by(b) });
+        else {
+          // It ends having made no call, so nothing showed it, and the
+          // machine's mark is still there.
+          b.alive = false;
+          marked.add(id);
+          send('SubagentStop', by(b));
+        }
         break;
       }
     }
