@@ -89,7 +89,7 @@ app.whenReady().then(async () => {
     await js('setRosterTab("inactive")');
     check('the Inactive tab lists agents', await until('document.querySelectorAll("#agents .agent[data-agent]").length > 2', 60000));
     check('main answered the images toggle (on by default)', await until('agentImagesEnabled === true'));
-    check('the hover pencil is drawn on faces', await js('document.querySelectorAll("#agents .face .face-edit").length > 0'));
+    check('the hover pencil is drawn on faces', await js('document.querySelectorAll("#agents .face .face-pencil").length > 0'));
     check('baseline: no video in the roster', (await vids()).length === 0);
 
     await wsSend({ type: 'portrait', action: 'set-global', path: ${JSON.stringify(VIDEO)} });

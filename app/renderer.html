@@ -532,14 +532,14 @@
     /* BACKLOG C #13: the hover pencil that opens the file picker for a face.
        Hidden until the face is hovered or focused, so it costs no space. */
     .agent .face { position: relative; }
-    .agent .face .face-edit {
+    .agent .face .face-pencil {
       position: absolute; right: 1px; bottom: 1px;
       width: 16px; height: 16px; padding: 0; line-height: 14px; font-size: 11px;
       border: 1px solid rgba(255,255,255,.25); border-radius: 4px;
       background: rgba(14,16,23,.75); color: #fff; cursor: pointer;
       opacity: 0; transition: opacity .15s;
     }
-    .agent .face:hover .face-edit, .agent .face .face-edit:focus-visible { opacity: 1; }
+    .agent .face:hover .face-pencil, .agent .face .face-pencil:focus-visible { opacity: 1; }
     /* BACKLOG C #18: the roster header's "agent images" switch. */
     #roster-subtabs { display: flex; align-items: center; }
     #images-toggle { margin-left: auto; cursor: pointer; }

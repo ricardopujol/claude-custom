@@ -1033,7 +1033,7 @@ function faceEditHtml() {
   // Hidden while images are off or unknown: a picture saved then changes nothing
   // visible, which reads as a broken button (Miguel S7, PR #64).
   return (window.harness && window.harness.avatar && agentImagesEnabled === true)
-    ? '<button type="button" class="face-edit" title="Choose a picture, GIF or video for this agent">✎</button>'
+    ? '<button type="button" class="face-pencil" data-no-card-click title="Choose a picture, GIF or video for this agent">✎</button>'
     : '';
 }
 
@@ -2707,11 +2707,12 @@ if (window.harness && window.harness.avatar) {
 // The hover pencil on a roster face: pick a file, send it as the same
 // `portrait set` a drop sends, for the state the card is showing.
 agentsEl.addEventListener('click', (e) => {
-  const btn = e.target.closest && e.target.closest('.face-edit');
+  const btn = e.target.closest && e.target.closest('.face-pencil');
   if (!btn) return;
-  // Not a card click: a plain click on a card does something else (the
-  // activity log), and this button must never trigger it.
-  e.stopImmediatePropagation();
+  // Not a card click: the card-click handler ignores anything inside a
+  // button / [data-no-card-click], so nothing here stops propagation (the CLI's
+  // clickable menus need xterm to see every mouse event; see
+  // test/renderer-mouse-passthrough.test.js).
   e.preventDefault();
   const row = btn.closest('.agent');
   const agent = row && row.dataset.agent;
@@ -2722,7 +2723,7 @@ agentsEl.addEventListener('click', (e) => {
     try { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent, state, path })); }
     catch { /* not attached */ }
   });
-}, true);
+});
 
 const HEX_INPUT = /^#[0-9a-f]{6}$/i;
 

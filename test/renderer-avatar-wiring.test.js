@@ -57,10 +57,14 @@ test('play/pause is decided by portraitMedia.visibilityAction from the observer 
 });
 
 test('the face pencil sends the same portrait-set message a drop sends, and is not the card click', () => {
-  const i = SRC.indexOf("closest('.face-edit')");
-  assert.ok(i !== -1, 'a delegated handler for .face-edit must exist');
-  const handler = SRC.slice(i, SRC.indexOf('}, true);', i));
-  assert.match(handler, /stopImmediatePropagation\(\)/, 'must not also trigger a card click');
+  const i = SRC.indexOf("closest('.face-pencil')");
+  assert.ok(i !== -1, 'a delegated handler for .face-pencil must exist');
+  const handler = SRC.slice(i, SRC.indexOf('\n});', i));
+  // Bubble phase and no propagation stopping: the CLI's clickable menus need
+  // xterm to see every mouse event (test/renderer-mouse-passthrough.test.js).
+  assert.doesNotMatch(handler, /stop(?:Immediate)?Propagation/);
+  assert.doesNotMatch(SRC.slice(i, i + handler.length + 10), /\}, true\);/, 'registered without a capture flag');
+  assert.match(body('function faceEditHtml'), /data-no-card-click/, 'the card-click contract: buttons marked no-card-click');
   assert.match(handler, /type: 'portrait', action: 'set', agent, state, path/);
   assert.match(handler, /window\.harness\.avatar\.pick\(\)/);
 });
