@@ -69,6 +69,18 @@ function reconcile(state, observation) {
     return !gone;
   });
 
+  // 2b. The branch follows the worktree (git switch, branch -m). Mid-rebase
+  //     there is no branch, so the tab keeps its last one. A finishing tab
+  //     that moved to another branch goes back to live: its marker was for
+  //     the old branch.
+  for (const t of tabs) {
+    if (t.phase !== 'live' && t.phase !== 'finishing') continue;
+    const w = worktrees.find(x => samePath(x.path, t.path));
+    if (!w || typeof w.branch !== 'string' || !w.branch || w.branch === t.branch) continue;
+    t.branch = w.branch;
+    t.phase = 'live';
+  }
+
   // 3. Merged: the tab shows it; the session keeps running until Ricardo ends
   //    it. hostSeen starts over here: only a host seen running AFTER the
   //    merge can end "the session that was open when it merged".

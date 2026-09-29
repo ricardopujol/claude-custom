@@ -144,6 +144,40 @@ test('a worktree that finishes being created (becomes openable) gets its tab the
   assert.deepStrictEqual(actions, [{ type: 'open', path: A, branch: 'feat/a' }]);
 });
 
+// Dexter F4 / Miguel F3: `git switch` or `git branch -m` inside a worktree.
+test('a tab\'s branch follows its worktree, dev\'s too', () => {
+  const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
+  const { state, actions } = reconcile(s1, obs([wt(DEV, 'main', true), wt(A, 'feat/renamed')]));
+  assert.deepStrictEqual(actions, []);
+  assert.deepStrictEqual(state.tabs.map(t => t.branch), ['main', 'feat/renamed']);
+});
+
+test('mid-rebase (no branch) the tab keeps its last branch', () => {
+  const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
+  const { state } = reconcile(s1, obs([DEV_WT, wt(A, null, false, false)]));
+  assert.strictEqual(state.tabs[1].branch, 'feat/a');
+});
+
+// Its marker was for the old branch; the new one hasn't merged. The shell
+// reads markers with the branch from the same poll, so merged is false here.
+test('a finishing tab whose branch changes goes back to live, and is not removed', () => {
+  const WTS = [DEV_WT, A_WT];
+  const s = run([
+    obs(WTS, { listening: { [A]: true } }),
+    obs(WTS, { merged: [A], listening: { [A]: true } }),
+  ]).state;
+  const { state, actions } = reconcile(s, obs([DEV_WT, wt(A, 'feat/b')], { listening: { [A]: false } }));
+  assert.deepStrictEqual(actions, []);
+  assert.strictEqual(state.tabs[1].phase, 'live');
+  assert.strictEqual(state.tabs[1].branch, 'feat/b');
+});
+
+test('mark-merged names the branch the worktree is on now', () => {
+  const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
+  const { actions } = reconcile(s1, obs([DEV_WT, wt(A, 'feat/b')], { merged: [A] }));
+  assert.deepStrictEqual(actions, [{ type: 'mark-merged', path: A, branch: 'feat/b' }]);
+});
+
 // A transient git failure must not read as "every worktree vanished" and
 // stop every session.
 test('an observation without dev is ignored: no tabs dropped, no actions', () => {
@@ -408,12 +442,15 @@ const obsArb = fc.record({
   present: fc.subarray(POOL.slice(1)),
   // Listed but not openable this time (detached mid-rebase, being created...).
   notOpenable: fc.subarray(POOL.slice(1).map(w => w.path)),
+  // On another branch this time (git switch / branch -m).
+  renamed: fc.subarray(POOL.map(w => w.path)),
   merged: fc.subarray(POOL.map(w => w.path)),
   listening: fc.array(fc.tuple(fc.constantFrom(...POOL.map(w => w.path)), fc.constantFrom(true, false, null)),
     { maxLength: 4 }),
   upper: fc.boolean(),
 }).map(e => {
   const worktrees = (e.withDev ? [DEV_WT, ...e.present] : e.present)
+    .map(w => (e.renamed.includes(w.path) ? { ...w, branch: `${w.branch}-2` } : w))
     .map(w => (e.notOpenable.includes(w.path) ? { ...w, branch: null, openable: false } : w))
     .map(w => ({ ...w, path: spell(w.path, e.upper) }));
   const listening = {};
@@ -475,6 +512,18 @@ test('PROPERTY: a poll stops or closes a tab only when git no longer lists its w
       if (e.kind !== 'obs') return;
       for (const a of r.actions.filter(x => x.type === 'stop' || x.type === 'close')) {
         assert.ok(!e.o.worktrees.some(w => samePath(w.path, a.path)), `${a.type} ${a.path} while listed`);
+      }
+    });
+  }));
+});
+
+test('PROPERTY: after a poll, a live or finishing tab shows the branch git lists for it, when there is one', () => {
+  fc.assert(fc.property(eventsArb, (events) => {
+    walk(events, (_, e, r) => {
+      if (e.kind !== 'obs' || !e.o.worktrees.some(w => w.isDev)) return;
+      for (const t of r.state.tabs.filter(x => x.phase === 'live' || x.phase === 'finishing')) {
+        const w = e.o.worktrees.find(x => samePath(x.path, t.path));
+        if (w && w.branch) assert.strictEqual(t.branch, w.branch, t.path);
       }
     });
   }));
