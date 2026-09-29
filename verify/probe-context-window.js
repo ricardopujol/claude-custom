@@ -34,7 +34,15 @@
    populated form of used_percentage / current_usage. host/hook-session.js
    readContext reads used_percentage as a number 0..100 (its sibling
    rate_limits.*.used_percentage is a 0..100 number) and applies it to
-   context_window_size. Confirm on the first real turn (see the PR). */
+   context_window_size. Confirm on the first real turn (see the PR).
+
+   HAND CHECK 2026-09-29 (PR #67, Ricardo, claude 2.1.284): PASSED. One billed
+   turn, then /model to sonnet, haiku and back to opus, then /clear (host.log:
+   Stop, three live-model changes, SessionEnd + a new SessionStart). The circle's
+   % agreed with /context, followed the window on each switch, and reset on
+   /clear -- so readContext's 0..100 reading of the populated used_percentage is
+   right in practice. The populated document itself was NOT captured (the relay
+   doesn't persist it); capture it here if this probe is ever re-run with a turn. */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
