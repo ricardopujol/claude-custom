@@ -248,7 +248,11 @@ function reduceAvatars(prev, msg) {
   }
   if (m.type === 'portrait' && m.global === true) {
     const global = wellFormed(m.globalPortrait) ? m.globalPortrait : cur.global;
-    const error = m.ok === true ? null : (typeof m.reason === 'string' && m.reason ? m.reason : 'the picture was not changed');
+    // A quiet message is the host's own watcher echoing (or another window's
+    // change): it refreshes the picture but says nothing about the user's last
+    // action, so it neither sets nor clears the error (Dexter N1, PR #64 r2).
+    if (m.quiet === true) return { ...state, avatars: { ...cur, global } };
+    const error =m.ok === true ? null : (typeof m.reason === 'string' && m.reason ? m.reason : 'the picture was not changed');
     return { ...state, avatars: { ...cur, global, error } };
   }
   return state;
