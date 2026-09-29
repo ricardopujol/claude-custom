@@ -169,7 +169,44 @@ function parseLine(text, names = new Map()) {
 
 /** A fresh tail over `file`, positioned at byte 0. */
 function createTail(file) {
-  return { file, offset: 0, names: new Map(), unknown: 0 };
+  return { file, offset: 0, names: new Map(), unknown: 0, skippedBytes: 0 };
+}
+
+// How much of a transcript's END is read when a log is first opened. The window
+// keeps 1000 entries; a finished agent's transcript can be tens of megabytes,
+// and streaming all of it to keep the last 1000 rows is hundreds of frames and
+// a redraw for each (Miguel M1, PR #63).
+const TAIL_BYTES = 512 * 1024;
+
+/**
+ * A tail over `file` for a log being OPENED: positioned at the first complete
+ * line of the last `tailBytes`, with the bytes before it counted in
+ * `state.skippedBytes` so the window can say the earlier part was not shown.
+ * A file no bigger than `tailBytes` starts at byte 0 and skips nothing.
+ *
+ * Never lands mid-line: it snaps forward to just past a newline. A window with
+ * no newline at all (one line longer than `tailBytes`) reads from the top
+ * instead -- rare, and the frame cap per poll bounds the cost.
+ */
+async function openTail(file, { tailBytes = TAIL_BYTES } = {}) {
+  const state = createTail(file);
+  const fh = await fsp.open(file, 'r');
+  try {
+    const { size } = await fh.stat();
+    if (size <= tailBytes) return state;
+    const from = size - tailBytes;
+    const buf = await readAt(fh, from, tailBytes);
+    const nl = buf.indexOf(10);
+    // No newline, or only the newline that ENDS a line which began before the
+    // window: no complete line lies inside it, and skipping to the end would
+    // hide the newest line altogether.
+    if (nl === -1 || from + nl + 1 >= size) return state;
+    state.offset = from + nl + 1;
+    state.skippedBytes = state.offset;
+    return state;
+  } finally {
+    await fh.close();
+  }
 }
 
 async function readAt(fh, offset, length) {
@@ -208,6 +245,7 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes =
     let offset = state.offset;
     let names = new Map(state.names);
     let unknown = state.unknown;
+    let skipped = state.skippedBytes || 0;
     let reset = false;
     // A REPLACED file is a different file, however large it has grown: shorter
     // than the offset, or a different inode/file id (Dexter F7 / Miguel S3, PR
@@ -217,7 +255,7 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes =
     // Transcripts are append-only, so that is an accepted premise, not a case.
     const replaced = state.ino !== undefined && state.ino !== ino;
     if (size < offset || replaced) {
-      offset = 0; names = new Map(); unknown = 0; reset = true;
+      offset = 0; names = new Map(); unknown = 0; reset = true; skipped = 0;
     }
 
     const entries = [];
@@ -256,7 +294,7 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes =
       entries,
       more,
       reset,
-      state: { file: state.file, offset: offset + consumed, names, unknown, ino },
+      state: { file: state.file, offset: offset + consumed, names, unknown, ino, skippedBytes: skipped },
     };
   } finally {
     await fh.close();
@@ -264,6 +302,6 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes =
 }
 
 module.exports = {
-  parseLine, createTail, readMore,
+  parseLine, createTail, openTail, readMore, TAIL_BYTES,
   SUMMARY_MAX, NAMES_MAX, DEFAULT_MAX_ENTRIES,
 };

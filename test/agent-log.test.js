@@ -230,6 +230,51 @@ test('a file that shrank is read again from the top, and the caller is told', as
   assert.deepStrictEqual(second.entries.map(e => e.summary), ['z']);
 });
 
+// ---- Miguel M1, PR #63: opening a big transcript reads its END, and says what it skipped ----
+
+test('M1: openTail on a big file starts at a line boundary inside the last tailBytes and counts what it skipped', async () => {
+  const rows = Array.from({ length: 400 }, (_, i) => assistant({ type: 'text', text: 'row ' + i }));
+  const f = fileWith(rows.join('\n') + '\n');
+  const size = fs.statSync(f).size;
+  const st = await log.openTail(f, { tailBytes: 2000 });
+  assert.ok(st.offset > 0 && st.offset >= size - 2000, 'starts inside the tail window');
+  assert.strictEqual(fs.readFileSync(f)[st.offset - 1], 10, 'just past a newline, never mid-line');
+  assert.strictEqual(st.skippedBytes, st.offset);
+  const r = await log.readMore(st);
+  assert.strictEqual(r.entries[r.entries.length - 1].summary, 'row 399', 'the newest line is delivered');
+  assert.ok(r.entries.length < 400 && r.entries.length > 0);
+  assert.strictEqual(r.entries[0].summary, 'row ' + (400 - r.entries.length), 'a contiguous run ending at the end');
+  assert.strictEqual(r.state.skippedBytes, st.skippedBytes, 'reading keeps the skipped count');
+  assert.strictEqual(r.state.unknown, 0, 'no fragment of a line was misread');
+});
+
+test('M1: a file no bigger than tailBytes is read from byte 0, skipping nothing', async () => {
+  const f = fileWith(assistant({ type: 'text', text: 'a' }) + '\n');
+  const st = await log.openTail(f, { tailBytes: 1_000_000 });
+  assert.strictEqual(st.offset, 0);
+  assert.strictEqual(st.skippedBytes, 0);
+});
+
+test('M1: one line longer than the whole tail window falls back to byte 0 rather than landing mid-line', async () => {
+  const f = fileWith(assistant({ type: 'text', text: 'z'.repeat(5000) }) + '\n');
+  const st = await log.openTail(f, { tailBytes: 1000 });
+  assert.strictEqual(st.offset, 0);
+  assert.strictEqual(st.skippedBytes, 0);
+});
+
+test('M1: a file replaced under an opened tail resets the skipped count with the rest', async () => {
+  const rows = Array.from({ length: 300 }, (_, i) => assistant({ type: 'text', text: 'row ' + i }));
+  const f = fileWith(rows.join('\n') + '\n');
+  const st = await log.openTail(f, { tailBytes: 1000 });
+  assert.ok(st.skippedBytes > 0);
+  const replacement = path.join(path.dirname(f), 'r.jsonl');
+  fs.writeFileSync(replacement, assistant({ type: 'text', text: 'fresh' }) + '\n');
+  fs.renameSync(replacement, f);
+  const r = await log.readMore(st);
+  assert.strictEqual(r.reset, true);
+  assert.strictEqual(r.state.skippedBytes, 0);
+});
+
 test('F7: a file replaced by a LONGER one (rename over) is read again from the top, not from the middle of a line', async () => {
   const f = fileWith(assistant({ type: 'text', text: 'old' }) + '\n');
   const first = await log.readMore(log.createTail(f));

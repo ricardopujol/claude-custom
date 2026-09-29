@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
 const { projectDirName } = require('../host/project-dir');
-const { findTranscript, createLogSession } = require('../host/agent-log-session');
+const { findTranscript, createLogSession, MAX_FRAMES_PER_POLL } = require('../host/agent-log-session');
 
 const CWD = 'C:/w/proj';
 const T = '2026-09-29T12:00:00.000Z';
@@ -319,6 +319,35 @@ test('a big backlog goes out in several frames, the first one a reset, none of t
   assert.ok(h.frames.slice(1).every(f => !f.reset));
   assert.deepStrictEqual(h.frames.flatMap(f => f.entries).map(e => e.summary), lines.map((_, i) => 'n' + i));
   assert.ok(h.frames.every(f => f.done === false), 'found by name: never claimed finished');
+});
+
+test('M1: opening a LARGE finished transcript reads its end: bounded frames, the skipped part said, newest line delivered', async () => {
+  const { root, dir } = project();
+  const N = 75000;                                 // ~8 MB, an order of magnitude past the tail window
+  const chunk = [];
+  for (let i = 0; i < N; i++) chunk.push(textLine('row ' + i));
+  const file = subagent(dir, 's1', 'huge', { agentType: 'rev' }, chunk);
+  const size = fs.statSync(file).size;
+  assert.ok(size > 8 * agentLog.TAIL_BYTES, `fixture is ${size} bytes`);
+
+  const h = harness({ root });
+  await h.session.open('rev');
+  assert.ok(h.frames.length <= MAX_FRAMES_PER_POLL, `first tick sent ${h.frames.length} frames`);
+  assert.strictEqual(h.frames[0].reset, true);
+  assert.ok(h.frames[0].skippedBytes > 0 && h.frames[0].skippedBytes < size);
+  assert.strictEqual(h.frames.filter(f => f.done).length, 0, 'not finished while more remains');
+
+  for (let i = 0; i < 20; i++) await h.session.poll();      // let the rest of the TAIL drain
+  const entries = h.frames.flatMap(f => f.entries);
+  assert.strictEqual(entries[entries.length - 1].summary, 'row ' + (N - 1), 'the newest line is delivered');
+  const budget = Math.ceil(agentLog.TAIL_BYTES / (size / N) / 500) + 2;
+  assert.ok(h.frames.length <= budget, `${h.frames.length} frames for a ${agentLog.TAIL_BYTES}-byte tail (budget ${budget})`);
+  assert.ok(entries.length < N / 8, 'nowhere near the whole history');
+  const first = Number(entries[0].summary.slice(4));
+  assert.strictEqual(entries.length, N - first, 'a contiguous run up to the end');
+  // The reducer says what was skipped.
+  const m = reduce('rev', h.frames);
+  assert.ok(m.skippedBytes > 0);
 });
 
 test('unknown-line count travels with the frames', async () => {

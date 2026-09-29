@@ -48,7 +48,7 @@ function emptyLog() {
   return {
     open: false, agent: null, waiting: false,
     source: null, reason: null,
-    entries: [], dropped: 0, unknown: 0,
+    entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
     running: false, done: false, tracked: true,
   };
 }
@@ -88,7 +88,7 @@ function applyFrame(model, frame) {
     return {
       ...model, waiting: false, source: null,
       reason: typeof frame.reason === 'string' && frame.reason ? frame.reason : 'no-transcript',
-      entries: [], dropped: 0, unknown: 0,
+      entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
       running: frame.running === true, done: false,
     };
   }
@@ -106,6 +106,10 @@ function applyFrame(model, frame) {
     ...model, waiting: false, source: frame.source, reason: null,
     entries, dropped,
     unknown: isCount(frame.unknown) ? frame.unknown : (reset ? 0 : model.unknown),
+    // How much of the transcript's START the host did not send (it opens a big
+    // one at its end). Distinct from `dropped`, which is entries this window
+    // itself pushed out past its cap.
+    skippedBytes: isCount(frame.skippedBytes) ? frame.skippedBytes : (reset ? 0 : model.skippedBytes),
     running: frame.running === true,
     done: frame.done === true,
     // Only an explicit `false` marks a run this host does not track (a
@@ -150,6 +154,12 @@ function basename(p) {
   return i === -1 ? p : p.slice(i + 1);
 }
 
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function plural(n, one, many) { return n === 1 ? one : many; }
 
 /** The log panel's HTML, or '' when no log is open. */
@@ -177,6 +187,9 @@ function renderAgentLog(model) {
 
   const src = `<div class="alog-src" title="${escapeHtml(model.source)}">${escapeHtml(basename(model.source))}</div>`;
   const notes = [];
+  if (model.skippedBytes > 0) {
+    notes.push(`the first ${formatBytes(model.skippedBytes)} of this transcript are not shown`);
+  }
   if (model.dropped > 0) {
     notes.push(`${model.dropped} earlier ${plural(model.dropped, 'entry', 'entries')} not shown`);
   }

@@ -44,6 +44,8 @@ const POLL_MS = 750;
 // One frame carries at most this many lines, so opening a huge transcript is a
 // stream of modest frames rather than one that stalls the socket.
 const FRAME_ENTRIES = 500;
+// ...and one poll sends at most this many frames.
+const MAX_FRAMES_PER_POLL = 8;
 
 /**
  * The transcript for one agent in one project.
@@ -120,7 +122,7 @@ async function findTranscript({
 function createLogSession({
   cwd, projectsDir, invocations, send, intervalMs = POLL_MS,
   setIntervalFn = setInterval, clearIntervalFn = clearInterval,
-  find = findTranscript, read = agentLog.readMore,
+  find = findTranscript, read = agentLog.readMore, openTail = agentLog.openTail,
 } = {}) {
   let cur = null;
 
@@ -137,7 +139,7 @@ function createLogSession({
     // a running agent's history vanish with `dropped: 0`.)
     c.lastRunning = null;
     c.lastDone = null;
-    if (c.tail) { c.tail = agentLog.createTail(c.tail.file); c.first = true; }
+    if (c.tail) { c.restartFile = c.tail.file; c.tail = null; }
     send({ type: 'agent-log', agent: c.agent, source: null, reason, running });
   }
 
@@ -157,12 +159,23 @@ function createLogSession({
       // carry over from last week's run found by name (Dexter F5, PR #63: a live
       // agent was told "no transcript found" before its file existed).
       c.everFound = false;
-      if (!ended) c.tail = null;
+      if (!ended) { c.tail = null; c.restartFile = null; }
     }
     // Nothing has been looked for on disk here, so nothing is claimed about the
     // disk: all that is known is that the run has not said who it is yet
     // (Dexter F6, PR #63 -- this used to read "its transcript isn't written yet").
     if (want === 'pending') { none(c, 'unidentified', running); return; }
+
+    if (!c.tail && c.restartFile) {
+      // Recovering from an absence frame: the SAME file, from the tail of it
+      // again, as a reset (see none()). No new search -- the file is known.
+      const file = c.restartFile;
+      c.restartFile = null;
+      const tail = await openTail(file);
+      if (cur !== c) return;
+      c.tail = tail;
+      c.first = true;
+    }
 
     if (!c.tail) {
       // A name lookup walks every transcript in the project, so a miss is not
@@ -180,12 +193,21 @@ function createLogSession({
         return;
       }
       c.everFound = true;
-      c.tail = agentLog.createTail(r.file);
+      let tail;
+      try {
+        tail = await openTail(r.file);
+      } catch (err) {
+        if (cur !== c) return;
+        none(c, err && err.code === 'ENOENT' ? 'no-transcript' : 'unreadable', running);
+        return;
+      }
+      if (cur !== c) return;
+      c.tail = tail;
       c.first = true;
       c.tracked = want.startsWith('id:');
     }
 
-    for (;;) {
+    for (let frames = 1; ; frames++) {
       let r;
       try {
         r = await read(c.tail, { maxEntries: FRAME_ENTRIES });
@@ -220,11 +242,14 @@ function createLogSession({
         send({
           type: 'agent-log', agent: c.agent, source: r.state.file,
           entries: r.entries, reset, running, done, tracked: c.tracked, unknown: r.state.unknown,
+          skippedBytes: r.state.skippedBytes || 0,
         });
       }
       c.lastRunning = running;
       c.lastDone = done;
-      if (!r.more) return;
+      // Bounded work per tick: the rest of a big backlog comes on the next
+      // ticks (`more` keeps `done` false meanwhile) instead of one flood.
+      if (!r.more || frames >= MAX_FRAMES_PER_POLL) return;
     }
   }
 
@@ -262,4 +287,4 @@ function createLogSession({
   return { open, close, poll, isOpen: () => cur !== null, current: () => (cur ? cur.agent : null) };
 }
 
-module.exports = { findTranscript, createLogSession, POLL_MS, FRAME_ENTRIES };
+module.exports = { findTranscript, createLogSession, POLL_MS, FRAME_ENTRIES, MAX_FRAMES_PER_POLL };

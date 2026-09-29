@@ -128,6 +128,21 @@ test('the log is capped, and says how many earlier entries are not shown', () =>
   assert.match(d.renderAgentLog(one), /1 earlier entry not shown/);
 });
 
+test('M1: the part of a big transcript the host did not send is said, in sensible units', () => {
+  const say = n => d.renderAgentLog(d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], skippedBytes: n })));
+  assert.match(say(900), /the first 900 B of this transcript are not shown/);
+  assert.match(say(2048), /the first 2 KB of this transcript are not shown/);
+  assert.match(say(5 * 1024 * 1024), /the first 5\.0 MB of this transcript are not shown/);
+  assert.ok(!/are not shown/.test(say(0)));
+  // Strict: absence, a string, a float, a negative is not a size; a follow-up frame keeps it.
+  for (const bad of [undefined, null, '5', 1.5, -2, NaN]) {
+    assert.ok(!/are not shown/.test(say(bad)), String(bad));
+  }
+  const m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], skippedBytes: 4096 }));
+  assert.strictEqual(d.applyFrame(m, frame({ reset: false, entries: [entry()], skippedBytes: undefined })).skippedBytes, 4096);
+  assert.strictEqual(d.applyFrame(m, frame({ reset: true, entries: [entry()], skippedBytes: undefined })).skippedBytes, 0);
+});
+
 test('unrecognised lines are counted for the reader', () => {
   const m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry({ kind: 'unknown', name: 'attachment', summary: '' })], unknown: 3 }));
   assert.strictEqual(m.unknown, 3);
