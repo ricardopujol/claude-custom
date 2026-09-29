@@ -587,6 +587,25 @@ test('R2-1: ENOENT on the recovery reopen is "no-transcript", not "unreadable"',
   assert.strictEqual(h.frames[h.frames.length - 1].reason, 'no-transcript');
 });
 
+test('R2-2: a tracked run that ENDS while its tail is in recovery stays that run, and finishes', async () => {
+  const { root, dir } = project();
+  parent(dir, 's1', [{ id: 't1', type: 'rev' }]);
+  const a1 = subagent(dir, 's1', 'a1', { agentType: 'rev', toolUseId: 't1' }, [textLine('mine')], new Date('2026-01-01'));
+  // Another host's NEWER run of the same agent: what a by-name pick would choose.
+  subagent(dir, 's1', 'r2', { agentType: 'rev' }, [textLine('theirs')], new Date('2026-06-01'));
+  const h = harness({ root, read: flaky(2), invocations: [{ name: 'rev', agentId: 'a1' }] });
+  await h.session.open('rev');
+  await h.session.poll();                          // EBUSY: the tail goes into recovery
+  h.state.invocations = [];                        // the run ends before the next tick
+  await h.session.poll();
+  await h.session.poll();
+  const last = h.frames[h.frames.length - 1];
+  assert.strictEqual(last.source, a1, 'not re-picked by name');
+  assert.strictEqual(last.tracked, true);
+  assert.strictEqual(last.done, true);
+  assert.deepStrictEqual(reduce('rev', h.frames).entries.map(e => e.summary), ['mine']);
+});
+
 test('R2-1: a failed open does not leave the name search latched', async () => {
   const { root, dir } = project();
   subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one')]);

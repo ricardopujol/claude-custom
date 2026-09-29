@@ -182,7 +182,10 @@ function createLogSession({
     if (want !== c.want) {
       // A run that ENDS keeps the file it was streaming: the log stays readable
       // and is not re-fetched by name (which could pick a different run).
-      const ended = want === 'name' && typeof c.want === 'string' && c.want.startsWith('id:') && c.tail;
+      // "Has the file" includes a file in RECOVERY (`restartFile`): the tail is
+      // null there only because an absence frame just moved it aside (R2-2).
+      const ended = want === 'name' && typeof c.want === 'string' && c.want.startsWith('id:') &&
+        (c.tail || c.restartFile);
       c.want = want; c.resolved = false;
       // `everFound` answers "have we shown a file FOR THIS RUN?" -- it must not
       // carry over from last week's run found by name (Dexter F5, PR #63: a live
