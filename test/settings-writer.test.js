@@ -32,7 +32,7 @@ test('does NOT union the user hooks', () => {
   assert.ok(!commands.includes('sync-agent.ps1'), 'user hook command must not be copied in');
 });
 
-test('PreToolUse covers Task and Bash, and nothing else', () => {
+test('PreToolUse covers Task and Bash, and no read or edit tool', () => {
   // Hooks run synchronously in the critical path of tool execution, measured at
   // ~23ms each. A '*' matcher taxes every Read, Grep and edit.
   //
@@ -47,11 +47,23 @@ test('PreToolUse covers Task and Bash, and nothing else', () => {
   assert.ok(/Task/.test(m) && /Bash/.test(m), m);
   assert.ok(!m.includes('*'), 'wildcard matcher would tax every tool call');
   for (const tool of ['Read', 'Grep', 'Edit', 'Write', 'Glob']) {
-    assert.ok(!new RegExp(`\b${tool}\b`).test(m), `${tool} must not be matched`);
+    // `\\b`, not `\b`: inside a template literal `\b` is a backspace, and the
+    // check could never fail.
+    assert.ok(!new RegExp(`\\b${tool}\\b`).test(m), `${tool} must not be matched`);
   }
 });
 
-test('PostToolUse is scoped to Task and Bash only', () => {
+// A message to a finished agent RESUMES it, with no Agent call; unhooked, the
+// resumed agent never showed working and a hidden card never came back. The
+// SendMessage RESULT names the run it resumed (host/mood-machine.js
+// message()); its PreToolUse is only intent, and a denied send never runs.
+test('SendMessage is hooked on its result, not on PreToolUse', () => {
+  const s = buildHarnessSettings(opts);
+  assert.ok(/\bSendMessage\b/.test(s.hooks.PostToolUse[0].matcher), s.hooks.PostToolUse[0].matcher);
+  assert.ok(!/\bSendMessage\b/.test(s.hooks.PreToolUse[0].matcher), 'intent alone opens nothing');
+});
+
+test('PostToolUse covers Task and Bash, and no read or edit tool', () => {
   const s = buildHarnessSettings(opts);
   const matchers = s.hooks.PostToolUse.map(e => e.matcher);
   assert.strictEqual(matchers.length, 1);

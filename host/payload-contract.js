@@ -90,7 +90,12 @@ const CONTRACT = {
     //   tool_response.interrupted -- that call was killed; never a failure,
     //     and the run continues. Never yet observed true (32,137 real Bash
     //     results, all false, 2026-09-27); cancellation is
-    //     PostToolUseFailure.is_interrupt.
+    //     PostToolUseFailure.is_interrupt;
+    //   on SendMessage's result: tool_response.success, .resumedAgentId (the
+    //     ended run it RESUMED) and .pin.id (the run it was queued for) --
+    //     the run a message brought back, named by id however `to` said it.
+    //     Measured 2026-09-29 on 2.1.285 by verify/probe-resume-queued-message.js,
+    //     which is also the check if they move (probe-payloads.js sends none).
   },
   // A failed call fires this INSTEAD of PostToolUse. Measured 2026-09-25.
   PostToolUseFailure: {

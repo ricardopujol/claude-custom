@@ -35,8 +35,15 @@ const path = require('path');
 // job that only reports on completion is invisible for the whole time it
 // matters. Bash already pays a PostToolUse hook, so this adds one more ~23ms
 // call to Bash only, not to Read/Grep/Edit.
+//
+// SendMessage, on its RESULT only: a message to a finished agent resumes it,
+// with no Agent call at all, and the result names the run it resumed or
+// queued for (host/mood-machine.js message()). Not PreToolUse: a send that
+// is denied or blocked never runs, so its intent opens nothing. And with no
+// PreToolUse, a message never shows as a running process. SendMessage calls
+// are rare, so the tax is negligible.
 const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
-const POST_TOOL_MATCHER = 'Agent|Task|Bash';    // completion and error signals
+const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage';    // completion and error signals
 const HOOK_TIMEOUT_SECONDS = 5;
 
 const quote = s => `"${s}"`;
