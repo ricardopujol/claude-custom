@@ -2242,6 +2242,17 @@ const NOTICE_MS = 12000;
 
 const currentModel = () => liveModel || sessionModelFallback;
 
+// BACKLOG #6: the context-fill circle. `ctx` is the host's { used, size } off
+// the statusLine document, or null -- and null (or anything contextFill cannot
+// trust) draws as UNKNOWN, a class of its own, never as a colour. Colours and
+// step edges live in app/context-fill-display.js and the .ctx-* CSS.
+const tbContextEl = document.getElementById('tb-context');
+// (the class/title/aria painting is app/context-fill-display.js's
+// applyContextFill, so a fake element can test it)
+function renderContextFill(ctx) {
+  applyContextFill(tbContextEl, ctx);
+}
+
 function renderTopBar() {
   const state = topBarState({
     model: currentModel(), effort: currentEffort,
@@ -2958,6 +2969,7 @@ function handleControl(msg) {
     pendingModel = null;
     pendingEffort = null;
     renderTopBar();
+    renderContextFill(msg.context);   // absent on an older host -> unknown
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
@@ -3033,6 +3045,12 @@ function handleControl(msg) {
       pendingModel = res.pending;
     }
     renderTopBar();
+    return;
+  }
+  if (msg.type === 'context') {
+    // The statusLine's context window, or null when the CLI has not counted
+    // yet (a fresh session) -- drawn as unknown, never as a confident 0%.
+    renderContextFill(msg.context);
     return;
   }
   if (msg.type === 'attention') {
