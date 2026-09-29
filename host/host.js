@@ -27,7 +27,7 @@ const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
-const { planPortraitUpload, applyPortraitUpload } = require('./portrait-upload');
+const { handlePortraitMessage } = require('./portrait-upload');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { wholeRoster, scanProjects } = require('./roster-index');
@@ -389,12 +389,13 @@ try {
   console.log('[host] provider config invalid, using default:', err.message);
 }
 console.log('[host] provider      :', provider.label, provider.metered ? '(metered)' : '(subscription)');
-const describe = (agent, state) => ({
-  agent, state,
-  portrait: portraitFor(agent, state, {
-    portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
-  }),
+// The ONE portrait lookup in this file, carrying all three tiers: the Inactive
+// tab's call sites once passed only portraitsDir, so an upload showed there as
+// "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
+const portraitOf = (agent, state) => portraitFor(agent, state, {
+  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
 });
+const describe = (agent, state) => ({ agent, state, portrait: portraitOf(agent, state) });
 
 // Generated once per project folder and reused by every context window on it.
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
@@ -711,44 +712,28 @@ function handleDrop(msg, ws) {
 // them silently disagreeing about whose upload just landed, or why one was
 // refused, is worse than a redraw.
 function handlePortraitUpload(msg) {
-  const agent = msg && msg.agent;
-  const state = msg && msg.state;
-  const source = msg && msg.path;
-  const reply = (ok, reason) => broadcastControl({ type: 'portrait', ok, agent, state, reason: reason || null });
-
-  if (!msg || msg.action !== 'set') {
-    reply(false, `unsupported portrait action: ${msg && msg.action}`);
-    return;
-  }
-
-  let size;
-  try {
-    size = fs.statSync(source).size;
-  } catch (err) {
-    reply(false, `could not read the dropped file: ${err && err.message}`);
-    return;
-  }
-
-  const plan = planPortraitUpload({ source, agent, state, uploadsDir: UPLOADS_DIR, size });
-  if (!plan.ok) {
-    console.log('[host] portrait upload refused:', agent, state, '-', plan.reason);
-    reply(false, plan.reason);
-    return;
-  }
-
-  try {
-    applyPortraitUpload({ source, dest: plan.dest });
-  } catch (err) {
-    console.log('[host] portrait upload copy failed:', agent, state, '-', err && err.message);
-    reply(false, `copy failed: ${err && err.message}`);
-    return;
-  }
-
-  reply(true);
+  const out = handlePortraitMessage(msg, {
+    uploadsDir: UPLOADS_DIR,
+    stat: (p) => fs.statSync(p),
+    liveState: (agent) => {
+      const row = mood.roster().find(r => r.agent === agent);
+      return row ? row.state : null;
+    },
+  });
+  if (!out.reply.ok) console.log('[host] portrait upload refused:', out.reply.agent, out.reply.state, '-', out.reply.reason);
+  broadcastControl({ type: 'portrait', ...out.reply });
   // Re-describe rather than assuming the tier that now applies -- describe()
   // re-reads the real filesystem, so a stale idea of "the upload obviously
   // won" can never disagree with what portraitFor actually resolves.
-  broadcastControl({ type: 'mood', ...describe(agent, state) });
+  if (out.mood) broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state) });
+  if (out.repaintIndex) {
+    lastRosterIndex = {
+      ...lastRosterIndex,
+      agents: lastRosterIndex.agents.map(a => (a.agent === out.reply.agent
+        ? { ...a, portrait: portraitOf(a.agent, 'sleeping') } : a)),
+    };
+    broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
+  }
 }
 
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
@@ -799,7 +784,7 @@ function rosterAgentRow(agent, lifetime, unresolvedNames) {
     // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
     // strict presence check that makes that hold.
     tokens: lifetime.agents.has(agent) ? lifetime.agents.get(agent) : null,
-    portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+    portrait: portraitOf(agent, 'sleeping'),
     // Dexter F3 / Miguel L1: an agent resolved only through an unresolved hook
     // LABEL (in either the identity walk or the token sum -- a run can be
     // orphaned in one project and confirmed in another) is flagged rather than
@@ -877,7 +862,7 @@ async function seedRosterIndex() {
     agents: names.map((agent) => ({
       agent,
       tokens: Number.isFinite(seed[agent] && seed[agent].tokens) ? seed[agent].tokens : null,
-      portrait: portraitFor(agent, 'sleeping', { portraitsDir: PORTRAITS_DIR }),
+      portrait: portraitOf(agent, 'sleeping'),
       // The seed doesn't carry identity provenance -- assume confirmed rather
       // than flagging every row; `refreshRosterIndex`'s real pass corrects
       // this within moments.

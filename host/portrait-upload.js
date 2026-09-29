@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeSegment, MEDIA_EXTENSIONS } = require('./portraits');
+const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES } = require('./portraits');
 const { renameWithRetry } = require('./atomic-write');
 
 // The upload tier accepts the same media as the resolver serves. Named
@@ -140,6 +140,64 @@ function removeOtherFormats(dest, unlinkSync) {
   }
 }
 
+/**
+ * The host's whole decision for a {type:'portrait', action:'set', agent,
+ * state, path} frame, with every side effect injected so it can be tested
+ * (Miguel I5, PR #35). host/host.js only performs what this returns:
+ *
+ *   reply         -> broadcast as {type:'portrait', ...reply}
+ *   mood          -> {agent, state} to re-describe and broadcast, or null
+ *   repaintIndex  -> re-resolve this agent's portrait in the Inactive list
+ *
+ * The state the renderer sends is what the person SAW. The file lands under
+ * it, but only if it is one of the four real states, and the mood re-broadcast
+ * uses the state the machine is in NOW (Dexter F3). A drop on an Inactive-tab
+ * row (state 'inactive', Miguel I1) sets the agent's default.<ext>, which
+ * covers every state with no file of its own. An agent that is not live gets
+ * no mood broadcast -- that would invent a live roster row for it.
+ */
+function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpload, liveState }) {
+  const agent = msg && msg.agent;
+  const seen = msg && msg.state;
+  const source = msg && msg.path;
+  const refuse = (reason) => ({
+    reply: { ok: false, agent, state: seen, reason }, mood: null, repaintIndex: false,
+  });
+
+  if (!msg || msg.action !== 'set') return refuse(`unsupported portrait action: ${msg && msg.action}`);
+
+  const target = seen === 'inactive' ? 'default' : seen;
+  if (seen !== 'inactive' && !BUILTIN_STATES.includes(seen)) {
+    return refuse(`"${seen}" is not a state a portrait can be set for`);
+  }
+
+  let info;
+  try {
+    info = stat(source);
+  } catch (err) {
+    return refuse(`could not read the dropped file: ${err && err.message}`);
+  }
+  if (!info || typeof info.isFile !== 'function' || !info.isFile()) {
+    return refuse('the dropped item is not a file');
+  }
+
+  const plan = planPortraitUpload({ source, agent, state: target, uploadsDir, size: info.size });
+  if (!plan.ok) return refuse(plan.reason);
+
+  try {
+    apply({ source, dest: plan.dest });
+  } catch (err) {
+    return refuse(`copy failed: ${err && err.message}`);
+  }
+
+  const now = liveState(agent);
+  return {
+    reply: { ok: true, agent, state: target, reason: null },
+    mood: now ? { agent, state: now } : null,
+    repaintIndex: !now,
+  };
+}
+
 module.exports = {
-  planPortraitUpload, applyPortraitUpload, MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS,
+  planPortraitUpload, applyPortraitUpload, handlePortraitMessage, MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS,
 };

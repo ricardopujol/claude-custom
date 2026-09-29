@@ -56,3 +56,11 @@ test('the roster never interpolates an agent name raw into markup', () => {
   assert.deepStrictEqual(raw, [],
     'every ${r.agent} in renderer.js must go through escapeHtml');
 });
+
+test('an Inactive-tab row carries its agent, escaped, so a portrait drop on it can reach the host (Miguel I1, PR #35)', () => {
+  const i = src.indexOf('data-state="inactive"');
+  assert.ok(i !== -1, 'renderer.js must draw inactive rows');
+  const rowOpen = src.slice(i, src.indexOf('>', i));
+  assert.ok(rowOpen.includes('data-agent="${escapeHtml(row.agent)}"'),
+    `the inactive row opens without an escaped data-agent: ${rowOpen}`);
+});

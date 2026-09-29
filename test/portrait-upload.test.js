@@ -296,3 +296,97 @@ test('"." is not an agent or state segment -- it would land in the shared upload
   const plan = planPortraitUpload({ source: path.join(os.tmpdir(), 'p.png'), agent: '.', state: 'working', uploadsDir: path.join(os.tmpdir(), 'u'), size: 1 });
   assert.strictEqual(plan.ok, false);
 });
+
+// --- handlePortraitMessage: the host wiring, testable (Miguel I5, PR #35) ----
+//
+// The state the renderer sends is what the person SAW; the state the machine
+// is in NOW may already differ (Dexter F3). The file lands under the state
+// the person saw, but the mood re-broadcast carries the CURRENT state, and a
+// state that is not one of the four is never trusted. A drop on an Inactive-
+// tab row (Miguel I1) sets that agent's default.<ext> and repaints the
+// Inactive list instead of inventing a live roster row.
+
+const { handlePortraitMessage } = require('../host/portrait-upload');
+
+function hostDeps(overrides = {}) {
+  const applied = [];
+  return {
+    applied,
+    deps: {
+      uploadsDir: path.join(os.tmpdir(), 'cc-never-written'),
+      stat: () => ({ size: 10, isFile: () => true }),
+      apply: (plan) => applied.push(plan.dest),
+      liveState: () => null,
+      ...overrides,
+    },
+  };
+}
+const setMsg = (extra) => ({ type: 'portrait', action: 'set', agent: 'a', path: 'drop.png', ...extra });
+
+test('a live agent: the file lands under the state the person SAW, the mood carries the CURRENT one', () => {
+  const { deps, applied } = hostDeps({ liveState: () => 'happy' });
+  const out = handlePortraitMessage(setMsg({ state: 'working' }), deps);
+  assert.strictEqual(out.reply.ok, true, out.reply.reason);
+  assert.ok(applied[0].endsWith(path.join('a', 'working.png')));
+  assert.deepStrictEqual(out.mood, { agent: 'a', state: 'happy' });
+  assert.strictEqual(out.repaintIndex, false);
+});
+
+test('a live agent: a state that is not one of the four is refused, not written (Dexter F3)', () => {
+  for (const state of ['default', 'inactive-ish', 'bogus']) {
+    const { deps, applied } = hostDeps({ liveState: () => 'working' });
+    const out = handlePortraitMessage(setMsg({ state }), deps);
+    assert.strictEqual(out.reply.ok, false, `${state} was accepted`);
+    assert.ok(out.reply.reason);
+    assert.deepStrictEqual(applied, []);
+    assert.strictEqual(out.mood, null);
+  }
+});
+
+test('a drop on an Inactive-tab row sets the agent\'s default portrait and repaints that list (Miguel I1)', () => {
+  const { deps, applied } = hostDeps({ liveState: () => null });
+  const out = handlePortraitMessage(setMsg({ state: 'inactive' }), deps);
+  assert.strictEqual(out.reply.ok, true, out.reply.reason);
+  assert.ok(applied[0].endsWith(path.join('a', 'default.png')));
+  assert.strictEqual(out.mood, null, 'an inactive agent must not get a live roster row');
+  assert.strictEqual(out.repaintIndex, true);
+});
+
+test('an agent that went away between the drop and the host: file saved, no live row invented', () => {
+  const { deps, applied } = hostDeps({ liveState: () => null });
+  const out = handlePortraitMessage(setMsg({ state: 'working' }), deps);
+  assert.strictEqual(out.reply.ok, true, out.reply.reason);
+  assert.ok(applied[0].endsWith(path.join('a', 'working.png')));
+  assert.strictEqual(out.mood, null);
+  assert.strictEqual(out.repaintIndex, true);
+});
+
+test('the host refuses what it cannot or must not copy, and says why', () => {
+  const cases = [
+    ['an unknown action', setMsg({ action: 'clear', state: 'working' }), {}],
+    ['an unreadable file', setMsg({ state: 'working' }), { stat: () => { throw new Error('ENOENT, simulated'); } }],
+    ['a directory', setMsg({ state: 'working' }), { stat: () => ({ size: 4096, isFile: () => false }) }],
+    ['a failed copy', setMsg({ state: 'working' }), { apply: () => { throw new Error('EPERM, simulated'); } }],
+  ];
+  for (const [label, msg, over] of cases) {
+    const { deps } = hostDeps({ liveState: () => 'working', ...over });
+    const out = handlePortraitMessage(msg, deps);
+    assert.strictEqual(out.reply.ok, false, `${label} was accepted`);
+    assert.ok(typeof out.reply.reason === 'string' && out.reply.reason, `${label} gave no reason`);
+    assert.strictEqual(out.mood, null, `${label} re-broadcast a mood`);
+    assert.strictEqual(out.repaintIndex, false, `${label} repainted the index`);
+  }
+});
+
+test('host.js resolves EVERY portrait through one helper that carries all three tiers (Dexter F2)', () => {
+  // The Inactive tab's two call sites passed only portraitsDir, so an uploaded
+  // or shipped portrait showed there as "no picture yet". host.js cannot be
+  // loaded by a test (it starts a server), so this reads its source.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  const calls = src.match(/\bportraitFor\(/g) || [];
+  assert.strictEqual(calls.length, 1, `expected one portraitFor call (the helper), found ${calls.length}`);
+  const helper = src.slice(src.indexOf('portraitFor('), src.indexOf(')', src.indexOf('portraitFor(')) + 80);
+  for (const dir of ['portraitsDir', 'uploadsDir', 'shippedDir']) {
+    assert.ok(helper.includes(dir), `the portrait helper does not pass ${dir}`);
+  }
+});

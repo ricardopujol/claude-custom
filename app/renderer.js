@@ -1165,7 +1165,9 @@ function inactiveRowHtml(row) {
   const unreadableHtml = row.unreadable
     ? '<span class="career-warn" title="ran, but a transcript could not be read this pass -- the total is unknown, not zero">?</span>'
     : '';
-  return `<div class="agent" data-state="inactive">` +
+  // data-agent: a portrait dropped on this face reaches the host, which sets
+  // the agent's default portrait for state "inactive" (Miguel I1, PR #35).
+  return `<div class="agent" data-state="inactive" data-agent="${escapeHtml(row.agent)}">` +
       `<div class="face">${faceHtml(entry && entry.portrait)}</div>` +
       `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}` +
         unresolvedHtml + unreadableHtml + `</div>` +
