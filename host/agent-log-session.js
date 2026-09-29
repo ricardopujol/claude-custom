@@ -12,7 +12,7 @@
  *   payload, which is somebody else's process boundary.
  *
  *   The agent is running but has not yet said who it is (an id is learned from
- *   its first call): the answer is "pending". NOT the newest transcript of that
+ *   its first call): the answer is "unidentified". NOT the newest transcript of that
  *   name -- that is last week's run, and drawing it under a live card would
  *   fabricate the very thing this panel exists to show.
  *
@@ -22,8 +22,10 @@
  *
  * ABSENCE IS EXPLICIT. `{ source: null, reason }` with reason
  *   no-transcript  nothing on disk for this agent (or it vanished)
- *   pending        it is running and its transcript is not written yet
- *   unreadable     the file exists and could not be read
+ *   unidentified   it is running but has not said which run it is, so no file
+ *                  can be picked (nothing was looked for on disk)
+ *   pending        its run is identified and the file is not on disk yet
+ *   unreadable     the file exists, or the search for it could not look
  * The window shows each as words, never as an empty list.
  *
  * The polling here is deliberately an interval and not fs.watch: a watcher on a
@@ -151,9 +153,16 @@ function createLogSession({
       // and is not re-fetched by name (which could pick a different run).
       const ended = want === 'name' && typeof c.want === 'string' && c.want.startsWith('id:') && c.tail;
       c.want = want; c.resolved = false;
+      // `everFound` answers "have we shown a file FOR THIS RUN?" -- it must not
+      // carry over from last week's run found by name (Dexter F5, PR #63: a live
+      // agent was told "no transcript found" before its file existed).
+      c.everFound = false;
       if (!ended) c.tail = null;
     }
-    if (want === 'pending') { none(c, 'pending', running); return; }
+    // Nothing has been looked for on disk here, so nothing is claimed about the
+    // disk: all that is known is that the run has not said who it is yet
+    // (Dexter F6, PR #63 -- this used to read "its transcript isn't written yet").
+    if (want === 'pending') { none(c, 'unidentified', running); return; }
 
     if (!c.tail) {
       // A name lookup walks every transcript in the project, so a miss is not

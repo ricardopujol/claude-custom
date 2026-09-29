@@ -64,6 +64,7 @@ test('junk frames change nothing', () => {
 test('no transcript is stated in words and the list is not shown', () => {
   for (const [reason, re] of [
     ['no-transcript', /no transcript found for rev/],
+    ['unidentified', /rev is running but hasn&#39;t said which run it is yet/],
     ['pending', /rev is running, but its transcript isn&#39;t written yet/],
     ['unreadable', /couldn&#39;t read the transcript for rev/],
     ['something-new', /no transcript available for rev \(something-new\)/],

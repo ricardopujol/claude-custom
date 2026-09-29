@@ -127,6 +127,7 @@ function timeOf(ts) {
 function absenceText(agent, reason) {
   switch (reason) {
     case 'no-transcript': return `no transcript found for ${agent}`;
+    case 'unidentified': return `${agent} is running but hasn't said which run it is yet, so its transcript can't be picked out`;
     case 'pending': return `${agent} is running, but its transcript isn't written yet`;
     case 'unreadable': return `couldn't read the transcript for ${agent}`;
     default: return `no transcript available for ${agent} (${reason})`;

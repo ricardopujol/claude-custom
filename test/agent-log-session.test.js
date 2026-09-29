@@ -240,13 +240,13 @@ test('when the run ends, a final frame says done and the log stays readable', as
   assert.ok(!last.reset, 'the same file is not re-fetched and re-sent when its run ends');
 });
 
-test('a running agent that has not yet said who it is gets "pending", NOT a previous run\'s log', async () => {
+test('a running agent that has not yet said who it is gets "unidentified", NOT a previous run\'s log', async () => {
   const { root, dir } = project();
   parent(dir, 's1', [{ id: 't1', type: 'rev' }]);
   subagent(dir, 's1', 'oldrun', { agentType: 'rev', toolUseId: 't1' }, [textLine('from last week')]);
   const h = harness({ root, invocations: [{ name: 'rev', agentId: null }] });
   await h.session.open('rev');
-  assert.deepStrictEqual(h.frames, [{ type: 'agent-log', agent: 'rev', source: null, reason: 'pending', running: true }]);
+  assert.deepStrictEqual(h.frames, [{ type: 'agent-log', agent: 'rev', source: null, reason: 'unidentified', running: true }]);
 
   // It makes its first call; the host learns the id; the log follows.
   const fresh = subagent(dir, 's1', 'newrun', { agentType: 'rev' }, [textLine('fresh')]);
@@ -256,6 +256,21 @@ test('a running agent that has not yet said who it is gets "pending", NOT a prev
   assert.strictEqual(f.source, fresh);
   assert.strictEqual(f.reset, true);
   assert.deepStrictEqual(f.entries.map(e => e.summary), ['fresh']);
+});
+
+test('F5: a live run whose file is not on disk yet is "pending" even if last week\'s run was found by name first', async () => {
+  const { root, dir } = project();
+  const old = subagent(dir, 's1', 'old', { agentType: 'rev' }, [textLine('last week')]);
+  const find = async ({ agentId }) => (agentId ? { file: null, reason: 'no-transcript' } : { file: old });
+  const h = harness({ root, find });
+  await h.session.open('rev');                    // idle: found by name
+  assert.strictEqual(h.frames[0].source, old);
+  h.state.invocations = [{ name: 'rev', agentId: 'b' }];   // a new run binds an id before its file exists
+  await h.session.poll();
+  const last = h.frames[h.frames.length - 1];
+  assert.strictEqual(last.source, null);
+  assert.strictEqual(last.reason, 'pending', 'not "no-transcript" under a live card');
+  assert.strictEqual(last.running, true);
 });
 
 test('a bound id whose file is not written yet is pending, and is retried every poll', async () => {
