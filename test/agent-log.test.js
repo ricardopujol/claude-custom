@@ -275,6 +275,48 @@ test('M1: a file replaced under an opened tail resets the skipped count with the
   assert.strictEqual(r.state.skippedBytes, 0);
 });
 
+// ---- Dexter F8, PR #63: the unterminated final line of a finished run is surfaced ----
+
+test('F8: trailingBytes counts what lies past the last newline; 0 when caught up', async () => {
+  const a = assistant({ type: 'text', text: 'a' });
+  const f = fileWith(a + '\n' + '{"type":"assis');
+  const r = await log.readMore(log.createTail(f));
+  assert.strictEqual(await log.trailingBytes(r.state), '{"type":"assis'.length);
+  const g = fileWith(a + '\n');
+  assert.strictEqual(await log.trailingBytes((await log.readMore(log.createTail(g))).state), 0);
+});
+
+test('F8: a complete JSON line with no newline is read as itself', async () => {
+  const f = fileWith(assistant({ type: 'text', text: 'first' }) + '\n' + assistant({ type: 'text', text: 'final answer' }));
+  const r = await log.readMore(log.createTail(f));
+  assert.deepStrictEqual(r.entries.map(e => e.summary), ['first'], 'withheld while the run may still be writing');
+  const t = await log.readTrailing(r.state);
+  assert.deepStrictEqual(t.entries.map(e => e.summary), ['final answer']);
+  assert.strictEqual(t.state.offset, fs.statSync(f).size);
+  assert.strictEqual(await log.trailingBytes(t.state), 0, 'consumed exactly once');
+  assert.deepStrictEqual((await log.readTrailing(t.state)).entries, []);
+});
+
+test('F8: a fragment that is not JSON becomes a counted unknown entry named "unterminated"', async () => {
+  const f = fileWith(assistant({ type: 'text', text: 'x' }) + '\n' + '{"type":"assistant","mess');
+  const r = await log.readMore(log.createTail(f));
+  const t = await log.readTrailing(r.state);
+  assert.strictEqual(t.entries.length, 1);
+  assert.strictEqual(t.entries[0].kind, 'unknown');
+  assert.strictEqual(t.entries[0].name, 'unterminated');
+  assert.match(t.entries[0].summary, /^\(no closing newline\) \{"type":"assistant","mess/);
+  assert.strictEqual(t.state.unknown, r.state.unknown + 1);
+});
+
+test('F8: trailing whitespace is nothing, and nothing after the offset is an empty read', async () => {
+  const f = fileWith(assistant({ type: 'text', text: 'x' }) + '\n' + '   ');
+  const r = await log.readMore(log.createTail(f));
+  assert.deepStrictEqual((await log.readTrailing(r.state)).entries, []);
+  const g = fileWith(assistant({ type: 'text', text: 'x' }) + '\n');
+  const s = (await log.readMore(log.createTail(g))).state;
+  assert.deepStrictEqual((await log.readTrailing(s)).entries, []);
+});
+
 test('F7: a file replaced by a LONGER one (rename over) is read again from the top, not from the middle of a line', async () => {
   const f = fileWith(assistant({ type: 'text', text: 'old' }) + '\n');
   const first = await log.readMore(log.createTail(f));

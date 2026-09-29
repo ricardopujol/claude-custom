@@ -39,6 +39,7 @@ const { projectDirName } = require('./project-dir');
 const { transcriptFiles, readMeta } = require('./transcripts');
 const { identityTables, resolveAgent, defaultProjectsDir } = require('./agent-stats');
 const agentLog = require('./agent-log');
+const { trailingBytes, readTrailing } = agentLog;
 
 const POLL_MS = 750;
 // One frame carries at most this many lines, so opening a huge transcript is a
@@ -266,19 +267,48 @@ function createLogSession({
       //     to "reading" with its next line, instead of streaming under
       //     "finished".
       // (Dexter F4, PR #63.)
-      const done = c.tracked && !running && !r.more && r.entries.length === 0 && !reset;
-      if (r.entries.length > 0 || reset || running !== c.lastRunning || done !== c.lastDone) {
+      let entries = r.entries;
+      let state = r.state;
+      let holding = false;
+      // AN UNTERMINATED FINAL LINE of a run that is over (Dexter F8). While
+      // anything might still be writing, a line without its newline is
+      // withheld; once the run is over and a poll brings nothing new, it is
+      // surfaced -- but only when the file has not moved for two such polls,
+      // so a line the CLI is still flushing is never split in two.
+      if (c.tracked && !running && !r.more && entries.length === 0 && !reset) {
+        let pending = 0;
+        try { pending = await trailingBytes(state); } catch { pending = 0; }
+        if (cur !== c) return;
+        if (pending > 0) {
+          const mark = state.offset + pending;
+          if (c.trailSeen === mark) {
+            const t = await readTrailing(state);
+            if (cur !== c) return;
+            entries = t.entries;
+            state = t.state;
+            c.tail = state;
+            c.trailSeen = null;
+          } else {
+            c.trailSeen = mark;
+            holding = true;              // not "finished" yet: something is still there
+          }
+        } else {
+          c.trailSeen = null;
+        }
+      }
+      const done = c.tracked && !running && !r.more && entries.length === 0 && !reset && !holding;
+      if (entries.length > 0 || reset || running !== c.lastRunning || done !== c.lastDone) {
         c.lastNone = null;
         send({
-          type: 'agent-log', agent: c.agent, source: r.state.file,
-          entries: r.entries, reset, running, done, tracked: c.tracked, blind: c.blind, unknown: r.state.unknown,
-          skippedBytes: r.state.skippedBytes || 0,
+          type: 'agent-log', agent: c.agent, source: state.file,
+          entries, reset, running, done, tracked: c.tracked, blind: c.blind, unknown: state.unknown,
+          skippedBytes: state.skippedBytes || 0,
         });
       }
       c.lastRunning = running;
       c.lastDone = done;
       // Nothing is changing: not running, nothing new, nothing waiting.
-      c.idle = !running && !r.more && r.entries.length === 0;
+      c.idle = !running && !r.more && entries.length === 0 && !holding;
       // Bounded work per tick: the rest of a big backlog comes on the next
       // ticks (`more` keeps `done` false meanwhile) instead of one flood.
       if (!r.more || frames >= MAX_FRAMES_PER_POLL) return;

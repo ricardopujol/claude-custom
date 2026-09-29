@@ -301,7 +301,45 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes =
   }
 }
 
+const TRAILING_MAX = 1024 * 1024;
+
+/**
+ * How many bytes lie past the last newline the tail consumed: the unterminated
+ * final line, if any. 0 when caught up (or when the file is shorter than the
+ * offset, which readMore treats as a reset).
+ */
+async function trailingBytes(state) {
+  const { size } = await fsp.stat(state.file);
+  return Math.max(0, size - state.offset);
+}
+
+/**
+ * Consume the unterminated final line as an entry. For a run that is OVER: the
+ * partial-line rule protects a line being written, and nothing revisits it once
+ * nothing is writing (Dexter F8, PR #63 -- a crash mid-write left the last
+ * message invisible under "finished", uncounted). A trailing fragment that is a
+ * complete JSON line parses as itself; anything else is an `unknown` entry named
+ * for what it is, never dropped. Bounded: past TRAILING_MAX only its head is read.
+ */
+async function readTrailing(state) {
+  const fh = await fsp.open(state.file, 'r');
+  try {
+    const { size } = await fh.stat();
+    if (size <= state.offset) return { entries: [], state };
+    const buf = await readAt(fh, state.offset, Math.min(size - state.offset, TRAILING_MAX));
+    const names = new Map(state.names);
+    const parsed = parseLine(buf.toString('utf8'), names).entries;
+    const entries = parsed.map(e => (e.name === 'unparseable'
+      ? { ...e, name: 'unterminated', summary: clip('(no closing newline) ' + e.summary) } : e));
+    const unknown = state.unknown + entries.filter(e => e.kind === 'unknown').length;
+    return { entries, state: { ...state, offset: size, names, unknown } };
+  } finally {
+    await fh.close();
+  }
+}
+
 module.exports = {
+  trailingBytes, readTrailing,
   parseLine, createTail, openTail, readMore, TAIL_BYTES,
   SUMMARY_MAX, NAMES_MAX, DEFAULT_MAX_ENTRIES,
 };

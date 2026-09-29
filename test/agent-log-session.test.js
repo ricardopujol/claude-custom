@@ -629,6 +629,51 @@ test('R2-2: a tracked run that ENDS while its tail is in recovery stays that run
   assert.deepStrictEqual(reduce('rev', h.frames).entries.map(e => e.summary), ['mine']);
 });
 
+test('F8: a run that ended with an unterminated final line shows it, once stable, and only then is "finished"', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('first')]);
+  const last = textLine('the final answer');
+  fs.appendFileSync(file, last);                   // no newline: the CLI died / never flushed it
+  const h = harness({ root, invocations: [{ name: 'rev', agentId: 'a1' }] });
+  await h.session.open('rev');
+  assert.deepStrictEqual(h.frames.flatMap(f => f.entries).map(e => e.summary), ['first']);
+  h.state.invocations = [];                        // the run ends
+  await h.session.poll();                          // first quiet poll: notes the trailing bytes, surfaces nothing yet
+  assert.deepStrictEqual(h.frames.flatMap(f => f.entries).map(e => e.summary), ['first']);
+  assert.ok(h.frames.every(f => f.done === false), 'not finished while a line is still unread');
+  await h.session.poll();                          // unchanged since the last poll: surfaced
+  assert.deepStrictEqual(h.frames.flatMap(f => f.entries).map(e => e.summary), ['first', 'the final answer']);
+  await h.session.poll();
+  assert.strictEqual(h.frames[h.frames.length - 1].done, true, 'and now it is finished');
+});
+
+test('F8: a trailing line that is still GROWING between quiet polls is not surfaced, so it is never split', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('first')]);
+  const full = textLine('flushing slowly');
+  fs.appendFileSync(file, full.slice(0, 20));
+  const h = harness({ root, invocations: [{ name: 'rev', agentId: 'a1' }] });
+  await h.session.open('rev');
+  h.state.invocations = [];
+  await h.session.poll();
+  fs.appendFileSync(file, full.slice(20, 40));     // it moved: not stable
+  await h.session.poll();
+  fs.appendFileSync(file, full.slice(40) + NL);    // and completes
+  await h.session.poll();
+  assert.deepStrictEqual(h.frames.flatMap(f => f.entries).map(e => e.summary), ['first', 'flushing slowly']);
+  assert.ok(!h.frames.some(f => f.entries.some(e => e.name === 'unterminated')));
+});
+
+test('F8: a transcript found by name (untracked) never surfaces a trailing fragment: it may be live elsewhere', async () => {
+  const { root, dir } = project();
+  const file = subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('first')]);
+  fs.appendFileSync(file, textLine('half written'));
+  const h = harness({ root });
+  await h.session.open('rev');
+  await h.session.poll(); await h.session.poll(); await h.session.poll();
+  assert.deepStrictEqual(h.frames.flatMap(f => f.entries).map(e => e.summary), ['first']);
+});
+
 test('R2-1: a failed open does not leave the name search latched', async () => {
   const { root, dir } = project();
   subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('one')]);
