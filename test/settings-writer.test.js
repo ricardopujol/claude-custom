@@ -47,8 +47,21 @@ test('PreToolUse covers Task and Bash, and nothing else', () => {
   assert.ok(/Task/.test(m) && /Bash/.test(m), m);
   assert.ok(!m.includes('*'), 'wildcard matcher would tax every tool call');
   for (const tool of ['Read', 'Grep', 'Edit', 'Write', 'Glob']) {
-    assert.ok(!new RegExp(`\b${tool}\b`).test(m), `${tool} must not be matched`);
+    // `\\b`, not `\b`: inside a template literal `\b` is a backspace, and the
+    // check could never fail.
+    assert.ok(!new RegExp(`\\b${tool}\\b`).test(m), `${tool} must not be matched`);
   }
+});
+
+// Ricardo's hand check of PR #66, 2026-09-29: the main session RESUMED a
+// finished background agent with SendMessage (to: its agent_id) instead of
+// spawning a new one. Unhooked, the resume was invisible: the agent never
+// showed working, and a hidden card never came back. Only the START is
+// needed -- the resumed run ends on its own SubagentStop.
+test('PreToolUse also covers SendMessage, so a resumed agent is seen; PostToolUse does not', () => {
+  const s = buildHarnessSettings(opts);
+  assert.ok(/\bSendMessage\b/.test(s.hooks.PreToolUse[0].matcher), s.hooks.PreToolUse[0].matcher);
+  assert.ok(!/\bSendMessage\b/.test(s.hooks.PostToolUse[0].matcher), 'the resume ends on SubagentStop; no post hook needed');
 });
 
 test('PostToolUse is scoped to Task and Bash only', () => {

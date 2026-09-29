@@ -67,6 +67,11 @@ function harness(opts = {}) {
       m.handle({ event: 'PostToolUse', payload: { tool_name: 'Agent', tool_use_id: key,
         tool_input: {}, tool_response: { isAsync: true, status: 'async_launched', agentId } } });
     },
+    // The main session messaging an agent: how a finished agent is RESUMED.
+    message(to, key = 'sm' + Math.random()) {
+      m.handle({ event: 'PreToolUse', payload: { tool_name: 'SendMessage', tool_use_id: key,
+        tool_input: { to, summary: 's', message: 'm' } } });
+    },
   };
   return h;
 }
@@ -605,4 +610,83 @@ test('watchedEnd: true only for a run this machine saw end, by its agent_id', ()
   assert.strictEqual(h.m.watchedEnd('a5f'), true);
   assert.strictEqual(h.m.watchedEnd('someone-else'), false);
   assert.strictEqual(h.m.watchedEnd(undefined), false);
+});
+
+// --- a finished agent RESUMED with SendMessage ---------------------------------
+// Ricardo's hand check of PR #66, 2026-09-29, replayed from the host log and the
+// session transcript: one Agent spawn, then two SendMessage calls to the same
+// agent_id. No Agent call marks the resumes; its calls and SubagentStop carry
+// the old id, which used to be dropped as a late echo of the ended run.
+
+function endedRun(h, type = 'general-purpose', id = 'a6c') {
+  h.spawn(type, 'k1', { background: true });
+  h.launchedAsync('k1', id);
+  h.subStop(id, type);
+  h.advance(10_000);                   // past the happy flash: asleep
+  return id;
+}
+
+test('resume: a message to an ended agent_id is a new run of that agent, working until its SubagentStop', () => {
+  const h = harness();
+  const id = endedRun(h);
+  assert.notStrictEqual(h.m.stateOf('general-purpose'), 'working');
+  h.message(id);
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'working');
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
+  assert.strictEqual(h.m.invocations()[0].agentId, id, 'bound to the resumed id at once');
+  assert.strictEqual(h.m.watchedEnd(id), false, 'running again, so not ended');
+  h.subStop(id, 'general-purpose');
+  assert.deepStrictEqual(h.m.stack(), []);
+  assert.strictEqual(h.m.watchedEnd(id), true);
+});
+
+test('resume: the resumed run\'s calls are its own, not dropped as a late echo', () => {
+  const h = harness();
+  const id = endedRun(h);
+  h.message(id);
+  h.call(id, 'general-purpose', { exit_code: 1, stderr: 'boom' });
+  assert.strictEqual(h.m.stateOf('general-purpose'), 'stressed', 'the failure lands on the resumed run');
+});
+
+test('resume: it is background work, so the main turn ending does not end it', () => {
+  const h = harness();
+  const id = endedRun(h);
+  h.message(id);
+  h.m.handle({ event: 'Stop', payload: {} });
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
+});
+
+test('resume: a message to a run that is still going changes nothing', () => {
+  const h = harness();
+  h.spawn('general-purpose', 'k1', { background: true });
+  h.launchedAsync('k1', 'live');
+  h.message('live');
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose'], 'no second instance');
+});
+
+test('resume: a message to an id this host never saw end is not a run', () => {
+  const h = harness();
+  h.message('stranger');
+  h.message('');
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'SendMessage', tool_use_id: 'x', tool_input: {} } });
+  assert.deepStrictEqual(h.m.stack(), []);
+});
+
+test('resume: the same SendMessage delivered twice is one run', () => {
+  const h = harness();
+  const id = endedRun(h);
+  h.message(id, 'same');
+  h.message(id, 'same');
+  assert.deepStrictEqual(h.m.stack(), ['general-purpose']);
+});
+
+test('resume: an agent spawned with a NAME is resumed by that name', () => {
+  const h = harness();
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_use_id: 'k1',
+    tool_input: { subagent_type: 'code-reviewer', name: 'miguel', run_in_background: true } } });
+  h.launchedAsync('k1', 'm1');
+  h.subStop('m1', 'code-reviewer');
+  h.message('miguel');
+  assert.deepStrictEqual(h.m.stack(), ['code-reviewer']);
+  assert.strictEqual(h.m.invocations()[0].agentId, 'm1');
 });

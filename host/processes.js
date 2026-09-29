@@ -81,6 +81,9 @@ function createProcessTracker({ now = Date.now } = {}) {
   function handle({ event, payload }) {
     const p = payload || {};
     if (event === 'PreToolUse') {
+      // A message to an agent (hooked so the mood engine sees a RESUME) is not
+      // a process, and has no PostToolUse hook to ever close its row.
+      if (p.tool_name === 'SendMessage') return 0;
       running.set(keyFor(p), {
         tool: p.tool_name,
         label: labelFor(p.tool_name, p.tool_input),

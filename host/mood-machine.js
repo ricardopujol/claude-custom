@@ -155,6 +155,14 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // PR #56, #4). Bounded, oldest out: ids are unique per session, so only a
   // late echo needs remembering, not the whole history.
   const endedIds = new Set();
+  // agent_id -> { name, label } of each ended run, so a RESUME can reopen it
+  // under the right card. Bounded like endedIds; newest last.
+  const endedRuns = new Map();
+  function rememberRun(inv) {
+    endedRuns.delete(inv.agentId);
+    endedRuns.set(inv.agentId, { name: inv.name, label: inv.label || null });
+    if (endedRuns.size > REMEMBER_MAX) endedRuns.delete(endedRuns.keys().next().value);
+  }
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -283,7 +291,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const at = invs.indexOf(inv);
       if (at === -1) continue;
       invs.splice(at, 1);
-      if (inv.agentId) remember(endedIds, inv.agentId);
+      if (inv.agentId) { remember(endedIds, inv.agentId); rememberRun(inv); }
       if (inv.key !== null) { spawns.delete(inv.key); remember(endedKeys, inv.key); }
       names.set(inv.name, names.get(inv.name) || completed(inv));
     }
@@ -343,10 +351,51 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     if (isCompleted(r)) finish(inv);
   }
 
+  // A RESUME. The main session brings a finished agent back by messaging its
+  // agent_id (or the name it was spawned with) -- there is no Agent call at all,
+  // and its calls and SubagentStop carry the OLD id, which bind() drops as a
+  // late echo of the ended run. So a message to a run this host watched end
+  // opens a new invocation already bound to that id. It is background work: the
+  // main turn ends while it runs (measured, Ricardo's hand check of PR #66). A
+  // message to a run that is still going is only a message.
+  function resume(p) {
+    const input = p.tool_input || {};
+    const to = input.to;
+    if (typeof to !== 'string' || !to) return;
+    const key = p.tool_use_id ?? null;
+    if (key !== null && (spawns.has(key) || endedKeys.has(key))) return;
+    if (invs.some(i => i.agentId === to || (i.label && i.label === to))) return;
+    let agentId = endedIds.has(to) && endedRuns.has(to) ? to : null;
+    if (!agentId) {
+      for (const [id, r] of endedRuns) if (r.label === to && endedIds.has(id)) agentId = id;   // newest wins
+    }
+    if (!agentId) return;
+    const run = endedRuns.get(agentId);
+    endedIds.delete(agentId);
+    const a = ensure(run.name);
+    if (!running(run.name)) {
+      a.errors = 0;
+      a.repeats = 0;
+      a.lastSignature = null;
+    }
+    a.flashUntil = 0;
+    a.lastActivity = now();
+    const inv = {
+      id: ++serial, key, name: run.name, label: run.label, agentId, parent: null,
+      orphan: false, background: true, description: input.summary,
+      startedAt: now(), lastActivity: now(),
+    };
+    invs.push(inv);
+    if (key !== null) spawns.set(key, inv);
+    setState(run.name, a, WORKING);
+  }
+
   function handle({ event, payload }) {
     const p = payload || {};
     const tool = p.tool_name;
     if (p.agent_id) saysWho = true;
+
+    if (event === 'PreToolUse' && tool === 'SendMessage') { resume(p); return; }
 
     if (event === 'PreToolUse' && AGENT_TOOLS.has(tool)) {
       const input = p.tool_input || {};
@@ -369,6 +418,9 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const parent = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
       const inv = {
         id: ++serial, key, name: agent, agentId: null, parent,
+        // The spawn's own NAME, when it was given one: SendMessage may resume
+        // the agent by it.
+        label: typeof input.name === 'string' && input.name ? input.name : null,
         // A spawner that names itself but can't be found (reaped, ended,
         // never seen -- or the host restarted) is some AGENT, not the main
         // session. "Unknown" used to be merged into "main session", so Stop

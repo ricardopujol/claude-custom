@@ -69,6 +69,7 @@ function opArb(callKinds, mainKinds = MAIN_KINDS) {
     { weight: 1, arbitrary: fc.record({ op: fc.constant('stop') }) },
     { weight: 1, arbitrary: fc.record({ op: fc.constant('sessionEnd') }) },
     { weight: 2, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 20_000 }) }) },
+    { weight: 1, arbitrary: fc.record({ op: fc.constant('resume'), who: fc.nat() }) },
   );
 }
 
@@ -207,6 +208,22 @@ function simulate(ops, { onStep, machineOpts = {} } = {}) {
         t += o.ms;
         m.tick();
         break;
+      case 'resume': {
+        // The main session brings an ended agent back with SendMessage to its
+        // agent_id (Ricardo's hand check of PR #66). It runs again as its own
+        // background root, on the SAME id, until its next SubagentStop. Only a
+        // run the machine could know by id: one that spoke before it ended,
+        // and not LATE_TYPE, whose ids may be bound crosswise (see the header).
+        const dead = agents.filter(x => !x.alive && x.told && x.type !== LATE_TYPE);
+        if (!dead.length) break;
+        const a = dead[o.who % dead.length];
+        a.alive = true;
+        a.bg = true;
+        a.parent = null;
+        send('PreToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm' + (++n),
+          tool_input: { to: a.id, summary: 's', message: 'm' } });
+        break;
+      }
     }
     if (onStep) onStep({ o, m, alive: alive(), agents, changes, mainFg, wasLabelled });
   }

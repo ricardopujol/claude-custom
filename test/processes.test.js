@@ -38,6 +38,15 @@ test('a finished tool call stops showing', () => {
   assert.deepStrictEqual(h.t.list(), []);
 });
 
+// SendMessage is hooked on PreToolUse ONLY (host/settings-writer.js), so the
+// mood engine sees an agent being RESUMED. It is a message, not a process, and
+// nothing would ever close its row.
+test('a SendMessage is not a process: it never shows as running', () => {
+  const h = harness();
+  h.pre('SendMessage', { to: 'a6c', summary: 's', message: 'm' }, 'sm1');
+  assert.deepStrictEqual(h.t.list(), []);
+});
+
 test('reports how long each call has been running', () => {
   // The whole point: a GPU job that takes four minutes should visibly be
   // taking four minutes, not silently appear stuck.
