@@ -40,6 +40,12 @@ test('the close control and the incoming frames are wired', () => {
   assert.ok(/msg\.type === 'agent-log'[\s\S]{0,80}handleAgentLogFrame\(msg\)/.test(src));
 });
 
+test('the hidden-rows toggle is wired: the click flips the model and the choice is kept across reopens', () => {
+  assert.ok(/closest\('\[data-agent-log-unknown\]'\)[\s\S]{0,200}toggleUnknown\(agentLog\)/.test(src));
+  assert.ok(src.includes('agentLogShowUnknown = agentLog.showUnknown'));
+  assert.ok(src.includes('openLog(agent, agentLogShowUnknown)'));
+});
+
 test('an open log is asked for again after a reattach', () => {
   const at = src.indexOf('ws.onopen = ');
   assert.ok(at !== -1);
@@ -56,6 +62,6 @@ test('the panel markup and the module are in the page, the module before rendere
 test('renderer.js reaches the module only through its one published name', () => {
   const uses = src.match(/agentLogDisplay\.\w+/g) || [];
   assert.ok(uses.length > 0);
-  const known = new Set(['emptyLog', 'openLog', 'closeLog', 'applyFrame', 'renderAgentLog', 'shouldFollow', 'paint', 'cardClickAgent']);
+  const known = new Set(['emptyLog', 'openLog', 'closeLog', 'applyFrame', 'renderAgentLog', 'shouldFollow', 'paint', 'cardClickAgent', 'toggleUnknown']);
   for (const u of uses) assert.ok(known.has(u.split('.')[1]), u);
 });

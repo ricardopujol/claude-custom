@@ -49,14 +49,48 @@ function emptyLog() {
     open: false, agent: null, waiting: false,
     source: null, reason: null,
     entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
+    // `unknown` rows (thinking blocks, attachments, unrecognised lines,
+    // `unterminated`) are HIDDEN by default and counted, never dropped: they stay
+    // in `entries`, and the header says how many are hidden. `showUnknown` is the
+    // reader's choice, kept across frames.
+    showUnknown: false,
     running: false, done: false, tracked: true, blind: false,
     render: 'rebuild', added: 0, capDrop: 0,
   };
 }
 
 /** The model for a log that was just asked for: nothing has arrived yet. */
-function openLog(agent) {
-  return { ...emptyLog(), open: true, agent, waiting: true };
+function openLog(agent, showUnknown = false) {
+  return { ...emptyLog(), open: true, agent, waiting: true, showUnknown: showUnknown === true };
+}
+
+/** The entries the list draws: all of them, or all but the `unknown` ones. */
+function visibleEntries(model) {
+  return model.showUnknown ? model.entries : model.entries.filter(e => e.kind !== 'unknown');
+}
+
+/** How many `unknown` entries the model holds (what "hidden" counts). */
+function unknownCount(model) {
+  let n = 0;
+  for (const e of model.entries) if (e.kind === 'unknown') n++;
+  return n;
+}
+
+/**
+ * The header control's text: '' when there is nothing to hide (no control),
+ * else "N hidden · show", or "showing N hidden · hide" once they are shown. The
+ * count is the model's, never read back from the DOM.
+ */
+function hiddenCountLabel(model) {
+  const n = unknownCount(model);
+  if (n === 0) return '';
+  return model.showUnknown ? `showing ${n} hidden · hide` : `${n} hidden · show`;
+}
+
+/** The model with the unknown rows shown / hidden, to be drawn from scratch. */
+function toggleUnknown(model) {
+  if (!model || !model.open) return model;
+  return { ...model, showUnknown: !model.showUnknown, render: 'rebuild', added: 0, capDrop: 0 };
 }
 
 function closeLog() {
@@ -100,13 +134,17 @@ function applyFrame(model, frame) {
   let entries = (reset ? [] : model.entries).concat(fresh);
   let dropped = reset ? 0 : model.dropped;
   let capped = false;
-  let capDrop = 0;
+  let capDrop = 0;             // VISIBLE rows that left the top (what the scroll anchor needs)
   if (entries.length > MAX_ENTRIES) {
-    capDrop = entries.length - MAX_ENTRIES;
-    dropped += capDrop;
-    entries = entries.slice(entries.length - MAX_ENTRIES);
+    const overflow = entries.length - MAX_ENTRIES;
+    dropped += overflow;       // every entry pushed out, hidden or not
+    capDrop = model.showUnknown ? overflow : entries.slice(0, overflow).filter(e => e.kind !== 'unknown').length;
+    entries = entries.slice(overflow);
     capped = true;
   }
+  const freshVisible = model.showUnknown ? fresh.length : fresh.filter(e => e.kind !== 'unknown').length;
+  const visibleBefore = visibleEntries(model).length;
+  const visibleAfter = model.showUnknown ? entries.length : entries.filter(e => e.kind !== 'unknown').length;
   // HOW THE WINDOW SHOULD DRAW THIS, so it never rebuilds what it can extend:
   // a rebuild throws away the reader's text selection (Miguel M3, PR #63 -- a
   // live log could not have a command copied out of it, being redrawn every
@@ -114,11 +152,16 @@ function applyFrame(model, frame) {
   // anything that changes what is above the last row -- a reset, a cap drop, a
   // first row replacing the "empty so far" line, a different source, an
   // absence before it -- is a rebuild.
-  const onScreen = !model.waiting && model.source === frame.source && model.entries.length > 0;
-  const render = reset || capped || !onScreen ? 'rebuild' : fresh.length > 0 ? 'append' : 'status';
+  //
+  // "On screen" and "appended" are counted in VISIBLE rows: a hidden `unknown`
+  // entry adds nothing to the DOM (a status update at most), and a list with no
+  // visible rows shows a placeholder line, so it is always redrawn.
+  const onScreen = !model.waiting && model.source === frame.source && visibleBefore > 0;
+  const render = reset || capped || !onScreen || visibleAfter === 0
+    ? 'rebuild' : freshVisible > 0 ? 'append' : 'status';
   return {
     ...model, waiting: false, source: frame.source, reason: null,
-    render, added: render === 'append' ? fresh.length : 0,
+    render, added: render === 'append' ? freshVisible : 0,
     // Rows removed from the TOP of an existing list by this frame's cap (not a
     // reset, which replaces the list): paint() uses it to keep a reader who
     // scrolled up on the same row.
@@ -190,6 +233,12 @@ function statusText(model) {
   return model.running ? 'live' : model.done ? 'finished' : model.tracked === false ? (model.blind ? 'latest run found (search incomplete)' : 'latest run') : 'reading';
 }
 
+/** The show / hide control for the unknown rows. Always present, `hidden` when there is nothing to hide. */
+function unknownControlHtml(model) {
+  const label = model.source === null || model.waiting ? '' : hiddenCountLabel(model);
+  return `<button type="button" class="alog-unk" data-agent-log-unknown${label ? '' : ' hidden'}>${escapeHtml(label)}</button>`;
+}
+
 /** The rows for these entries (also what an append adds). */
 function renderRows(entries) {
   return entries.map(entryHtml).join('');
@@ -204,9 +253,8 @@ function renderNotes(model) {
   if (model.dropped > 0) {
     notes.push(`${model.dropped} earlier ${plural(model.dropped, 'entry', 'entries')} not shown`);
   }
-  if (model.unknown > 0) {
-    notes.push(`${model.unknown} ${plural(model.unknown, 'line', 'lines')} of a kind this view cannot show as a call or message (dimmed)`);
-  }
+  // (Unrecognised lines are no longer a note: they are hidden rows, counted by
+  // the header control -- see hiddenCountLabel.)
   return notes.map(n => `<div class="alog-note">${escapeHtml(n)}</div>`).join('');
 }
 
@@ -220,6 +268,7 @@ function renderAgentLog(model) {
       `<button type="button" class="alog-close" data-agent-log-close title="Close the log">&larr;</button>` +
       `<span class="alog-title" title="${escapeHtml(agent)}">${escapeHtml(agent)}</span>` +
       `<span class="alog-status">${statusText(model)}</span>` +
+      unknownControlHtml(model) +
     `</div>`;
 
   if (model.waiting) {
@@ -230,9 +279,12 @@ function renderAgentLog(model) {
   }
 
   const src = `<div class="alog-src" title="${escapeHtml(model.source)}">${escapeHtml(basename(model.source))}</div>`;
+  const visible = visibleEntries(model);
   const rows = model.entries.length === 0
     ? `<div class="alog-none">the transcript is empty so far</div>`
-    : renderRows(model.entries);
+    : visible.length === 0
+      ? `<div class="alog-none">nothing but hidden rows so far</div>`
+      : renderRows(visible);
   return head + src +
     `<div class="alog-body"><div class="alog-notes">${renderNotes(model)}</div><div class="alog-rows">${rows}</div></div>`;
 }
@@ -321,17 +373,27 @@ function paint(el, model) {
 
   let how = 'rebuild';
   const rows = el.querySelector('.alog-rows');
+  // Row counts are VISIBLE rows: what is in the DOM.
+  const visible = model && model.open ? visibleEntries(model) : [];
   const canExtend = model && model.open && body && rows &&
     (model.render === 'append' || model.render === 'status') &&
-    Number(rows.dataset.count) === model.entries.length - (model.render === 'append' ? model.added : 0);
+    Number(rows.dataset.count) === visible.length - (model.render === 'append' ? model.added : 0);
   if (canExtend) {
     how = model.render;
     if (how === 'append') {
-      rows.insertAdjacentHTML('beforeend', renderRows(model.entries.slice(model.entries.length - model.added)));
-      rows.dataset.count = String(model.entries.length);
+      rows.insertAdjacentHTML('beforeend', renderRows(visible.slice(visible.length - model.added)));
+      rows.dataset.count = String(visible.length);
     }
     const status = el.querySelector('.alog-status');
     if (status && status.textContent !== statusText(model)) status.textContent = statusText(model);
+    // The hidden-rows control: its text is the model's count, and it appears
+    // when the first hidden row arrives.
+    const unk = el.querySelector('.alog-unk');
+    if (unk) {
+      const label = hiddenCountLabel(model);
+      if (unk.textContent !== label) unk.textContent = label;
+      unk.hidden = label === '';
+    }
     const notes = el.querySelector('.alog-notes');
     const html = renderNotes(model);
     if (notes && notes.dataset.sig !== html) { notes.innerHTML = html; notes.dataset.sig = html; }
@@ -350,7 +412,7 @@ function paint(el, model) {
       });
     }
     const fresh = el.querySelector('.alog-rows');
-    if (fresh) fresh.dataset.count = String(model.entries.length);
+    if (fresh) fresh.dataset.count = String(visible.length);
     const notes = el.querySelector('.alog-notes');
     if (notes) notes.dataset.sig = renderNotes(model);
   }
@@ -361,7 +423,7 @@ function paint(el, model) {
 }
 
 const api = {
-  cardClickAgent, paint, emptyLog, openLog, closeLog, applyFrame, renderAgentLog, renderRows, renderNotes, statusText,
+  visibleEntries, hiddenCountLabel, toggleUnknown, cardClickAgent, paint, emptyLog, openLog, closeLog, applyFrame, renderAgentLog, renderRows, renderNotes, statusText,
   shouldFollow, anchoredScrollTop, MAX_ENTRIES, FOLLOW_SLACK_PX,
 };
 

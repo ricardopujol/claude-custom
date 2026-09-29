@@ -105,10 +105,17 @@ app.on('ready', async () => {
     r.titleTouched = document.title !== 'alog';
     r.firstCommandText = (document.querySelector('.alog-tool_use .alog-sum') || {}).textContent;
     r.errorRows = document.querySelectorAll('.alog-error').length;
-    r.dimmedUnknown = document.querySelectorAll('.alog-unknown').length;
+    r.hiddenRowsInDom = document.querySelectorAll('.alog-unknown').length;
+    const unkBtn = document.querySelector('[data-agent-log-unknown]');
+    r.hiddenLabel = unkBtn.textContent; r.hiddenBtnVisible = !unkBtn.hidden;
     r.status = (document.querySelector('.alog-status') || {}).textContent;
     r.notes = [...document.querySelectorAll('.alog-note')].map(n => n.textContent);
     r.summaries = [...document.querySelectorAll('.alog-entry .alog-sum')].map(n => n.textContent);
+    // The toggle, on the real DOM: the hidden row appears, dimmed, and the label flips.
+    m = d.toggleUnknown(m);
+    d.paint(document.getElementById('agent-log'), m);
+    r.dimmedUnknown = document.querySelectorAll('.alog-unknown').length;
+    r.shownLabel = document.querySelector('[data-agent-log-unknown]').textContent;
     return r;
   })()\`);
   console.log('RESULT ' + JSON.stringify(out));
@@ -132,11 +139,13 @@ app.on('ready', async () => {
   const r = JSON.parse(m[1]);
   console.log('window result      :', JSON.stringify(r, null, 2));
   const ok = r.published === 'object' && r.leaks.length === 0 && r.imgElements === 0 && !r.titleTouched
-    && r.firstCommandText === HOSTILE && r.errorRows === 1 && r.dimmedUnknown === 1
+    && r.firstCommandText === HOSTILE && r.errorRows === 1
+    && r.hiddenRowsInDom === 0 && r.hiddenLabel === '1 hidden · show' && r.hiddenBtnVisible
+    && r.dimmedUnknown === 1 && r.shownLabel === 'showing 1 hidden · hide'
     && r.summaries[r.summaries.length - 2] === 'the second message'
     && r.cardClicks.body === 'probe-agent' && r.cardClicks.face === null
     && r.cardClicks.button === null && r.cardClicks.insideButton === null
-    && r.appendMode === 'append' && r.sameRowsNode && r.selectionSurvived && r.rowsAfterAppend === 6;
+    && r.appendMode === 'append' && r.sameRowsNode && r.selectionSurvived && r.rowsAfterAppend === 5;      // 6 entries, 1 of them hidden
   console.log(ok ? 'PASS' : 'FAIL');
   process.exit(ok ? 0 : 1);
 }

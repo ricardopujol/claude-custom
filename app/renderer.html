@@ -544,6 +544,9 @@
     .alog-tool_use .alog-kind { color: var(--accent); }
     .alog-error .alog-kind, .alog-error .alog-sum { color: #e06c75; }
     .alog-unknown { opacity: .45; }
+    .alog-unk { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 10px; padding: 0 2px; }
+    .alog-unk:hover { color: var(--text); }
+    .alog-unk[hidden] { display: none; }
 
     .agent {
       display: flex; align-items: center; gap: 9px;

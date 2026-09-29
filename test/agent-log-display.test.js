@@ -146,11 +146,11 @@ test('M1: the part of a big transcript the host did not send is said, in sensibl
 test('unrecognised lines are counted for the reader', () => {
   const m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry({ kind: 'unknown', name: 'attachment', summary: '' })], unknown: 3 }));
   assert.strictEqual(m.unknown, 3);
-  assert.match(d.renderAgentLog(m), /3 lines of a kind this view cannot show as a call or message/);
-  const one = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], unknown: 1 }));
-  assert.match(d.renderAgentLog(one), /1 line of a kind/);
+  // The host's cumulative count is kept, but what the header says is hidden is
+  // the model's own unknown ENTRIES (see the hidden-rows tests below).
+  assert.strictEqual(d.hiddenCountLabel(m), '1 hidden · show');
   const none = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], unknown: 0 }));
-  assert.ok(!/lines? of a kind/.test(d.renderAgentLog(none)));
+  assert.strictEqual(d.hiddenCountLabel(none), '');
   // Strict: absence, a string, a float or a negative is not a count.
   for (const bad of [undefined, null, '5', 1.5, -2, NaN]) {
     const m2 = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], unknown: bad }));
@@ -159,7 +159,7 @@ test('unrecognised lines are counted for the reader', () => {
 });
 
 test('entries of every kind render their own class and label', () => {
-  const html = d.renderAgentLog(d.applyFrame(d.openLog('rev'), frame({ entries: [
+  const html = d.renderAgentLog(d.applyFrame(d.openLog('rev', true), frame({ entries: [
     entry({ kind: 'tool_use', name: 'Bash', summary: 'ls' }),
     entry({ kind: 'tool_result', name: 'Bash', summary: 'ok', error: false }),
     entry({ kind: 'tool_result', name: 'Bash', summary: 'boom', error: true }),
@@ -241,7 +241,7 @@ function fakeContainer() {
     get() { return c.html; },
     set(v) {
       c.html = v; c.ops.push('rebuild'); c.els = {};
-      for (const [sel, cls] of [['.alog-body', 'alog-body'], ['.alog-rows', 'alog-rows'], ['.alog-status', 'alog-status'], ['.alog-notes', 'alog-notes']]) {
+      for (const [sel, cls] of [['.alog-body', 'alog-body'], ['.alog-rows', 'alog-rows'], ['.alog-status', 'alog-status'], ['.alog-notes', 'alog-notes'], ['.alog-unk', 'class="alog-unk"']]) {
         if (v.includes(cls)) c.els[sel] = mk();
       }
       // Rows are 20px tall; a notes line above them pushes every row down by one.
@@ -312,16 +312,16 @@ test('M3: painting the same append model twice cannot duplicate rows -- the coun
 
 test('M3: notes are only rewritten when they change', () => {
   const c = fakeContainer();
-  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], unknown: 1 }));
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], skippedBytes: 2048 }));
   d.paint(c, m);
   const notes = c.querySelector('.alog-notes');
   notes.innerHTML = 'SENTINEL';
-  m = d.applyFrame(m, frame({ reset: false, entries: [entry()], unknown: 1 }));
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry()], skippedBytes: 2048 }));
   d.paint(c, m);
   assert.strictEqual(notes.innerHTML, 'SENTINEL', 'unchanged notes are left alone');
-  m = d.applyFrame(m, frame({ reset: false, entries: [entry()], unknown: 2 }));
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry()], skippedBytes: 4096 }));
   d.paint(c, m);
-  assert.match(notes.innerHTML, /2 lines of a kind/);
+  assert.match(notes.innerHTML, /the first 4 KB of this transcript/);
 });
 
 test('M3: paint keeps following when at the bottom, and leaves a reader who scrolled up where they are', () => {
@@ -337,6 +337,102 @@ test('M3: paint keeps following when at the bottom, and leaves a reader who scro
   m = d.applyFrame(m, frame({ reset: false, entries: [entry()] }));
   d.paint(c, m);
   assert.strictEqual(body.scrollTop, 200);
+});
+
+// ---- product decision (Ricardo): unknown rows are HIDDEN by default, counted, and toggleable ----
+
+const unk = (over = {}) => entry({ kind: 'unknown', name: 'thinking', summary: '', ...over });
+
+test('hidden by default: unknown entries stay in the model but not in visibleEntries or the list', () => {
+  const m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry({ summary: 'a' }), unk(), unk(), entry({ summary: 'b' })] }));
+  assert.strictEqual(m.showUnknown, false);
+  assert.strictEqual(m.entries.length, 4, 'hidden, not dropped');
+  assert.deepStrictEqual(d.visibleEntries(m).map(e => e.summary), ['a', 'b']);
+  const html = d.renderAgentLog(m);
+  assert.strictEqual((html.match(/alog-entry/g) || []).length, 2);
+  assert.ok(!html.includes('alog-unknown'));
+});
+
+test('hiddenCountLabel: nothing hidden is no control; hidden counts come from the model and follow the toggle', () => {
+  const none = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()] }));
+  assert.strictEqual(d.hiddenCountLabel(none), '');
+  assert.match(d.renderAgentLog(none), /data-agent-log-unknown hidden>/, 'the control exists but is hidden at 0');
+  const m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry(), unk(), unk()] }));
+  assert.strictEqual(d.hiddenCountLabel(m), '2 hidden · show');
+  assert.match(d.renderAgentLog(m), /data-agent-log-unknown>2 hidden · show</);
+  const shown = d.toggleUnknown(m);
+  assert.strictEqual(shown.showUnknown, true);
+  assert.strictEqual(d.hiddenCountLabel(shown), 'showing 2 hidden · hide');
+  assert.strictEqual(d.visibleEntries(shown).length, 3);
+  assert.strictEqual((d.renderAgentLog(shown).match(/alog-unknown"/g) || []).length, 2);
+  assert.strictEqual(d.toggleUnknown(shown).showUnknown, false, 'and back');
+  assert.strictEqual(shown.render, 'rebuild');
+});
+
+test('the count stays correct as frames append, and is per ENTRIES held (a reset starts it over)', () => {
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry(), unk()] }));
+  assert.strictEqual(d.hiddenCountLabel(m), '1 hidden · show');
+  m = d.applyFrame(m, frame({ reset: false, entries: [unk(), entry(), unk()] }));
+  assert.strictEqual(d.hiddenCountLabel(m), '3 hidden · show');
+  m = d.applyFrame(m, frame({ reset: true, entries: [entry()] }));
+  assert.strictEqual(d.hiddenCountLabel(m), '');
+});
+
+test('the reader\'s choice survives frames, and openLog can start with it', () => {
+  let m = d.toggleUnknown(d.applyFrame(d.openLog('rev'), frame({ entries: [unk()] })));
+  m = d.applyFrame(m, frame({ reset: false, entries: [unk()] }));
+  assert.strictEqual(m.showUnknown, true);
+  assert.strictEqual(d.openLog('rev', true).showUnknown, true);
+  assert.strictEqual(d.openLog('rev').showUnknown, false);
+  assert.strictEqual(d.openLog('rev', 'yes').showUnknown, false, 'strictly true or not');
+  const closed = d.emptyLog();
+  assert.strictEqual(d.toggleUnknown(closed), closed);
+});
+
+test('a log of nothing but hidden rows says so, rather than looking empty or idle', () => {
+  const m = d.applyFrame(d.openLog('rev'), frame({ entries: [unk(), unk()] }));
+  assert.match(d.renderAgentLog(m), /nothing but hidden rows so far/);
+  assert.ok(!/empty so far/.test(d.renderAgentLog(m)));
+  const empty = d.applyFrame(d.openLog('rev'), frame({ entries: [] }));
+  assert.match(d.renderAgentLog(empty), /the transcript is empty so far/);
+});
+
+test('paint: hidden rows are not in the DOM, and the control\'s text is the model\'s label, live as frames arrive', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry({ summary: 'a' })] }));
+  d.paint(c, m);
+  const ctl = c.querySelector('.alog-unk');
+  assert.ok(ctl, 'the control is in the header');
+  // A hidden row arrives: nothing appended, the control gains its label and appears.
+  m = d.applyFrame(m, frame({ reset: false, entries: [unk()] }));
+  assert.strictEqual(m.render, 'status');
+  assert.strictEqual(d.paint(c, m), 'status');
+  assert.strictEqual(c.querySelector('.alog-rows').inserted.length, 0, 'no hidden row reached the DOM');
+  assert.strictEqual(ctl.textContent, '1 hidden · show');
+  assert.strictEqual(ctl.hidden, false);
+  // A visible row arrives alongside another hidden one: only the visible row is inserted.
+  m = d.applyFrame(m, frame({ reset: false, entries: [unk(), entry({ summary: 'b' })] }));
+  assert.strictEqual(d.paint(c, m), 'append');
+  const inserted = c.querySelector('.alog-rows').inserted;
+  assert.strictEqual(inserted.length, 1);
+  assert.ok(inserted[0][1].includes('>b<') && !inserted[0][1].includes('alog-unknown'));
+  assert.strictEqual(ctl.textContent, '2 hidden · show');
+  assert.strictEqual(c.querySelector('.alog-rows').dataset.count, '2');
+  // Showing them is a rebuild that includes them, with the label flipped.
+  m = d.toggleUnknown(m);
+  assert.strictEqual(d.paint(c, m), 'rebuild');
+  assert.ok(c.html.includes('alog-unknown'));
+  assert.ok(c.html.includes('showing 2 hidden · hide'));
+});
+
+test('cap drops are counted in VISIBLE rows for the scroll anchor, but dropped counts every entry', () => {
+  const rows = [];
+  for (let i = 0; i < d.MAX_ENTRIES; i++) rows.push(i % 2 === 0 ? entry({ summary: 'v' + i }) : unk());
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: rows }));
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry(), entry(), unk(), unk()] }));   // overflow of 4: entries 0..3 = v, unk, v, unk
+  assert.strictEqual(m.dropped, 4);
+  assert.strictEqual(m.capDrop, 2, 'two of the four dropped rows were visible');
+  assert.strictEqual(d.applyFrame(d.toggleUnknown(m), frame({ reset: false, entries: [entry()] })).capDrop, 1, 'shown: every dropped row counts');
 });
 
 // ---- card clicks: a control inside a card (PR #66's hide button) must not open a log ----

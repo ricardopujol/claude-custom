@@ -1250,6 +1250,8 @@ function renderAgentStats(stats) {
 // streams it -- nothing shown here is made up by the window.
 const agentLogEl = document.getElementById('agent-log');
 let agentLog = window.agentLogDisplay.emptyLog();
+// The reader's "show hidden rows" choice, kept across closing and reopening a log.
+let agentLogShowUnknown = false;
 
 function renderAgentLogPanel() {
   if (!agentLogEl) return;
@@ -1267,7 +1269,7 @@ function sendAgentLog(action, agent) {
 }
 
 function openAgentLog(agent) {
-  agentLog = window.agentLogDisplay.openLog(agent);
+  agentLog = window.agentLogDisplay.openLog(agent, agentLogShowUnknown);
   renderAgentLogPanel();
   sendAgentLog('open', agent);
 }
@@ -1290,6 +1292,11 @@ agentsEl.addEventListener('click', (e) => {
 if (agentLogEl) {
   agentLogEl.addEventListener('click', (e) => {
     if (e.target.closest('[data-agent-log-close]')) closeAgentLog();
+    if (e.target.closest('[data-agent-log-unknown]')) {
+      agentLog = window.agentLogDisplay.toggleUnknown(agentLog);
+      agentLogShowUnknown = agentLog.showUnknown;
+      renderAgentLogPanel();
+    }
   });
 }
 
