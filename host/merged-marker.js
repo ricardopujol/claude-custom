@@ -29,7 +29,8 @@ function readMergedMarker(worktreePath, expectedBranch) {
 
   let m;
   try {
-    m = JSON.parse(fs.readFileSync(path.join(gitDir, MARKER), 'utf8'));
+    // PowerShell 5.1 writes UTF-8 with a BOM, which JSON.parse rejects.
+    m = JSON.parse(fs.readFileSync(path.join(gitDir, MARKER), 'utf8').replace(/^﻿/, ''));
   } catch {
     return null;
   }

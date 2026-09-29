@@ -56,6 +56,14 @@ test('a relative gitdir: pointer resolves against the worktree, not the cwd', ()
   assert.deepStrictEqual(readMergedMarker(wt, 'feat/x'), VALID);
 });
 
+// Dexter F5: PowerShell 5.1's `Set-Content -Encoding UTF8` writes a BOM, and
+// JSON.parse rejects it -- a valid marker would silently never fire W4.
+test('a valid marker written with a UTF-8 BOM is read', () => {
+  const { wt, gitDir } = makeWorktree();
+  fs.writeFileSync(path.join(gitDir, 'claude-merged.json'), '﻿' + JSON.stringify(VALID));
+  assert.deepStrictEqual(readMergedMarker(wt, 'feat/x'), VALID);
+});
+
 test('no marker is not merged', () => {
   const { wt } = makeWorktree();
   assert.strictEqual(readMergedMarker(wt, 'feat/x'), null);
