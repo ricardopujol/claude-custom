@@ -30,6 +30,7 @@ const { portraitFor } = require('./portraits');
 const { handlePortraitMessage } = require('./portrait-upload');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { createLogSession } = require('./agent-log-session');
 const { wholeRoster, scanProjects } = require('./roster-index');
 const { lifetimeAgentTokens, readCacheSeed } = require('./agent-stats-cache');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
@@ -52,7 +53,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { readSessionHook, readStatus } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
-const { validResizeDims, handleFrame } = require('./control');
+const { validResizeDims, handleFrame, validAgentLogRequest } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
@@ -1616,6 +1617,16 @@ wss.on('connection', (ws) => {
       .catch(() => { /* the next poll will carry it */ });
   }
 
+  // BACKLOG #10: this window's open agent log, if any. One per window, closed
+  // when the window detaches. `running` comes from the same invocations the
+  // roster is drawn from, so "live" never disagrees with the card.
+  const agentLog = createLogSession({
+    cwd: CWD,
+    invocations: () => mood.invocations(),
+    watchedEnd: (agentId) => mood.watchedEnd(agentId),
+    send: (frame) => sendControl(ws, frame),
+  });
+
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
 
@@ -1677,6 +1688,22 @@ wss.on('connection', (ws) => {
       // the same value before the vault could tell them apart.
       const result = applyVaultAction(bugVault, msg);
       broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
+      return;
+    }
+    if (msg.type === 'agent-log') {
+      // Read-only: opens a transcript the CLI already wrote, never touches it.
+      const req = validAgentLogRequest(msg);
+      if (!req) {
+        console.log('[host] rejected agent-log request:', msg.action);
+        return;
+      }
+      if (req.action === 'open') {
+        agentLog.open(req.agent).catch((err) => {
+          console.log('[host] agent-log open failed:', err && err.message);
+        });
+      } else {
+        agentLog.close();
+      }
       return;
     }
     if (msg.type === 'projects') {
@@ -1858,6 +1885,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     clients.delete(ws);
+    agentLog.close();
     console.log(`[host] client detached (${clients.size} remain)`);
     // NOTE: the pty deliberately keeps running. This is the detachable-session
     // property the phone/Remote Control workflow depends on.

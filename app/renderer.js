@@ -1243,6 +1243,70 @@ function renderAgentStats(stats) {
   renderRoster();
 }
 
+// --- agent activity log (BACKLOG #10) ----------------------------------------
+// The decisions (what a frame does to the model, what the model draws, whether
+// to keep following the bottom) are pure and live in app/agent-log-display.js;
+// this is wiring only. The host reads the transcript the CLI already wrote and
+// streams it -- nothing shown here is made up by the window.
+const agentLogEl = document.getElementById('agent-log');
+let agentLog = window.agentLogDisplay.emptyLog();
+// The reader's "show hidden rows" choice, kept across closing and reopening a log.
+let agentLogShowUnknown = false;
+
+function renderAgentLogPanel() {
+  if (!agentLogEl) return;
+  const panel = agentLogEl.closest('.panel');
+  if (panel) panel.classList.toggle('logging', agentLog.open);
+  // Appends rows to what is on screen when it can (so a text selection
+  // survives a live log), rebuilds otherwise, and keeps the reader's scroll
+  // place -- all in the display module's paint function.
+  window.agentLogDisplay.paint(agentLogEl, agentLog);
+}
+
+function sendAgentLog(action, agent) {
+  try { ws.send(JSON.stringify({ type: 'agent-log', action, agent })); }
+  catch { /* not attached: the reattach in ws.onopen asks again */ }
+}
+
+function openAgentLog(agent) {
+  agentLog = window.agentLogDisplay.openLog(agent, agentLogShowUnknown);
+  renderAgentLogPanel();
+  sendAgentLog('open', agent);
+}
+
+function closeAgentLog() {
+  if (agentLog.open) sendAgentLog('close', agentLog.agent);
+  agentLog = window.agentLogDisplay.closeLog();
+  renderAgentLogPanel();
+}
+
+// A click anywhere on a card EXCEPT its face opens the log: the face is the
+// portrait drop/upload target (see the drop handler below).
+agentsEl.addEventListener('click', (e) => {
+  // Which agent (if any) this click is FOR -- not the portrait, not a control
+  // inside the card -- is decided in the display module, where it is tested.
+  const agent = window.agentLogDisplay.cardClickAgent(e.target);
+  if (agent) openAgentLog(agent);
+});
+
+if (agentLogEl) {
+  agentLogEl.addEventListener('click', (e) => {
+    if (e.target.closest('[data-agent-log-close]')) closeAgentLog();
+    if (e.target.closest('[data-agent-log-unknown]')) {
+      agentLog = window.agentLogDisplay.toggleUnknown(agentLog);
+      agentLogShowUnknown = agentLog.showUnknown;
+      renderAgentLogPanel();
+    }
+  });
+}
+
+function handleAgentLogFrame(msg) {
+  const next = window.agentLogDisplay.applyFrame(agentLog, msg);
+  if (next === agentLog) return;       // not for the open log: nothing to redraw
+  agentLog = next;
+  renderAgentLogPanel();
+}
+
 // --- model browser -----------------------------------------------------------
 // Every OpenRouter model, and up to three council seats.
 //
@@ -2861,6 +2925,10 @@ function handleControl(msg) {
     });
     return;
   }
+  if (msg.type === 'agent-log') {
+    handleAgentLogFrame(msg);
+    return;
+  }
   if (msg.type === 'exit') {
     term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
     return;
@@ -2882,6 +2950,9 @@ function connect() {
     dot.classList.add('on');
     term.focus();
     sendResize();
+    // A log open across a reattach is asked for again: the host's log session
+    // belongs to the old socket and died with it.
+    if (agentLog.open) openAgentLog(agentLog.agent);
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
     if (activeTab === 'fog') requestFog();
