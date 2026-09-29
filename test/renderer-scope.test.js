@@ -70,6 +70,8 @@ const ALLOWED_GLOBALS = new Set([
   'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
+  // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
+  'agentLogDisplay',
   // app/top-bar-display.js (FF12)
   'modelFamily', 'cueColour', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
