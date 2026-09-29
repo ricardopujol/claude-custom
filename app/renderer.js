@@ -1234,12 +1234,70 @@ function inactiveRowHtml(row) {
     `</div>`;
 }
 
+// --- hide sleeping agents (BACKLOG #14) ---------------------------------------
+// Decisions live in app/hidden-agents-display.js. The host owns the persisted
+// set and sends it in `hello` and in `hidden` frames; this list is only its
+// mirror, and a click sends a request rather than editing it.
+let hiddenAgentNames = [];
+let showHiddenAgents = false;
+
+function sendRosterAction(action, agent) {
+  try { ws.send(JSON.stringify({ type: 'roster', action, agent })); }
+  catch { /* not attached */ }
+}
+
+// Its own element with a data attribute, never on `.face` (a portrait drop
+// target) and never a bare card click. Only a sleeping row is offered "hide";
+// a revealed hidden row is offered "unhide" instead.
+function hideButtonHtml(r) {
+  if (hiddenAgentNames.includes(r.agent)) {
+    return `<button type="button" class="agent-hide" data-roster-action="unhide" title="Show this agent in the list again">unhide</button>`;
+  }
+  return hideButtonFor(r)
+    ? `<button type="button" class="agent-hide" data-roster-action="hide" title="Hide this sleeping agent (it comes back when it wakes)">hide</button>`
+    : '';
+}
+
+// The ONE place #agents' markup is written (Dexter F1). A `processes` frame
+// re-renders the roster every second while anything runs; replacing identical
+// markup detached a button between its mousedown and mouseup and lost the click.
+// `repaintNeeded` (app/hidden-agents-display.js) leaves unchanged markup alone.
+let lastAgentsHtml = null;
+function paintAgents(html) {
+  if (!repaintNeeded(lastAgentsHtml, html)) return;
+  lastAgentsHtml = html;
+  // Through setRosterHtml, not innerHTML: a live avatar video keeps its node
+  // across a repaint, per PR #64. The unchanged-markup skip from PR #66 runs first.
+  setRosterHtml(html);
+}
+
+// Delegated on #agents, the ONE click handler for the roster's cards. No
+// stopPropagation: test/renderer-mouse-passthrough.test.js forbids it on any
+// mouse listener. A hide/unhide control is asked about first, via
+// `rosterActionFromClick`; only a click that is not one can open a log.
+agentsEl.addEventListener('click', (e) => {
+  const act = rosterActionFromClick(e.target);
+  if (act) { sendRosterAction(act.action, act.agent); return; }
+  // A click anywhere on a card EXCEPT its face or a control inside it opens
+  // the log: the face is the portrait drop/upload target. Which agent the
+  // click is for is decided in the display module, where it is tested.
+  const agent = window.agentLogDisplay.cardClickAgent(e.target);
+  if (agent) openAgentLog(agent);
+});
+
+document.getElementById('roster-show-hidden').addEventListener('click', () => {
+  showHiddenAgents = !showHiddenAgents;
+  renderRoster();
+});
+
 function renderRoster() {
+  const showBtnEl = document.getElementById('roster-show-hidden');
+  showBtnEl.hidden = true;   // Active tab only; the Active branch below un-hides it when n > 0
   const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
 
   if (activeRosterTab === 'inactive') {
     if (inactive.length === 0) {
-      setRosterHtml('<div class="empty">No other agents known yet.</div>');
+      paintAgents('<div class="empty">No other agents known yet.</div>');
       return;
     }
     const rows = sortRosterRows(inactive.map((agent) => {
@@ -1252,15 +1310,14 @@ function renderRoster() {
         unreadable: !!(entry && entry.unreadable),
       };
     }));
-    setRosterHtml(rows.map(inactiveRowHtml).join(''));
+    paintAgents(rows.map(inactiveRowHtml).join(''));
     return;
   }
 
   if (roster.size === 0) {
     // Three different situations, not one sentence. "No agents yet" is a
     // positive claim about history and must not be made on a read that failed.
-    setRosterHtml(
-      `<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`);
+    paintAgents(`<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`);
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -1270,8 +1327,26 @@ function renderRoster() {
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
   const counts = instanceCounts(latestParty);
 
-  setRosterHtml(rows.map(r =>
-    `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}">` +
+  // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
+  // ever draws a hide flag on an awake agent. The host stays authoritative:
+  // its `hidden` frame replaces this list wholesale.
+  hiddenAgentNames = reconcileHidden(hiddenAgentNames, rows).hidden;
+  const nHidden = hiddenCount(rows, hiddenAgentNames);
+  if (nHidden === 0) showHiddenAgents = false;   // nothing left to reveal
+  const shown = visibleRows(rows, hiddenAgentNames, showHiddenAgents);
+  showBtnEl.hidden = nHidden === 0;
+  showBtnEl.textContent = showHiddenAgents ? `hide hidden (${nHidden})` : `show hidden (${nHidden})`;
+  if (shown.length === 0) {
+    // True only because awake rows are always in `shown`: what is left is
+    // sleeping AND hidden.
+    paintAgents('<div class="empty">Every agent here is asleep and hidden.</div>');
+    return;
+  }
+
+  paintAgents(shown.map(r =>
+    `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
+      (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
+      hideButtonHtml(r) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
       `<div class="meta"><div class="name" title="${escapeHtml(r.agent)}">${escapeHtml(r.agent)}` +
         countBadgeHtml(r.agent, counts) + `</div>` +
@@ -1337,14 +1412,6 @@ function closeAgentLog() {
   renderAgentLogPanel();
 }
 
-// A click anywhere on a card EXCEPT its face opens the log: the face is the
-// portrait drop/upload target (see the drop handler below).
-agentsEl.addEventListener('click', (e) => {
-  // Which agent (if any) this click is FOR -- not the portrait, not a control
-  // inside the card -- is decided in the display module, where it is tested.
-  const agent = window.agentLogDisplay.cardClickAgent(e.target);
-  if (agent) openAgentLog(agent);
-});
 
 if (agentLogEl) {
   agentLogEl.addEventListener('click', (e) => {
@@ -2894,6 +2961,8 @@ function handleControl(msg) {
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
+    // The persisted hidden set (BACKLOG #14), before the first paint.
+    hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
     // Before renderRoster, so the first paint already carries the careers and
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
@@ -2909,6 +2978,12 @@ function handleControl(msg) {
   }
   if (msg.type === 'mood') {
     roster.set(msg.agent, msg);
+    renderRoster();
+    return;
+  }
+  if (msg.type === 'hidden') {
+    // The host's set replaces ours wholesale (BACKLOG #14).
+    hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
     renderRoster();
     return;
   }

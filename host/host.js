@@ -29,6 +29,7 @@ const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
+const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
@@ -356,6 +357,9 @@ const cooldowns = createCooldowns({ store });
 // attribution cannot be given one later, so the field goes in now while it is
 // one line rather than an archaeology problem.
 const bugVault = createBugVault({ store, project: CWD });
+// BACKLOG #14: agents the user has hidden from the Active roster, per project.
+// The host is authoritative -- see host/hidden-agents.js.
+const hiddenAgents = createHiddenAgents({ store, project: CWD });
 // Dexter F2: this is called while building the `hello` frame inside
 // `wss.on('connection')`, which has NO catch above it -- unlike control-frame
 // dispatch, which `handleFrame` wraps. The host owns the pty, so a throw here
@@ -785,6 +789,38 @@ function handlePortraitUpload(msg) {
     };
     broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
   }
+}
+
+// {type:'roster', action:'hide'|'unhide', agent} (BACKLOG #14). BROADCAST like
+// the portrait upload above: two windows on one project share the hidden set.
+// A refused hide (the agent woke between the click and now) still re-broadcasts
+// the set, so the asking window redraws to the truth rather than guessing.
+function broadcastHidden() {
+  broadcastControl({ type: 'hidden', hidden: hiddenAgents.list() });
+}
+// The set a new window starts with, reconciled first. If that cleared anything
+// the OTHER open windows are told too, as the mood path does (Miguel M6).
+function hiddenAtAttach() {
+  if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
+  return hiddenAgents.list();
+}
+function handleRosterMessage(msg) {
+  if (!validRosterMsg(msg)) {
+    // Logged and answered with the truth, never dropped in silence (Dexter F4):
+    // the asking window redraws to what the host actually holds.
+    console.log('[host] roster message refused: malformed');
+    broadcastHidden();
+    return;
+  }
+  if (msg.action === 'hide') {
+    const out = hiddenAgents.hide(msg.agent, mood.roster());
+    if (!out.ok) console.log('[host] hide refused:', msg.agent, '-', out.reason);
+    else if (out.persisted === false) console.log('[host] hidden agents could not be saved:', msg.agent);
+  } else {
+    const out = hiddenAgents.unhide(msg.agent);
+    if (out.persisted === false) console.log('[host] hidden agents could not be saved:', msg.agent);
+  }
+  broadcastHidden();
 }
 
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
@@ -1398,7 +1434,12 @@ term.onData((data) => {
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
 // owns the clock and the transitions stay reproducible in tests.
-mood.on('change', ({ agent, state }) => broadcastControl({ type: 'mood', ...describe(agent, state) }));
+mood.on('change', ({ agent, state }) => {
+  broadcastControl({ type: 'mood', ...describe(agent, state) });
+  // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
+  // applies the same rule itself, but the host persists it and is authoritative.
+  if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
+});
 const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
@@ -1560,6 +1601,9 @@ wss.on('connection', (ws) => {
     style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
+    // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
+    // window never starts with a flag on an agent that is awake.
+    hidden: hiddenAtAttach(),
     globalPortrait: globalPortraitInfo(),
     running: processes.list(),
     party: mood.stack(),
@@ -1829,6 +1873,10 @@ wss.on('connection', (ws) => {
     if (msg.type === 'portrait') {
       if (msg.action === 'set-global' || msg.action === 'reset-global') handleGlobalPortrait(msg);
       else handlePortraitUpload(msg);
+      return;
+    }
+    if (msg.type === 'roster') {
+      handleRosterMessage(msg);
       return;
     }
     if (msg.type === 'fog') {
