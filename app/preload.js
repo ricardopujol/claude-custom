@@ -111,4 +111,19 @@ contextBridge.exposeInMainWorld('harness', {
     get: () => ipcRenderer.invoke('favourites:get'),
     set: (kind, id, on) => ipcRenderer.invoke('favourites:set', kind, id, on),
   },
+
+  // Agent pictures (BACKLOG C #13, #18) -- see app/avatar-bridge.js. `pick`
+  // opens the OS file dialog and answers a path (or null); the page then hands
+  // that path to the host, which copies it into the app's data folder.
+  // `setImagesEnabled` takes the DESIRED boolean; main pushes the result back
+  // through `onImagesEnabled` (replace-don't-accumulate, like onWindowFocus).
+  avatar: {
+    pick: () => ipcRenderer.invoke('avatar:pick'),
+    getImagesEnabled: () => ipcRenderer.invoke('avatar:getImagesEnabled'),
+    setImagesEnabled: (enabled) => ipcRenderer.invoke('avatar:setImagesEnabled', enabled),
+    onImagesEnabled: (fn) => (ipcRenderer.removeAllListeners('avatar-images'), ipcRenderer.on('avatar-images',
+      (_e, enabled) => {
+        try { fn(enabled === true); } catch (err) { console.error('[preload] avatar-images listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('avatar-images')),
+  },
 });

@@ -52,6 +52,8 @@ const ALLOWED_GLOBALS = new Set([
   'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
   // app/roster-tabs-display.js (BACKLOG D #16: Active/Inactive roster tabs)
   'splitActiveInactive', 'rosterTokenState', 'sortRosterRows',
+  // app/hidden-agents-display.js (BACKLOG #14)
+  'reconcileHidden', 'visibleRows', 'hideButtonFor', 'hiddenCount', 'rosterActionFromClick', 'repaintNeeded',
   'quotaDisplay', 'formatQuotaCountdown',
   // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
   // IIFE-wrapped module, not leaks -- checked before allowlisting them, since
@@ -70,6 +72,13 @@ const ALLOWED_GLOBALS = new Set([
   'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
+  // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object
+  // rather than six bare globals.
+  'portraitMedia',
+  // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
+  'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
+  // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
+  'agentLogDisplay',
   // app/top-bar-display.js (FF12)
   'modelFamily', 'cueColour', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
