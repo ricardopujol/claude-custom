@@ -46,6 +46,7 @@ const POLL_MS = 750;
 const FRAME_ENTRIES = 500;
 // ...and one poll sends at most this many frames.
 const MAX_FRAMES_PER_POLL = 8;
+const IDLE_POLL_MS = 3000;
 
 /**
  * The transcript for one agent in one project.
@@ -123,6 +124,7 @@ function createLogSession({
   cwd, projectsDir, invocations, send, intervalMs = POLL_MS,
   setIntervalFn = setInterval, clearIntervalFn = clearInterval,
   find = findTranscript, read = agentLog.readMore, openTail = agentLog.openTail,
+  now = Date.now,
 } = {}) {
   let cur = null;
 
@@ -139,6 +141,7 @@ function createLogSession({
     // a running agent's history vanish with `dropped: 0`.)
     c.lastRunning = null;
     c.lastDone = null;
+    c.idle = !running;
     if (c.tail) { c.restartFile = c.tail.file; c.tail = null; }
     send({ type: 'agent-log', agent: c.agent, source: null, reason, running });
   }
@@ -247,6 +250,8 @@ function createLogSession({
       }
       c.lastRunning = running;
       c.lastDone = done;
+      // Nothing is changing: not running, nothing new, nothing waiting.
+      c.idle = !running && !r.more && r.entries.length === 0;
       // Bounded work per tick: the rest of a big backlog comes on the next
       // ticks (`more` keeps `done` false meanwhile) instead of one flood.
       if (!r.more || frames >= MAX_FRAMES_PER_POLL) return;
@@ -257,6 +262,7 @@ function createLogSession({
     const c = cur;
     if (!c || c.busy) return;
     c.busy = true;
+    c.lastPollAt = now();
     try {
       await step(c);
     } catch (err) {
@@ -275,11 +281,18 @@ function createLogSession({
     close();
     if (typeof agent !== 'string' || !agent) return;
     const c = {
-      agent, timer: null, busy: false, want: null, resolved: false, everFound: false,
+      agent, timer: null, busy: false, idle: false, lastPollAt: 0, want: null, resolved: false, everFound: false,
       tail: null, first: false, tracked: false, lastNone: null, lastRunning: null, lastDone: null,
     };
     cur = c;
-    c.timer = setIntervalFn(() => { poll().catch(() => {}); }, intervalMs);
+    // A log nobody is watching change (the run is over, nothing new arrived)
+    // is looked at every IDLE_POLL_MS, not every tick: the window may not even
+    // be showing the Agents tab any more (Miguel S2, PR #63). A running agent,
+    // a backlog still draining, or an absence while running keeps the fast tick.
+    c.timer = setIntervalFn(() => {
+      if (c.idle && now() - c.lastPollAt < IDLE_POLL_MS) return undefined;
+      return poll().catch(() => {});      // (the promise is for tests; setInterval ignores it)
+    }, intervalMs);
     if (c.timer && typeof c.timer.unref === 'function') c.timer.unref();
     await poll();
   }
@@ -287,4 +300,4 @@ function createLogSession({
   return { open, close, poll, isOpen: () => cur !== null, current: () => (cur ? cur.agent : null) };
 }
 
-module.exports = { findTranscript, createLogSession, POLL_MS, FRAME_ENTRIES, MAX_FRAMES_PER_POLL };
+module.exports = { findTranscript, createLogSession, POLL_MS, FRAME_ENTRIES, MAX_FRAMES_PER_POLL, IDLE_POLL_MS };

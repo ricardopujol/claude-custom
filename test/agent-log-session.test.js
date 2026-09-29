@@ -350,6 +350,36 @@ test('M1: opening a LARGE finished transcript reads its end: bounded frames, the
   assert.ok(m.skippedBytes > 0);
 });
 
+test('S2: an idle log is looked at every 3 s, a running one every tick', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'a1', { agentType: 'rev' }, [textLine('x')]);
+  let reads = 0;
+  const read = (s, o) => { reads++; return agentLog.readMore(s, o); };
+  let t = 1_000_000;
+
+  // Not running: idle once caught up.
+  const idle = harness({ root, read, now: () => t });
+  await idle.session.open('rev');
+  assert.strictEqual(reads, 1);
+  t += 750;
+  await idle.timers[0].fn();                     // the open read brought entries: not idle yet, so this reads
+  assert.strictEqual(reads, 2);
+  for (let i = 0; i < 3; i++) { t += 750; await idle.timers[0].fn(); }
+  assert.strictEqual(reads, 2, 'now idle: ticks inside the 3 s interval do not read');
+  t += 750;                                      // 3 s since the last read
+  await idle.timers[0].fn();
+  assert.strictEqual(reads, 3, 'after 3 s it looks once');
+  idle.session.close();
+
+  // Running: every tick reads.
+  reads = 0;
+  const live = harness({ root, read, now: () => t, invocations: [{ name: 'rev', agentId: 'a1' }] });
+  await live.session.open('rev');
+  const r0 = reads;
+  for (let i = 0; i < 3; i++) { t += 750; await live.timers[0].fn(); }
+  assert.strictEqual(reads, r0 + 3);
+});
+
 test('unknown-line count travels with the frames', async () => {
   const { root, dir } = project();
   subagent(dir, 's1', 'a1', { agentType: 'rev' }, [JSON.stringify({ type: 'attachment', attachment: { type: 'e' } }), 'garbage', textLine('x')]);
