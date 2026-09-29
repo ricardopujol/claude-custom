@@ -49,7 +49,7 @@ const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
-const { readSessionHook, readStatus } = require('./hook-session');
+const { readSessionHook, readStatus, readContext } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { validResizeDims, handleFrame } = require('./control');
@@ -951,6 +951,9 @@ if (helperExists) {
     // status redraw. Not a hook: handled here and ONLY here, so the mood
     // engine, the process panel and the [hook] log never see it.
     if (ev.event === 'Status') {
+      // Every document, even one without a model: a document that cannot say
+      // must CLEAR the fill (unknown), never leave the last one standing.
+      setContext(readContext(ev.payload));
       const status = readStatus(ev.payload);
       if (status.model !== undefined) setLiveModel(status.model);
       if (status.effort !== undefined) setEffort(status.effort);
@@ -1308,6 +1311,16 @@ function setEffort(level) {
   broadcastControl({ type: 'effort', level: lastEffort, at: Date.now() });
 }
 
+// The context window as the statusLine reports it: { used, size } or null
+// (unknown -- see hook-session.js readContext). Broadcast only on a change.
+let lastContext = null;
+function setContext(ctx) {
+  if ((ctx === null && lastContext === null)
+    || (ctx && lastContext && ctx.used === lastContext.used && ctx.size === lastContext.size)) return;
+  lastContext = ctx;
+  broadcastControl({ type: 'context', context: lastContext, at: Date.now() });
+}
+
 function setLiveModel(model) {
   if (model === lastLiveModel) return;
   lastLiveModel = model;
@@ -1525,6 +1538,7 @@ wss.on('connection', (ws) => {
     // which the panel renders as "—" rather than a guessed default.
     effort: lastEffort,
     liveModel: lastLiveModel,
+    context: lastContext,
     cooldowns: cooldowns.list(),
     vault: vaultPayload(),
     health: healthState,

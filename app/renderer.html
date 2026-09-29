@@ -714,6 +714,17 @@
     /* A switch that did not take, or was not sent. The label still reports
        the truth; the dashed border says "look at the tooltip". */
     .tb-chip.notice { border-style: dashed; }
+    /* BACKLOG #6 context-fill circle. The palette is app/context-fill-display.js's
+       PALETTE (test/renderer-context-fill.test.js fails if these drift). Unknown
+       is hollow and dashed -- a shape of its own, never one of the five. */
+    .tb-ctx { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+              margin-left: 3px; box-sizing: border-box; flex: none; }
+    .ctx-0 { background: #8a8f98; }
+    .ctx-1 { background: #4caf6a; }
+    .ctx-2 { background: #e6c229; }
+    .ctx-3 { background: #f08a24; }
+    .ctx-4 { background: #e04848; }
+    .ctx-unknown { background: transparent; border: 1.5px dashed var(--text); opacity: .55; }
     .tb-menu .note { font-size: 10px; opacity: .6; padding: 3px 7px 0; max-width: 170px; }
     .tb-menu { position: fixed; left: 0; top: 0; z-index: 50; display: flex; flex-direction: column;
                gap: 2px; background: var(--chrome); border: 1px solid var(--border);
@@ -844,6 +855,7 @@
       <span id="top-bar">
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
+        <span id="tb-context" class="tb-ctx ctx-unknown" title="context: unknown"></span>
       </span>
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
@@ -999,6 +1011,7 @@
   <script src="./style-display.js"></script>
   <script src="./agent-card-display.js"></script>
   <script src="./top-bar-display.js"></script>
+  <script src="./context-fill-display.js"></script>
   <script src="./models-favourites.js"></script>
   <script src="./models-refresh.js"></script>
   <script src="./models-catalogue.js"></script>

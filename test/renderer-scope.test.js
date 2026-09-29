@@ -75,6 +75,8 @@ const ALLOWED_GLOBALS = new Set([
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
+  // app/context-fill-display.js (BACKLOG #6)
+  'contextFill', 'contextFillTitle', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
   // renderer.js's key handler, like isPanelToggle.
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',
