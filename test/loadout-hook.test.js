@@ -96,7 +96,7 @@ test('every failure path is silent and exits 0', () => {
   }
 });
 
-test('a hand-edited loadout with two Pace items applies neither conflict', () => {
+test('a hand-edited loadout with two Pace items applies the FIRST and drops the conflicting second', () => {
   const dir = stateWith({ agents: { 'code-reviewer': ['pace-haiku', 'pace-opus'] } });
   const out = JSON.parse(run(payload(), ['--state', dir]).stdout);
   assert.strictEqual(out.hookSpecificOutput.updatedInput.model, 'haiku');
@@ -117,4 +117,96 @@ test('decide() is the same logic without a process: null when there is nothing t
   assert.strictEqual(hook.decide('garbage', dir), null);
   assert.strictEqual(hook.decide(payload(), null), null);
   assert.strictEqual(typeof hook.decide(payload(), dir), 'string');
+});
+
+// --- PR #68, Miguel I3: the stdin paths -------------------------------------------
+
+const { EventEmitter } = require('node:events');
+
+function fakeStdin() {
+  const s = new EventEmitter();
+  s.setEncoding = () => {};
+  s.destroyed = false;
+  s.destroy = () => { s.destroyed = true; };
+  return s;
+}
+const ARGV = (dir) => ['node', 'hook', '--state', dir];
+
+test('run(): a stdin that never closes is answered after the timeout, and destroyed', async () => {
+  const dir = stateWith(belt('code-reviewer', 'pace-haiku'));
+  const stdin = fakeStdin();
+  const written = [];
+  const started = Date.now();
+  const p = hook.run({ stdin, argv: ARGV(dir), write: s => written.push(s), timeoutMs: 40 });
+  stdin.emit('data', payload());          // the payload arrived, the CLI never ended stdin
+  await p;
+  assert.ok(Date.now() - started >= 35, 'it waited for the timeout rather than answering early');
+  assert.strictEqual(written.length, 1);
+  assert.strictEqual(JSON.parse(written[0]).hookSpecificOutput.updatedInput.model, 'haiku');
+  assert.strictEqual(stdin.destroyed, true, 'stdin is destroyed so the loop can drain without process.exit');
+});
+
+test('run(): a stdin error still answers exactly once', async () => {
+  const dir = stateWith(belt('code-reviewer', 'pace-haiku'));
+  const stdin = fakeStdin();
+  const written = [];
+  const p = hook.run({ stdin, argv: ARGV(dir), write: s => written.push(s), timeoutMs: 5000 });
+  stdin.emit('data', payload());
+  stdin.emit('error', new Error('EPIPE'));
+  stdin.emit('end');                       // a late end must not answer twice
+  await p;
+  assert.strictEqual(written.length, 1);
+});
+
+test('run(): end before the timeout answers at once', async () => {
+  const dir = stateWith(belt('code-reviewer', 'pace-haiku'));
+  const stdin = fakeStdin();
+  const written = [];
+  const started = Date.now();
+  const p = hook.run({ stdin, argv: ARGV(dir), write: s => written.push(s), timeoutMs: 5000 });
+  stdin.emit('data', payload());
+  stdin.emit('end');
+  await p;
+  assert.ok(Date.now() - started < 1000);
+  assert.strictEqual(written.length, 1);
+});
+
+test('run(): nothing to change writes nothing', async () => {
+  const dir = stateWith(belt('someone-else', 'pace-haiku'));
+  const stdin = fakeStdin();
+  const written = [];
+  const p = hook.run({ stdin, argv: ARGV(dir), write: s => written.push(s), timeoutMs: 5000 });
+  stdin.emit('data', payload());
+  stdin.emit('end');
+  await p;
+  assert.deepStrictEqual(written, []);
+});
+
+test('as a process: stdin left OPEN still gets the answer and a clean exit (the 3 s branch)', () => {
+  const dir = stateWith(belt('code-reviewer', 'pace-haiku'));
+  const { spawn } = require('child_process');
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [HOOK, '--state', dir], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    let out = '';
+    child.stdout.on('data', d => { out += d; });
+    const started = Date.now();
+    child.on('close', (code) => {
+      try {
+        assert.strictEqual(code, 0);
+        assert.strictEqual(JSON.parse(out).hookSpecificOutput.updatedInput.model, 'haiku');
+        assert.ok(Date.now() - started < 8000);
+        resolve();
+      } catch (e) { reject(e); }
+    });
+    child.stdin.write(payload());          // never end()
+  });
+});
+
+test('a 300 KB prompt comes back complete, not truncated', () => {
+  const dir = stateWith(belt('code-reviewer', 'verify-with-test'));
+  const big = 'x'.repeat(300 * 1024);
+  const r = run(payload({ tool_input: { subagent_type: 'code-reviewer', prompt: big, description: 'd' } }), ['--state', dir]);
+  assert.strictEqual(r.status, 0);
+  const out = JSON.parse(r.stdout);               // throws if truncated
+  assert.ok(out.hookSpecificOutput.updatedInput.prompt.endsWith(big));
 });

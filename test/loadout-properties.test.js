@@ -53,10 +53,15 @@ test('PROPERTY: apply is idempotent on its own output -- the prefix never stacks
     const once = L.applyLoadout(input, l) || input;
     const twice = L.applyLoadout(once, l) || once;
     assert.deepStrictEqual(twice, once);
-    if (typeof once.prompt === 'string') {
+    if (typeof input.prompt === 'string') {
+      // EXACT count (Miguel S3): the equipped instruction appears as often as
+      // the caller's own prompt already had it, plus one only if it was not
+      // already leading the prompt. Never stacked.
+      const count = (s, needle) => s.split(needle).length - 1;
       for (const item of L.itemsFor(l, input.subagent_type).filter(i => i.kind === 'method')) {
-        assert.strictEqual(once.prompt.split(item.instruction).length - 1 <= 1 +
-          (typeof input.prompt === 'string' ? input.prompt.split(item.instruction).length - 1 : 0), true);
+        const had = count(input.prompt, item.instruction);
+        const added = input.prompt.startsWith(item.instruction) ? 0 : 1;
+        assert.strictEqual(count(once.prompt, item.instruction), had + added);
       }
     }
   }), { numRuns: 300 });

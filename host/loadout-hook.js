@@ -58,25 +58,47 @@ function stateDirFrom(argv) {
   return i > -1 && typeof argv[i + 1] === 'string' ? argv[i + 1] : null;
 }
 
-function main() {
-  let raw = '';
-  let done = false;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    const out = decide(raw, stateDirFrom(process.argv));
-    if (out) process.stdout.write(out);
-    process.exitCode = 0;
-  };
-  // If the CLI never closes stdin, do not hold the spawn open for it. unref'd,
-  // so it never keeps a finished process alive.
-  setTimeout(() => { finish(); process.exit(0); }, 3000).unref();
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', d => { raw += d; });
-  process.stdin.on('end', finish);
-  process.stdin.on('error', finish);
+const STDIN_TIMEOUT_MS = 3000;
+
+/**
+ * Read the payload, answer once, return a promise for "answered". Injectable
+ * (stdin, argv, write, timeoutMs) so the timeout and error branches are tested
+ * without a 3 s wait or a real broken pipe (PR #68, Miguel I3).
+ *
+ * If the CLI never closes stdin we do not hold the spawn open: after the
+ * timeout we answer with what we have and DESTROY stdin. There is deliberately
+ * no process.exit(): on an asynchronous stdout pipe an immediate exit can
+ * truncate a large updatedInput, and truncated JSON is ignored silently. With
+ * stdin destroyed and the timer cleared nothing keeps the loop alive, so the
+ * process ends by itself once stdout has drained.
+ */
+function run({ stdin = process.stdin, argv = process.argv, write = (s) => process.stdout.write(s),
+  timeoutMs = STDIN_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    let raw = '';
+    let done = false;
+    let timer = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        const out = decide(raw, stateDirFrom(argv));
+        if (out) write(out);
+      } catch { /* silent: the agent runs unmodified */ }
+      try { if (typeof stdin.destroy === 'function') stdin.destroy(); } catch { /* already closed */ }
+      resolve();
+    };
+    timer = setTimeout(finish, timeoutMs);
+    try { stdin.setEncoding('utf8'); } catch { /* fake or closed stdin */ }
+    stdin.on('data', (d) => { raw += d; });
+    stdin.on('end', finish);
+    stdin.on('error', finish);
+  });
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  run().then(() => { process.exitCode = 0; });
+}
 
-module.exports = { decide, stateDirFrom };
+module.exports = { decide, stateDirFrom, run, STDIN_TIMEOUT_MS };
