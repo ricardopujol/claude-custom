@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES, GLOBAL_AGENT } = require('./portraits');
+const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES, GLOBAL_AGENT, isReservedAgent } = require('./portraits');
 const { renameWithRetry } = require('./atomic-write');
 
 // The upload tier accepts the same media as the resolver serves. Named
@@ -21,6 +21,8 @@ const { renameWithRetry } = require('./atomic-write');
 // difference between "what we can display" and "what we accept from a drag"
 // does not require touching two unrelated lists to express.
 const UPLOAD_EXTENSIONS = MEDIA_EXTENSIONS;
+
+const RESERVED_REASON = `"${GLOBAL_AGENT}" is reserved for the global default picture and cannot be an agent's name`;
 
 // 25 MB. Ricardo, 2026-09-22: refuse by extension and size, with a visible
 // reason -- a stuck drag of a multi-gigabyte video should fail fast and say
@@ -43,10 +45,11 @@ function extensionOf(sourcePath) {
  * refused upload is exactly the moment this project's rule is "say so
  * out loud" (host/drop.js, planDrop).
  */
-function planPortraitUpload({ source, agent, state, uploadsDir, size } = {}) {
+function planPortraitUpload({ source, agent, state, uploadsDir, size, allowReserved = false } = {}) {
   if (!uploadsDir) {
     return { ok: false, reason: 'no uploads directory is configured' };
   }
+  if (!allowReserved && isReservedAgent(agent)) return { ok: false, reason: RESERVED_REASON };
   const safeAgent = safeSegment(agent);
   if (!safeAgent) {
     return { ok: false, reason: 'the agent name is not a valid path segment' };
@@ -197,9 +200,7 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
 
   // `_global` is the folder of the global default picture (handleGlobalPortraitMessage);
   // an agent sharing the name would write into it.
-  if (agent === GLOBAL_AGENT) {
-    return refuse(`"${GLOBAL_AGENT}" is reserved for the global default picture and cannot be an agent's name`);
-  }
+  if (isReservedAgent(agent)) return refuse(RESERVED_REASON);
   if (typeof seen !== 'string' || !seen) return refuse('no state was given for the portrait');
   const target = seen === 'inactive' ? 'sleeping' : seen;
   if (!BUILTIN_STATES.includes(target)) {
@@ -288,7 +289,7 @@ function handleGlobalPortraitMessage(msg, {
   }
   if (!info || typeof info.isFile !== 'function' || !info.isFile()) return refuse('the chosen item is not a file');
 
-  const plan = planPortraitUpload({ source, agent: GLOBAL_AGENT, state: 'default', uploadsDir, size: info.size });
+  const plan = planPortraitUpload({ source, agent: GLOBAL_AGENT, state: 'default', uploadsDir, size: info.size, allowReserved: true });
   if (!plan.ok) return refuse(plan.reason);
 
   let leftovers;

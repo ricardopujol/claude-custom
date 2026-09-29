@@ -43,6 +43,15 @@ const VIDEO_EXTENSIONS = new Set(['webm', 'mp4']);
 const GLOBAL_AGENT = '_global';
 const mediaKindFor = ext => (VIDEO_EXTENSIONS.has(ext) ? 'video' : 'image');
 
+// `_global` is the folder of the global default picture, not an agent. The
+// filesystem it lives on folds case and trims trailing dots and spaces
+// (NTFS), so `_GLOBAL`, `_global.` and `_global ` are the same directory:
+// the check compares the name the way the filesystem does (Dexter F4 /
+// Miguel I3, PR #64).
+function isReservedAgent(name) {
+  return typeof name === 'string' && name.replace(/[. ]+$/, '').toLowerCase() === GLOBAL_AGENT;
+}
+
 // Agent names key straight into a filesystem path. A name is only ever a single
 // path segment; anything else is refused rather than resolved.
 function safeSegment(name) {
@@ -172,7 +181,7 @@ function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}
   if (!safeAgent || !safeState) return placeholderFor(agent);
   // `_global` is the folder of the global default, not an agent: a real agent
   // that happens to carry the name must not read it as its own upload.
-  if (safeAgent === GLOBAL_AGENT) return placeholderFor(agent);
+  if (isReservedAgent(safeAgent)) return placeholderFor(agent);
 
   const uploaded = uploadedFor(safeAgent, safeState, uploadsDir);
   if (uploaded) return fileResult('uploaded', safeAgent, safeState, uploaded);
@@ -195,5 +204,5 @@ function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}
 
 module.exports = {
   portraitFor, placeholderFor, listStates, BUILTIN_STATES,
-  safeSegment, MEDIA_EXTENSIONS, GLOBAL_AGENT, globalPortrait,
+  safeSegment, MEDIA_EXTENSIONS, GLOBAL_AGENT, globalPortrait, isReservedAgent,
 };
