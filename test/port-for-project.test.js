@@ -282,3 +282,74 @@ test('without fresh, nothing changes -- reopening still finds the session it lef
   return resolvePort({ cwd, occupantAt: (p) => (p === mine ? { cwd } : null) })
     .then(r => assert.deepStrictEqual(r, { port: mine, action: 'attach' }));
 });
+
+// --- a session is found wherever it lives (Dexter #41 F1, Ricardo's option A) --
+//
+// The walk used to stop at the first FREE port. Once a `--new` session's
+// window closed, `claude-custom proj` stopped at the free derived port and
+// spawned a third session beside the live one, and nothing could reach the
+// orphan. The default walk now looks at the WHOLE range for a session of this
+// project before it settles for a free port.
+
+test('a session of this project PAST a free port is reattached to, not duplicated', async () => {
+  const base = portForCwd(PROJ);
+  const r = await resolvePort({
+    cwd: PROJ,
+    occupantAt: (port) => (port === base + 1 ? { cwd: PROJ } : null),
+  });
+  assert.deepStrictEqual(r, { port: base + 1, action: 'attach' });
+});
+
+test('a session of this project is found even behind free ports AND a stranger\'s', async () => {
+  const base = portForCwd(PROJ);
+  const far = PORT_BASE + ((base - PORT_BASE + 57) % PORT_SPAN);
+  const r = await resolvePort({
+    cwd: PROJ,
+    occupantAt: (port) => (port === base + 1 ? { cwd: 'C:/some/other/project' }
+      : port === far ? { cwd: PROJ } : null),
+  });
+  assert.deepStrictEqual(r, { port: far, action: 'attach' });
+});
+
+test('with two sessions alive, the one nearest the derived port wins, every time', async () => {
+  const base = portForCwd(PROJ);
+  const occupantAt = (port) => (port === base + 3 || port === base + 9 ? { cwd: PROJ } : null);
+  for (let i = 0; i < 3; i++) {
+    assert.deepStrictEqual(await resolvePort({ cwd: PROJ, occupantAt }), { port: base + 3, action: 'attach' });
+  }
+});
+
+test('with no session anywhere, the FIRST free port from the derived one is still where we spawn', async () => {
+  const base = portForCwd(PROJ);
+  const r = await resolvePort({
+    cwd: PROJ,
+    occupantAt: (port) => (port === base ? { cwd: 'C:/some/other/project' } : null),
+  });
+  assert.deepStrictEqual(r, { port: base + 1, action: 'spawn' });
+});
+
+test('if the deadline hits mid-walk, a free port already found is used -- never a failed launch', async () => {
+  // The full walk is ~100 probes. Behind a DROP firewall every probe is slow;
+  // the walk must degrade to the old "first free port" answer, not throw
+  // after finding one.
+  const base = portForCwd(PROJ);
+  const slow = async (port) => { await new Promise(r => setTimeout(r, 30)); return port === base ? null : { cwd: 'C:/other' }; };
+  const r = await resolvePort({ cwd: PROJ, occupantAt: slow, deadlineMs: 150 });
+  assert.deepStrictEqual(r, { port: base, action: 'spawn' });
+});
+
+// --- an explicit port with --new (Dexter #41 F4) ------------------------------
+
+const { decideExplicitPort } = require('../host/port-for-project');
+
+test('an explicit port already serving this project REFUSES a fresh launch instead of reattaching', () => {
+  const d = decideExplicitPort({ requestedCwd: PROJ, occupant: { cwd: PROJ }, fresh: true });
+  assert.strictEqual(d.action, 'refuse');
+  assert.ok(typeof d.reason === 'string' && d.reason);
+});
+
+test('an explicit port: without --new, or when it is free, nothing changes', () => {
+  assert.strictEqual(decideExplicitPort({ requestedCwd: PROJ, occupant: { cwd: PROJ }, fresh: false }).action, 'attach');
+  assert.strictEqual(decideExplicitPort({ requestedCwd: PROJ, occupant: null, fresh: true }).action, 'spawn');
+  assert.strictEqual(decideExplicitPort({ requestedCwd: PROJ, occupant: { cwd: 'C:/other' }, fresh: true }).action, 'refuse');
+});

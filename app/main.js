@@ -18,8 +18,8 @@ const fs = require('fs');
 const path = require('path');
 const { projectLabel } = require('../host/project-path');
 
-const { resolvePort } = require('../host/port-for-project');
-const { decideAttach } = require('../host/handshake');
+const { resolvePort, decideExplicitPort } = require('../host/port-for-project');
+const { isFreshLaunch, hostEnv } = require('../host/launch-target');
 const { readIdentity } = require('../host/host-identity');
 const { readLook } = require('../host/style');
 const { sanitizeDim } = require('../host/look');
@@ -115,10 +115,16 @@ async function occupantAt(port) {
 // Returns { port, action } or null when the user named a port we must not take.
 async function chooseHostPort() {
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  // `--new` on the launcher asks for a SECOND session in this folder rather
+  // than a reattach to the one already running. Read from the environment
+  // because the launcher is a separate process; anything but the exact value
+  // it writes means the ordinary reattach, which must never change by accident.
+  const fresh = isFreshLaunch(process.env);
   if (EXPLICIT_PORT) {
-    const decision = decideAttach({
+    const decision = decideExplicitPort({
       requestedCwd: PROJECT_CWD,
       occupant: await occupantAt(EXPLICIT_PORT),
+      fresh,
     });
     if (decision.action === 'refuse') {
       console.error(`[main] refusing port ${EXPLICIT_PORT}: ${decision.reason}` +
@@ -128,12 +134,6 @@ async function chooseHostPort() {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  // `--new` on the launcher asks for a SECOND session in this folder rather
-  // than a reattach to the one already running. Read from the environment
-  // because the launcher is a separate process; an absent or empty value means
-  // the ordinary reattach, which is the behaviour that must never change by
-  // accident.
-  const fresh = process.env.CLAUDE_CUSTOM_NEW === '1';
   return resolvePort({ cwd: PROJECT_CWD, occupantAt, fresh });
 }
 
@@ -153,13 +153,7 @@ function spawnHost() {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-      CLAUDE_CUSTOM_PORT: String(PORT),
-      CLAUDE_CUSTOM_CWD: PROJECT_CWD,
-      CLAUDE_CUSTOM_TOKEN: SESSION_TOKEN,
-    },
+    env: hostEnv(process.env, { port: PORT, cwd: PROJECT_CWD, token: SESSION_TOKEN }),
   });
   console.log('[main] host log:', logPath);
   child.unref();

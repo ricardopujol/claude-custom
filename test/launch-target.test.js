@@ -160,3 +160,64 @@ test('CLAUDE_CUSTOM_NEW does not leak into a project opened from the picker', ()
   assert.strictEqual(env.CLAUDE_CUSTOM_NEW, undefined);
   assert.strictEqual(env.PATH, '/usr/bin', 'and unrelated variables still pass through');
 });
+
+// --- the --new wiring, testable (Dexter #41 F2, Miguel #2) --------------------
+//
+// Deleting `wantsNew`, the CLAUDE_CUSTOM_NEW:'1' in the child env, or main's
+// `=== '1'` each left the suite green: bin/ and main.js are not loadable by a
+// test. The decisions now live here, and those files only call them.
+
+const { parseLaunchArgs, isFreshLaunch, hostEnv } = require('../host/launch-target');
+
+test('parseLaunchArgs: --new is read wherever it sits, and is never taken for the folder', () => {
+  assert.deepStrictEqual(parseLaunchArgs([]), { help: false, fresh: false, folder: undefined });
+  assert.deepStrictEqual(parseLaunchArgs(['proj']), { help: false, fresh: false, folder: 'proj' });
+  assert.deepStrictEqual(parseLaunchArgs(['--new']), { help: false, fresh: true, folder: undefined });
+  assert.deepStrictEqual(parseLaunchArgs(['proj', '--new']), { help: false, fresh: true, folder: 'proj' });
+  assert.deepStrictEqual(parseLaunchArgs(['--new', 'proj']), { help: false, fresh: true, folder: 'proj' });
+  assert.strictEqual(parseLaunchArgs(['-h']).help, true);
+  assert.strictEqual(parseLaunchArgs(['proj', '--help']).help, true);
+});
+
+test('parseLaunchArgs: there is no -n alias -- a folder named -n is a folder (Dexter F5)', () => {
+  assert.deepStrictEqual(parseLaunchArgs(['-n']), { help: false, fresh: false, folder: '-n' });
+});
+
+test('launchEnv carries CLAUDE_CUSTOM_NEW=1 exactly when a fresh session is asked for', () => {
+  assert.strictEqual(launchEnv({}, 'C:/p', { fresh: true }).CLAUDE_CUSTOM_NEW, '1');
+  assert.ok(!('CLAUDE_CUSTOM_NEW' in launchEnv({}, 'C:/p', { fresh: false })));
+  assert.ok(!('CLAUDE_CUSTOM_NEW' in launchEnv({ CLAUDE_CUSTOM_NEW: '1' }, 'C:/p')),
+    'an inherited flag must not survive a plain launch');
+});
+
+test('isFreshLaunch: only the exact value the launcher writes counts', () => {
+  assert.strictEqual(isFreshLaunch({ CLAUDE_CUSTOM_NEW: '1' }), true);
+  for (const v of [undefined, '', '0', 'true', 'yes', ' 1']) {
+    assert.strictEqual(isFreshLaunch({ CLAUDE_CUSTOM_NEW: v }), false, `for ${JSON.stringify(v)}`);
+  }
+  assert.strictEqual(isFreshLaunch(undefined), false);
+});
+
+test('hostEnv: the detached host gets its port, cwd and token, and NOT the --new flag (Miguel #4)', () => {
+  // Inherited, the flag reached the host and its `claude` child -- so `npm
+  // start` run inside a --new session's terminal carried it (Dexter F4).
+  const env = hostEnv({ PATH: 'x', CLAUDE_CUSTOM_NEW: '1' }, { port: 7764, cwd: 'C:/p', token: 't' });
+  assert.strictEqual(env.PATH, 'x');
+  assert.strictEqual(env.ELECTRON_RUN_AS_NODE, '1');
+  assert.strictEqual(env.CLAUDE_CUSTOM_PORT, '7764');
+  assert.strictEqual(env.CLAUDE_CUSTOM_CWD, 'C:/p');
+  assert.strictEqual(env.CLAUDE_CUSTOM_TOKEN, 't');
+  assert.ok(!('CLAUDE_CUSTOM_NEW' in env));
+});
+
+test('bin/ and main.js route through these helpers, not their own copies', () => {
+  const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+  const bin = read('bin/claude-custom.js');
+  const main = read('app/main.js');
+  assert.match(bin, /parseLaunchArgs\(/);
+  assert.match(bin, /launchEnv\([^)]*fresh/);
+  assert.doesNotMatch(bin, /CLAUDE_CUSTOM_NEW/, 'bin/ must not build the flag by hand');
+  assert.match(main, /isFreshLaunch\(process\.env\)/);
+  assert.match(main, /hostEnv\(process\.env/);
+  assert.doesNotMatch(main, /CLAUDE_CUSTOM_NEW\s*===/, 'main.js must not re-read the flag by hand');
+});

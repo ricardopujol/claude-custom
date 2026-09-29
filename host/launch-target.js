@@ -41,7 +41,7 @@ function resolveLaunchTarget(arg, { cwd = process.cwd(), stat = fs.statSync } = 
  * where main.js finds the old host, refuses it and exits -- so the picker would
  * appear to do nothing.
  */
-function launchEnv(env, target) {
+function launchEnv(env, target, { fresh = false } = {}) {
   const out = {};
   // WILDCARD, not a denylist. Dexter, Finding 4: the denylist named the two
   // variables whose harm I had already been bitten by, and at least four more
@@ -61,7 +61,47 @@ function launchEnv(env, target) {
   }
   delete out.ELECTRON_RUN_AS_NODE;
   out.CLAUDE_CUSTOM_CWD = target;
+  // `--new`: the one CLAUDE_CUSTOM_* value set on purpose, AFTER the wildcard,
+  // so an inherited one never survives a plain launch.
+  if (fresh) out.CLAUDE_CUSTOM_NEW = FRESH_VALUE;
   return out;
 }
 
-module.exports = { resolveLaunchTarget, launchEnv };
+// The launcher and main.js are separate processes, so `--new` crosses as an
+// environment variable. One exact value, written and read only here (Dexter
+// #41 F2: deleting either side by hand left the suite green).
+const FRESH_VALUE = '1';
+const isFreshLaunch = (env) => !!env && env.CLAUDE_CUSTOM_NEW === FRESH_VALUE;
+
+/**
+ * claude-custom [folder] [--new] [-h|--help]. `--new` may sit before or after
+ * the folder. There is deliberately no `-n` alias (Dexter #41 F5): it was
+ * undocumented, and it swallowed a folder actually named `-n`.
+ */
+function parseLaunchArgs(argv) {
+  const args = argv || [];
+  const rest = args.filter(a => a !== '--new');
+  return {
+    help: args.includes('-h') || args.includes('--help'),
+    fresh: args.includes('--new'),
+    folder: rest[0],
+  };
+}
+
+/**
+ * The detached host's environment. `--new` is dropped: it is main's question
+ * alone, and inherited it reached the host's `claude` child -- so `npm start`
+ * run inside a --new session's terminal asked for a fresh session too (Miguel
+ * #41 #4, Dexter F4).
+ */
+function hostEnv(env, { port, cwd, token }) {
+  const out = { ...env };
+  delete out.CLAUDE_CUSTOM_NEW;
+  out.ELECTRON_RUN_AS_NODE = '1';
+  out.CLAUDE_CUSTOM_PORT = String(port);
+  out.CLAUDE_CUSTOM_CWD = cwd;
+  out.CLAUDE_CUSTOM_TOKEN = token;
+  return out;
+}
+
+module.exports = { resolveLaunchTarget, launchEnv, parseLaunchArgs, isFreshLaunch, hostEnv };
