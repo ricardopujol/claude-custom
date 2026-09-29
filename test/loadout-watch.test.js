@@ -15,7 +15,7 @@ const { watchLoadout } = require('../host/loadout-watch');
 const { createStore } = require('../host/store');
 const { createLoadoutControl } = require('../host/loadout-control');
 const { decide } = require('../host/loadout-hook');
-const { reduce, emptyState } = require('../app/loadout-display');
+const { reduce, ask, emptyState } = require('../app/loadout-display');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const equip = (agentType, itemId) => ({ type: 'loadout-equip', agentType, itemId });
@@ -186,6 +186,7 @@ test('F1: a frame from a watcher never clears the refusal shown in a window', ()
   const { a, b } = twoHosts();
   a.handle(equip('x', 'pace-haiku'));
   let shown = reduce(emptyState(), b.payload() && { type: 'hello', loadout: b.payload() });
+  shown = ask(shown, { kind: 'equip', agent: 'x', itemId: 'pace-opus' });   // this window clicked
   shown = reduce(shown, b.handle(equip('x', 'pace-opus')));           // refused in B's window
   assert.ok(shown.error);
   a.handle(unequip('x', 'pace-haiku'));                                // A changes the file

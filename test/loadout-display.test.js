@@ -12,6 +12,10 @@ const L = require('../host/loadout');
 
 const items = L.catalogue();
 const hello = (agents = {}) => ({ type: 'hello', loadout: { agents, items } });
+// Only a refusal THIS window asked for is shown (Dexter F6): ask, then answer.
+const refuse = (state, over = {}) => D.reduce(
+  D.ask(state, { kind: 'equip', agent: over.agentType || 'a', itemId: over.itemId || 'pace-haiku' }),
+  frame({ ok: false, ...over }));
 const frame = (over = {}) => ({ type: 'loadout', ok: true, reason: null, agentType: 'a', itemId: 'pace-haiku',
   agents: { a: ['pace-haiku'] }, items, ...over });
 
@@ -36,20 +40,20 @@ test('a successful frame updates the belts', () => {
 });
 
 test('a refusal keeps the belts the host reports and records WHICH agent and item it was for', () => {
-  const s = D.reduce(D.reduce(D.emptyState(), hello({ a: ['pace-haiku'] })),
-    frame({ ok: false, reason: 'both set the agent\'s model', itemId: 'pace-opus' }));
+  const s = refuse(D.reduce(D.emptyState(), hello({ a: ['pace-haiku'] })),
+    { reason: 'both set the agent\'s model', itemId: 'pace-opus' });
   assert.deepStrictEqual(s.error, { agentType: 'a', itemId: 'pace-opus', reason: 'both set the agent\'s model' });
   assert.deepStrictEqual(s.agents.get('a'), ['pace-haiku']);
 });
 
 test('a refusal with no reason still says something', () => {
-  const s = D.reduce(D.emptyState(), frame({ ok: false, reason: undefined }));
+  const s = refuse(D.emptyState(), { reason: undefined });
   assert.strictEqual(typeof s.error.reason, 'string');
   assert.ok(s.error.reason.length > 0);
 });
 
 test('PR #64 N1: a QUIET frame neither sets nor clears the error line', () => {
-  const refused = D.reduce(D.emptyState(), frame({ ok: false, reason: 'no' }));
+  const refused = refuse(D.emptyState(), { reason: 'no' });
   const echoed = D.reduce(refused, frame({ quiet: true, ok: true, agents: { a: ['review-twice'] } }));
   assert.deepStrictEqual(echoed.error, refused.error, 'the refusal must survive an echo');
   assert.deepStrictEqual(echoed.agents.get('a'), ['review-twice'], 'but the echo still refreshes the belts');
@@ -57,20 +61,55 @@ test('PR #64 N1: a QUIET frame neither sets nor clears the error line', () => {
   assert.strictEqual(quietRefusal.error, null, 'and a quiet frame never SETS one either');
 });
 
+test('F6: a refusal this window did NOT ask for changes nothing on screen', () => {
+  // W1 shows its own refusal for X; W2's user makes a conflicting equip on Y.
+  // The broadcast must not replace W1's alert, and must not appear as an error
+  // in a window whose user never clicked.
+  const mine = refuse(D.emptyState(), { agentType: 'x', itemId: 'pace-opus', reason: 'mine' });
+  const other = D.reduce(mine, frame({ ok: false, agentType: 'y', itemId: 'pace-opus', reason: 'theirs', agents: { y: ['pace-haiku'] } }));
+  assert.deepStrictEqual(other.error, mine.error);
+  assert.deepStrictEqual(other.agents.get('y'), ['pace-haiku'], 'but the belts it reports are still applied');
+  const cold = D.reduce(D.emptyState(), frame({ ok: false, agentType: 'x', itemId: 'pace-opus', reason: 'theirs' }));
+  assert.strictEqual(cold.error, null, 'nothing was asked here, so nothing is shown');
+});
+
+test('F6: a refusal must match the item that was asked, not only the agent', () => {
+  const asked = D.ask(D.emptyState(), { kind: 'equip', agent: 'x', itemId: 'pace-opus' });
+  const wrong = D.reduce(asked, frame({ ok: false, agentType: 'x', itemId: 'pace-sonnet', reason: 'other click' }));
+  assert.strictEqual(wrong.error, null);
+  const right = D.reduce(asked, frame({ ok: false, agentType: 'x', itemId: 'pace-opus', reason: 'mine' }));
+  assert.strictEqual(right.error.reason, 'mine');
+});
+
+test('F6: the answer consumes the ask, so a later broadcast of the same refusal is not shown', () => {
+  const first = refuse(D.emptyState(), { reason: 'mine' });
+  const cleared = D.reduce(first, frame({ ok: true, agentType: 'a', itemId: 'pace-haiku', agents: {} }));
+  assert.strictEqual(cleared.error, null);
+  const echo = D.reduce(cleared, frame({ ok: false, reason: 'someone else' }));
+  assert.strictEqual(echo.error, null);
+});
+
+test('F6: ask() ignores anything that is not an equip/unequip action', () => {
+  const s = D.emptyState();
+  for (const a of [null, undefined, {}, { kind: 'toggle', agent: 'a' }, { kind: 'equip' }, { kind: 'equip', agent: 'a' }]) {
+    assert.strictEqual(D.ask(s, a), s, JSON.stringify(a));
+  }
+});
+
 test('a hello is quiet too: a reattach does not wipe a refusal on screen', () => {
-  const refused = D.reduce(D.emptyState(), frame({ ok: false, reason: 'no' }));
+  const refused = refuse(D.emptyState(), { reason: 'no' });
   assert.deepStrictEqual(D.reduce(refused, hello({ a: ['pace-haiku'] })).error, refused.error);
 });
 
 test('a success for the SAME agent clears its refusal; for another agent it does not', () => {
-  const refused = D.reduce(D.emptyState(), frame({ ok: false, reason: 'no' }));
+  const refused = refuse(D.emptyState(), { reason: 'no' });
   assert.strictEqual(D.reduce(refused, frame({ ok: true, agentType: 'a' })).error, null);
   assert.deepStrictEqual(D.reduce(refused, frame({ ok: true, agentType: 'b', agents: { b: ['pace-opus'] } })).error, refused.error);
 });
 
 test('a later refusal replaces an earlier one', () => {
-  let s = D.reduce(D.emptyState(), frame({ ok: false, reason: 'first' }));
-  s = D.reduce(s, frame({ ok: false, reason: 'second', agentType: 'b' }));
+  let s = refuse(D.emptyState(), { reason: 'first' });
+  s = refuse(s, { reason: 'second', agentType: 'b' });
   assert.strictEqual(s.error.reason, 'second');
   assert.strictEqual(s.error.agentType, 'b');
 });
@@ -117,7 +156,7 @@ test('toggle opens one picker at a time and closes it again', () => {
 });
 
 test('toggling clears a refusal: it was about a picker that is no longer showing', () => {
-  const refused = D.reduce(D.emptyState(), frame({ ok: false, reason: 'no' }));
+  const refused = refuse(D.emptyState(), { reason: 'no' });
   assert.strictEqual(D.toggle(refused, 'a').error, null);
 });
 
@@ -185,9 +224,9 @@ test('the note is only there while the picker is open', () => {
 });
 
 test('a refusal shows on the agent it was for, and only there', () => {
-  const s = D.toggle(D.reduce(seeded({ a: ['pace-haiku'] }), frame({ ok: false, reason: 'both set model', itemId: 'pace-opus' })), 'a');
+  const s = D.toggle(refuse(seeded({ a: ['pace-haiku'] }), { reason: 'both set model', itemId: 'pace-opus' }), 'a');
   // toggle cleared it (it is a new picker), so re-send the refusal:
-  const refused = D.reduce(s, frame({ ok: false, reason: 'both set model', itemId: 'pace-opus' }));
+  const refused = refuse(s, { reason: 'both set model', itemId: 'pace-opus' });
   assert.strictEqual(D.view(refused, 'a', {}).error, 'both set model');
   assert.strictEqual(D.view(refused, 'b', {}).error, null);
 });
@@ -225,7 +264,7 @@ test('the strip draws each equipped glyph and name', () => {
 test('the open picker draws the note, and the refusal when there is one', () => {
   const base = D.toggle(seeded({ a: ['pace-haiku'] }), 'a');
   assert.match(D.html(D.view(base, 'a', { running: true })), /current run isn(&#39;|')t affected/);
-  const refused = D.reduce(base, frame({ ok: false, reason: 'both set the model', itemId: 'pace-opus' }));
+  const refused = refuse(base, { reason: 'both set the model', itemId: 'pace-opus' });
   const html = D.html(D.view(refused, 'a', {}));
   assert.match(html, /class="belt-error"[^>]*>[^<]*both set the model/);
 });
@@ -233,7 +272,7 @@ test('the open picker draws the note, and the refusal when there is one', () => 
 test('names and reasons from the wire are escaped', () => {
   const evil = '"><img src=x onerror=alert(1)>';
   const s = D.toggle(seeded(), evil);
-  const refused = D.reduce(s, frame({ ok: false, agentType: evil, reason: evil }));
+  const refused = refuse(s, { agentType: evil, reason: evil });
   const html = D.html(D.view(refused, evil, {}));
   assert.ok(!html.includes('<img'), html);
   assert.ok(!html.includes(evil), 'the raw string must never appear');
@@ -243,6 +282,63 @@ test('names and reasons from the wire are escaped', () => {
 test('nothing equipped and closed: only the button, no empty strip element', () => {
   const html = D.html(D.view(seeded(), 'a', {}));
   assert.doesNotMatch(html, /belt-strip/);
+});
+
+// --- availability (Dexter F2, F3) ------------------------------------------------------
+
+test('F2: a label row (resolved:false) can never match a subagent_type, so it gets no belt', () => {
+  assert.match(D.unavailableReason({ resolved: false }), /label, not an agent type/);
+  assert.strictEqual(D.unavailableReason({ resolved: true }), null);
+  assert.strictEqual(D.unavailableReason({}), null, 'unknown is not false: only an explicit resolved:false hides it');
+});
+
+test('F3: with hooks off nothing can apply, and the belt says so', () => {
+  assert.match(D.unavailableReason({ hooks: false }), /hooks are off/i);
+  assert.strictEqual(D.unavailableReason({ hooks: true }), null);
+  assert.strictEqual(D.unavailableReason({ hooks: undefined }), null, 'before the first hello nothing is claimed');
+  assert.strictEqual(D.unavailableReason(null), null);
+});
+
+test('an unavailable card has no button and no picker row, only the reason', () => {
+  const reason = D.unavailableReason({ resolved: false });
+  const open = D.toggle(seeded(), 'miguel-usage');                  // even if a picker was open
+  const v = D.view(open, 'miguel-usage', { unavailable: reason });
+  assert.strictEqual(v.unavailable, reason);
+  assert.strictEqual(v.open, false);
+  assert.deepStrictEqual(v.rows, []);
+  const html = D.html(v);
+  assert.doesNotMatch(html, /<button|data-loadout-/);
+  assert.match(html, /class="belt-off"/);
+  assert.ok(html.includes('label, not an agent type'));
+});
+
+test('an unavailable card that already has items still shows the strip', () => {
+  const v = D.view(seeded({ a: ['pace-haiku'] }), 'a', { unavailable: D.unavailableReason({ hooks: false }) });
+  assert.match(D.html(v), /belt-strip/);
+  assert.doesNotMatch(D.html(v), /<button/);
+});
+
+test('an available card is unchanged: unavailable is null', () => {
+  assert.strictEqual(D.view(seeded(), 'a', {}).unavailable, null);
+});
+
+// --- accessibility (Miguel S1) ---------------------------------------------------------
+
+test('S1: every toggle names its agent, rows expose pressed state, glyphs are hidden from readers', () => {
+  const html = D.html(D.view(D.toggle(seeded({ a: ['pace-haiku'] }), 'a'), 'a', {}));
+  assert.match(html, /data-loadout-toggle="a"[^>]*aria-label="Tool belt for a"/);
+  assert.match(html, /data-loadout-item="pace-haiku"[^>]*aria-pressed="true"/);
+  assert.match(html, /data-loadout-item="review-twice"[^>]*aria-pressed="false"/);
+  const glyphs = html.match(/<span class="belt-glyph"[^>]*>/g) || [];
+  assert.ok(glyphs.length > 0);
+  for (const g of glyphs) assert.match(g, /aria-hidden="true"/);
+});
+
+test('S1: the aria-label is escaped like everything else from the wire', () => {
+  const evil = '"><b>';
+  const html = D.html(D.view(seeded(), evil, {}));
+  assert.ok(!html.includes('aria-label="Tool belt for "><b>'));
+  assert.ok(html.includes('aria-label="Tool belt for &quot;&gt;&lt;b&gt;"'));
 });
 
 // --- click decoding ---------------------------------------------------------------
@@ -287,7 +383,7 @@ test('PROPERTY: reduce and view are total over arbitrary frames', () => {
 
 test('PROPERTY: a quiet frame never changes the error, whatever it carries', () => {
   fc.assert(fc.property(fc.jsonValue(), fc.boolean(), (agents, ok) => {
-    const refused = D.reduce(D.emptyState(), frame({ ok: false, reason: 'kept' }));
+    const refused = refuse(D.emptyState(), { reason: 'kept' });
     const after = D.reduce(refused, { type: 'loadout', quiet: true, ok, agents, items, agentType: 'a', reason: 'other' });
     assert.deepStrictEqual(after.error, refused.error);
   }), { numRuns: 200 });

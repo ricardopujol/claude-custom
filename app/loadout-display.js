@@ -49,7 +49,7 @@ const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
 function emptyState() {
-  return { agents: new Map(), items: [], open: null, error: null };
+  return { agents: new Map(), items: [], open: null, error: null, asked: null };
 }
 
 /** Wire `agents` -> Map<string, string[]>, or null when it is not an object. */
@@ -95,17 +95,51 @@ function reduce(state, msg) {
 
   const next = withBelts(cur, msg);
   if (msg.quiet === true) return next;
+  // The frame is BROADCAST to every window, but a refusal answers ONE click.
+  // Only a window that asked for exactly this (agent, item) shows it; another
+  // window's refusal neither replaces the alert on screen nor appears as an
+  // error in a window whose user never clicked (Dexter F6). The belts it
+  // carries are applied either way.
+  const answers = !!(cur.asked && cur.asked.agentType === msg.agentType && cur.asked.itemId === msg.itemId);
   if (msg.ok === false) {
-    return { ...next, error: {
+    if (!answers) return next;
+    return { ...next, asked: null, error: {
       agentType: isStr(msg.agentType) ? msg.agentType : '',
       itemId: isStr(msg.itemId) ? msg.itemId : '',
       reason: isStr(msg.reason) && msg.reason ? msg.reason : UNKNOWN_REFUSAL,
     } };
   }
-  if (msg.ok === true && next.error && next.error.agentType === msg.agentType) {
-    return { ...next, error: null };
+  if (msg.ok === true) {
+    const cleared = next.error && next.error.agentType === msg.agentType ? { error: null } : {};
+    return { ...next, ...cleared, ...(answers ? { asked: null } : {}) };
   }
   return next;
+}
+
+/** Note that THIS window just asked for an equip/unequip, so its answer is shown. */
+function ask(state, action) {
+  const cur = state || emptyState();
+  if (!action || (action.kind !== 'equip' && action.kind !== 'unequip')
+      || !isStr(action.agent) || !action.agent || !isStr(action.itemId) || !action.itemId) return cur;
+  return { ...cur, asked: { agentType: action.agent, itemId: action.itemId } };
+}
+
+/**
+ * Why a card cannot take a belt at all, or null. `resolved:false` is a roster
+ * row known only by its hook LABEL: the hook keys on subagent_type, so an item
+ * equipped on a label can never apply (Dexter F2). `hooks:false` means the
+ * native helper is missing, so the settings file that registers the belt's hook
+ * is never passed to the CLI (Dexter F3). Only an explicit false counts.
+ */
+function unavailableReason(facts) {
+  if (!facts || typeof facts !== 'object') return null;
+  if (facts.resolved === false) {
+    return "This is a label, not an agent type: a spawn's subagent_type can never match it, so an item here would never apply.";
+  }
+  if (facts.hooks === false) {
+    return 'Hooks are off (the hook helper is missing), so items cannot apply to any spawn.';
+  }
+  return null;
 }
 
 /** Open (or close) one agent's picker. One at a time; a new picker starts with no stale refusal. */
@@ -123,7 +157,8 @@ function view(state, agent, opts) {
   const byId = new Map(cur.items.map(i => [i.id, i]));
   const ids = cur.agents.get(name) || [];
   const equipped = ids.map(id => byId.get(id)).filter(Boolean);
-  const open = !!name && cur.open === name;
+  const unavailable = opts && isStr(opts.unavailable) && opts.unavailable ? opts.unavailable : null;
+  const open = !!name && !unavailable && cur.open === name;
 
   const rows = open ? cur.items.map((item) => {
     const on = equipped.some(e => e.id === item.id);
@@ -139,6 +174,7 @@ function view(state, agent, opts) {
     agent: name,
     equipped,
     open,
+    unavailable,
     rows,
     note: open ? (running ? RUNNING_NOTE : NEXT_RUN) : null,
     error: cur.error && cur.error.agentType === name ? cur.error.reason : null,
@@ -150,17 +186,23 @@ function html(v) {
   const strip = v.equipped.length
     ? `<div class="belt-strip">${v.equipped.map(e =>
       `<span class="belt-item" data-kind="${esc(e.kind)}" title="${esc(e.description)}">` +
-      `<span class="belt-glyph">${esc(e.glyph)}</span>${esc(e.name)}</span>`).join('')}</div>`
+      `<span class="belt-glyph" aria-hidden="true">${esc(e.glyph)}</span>${esc(e.name)}</span>`).join('')}</div>`
     : '';
+  if (v.unavailable) {
+    return `<div class="belt" data-belt="${a}">${strip}` +
+      `<span class="belt-off" title="${esc(v.unavailable)}">belt unavailable</span></div>`;
+  }
   const button = `<button type="button" class="belt-btn${v.open ? ' on' : ''}" data-loadout-toggle="${a}" ` +
-    `aria-expanded="${v.open ? 'true' : 'false'}" title="Equip items that change how this agent is spawned">belt</button>`;
+    `aria-label="Tool belt for ${a}" aria-expanded="${v.open ? 'true' : 'false'}" ` +
+    `title="Equip items that change how this agent is spawned">belt</button>`;
   let picker = '';
   if (v.open) {
     picker = `<div class="belt-picker"><div class="belt-note">${esc(v.note)}</div>` +
       v.rows.map(r =>
         `<button type="button" class="belt-row${r.equipped ? ' on' : ''}" data-loadout-act="${r.action}" ` +
-        `data-loadout-agent="${a}" data-loadout-item="${esc(r.id)}" title="${esc(r.description)}">` +
-        `<span class="belt-glyph">${esc(r.glyph)}</span>` +
+        `data-loadout-agent="${a}" data-loadout-item="${esc(r.id)}" aria-pressed="${r.equipped ? 'true' : 'false'}" ` +
+        `title="${esc(r.description)}">` +
+        `<span class="belt-glyph" aria-hidden="true">${esc(r.glyph)}</span>` +
         `<span class="belt-name">${esc(r.name)}${r.hint ? `<span class="belt-hint">${esc(r.hint)}</span>` : ''}</span>` +
         `<span class="belt-do">${r.equipped ? 'remove' : 'equip'}</span>` +
         `</button>`).join('') +
@@ -187,7 +229,8 @@ function controlMessage(action) {
   return { type: `loadout-${action.kind}`, agentType: action.agent, itemId: action.itemId };
 }
 
-const api = { emptyState, reduce, toggle, view, html, clickAction, controlMessage, NEXT_RUN, RUNNING_NOTE };
+const api = { emptyState, reduce, ask, toggle, view, html, unavailableReason, clickAction, controlMessage,
+  NEXT_RUN, RUNNING_NOTE };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system. Only ONE name leaves the IIFE.

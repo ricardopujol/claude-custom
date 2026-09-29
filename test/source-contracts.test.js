@@ -130,11 +130,16 @@ test('host.js wires the tool belt: the hook, the handshake and both control type
 
 test('renderer.js wires the tool belt: hello seeds it, loadout frames update it, only <button>s act (BACKLOG #17)', () => {
   const r = read('app/renderer.js');
-  assert.match(r, /loadoutState = loadoutDisplay\.reduce\(loadoutState, msg\);\s*renderAgentStats/,
+  assert.match(r, /loadoutState = loadoutDisplay\.reduce\(loadoutState, msg\);\s*hooksOn = msg\.hooks;\s*renderAgentStats/,
     'hello must seed the belts before the first roster paint');
   assert.match(r, /msg\.type === 'loadout'\)\s*\{\s*loadoutState = loadoutDisplay\.reduce/);
   assert.match(r, /closest\('button\[data-loadout-toggle\], button\[data-loadout-act\]'\)/,
     'only real <button>s act -- a control inside a card must never open the card');
+  assert.match(r, /beltHtml\(row\.agent, \{ resolved: entry \? entry\.resolved : undefined \}\)/,
+    'an Inactive label row (resolved:false) must be handed to the belt as such (Dexter F2)');
+  assert.match(r, /hooksOn = msg\.hooks;/, 'hello.hooks must reach the belt (Dexter F3)');
+  assert.match(r, /loadoutState = loadoutDisplay\.ask\(loadoutState, action\);\s*try \{ ws\.send/,
+    'a window remembers what it asked before sending (Dexter F6)');
   assert.strictEqual((r.match(/beltHtml\(/g) || []).length, 3, 'defined once, drawn on both the Active and Inactive card');
   assert.ok(read('app/renderer.html').includes('<script src="./loadout-display.js"></script>'));
 });
