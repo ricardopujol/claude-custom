@@ -244,6 +244,12 @@ function fakeContainer() {
       for (const [sel, cls] of [['.alog-body', 'alog-body'], ['.alog-rows', 'alog-rows'], ['.alog-status', 'alog-status'], ['.alog-notes', 'alog-notes']]) {
         if (v.includes(cls)) c.els[sel] = mk();
       }
+      // Rows are 20px tall; a notes line above them pushes every row down by one.
+      if (c.els['.alog-rows']) {
+        const n = (v.match(/class="alog-entry/g) || []).length;
+        const shift = v.includes('class="alog-note"') ? 1 : 0;
+        c.els['.alog-rows'].children = Array.from({ length: n }, (_, i) => ({ offsetTop: (i + shift) * 20 }));
+      }
     },
   });
   c.querySelector = sel => c.els[sel] || null;
@@ -331,6 +337,52 @@ test('M3: paint keeps following when at the bottom, and leaves a reader who scro
   m = d.applyFrame(m, frame({ reset: false, entries: [entry()] }));
   d.paint(c, m);
   assert.strictEqual(body.scrollTop, 200);
+});
+
+// ---- Dexter F9, PR #63: a reader who scrolled up keeps their ROW when the cap drops rows ----
+
+test('F9: anchoredScrollTop finds the same row again after rows leave the top', () => {
+  const oldTops = [0, 20, 40, 60, 80];
+  const newTops = [0, 20, 40];                      // 2 rows dropped: old row 2 is new row 0
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 45, oldTops, newTops, dropped: 2 }), 5, 'row 2, 5px in');
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 80, oldTops, newTops, dropped: 2 }), 40);
+  // With a note now above the rows, every new top is 20 lower.
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 45, oldTops, newTops: [20, 40, 60], dropped: 2 }), 25);
+  // The row being read was itself dropped: the top of what remains.
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 25, oldTops, newTops, dropped: 2 }), 0);
+  // Nothing to adjust, or nothing measurable: leave the position alone.
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 45, oldTops, newTops, dropped: 0 }), 45);
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 45, oldTops: [], newTops, dropped: 2 }), 45);
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 45, oldTops, newTops: [0, NaN], dropped: 2 }), 45);
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 45, oldTops, newTops, dropped: 1.5 }), 45);
+  assert.strictEqual(d.anchoredScrollTop({ scrollTop: 45, oldTops, newTops: [], dropped: 2 }), 45, 'row not in the new list');
+});
+
+test('F9: a capped frame rebuilds, and a reader scrolled up stays on the same row', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: Array.from({ length: d.MAX_ENTRIES }, (_, i) => entry({ summary: 'n' + i })) }));
+  d.paint(c, m);
+  const body = c.querySelector('.alog-body');
+  body.scrollHeight = 30000;
+  body.scrollTop = 500 * 20 + 5;                    // 5px into row 500
+  m = d.applyFrame(m, frame({ reset: false, entries: Array.from({ length: 3 }, () => entry()) }));
+  assert.strictEqual(m.capDrop, 3);
+  assert.strictEqual(d.paint(c, m), 'rebuild');
+  // Old row 500 is now row 497, and the "earlier entries" note pushes rows down by one line.
+  assert.strictEqual(c.querySelector('.alog-body').scrollTop, (497 + 1) * 20 + 5);
+});
+
+test('F9: a reader who is following is still pinned to the bottom through a capped frame; a reset is not anchored', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: Array.from({ length: d.MAX_ENTRIES }, () => entry()) }));
+  d.paint(c, m);
+  c.querySelector('.alog-body').scrollTop = 900;    // at the bottom of a 1000px scroller
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry()] }));
+  d.paint(c, m);
+  const b = c.querySelector('.alog-body');
+  assert.strictEqual(b.scrollTop, b.scrollHeight);
+  const r = d.applyFrame(m, frame({ reset: true, entries: [entry()] }));
+  assert.strictEqual(r.capDrop, 0, 'a reset replaces the list; there is no row to anchor to');
 });
 
 test('the close button is a real, addressable control', () => {

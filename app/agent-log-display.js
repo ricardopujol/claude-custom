@@ -50,7 +50,7 @@ function emptyLog() {
     source: null, reason: null,
     entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
     running: false, done: false, tracked: true, blind: false,
-    render: 'rebuild', added: 0,
+    render: 'rebuild', added: 0, capDrop: 0,
   };
 }
 
@@ -87,7 +87,7 @@ function applyFrame(model, frame) {
 
   if (frame.source === null) {
     return {
-      ...model, waiting: false, source: null, render: 'rebuild', added: 0,
+      ...model, waiting: false, source: null, render: 'rebuild', added: 0, capDrop: 0,
       reason: typeof frame.reason === 'string' && frame.reason ? frame.reason : 'no-transcript',
       entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
       running: frame.running === true, done: false,
@@ -100,8 +100,10 @@ function applyFrame(model, frame) {
   let entries = (reset ? [] : model.entries).concat(fresh);
   let dropped = reset ? 0 : model.dropped;
   let capped = false;
+  let capDrop = 0;
   if (entries.length > MAX_ENTRIES) {
-    dropped += entries.length - MAX_ENTRIES;
+    capDrop = entries.length - MAX_ENTRIES;
+    dropped += capDrop;
     entries = entries.slice(entries.length - MAX_ENTRIES);
     capped = true;
   }
@@ -117,6 +119,10 @@ function applyFrame(model, frame) {
   return {
     ...model, waiting: false, source: frame.source, reason: null,
     render, added: render === 'append' ? fresh.length : 0,
+    // Rows removed from the TOP of an existing list by this frame's cap (not a
+    // reset, which replaces the list): paint() uses it to keep a reader who
+    // scrolled up on the same row.
+    capDrop: reset ? 0 : capDrop,
     entries, dropped,
     unknown: isCount(frame.unknown) ? frame.unknown : (reset ? 0 : model.unknown),
     // How much of the transcript's START the host did not send (it opens a big
@@ -245,6 +251,33 @@ function shouldFollow(metrics) {
 }
 
 /**
+ * Where to scroll so the row a reader was looking at stays put after `dropped`
+ * rows were removed from the top of the list (Dexter F9, PR #63: an absolute
+ * scrollTop shifted the view forward by the dropped rows' height on every
+ * capped frame).
+ *
+ * @param scrollTop  the reader's position before the rebuild
+ * @param oldTops    each row's offsetTop before, in order
+ * @param newTops    each row's offsetTop after, in order
+ * @param dropped    how many rows left the top
+ * The row at `scrollTop` (and how far into it) is found in `oldTops`, then
+ * looked up `dropped` places earlier in `newTops`. If that row was itself
+ * dropped, the top of what remains. Anything unmeasurable leaves `scrollTop`.
+ */
+function anchoredScrollTop({ scrollTop, oldTops, newTops, dropped }) {
+  if (!Array.isArray(oldTops) || !Array.isArray(newTops) || oldTops.length === 0) return scrollTop;
+  if (!isCount(dropped) || dropped === 0) return scrollTop;
+  if (![scrollTop, ...oldTops, ...newTops].every(v => typeof v === 'number' && Number.isFinite(v))) return scrollTop;
+  let i = 0;
+  for (let k = 0; k < oldTops.length && oldTops[k] <= scrollTop; k++) i = k;
+  const within = scrollTop - oldTops[i];
+  const j = i - dropped;
+  if (j < 0) return 0;
+  if (j >= newTops.length) return scrollTop;
+  return newTops[j] + within;
+}
+
+/**
  * Draw `model` into `el`, extending what is on screen when the model says it can
  * (`model.render`), and rebuilding otherwise. Returns which it did.
  *
@@ -262,6 +295,7 @@ function paint(el, model) {
     ? { scrollTop: body.scrollTop, clientHeight: body.clientHeight, scrollHeight: body.scrollHeight }
     : null);
   const keep = body ? body.scrollTop : 0;
+  let target = keep;                      // where a reader who is NOT following ends up
 
   let how = 'rebuild';
   const rows = el.querySelector('.alog-rows');
@@ -280,7 +314,19 @@ function paint(el, model) {
     const html = renderNotes(model);
     if (notes && notes.dataset.sig !== html) { notes.innerHTML = html; notes.dataset.sig = html; }
   } else {
+    // A cap drop with the reader scrolled up: remember where each row was so
+    // the same row can be found again once the top has been cut away.
+    const oldTops = !follow && model && model.capDrop > 0 && body && rows && rows.children
+      ? Array.from(rows.children, r => r.offsetTop)
+      : null;
     el.innerHTML = renderAgentLog(model);
+    const nowRows = el.querySelector('.alog-rows');
+    if (oldTops && nowRows && nowRows.children) {
+      target = anchoredScrollTop({
+        scrollTop: keep, oldTops, dropped: model.capDrop,
+        newTops: Array.from(nowRows.children, r => r.offsetTop),
+      });
+    }
     const fresh = el.querySelector('.alog-rows');
     if (fresh) fresh.dataset.count = String(model.entries.length);
     const notes = el.querySelector('.alog-notes');
@@ -288,13 +334,13 @@ function paint(el, model) {
   }
 
   const after = el.querySelector('.alog-body');
-  if (after) after.scrollTop = follow ? after.scrollHeight : keep;
+  if (after) after.scrollTop = follow ? after.scrollHeight : target;
   return how;
 }
 
 const api = {
   paint, emptyLog, openLog, closeLog, applyFrame, renderAgentLog, renderRows, renderNotes, statusText,
-  shouldFollow, MAX_ENTRIES, FOLLOW_SLACK_PX,
+  shouldFollow, anchoredScrollTop, MAX_ENTRIES, FOLLOW_SLACK_PX,
 };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
