@@ -106,6 +106,13 @@ function tabWorktrees(entries, container) {
 // Remove, then prune, run from dev. Never `--force`: git refuses to remove a
 // worktree with changes, and that refusal is the point. Anything that isn't a
 // sibling worktree -- dev itself above all -- gets no commands.
+//
+// BEFORE RUNNING THESE, UNLINK EVERY JUNCTION IN THE WORKTREE. Measured
+// 2026-09-29 on git 2.53.0.windows.1: `git worktree remove` FOLLOWS a
+// `node_modules` junction and empties its target -- here that target is
+// `dev\node_modules`. `cmd /c rmdir <junction>` first leaves the target intact.
+// That check needs the filesystem, so it belongs to the caller (PR 3), not to
+// this pure builder.
 function removalCommands(container, worktreePath) {
   if (normPath(container) === null) return [];
   const dev = path.join(container, 'dev');
