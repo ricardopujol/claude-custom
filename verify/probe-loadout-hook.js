@@ -67,7 +67,10 @@
    ALSO MEASURED, worth knowing: on 2.1.284 the Agent tool returns at once with
    "Async agent launched successfully ... agentId: ..." -- a subagent runs in
    the background by default, so the rewrite has to land at spawn (it does: the
-   hook runs before the launch). */
+   hook runs before the launch).
+
+   RE-RUN with the real host/loadout-hook.js (same day, same CLI): PASS (1),
+   PASS (2), PASS (1c), PASS (5), hook median 59 ms, spawn path 436 ms. */
 
 const { spawnSync } = require('child_process');
 const http = require('http');
