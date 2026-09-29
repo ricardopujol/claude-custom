@@ -204,12 +204,19 @@ async function readAt(fh, offset, length) {
 async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes = WINDOW_BYTES } = {}) {
   const fh = await fsp.open(state.file, 'r');
   try {
-    const { size } = await fh.stat();
+    const { size, ino } = await fh.stat();
     let offset = state.offset;
     let names = new Map(state.names);
     let unknown = state.unknown;
     let reset = false;
-    if (size < offset) {
+    // A REPLACED file is a different file, however large it has grown: shorter
+    // than the offset, or a different inode/file id (Dexter F7 / Miguel S3, PR
+    // #63 -- a rename-over that ends up longer than the old offset used to be
+    // read from the middle of a line). What is NOT detected: the SAME file
+    // truncated in place and re-grown past the offset between two ticks.
+    // Transcripts are append-only, so that is an accepted premise, not a case.
+    const replaced = state.ino !== undefined && state.ino !== ino;
+    if (size < offset || replaced) {
       offset = 0; names = new Map(); unknown = 0; reset = true;
     }
 
@@ -249,7 +256,7 @@ async function readMore(state, { maxEntries = DEFAULT_MAX_ENTRIES, windowBytes =
       entries,
       more,
       reset,
-      state: { file: state.file, offset: offset + consumed, names, unknown },
+      state: { file: state.file, offset: offset + consumed, names, unknown, ino },
     };
   } finally {
     await fh.close();

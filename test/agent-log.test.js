@@ -230,6 +230,28 @@ test('a file that shrank is read again from the top, and the caller is told', as
   assert.deepStrictEqual(second.entries.map(e => e.summary), ['z']);
 });
 
+test('F7: a file replaced by a LONGER one (rename over) is read again from the top, not from the middle of a line', async () => {
+  const f = fileWith(assistant({ type: 'text', text: 'old' }) + '\n');
+  const first = await log.readMore(log.createTail(f));
+  const replacement = path.join(path.dirname(f), 'replacement.jsonl');
+  fs.writeFileSync(replacement, [1, 2, 3].map(i => assistant({ type: 'text', text: 'new content number ' + i })).join('\n') + '\n');
+  assert.ok(fs.statSync(replacement).size > first.state.offset, 'the replacement is longer than the saved offset');
+  fs.renameSync(replacement, f);
+  const second = await log.readMore(first.state);
+  assert.strictEqual(second.reset, true);
+  assert.deepStrictEqual(second.entries.map(e => e.summary), ['new content number 1', 'new content number 2', 'new content number 3']);
+  assert.strictEqual(second.state.unknown, 0, 'no fragment of a line was misread');
+});
+
+test('an unchanged file is never reset by the replacement check', async () => {
+  const f = fileWith(assistant({ type: 'text', text: 'a' }) + '\n');
+  let r = await log.readMore(log.createTail(f));
+  fs.appendFileSync(f, assistant({ type: 'text', text: 'b' }) + '\n');
+  r = await log.readMore(r.state);
+  assert.ok(!r.reset);
+  assert.deepStrictEqual(r.entries.map(e => e.summary), ['b']);
+});
+
 test('a vanished file rejects with ENOENT so the caller can say so', async () => {
   const dir = tmpDir();
   await assert.rejects(log.readMore(log.createTail(path.join(dir, 'nope.jsonl'))), { code: 'ENOENT' });
