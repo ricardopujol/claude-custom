@@ -227,6 +227,39 @@ test('a host never seen listening is not "stopped": no remove', () => {
   assert.strictEqual(r.state.tabs[1].phase, 'finishing');
 });
 
+// Dexter F2: the session ran and ended, Ricardo pressed Restart, and the
+// marker lands while the NEW host is still starting. "Seen listening" must
+// mean seen after the merge, or this removes the folder under the new host.
+test('restart after exit: the marker landing while the new host starts does not remove', () => {
+  const WTS = [DEV_WT, A_WT];
+  let r = run([
+    obs(WTS, { listening: { [A]: true } }),                 // the first session runs
+    obs(WTS, { listening: { [A]: false } }),                // ...and ends; Restart pressed
+    obs(WTS, { merged: [A], listening: { [A]: false } }),   // marker lands, new host starting
+    obs(WTS, { merged: [A], listening: { [A]: false } }),
+  ]);
+  assert.ok(!types(r.actions).includes('remove'), types(r.actions).join());
+  assert.strictEqual(r.state.tabs[1].phase, 'finishing');
+
+  // The new host comes up, then Ricardo ends it: now the folder goes.
+  r = run([
+    obs(WTS, { merged: [A], listening: { [A]: true } }),
+    obs(WTS, { merged: [A], listening: { [A]: false } }),
+  ], r.state);
+  assert.deepStrictEqual(r.actions, [{ type: 'remove', path: A }]);
+});
+
+// Miguel S1: `finishing` is always visible for at least one poll, because the
+// host has to be seen running after the merge before it can be seen stopping.
+test('a merged tab is never marked and removed in the same poll', () => {
+  const WTS = [DEV_WT, A_WT];
+  const r = run([
+    obs(WTS, { listening: { [A]: true } }),
+    obs(WTS, { merged: [A], listening: { [A]: false } }),
+  ]);
+  assert.deepStrictEqual(types(r.actions), ['open', 'open', 'mark-merged']);
+});
+
 // Unreadable marker = not merged, including at the moment of removal.
 test('a finishing tab whose marker is no longer read is not removed', () => {
   const WTS = [DEV_WT, A_WT];
@@ -396,13 +429,13 @@ test('PROPERTY: no remove unless that observation says the host is not listening
   }));
 });
 
-test('PROPERTY: no remove unless the host was seen listening since the tab opened', () => {
+test('PROPERTY: no remove unless the host was seen listening since the tab was marked merged', () => {
   fc.assert(fc.property(eventsArb, (events) => {
     const seen = new Map();
     walk(events, (_, e, r) => {
       for (const a of r.actions) {
         const k = normPath(a.path);
-        if (a.type === 'open') seen.set(k, false);
+        if (a.type === 'mark-merged') seen.set(k, false);
         if (a.type === 'remove') assert.strictEqual(seen.get(k), true, a.path);
       }
       if (e.kind === 'obs') {

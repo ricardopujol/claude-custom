@@ -13,11 +13,13 @@
  *
  * A worktree's folder is removed only when, in the same observation, its
  * marker still reads as merged AND its host is not listening (strictly
- * `false`: missing is not "stopped") AND that host was seen listening at some
- * point since the tab opened. The last condition is what tells "the session
- * ended" from "the session hasn't started yet": opening a window on an
- * already-merged worktree must not delete its folder while its host is coming
- * up.
+ * `false`: missing is not "stopped") AND that host was seen listening since
+ * the tab was marked merged. The last condition is what tells "the session
+ * ended" from "a session hasn't started yet": opening a window on an
+ * already-merged worktree, or pressing Restart after an exit, must not delete
+ * the folder while a host is coming up. A session that had already ended
+ * before the merge is never removed automatically; closing the tab by hand
+ * keeps the folder for `/merged --sweep`.
  */
 
 const { normPath, samePath } = require('./project-layout');
@@ -58,10 +60,6 @@ function reconcile(state, observation) {
     actions.push({ type: 'open', path: w.path, branch: w.branch });
   }
 
-  for (const t of tabs) {
-    if (listening[normPath(t.path)] === true) t.hostSeen = true;
-  }
-
   // 2. A worktree git no longer lists AT ALL: stop its host, close its tab.
   //    Listed-but-not-openable (detached mid-rebase, prunable) is still here.
   //    Not while we are removing it ourselves -- removeResult closes that one.
@@ -71,12 +69,19 @@ function reconcile(state, observation) {
     return !gone;
   });
 
-  // 3. Merged: the tab shows it; the session keeps running until Ricardo ends it.
+  // 3. Merged: the tab shows it; the session keeps running until Ricardo ends
+  //    it. hostSeen starts over here: only a host seen running AFTER the
+  //    merge can end "the session that was open when it merged".
   for (const t of tabs) {
     if (!t.isDev && t.phase === 'live' && isMerged(t)) {
       t.phase = 'finishing';
+      t.hostSeen = false;
       actions.push({ type: 'mark-merged', path: t.path, branch: t.branch });
     }
+  }
+
+  for (const t of tabs) {
+    if (listening[normPath(t.path)] === true) t.hostSeen = true;
   }
 
   // 4. Merged and its host seen running, then stopped: remove the folder.
