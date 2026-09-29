@@ -10,7 +10,7 @@ const {
 
 test('the registry lists colours, background and inactive windows, in that order', () => {
   // The container-that-grows design: a new section is one entry here.
-  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'background', 'inactive']);
+  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'background', 'inactive', 'avatars']);
   for (const s of STYLE_SECTIONS) assert.ok(s.title, s.id);
 });
 
@@ -239,7 +239,7 @@ test('F2: an untagged refusal falls back to the background section, never vanish
 test('F2: an unknown ask tag is not used as a state key', () => {
   const s = reduceStyle(reduceStyle(undefined, hello), { type: 'style', error: 'x', ask: '__proto__' });
   assert.strictEqual(s.background.error, 'x');
-  assert.deepStrictEqual(Object.keys(s).sort(), ['background', 'colours', 'inactive']);
+  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive']);
 });
 
 test('F3: a refusal keeps the STORED darkness, so the preview can be put back', () => {

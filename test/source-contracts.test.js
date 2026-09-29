@@ -140,6 +140,17 @@ test('renderer.js wires the tool belt: hello seeds it, loadout frames update it,
   assert.match(r, /hooksOn = msg\.hooks;/, 'hello.hooks must reach the belt (Dexter F3)');
   assert.match(r, /loadoutState = loadoutDisplay\.ask\(loadoutState, action\);\s*try \{ ws\.send/,
     'a window remembers what it asked before sending (Dexter F6)');
+  // The belt rides in the ONE delegated card-click handler (the #66 contract),
+  // asked after hide/unhide and before the log: a belt click is handled and
+  // stops there. Its own listener registered first would also shadow the
+  // handler the #63/#66 wiring tests read.
+  const at = r.indexOf("agentsEl.addEventListener('click'");
+  const card = r.slice(at, r.indexOf('\n});', at));
+  const roster = card.indexOf('rosterActionFromClick(e.target)');
+  const belt = card.indexOf('if (beltClick(e.target)) return;');
+  const log = card.indexOf('cardClickAgent(e.target)');
+  assert.ok(roster !== -1 && belt > roster && log > belt,
+    'the card-click handler asks hide/unhide, then the belt, then the log');
   assert.strictEqual((r.match(/beltHtml\(/g) || []).length, 3, 'defined once, drawn on both the Active and Inactive card');
   assert.ok(read('app/renderer.html').includes('<script src="./loadout-display.js"></script>'));
 });

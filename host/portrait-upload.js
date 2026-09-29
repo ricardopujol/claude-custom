@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES } = require('./portraits');
+const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES, GLOBAL_AGENT, isReservedAgent } = require('./portraits');
 const { renameWithRetry } = require('./atomic-write');
 
 // The upload tier accepts the same media as the resolver serves. Named
@@ -21,6 +21,9 @@ const { renameWithRetry } = require('./atomic-write');
 // difference between "what we can display" and "what we accept from a drag"
 // does not require touching two unrelated lists to express.
 const UPLOAD_EXTENSIONS = MEDIA_EXTENSIONS;
+
+const STALE_REASON = 'the new picture was saved, but its version could not be updated, so the previous picture may still be shown until the app is restarted';
+const RESERVED_REASON = `"${GLOBAL_AGENT}" is reserved for the global default picture and cannot be an agent's name`;
 
 // 25 MB. Ricardo, 2026-09-22: refuse by extension and size, with a visible
 // reason -- a stuck drag of a multi-gigabyte video should fail fast and say
@@ -43,10 +46,11 @@ function extensionOf(sourcePath) {
  * refused upload is exactly the moment this project's rule is "say so
  * out loud" (host/drop.js, planDrop).
  */
-function planPortraitUpload({ source, agent, state, uploadsDir, size } = {}) {
+function planPortraitUpload({ source, agent, state, uploadsDir, size, allowReserved = false } = {}) {
   if (!uploadsDir) {
     return { ok: false, reason: 'no uploads directory is configured' };
   }
+  if (!allowReserved && isReservedAgent(agent)) return { ok: false, reason: RESERVED_REASON };
   const safeAgent = safeSegment(agent);
   if (!safeAgent) {
     return { ok: false, reason: 'the agent name is not a valid path segment' };
@@ -104,20 +108,46 @@ function applyPortraitUpload({ source, dest }, {
   mkdirSync = fs.mkdirSync,
   rename = renameWithRetry,
   unlinkSync = fs.unlinkSync,
+  statSync = fs.statSync,
+  utimesSync = fs.utimesSync,
+  now = Date.now,
 } = {}) {
   mkdirSync(path.dirname(dest), { recursive: true });
+  // The version the display puts in the picture's URL (?v=) is this file's
+  // mtime -- and copyFile PRESERVES THE SOURCE'S mtime, so two different
+  // pictures from one zip (same DOS timestamp) would share a URL and the cached
+  // one would be served (Dexter F2, PR #64). The destination is stamped after
+  // the copy with a time this function controls, strictly later than whatever
+  // it replaces.
+  let previous = 0;
+  try { previous = statSync(dest).mtimeMs; } catch { /* first upload */ }
   const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
+  let stamped = false;
+  let versionMoved = true;
   try {
     // Inside the try (Dexter F4, PR #35): a copy that dies partway -- ENOSPC
     // on a large video -- has already created the temp file.
     copyFile(source, tmp);
     rename(tmp, dest);
+    // Retried like the rename (an antivirus scan of the just-renamed file holds
+    // it for a moment). The file has landed, so a stamp that never succeeds must
+    // not read as a failed copy -- but it must not read as a clean success
+    // either: if the version did not move, the old picture may stay cached.
+    const stamp = Math.max(now(), previous + 1) / 1000;
+    for (let attempt = 0; attempt < 3 && !stamped; attempt++) {
+      try { utimesSync(dest, stamp, stamp); stamped = true; } catch { /* try again */ }
+    }
+    if (!stamped) {
+      let after = previous;
+      try { after = statSync(dest).mtimeMs; } catch { /* unknown counts as unmoved */ }
+      versionMoved = after !== previous;
+    }
   } catch (err) {
     // Best-effort cleanup; the copy's or rename's own error is the one that matters.
     try { unlinkSync(tmp); } catch { /* already gone, or never landed */ }
     throw err;
   }
-  return { leftovers: removeOtherFormats(dest, unlinkSync) };
+  return { leftovers: removeOtherFormats(dest, unlinkSync), versionStale: !stamped && !versionMoved };
 }
 
 // The resolver picks between formats by a fixed extension order, so a stale
@@ -182,6 +212,9 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
 
   if (!msg || msg.action !== 'set') return refuse(`unsupported portrait action: ${msg && msg.action}`);
 
+  // `_global` is the folder of the global default picture (handleGlobalPortraitMessage);
+  // an agent sharing the name would write into it.
+  if (isReservedAgent(agent)) return refuse(RESERVED_REASON);
   if (typeof seen !== 'string' || !seen) return refuse('no state was given for the portrait');
   const target = seen === 'inactive' ? 'sleeping' : seen;
   if (!BUILTIN_STATES.includes(target)) {
@@ -194,6 +227,9 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
   } catch (err) {
     return refuse(`could not read the dropped file: ${err && err.message}`);
   }
+  if (info && typeof info.isSymbolicLink === 'function' && info.isSymbolicLink()) {
+    return refuse('the dropped item is a symbolic link; drop the real file instead');
+  }
   if (!info || typeof info.isFile !== 'function' || !info.isFile()) {
     return refuse('the dropped item is not a file');
   }
@@ -202,25 +238,101 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
   if (!plan.ok) return refuse(plan.reason);
 
   let leftovers;
+  let versionStale = false;
   try {
-    leftovers = ((apply({ source, dest: plan.dest }) || {}).leftovers) || [];
+    const applied = apply({ source, dest: plan.dest }) || {};
+    leftovers = applied.leftovers || [];
+    versionStale = applied.versionStale === true;
   } catch (err) {
     return refuse(`copy failed: ${err && err.message}`);
   }
 
   const shown = resolve(agent, target) === plan.dest;
-  const reason = shown ? null
+  const reason = shown ? (versionStale ? STALE_REASON : null)
     : leftovers.length
       ? `the new portrait was saved, but the old ${leftovers.join(', ')} could not be removed and is still shown`
       : 'the new portrait was saved, but another file is still shown';
   const now = liveState(agent);
   return {
-    reply: { ok: shown, agent, state: target, reason },
+    reply: { ok: shown && !versionStale, agent, state: target, reason },
     mood: now ? { agent, state: now } : null,
     repaintIndex: !now,
   };
 }
 
+/**
+ * The GLOBAL default picture (BACKLOG C #3): {type:'portrait', action:
+ * 'set-global', path} copies a file to <uploads>/_global/default.<ext> through
+ * the same plan/apply as a per-agent upload; {action:'reset-global'} removes
+ * every _global default. Same shape as handlePortraitMessage: every side
+ * effect is injected, success is read back from the resolver, and a refusal is
+ * a sentence.
+ *
+ *   reply    -> broadcast as {type:'portrait', global: true, ...reply}
+ *   changed  -> true when files on disk changed, i.e. every face must be
+ *               re-resolved (the host does that; this module only decides)
+ */
+function handleGlobalPortraitMessage(msg, {
+  uploadsDir, stat, apply = applyPortraitUpload, resolve, unlink = fs.unlinkSync,
+} = {}) {
+  const refuse = (reason) => ({ reply: { ok: false, global: true, reason }, changed: false });
+  const action = msg && msg.action;
+
+  if (action === 'reset-global') {
+    const dir = uploadsDir ? path.join(uploadsDir, GLOBAL_AGENT) : null;
+    if (!dir) return refuse('no uploads directory is configured');
+    let removed = 0;
+    const stuck = [];
+    for (const ext of UPLOAD_EXTENSIONS) {
+      const file = path.join(dir, `default.${ext}`);
+      try {
+        unlink(file);
+        removed += 1;
+      } catch (err) {
+        if (!err || err.code !== 'ENOENT') stuck.push(path.basename(file));
+      }
+    }
+    if (stuck.length) {
+      return { reply: { ok: false, global: true, reason: `could not remove ${stuck.join(', ')}` }, changed: removed > 0 };
+    }
+    return { reply: { ok: true, global: true, reason: null }, changed: removed > 0 };
+  }
+
+  if (action !== 'set-global') return refuse(`unsupported portrait action: ${action}`);
+
+  const source = msg.path;
+  let info;
+  try {
+    info = stat(source);
+  } catch (err) {
+    return refuse(`could not read the chosen file: ${err && err.message}`);
+  }
+  if (info && typeof info.isSymbolicLink === 'function' && info.isSymbolicLink()) {
+    return refuse('the chosen item is a symbolic link; choose the real file instead');
+  }
+  if (!info || typeof info.isFile !== 'function' || !info.isFile()) return refuse('the chosen item is not a file');
+
+  const plan = planPortraitUpload({ source, agent: GLOBAL_AGENT, state: 'default', uploadsDir, size: info.size, allowReserved: true });
+  if (!plan.ok) return refuse(plan.reason);
+
+  let leftovers;
+  let versionStale = false;
+  try {
+    const applied = apply({ source, dest: plan.dest }) || {};
+    leftovers = applied.leftovers || [];
+    versionStale = applied.versionStale === true;
+  } catch (err) {
+    return refuse(`copy failed: ${err && err.message}`);
+  }
+  const shown = resolve() === plan.dest;
+  const reason = shown ? (versionStale ? STALE_REASON : null)
+    : leftovers.length
+      ? `the new picture was saved, but the old ${leftovers.join(', ')} could not be removed and is still shown`
+      : 'the new picture was saved, but another file is still shown';
+  return { reply: { ok: shown && !versionStale, global: true, reason }, changed: true };
+}
+
 module.exports = {
-  planPortraitUpload, applyPortraitUpload, handlePortraitMessage, MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS,
+  planPortraitUpload, applyPortraitUpload, handlePortraitMessage, handleGlobalPortraitMessage,
+  MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS,
 };
