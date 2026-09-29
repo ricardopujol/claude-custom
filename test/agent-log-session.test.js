@@ -117,12 +117,12 @@ test('an unreadable meta does not hide the other agents\' transcripts', async ()
 
 // ---- the session ------------------------------------------------------------
 
-function harness({ invocations = [], root, intervalMs = 750, read, find, now, openTail } = {}) {
+function harness({ invocations = [], root, intervalMs = 750, read, find, now, openTail, watchedEnd } = {}) {
   const frames = [];
   const timers = [];
   const state = { invocations };
   const session = createLogSession({
-    cwd: CWD, projectsDir: root, read, find, now, openTail,
+    cwd: CWD, projectsDir: root, read, find, now, openTail, watchedEnd,
     invocations: () => state.invocations,
     send: f => frames.push(f),
     intervalMs,
@@ -187,6 +187,32 @@ test('F4: a run this host watched end is "finished" on the first poll that bring
   const last = h.frames[h.frames.length - 1];
   assert.strictEqual(last.done, true);
   assert.strictEqual(last.tracked, true);
+});
+
+// Ricardo's hand check, 2026-09-29: a 2-second background run with no tool
+// calls had ended before its card was clicked, so the log was opened by NAME
+// and said "latest run" -- although this host watched that very run end (its
+// agentId came with the spawn result and with SubagentStop).
+test('a run this host watched end, opened by name after it ended, is tracked and "finished"', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'done1', { agentType: 'rev' }, [textLine('hello')]);
+  const h = harness({ root, watchedEnd: id => id === 'done1' });
+  await h.session.open('rev');
+  assert.strictEqual(h.frames[0].tracked, true);
+  await h.session.poll();
+  const last = h.frames[h.frames.length - 1];
+  assert.strictEqual(last.done, true);
+  assert.strictEqual(last.tracked, true);
+});
+
+test('a name-picked file whose run this host did NOT watch end stays untracked, even if it watched another end', async () => {
+  const { root, dir } = project();
+  subagent(dir, 's1', 'mine', { agentType: 'rev' }, [textLine('old')], new Date('2026-01-01'));
+  subagent(dir, 's1', 'theirs', { agentType: 'rev' }, [textLine('new')], new Date('2026-06-01'));
+  const h = harness({ root, watchedEnd: id => id === 'mine' });
+  await h.session.open('rev');
+  await h.session.poll();
+  assert.ok(h.frames.every(f => f.tracked === false && f.done === false), JSON.stringify(h.frames.map(f => [f.tracked, f.done])));
 });
 
 test('F4: a run the stall reaper ended that KEEPS WRITING goes back to not-finished with its next line', async () => {

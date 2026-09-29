@@ -46,6 +46,8 @@ test('host.js dispatches agent-log through the validator into a per-window sessi
   assert.ok(host.includes('validAgentLogRequest(msg)'), 'the frame must be validated before anything acts on it');
   assert.ok(host.includes('createLogSession({'), 'a log session is created per window');
   assert.ok(host.includes('mood.invocations()'), 'running state comes from the mood machine');
+  assert.ok(/watchedEnd:\s*\(agentId\)\s*=>\s*mood\.watchedEnd\(agentId\)/.test(host),
+    'a log opened by name after its run ended can only say "finished" if the session knows which runs this host watched end');
 });
 
 test('the window\'s log is closed when the window detaches', () => {

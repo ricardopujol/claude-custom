@@ -1623,6 +1623,7 @@ wss.on('connection', (ws) => {
   const agentLog = createLogSession({
     cwd: CWD,
     invocations: () => mood.invocations(),
+    watchedEnd: (agentId) => mood.watchedEnd(agentId),
     send: (frame) => sendControl(ws, frame),
   });
 

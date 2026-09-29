@@ -129,9 +129,20 @@ function createLogSession({
   cwd, projectsDir, invocations, send, intervalMs = POLL_MS,
   setIntervalFn = setInterval, clearIntervalFn = clearInterval,
   find = findTranscript, read = agentLog.readMore, openTail = agentLog.openTail,
-  now = Date.now,
+  now = Date.now, watchedEnd = () => false,
 } = {}) {
   let cur = null;
+
+  // A file found by NAME is still one this host tracks when it is the
+  // transcript of a run this host watched end (`watchedEnd(agentId)`, the mood
+  // machine's ended ids). The id comes from the real file's own name and is
+  // only compared, never joined into a path. (Ricardo's hand check, PR #63: a
+  // two-second background run had ended before its card was clicked, and its
+  // log said "latest run" instead of "finished".)
+  function watchedToEnd(file) {
+    const m = /^agent-(.+)\.jsonl$/.exec(path.basename(file));
+    return !!m && watchedEnd(m[1]) === true;
+  }
 
   function none(c, reason, running) {
     const key = `${reason}|${running}`;
@@ -235,7 +246,7 @@ function createLogSession({
       c.tail = tail;
       c.blind = r.blind === true;
       c.first = true;
-      c.tracked = want.startsWith('id:');
+      c.tracked = want.startsWith('id:') || (want === 'name' && watchedToEnd(r.file));
     }
 
     for (let frames = 1; ; frames++) {
