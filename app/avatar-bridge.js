@@ -53,7 +53,7 @@ function pickerOptions() {
   };
 }
 
-function registerAvatarHandlers({ ipcMain, store, win, dialog }) {
+function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {} }) {
   const fromWindow = (e) => !!(e && win && e.sender === win.webContents);
 
   ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readImagesEnabled(store) : true));
@@ -69,6 +69,9 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog }) {
       console.error('[main] could not save the agent-images toggle:', err && err.message);
       return null;
     }
+    // The watcher must know what this window was just told, or a later change
+    // back would compare equal to its stale memory and never be pushed (Dexter N2).
+    sync.last = enabled;
     try { win.webContents.send(PUSH_CHANNEL, enabled); } catch { /* window is going away */ }
     return enabled;
   });
@@ -95,13 +98,21 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog }) {
  * Returns stop(). A window that has gone away is not an error.
  */
 function watchImagesEnabled({
-  store, file, win, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile,
+  store, file, win, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile, sync = {},
 }) {
-  let last = readImagesEnabled(store);
+  sync.last = readImagesEnabled(store);
   const listener = () => {
-    const now = readImagesEnabled(store);
-    if (now === last) return;
-    last = now;
+    // A read that FAILED (EBUSY under an antivirus scan) or found a corrupt file
+    // says nothing about the user's choice: skip it and let the next poll try,
+    // instead of pushing the fresh-install default of "on" (Dexter N2).
+    let now;
+    if (typeof store.readState === 'function') {
+      const st = store.readState(AVATAR_KEY);
+      if (st.status !== 'ok' && st.status !== 'missing') return;
+    }
+    now = readImagesEnabled(store);
+    if (now === sync.last) return;
+    sync.last = now;
     try { win.webContents.send(PUSH_CHANNEL, now); } catch { /* window is going away */ }
   };
   watchFile(file, { interval: intervalMs, persistent: false }, listener);

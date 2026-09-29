@@ -369,10 +369,11 @@ function createWindow(spawnedHost) {
   // Agent pictures (BACKLOG C #13, #18): the file picker for a portrait and the
   // install-wide "show agent images" toggle, persisted GLOBALLY next to
   // look-global -- see avatar-bridge.js.
-  registerAvatarHandlers({ ipcMain, store: uiStore, win, dialog });
+  const avatarSync = {};
+  registerAvatarHandlers({ ipcMain, store: uiStore, win, dialog, sync: avatarSync });
   // Other project windows are other mains sharing this store: follow their toggle.
   watchImagesEnabled({
-    store: uiStore, win,
+    store: uiStore, win, sync: avatarSync,
     file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
   });
 
