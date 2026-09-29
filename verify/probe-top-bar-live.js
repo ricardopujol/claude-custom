@@ -11,10 +11,14 @@
 
    Cases, each ASSERTED, not logged:
      boot      the chip shows the statusLine's model id, not "—"
+     menus     each menu opens inside the window, under its chip, with no
+               row painted over and the header not scrolled (the clipped-
+               dropdown bug, 2026-09-26)
      effort    a click on "low" over a single-line draft: the draft is
                cleared, not submitted, and the chip confirms "low"
      model     a click on "sonnet": the chip confirms a claude-sonnet-* id
                and the accent turns the sonnet colour
+     1m        `sonnet[1m]` is confirmed, not timed out (Dexter r2 N4)
      dialog    with /model's picker open, a click is REFUSED with a notice
                and nothing is typed into the picker
      bad id    a free-typed id with an embedded CR is refused
@@ -177,6 +181,35 @@ app.on('ready', async () => {
     console.log(`      started on ${startModel} / ${startEffort}`);
     await shot('1-boot');
 
+    // --- the menus (Ricardo, 2026-09-26): the model menu hid the header and
+    // showed half a menu; the effort menu was painted over by the layout ------
+    for (const kind of ['model', 'effort']) {
+      await js(`document.getElementById('tb-${kind}').click(); true`);
+      await sleep(300);
+      const m = await js(`(() => {
+        const menu = document.getElementById('tb-${kind}-menu');
+        const r = menu.getBoundingClientRect();
+        const header = document.querySelector('header');
+        const h = header.getBoundingClientRect();
+        const c = document.getElementById('tb-${kind}').getBoundingClientRect();
+        // Every row's centre must hit the menu itself: nothing paints over it.
+        const rows = [...menu.querySelectorAll('button')].map(b => {
+          const br = b.getBoundingClientRect();
+          const hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2);
+          return !!hit && menu.contains(hit);
+        });
+        return { open: !menu.hidden, inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
+                 rows: rows.length, covered: rows.filter(x => !x).length,
+                 scrolled: header.scrollLeft, chipShown: c.left >= h.left && c.right <= h.right && c.width > 0,
+                 below: r.top >= c.bottom - 1 };
+      })()`);
+      await shot(`menu-${kind}`);
+      check(`menu ${kind}: opens wholly inside the window, under its chip`, m.open && m.inside && m.below, JSON.stringify(m));
+      check(`menu ${kind}: no row is painted over by the layout`, m.rows > 0 && m.covered === 0, JSON.stringify(m));
+      check(`menu ${kind}: the header did not scroll away`, m.scrolled === 0 && m.chipShown, JSON.stringify(m));
+      await js(`closeTopBarMenus(); true`);
+    }
+
     // --- effort over a draft -----------------------------------------------------
     await js(`send(JSON.stringify({ type: 'input', data: 'draft words here' })); true`);
     await sleep(800);
@@ -226,6 +259,13 @@ app.on('ready', async () => {
     const expected = { sonnet: '#4c8bf5', haiku: '#4caf6a' }[wantFamily];
     check(`model: the accent is the ${wantFamily} colour`, accent.toLowerCase() === expected, accent);
     await shot('3-model');
+
+    // --- Dexter r2 N4: a [1m] alias is confirmed, not timed out ----------------
+    await idle();
+    await js(`requestSwitch('model', 'sonnet[1m]'); true`);
+    const oneM = await until(async () => { const c = await chip('tb-model'); return !c.pending && c; }, 10000);
+    check('1m: sonnet[1m] is confirmed by a claude-sonnet-*[1m] id, with no notice',
+      !!oneM && /sonnet.*\[1m\]$/.test(oneM.text) && !oneM.notice, JSON.stringify(await chip('tb-model')));
 
     // --- dialog -----------------------------------------------------------------------
     await idle();

@@ -204,3 +204,59 @@ test('unparseable stdin is not forwarded, and the user command still runs', asyn
   assert.strictEqual(events, 0);
   assert.strictEqual(res.out, 'ok');
 });
+
+// --- a user command that never exits (Dexter r2 N6) ---------------------------
+
+const { runUser } = require('../host/status-relay');
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test("a hung user statusLine is killed, grandchild and all, and the relay still exits", async () => {
+  // shell:true puts a shell between the relay and the user's command. Killing
+  // only the shell (child.kill) leaves the real command running, one more
+  // orphan every time the status line re-fires.
+  const dir = tmpDir('relay-hang');
+  const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
+  const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
+  const t0 = Date.now();
+  const code = await runUser(b64(hang), DOC, { timeoutMs: 1500 });
+  assert.ok(Date.now() - t0 < 6000, 'the relay must not wait on a hung command');
+  assert.notStrictEqual(code, 0, 'a killed command is not a success');
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  let gone = false;
+  for (let i = 0; i < 20 && !gone; i++) { gone = !alive(pid); if (!gone) await new Promise(r => setTimeout(r, 150)); }
+  if (!gone) try { process.kill(pid); } catch {}
+  assert.ok(gone, `the user's command (pid ${pid}) is still running`);
+});
+
+test('a user command that finishes in time is not killed', async () => {
+  const quick = `"${process.execPath}" -e "process.exit(0)"`;
+  assert.strictEqual(await runUser(b64(quick), DOC, { timeoutMs: 5000 }), 0);
+});
+
+test('the whole relay SCRIPT exits promptly on a hung user command (Miguel #51 1)', async () => {
+  const dir = tmpDir('relay-hang-script');
+  const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
+  const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
+  const t0 = Date.now();
+  const res = await runRelay(['--pipe', pipeName(), '--then', b64(hang)], DOC);
+  assert.ok(Date.now() - t0 < 12000, `the relay took ${Date.now() - t0}ms`);
+  assert.notStrictEqual(res.code, 0);
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  let gone = false;
+  for (let i = 0; i < 20 && !gone; i++) { gone = !alive(pid); if (!gone) await new Promise(r => setTimeout(r, 150)); }
+  if (!gone) try { process.kill(pid); } catch {}
+  assert.ok(gone, `the user's command (pid ${pid}) outlived the relay`);
+});
+
+const RELAY_SRC = fs.readFileSync(RELAY, 'utf8');
+
+test('the relay exits explicitly, so a kill that failed cannot keep it alive (Miguel #51 2)', () => {
+  assert.match(RELAY_SRC, /process\.exit\(code\)/);
+});
+
+test('the user command stays in the relay\'s process group (Dexter #51 F7)', () => {
+  // detached:true moved it into its own group on POSIX, so a CLI that kills
+  // the relay's group no longer reached it: worse than before the timeout.
+  assert.doesNotMatch(RELAY_SRC, /detached:/);
+});
