@@ -130,4 +130,4 @@ function currentBranch(cwd) {
   return null;
 }
 
-module.exports = { currentBranch, isValidBranchName };
+module.exports = { currentBranch, isValidBranchName, resolveWorktreeGitDir };
