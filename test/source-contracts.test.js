@@ -121,6 +121,8 @@ test('host.js wires the tool belt: the hook, the handshake and both control type
   assert.match(host, /loadoutHook:\s*\{/, 'writeHarnessSettings must be given the loadout hook');
   assert.match(host, /loadout-hook\.js/);
   assert.match(host, /loadout:\s*loadoutControl\.payload\(\)/, 'hello must carry the loadout');
+  assert.match(host, /watchLoadout\(\{[\s\S]{0,200}loadoutControl\.changed\(\)[\s\S]{0,80}broadcastControl\(frame\)/,
+    'another host\'s change must reach this host\'s windows (Dexter F1)');
   assert.match(host, /msg\.type === 'loadout-equip' \|\| msg\.type === 'loadout-unequip'/);
   assert.match(host, /broadcastControl\(loadoutControl\.handle\(msg\)\)/,
     'the answer must reach every window, and must not be reduced to a per-client reply');

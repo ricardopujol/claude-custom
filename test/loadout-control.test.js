@@ -163,6 +163,33 @@ test('a store that cannot write answers ok:false with a reason instead of throwi
   assert.deepStrictEqual(frame.agents, {}, 'the frame reports what is really saved');
 });
 
+test('F5: an UNREADABLE loadout file refuses the equip and never writes (it would wipe every belt)', () => {
+  // store.read merges missing / corrupt / unreadable into the fallback; only
+  // `missing` authorises writing over a file (host/store.js readState).
+  const writes = [];
+  const store = {
+    read: (_k, fallback) => fallback,
+    readState: () => ({ status: 'unreadable', value: null, error: new Error('EPERM') }),
+    write: (k, v) => writes.push([k, v]),
+  };
+  const control = createLoadoutControl({ store });
+  for (const msg of [equip('C', 'pace-opus'), unequip('A', 'pace-haiku')]) {
+    const frame = control.handle(msg);
+    assert.strictEqual(frame.ok, false);
+    assert.match(frame.reason, /could not read/i);
+    assert.ok(!('quiet' in frame));
+    assert.ok(!('agents' in frame), 'no agents field: an empty one would blank every window\'s belts');
+  }
+  assert.deepStrictEqual(writes, []);
+});
+
+test('F5: a MISSING file and a CORRUPT file are still writable (first run, and healing)', () => {
+  const { control, file } = harness();
+  assert.strictEqual(control.handle(equip('a', 'pace-haiku')).ok, true);       // missing
+  fs.writeFileSync(file, '{"agents": {"a": [');
+  assert.strictEqual(control.handle(equip('a', 'pace-opus')).ok, true);        // corrupt
+});
+
 test('createLoadoutControl needs a store', () => {
   assert.throws(() => createLoadoutControl({}), /store/);
 });

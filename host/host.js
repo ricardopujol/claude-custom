@@ -53,6 +53,7 @@ const { readSessionHook, readStatus } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
+const { watchLoadout } = require('./loadout-watch');
 const { validResizeDims, handleFrame } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
@@ -352,6 +353,16 @@ const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
+// The loadout is install-wide and another host may change it: tell OUR windows.
+// The frame is QUIET (host/loadout-control.js changed()), so it never touches a
+// refusal on screen. PR #68, Dexter F1.
+watchLoadout({
+  dir: path.join(HARNESS_DIR, 'state'),
+  onChange: () => {
+    const frame = loadoutControl.changed();
+    if (frame) broadcastControl(frame);
+  },
+});
 // One record per distinct bug CLASS, so a recurring defect category is a
 // visible count instead of a memory hand-carried between review rounds in PR
 // comments. Persisted through the shared store under `vault.json`, same as
