@@ -4,15 +4,20 @@
  *
  * WHAT THIS STORE ACTUALLY CONTAINS TODAY:
  *
- *   .harness/state/cooldowns.json  the only file this store writes.
- *                                  host/cooldowns.js, STORE_KEY 'cooldowns'.
+ *   .harness/state/cooldowns.json  host/cooldowns.js, STORE_KEY 'cooldowns'.
+ *   .harness/state/loadout.json    host/loadout-control.js, STORE_KEY 'loadout'
+ *                                  (BACKLOG #17, the tool belt). Install-wide,
+ *                                  keyed by agent type. The host writes it; the
+ *                                  Node hook host/loadout-hook.js READS it with
+ *                                  a plain fs read on every Agent spawn.
  *
  * THAT IS THE WHOLE LIST. The four entries that used to stand here --
- * loadout.json, vault.json, map.json and stats.json -- named files that have
+ * loadout.json, vault.json, map.json and stats.json -- named files that had
  * NEVER BEEN WRITTEN. Verified by grepping for each store key across host/ and
- * app/: 'loadout' 0 references, 'map' 0, 'stats' 0. The one real key,
- * 'cooldowns', was not in the list at all, so the header named four files that
- * do not exist and omitted the one that does.
+ * app/: 'loadout' 0 references, 'map' 0, 'stats' 0. (loadout.json has since
+ * been BUILT, in the tool belt change; the other three still have no producer.)
+ * The one real key then, 'cooldowns', was not in the list at all, so the header
+ * named four files that did not exist and omitted the one that did.
  *
  * It was a roadmap written in the present tense, and it cost real time:
  *
@@ -73,7 +78,10 @@
  * `loadout.json` directly, "which is what lets equipped items keep working
  * when the GUI is closed". Grep helper/: zero references. It described the
  * mechanism of a feature that was never built, in the present tense, as a
- * justification -- the most persuasive form a false comment can take.)
+ * justification -- the most persuasive form a false comment can take. The
+ * native helper still does not read it, by design: it is transport-only and
+ * must never block. The Node hook host/loadout-hook.js does, and that one is
+ * real and tested.)
  *
  * Every read defaults rather than throwing. All of this is regenerable
  * convenience state; none of it is worth an exception on a hot path, and a
