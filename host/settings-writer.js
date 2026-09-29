@@ -74,7 +74,24 @@ function buildStatusLine({ nodePath, scriptPath, userStatusLine }, pipeName) {
   return { padding: 0, ...(user || {}), type: 'command', command };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay } = {}) {
+// The tool belt's hook (BACKLOG #17): rewrites an Agent spawn from the loadout.
+// A SECOND PreToolUse entry, for the subagent tool ONLY. It is a Node script
+// rather than the native helper because it has to read state and decide, and
+// the helper is transport-only and must never block. Node's ~55 ms startup is
+// therefore paid per subagent spawn, never per Read or Bash -- which is why
+// this matcher must stay narrower than PRE_TOOL_MATCHER, not equal to it.
+const LOADOUT_MATCHER = 'Agent|Task';
+const LOADOUT_TIMEOUT_SECONDS = 5;
+
+/** The tool belt entry, or null when it is not fully specified. */
+function buildLoadoutEntry(loadoutHook) {
+  const h = loadoutHook && typeof loadoutHook === 'object' ? loadoutHook : null;
+  if (!h || !h.nodePath || !h.scriptPath || !h.stateDir) return null;
+  const command = `${quote(slashes(h.nodePath))} ${quote(slashes(h.scriptPath))} --state ${quote(slashes(h.stateDir))}`;
+  return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
+}
+
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -112,6 +129,8 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay } = {}) {
     },
   };
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
+  const loadoutEntry = buildLoadoutEntry(loadoutHook);
+  if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
   return settings;
 }
 
