@@ -54,6 +54,10 @@ const CONTRACT = {
         used: 'mood-machine.js + portraits.js, the agent identity the roster renders',
         onlyWhen: p => AGENT_TOOLS.includes(p && p.tool_name),
       },
+      'tool_input.prompt': {
+        used: 'loadout-hook.js, the prompt a Method item prepends its instruction to (BACKLOG #17)',
+        onlyWhen: p => AGENT_TOOLS.includes(p && p.tool_name),
+      },
       'tool_input.command': {
         used: 'processes.js, the label shown in the Running panel',
         onlyWhen: p => (p && p.tool_name) === 'Bash',

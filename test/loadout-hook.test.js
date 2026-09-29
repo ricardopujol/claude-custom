@@ -118,11 +118,3 @@ test('decide() is the same logic without a process: null when there is nothing t
   assert.strictEqual(hook.decide(payload(), null), null);
   assert.strictEqual(typeof hook.decide(payload(), dir), 'string');
 });
-
-test('the hook stays cheap to start: it requires only the loadout core and payload contract', () => {
-  // Node startup is paid per Agent spawn. This pins the require graph so a
-  // future import of the store or the host does not quietly add to it.
-  const src = fs.readFileSync(HOOK, 'utf8');
-  const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map(m => m[1]).sort();
-  assert.deepStrictEqual(requires, ['./loadout', './payload-contract', 'fs', 'path']);
-});

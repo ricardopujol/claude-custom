@@ -113,6 +113,29 @@ test('the B2(a) cleartext limit stays written down in the vault module', () => {
     'including the one-line statement a reader will actually remember');
 });
 
+test('host.js wires the tool belt: the hook, the handshake and both control types (BACKLOG #17)', () => {
+  // host.js is not unit-testable, so the wiring is pinned as text: a belt whose
+  // hook is never registered, or whose hello never carries `loadout`, is a
+  // feature that draws a UI and does nothing to the spawn.
+  const host = read('host/host.js');
+  assert.match(host, /loadoutHook:\s*\{/, 'writeHarnessSettings must be given the loadout hook');
+  assert.match(host, /loadout-hook\.js/);
+  assert.match(host, /loadout:\s*loadoutControl\.payload\(\)/, 'hello must carry the loadout');
+  assert.match(host, /msg\.type === 'loadout-equip' \|\| msg\.type === 'loadout-unequip'/);
+  assert.match(host, /broadcastControl\(loadoutControl\.handle\(msg\)\)/,
+    'the answer must reach every window, and must not be reduced to a per-client reply');
+});
+
+test('the tool belt hook stays cheap to start: it requires only the loadout core and the payload contract', () => {
+  // Node startup is paid per Agent spawn (~55 ms measured). This pins the
+  // require graph so a future import of the store or the host does not quietly
+  // add to it. Source text, hence here rather than in test/loadout-hook.test.js
+  // (a code-shape assertion aborts the Stryker dry run).
+  const src = read('host/loadout-hook.js');
+  const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map(m => m[1]).sort();
+  assert.deepStrictEqual(requires, ['./loadout', './payload-contract', 'fs', 'path']);
+});
+
 test('main.js still depends on createVault never throwing, and says so', () => {
   // The invariant G3 moved: `createVault` constructs for ANY bytes on disk,
   // because main.js does not wrap it and a throw there means no window opens.

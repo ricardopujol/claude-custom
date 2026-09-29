@@ -61,6 +61,9 @@ const CONTROL_TYPES = new Set([
   // twice in this repo already (#24's `drop`, #29's `bugvault`), both times
   // by resolving this exact list in favour of one side. `portrait` is FF7's.
   'bugvault', 'projects', 'open', 'style', 'portrait',
+  // The tool belt (BACKLOG #17). Left off this list, an equip frame would be
+  // TYPED into the pty as literal JSON -- the hole described above.
+  'loadout-equip', 'loadout-unequip',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
