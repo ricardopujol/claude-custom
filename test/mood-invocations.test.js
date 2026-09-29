@@ -592,3 +592,17 @@ test('Dexter #3: a main-session failure does not stress a foreground subagent on
   h.main({ exit_code: 1 });
   assert.strictEqual(h.m.stateOf('paris'), 'working');
 });
+
+// Ricardo's hand check of PR #63, 2026-09-29, replayed: a background spawn that
+// made no tool calls, its id arriving only with the async launch result, then
+// SubagentStop. The agent log asks the machine whether it watched that run end.
+test('watchedEnd: true only for a run this machine saw end, by its agent_id', () => {
+  const h = harness();
+  h.spawn('general-purpose', 'k1', { background: true });
+  h.launchedAsync('k1', 'a5f');
+  assert.strictEqual(h.m.watchedEnd('a5f'), false, 'still running: not ended');
+  h.subStop('a5f', 'general-purpose');
+  assert.strictEqual(h.m.watchedEnd('a5f'), true);
+  assert.strictEqual(h.m.watchedEnd('someone-else'), false);
+  assert.strictEqual(h.m.watchedEnd(undefined), false);
+});

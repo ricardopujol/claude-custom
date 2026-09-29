@@ -75,6 +75,8 @@ const ALLOWED_GLOBALS = new Set([
   'portraitMedia',
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
+  // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
+  'agentLogDisplay',
   // app/top-bar-display.js (FF12)
   'modelFamily', 'cueColour', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
