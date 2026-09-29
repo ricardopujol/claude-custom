@@ -60,7 +60,7 @@ test('a relative gitdir: pointer resolves against the worktree, not the cwd', ()
 // JSON.parse rejects it -- a valid marker would silently never fire W4.
 test('a valid marker written with a UTF-8 BOM is read', () => {
   const { wt, gitDir } = makeWorktree();
-  fs.writeFileSync(path.join(gitDir, 'claude-merged.json'), '﻿' + JSON.stringify(VALID));
+  fs.writeFileSync(path.join(gitDir, 'claude-merged.json'), String.fromCharCode(0xfeff) + JSON.stringify(VALID));
   assert.deepStrictEqual(readMergedMarker(wt, 'feat/x'), VALID);
 });
 

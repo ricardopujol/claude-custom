@@ -16,6 +16,9 @@ const path = require('path');
 const { resolveWorktreeGitDir } = require('./git-branch');
 
 const MARKER = 'claude-merged.json';
+// Built, not typed: a literal U+FEFF in source is invisible (and the
+// renderer-scope guard rejects it).
+const BOM = String.fromCharCode(0xfeff);
 
 function readMergedMarker(worktreePath, expectedBranch) {
   if (typeof worktreePath !== 'string' || !worktreePath) return null;
@@ -30,7 +33,8 @@ function readMergedMarker(worktreePath, expectedBranch) {
   let m;
   try {
     // PowerShell 5.1 writes UTF-8 with a BOM, which JSON.parse rejects.
-    m = JSON.parse(fs.readFileSync(path.join(gitDir, MARKER), 'utf8').replace(/^﻿/, ''));
+    const raw = fs.readFileSync(path.join(gitDir, MARKER), 'utf8');
+    m = JSON.parse(raw.startsWith(BOM) ? raw.slice(1) : raw);
   } catch {
     return null;
   }
