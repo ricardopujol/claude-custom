@@ -104,14 +104,27 @@ function applyPortraitUpload({ source, dest }, {
   mkdirSync = fs.mkdirSync,
   rename = renameWithRetry,
   unlinkSync = fs.unlinkSync,
+  statSync = fs.statSync,
+  utimesSync = fs.utimesSync,
+  now = Date.now,
 } = {}) {
   mkdirSync(path.dirname(dest), { recursive: true });
+  // The version the display puts in the picture's URL (?v=) is this file's
+  // mtime -- and copyFile PRESERVES THE SOURCE'S mtime, so two different
+  // pictures from one zip (same DOS timestamp) would share a URL and the cached
+  // one would be served (Dexter F2, PR #64). The destination is stamped after
+  // the copy with a time this function controls, strictly later than whatever
+  // it replaces.
+  let previous = 0;
+  try { previous = statSync(dest).mtimeMs; } catch { /* first upload */ }
   const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
   try {
     // Inside the try (Dexter F4, PR #35): a copy that dies partway -- ENOSPC
     // on a large video -- has already created the temp file.
     copyFile(source, tmp);
     rename(tmp, dest);
+    // Best effort: the file has landed, so a failed stamp must not read as a failed copy.
+    try { const stamp = Math.max(now(), previous + 1) / 1000; utimesSync(dest, stamp, stamp); } catch { /* keeps the copied mtime */ }
   } catch (err) {
     // Best-effort cleanup; the copy's or rename's own error is the one that matters.
     try { unlinkSync(tmp); } catch { /* already gone, or never landed */ }
