@@ -550,6 +550,27 @@
     .agent .agent-model { font-size: 10px; color: var(--dim); opacity: 0.6;
       font-variant-numeric: tabular-nums; margin-top: 1px; white-space: nowrap;
       overflow: hidden; text-overflow: ellipsis; }
+    /* BACKLOG #14. A small button in its own element, shown on a sleeping card
+       only (and as "unhide" while hidden rows are revealed). Appears on hover
+       or keyboard focus, and sits off .face entirely: the face is a portrait
+       drop target. */
+    .agent { position: relative; }
+    .agent .agent-hide {
+      position: absolute; top: 3px; right: 3px;
+      font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--dim);
+      cursor: pointer; opacity: 0; transition: opacity .15s;
+    }
+    .agent:hover .agent-hide, .agent .agent-hide:focus-visible { opacity: 1; }
+    .agent .agent-hide:hover { color: var(--accent); border-color: var(--accent); }
+    .agent[data-hidden="true"] { outline: 1px dashed var(--border); outline-offset: -1px; }
+    #roster-show-hidden {
+      display: block; width: 100%; margin: 0 0 4px; padding: 3px 6px; text-align: left;
+      font-size: 10px; color: var(--dim); background: transparent;
+      border: 0; border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    #roster-show-hidden[hidden] { display: none; }
+    #roster-show-hidden:hover { color: var(--accent); }
     .agent .agent-count { font-size: 10px; font-weight: 700; color: var(--accent);
       opacity: .85; margin-left: 4px; }
 
@@ -877,6 +898,10 @@
             <button type="button" data-roster-tab="active" class="on" title="Working in this host's lifetime">Active</button>
             <button type="button" data-roster-tab="inactive" title="Every other agent this project or account has ever used">Inactive</button>
           </nav>
+          <!-- BACKLOG #14: shown only on the Active tab and only while at least
+               one sleeping agent is hidden (or the reveal is on). Decisions in
+               app/hidden-agents-display.js; renderer.js draws the label. -->
+          <button type="button" id="roster-show-hidden" hidden></button>
           <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
           <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
           <div id="cooldowns"></div>
@@ -993,6 +1018,7 @@
   <script src="./vault-lock-display.js"></script>
   <script src="./career-display.js"></script>
   <script src="./roster-tabs-display.js"></script>
+  <script src="./hidden-agents-display.js"></script>
   <script src="./quota-display.js"></script>
   <script src="./bugvault-display.js"></script>
   <script src="./projects-display.js"></script>

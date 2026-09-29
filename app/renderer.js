@@ -1177,7 +1177,49 @@ function inactiveRowHtml(row) {
     `</div>`;
 }
 
+// --- hide sleeping agents (BACKLOG #14) ---------------------------------------
+// Decisions live in app/hidden-agents-display.js. The host owns the persisted
+// set and sends it in `hello` and in `hidden` frames; this list is only its
+// mirror, and a click sends a request rather than editing it.
+let hiddenAgentNames = [];
+let showHiddenAgents = false;
+
+function sendRosterAction(action, agent) {
+  try { ws.send(JSON.stringify({ type: 'roster', action, agent })); }
+  catch { /* not attached */ }
+}
+
+// Its own element with a data attribute, never on `.face` (a portrait drop
+// target) and never a bare card click. Only a sleeping row is offered "hide";
+// a revealed hidden row is offered "unhide" instead.
+function hideButtonHtml(r) {
+  if (hiddenAgentNames.includes(r.agent)) {
+    return `<button type="button" class="agent-hide" data-roster-action="unhide" title="Show this agent in the list again">unhide</button>`;
+  }
+  return hideButtonFor(r)
+    ? `<button type="button" class="agent-hide" data-roster-action="hide" title="Hide this sleeping agent (it comes back when it wakes)">hide</button>`
+    : '';
+}
+
+// Delegated on #agents. No stopPropagation: test/renderer-mouse-passthrough.test.js
+// forbids it on any mouse listener. Nothing above #agents listens for a click, and
+// a card-click handler on `.agent` must ignore a click whose target is inside
+// `.agent-hide`.
+agentsEl.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest && e.target.closest('.agent-hide');
+  const row = btn && btn.closest('.agent');
+  if (!btn || !row || !row.dataset.agent) return;
+  sendRosterAction(btn.dataset.rosterAction === 'unhide' ? 'unhide' : 'hide', row.dataset.agent);
+});
+
+document.getElementById('roster-show-hidden').addEventListener('click', () => {
+  showHiddenAgents = !showHiddenAgents;
+  renderRoster();
+});
+
 function renderRoster() {
+  const showBtnEl = document.getElementById('roster-show-hidden');
+  showBtnEl.hidden = true;   // Active tab only; the Active branch below un-hides it when n > 0
   const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
 
   if (activeRosterTab === 'inactive') {
@@ -1213,8 +1255,25 @@ function renderRoster() {
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
   const counts = instanceCounts(latestParty);
 
-  agentsEl.innerHTML = rows.map(r =>
-    `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}">` +
+  // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
+  // ever draws a hide flag on an awake agent. The host stays authoritative:
+  // its `hidden` frame replaces this list wholesale.
+  hiddenAgentNames = reconcileHidden(hiddenAgentNames, rows).hidden;
+  const nHidden = hiddenCount(rows, hiddenAgentNames);
+  if (nHidden === 0) showHiddenAgents = false;   // nothing left to reveal
+  const shown = visibleRows(rows, hiddenAgentNames, showHiddenAgents);
+  const showBtn = document.getElementById('roster-show-hidden');
+  showBtn.hidden = nHidden === 0;
+  showBtn.textContent = showHiddenAgents ? `hide hidden (${nHidden})` : `show hidden (${nHidden})`;
+  if (shown.length === 0) {
+    agentsEl.innerHTML = '<div class="empty">Every agent here is asleep and hidden.</div>';
+    return;
+  }
+
+  agentsEl.innerHTML = shown.map(r =>
+    `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
+      (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
+      hideButtonHtml(r) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}</div>` +
       `<div class="meta"><div class="name" title="${escapeHtml(r.agent)}">${escapeHtml(r.agent)}` +
         countBadgeHtml(r.agent, counts) + `</div>` +
@@ -2632,6 +2691,8 @@ function handleControl(msg) {
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
+    // The persisted hidden set (BACKLOG #14), before the first paint.
+    hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
     // Before renderRoster, so the first paint already carries the careers and
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
@@ -2647,6 +2708,12 @@ function handleControl(msg) {
   }
   if (msg.type === 'mood') {
     roster.set(msg.agent, msg);
+    renderRoster();
+    return;
+  }
+  if (msg.type === 'hidden') {
+    // The host's set replaces ours wholesale (BACKLOG #14).
+    hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
     renderRoster();
     return;
   }

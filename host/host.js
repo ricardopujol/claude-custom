@@ -28,6 +28,7 @@ const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor } = require('./portraits');
 const { handlePortraitMessage } = require('./portrait-upload');
+const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
 const { wholeRoster, scanProjects } = require('./roster-index');
@@ -352,6 +353,9 @@ const cooldowns = createCooldowns({ store });
 // attribution cannot be given one later, so the field goes in now while it is
 // one line rather than an archaeology problem.
 const bugVault = createBugVault({ store, project: CWD });
+// BACKLOG #14: agents the user has hidden from the Active roster, per project.
+// The host is authoritative -- see host/hidden-agents.js.
+const hiddenAgents = createHiddenAgents({ store, project: CWD });
 // Dexter F2: this is called while building the `hello` frame inside
 // `wss.on('connection')`, which has NO catch above it -- unlike control-frame
 // dispatch, which `handleFrame` wraps. The host owns the pty, so a throw here
@@ -738,6 +742,26 @@ function handlePortraitUpload(msg) {
     };
     broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
   }
+}
+
+// {type:'roster', action:'hide'|'unhide', agent} (BACKLOG #14). BROADCAST like
+// the portrait upload above: two windows on one project share the hidden set.
+// A refused hide (the agent woke between the click and now) still re-broadcasts
+// the set, so the asking window redraws to the truth rather than guessing.
+function broadcastHidden() {
+  broadcastControl({ type: 'hidden', hidden: hiddenAgents.list() });
+}
+function handleRosterMessage(msg) {
+  if (!validRosterMsg(msg)) return;
+  if (msg.action === 'hide') {
+    const out = hiddenAgents.hide(msg.agent, mood.roster());
+    if (!out.ok) console.log('[host] hide refused:', msg.agent, '-', out.reason);
+    else if (out.persisted === false) console.log('[host] hidden agents could not be saved:', msg.agent);
+  } else {
+    const out = hiddenAgents.unhide(msg.agent);
+    if (out.persisted === false) console.log('[host] hidden agents could not be saved:', msg.agent);
+  }
+  broadcastHidden();
 }
 
 // Per-agent career stats: tokens spent and time worked IN THIS PROJECT, across
@@ -1351,7 +1375,12 @@ term.onData((data) => {
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
 // owns the clock and the transitions stay reproducible in tests.
-mood.on('change', ({ agent, state }) => broadcastControl({ type: 'mood', ...describe(agent, state) }));
+mood.on('change', ({ agent, state }) => {
+  broadcastControl({ type: 'mood', ...describe(agent, state) });
+  // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
+  // applies the same rule itself, but the host persists it and is authoritative.
+  if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
+});
 const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
@@ -1513,6 +1542,9 @@ wss.on('connection', (ws) => {
     style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
+    // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
+    // window never starts with a flag on an agent that is awake.
+    hidden: (hiddenAgents.reconcile(mood.roster()), hiddenAgents.list()),
     running: processes.list(),
     party: mood.stack(),
     // The scrape wins once it has anything; permission_mode off the hook
@@ -1754,6 +1786,10 @@ wss.on('connection', (ws) => {
     }
     if (msg.type === 'portrait') {
       handlePortraitUpload(msg);
+      return;
+    }
+    if (msg.type === 'roster') {
+      handleRosterMessage(msg);
       return;
     }
     if (msg.type === 'fog') {

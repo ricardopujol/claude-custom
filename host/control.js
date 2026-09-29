@@ -61,6 +61,9 @@ const CONTROL_TYPES = new Set([
   // twice in this repo already (#24's `drop`, #29's `bugvault`), both times
   // by resolving this exact list in favour of one side. `portrait` is FF7's.
   'bugvault', 'projects', 'open', 'style', 'portrait',
+  // BACKLOG #14: {type:'roster', action:'hide'|'unhide', agent}. Absent from
+  // this list, a hide click would be typed into the session as JSON.
+  'roster',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
