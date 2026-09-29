@@ -64,6 +64,9 @@ const CONTROL_TYPES = new Set([
   // BACKLOG #14: {type:'roster', action:'hide'|'unhide', agent}. Absent from
   // this list, a hide click would be typed into the session as JSON.
   'roster',
+  // BACKLOG #10: open/close an agent's activity log. Listed here or the frame
+  // is typed into the pty (see the comment above).
+  'agent-log',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
@@ -111,7 +114,29 @@ function handleFrame(text, dispatch, writeInput) {
   return { handled: false };
 }
 
+// An agent name is a file name or a hook payload's agent_type -- somebody
+// else's string. It is only ever COMPARED with names the host already holds,
+// never joined into a path, but it is still bounded and typed before use.
+const MAX_AGENT_NAME = 200;
+
+/**
+ * `{ action, agent }` for a well-formed agent-log request, else `null`.
+ * `open` needs an agent; `close` may omit it (it closes whatever is open).
+ */
+function validAgentLogRequest(msg) {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return null;
+  const { action, agent } = msg;
+  const named = typeof agent === 'string' && agent.length > 0 && agent.length <= MAX_AGENT_NAME;
+  if (action === 'open') return named ? { action, agent } : null;
+  if (action === 'close') {
+    if (agent === undefined || agent === null) return { action, agent: null };
+    return named ? { action, agent } : null;
+  }
+  return null;
+}
+
 module.exports = {
+  validAgentLogRequest, MAX_AGENT_NAME,
   validResizeDims, parseControlFrame, handleFrame,
   MIN_TERMINAL_DIM, MAX_TERMINAL_DIM, CONTROL_TYPES,
 };

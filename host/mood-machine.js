@@ -560,6 +560,9 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state }));
   // Sizes of the per-host bookkeeping, for the test that it stays bounded.
   machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size });
+  // Whether this machine watched the run with that agent_id end, for the agent
+  // log's "finished" (host/agent-log-session.js). Bounded by REMEMBER_MAX.
+  machine.watchedEnd = agentId => typeof agentId === 'string' && endedIds.has(agentId);
   // The live invocation tree, read-only, for tests and diagnostics.
   machine.invocations = () => invs.map(i => ({
     id: i.id, name: i.name, key: i.key, agentId: i.agentId,

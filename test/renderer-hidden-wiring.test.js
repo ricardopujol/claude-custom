@@ -41,11 +41,17 @@ test('a click sends a roster control frame and the type is on the allow-list', (
   assert.ok(require('../host/control').CONTROL_TYPES.has('roster'));
 });
 
+// Merged with PR #64: the one write is setRosterHtml (it keeps live avatar
+// videos across a repaint), and paintAgents is its only caller, so every roster
+// paint still passes the unchanged-markup check first.
 test('Dexter F1: #agents markup is written in exactly one place, behind repaintNeeded', () => {
-  const writes = SRC.match(/agentsEl\.innerHTML\s*=/g) || [];
-  assert.strictEqual(writes.length, 1, 'every roster paint must go through paintAgents');
-  const fn = SRC.slice(SRC.indexOf('function paintAgents'), SRC.indexOf('function paintAgents') + 200);
-  assert.match(fn, /repaintNeeded\(lastAgentsHtml, html\)[\s\S]*agentsEl\.innerHTML = html/);
+  assert.strictEqual((SRC.match(/agentsEl\.innerHTML\s*=/g) || []).length, 0,
+    'nothing assigns #agents innerHTML directly: setRosterHtml is the one write');
+  const calls = SRC.match(/(?<!function )setRosterHtml\(/g) || [];
+  assert.strictEqual(calls.length, 1, 'every roster paint must go through paintAgents');
+  const at = SRC.indexOf('function paintAgents');
+  const fn = SRC.slice(at, SRC.indexOf('\n}', at));
+  assert.match(fn, /repaintNeeded\(lastAgentsHtml, html\)[\s\S]*setRosterHtml\(html\)/);
 });
 
 test('Dexter F5: the click handler asks rosterActionFromClick and sends what it returns', () => {

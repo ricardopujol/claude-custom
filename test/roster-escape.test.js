@@ -18,7 +18,7 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'u
 // faceHtml, EXECUTED rather than pattern-matched: a pattern test for
 // `${r.agent}` passed while the same name reached the row raw through the
 // portrait's initials (Miguel, #49 review). Lifted out of the source with
-// escapeHtml and FF7's PORTRAIT_TIER_TITLE, which it needs, so the real
+// escapeHtml and the portraitMedia module it delegates to, so the real
 // function runs.
 function lift(start, end) {
   const i = src.indexOf(start);
@@ -26,10 +26,10 @@ function lift(start, end) {
   const j = src.indexOf(end, i);
   return src.slice(i, j + end.length);
 }
-const faceHtml = new Function(
+const faceHtml = new Function('portraitMedia',
   lift('const escapeHtml = ', '[c]));') + '\n' +
-  lift('const PORTRAIT_TIER_TITLE = ', '\n};') + '\n' +
-  lift('function faceHtml(', '\n}') + '\nreturn faceHtml;')();
+  'const agentImagesEnabled = true;\n' +
+  lift('function faceHtml(', '\n}') + '\nreturn faceHtml;')(require('../app/portrait-media-display'));
 
 const HOSTILE = '"><img src=x onerror=alert(1)>';
 

@@ -26,11 +26,13 @@ const { createTerminalState } = require('./terminal-state');
 const { killTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
-const { portraitFor } = require('./portraits');
-const { handlePortraitMessage } = require('./portrait-upload');
+const { portraitFor, globalPortrait } = require('./portraits');
+const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
+const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats } = require('./agent-stats');
+const { createLogSession } = require('./agent-log-session');
 const { wholeRoster, scanProjects } = require('./roster-index');
 const { lifetimeAgentTokens, readCacheSeed } = require('./agent-stats-cache');
 const { readSessionModel, defaultProjectsDir, createSessionModelRefresher } = require('./session-model');
@@ -53,7 +55,7 @@ const { parsePermissionMode, MODES } = require('./mode');
 const { readSessionHook, readStatus } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
-const { validResizeDims, handleFrame } = require('./control');
+const { validResizeDims, handleFrame, validAgentLogRequest } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
@@ -334,7 +336,9 @@ const PORTRAITS_DIR =
 // app/assets/portrait-default.* does not exist on disk
 // today, deliberately, so most installs land on the text placeholder until
 // someone adds one.
-const UPLOADS_DIR = path.join(HARNESS_DIR, 'portraits');
+// CLAUDE_CUSTOM_UPLOADS lets a probe point the uploads at a throwaway folder
+// instead of the developer's real pictures (Miguel I1, PR #64).
+const UPLOADS_DIR = process.env.CLAUDE_CUSTOM_UPLOADS || path.join(HARNESS_DIR, 'portraits');
 const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
 const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
@@ -718,10 +722,53 @@ function handleDrop(msg, ws) {
 // dispatchControl -- two windows on one project share a roster, and one of
 // them silently disagreeing about whose upload just landed, or why one was
 // refused, is worse than a redraw.
+// What the Style tab's "Default agent picture" row shows: set or not, never
+// blank, and the file's own name so the row can say where the picture came from.
+function globalPortraitInfo() {
+  const g = globalPortrait(UPLOADS_DIR);
+  return g ? { set: true, file: g.file, media: g.media } : { set: false, file: null, media: null };
+}
+
+// A file-tier change under _global alters what EVERY face without its own
+// picture resolves to, so re-describe all of them rather than guessing which.
+function repaintAllPortraits() {
+  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state) });
+  lastRosterIndex = {
+    ...lastRosterIndex,
+    agents: lastRosterIndex.agents.map(a => ({ ...a, portrait: portraitOf(a.agent, 'sleeping') })),
+  };
+  broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
+}
+
+// Every project window is its own host, but the uploads folder is install-wide:
+// a change to the global picture made in ANOTHER window must reach this one, or
+// its idle faces keep pointing at a deleted file (Dexter F3, PR #64). `quiet`
+// tells the renderer to update the Style row without announcing a change this
+// window's user did not make.
+watchGlobalDir(path.join(UPLOADS_DIR, '_global'), () => {
+  broadcastControl({ type: 'portrait', global: true, ok: true, quiet: true, globalPortrait: globalPortraitInfo() });
+  repaintAllPortraits();
+});
+
+// {type:'portrait', action:'set-global'|'reset-global'[, path]}: the user's
+// default picture for every agent (BACKLOG C #3). BROADCAST for the same
+// reason as the per-agent upload above.
+function handleGlobalPortrait(msg) {
+  const out = handleGlobalPortraitMessage(msg, {
+    uploadsDir: UPLOADS_DIR,
+    stat: (p) => fs.lstatSync(p),
+    resolve: () => (globalPortrait(UPLOADS_DIR) || {}).path || null,
+  });
+  if (!out.reply.ok) console.log('[host] global portrait refused:', msg && msg.action, '-', out.reply.reason);
+  broadcastControl({ type: 'portrait', ...out.reply, globalPortrait: globalPortraitInfo() });
+  if (out.changed) repaintAllPortraits();
+}
+
 function handlePortraitUpload(msg) {
   const out = handlePortraitMessage(msg, {
     uploadsDir: UPLOADS_DIR,
-    stat: (p) => fs.statSync(p),
+    // lstat, not stat: a symlink is refused, never followed (Miguel S1, PR #64).
+    stat: (p) => fs.lstatSync(p),
     resolve: (agent, state) => portraitOf(agent, state).path,
     liveState: (agent) => {
       const row = mood.roster().find(r => r.agent === agent);
@@ -1557,6 +1604,7 @@ wss.on('connection', (ws) => {
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
+    globalPortrait: globalPortraitInfo(),
     running: processes.list(),
     party: mood.stack(),
     // The scrape wins once it has anything; permission_mode off the hook
@@ -1660,6 +1708,16 @@ wss.on('connection', (ws) => {
       .catch(() => { /* the next poll will carry it */ });
   }
 
+  // BACKLOG #10: this window's open agent log, if any. One per window, closed
+  // when the window detaches. `running` comes from the same invocations the
+  // roster is drawn from, so "live" never disagrees with the card.
+  const agentLog = createLogSession({
+    cwd: CWD,
+    invocations: () => mood.invocations(),
+    watchedEnd: (agentId) => mood.watchedEnd(agentId),
+    send: (frame) => sendControl(ws, frame),
+  });
+
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
 
@@ -1721,6 +1779,22 @@ wss.on('connection', (ws) => {
       // the same value before the vault could tell them apart.
       const result = applyVaultAction(bugVault, msg);
       broadcastControl({ type: 'bugvault', ...vaultPayload(), error: result.ok ? null : result.error });
+      return;
+    }
+    if (msg.type === 'agent-log') {
+      // Read-only: opens a transcript the CLI already wrote, never touches it.
+      const req = validAgentLogRequest(msg);
+      if (!req) {
+        console.log('[host] rejected agent-log request:', msg.action);
+        return;
+      }
+      if (req.action === 'open') {
+        agentLog.open(req.agent).catch((err) => {
+          console.log('[host] agent-log open failed:', err && err.message);
+        });
+      } else {
+        agentLog.close();
+      }
       return;
     }
     if (msg.type === 'projects') {
@@ -1797,7 +1871,8 @@ wss.on('connection', (ws) => {
       return;
     }
     if (msg.type === 'portrait') {
-      handlePortraitUpload(msg);
+      if (msg.action === 'set-global' || msg.action === 'reset-global') handleGlobalPortrait(msg);
+      else handlePortraitUpload(msg);
       return;
     }
     if (msg.type === 'roster') {
@@ -1906,6 +1981,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     clients.delete(ws);
+    agentLog.close();
     console.log(`[host] client detached (${clients.size} remain)`);
     // NOTE: the pty deliberately keeps running. This is the detachable-session
     // property the phone/Remote Control workflow depends on.

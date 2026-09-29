@@ -1,16 +1,17 @@
 'use strict';
 /**
- * Portrait lookup — convention over configuration, three tiers deep.
+ * Portrait lookup — convention over configuration, tiers deep.
  *
  * Resolved per (agent, state), highest tier wins:
  *
  *   1. UPLOADED  .harness/portraits/<agent>/<state>.<ext>      (user-supplied)
  *                .harness/portraits/<agent>/default.<ext>      (per-agent fallback)
  *   2. FORGE     portraits/<agent>/<state>.png                 (generated, existing)
- *                portraits/_default/<state>.png                (one character for everyone)
+ *   3. GLOBAL    .harness/portraits/_global/default.<ext>      (the user's default for everyone)
+ *   4. FORGE     portraits/_default/<state>.png                (one character for everyone)
  *                portraits/_default/default.png
- *   3. SHIPPED   app/assets/portrait-default.<ext>             (bundled with the app)
- *   4. TEXT      initials-on-a-hue placeholder                 (always available)
+ *   5. SHIPPED   app/assets/portrait-default.<ext>             (bundled with the app)
+ *   6. TEXT      initials-on-a-hue placeholder                 (always available)
  *
  * The FOUR STATES stay in the data model even where only one asset exists per
  * agent -- ext resolution collapses to one file reused across every state,
@@ -20,7 +21,7 @@
  *
  * A display that can't say where a picture came from is this project's
  * signature defect (absence reported as a confident answer). So every file
- * result carries `tier` -- 'uploaded' | 'forge' | 'shipped' -- and every
+ * result carries `tier` -- 'uploaded' | 'forge' | 'global' | 'shipped' -- and every
  * placeholder carries `tier: 'text'`. Nothing here decides UI wording; that
  * lives in app/renderer.js's faceHtml.
  *
@@ -38,7 +39,18 @@ const BUILTIN_STATES = ['sleeping', 'working', 'happy', 'stressed'];
 // not "whatever readdir felt like today".
 const MEDIA_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'mp4'];
 const VIDEO_EXTENSIONS = new Set(['webm', 'mp4']);
+// Reserved agent segment holding the user-set global default picture.
+const GLOBAL_AGENT = '_global';
 const mediaKindFor = ext => (VIDEO_EXTENSIONS.has(ext) ? 'video' : 'image');
+
+// `_global` is the folder of the global default picture, not an agent. The
+// filesystem it lives on folds case and trims trailing dots and spaces
+// (NTFS), so `_GLOBAL`, `_global.` and `_global ` are the same directory:
+// the check compares the name the way the filesystem does (Dexter F4 /
+// Miguel I3, PR #64).
+function isReservedAgent(name) {
+  return typeof name === 'string' && name.replace(/[. ]+$/, '').toLowerCase() === GLOBAL_AGENT;
+}
 
 // Agent names key straight into a filesystem path. A name is only ever a single
 // path segment; anything else is refused rather than resolved.
@@ -93,14 +105,22 @@ function findAsset(dir, base) {
   for (const ext of MEDIA_EXTENSIONS) {
     const file = path.join(dir, `${base}.${ext}`);
     try {
-      if (fs.statSync(file).isFile()) return { path: file, ext };
+      const st = fs.statSync(file);
+      if (st.isFile()) return { path: file, ext, mtimeMs: st.mtimeMs };
     } catch { /* try the next extension */ }
   }
   return null;
 }
 
 function fileResult(tier, agent, state, hit) {
-  return { kind: 'file', tier, media: mediaKindFor(hit.ext), agent, state, path: hit.path };
+  // `mtimeMs` lets the display bust the image cache when a picture is replaced
+  // by one of the same extension; `fallback` is what the face draws instead of
+  // the file when agent images are turned off (BACKLOG C #18).
+  const { initials, hue } = placeholderFor(agent);
+  return {
+    kind: 'file', tier, media: mediaKindFor(hit.ext), agent, state, path: hit.path,
+    mtimeMs: hit.mtimeMs, fallback: { initials, hue },
+  };
 }
 
 // Tier 1: a real person's own upload, copied in by host/portrait-upload.js.
@@ -116,24 +136,24 @@ function uploadedFor(safeAgent, safeState, uploadsDir) {
 // where a future "one generated character for everyone" lands. PNG only: the
 // forge has never written anything else, and `findAsset` still needs an
 // extension list, so this one is pinned rather than reusing the full set.
-function forgeFor(safeAgent, safeState, portraitsDir) {
+function pngHit(file) {
+  try {
+    const st = fs.statSync(file);
+    return st.isFile() ? { path: file, ext: 'png', mtimeMs: st.mtimeMs } : null;
+  } catch { return null; }
+}
+
+function forgeOwnFor(safeAgent, safeState, portraitsDir) {
   if (!portraitsDir) return null;
-  const own = path.join(portraitsDir, safeAgent, `${safeState}.png`);
-  try {
-    if (fs.statSync(own).isFile()) return { kind: 'file', tier: 'forge', media: 'image', agent: safeAgent, state: safeState, path: own };
-  } catch { /* fall through */ }
+  const hit = pngHit(path.join(portraitsDir, safeAgent, `${safeState}.png`));
+  return hit ? fileResult('forge', safeAgent, safeState, hit) : null;
+}
 
-  const sharedState = path.join(portraitsDir, '_default', `${safeState}.png`);
-  try {
-    if (fs.statSync(sharedState).isFile()) return { kind: 'file', tier: 'forge', media: 'image', agent: safeAgent, state: safeState, path: sharedState };
-  } catch { /* fall through */ }
-
-  const sharedDefault = path.join(portraitsDir, '_default', 'default.png');
-  try {
-    if (fs.statSync(sharedDefault).isFile()) return { kind: 'file', tier: 'forge', media: 'image', agent: safeAgent, state: safeState, path: sharedDefault };
-  } catch { /* fall through */ }
-
-  return null;
+function forgeSharedFor(safeAgent, safeState, portraitsDir) {
+  if (!portraitsDir) return null;
+  const hit = pngHit(path.join(portraitsDir, '_default', `${safeState}.png`))
+    || pngHit(path.join(portraitsDir, '_default', 'default.png'));
+  return hit ? fileResult('forge', safeAgent, safeState, hit) : null;
 }
 
 // Tier 3: a picture shipped with the app itself, for the majority of installs
@@ -146,16 +166,35 @@ function shippedFor(safeAgent, safeState, shippedDir) {
   return hit ? fileResult('shipped', safeAgent, safeState, hit) : null;
 }
 
+// The user-set default picture for EVERY agent (BACKLOG C #3), stored by the
+// ordinary uploader under the reserved agent segment `_global`. Returns
+// { path, ext, file, media } or null when none is set.
+function globalPortrait(uploadsDir) {
+  if (!uploadsDir) return null;
+  const hit = findAsset(path.join(uploadsDir, GLOBAL_AGENT), 'default');
+  return hit ? { ...hit, file: path.basename(hit.path), media: mediaKindFor(hit.ext) } : null;
+}
+
 function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}) {
   const safeAgent = safeSegment(agent);
   const safeState = safeSegment(state);
   if (!safeAgent || !safeState) return placeholderFor(agent);
+  // `_global` is the folder of the global default, not an agent: a real agent
+  // that happens to carry the name must not read it as its own upload.
+  if (isReservedAgent(safeAgent)) return placeholderFor(agent);
 
   const uploaded = uploadedFor(safeAgent, safeState, uploadsDir);
   if (uploaded) return fileResult('uploaded', safeAgent, safeState, uploaded);
 
-  const forged = forgeFor(safeAgent, safeState, portraitsDir);
-  if (forged) return forged;
+  const forgedOwn = forgeOwnFor(safeAgent, safeState, portraitsDir);
+  if (forgedOwn) return forgedOwn;
+
+  // The user's own explicit choice beats the generated shared character.
+  const global = globalPortrait(uploadsDir);
+  if (global) return fileResult('global', safeAgent, safeState, global);
+
+  const forgedShared = forgeSharedFor(safeAgent, safeState, portraitsDir);
+  if (forgedShared) return forgedShared;
 
   const shipped = shippedFor(safeAgent, safeState, shippedDir);
   if (shipped) return shipped;
@@ -165,5 +204,5 @@ function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}
 
 module.exports = {
   portraitFor, placeholderFor, listStates, BUILTIN_STATES,
-  safeSegment, MEDIA_EXTENSIONS,
+  safeSegment, MEDIA_EXTENSIONS, GLOBAL_AGENT, globalPortrait, isReservedAgent,
 };
