@@ -11,13 +11,25 @@
  *                                  Node hook host/loadout-hook.js READS it with
  *                                  a plain fs read on every Agent spawn.
  *
- * THAT IS THE WHOLE LIST. The four entries that used to stand here --
- * loadout.json, vault.json, map.json and stats.json -- named files that had
- * NEVER BEEN WRITTEN. Verified by grepping for each store key across host/ and
- * app/: 'loadout' 0 references, 'map' 0, 'stats' 0. (loadout.json has since
- * been BUILT, in the tool belt change; the other three still have no producer.)
- * The one real key then, 'cooldowns', was not in the list at all, so the header
- * named four files that did not exist and omitted the one that did.
+ *   .harness/state/vault.json      host/bugvault.js, STORE_KEY 'vault' (the bug
+ *                                  vault; irreplaceable, so it opts in to
+ *                                  withLock and readState).
+ *   .harness/state/council.json    host/host.js reads and writes 'council' (the
+ *                                  seated models).
+ *   .harness/state/provider.json   host/host.js READS 'provider'. Nothing in
+ *                                  this repo writes it; a missing file is the
+ *                                  default, 'claude-max'.
+ *   'look-global'                  written by Electron MAIN, app/main.js UI_KEY,
+ *                                  not by the host (see below).
+ *
+ * The list above was re-derived by grepping host/ and app/ for every store key
+ * (STORE_KEY / UI_KEY constants and store.read/write/update calls), and
+ * test/store.test.js now does that grep on every run and fails if a key in use
+ * is not named here. This header used to say "THAT IS THE WHOLE LIST" while
+ * naming two files; before that it named four -- loadout.json, vault.json,
+ * map.json and stats.json -- that had NEVER BEEN WRITTEN, and omitted the one
+ * real key, 'cooldowns'. Of those four, loadout.json and vault.json have since
+ * been built; 'map' and 'stats' still have zero references anywhere.
  *
  * It was a roadmap written in the present tense, and it cost real time:
  *
