@@ -52,6 +52,6 @@ test('the panel markup and the module are in the page, the module before rendere
 test('renderer.js reaches the module only through its one published name', () => {
   const uses = src.match(/agentLogDisplay\.\w+/g) || [];
   assert.ok(uses.length > 0);
-  const known = new Set(['emptyLog', 'openLog', 'closeLog', 'applyFrame', 'renderAgentLog', 'shouldFollow']);
+  const known = new Set(['emptyLog', 'openLog', 'closeLog', 'applyFrame', 'renderAgentLog', 'shouldFollow', 'paint']);
   for (const u of uses) assert.ok(known.has(u.split('.')[1]), u);
 });

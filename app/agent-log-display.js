@@ -50,6 +50,7 @@ function emptyLog() {
     source: null, reason: null,
     entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
     running: false, done: false, tracked: true,
+    render: 'rebuild', added: 0,
   };
 }
 
@@ -86,7 +87,7 @@ function applyFrame(model, frame) {
 
   if (frame.source === null) {
     return {
-      ...model, waiting: false, source: null,
+      ...model, waiting: false, source: null, render: 'rebuild', added: 0,
       reason: typeof frame.reason === 'string' && frame.reason ? frame.reason : 'no-transcript',
       entries: [], dropped: 0, unknown: 0, skippedBytes: 0,
       running: frame.running === true, done: false,
@@ -98,12 +99,24 @@ function applyFrame(model, frame) {
   const fresh = (Array.isArray(frame.entries) ? frame.entries : []).map(normalizeEntry);
   let entries = (reset ? [] : model.entries).concat(fresh);
   let dropped = reset ? 0 : model.dropped;
+  let capped = false;
   if (entries.length > MAX_ENTRIES) {
     dropped += entries.length - MAX_ENTRIES;
     entries = entries.slice(entries.length - MAX_ENTRIES);
+    capped = true;
   }
+  // HOW THE WINDOW SHOULD DRAW THIS, so it never rebuilds what it can extend:
+  // a rebuild throws away the reader's text selection (Miguel M3, PR #63 -- a
+  // live log could not have a command copied out of it, being redrawn every
+  // tick). Rows are only ever APPENDED to a list that is already on screen;
+  // anything that changes what is above the last row -- a reset, a cap drop, a
+  // first row replacing the "empty so far" line, a different source, an
+  // absence before it -- is a rebuild.
+  const onScreen = !model.waiting && model.source === frame.source && model.entries.length > 0;
+  const render = reset || capped || !onScreen ? 'rebuild' : fresh.length > 0 ? 'append' : 'status';
   return {
     ...model, waiting: false, source: frame.source, reason: null,
+    render, added: render === 'append' ? fresh.length : 0,
     entries, dropped,
     unknown: isCount(frame.unknown) ? frame.unknown : (reset ? 0 : model.unknown),
     // How much of the transcript's START the host did not send (it opens a big
@@ -162,30 +175,19 @@ function formatBytes(n) {
 
 function plural(n, one, many) { return n === 1 ? one : many; }
 
-/** The log panel's HTML, or '' when no log is open. */
-function renderAgentLog(model) {
-  if (!model || !model.open) return '';
-  const agent = String(model.agent);
+/** The status word beside the agent's name: '' when there is no transcript. */
+function statusText(model) {
+  if (!model || !model.open || model.source === null) return '';
+  return model.running ? 'live' : model.done ? 'finished' : model.tracked === false ? 'latest run' : 'reading';
+}
 
-  let status = '';
-  if (model.source !== null) {
-    status = model.running ? 'live' : model.done ? 'finished' : model.tracked === false ? 'latest run' : 'reading';
-  }
-  const head =
-    `<div class="alog-head">` +
-      `<button type="button" class="alog-close" data-agent-log-close title="Close the log">&larr;</button>` +
-      `<span class="alog-title" title="${escapeHtml(agent)}">${escapeHtml(agent)}</span>` +
-      `<span class="alog-status">${status}</span>` +
-    `</div>`;
+/** The rows for these entries (also what an append adds). */
+function renderRows(entries) {
+  return entries.map(entryHtml).join('');
+}
 
-  if (model.waiting) {
-    return head + `<div class="alog-body"><div class="alog-none">waiting for the host…</div></div>`;
-  }
-  if (model.source === null) {
-    return head + `<div class="alog-body"><div class="alog-none">${escapeHtml(absenceText(agent, model.reason))}</div></div>`;
-  }
-
-  const src = `<div class="alog-src" title="${escapeHtml(model.source)}">${escapeHtml(basename(model.source))}</div>`;
+/** The notes above the rows (what is not shown, what is unrecognised), as HTML. */
+function renderNotes(model) {
   const notes = [];
   if (model.skippedBytes > 0) {
     notes.push(`the first ${formatBytes(model.skippedBytes)} of this transcript are not shown`);
@@ -196,11 +198,34 @@ function renderAgentLog(model) {
   if (model.unknown > 0) {
     notes.push(`${model.unknown} ${plural(model.unknown, 'line', 'lines')} of a kind this view cannot show as a call or message (dimmed)`);
   }
-  const noteHtml = notes.map(n => `<div class="alog-note">${escapeHtml(n)}</div>`).join('');
-  const body = model.entries.length === 0
+  return notes.map(n => `<div class="alog-note">${escapeHtml(n)}</div>`).join('');
+}
+
+/** The log panel's HTML, or '' when no log is open. */
+function renderAgentLog(model) {
+  if (!model || !model.open) return '';
+  const agent = String(model.agent);
+
+  const head =
+    `<div class="alog-head">` +
+      `<button type="button" class="alog-close" data-agent-log-close title="Close the log">&larr;</button>` +
+      `<span class="alog-title" title="${escapeHtml(agent)}">${escapeHtml(agent)}</span>` +
+      `<span class="alog-status">${statusText(model)}</span>` +
+    `</div>`;
+
+  if (model.waiting) {
+    return head + `<div class="alog-body"><div class="alog-none">waiting for the host…</div></div>`;
+  }
+  if (model.source === null) {
+    return head + `<div class="alog-body"><div class="alog-none">${escapeHtml(absenceText(agent, model.reason))}</div></div>`;
+  }
+
+  const src = `<div class="alog-src" title="${escapeHtml(model.source)}">${escapeHtml(basename(model.source))}</div>`;
+  const rows = model.entries.length === 0
     ? `<div class="alog-none">the transcript is empty so far</div>`
-    : model.entries.map(entryHtml).join('');
-  return head + src + `<div class="alog-body">${noteHtml}${body}</div>`;
+    : renderRows(model.entries);
+  return head + src +
+    `<div class="alog-body"><div class="alog-notes">${renderNotes(model)}</div><div class="alog-rows">${rows}</div></div>`;
 }
 
 /**
@@ -216,7 +241,58 @@ function shouldFollow(metrics) {
   return scrollHeight - scrollTop - clientHeight <= FOLLOW_SLACK_PX;
 }
 
-const api = { emptyLog, openLog, closeLog, applyFrame, renderAgentLog, shouldFollow, MAX_ENTRIES, FOLLOW_SLACK_PX };
+/**
+ * Draw `model` into `el`, extending what is on screen when the model says it can
+ * (`model.render`), and rebuilding otherwise. Returns which it did.
+ *
+ * Only APPENDING keeps the reader's text selection alive: setting innerHTML on
+ * a container replaces every node in it. `data-count` on the rows container is
+ * how many rows are on screen, checked before an append so a repeated or
+ * missed paint rebuilds instead of duplicating or losing rows.
+ *
+ * Scroll: pinned to the bottom if the reader was at (or near) it BEFORE this
+ * paint, otherwise left where they put it.
+ */
+function paint(el, model) {
+  const body = el.querySelector('.alog-body');
+  const follow = shouldFollow(body
+    ? { scrollTop: body.scrollTop, clientHeight: body.clientHeight, scrollHeight: body.scrollHeight }
+    : null);
+  const keep = body ? body.scrollTop : 0;
+
+  let how = 'rebuild';
+  const rows = el.querySelector('.alog-rows');
+  const canExtend = model && model.open && body && rows &&
+    (model.render === 'append' || model.render === 'status') &&
+    Number(rows.dataset.count) === model.entries.length - (model.render === 'append' ? model.added : 0);
+  if (canExtend) {
+    how = model.render;
+    if (how === 'append') {
+      rows.insertAdjacentHTML('beforeend', renderRows(model.entries.slice(model.entries.length - model.added)));
+      rows.dataset.count = String(model.entries.length);
+    }
+    const status = el.querySelector('.alog-status');
+    if (status && status.textContent !== statusText(model)) status.textContent = statusText(model);
+    const notes = el.querySelector('.alog-notes');
+    const html = renderNotes(model);
+    if (notes && notes.dataset.sig !== html) { notes.innerHTML = html; notes.dataset.sig = html; }
+  } else {
+    el.innerHTML = renderAgentLog(model);
+    const fresh = el.querySelector('.alog-rows');
+    if (fresh) fresh.dataset.count = String(model.entries.length);
+    const notes = el.querySelector('.alog-notes');
+    if (notes) notes.dataset.sig = renderNotes(model);
+  }
+
+  const after = el.querySelector('.alog-body');
+  if (after) after.scrollTop = follow ? after.scrollHeight : keep;
+  return how;
+}
+
+const api = {
+  paint, emptyLog, openLog, closeLog, applyFrame, renderAgentLog, renderRows, renderNotes, statusText,
+  shouldFollow, MAX_ENTRIES, FOLLOW_SLACK_PX,
+};
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.

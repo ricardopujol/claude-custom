@@ -72,9 +72,24 @@ app.on('ready', async () => {
     const snap = [];
     for (const f of \${JSON.stringify(frames)}) {
       m = d.applyFrame(m, f);
-      document.getElementById('agent-log').innerHTML = d.renderAgentLog(m);
+      d.paint(document.getElementById('agent-log'), m);
       snap.push(document.querySelectorAll('.alog-entry').length);
     }
+    // M3 (PR #63 review): a text selection must survive a live append.
+    const rowsBefore = document.querySelector('.alog-rows');
+    const sum = document.querySelector('.alog-text .alog-sum');
+    const range = document.createRange();
+    range.selectNodeContents(sum);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    const selected = sel.toString();
+    m = d.applyFrame(m, { type: 'agent-log', agent: 'probe-agent', source: \${JSON.stringify(frames[0].source)}, reset: false,
+      entries: [{ ts: null, kind: 'text', name: 'assistant', summary: 'appended live' }], running: true, done: false, tracked: true });
+    const how = d.paint(document.getElementById('agent-log'), m);
+    r.appendMode = how;
+    r.sameRowsNode = document.querySelector('.alog-rows') === rowsBefore;
+    r.selectionSurvived = selected.length > 0 && sel.toString() === selected;
+    r.rowsAfterAppend = document.querySelectorAll('.alog-entry').length;
     r.entriesAfterEachFrame = snap;
     r.imgElements = document.querySelectorAll('img').length;
     r.titleTouched = document.title !== 'alog';
@@ -108,7 +123,8 @@ app.on('ready', async () => {
   console.log('window result      :', JSON.stringify(r, null, 2));
   const ok = r.published === 'object' && r.leaks.length === 0 && r.imgElements === 0 && !r.titleTouched
     && r.firstCommandText === HOSTILE && r.errorRows === 1 && r.dimmedUnknown === 1
-    && r.summaries[r.summaries.length - 1] === 'the second message';
+    && r.summaries[r.summaries.length - 2] === 'the second message'
+    && r.appendMode === 'append' && r.sameRowsNode && r.selectionSurvived && r.rowsAfterAppend === 6;
   console.log(ok ? 'PASS' : 'FAIL');
   process.exit(ok ? 0 : 1);
 }

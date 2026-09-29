@@ -228,6 +228,111 @@ test('PROPERTY: no string in a frame ever reaches the markup as a tag or a quote
   }), { numRuns: 300 });
 });
 
+// ---- Miguel M3, PR #63: a live log is extended, not rebuilt, so a selection survives ----
+
+// Just enough DOM for paint(): a container whose innerHTML setter is a REBUILD
+// (every child replaced) and whose children are recognised by class. The real
+// thing is measured in Chromium by verify/probe-agent-log.js.
+function fakeContainer() {
+  const c = { ops: [], els: {}, html: '' };
+  const mk = () => ({ dataset: {}, scrollTop: 0, clientHeight: 100, scrollHeight: 1000, textContent: '', innerHTML: '',
+    inserted: [], insertAdjacentHTML(pos, h) { this.inserted.push([pos, h]); } });
+  Object.defineProperty(c, 'innerHTML', {
+    get() { return c.html; },
+    set(v) {
+      c.html = v; c.ops.push('rebuild'); c.els = {};
+      for (const [sel, cls] of [['.alog-body', 'alog-body'], ['.alog-rows', 'alog-rows'], ['.alog-status', 'alog-status'], ['.alog-notes', 'alog-notes']]) {
+        if (v.includes(cls)) c.els[sel] = mk();
+      }
+    },
+  });
+  c.querySelector = sel => c.els[sel] || null;
+  return c;
+}
+
+test('M3: the first paint builds; later frames only APPEND the new rows, on the same nodes', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry({ summary: 'a' }), entry({ summary: 'b' })], running: true, done: false }));
+  assert.strictEqual(d.paint(c, m), 'rebuild');
+  const rows = c.querySelector('.alog-rows');
+  m = d.applyFrame(m, frame({ reset: false, running: true, done: false, entries: [entry({ summary: 'c' })] }));
+  assert.strictEqual(m.render, 'append');
+  assert.strictEqual(m.added, 1);
+  assert.strictEqual(d.paint(c, m), 'append');
+  assert.strictEqual(c.ops.length, 1, 'no second rebuild');
+  assert.strictEqual(c.querySelector('.alog-rows'), rows, 'the rows container is the same node (a selection lives in it)');
+  assert.strictEqual(rows.inserted.length, 1);
+  assert.strictEqual(rows.inserted[0][0], 'beforeend');
+  assert.ok(rows.inserted[0][1].includes('>c<') && !rows.inserted[0][1].includes('>a<'), 'only the new row is inserted');
+  assert.strictEqual(rows.dataset.count, '3');
+});
+
+test('M3: a status-only frame changes the status text and touches no rows', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], running: true, done: false }));
+  d.paint(c, m);
+  m = d.applyFrame(m, frame({ reset: false, entries: [], running: false, done: true }));
+  assert.strictEqual(m.render, 'status');
+  assert.strictEqual(d.paint(c, m), 'status');
+  assert.strictEqual(c.querySelector('.alog-status').textContent, 'finished');
+  assert.strictEqual(c.querySelector('.alog-rows').inserted.length, 0);
+  assert.strictEqual(c.ops.length, 1);
+});
+
+test('M3: anything that changes what is above the last row is a rebuild', () => {
+  const base = d.applyFrame(d.openLog('rev'), frame({ entries: [entry({ summary: 'a' })] }));
+  const cases = {
+    'a reset': d.applyFrame(base, frame({ reset: true, entries: [entry({ summary: 'z' })] })),
+    'another source': d.applyFrame(base, frame({ reset: false, source: '/p/other.jsonl', entries: [entry()] })),
+    'the cap dropping rows': d.applyFrame(
+      d.applyFrame(d.openLog('rev'), frame({ entries: Array.from({ length: d.MAX_ENTRIES }, () => entry()) })),
+      frame({ reset: false, entries: [entry()] })),
+    'the first row replacing "empty so far"': d.applyFrame(d.applyFrame(d.openLog('rev'), frame({ entries: [] })), frame({ reset: false, entries: [entry()] })),
+    'an absence before it': d.applyFrame(d.applyFrame(base, { type: 'agent-log', agent: 'rev', source: null, reason: 'unreadable' }), frame({ reset: true, entries: [entry()] })),
+  };
+  for (const [name, m] of Object.entries(cases)) assert.strictEqual(m.render, 'rebuild', name);
+  assert.strictEqual(d.openLog('rev').render, 'rebuild');
+  assert.strictEqual(d.closeLog().render, 'rebuild');
+});
+
+test('M3: painting the same append model twice cannot duplicate rows -- the count check forces a rebuild', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry({ summary: 'a' })] }));
+  d.paint(c, m);
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry({ summary: 'b' })] }));
+  assert.strictEqual(d.paint(c, m), 'append');
+  assert.strictEqual(d.paint(c, m), 'rebuild', 'the DOM already holds 2 rows: an append would make 3');
+});
+
+test('M3: notes are only rewritten when they change', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()], unknown: 1 }));
+  d.paint(c, m);
+  const notes = c.querySelector('.alog-notes');
+  notes.innerHTML = 'SENTINEL';
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry()], unknown: 1 }));
+  d.paint(c, m);
+  assert.strictEqual(notes.innerHTML, 'SENTINEL', 'unchanged notes are left alone');
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry()], unknown: 2 }));
+  d.paint(c, m);
+  assert.match(notes.innerHTML, /2 lines of a kind/);
+});
+
+test('M3: paint keeps following when at the bottom, and leaves a reader who scrolled up where they are', () => {
+  const c = fakeContainer();
+  let m = d.applyFrame(d.openLog('rev'), frame({ entries: [entry()] }));
+  d.paint(c, m);
+  const body = c.querySelector('.alog-body');
+  body.scrollTop = 900;                            // clientHeight 100, scrollHeight 1000: at the bottom
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry()] }));
+  d.paint(c, m);
+  assert.strictEqual(body.scrollTop, body.scrollHeight);
+  body.scrollTop = 200;                            // scrolled up
+  m = d.applyFrame(m, frame({ reset: false, entries: [entry()] }));
+  d.paint(c, m);
+  assert.strictEqual(body.scrollTop, 200);
+});
+
 test('the close button is a real, addressable control', () => {
   const html = d.renderAgentLog(d.openLog('rev'));
   assert.match(html, /<button[^>]*data-agent-log-close/);

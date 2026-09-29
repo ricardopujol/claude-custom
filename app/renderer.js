@@ -1255,16 +1255,10 @@ function renderAgentLogPanel() {
   if (!agentLogEl) return;
   const panel = agentLogEl.closest('.panel');
   if (panel) panel.classList.toggle('logging', agentLog.open);
-  // Measured BEFORE the redraw: a reader who scrolled up keeps their place, one
-  // at the bottom keeps following.
-  const before = agentLogEl.querySelector('.alog-body');
-  const follow = window.agentLogDisplay.shouldFollow(before
-    ? { scrollTop: before.scrollTop, clientHeight: before.clientHeight, scrollHeight: before.scrollHeight }
-    : null);
-  const keep = before ? before.scrollTop : 0;
-  agentLogEl.innerHTML = window.agentLogDisplay.renderAgentLog(agentLog);
-  const after = agentLogEl.querySelector('.alog-body');
-  if (after) after.scrollTop = follow ? after.scrollHeight : keep;
+  // Appends rows to what is on screen when it can (so a text selection
+  // survives a live log), rebuilds otherwise, and keeps the reader's scroll
+  // place -- all in the display module's paint function.
+  window.agentLogDisplay.paint(agentLogEl, agentLog);
 }
 
 function sendAgentLog(action, agent) {
