@@ -280,3 +280,98 @@ test('the shared settings file is STILL written, because probes read it by that 
   assert.ok(fs.existsSync(path.join(dir, 'harness-settings.json')),
     'the fixed-name file must keep being written for the probes');
 });
+
+// --- the tool belt's hook (BACKLOG #17) ---------------------------------------
+
+const loadoutHook = {
+  nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+  scriptPath: 'C:\\proj\\claude-custom\\host\\loadout-hook.js',
+  stateDir: 'C:\\proj\\claude-custom\\.harness\\state',
+};
+
+test('the tool belt adds a SECOND PreToolUse entry for Agent|Task only', () => {
+  const s = buildHarnessSettings({ ...opts, loadoutHook });
+  assert.strictEqual(s.hooks.PreToolUse.length, 2);
+  const entry = s.hooks.PreToolUse[1];
+  assert.strictEqual(entry.matcher, 'Agent|Task');
+  assert.strictEqual(entry.hooks.length, 1);
+  assert.strictEqual(entry.hooks[0].type, 'command');
+  assert.ok(entry.hooks[0].command.includes('loadout-hook.js'));
+  assert.ok(entry.hooks[0].command.includes('--state'));
+  // Node startup is paid per matched call: Bash must never be in this matcher.
+  assert.ok(!/Bash/.test(entry.matcher));
+});
+
+test('the native helper entry is byte-identical with or without the tool belt', () => {
+  const without = buildHarnessSettings(opts);
+  const withHook = buildHarnessSettings({ ...opts, loadoutHook });
+  assert.strictEqual(JSON.stringify(withHook.hooks.PreToolUse[0]), JSON.stringify(without.hooks.PreToolUse[0]));
+  for (const event of Object.keys(without.hooks)) {
+    if (event === 'PreToolUse') continue;
+    assert.strictEqual(JSON.stringify(withHook.hooks[event]), JSON.stringify(without.hooks[event]), event);
+  }
+});
+
+test('without loadoutHook, PreToolUse is exactly what it always was', () => {
+  assert.strictEqual(buildHarnessSettings(opts).hooks.PreToolUse.length, 1);
+});
+
+test('the tool belt command carries no backslash at all (a POSIX shell eats them inside quotes)', () => {
+  const s = buildHarnessSettings({ ...opts, loadoutHook });
+  const command = s.hooks.PreToolUse[1].hooks[0].command;
+  assert.ok(!command.includes('\\'), command);
+  assert.ok(command.includes('C:/proj/claude-custom/host/loadout-hook.js'), command);
+  assert.ok(command.includes('C:/proj/claude-custom/.harness/state'), command);
+  assert.ok(command.startsWith('"C:/Program Files/nodejs/node.exe" '), command);
+});
+
+test('a bare `node` works as nodePath (the Electron host runs it from PATH)', () => {
+  const s = buildHarnessSettings({ ...opts, loadoutHook: { ...loadoutHook, nodePath: 'node' } });
+  assert.ok(s.hooks.PreToolUse[1].hooks[0].command.startsWith('"node" '));
+});
+
+test('the tool belt hook has a timeout, and it is short', () => {
+  const t = buildHarnessSettings({ ...opts, loadoutHook }).hooks.PreToolUse[1].hooks[0].timeout;
+  assert.strictEqual(typeof t, 'number');
+  assert.ok(t > 0 && t <= 10);
+});
+
+test('a half-specified loadoutHook adds nothing rather than a broken command', () => {
+  for (const bad of [{}, { nodePath: 'node' }, { ...loadoutHook, stateDir: '' }, { ...loadoutHook, scriptPath: undefined }, 'x', null]) {
+    assert.strictEqual(buildHarnessSettings({ ...opts, loadoutHook: bad }).hooks.PreToolUse.length, 1, JSON.stringify(bad));
+  }
+});
+
+test('F7/S5: a $, backtick or quote in the install path reaches node verbatim under a POSIX hook shell', () => {
+  // Inside double quotes a POSIX shell expands $work and `cmd` and ends the
+  // string at a bare ". `slashes` fixes the backslash trap but not these.
+  const { spawnSync } = require('child_process');
+  const probe = spawnSync('bash', ['-c', 'printf ok'], { encoding: 'utf8' });
+  if (probe.status !== 0 || probe.stdout !== 'ok') return;          // no POSIX shell here: nothing to be an oracle
+  const hard = 'D:\\$work\\`id`\\a"b\\claude-custom';
+  const entry = buildHarnessSettings({ ...opts, loadoutHook: {
+    nodePath: 'node', scriptPath: `${hard}\\host\\loadout-hook.js`, stateDir: `${hard}\\.harness\\state`,
+  } }).hooks.PreToolUse[1];
+  const r = spawnSync('bash', ['-c', `printf '%s\\n' ${entry.hooks[0].command}`], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
+  const words = r.stdout.split('\n').slice(0, 4);
+  assert.deepStrictEqual(words, [
+    'node',
+    'D:/$work/`id`/a"b/claude-custom/host/loadout-hook.js',
+    '--state',
+    'D:/$work/`id`/a"b/claude-custom/.harness/state',
+  ]);
+});
+
+test('an ordinary path is quoted exactly as before (no escapes added where none are needed)', () => {
+  const s = buildHarnessSettings({ ...opts, loadoutHook });
+  assert.strictEqual(s.hooks.PreToolUse[1].hooks[0].command,
+    '"C:/Program Files/nodejs/node.exe" "C:/proj/claude-custom/host/loadout-hook.js" --state "C:/proj/claude-custom/.harness/state"');
+});
+
+test('the tool belt hook survives being written to disk and read back', () => {
+  const dir = tmpDir('cc-settings-');
+  const file = writeHarnessSettings(dir, { ...opts, loadoutHook }, 7701);
+  const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.strictEqual(parsed.hooks.PreToolUse[1].matcher, 'Agent|Task');
+});

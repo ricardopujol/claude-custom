@@ -74,7 +74,33 @@ function buildStatusLine({ nodePath, scriptPath, userStatusLine }, pipeName) {
   return { padding: 0, ...(user || {}), type: 'command', command };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay } = {}) {
+// The tool belt's hook (BACKLOG #17): rewrites an Agent spawn from the loadout.
+// A SECOND PreToolUse entry, for the subagent tool ONLY. It is a Node script
+// rather than the native helper because it has to read state and decide, and
+// the helper is transport-only and must never block. Node's ~55 ms startup is
+// therefore paid per subagent spawn, never per Read or Bash -- which is why
+// this matcher must stay narrower than PRE_TOOL_MATCHER, not equal to it.
+const LOADOUT_MATCHER = 'Agent|Task';
+const LOADOUT_TIMEOUT_SECONDS = 5;
+
+// Inside double quotes a POSIX shell still expands `$name` and backticks and
+// ends the string at a bare `"`, so an install under `D:\$work` reaches node as
+// `D://...` (PR #68, Dexter F7 / Miguel S5). Those three are backslash-escaped.
+// A path without them is quoted exactly as before, so the common case is
+// byte-identical; the escape assumes the POSIX shell this file already assumes
+// for the backslash trap. (The two older entries still use plain `quote`.)
+const quotePosixSafe = (s) => `"${String(s).replace(/(["$`])/g, '\\$1')}"`;
+
+/** The tool belt entry, or null when it is not fully specified. */
+function buildLoadoutEntry(loadoutHook) {
+  const h = loadoutHook && typeof loadoutHook === 'object' ? loadoutHook : null;
+  if (!h || !h.nodePath || !h.scriptPath || !h.stateDir) return null;
+  const q = (p) => quotePosixSafe(slashes(p));
+  const command = `${q(h.nodePath)} ${q(h.scriptPath)} --state ${q(h.stateDir)}`;
+  return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
+}
+
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -112,6 +138,8 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay } = {}) {
     },
   };
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
+  const loadoutEntry = buildLoadoutEntry(loadoutHook);
+  if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
   return settings;
 }
 

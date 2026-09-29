@@ -113,6 +113,58 @@ test('the B2(a) cleartext limit stays written down in the vault module', () => {
     'including the one-line statement a reader will actually remember');
 });
 
+test('host.js wires the tool belt: the hook, the handshake and both control types (BACKLOG #17)', () => {
+  // host.js is not unit-testable, so the wiring is pinned as text: a belt whose
+  // hook is never registered, or whose hello never carries `loadout`, is a
+  // feature that draws a UI and does nothing to the spawn.
+  const host = read('host/host.js');
+  assert.match(host, /loadoutHook:\s*\{/, 'writeHarnessSettings must be given the loadout hook');
+  assert.match(host, /loadout-hook\.js/);
+  assert.match(host, /loadout:\s*loadoutControl\.payload\(\)/, 'hello must carry the loadout');
+  assert.match(host, /watchLoadout\(\{[\s\S]{0,200}loadoutControl\.changed\(\)[\s\S]{0,80}broadcastControl\(frame\)/,
+    'another host\'s change must reach this host\'s windows (Dexter F1)');
+  assert.match(host, /msg\.type === 'loadout-equip' \|\| msg\.type === 'loadout-unequip'/);
+  assert.match(host, /broadcastControl\(loadoutControl\.handle\(msg\)\)/,
+    'the answer must reach every window, and must not be reduced to a per-client reply');
+});
+
+test('renderer.js wires the tool belt: hello seeds it, loadout frames update it, only <button>s act (BACKLOG #17)', () => {
+  const r = read('app/renderer.js');
+  assert.match(r, /loadoutState = loadoutDisplay\.reduce\(loadoutState, msg\);\s*hooksOn = msg\.hooks;\s*renderAgentStats/,
+    'hello must seed the belts before the first roster paint');
+  assert.match(r, /msg\.type === 'loadout'\)\s*\{\s*loadoutState = loadoutDisplay\.reduce/);
+  assert.match(r, /closest\('button\[data-loadout-toggle\], button\[data-loadout-act\]'\)/,
+    'only real <button>s act -- a control inside a card must never open the card');
+  assert.match(r, /beltHtml\(row\.agent, \{ resolved: entry \? entry\.resolved : undefined \}\)/,
+    'an Inactive label row (resolved:false) must be handed to the belt as such (Dexter F2)');
+  assert.match(r, /hooksOn = msg\.hooks;/, 'hello.hooks must reach the belt (Dexter F3)');
+  assert.match(r, /loadoutState = loadoutDisplay\.ask\(loadoutState, action\);\s*try \{ ws\.send/,
+    'a window remembers what it asked before sending (Dexter F6)');
+  // The belt rides in the ONE delegated card-click handler (the #66 contract),
+  // asked after hide/unhide and before the log: a belt click is handled and
+  // stops there. Its own listener registered first would also shadow the
+  // handler the #63/#66 wiring tests read.
+  const at = r.indexOf("agentsEl.addEventListener('click'");
+  const card = r.slice(at, r.indexOf('\n});', at));
+  const roster = card.indexOf('rosterActionFromClick(e.target)');
+  const belt = card.indexOf('if (beltClick(e.target)) return;');
+  const log = card.indexOf('cardClickAgent(e.target)');
+  assert.ok(roster !== -1 && belt > roster && log > belt,
+    'the card-click handler asks hide/unhide, then the belt, then the log');
+  assert.strictEqual((r.match(/beltHtml\(/g) || []).length, 3, 'defined once, drawn on both the Active and Inactive card');
+  assert.ok(read('app/renderer.html').includes('<script src="./loadout-display.js"></script>'));
+});
+
+test('the tool belt hook stays cheap to start: it requires only the loadout core and the payload contract', () => {
+  // Node startup is paid per Agent spawn (~55 ms measured). This pins the
+  // require graph so a future import of the store or the host does not quietly
+  // add to it. Source text, hence here rather than in test/loadout-hook.test.js
+  // (a code-shape assertion aborts the Stryker dry run).
+  const src = read('host/loadout-hook.js');
+  const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map(m => m[1]).sort();
+  assert.deepStrictEqual(requires, ['./loadout', './payload-contract', 'fs', 'path']);
+});
+
 test('main.js still depends on createVault never throwing, and says so', () => {
   // The invariant G3 moved: `createVault` constructs for ANY bytes on disk,
   // because main.js does not wrap it and a throw there means no window opens.

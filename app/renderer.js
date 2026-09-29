@@ -1160,6 +1160,37 @@ function agentModelHtml(agent) {
   return `<div class="agent-model" title="${escapeHtml(m.title)}">${escapeHtml(m.text)}</div>`;
 }
 
+// The tool belt (BACKLOG #17): every decision, and the HTML, lives in
+// app/loadout-display.js. `running` is what lets the picker say the CURRENT run
+// isn't affected -- an equip changes the next spawn only.
+let loadoutState = loadoutDisplay.emptyState();
+// `hooksOn` is hello.hooks (false when the native helper is missing, so the belt's
+// hook is never registered); `facts.resolved === false` marks a roster row known
+// only by its hook label. Either makes the belt unavailable rather than a
+// control that reports success and never applies (Dexter F2, F3).
+let hooksOn;
+function beltHtml(agent, facts) {
+  const running = (instanceCounts(latestParty).get(agent) || 0) > 0;
+  const unavailable = loadoutDisplay.unavailableReason({ hooks: hooksOn, ...facts });
+  return loadoutDisplay.html(loadoutDisplay.view(loadoutState, agent, { running, unavailable }));
+}
+// Called from the roster's ONE card-click handler (below, by paintAgents).
+// True when the click was a belt control and has been handled.
+function beltClick(target) {
+  const btn = target.closest && target.closest('button[data-loadout-toggle], button[data-loadout-act]');
+  const action = btn && loadoutDisplay.clickAction(btn.dataset);
+  if (!action) return false;
+  if (action.kind === 'toggle') {
+    loadoutState = loadoutDisplay.toggle(loadoutState, action.agent);
+    renderRoster();
+    return true;
+  }
+  // Remember what THIS window asked, so only its own refusal is shown (Dexter F6).
+  loadoutState = loadoutDisplay.ask(loadoutState, action);
+  try { ws.send(JSON.stringify(loadoutDisplay.controlMessage(action))); } catch { /* not attached */ }
+  return true;
+}
+
 function countBadgeHtml(agent, counts) {
   // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
   // concurrent run is news.
@@ -1230,6 +1261,7 @@ function inactiveRowHtml(row) {
         unresolvedHtml + unreadableHtml + `</div>` +
       `<div class="state">inactive</div>` +
       tokenHtml +
+      beltHtml(row.agent, { resolved: entry ? entry.resolved : undefined }) +
       `</div>` +
     `</div>`;
 }
@@ -1278,6 +1310,7 @@ function paintAgents(html) {
 agentsEl.addEventListener('click', (e) => {
   const act = rosterActionFromClick(e.target);
   if (act) { sendRosterAction(act.action, act.agent); return; }
+  if (beltClick(e.target)) return;
   // A click anywhere on a card EXCEPT its face or a control inside it opens
   // the log: the face is the portrait drop/upload target. Which agent the
   // click is for is decided in the display module, where it is tested.
@@ -1353,6 +1386,7 @@ function renderRoster() {
       `<div class="state">${r.state}</div>` +
       agentModelHtml(r.agent) +
       careerHtml(r.agent) +
+      beltHtml(r.agent) +
       `</div>` +
     `</div>`
   ).join(''));
@@ -2979,6 +3013,8 @@ function handleControl(msg) {
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
     rosterIndexPayload = msg.rosterIndex || null;
+    loadoutState = loadoutDisplay.reduce(loadoutState, msg);
+    hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -2986,6 +3022,11 @@ function handleControl(msg) {
     councilWarnings = [];
     renderSeats();
     if (!msg.hooks) console.warn('[renderer] host reports no hook helper — moods will not update');
+    return;
+  }
+  if (msg.type === 'loadout') {
+    loadoutState = loadoutDisplay.reduce(loadoutState, msg);
+    renderRoster();
     return;
   }
   if (msg.type === 'mood') {
