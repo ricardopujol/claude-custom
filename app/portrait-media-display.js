@@ -40,6 +40,8 @@ const TIER_TITLE = {
 };
 
 const IMAGES_OFF_TITLE = 'agent images are turned off';
+// Not yet known is neither on nor off (Dexter F5, PR #64): say so.
+const IMAGES_UNKNOWN_TITLE = 'agent images: reading the setting';
 
 function tierTitle(result) {
   const tier = result && typeof result.tier === 'string' ? result.tier : 'text';
@@ -79,7 +81,8 @@ function mediaElementFor(result, opts) {
   const r = result && typeof result === 'object' ? result : null;
 
   if (!imagesEnabled) {
-    return { tag: 'placeholder', attrs: placeholderAttrs(r, IMAGES_OFF_TITLE) };
+    const known = !!opts && opts.imagesEnabled === false;
+    return { tag: 'placeholder', attrs: placeholderAttrs(r, known ? IMAGES_OFF_TITLE : IMAGES_UNKNOWN_TITLE) };
   }
   if (r && r.kind === 'file' && typeof r.path === 'string' && r.path) {
     const src = fileUrl(r.path, r.mtimeMs);

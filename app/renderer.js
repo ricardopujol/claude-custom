@@ -2678,7 +2678,15 @@ function applyAgentImages(enabled) {
 
 function refreshAgentImages() {
   if (!(window.harness && window.harness.avatar)) return;
-  window.harness.avatar.getImagesEnabled().then(applyAgentImages).catch(() => applyAgentImages(true));
+  window.harness.avatar.getImagesEnabled().then(applyAgentImages).catch(() => {
+    // A failed read is UNKNOWN, not "on" (Dexter F5, PR #64): keep the state
+    // null, say so on the button, and let a click try again.
+    const btn = document.getElementById('images-toggle');
+    if (btn) {
+      btn.removeAttribute('aria-pressed');
+      btn.title = 'Could not read the agent images setting. Click to try again.';
+    }
+  });
 }
 
 const imagesToggleBtn = document.getElementById('images-toggle');
@@ -2686,6 +2694,7 @@ if (imagesToggleBtn) {
   if (!(window.harness && window.harness.avatar)) imagesToggleBtn.hidden = true;
   imagesToggleBtn.addEventListener('click', () => {
     if (typeof agentImagesEnabled === 'boolean') setAgentImages(!agentImagesEnabled);
+    else refreshAgentImages();
   });
 }
 if (window.harness && window.harness.avatar) {
