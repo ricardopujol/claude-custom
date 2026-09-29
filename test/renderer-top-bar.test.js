@@ -72,7 +72,7 @@ test('hello reads the live model', () => {
 test('a switch is planned before anything is typed, and typed only through send() (Miguel #2)', () => {
   const body = fnBody('requestSwitch');
   assert.match(body, /planSwitch\(/);
-  assert.match(body, /inputState\(screenLines\(\)\)/, 'the input box must be checked (Dexter #4)');
+  assert.match(body, /inputState\(lines, /, 'the input box must be checked (Dexter #4)');
   assert.ok(body.indexOf('if (!plan.ok)') < body.indexOf('send('), 'refusal must come before any send');
   assert.doesNotMatch(body, /ws\.send/, 'bypassing send() swallowed a closed socket silently');
   assert.match(body, /\\x15/, 'Ctrl-U must clear the draft first');
@@ -123,4 +123,79 @@ test('Esc closes an open menu without reaching the terminal, and only then', () 
   assert.ok(i !== -1);
   const line = JS.slice(i - 80, JS.indexOf('\n', i + 60));
   assert.match(line, /closeTopBarMenus\(\)/);
+});
+
+// --- the dropdowns (Ricardo, 2026-09-26: the model menu hid the whole header
+// and showed half a menu; the effort menu was painted over by the layout) ---
+
+test('the menus live OUTSIDE the header, whose overflow:hidden clipped them', () => {
+  const header = HTML.slice(HTML.indexOf('<header>'), HTML.indexOf('</header>'));
+  assert.doesNotMatch(header, /class="tb-menu"/);
+  assert.match(HTML, /id="tb-model-menu" class="tb-menu"/);
+  assert.match(HTML, /id="tb-effort-menu" class="tb-menu"/);
+});
+
+test('the menus are position:fixed, placed by menuPlacement against the chip', () => {
+  const rule = /\.tb-menu \{([^}]*)\}/.exec(HTML);
+  assert.ok(rule, 'a .tb-menu rule');
+  assert.match(rule[1], /position:\s*fixed/);
+  assert.match(fnBody('toggleMenu'), /menuPlacement\(/);
+});
+
+test('opening the model menu focuses its field WITHOUT scrolling the header', () => {
+  // focus() scrolls its overflow:hidden ancestors to reveal the target: the
+  // header slid sideways and every chip vanished.
+  assert.doesNotMatch(JS, /tbModelCustom\.focus\(\)/);
+  assert.match(fnBody('toggleMenu'), /focus\(\{ preventScroll: true \}\)/);
+});
+
+test('a click inside a detached menu does not count as "outside"', () => {
+  const i = JS.indexOf("document.addEventListener('mousedown'");
+  assert.ok(i !== -1);
+  const handler = JS.slice(i, JS.indexOf('});', i));
+  assert.match(handler, /\.tb-menu/);
+});
+
+// --- vim, the read-back and stale notices (Dexter r2 N2, N5; Miguel r2) -----
+
+test('vim mode is latched from the screen and passed to every screen judgement', () => {
+  assert.match(JS, /vimInsertShown\(/);
+  const body = fnBody('requestSwitch');
+  assert.match(body, /inputState\(lines, \{ vim: vimSeen \}\)/);
+  assert.match(body, /plan\.enterInsert/);
+});
+
+test('the CR is sent only after the box reads back exactly the command', () => {
+  const body = fnBody('requestSwitch');
+  const check = body.indexOf('commandTyped(');
+  const cr = body.indexOf("input('\\r')");
+  assert.ok(check !== -1, 'a read-back before Enter');
+  assert.ok(cr > check, 'Enter comes after the read-back');
+});
+
+test('a truth clears a TIMEOUT notice it has made stale (Dexter r2 N5)', () => {
+  assert.match(branch('liveModel'), /clearStaleNotice\('model'\)/);
+  assert.match(branch('effort'), /clearStaleNotice\('effort'\)/);
+});
+
+// --- PR #51 review ------------------------------------------------------------
+
+test('the vim latch is fed by terminal OUTPUT, not only at click time (Dexter #51 F1)', () => {
+  // Learned only on a click, "vim on, Esc, FIRST click" still read 'ready' and
+  // typed the command into NORMAL mode as motions.
+  const i = JS.indexOf('term.onWriteParsed(');
+  assert.ok(i !== -1, 'a write hook feeds the latch');
+  assert.match(JS.slice(i, JS.indexOf('});', i)), /vimInsertShown\(/);
+});
+
+test('a refused read-back clears only ITS OWN pending request (Dexter #51 F5)', () => {
+  const body = fnBody('requestSwitch');
+  assert.match(body, /pending === request/);
+  assert.doesNotMatch(body, /pending\.value === plan\.value/);
+});
+
+test('a refused read-back puts vim back in NORMAL if it left it (Miguel #51 3)', () => {
+  const body = fnBody('requestSwitch');
+  const refusal = body.slice(body.indexOf('commandTyped('));
+  assert.match(refusal, /if \(plan\.enterInsert\)[^\n]*input\('\\x1b'\)/);
 });

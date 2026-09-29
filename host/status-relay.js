@@ -18,9 +18,28 @@
  * not stop the host hearing the truth. The two run concurrently.
  */
 const net = require('net');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const FORWARD_TIMEOUT_MS = 300;
+// How long the user's own statusLine command may run (Dexter r2 N6). Without
+// a bound a hung command (a network call, say) was awaited forever, and each
+// re-fire left one more of it behind.
+const USER_TIMEOUT_MS = 5000;
+
+// The whole tree on Windows: with shell:true the user's command runs UNDER
+// cmd.exe, and killing only cmd.exe leaves the command itself running. On
+// POSIX the child stays in the relay's own process group (Dexter #51 F7), so
+// a CLI that kills the group still reaches it; `sh -c` execs a single command,
+// so killing the child is killing the command.
+function killTree(child) {
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    } else {
+      child.kill('SIGKILL');
+    }
+  } catch { /* already gone */ }
+}
 
 function parseArgs(argv) {
   const out = { pipe: null, then: null };
@@ -53,7 +72,7 @@ function forward(pipe, input) {
   });
 }
 
-function runUser(encoded, input) {
+function runUser(encoded, input, { timeoutMs = USER_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     if (!encoded) { resolve(0); return; }
     let command;
@@ -66,8 +85,10 @@ function runUser(encoded, input) {
       resolve(1);
       return;
     }
-    child.on('error', () => resolve(1));
-    child.on('close', code => resolve(typeof code === 'number' ? code : 1));
+    const timer = setTimeout(() => { killTree(child); resolve(1); }, timeoutMs);
+    timer.unref();
+    child.on('error', () => { clearTimeout(timer); resolve(1); });
+    child.on('close', (code) => { clearTimeout(timer); resolve(typeof code === 'number' ? code : 1); });
     child.stdin.on('error', () => { /* the user command may not read stdin */ });
     child.stdin.end(input);
   });
@@ -84,8 +105,10 @@ if (require.main === module) {
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (d) => { input += d; });
   process.stdin.on('end', () => {
-    relay(process.argv.slice(2), input).then((code) => { process.exitCode = code; });
+    // Exit explicitly: if killTree failed, the child would otherwise hold the
+    // event loop and the relay would hang with it (Miguel #51 2).
+    relay(process.argv.slice(2), input).then((code) => { process.exit(code); });
   });
 }
 
-module.exports = { parseArgs, relay, forward, runUser };
+module.exports = { parseArgs, relay, forward, runUser, USER_TIMEOUT_MS };

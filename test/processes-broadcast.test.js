@@ -79,3 +79,19 @@ test('tick: before anything was ever sent, the first idle tick announces the sta
   b.tick([], []);
   assert.strictEqual(sent.length, 1);
 });
+
+test('a broadcast that THROWS on the falling edge is retried on the next tick (Dexter, #45 review)', () => {
+  // The retry works only because send() broadcasts BEFORE it records what was
+  // sent. Record first and a throw loses the falling edge for good: the next
+  // tick sees "nothing ran, party unchanged" and the swept row stays on screen.
+  const sent = [];
+  let fail = false;
+  const b = createProcessesBroadcast((msg) => { if (fail) throw new Error('socket gone'); sent.push(msg); });
+  b.send([{ id: 't1' }], ['main']);
+  sent.length = 0;
+  fail = true;
+  assert.throws(() => b.tick([], ['main']));
+  fail = false;
+  b.tick([], ['main']);
+  assert.deepStrictEqual(sent, [{ type: 'processes', running: [], party: ['main'] }]);
+});
