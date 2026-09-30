@@ -401,3 +401,33 @@ test('every password field in the lock panel has a real label', () => {
   assert.ok(html.includes('.sr-only'),
     'and renderer.html must style it as visually hidden rather than dropping it');
 });
+
+// --- host control frames added by worktree tabs ------------------------------
+// A control type missing from CONTROL_TYPES is typed into the pty as literal
+// JSON (happened twice). Each of these must be a known type AND have a
+// dispatch branch in host.js, or the frame is dropped after being classified.
+const { parseControlFrame } = require('../host/control');
+const HOST_SRC = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+
+for (const type of ['stop', 'raise']) {
+  test(`the ${type} frame is a known control type, never pty input`, () => {
+    assert.deepStrictEqual(parseControlFrame(JSON.stringify({ type })), { type });
+  });
+
+  test(`host.js dispatches ${type}`, () => {
+    assert.ok(HOST_SRC.includes(`msg.type === '${type}'`), `dispatchControl must handle ${type}`);
+  });
+}
+
+test('raise answers the sender with raised + a window count, and tells every window', () => {
+  const at = HOST_SRC.indexOf("msg.type === 'raise'");
+  const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));
+  assert.match(branch, /broadcastControl\(\{ type: 'raise' \}\)/);
+  assert.match(branch, /sendControl\(ws, \{ type: 'raised', windows: clients\.size \}\)/);
+});
+
+test('stop runs shutdown() and then exits', () => {
+  const at = HOST_SRC.indexOf("msg.type === 'stop'");
+  const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));
+  assert.ok(branch.indexOf('shutdown()') !== -1 && branch.indexOf('process.exit(0)') > branch.indexOf('shutdown()'));
+});

@@ -47,6 +47,7 @@ const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
 const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook } = require('./style');
 const { hasClaudeHistory } = require('./recent');
+const { projectRoots } = require('./project-roots');
 const { applyLook } = require('./look');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
@@ -106,6 +107,11 @@ function resolveClaude() {
 
 const CLAUDE_BIN = resolveClaude();
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+// CWD is this tab's worktree: the pty, the session lock and everything git.
+// PROJECT_ROOT and STATE_ROOT are the project's (theme, label / look, style):
+// one set shared by every tab of a container. For a flat repo all three are
+// one folder (host/project-roots.js).
+const { projectRoot: PROJECT_ROOT, stateRoot: STATE_ROOT } = projectRoots(process.env, CWD);
 
 // Derived from the project, so two projects can be open at once and reopening
 // a window finds the host it left running. An explicit CLAUDE_CUSTOM_PORT still
@@ -359,7 +365,7 @@ const PORTRAITS_DIR =
 // instead of the developer's real pictures (Miguel I1, PR #64).
 const UPLOADS_DIR = process.env.CLAUDE_CUSTOM_UPLOADS || path.join(HARNESS_DIR, 'portraits');
 const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
-const theme = resolveTheme(CWD, { registryDir: REGISTRY_DIR });
+const theme = resolveTheme(PROJECT_ROOT, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
 const mood = createMoodMachine();
@@ -440,7 +446,7 @@ const describe = (agent, state) => ({ agent, state, portrait: portraitOf(agent, 
 
 // Generated once per project folder and reused by every context window on it.
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
-const background = backgroundFor(CWD, { dir: BACKGROUNDS_DIR });
+const background = backgroundFor(PROJECT_ROOT, { dir: BACKGROUNDS_DIR });
 console.log('[host] background     :', path.basename(background.path), background.created ? '(new)' : '(existing)');
 
 // Backlog #15: a NEW project -- no look.json and no Claude history for the
@@ -448,7 +454,7 @@ console.log('[host] background     :', path.basename(background.path), backgroun
 // before the CLI is spawned (the spawn is what creates the history). Every
 // other state is left exactly as found; host/style.js seedLookIfNew decides.
 try {
-  const seeded = seedLookIfNew({ cwd: CWD, hasHistory: () => hasClaudeHistory(CWD),
+  const seeded = seedLookIfNew({ cwd: STATE_ROOT, hasHistory: () => hasClaudeHistory(STATE_ROOT),
     terminalForeground: theme.terminal && theme.terminal.foreground });
   console.log('[host] look seed      :', seeded.seeded ? `new project, generated ${seeded.look.appColor}` : seeded.reason);
 } catch (err) {
@@ -462,7 +468,7 @@ try {
 // `theme` is the registry theme with the look merged in (host/look.js), so the
 // view paints a look with the same applyTheme it paints a registry theme with.
 function currentStyle() {
-  const r = resolveStyle(CWD, background.path);
+  const r = resolveStyle(STATE_ROOT, background.path);
   return {
     background: r.background, source: r.source, setAt: r.setAt, look: r.look,
     theme: applyLook(theme, r.look),
@@ -1818,7 +1824,7 @@ wss.on('connection', (ws) => {
     // `branch` is null for "not a git repo"; for a detached HEAD it is a
     // `~`-prefixed short SHA (see host/git-branch.js) rather than a bare one,
     // so it can never read as a real branch of the same name.
-    project: projectLabel(CWD),
+    project: projectLabel(PROJECT_ROOT),
     branch: branchWas,
     // Extension X1/X4: whether this window has a session or was blocked by
     // another one in the same worktree, other live sessions here, and how far
@@ -2064,6 +2070,21 @@ wss.on('connection', (ws) => {
       overrideSession().catch((err) => console.log('[host] lock-override failed:', err && err.message));
       return;
     }
+    if (msg.type === 'stop') {
+      // A tab closed by hand (worktree tabs). The same teardown SIGTERM runs:
+      // release the lock, end the pty. Authorised like every control frame --
+      // the connection already presented the session token at the handshake.
+      console.log('[host] stop requested');
+      shutdown();
+      process.exit(0);
+    }
+    if (msg.type === 'raise') {
+      // *Go to that session*: every window attached here comes forward, and
+      // the sender learns how many there were (0 would mean nobody to raise).
+      broadcastControl({ type: 'raise' });
+      sendControl(ws, { type: 'raised', windows: clients.size });
+      return;
+    }
     if (msg.type === 'models') {
       // Asynchronous and yielding for the same reason the fog read is: the
       // loop here also accepts the hook helper's named-pipe connection, and
@@ -2171,7 +2192,7 @@ wss.on('connection', (ws) => {
           refuse('no file was given');
           return;
         }
-        const r = setBackground({ source: asked, cwd: CWD });
+        const r = setBackground({ source: asked, cwd: STATE_ROOT });
         if (!r.ok) {
           console.log('[host] style refused :', r.reason);
           refuse(r.reason);
@@ -2182,7 +2203,7 @@ wss.on('connection', (ws) => {
       }
       if (msg.action === 'reset-background') {
         try {
-          resetBackground({ cwd: CWD });
+          resetBackground({ cwd: STATE_ROOT });
         } catch (err) {
           refuse(`could not reset: ${err.message}`);
           return;
@@ -2193,7 +2214,7 @@ wss.on('connection', (ws) => {
       if (msg.action === 'reroll-look') {
         // The Style tab's "Random colours": host/style.js generates and saves,
         // with the same refusals set-look has.
-        const r = rerollLook({ cwd: CWD, terminalForeground: theme.terminal && theme.terminal.foreground });
+        const r = rerollLook({ cwd: STATE_ROOT, terminalForeground: theme.terminal && theme.terminal.foreground });
         if (!r.ok) {
           refuse(r.reason);
           return;
@@ -2204,7 +2225,7 @@ wss.on('connection', (ws) => {
       if (msg.action === 'set-look') {
         // Colours and darkness only -- host/style.js refuses any other key, so
         // this cannot point the background at a file it did not copy in.
-        const r = setLook({ cwd: CWD, patch: msg.look });
+        const r = setLook({ cwd: STATE_ROOT, patch: msg.look });
         if (!r.ok) {
           refuse(r.reason);
           return;
@@ -2347,7 +2368,7 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
 (async () => {
   const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges()]);
   excludedPorts = excluded;
-  lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null };
+  lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null, install: path.join(__dirname, '..') };
   const gate = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
   // Recorded FIRST (Miguel, PR #71 Y1): if anything below throws, the catch
   // must still know a blocked verdict was reached.

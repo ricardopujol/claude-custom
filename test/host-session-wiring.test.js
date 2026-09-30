@@ -108,3 +108,7 @@ test('Y2: a blocked host allocates no port block -- the env is worked out when a
 test('F8: the terminal check re-reads the lock holder, so its own claude is never "another session"', () => {
   assert.match(fnBody('refreshTerminals'), /readHolder\(SESSION_LOCK\)/);
 });
+
+test('the lock owner names this host\'s install dir', () => {
+  assert.match(HOST, /lockOwner = \{[^}]*install: path\.join\(__dirname, '\.\.'\)/);
+});

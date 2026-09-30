@@ -223,3 +223,16 @@ test('every type host.js dispatches is on the control allow-list', () => {
     'host.js dispatches these types, but parseControlFrame does not recognise them, ' +
     'so the frames are written to the pty as literal keystrokes instead');
 });
+
+test('stop and raise frames are control, never typed into the pty', () => {
+  // Worktree tabs. Off CONTROL_TYPES either would be typed as literal JSON
+  // into a session that may run --dangerously-skip-permissions.
+  for (const type of ['stop', 'raise']) {
+    const written = [];
+    let dispatchedWith = null;
+    const result = handleFrame(JSON.stringify({ type }), (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+    assert.strictEqual(result.handled, true, type);
+    assert.deepStrictEqual(written, [], type);
+    assert.deepStrictEqual(dispatchedWith, { type }, type);
+  }
+});

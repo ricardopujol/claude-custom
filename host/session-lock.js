@@ -7,7 +7,7 @@
  * `dev\.git\` for dev, `dev\.git\worktrees\<name>\` for a sibling worktree,
  * `.git\` for a flat repo -- git's own per-worktree directory, so it never
  * shows up in `git status` and dies with the worktree. Contents:
- *   {pid, processStartedAt, startedAt, port, claudePid}
+ *   {pid, processStartedAt, startedAt, port, claudePid, install}
  * `pid` is the HOST, not `claude`: the host owns the pty and dies with it, so a
  * crashed or killed host leaves a lock whose pid is dead. `port` and
  * `claudePid` are for whoever is blocked by it -- who holds it, and where.
@@ -105,6 +105,8 @@ function holderOf(seen) {
     startedAt: finiteOrNull(p.startedAt),
     port: validPort(p.port) ? p.port : null,
     claudePid: validPid(p.claudePid) ? p.claudePid : null,
+    // The install dir of the harness that holds it (additive: older locks lack it).
+    install: typeof p.install === 'string' ? p.install : null,
   };
 }
 
@@ -125,6 +127,8 @@ const record = o => ({
   startedAt: o.startedAt,
   port: o.port,
   claudePid: o.claudePid,
+  // Omitted, not null, when unknown: a lock without it stays byte-identical to an older one.
+  install: typeof o.install === 'string' ? o.install : undefined,
 });
 
 // true when we created it, false when it exists. Any other failure throws.
@@ -152,7 +156,7 @@ function tryCreate(lockPath, owner) {
 /**
  * Take the worktree's session lock for `owner`.
  *   { state: 'held' }
- *   { state: 'blocked', holder: { pid, startedAt, port, claudePid } }
+ *   { state: 'blocked', holder: { pid, startedAt, port, claudePid, install } }
  *   { state: 'unlocked', reason: 'not-a-repo' | 'error', code? }
  */
 async function acquire(lockPath, owner, deps = {}) {
