@@ -150,3 +150,232 @@ test('a reset under a minute away is not "0m"', () => {
   assert.strictEqual(formatCountdown('2026-09-15T16:00:59Z', NOW), '<1m');
   assert.strictEqual(formatCountdown('2026-09-15T16:01:00Z', NOW), '1m');
 });
+
+// =============================================================================
+// KILLS FOR THE 51 SURVIVORS OF THE 2026-09-30 SCOPED STRYKER RUN (Mortimer).
+//
+// Each block names the mutants it kills, because a test written against a
+// survivor and not against a behaviour is how a suite ends up asserting nothing.
+// Mutants left alive on purpose are listed in the 2026-09-30 report: `n === null`
+// in percentOrNull (null < 0 is false, so the branch is invisible), `typeof v ===
+// 'number'` inside finiteOrNull (Number.isFinite already rejects non-numbers),
+// the default 'normal' severity literal, and fill's `pct === null => false`.
+// =============================================================================
+
+const meterFor = (over) => quotaDisplay(ready([win(over)]), NOW).meters[0];
+
+// --- finiteOrNull: strictly a finite NUMBER -----------------------------------
+
+test('a percent that is not a finite number is unknown, whatever it coerces to', () => {
+  // Kills finiteOrNull `-> true` (a string '50' would pass straight through as
+  // the percent) and `&&` -> `||` (NaN and +-Infinity are typeof 'number', so
+  // they would be believed). `Number('50')` is 50 and `Number(null)` is 0: this
+  // file exists to never turn "no value" into a confident number.
+  for (const bad of ['50', '', NaN, Infinity, -Infinity, undefined, {}, [], true]) {
+    const m = meterFor({ percent: bad });
+    assert.strictEqual(m.percent, null, `percent ${String(bad)} must be unknown`);
+    assert.strictEqual(m.text, UNKNOWN, `text for ${String(bad)}`);
+    assert.strictEqual(m.fill, 0);
+    assert.strictEqual(m.tone, 'unknown');
+  }
+});
+
+// --- formatPercent boundaries, pinned ON the edge ------------------------------
+
+test('exactly 1% is "1%", not "<1%"', () => {
+  // Kills `pct < 1` -> `pct <= 1`.
+  assert.strictEqual(meterFor({ percent: 1 }).text, '1%');
+  assert.strictEqual(meterFor({ percent: 0.99 }).text, '<1%');
+});
+
+test('exactly 99% is "99%", not ">99%"', () => {
+  // Kills `pct > 99` -> `pct >= 99`.
+  assert.strictEqual(meterFor({ percent: 99 }).text, '99%');
+  assert.strictEqual(meterFor({ percent: 99.01 }).text, '>99%');
+});
+
+// --- toneFor -------------------------------------------------------------------
+
+test('toneFor of nothing is unknown, and does not throw', () => {
+  // Kills `!w` -> false (TypeError on w.lockedReason) and the 'unknown' literal.
+  assert.strictEqual(toneFor(null), 'unknown');
+  assert.strictEqual(toneFor(undefined), 'unknown');
+});
+
+test('every spelling of a server severity is honoured, in any case', () => {
+  // Kills `sev === 'severe'` -> false, `sev === 'warn'` -> false, and both of
+  // their literals. Percent 10 looks harmless from here, so ONLY the severity
+  // can produce these tones.
+  assert.strictEqual(toneFor({ severity: 'severe', percent: 10 }), 'critical');
+  assert.strictEqual(toneFor({ severity: 'warn', percent: 10 }), 'warn');
+  assert.strictEqual(toneFor({ severity: 'SEVERE', percent: 10 }), 'critical');
+  assert.strictEqual(toneFor({ severity: 'Warning', percent: 10 }), 'warn');
+  assert.strictEqual(toneFor({ severity: 'Critical', percent: 10 }), 'critical');
+});
+
+// --- formatCountdown boundaries ------------------------------------------------
+
+test('a reset at exactly this instant is "due", not "<1m"', () => {
+  // Kills `ms <= 0` -> `ms < 0`.
+  assert.strictEqual(formatCountdown('2026-09-15T16:00:00Z', NOW), 'due');
+});
+
+test('exactly one hour is "1h", not "60m"', () => {
+  // Kills `mins < 60` -> `mins <= 60`, and the `${hours}h` template.
+  assert.strictEqual(formatCountdown('2026-09-15T17:00:00Z', NOW), '1h');
+  assert.strictEqual(formatCountdown('2026-09-15T16:59:00Z', NOW), '59m');
+  assert.strictEqual(formatCountdown('2026-09-15T18:00:00Z', NOW), '2h');
+});
+
+test('exactly one day is "1d", not "24h"', () => {
+  // Kills `hours < 24` -> `hours <= 24`, and the `${days}d` template.
+  assert.strictEqual(formatCountdown('2026-09-16T16:00:00Z', NOW), '1d');
+  assert.strictEqual(formatCountdown('2026-09-16T15:59:00Z', NOW), '23h59m');
+  assert.strictEqual(formatCountdown('2026-09-18T16:00:00Z', NOW), '3d');
+});
+
+// --- quotaDisplay: the three states, exactly -----------------------------------
+
+test('the reading state says so in words', () => {
+  // Kills the 'reading account limits…' literal.
+  assert.strictEqual(quotaDisplay(null, NOW).note, 'reading account limits…');
+  assert.strictEqual(quotaDisplay(undefined, NOW).note, 'reading account limits…');
+});
+
+test('a read that FAILED is absent even when it still carries windows', () => {
+  // Kills `quota.ok === false` -> false (and the `||` -> `&&` twins): a payload
+  // that says ok:false is a failed read no matter what else rides along, and
+  // drawing its windows would be drawing numbers we were told not to trust.
+  const d = quotaDisplay({ ok: false, error: 'stale', windows: [win()] }, NOW);
+  assert.strictEqual(d.state, 'absent');
+  assert.deepStrictEqual(d.meters, []);
+  assert.strictEqual(d.note, 'stale');
+});
+
+test('an ok read with no windows is absent, not a header of zero meters', () => {
+  // Kills `quota.windows.length === 0` -> false and the `&&` regroupings.
+  for (const q of [{ ok: true, windows: [] }, { ok: true }, { ok: true, windows: null },
+                   { ok: true, windows: 'x' }, {}]) {
+    const d = quotaDisplay(q, NOW);
+    assert.strictEqual(d.state, 'absent', JSON.stringify(q));
+    assert.deepStrictEqual(d.meters, []);
+    assert.strictEqual(d.note, 'could not read account limits');
+  }
+});
+
+test('the absent note is the server error, stringified, when there is one', () => {
+  // With an error present it must win over the fallback.
+  assert.strictEqual(quotaDisplay({ ok: false, error: 401 }, NOW).note, '401');
+});
+
+// --- the tooltip, pinned as a whole --------------------------------------------
+
+test('the tooltip is exactly: label, percent, reset, binding flag -- joined by " · "', () => {
+  // Kills every string in the parts list at once: the ' used' suffix, the ' · '
+  // separator, 'resets in', and the binding sentence.
+  assert.strictEqual(meterFor({}).title,
+    '5h: 24% used · resets in 1h37m · currently the binding limit');
+});
+
+test('an unknown percent reads "unknown" in the tooltip, never "0% used"', () => {
+  // Kills `pct === null` -> false in the parts line and the 'unknown' literal.
+  assert.strictEqual(meterFor({ percent: null, isActive: false }).title,
+    '5h: unknown · resets in 1h37m');
+});
+
+test('an unknown reset time reads "reset time unknown"', () => {
+  // Kills `countdown === UNKNOWN` -> false and the literal.
+  assert.strictEqual(meterFor({ resetsAt: null, isActive: false }).title,
+    '5h: 24% used · reset time unknown');
+});
+
+test('a reset already past reads "resetting now", not "resets in due"', () => {
+  // Kills `countdown === 'due'` -> false, the 'due' literal, and the
+  // 'resetting now' literal.
+  assert.strictEqual(meterFor({ resetsAt: '2026-09-15T15:00:00Z', isActive: false }).title,
+    '5h: 24% used · resetting now');
+});
+
+test('the binding sentence appears only for the active window', () => {
+  // Kills `if (w.isActive)` -> true.
+  assert.doesNotMatch(meterFor({ isActive: false }).title, /binding/);
+  assert.doesNotMatch(meterFor({ isActive: undefined }).title, /binding/);
+});
+
+test('a locked window says LOCKED and why -- and an unlocked one says nothing', () => {
+  // Kills `if (w.lockedReason)` -> true / -> false and the template literal.
+  assert.strictEqual(meterFor({ lockedReason: 'limit_reached', isActive: false }).title,
+    '5h: 24% used · resets in 1h37m · LOCKED: limit_reached');
+  assert.doesNotMatch(meterFor({ lockedReason: null }).title, /LOCKED/);
+  assert.doesNotMatch(meterFor({ lockedReason: '' }).title, /LOCKED/);
+});
+
+// --- fill and isActive ---------------------------------------------------------
+
+test('fill follows the percent, is clamped to 100, and is 0 when unknown', () => {
+  // Kills `pct === null` -> true / `!==` (fill stuck at 0), Math.max -> Math.min
+  // (fill stuck at 0), and Math.min(100, ..) -> Math.max(100, ..) (fill never
+  // below 100). Over 100 is drawn full, not overflowing the layout.
+  assert.strictEqual(meterFor({ percent: 24 }).fill, 24);
+  assert.strictEqual(meterFor({ percent: 0 }).fill, 0);
+  assert.strictEqual(meterFor({ percent: 100 }).fill, 100);
+  assert.strictEqual(meterFor({ percent: 140 }).fill, 100);
+  assert.strictEqual(meterFor({ percent: null }).fill, 0);
+  assert.strictEqual(meterFor({ percent: -5 }).fill, 0);
+});
+
+test('isActive is a real boolean, coerced the right way round', () => {
+  // Kills `!!w.isActive` -> `!w.isActive` and -> `w.isActive`.
+  assert.strictEqual(meterFor({ isActive: true }).isActive, true);
+  assert.strictEqual(meterFor({ isActive: 1 }).isActive, true);
+  assert.strictEqual(meterFor({ isActive: false }).isActive, false);
+  assert.strictEqual(meterFor({ isActive: undefined }).isActive, false);
+});
+
+// --- the plain <script> path ---------------------------------------------------
+//
+// THE ONLY WAY TO REACH THE `else` BRANCH: renderer.js loads this file as a
+// <script>, where there is no `module`. `require` never takes that branch, so
+// every mutant on the load-path guard used to survive -- and it is the guard whose
+// failure took the whole header down once (see the IIFE note at the top of
+// app/quota-display.js).
+//
+// `process` is injected into the context ON PURPOSE. Stryker decides which mutant
+// is live by reading process.env.__STRYKER_ACTIVE_MUTANT__ through the global; a
+// bare vm context has no `process`, so a mutant in a file evaluated there never
+// activates (test/renderer-scope.test.js is blind to it for that reason). The
+// real code never touches `process`, so this changes nothing outside a mutation run.
+
+function loadAsScript(sandbox = {}) {
+  const fs = require('fs');
+  const vm = require('node:vm');
+  // The file `require` resolves, evaluated as a script. Resolved rather than named so
+  // this reads the code to RUN it, never to assert on its text: instrumentation
+  // rewrites that text, which is what test/stryker-config.test.js guards against.
+  const src = fs.readFileSync(require.resolve('../app/quota-display'), 'utf8');
+  const ctx = vm.createContext({ process, ...sandbox });
+  vm.runInContext(src, ctx, { filename: 'quota-display-as-script' });
+  return ctx;
+}
+
+test('as a plain <script> with a window, it publishes on the WINDOW', () => {
+  // Kills `typeof module !== 'undefined' && module.exports` -> true / `||` /
+  // `typeof module !== ''` (a ReferenceError: `module` does not exist there),
+  // the emptied else block, and `typeof window !== 'undefined'` -> false (which
+  // would publish on the context global instead of on the window).
+  const w = {};
+  const ctx = loadAsScript({ window: w });
+  assert.strictEqual(typeof w.quotaDisplay, 'function');
+  assert.strictEqual(typeof w.formatQuotaCountdown, 'function');
+  assert.strictEqual(w.quotaDisplay(null).state, 'reading');
+  assert.strictEqual(w.formatQuotaCountdown('2026-09-15T17:00:00Z', NOW), '1h');
+  assert.strictEqual(ctx.quotaDisplay, undefined, 'must not leak onto the global when a window exists');
+  assert.strictEqual(ctx.UNKNOWN, undefined, 'the IIFE must keep its constants private');
+});
+
+test('as a plain <script> with no window, it publishes on the global', () => {
+  // The other side of `typeof window !== 'undefined'`.
+  const ctx = loadAsScript();
+  assert.strictEqual(typeof ctx.quotaDisplay, 'function');
+  assert.strictEqual(typeof ctx.formatQuotaCountdown, 'function');
+});
