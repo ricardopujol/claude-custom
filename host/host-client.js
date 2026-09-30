@@ -18,7 +18,17 @@
  *   'closed before reply'           it hung up on us before answering
  *   'socket error: <message>'       anything else the socket reported
  *   'invalid ...' / 'unsupported control type: <t>'   bad arguments
+ *   OLDER_HOST(type)                it's a host of older code: nothing was sent
+ *
+ * THE FRAME WAITS FOR THE HOST'S HELLO. A host started before `stop` / `raise`
+ * existed doesn't know them, and host/control.js treats a frame of unknown type
+ * as INPUT: sent on open, `{"type":"stop"}` would be typed into that live
+ * session's prompt. Every host of this code lists what it accepts in its hello
+ * (`controls`); the frame goes only to a host that lists its type.
  */
+
+const OLDER_HOST = (type) =>
+  `that session runs an older claude-custom that can't take "${type}" (reopen it to update)`;
 
 // What each frame waits for. `reply` is the control type that answers it;
 // `null` means "the host ends, and its socket closes". A third frame is a
@@ -65,19 +75,25 @@ function sendControl({ port, token, msg, timeoutMs = DEFAULT_TIMEOUT_MS, WebSock
 
     timer = setTimeout(() => finish({ ok: false, error: `timed out after ${wait}ms` }), wait);
 
-    ws.on('open', () => {
-      try {
-        ws.send(JSON.stringify(msg));
-        sent = true;
-      } catch (err) {
-        finish({ ok: false, error: `socket error: ${err && err.message}` });
-      }
-    });
-
     ws.on('message', (raw, isBinary) => {
-      if (isBinary || expected.reply === null) return;    // pty bytes, or nothing to wait for
+      if (isBinary) return;                               // pty bytes
       let parsed;
       try { parsed = JSON.parse(raw.toString()); } catch { return; }
+      if (!sent) {
+        // Nothing goes out before the hello says this host takes it.
+        if (!parsed || parsed.type !== 'hello') return;
+        if (!Array.isArray(parsed.controls) || !parsed.controls.includes(msg.type)) {
+          return finish({ ok: false, error: OLDER_HOST(msg.type) });
+        }
+        try {
+          ws.send(JSON.stringify(msg));
+          sent = true;
+        } catch (err) {
+          finish({ ok: false, error: `socket error: ${err && err.message}` });
+        }
+        return;
+      }
+      if (expected.reply === null) return;                // nothing to wait for but the close
       if (parsed && parsed.type === expected.reply) finish({ ok: true, reply: parsed });
     });
 
@@ -101,4 +117,4 @@ function sendControl({ port, token, msg, timeoutMs = DEFAULT_TIMEOUT_MS, WebSock
   });
 }
 
-module.exports = { sendControl, EXPECTED, DEFAULT_TIMEOUT_MS };
+module.exports = { sendControl, EXPECTED, DEFAULT_TIMEOUT_MS, OLDER_HOST };

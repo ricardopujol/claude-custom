@@ -424,6 +424,16 @@ for (const type of ['stop', 'raise']) {
   });
 }
 
+test('hello tells every client which control types this host accepts', () => {
+  // host/host-client.js sends stop/raise only to a host that lists them: an
+  // older host types an unknown frame into the session instead.
+  const at = HOST_SRC.indexOf("type: 'hello'");
+  assert.ok(at !== -1);
+  const hello = HOST_SRC.slice(at, HOST_SRC.indexOf('});', at));
+  assert.match(hello, /controls:\s*\[\.\.\.CONTROL_TYPES\]/);
+  assert.match(HOST_SRC, /\bCONTROL_TYPES\b[^;]*\}\s*=\s*require\('\.\/control'\)/);
+});
+
 test('raise answers the sender with raised + a window count, and tells every window', () => {
   const at = HOST_SRC.indexOf("msg.type === 'raise'");
   const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));

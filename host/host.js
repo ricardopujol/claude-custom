@@ -58,7 +58,7 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
-const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets } = require('./control');
+const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, CONTROL_TYPES } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
@@ -1824,6 +1824,10 @@ wss.on('connection', (ws) => {
   const styleResolved = currentStyle();
   sendControl(ws, {
     type: 'hello',
+    // What this host accepts as control. host/host-client.js sends `stop` /
+    // `raise` only to a host that lists them: an older one would type them into
+    // the session as input (PR #75).
+    controls: [...CONTROL_TYPES],
     cwd: CWD,
     // FF21. `project` is the same source of truth as the OS window title
     // (FF3, `projectLabel`) rather than a second guess at the same string.
