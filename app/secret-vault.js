@@ -1111,6 +1111,12 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
   function visibleFrom(entry, project) {
     const scope = scopeOf(entry);
     if (scope === null) return true;
+    // `project` is one path OR a list of them (PR 2: a window sees its state
+    // root `<container>\dev` AND the container root, where entries saved before
+    // the 2026-09-28 layout move are scoped). Visible when ANY of them matches.
+    // Anything else -- including unusable members of a list -- grants nothing.
+    // Still ONE definition: list, get and remove all come through here.
+    if (Array.isArray(project)) return project.some(p => samePath(scope, p));
     return samePath(scope, project);
   }
 

@@ -900,3 +900,90 @@ test('the shape production actually sends -- { project: null } -- is denied', ()
       `an unusable project (${JSON.stringify(q)}) must see nothing, not everything`);
   }
 });
+
+// --- scope: a window sees its state root AND the container root -------------
+//
+// PR 2 (worktree tabs): the vault is created with `project: stateRoot(project)`
+// (= <container>\dev), while entries saved before the 2026-09-28 layout move are
+// scoped to the container root. `project` may therefore be a LIST of paths, and
+// an entry is visible when its scope matches ANY of them.
+const ROOT = 'C:/work/container';
+const DEV = 'C:/work/container/dev';
+const OTHER_ROOT = 'C:/work/other';
+const OTHER_DEV = 'C:/work/other/dev';
+
+function twoScoped() {
+  const v = vault();
+  const root = v.add({ label: 'root-scoped', secret: 's-root', project: ROOT });
+  const dev = v.add({ label: 'dev-scoped', secret: 's-dev', project: DEV });
+  return { v, root, dev };
+}
+
+test('an array of projects shows entries scoped to any of them', () => {
+  const { v } = twoScoped();
+  assert.deepStrictEqual(
+    v.list({ project: [ROOT, DEV] }).map(e => e.label).sort(), ['dev-scoped', 'root-scoped']);
+});
+
+test('an array that matches neither scope sees neither entry', () => {
+  const { v } = twoScoped();
+  assert.deepStrictEqual(v.list({ project: [OTHER_ROOT, OTHER_DEV] }), []);
+});
+
+test('a string project still works exactly as before', () => {
+  const { v } = twoScoped();
+  assert.deepStrictEqual(v.list({ project: DEV }).map(e => e.label), ['dev-scoped']);
+  assert.deepStrictEqual(v.list({ project: ROOT }).map(e => e.label), ['root-scoped']);
+});
+
+test('get honours an array of projects', () => {
+  const { v, root, dev } = twoScoped();
+  const id = (x) => (typeof x === 'string' ? x : x.id);
+  assert.strictEqual(v.get(id(root), { project: [ROOT, DEV] }), 's-root');
+  assert.strictEqual(v.get(id(dev), { project: [ROOT, DEV] }), 's-dev');
+  assert.strictEqual(v.get(id(root), { project: [OTHER_ROOT, OTHER_DEV] }), null);
+  assert.strictEqual(v.get(id(dev), { project: [OTHER_ROOT] }), null);
+});
+
+test('remove honours an array of projects', () => {
+  const { v, root, dev } = twoScoped();
+  const id = (x) => (typeof x === 'string' ? x : x.id);
+  assert.strictEqual(v.remove(id(root), { project: [OTHER_ROOT, OTHER_DEV] }), false);
+  assert.strictEqual(v.remove(id(root), { project: [ROOT, DEV] }), true);
+  assert.strictEqual(v.remove(id(dev), { project: [ROOT, DEV] }), true);
+  assert.deepStrictEqual(v.list({ project: [ROOT, DEV] }), []);
+});
+
+test('a shared entry is visible from an array, and unusable list members grant nothing', () => {
+  const v = vault();
+  v.add({ label: 'shared', secret: 's', shared: true });
+  v.add({ label: 'scoped', secret: 's', project: ROOT });
+  assert.deepStrictEqual(v.list({ project: [OTHER_ROOT, OTHER_DEV] }).map(e => e.label), ['shared']);
+  assert.deepStrictEqual(v.list({ project: [null, undefined, '', 42] }).map(e => e.label), ['shared']);
+  assert.deepStrictEqual(v.list({ project: [] }).map(e => e.label), ['shared']);
+});
+
+test('a non-array, non-string project still denies everything scoped', () => {
+  const { v } = twoScoped();
+  for (const p of [42, {}, true, null, undefined]) {
+    assert.deepStrictEqual(v.list({ project: p }), [], `${JSON.stringify(p)} must see nothing scoped`);
+  }
+});
+
+test('PROPERTY: root/dev scoped entries are visible from their own pair and never from another project', () => {
+  const fc = require('fast-check');
+  const seg = fc.stringMatching(/^[a-z0-9]{1,8}$/);
+  fc.assert(fc.property(seg, seg, (p, q) => {
+    fc.pre(p !== q);
+    const P = { root: `C:/work/${p}`, dev: `C:/work/${p}/dev` };
+    const Q = { root: `C:/work/${q}`, dev: `C:/work/${q}/dev` };
+    const v = unboundVault({ file: tmp(), crypto: fakeCrypto() });
+    v.add({ label: 'p-root', secret: 'x', project: P.root });
+    v.add({ label: 'p-dev', secret: 'x', project: P.dev });
+    v.add({ label: 'shared', secret: 'x', shared: true });
+    const own = v.list({ project: [P.root, P.dev] }).map(e => e.label).sort();
+    const other = v.list({ project: [Q.root, Q.dev] }).map(e => e.label).sort();
+    assert.deepStrictEqual(own, ['p-dev', 'p-root', 'shared']);
+    assert.deepStrictEqual(other, ['shared']);
+  }), { numRuns: 60 });
+});
