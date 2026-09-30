@@ -15,7 +15,7 @@ const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\
 const PROBE = strip(fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-worktree-tabs.js'), 'utf8'));
 
 test('nothing can bill: every host\'s claude is cmd.exe, and the window launch has no ELECTRON_RUN_AS_NODE', () => {
-  assert.match(PROBE, /CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd\.exe'/);
+  assert.ok(PROBE.includes(String.raw`CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd.exe'`));
   assert.match(PROBE, /delete env\.ELECTRON_RUN_AS_NODE/);
   assert.match(PROBE, /delete env\.CLAUDE_CUSTOM_PORT/);
   assert.match(PROBE, /delete env\.CLAUDE_CUSTOM_TOKEN/);
@@ -23,7 +23,7 @@ test('nothing can bill: every host\'s claude is cmd.exe, and the window launch h
 
 test('it never touches the real state: registry, portraits, uploads and user data are temp', () => {
   for (const k of ['CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_UPLOADS']) {
-    assert.match(PROBE, new RegExp(`${k}: path\.join\(tmp,`), k);
+    assert.ok(PROBE.includes(`${k}: path.join(tmp,`), k);
   }
   assert.match(PROBE, /--user-data-dir=\$\{userData\}/);
   assert.doesNotMatch(PROBE, /rmSync\([^)]*\.harness/);
