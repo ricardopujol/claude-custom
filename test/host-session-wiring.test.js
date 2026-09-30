@@ -30,3 +30,30 @@ test('R1: the pty starts at the size the window last asked for, not a fixed 120x
   assert.match(body, /termState\.size\(\)/, 'startSession must read the current size from termState');
   assert.doesNotMatch(body, /cols:\s*\d|rows:\s*\d/, 'no literal dimensions in the spawn');
 });
+
+function bootBlock() {
+  const start = HOST.indexOf('// --- boot: the session lock');
+  assert.ok(start !== -1, 'host.js must have the boot block');
+  return HOST.slice(start);
+}
+
+test('Y1: boot records the lock verdict before anything else can throw', () => {
+  // Miguel, PR #71 Y1: the verdict was only recorded after the port block and
+  // env were worked out, so an error there left lockState 'pending' and the
+  // catch started a session over a BLOCKED verdict.
+  const boot = bootBlock();
+  const acquired = boot.indexOf('acquireSessionLock(');
+  const recorded = boot.indexOf('setLockState(gate.lock)');
+  assert.ok(acquired !== -1 && recorded > acquired, 'the verdict is recorded right after acquire');
+  for (const later of ['worktreeEnv(', 'allocatePortBlock(']) {
+    const at = boot.indexOf(later);
+    assert.ok(at === -1 || at > recorded, `${later} runs only after the verdict is recorded`);
+  }
+});
+
+test('Y1: boot\'s catch asks gateOnBootError and never throws out of itself', () => {
+  const boot = bootBlock();
+  const katch = boot.slice(boot.indexOf('.catch('), boot.indexOf('.finally('));
+  assert.match(katch, /gateOnBootError\(lockState\)/);
+  assert.match(katch, /try\s*\{[^}]*startSession\(\)/, 'a startSession that throws in the catch is caught');
+});

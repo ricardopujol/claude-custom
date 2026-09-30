@@ -40,4 +40,15 @@ function idleExit(lock, started, clientCount) {
   return Boolean(lock) && lock.state === 'blocked' && !started && clientCount === 0;
 }
 
-module.exports = { gateFromAcquire, gateOverride, idleExit };
+// What boot does when something throws after -- or before -- the lock was
+// tried (Miguel, PR #71 Y1). A blocked verdict stands: an error must never be
+// the thing that starts a second session. A taken lock is kept. Anything
+// else starts unlocked and says why, so a bug here never costs the session.
+function gateOnBootError(lock) {
+  const state = lock && lock.state;
+  if (state === 'blocked') return { lock, start: false };
+  if (state === 'held' || state === 'unlocked' || state === 'override') return { lock, start: true };
+  return { lock: { state: 'unlocked', reason: 'error', code: 'BOOT' }, start: true };
+}
+
+module.exports = { gateFromAcquire, gateOverride, idleExit, gateOnBootError };

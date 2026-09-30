@@ -75,7 +75,7 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock } = require('./session-lock');
 const { createSelfStartTime } = require('./proc-start');
-const { gateFromAcquire, gateOverride, idleExit } = require('./session-gate');
+const { gateFromAcquire, gateOverride, idleExit, gateOnBootError } = require('./session-gate');
 const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
@@ -2275,18 +2275,25 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
   const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges()]);
   lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null };
   const gate = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
+  // Recorded FIRST (Miguel, PR #71 Y1): if anything below throws, the catch
+  // must still know a blocked verdict was reached.
+  setLockState(gate.lock);
+  console.log('[host] session lock  :', SESSION_LOCK || '(not a repo)', JSON.stringify(gate.lock));
   // A port block belongs to the worktree, never a subfolder of it, and a
   // folder that is no worktree takes none.
   const root = worktreeRoot(CWD);
   sessionEnv = worktreeEnv(CWD, { portBase: root ? allocatePortBlock(root, { excluded }) : null });
-  console.log('[host] session lock  :', SESSION_LOCK || '(not a repo)', JSON.stringify(gate.lock));
   console.log('[host] worktree env  :', JSON.stringify(sessionEnv));
-  setLockState(gate.lock);
   if (gate.start) startSession();
 })().catch((err) => {
-  console.error('[host] session lock failed, starting unlocked:', err && err.stack || err);
-  setLockState({ state: 'unlocked', reason: 'error', code: 'BOOT' });
-  startSession();
+  // host/session-gate.js gateOnBootError: a blocked verdict stands, a taken
+  // lock is kept, anything else starts unlocked -- never a second session.
+  const g = gateOnBootError(lockState);
+  console.error(`[host] boot failed (${g.start ? 'starting' : 'staying blocked'}):`, err && err.stack || err);
+  setLockState(g.lock);
+  if (g.start) {
+    try { startSession(); } catch (e) { console.error('[host] could not start the session:', e && e.message); }
+  }
 }).finally(() => {
   refreshBranchHealth();
   refreshTerminals();
