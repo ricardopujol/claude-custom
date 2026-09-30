@@ -27,7 +27,7 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { createShell, handleProbeCommand, shortcutFor, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, shortcutFor, viewToFocus, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -272,7 +272,7 @@ function createWindow() {
   };
   const focusSelected = () => {
     const sel = selectedView();
-    if (sel && !sel.webContents.isDestroyed()) sel.webContents.focus();
+    if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
   };
   win.on('focus', () => {
     focused = true;
@@ -394,18 +394,19 @@ function destroyTabView(tab) {
 // --- pushing the model out: strip, visibility, menu ------------------------------
 
 let lastStripPayload = null;
-let lastSelectedKey = null;
+let lastFocusedView = null;   // the tab view that last received keyboard focus
 
 function applySelection(snapshot) {
   for (const tab of snapshot.tabs) {
     if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.setVisible(tab.key === snapshot.selectedKey);
   }
-  if (snapshot.selectedKey !== lastSelectedKey) {
-    lastSelectedKey = snapshot.selectedKey;
-    if (focused) {
-      const sel = selectedView();
-      if (sel && !sel.webContents.isDestroyed()) sel.webContents.focus();
-    }
+  // Keyed on the VIEW, not on a changed selection: a view created for the
+  // already-selected tab has never had the keyboard (Dexter F4 / Miguel M1).
+  const sel = selectedView();
+  const live = sel && !sel.webContents.isDestroyed() ? sel : null;
+  if (viewToFocus({ windowFocused: focused, selectedView: live, lastFocused: lastFocusedView })) {
+    live.webContents.focus();
+    lastFocusedView = live;
   }
 }
 

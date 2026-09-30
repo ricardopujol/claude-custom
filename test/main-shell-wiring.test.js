@@ -197,3 +197,20 @@ test('only the headless paths switch native occlusion tracking off (an occluded 
   assert.match(MAIN, /if \(process\.env\.CLAUDE_CUSTOM_SCREENSHOT \|\| PROBE_PORT\) \{\s*app\.commandLine\.appendSwitch\('disable-features', 'CalculateNativeWinOcclusion'\);/);
   assert.strictEqual((MAIN.match(/CalculateNativeWinOcclusion/g) || []).length, 1);
 });
+
+test('F4 (Dexter, PR #75): applySelection focuses by view IDENTITY via viewToFocus, not by a changed selection key', () => {
+  const start = MAIN.indexOf('function applySelection(');
+  assert.ok(start !== -1);
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start));
+  assert.ok(/viewToFocus\(/.test(body), 'applySelection must ask viewToFocus');
+  assert.ok(!/selectedKey\s*!==\s*lastSelectedKey/.test(body),
+    'a key that has not changed says nothing about whether its NEW view has the keyboard');
+  assert.ok(/\.webContents\.focus\(\)/.test(body), 'and it must actually focus the view');
+});
+
+test('F4: the window-focus path records which view it focused, so applySelection does not repeat it', () => {
+  const i = MAIN.indexOf('const focusSelected = ()');
+  assert.ok(i !== -1);
+  const body = MAIN.slice(i, MAIN.indexOf('};', i));
+  assert.ok(/lastFocusedView\s*=/.test(body));
+});

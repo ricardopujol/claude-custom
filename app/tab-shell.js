@@ -511,6 +511,21 @@ function createShell(deps) {
   };
 }
 
+// --- keyboard focus ----------------------------------------------------------------
+
+/**
+ * Should main give the keyboard to the selected tab's view now? Dexter F4 /
+ * Miguel M1, PR #75: keyed on a CHANGED SELECTION, a view created for a tab
+ * that was already selected (first launch, Ctrl+Tab onto an unstarted tab)
+ * never got focus, and keystrokes went to the strip. Keyed on the VIEW
+ * instead: focus it when the window is focused and it is not the view that
+ * last received focus. A non-selected tab presenting changes nothing here,
+ * because only the selected tab's view is ever passed in.
+ */
+function viewToFocus({ windowFocused, selectedView, lastFocused } = {}) {
+  return windowFocused === true && !!selectedView && selectedView !== lastFocused;
+}
+
 // --- keyboard shortcuts ------------------------------------------------------------
 
 /**
@@ -568,5 +583,5 @@ async function handleProbeCommand(line, api) {
 
 module.exports = {
   createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor, NO_PORT_ERROR,
+  handleProbeCommand, noWindowText, shortcutFor, viewToFocus, NO_PORT_ERROR,
 };

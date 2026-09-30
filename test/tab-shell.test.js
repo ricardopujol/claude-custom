@@ -14,7 +14,7 @@ const fc = require('fast-check');
 
 const {
   createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor,
+  handleProbeCommand, noWindowText, shortcutFor, viewToFocus,
 } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
 
@@ -484,6 +484,50 @@ test('F3: a clean stop leaves no notice', async () => {
   await flush();
   await h.shell.closeTab(key('feat-a'));
   assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+// --- Dexter F4 / Miguel M1, PR #75: a lazily created view gets the keyboard ------
+
+test('F4: viewToFocus -- focus a selected view the window has not focused yet, only while the window is focused', () => {
+  const v = {};
+  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: v, lastFocused: null }), true);
+  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: v, lastFocused: v }), false, 'already has it');
+  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: v, lastFocused: {} }), true, 'a different view');
+  assert.strictEqual(viewToFocus({ windowFocused: false, selectedView: v, lastFocused: null }), false, 'window not focused');
+  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: null, lastFocused: null }), false, 'no view yet');
+});
+
+// Drives viewToFocus over the shell's own snapshots the way main's applySelection does.
+function focusTrace(h) {
+  const focusedKeys = [];
+  let last = null;
+  for (const snap of h.changes) {
+    const t = snap.tabs.find(x => x.key === snap.selectedKey);
+    const view = t && t.view ? t.view : null;
+    if (viewToFocus({ windowFocused: true, selectedView: view, lastFocused: last })) {
+      focusedKeys.push(t.key);
+      last = view;
+    }
+  }
+  return focusedKeys;
+}
+
+test('F4: the view created for the ALREADY-selected tab is focused when it appears (first launch, Ctrl+Tab onto an unstarted tab)', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(focusTrace(h), [key('dev')], 'dev was selected before it had a view, and is focused once it has one');
+  await h.shell.select(key('feat-b'));      // unstarted: its view is created AFTER the selection changed
+  await flush();
+  assert.deepStrictEqual(focusTrace(h), [key('dev'), key('feat-b')]);
+});
+
+test('F4: presenting a NON-selected tab (reattach at open) does not steal focus', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(h.viewsMade.map(v => v.tab).sort(), [key('dev'), key('feat-a')].sort());
+  assert.deepStrictEqual(focusTrace(h), [key('dev')], 'only the selected tab is ever focused');
 });
 
 // --- what a tab reports ------------------------------------------------------
