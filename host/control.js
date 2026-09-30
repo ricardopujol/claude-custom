@@ -70,6 +70,9 @@ const CONTROL_TYPES = new Set([
   // BACKLOG #10: open/close an agent's activity log. Listed here or the frame
   // is typed into the pty (see the comment above).
   'agent-log',
+  // Extension X1: *Open anyway* on a window the session lock blocked. Typed
+  // into the pty instead, it would reach a pty that doesn't exist yet.
+  'lock-override',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed

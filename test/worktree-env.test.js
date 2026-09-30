@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const fc = require('fast-check');
 
-const { composeName, worktreeEnv } = require('../host/worktree-env');
+const { composeName, worktreeEnv, worktreeRoot } = require('../host/worktree-env');
 const { tmpDir } = require('./tmp-dir');
 
 function makeContainer(name = 'claude-custom') {
@@ -86,6 +86,25 @@ test('the port base is passed as a string when there is one, and only then', () 
   for (const portBase of [null, undefined, NaN, '20100', 20100.5]) {
     assert.ok(!('WORKTREE_PORT_BASE' in worktreeEnv(dev, { portBase })), String(portBase));
   }
+});
+
+test('worktreeRoot: the folder a port block belongs to -- never a subfolder, never a non-worktree', () => {
+  // The host allocates a port block only for this, so a plain folder never
+  // takes one and a subfolder shares its worktree's (probe-session-lock-host
+  // caught a temp non-repo folder holding block 20000).
+  const { base, dev, sibling } = makeContainer();
+  const wt = sibling('feat-x');
+  fs.mkdirSync(path.join(dev, 'app'));
+  assert.strictEqual(worktreeRoot(dev), dev);
+  assert.strictEqual(worktreeRoot(path.join(dev, 'app')), dev);
+  assert.strictEqual(worktreeRoot(path.join(wt, 'sub')), wt);
+  assert.strictEqual(worktreeRoot(base), null, 'the container itself');
+  assert.strictEqual(worktreeRoot(tmpDir('worktree-env-plain-')), null);
+  assert.strictEqual(worktreeRoot(null), null);
+  const repo = path.join(tmpDir('worktree-env-'), 'flat');
+  fs.mkdirSync(path.join(repo, '.git', 'x'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  assert.strictEqual(worktreeRoot(path.join(repo, '.git', 'x')), repo);
 });
 
 test('composeName: lowercase, only [a-z0-9_-], no leading _ or -', () => {

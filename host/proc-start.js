@@ -25,6 +25,9 @@
 const { execFile } = require('child_process');
 
 const QUERY_TIMEOUT_MS = 5000;
+// Built, not typed: a literal U+FEFF in source is invisible (and
+// test/renderer-scope.test.js rejects it).
+const BOM_AT_START = new RegExp('^' + String.fromCharCode(0xfeff));
 
 // Only positive integers are ever put anywhere near an OS call. The pid comes
 // from a file on disk, and `kill(0, 0)` addresses the caller's process group
@@ -81,7 +84,7 @@ async function startTimes(pids, { exec = defaultExec, platform = process.platfor
     return null;
   }
 
-  const lines = String(out).replace(/^﻿/, '').split(/\r?\n/).map(l => l.trim());
+  const lines = String(out).replace(BOM_AT_START, '').split(/\r?\n/).map(l => l.trim());
   if (!lines.includes('END')) return null;
 
   const result = new Map();

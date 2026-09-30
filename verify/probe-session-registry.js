@@ -23,7 +23,7 @@
    1. One `<pid>.json` per session (plus its `.key`). Fields: pid (number),
       sessionId, cwd, procStart (STRING), startedAt (ms epoch), version, kind
       ("interactive"), entrypoint ("cli"), status ("idle" | "busy"), pidDomain
-      ("win32:<host>"), name, updatedAt, statusUpdatedAt, peer*/messaging*.
+      ("win32:<host>"), name, updatedAt, statusUpdatedAt, and peer and messaging fields.
       `cwd` is the native path, backslashes and on-disk case, so compare it
       through project-layout's normPath, never as a string.
    2. procStart is a FILETIME (100 ns ticks since 1601, UTC) as a decimal

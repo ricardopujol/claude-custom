@@ -38,6 +38,20 @@ function worktreeFolder(cwd, project) {
   return first && first !== '..' ? first : null;
 }
 
+/**
+ * The worktree folder `cwd` belongs to, or null (a plain folder, or the
+ * container itself). What a port block is keyed by: a subfolder shares its
+ * worktree's block, and a folder that isn't a worktree never takes one.
+ */
+function worktreeRoot(cwd) {
+  if (typeof cwd !== 'string' || !cwd) return null;
+  const project = projectOf(cwd);
+  if (!project) return null;
+  if (project.kind === 'flat') return project.root;
+  const folder = worktreeFolder(cwd, project);
+  return folder ? path.join(project.root, folder) : null;
+}
+
 function worktreeEnv(cwd, { portBase } = {}) {
   if (typeof cwd !== 'string' || !cwd) return {};
   const project = projectOf(cwd);
@@ -57,4 +71,4 @@ function worktreeEnv(cwd, { portBase } = {}) {
   return env;
 }
 
-module.exports = { composeName, worktreeEnv };
+module.exports = { composeName, worktreeEnv, worktreeRoot };
