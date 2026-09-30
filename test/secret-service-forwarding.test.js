@@ -335,3 +335,265 @@ test('list returns an ARRAY when the vault throws', () => {
   assert.ok(Array.isArray(res));
   assert.deepStrictEqual(res, []);
 });
+
+// =============================================================================
+// KILLS FOR MUTATION SURVIVORS (Mortimer, PR #73).
+//
+// The first two survivor clusters above were forwarding guards; these are the
+// rest of the file, which the forwarding pass never reached: the constructor's
+// refusals, removeKey/melt's catch arms, list()'s query handling, add/reveal/copy
+// results, and the clipboard timer's bookkeeping. The mutants left alive on
+// purpose, and why, are in the build log.
+// =============================================================================
+
+const GOOD_CLIPBOARD = { writeText: () => {}, readText: () => '', clear: () => {} };
+
+// --- the constructor refuses to exist half-built -------------------------------
+
+test('the constructor refuses a missing vault, and says which thing is missing', () => {
+  // Kills `!vault` -> false and its message literal. The message is matched by
+  // its distinguishing words (not verbatim) so the guard that fired is proven
+  // without pinning the punctuation.
+  assert.throws(() => createSecretService({ clipboard: GOOD_CLIPBOARD, project: 'p' }),
+    /vault is required/);
+  assert.throws(() => createSecretService({ vault: null, clipboard: GOOD_CLIPBOARD, project: 'p' }),
+    /vault is required/);
+});
+
+test('the constructor refuses a missing clipboard', () => {
+  // Kills `!clipboard` -> false and its message literal.
+  assert.throws(() => createSecretService({ vault: {}, project: 'p' }), /clipboard is required/);
+});
+
+test('the constructor refuses a missing, blank or non-string project', () => {
+  // Dexter, PR #40, Finding 1: a default project is a silent grant. Kills
+  // `typeof project !== 'string' || !project.trim()` -> false, `||` -> `&&`
+  // (blank strings and numbers would sail through, or throw a TypeError instead
+  // of the refusal), `project.trim()` -> `project` (whitespace would count as a
+  // project), each half on its own, the emptied throw block, and the message.
+  for (const bad of [undefined, null, '', '   ', '\t\n', 42, {}, ['p'], true]) {
+    assert.throws(
+      () => createSecretService({ vault: {}, clipboard: GOOD_CLIPBOARD, project: bad }),
+      /project is required/,
+      `project ${JSON.stringify(bad)} must be refused with the project message`);
+  }
+  assert.throws(() => createSecretService({ vault: {}, clipboard: GOOD_CLIPBOARD }), /project is required/);
+  assert.throws(() => createSecretService(), /vault is required/);
+});
+
+test('a well-formed construction does not throw', () => {
+  // The other side of every refusal above: a guard mutated to always fire.
+  assert.doesNotThrow(() => createSecretService({ vault: {}, clipboard: GOOD_CLIPBOARD, project: ' p ' }));
+});
+
+// --- removeKey and melt report a throw -----------------------------------------
+
+test('removeKey reports a throw as an error, not as success', () => {
+  // Kills removeKey's catch arm: emptied block, `{}` for the object, and
+  // `ok: false` -> `ok: true`. setKey/unlock/lock/remove each had this pinned;
+  // removeKey never did, and it is the operation that DELETES the user's key.
+  const svc = svcWith({ removeKey: () => { throw new Error('key file locked'); } });
+  // ok and error only: extra fields (failed, leftovers) are harmless and the
+  // renderer already reads them (Dexter, PR #73 F5).
+  const r = svc.removeKey();
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, 'key file locked');
+});
+
+test('melt reports a throw as an error, not as success', () => {
+  // Kills melt's catch arm the same three ways. A melt that throws has not
+  // destroyed the vault; saying `ok: true` here tells the user it is gone.
+  const svc = svcWith({ melt: () => { throw new Error('vault busy'); } });
+  const r = svc.melt();
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, 'vault busy');
+});
+
+// --- list(): the query ---------------------------------------------------------
+
+const ENTRIES = [
+  { id: '1', label: 'GitHub Token', note: 'Deploy Key for CI' },
+  { id: '2', label: 'stripe', note: '' },
+  { id: '3', label: 'npm' },                     // no note at all
+  { id: '4', note: 'orphan note' },              // no label at all
+];
+const ids = (svc, q) => svc.list(q).map(e => e.id);
+
+test('list with no query returns every entry, with or without an options object', () => {
+  // Kills `String(query || '')`'s '' literal -> "Stryker was here!": an absent
+  // query would be searched for as that text and return nothing at all.
+  const svc = svcWith({ list: () => ENTRIES });
+  assert.deepStrictEqual(ids(svc), ['1', '2', '3', '4']);
+  assert.deepStrictEqual(ids(svc, {}), ['1', '2', '3', '4']);
+  assert.deepStrictEqual(ids(svc, { query: '' }), ['1', '2', '3', '4']);
+  assert.deepStrictEqual(ids(svc, { query: '   ' }), ['1', '2', '3', '4']);
+});
+
+test('a query is trimmed before it is matched', () => {
+  // Kills `.trim()` removal: padding from a paste or a stray space would
+  // otherwise match nothing.
+  const svc = svcWith({ list: () => ENTRIES });
+  assert.deepStrictEqual(ids(svc, { query: '  github  ' }), ['1']);
+});
+
+test('a query matches the NOTE, case-insensitively', () => {
+  // Kills `String(e.note || '').toLowerCase()` -> toUpperCase (a mixed-case note
+  // could never match a lower-cased query), and `e.note || ''` -> true / false /
+  // `e.note && ''` (each of which stops the note from ever being searched).
+  const svc = svcWith({ list: () => ENTRIES });
+  assert.deepStrictEqual(ids(svc, { query: 'deploy key' }), ['1']);
+  assert.deepStrictEqual(ids(svc, { query: 'DEPLOY' }), ['1']);
+  assert.deepStrictEqual(ids(svc, { query: 'orphan' }), ['4']);
+});
+
+test('a missing label or note is empty text, not the word "undefined" or a placeholder', () => {
+  // Kills both `''` fallbacks -> "Stryker was here!", and `e.note && ''`, which
+  // stringifies an absent note to "undefined". Entries 3 and 4 each lack one
+  // field; none of these queries may match them through the missing field.
+  const svc = svcWith({ list: () => ENTRIES });
+  assert.deepStrictEqual(ids(svc, { query: 'undefined' }), []);
+  assert.deepStrictEqual(ids(svc, { query: 'stryker' }), []);
+  assert.deepStrictEqual(ids(svc, { query: 'was here' }), []);
+  assert.deepStrictEqual(ids(svc, { query: 'false' }), []);
+  assert.deepStrictEqual(ids(svc, { query: 'true' }), []);
+});
+
+// --- add / reveal / copy results -----------------------------------------------
+
+test('add reports ok:true and hands back the vault entry untouched', () => {
+  // Kills `ok: true` -> false in add's success arm. Every existing add test read
+  // `.entry` and never looked at `.ok`, so the panel's success/failure switch
+  // was unobserved.
+  const entry = { id: 'x1', label: 'k', note: 'n', createdAt: 5 };
+  const svc = svcWith({ add: () => entry });
+  const res = svc.add({ label: 'k', secret: 's' });
+  assert.strictEqual(res.ok, true);
+  // Its content, not its identity: a hardening that returns a safe copy of the
+  // entry is not a behaviour change (Dexter, PR #73 F4).
+  assert.deepStrictEqual(res.entry, entry);
+});
+
+test('reveal of something the vault does not have is a failure, not an ok with no secret', () => {
+  // Kills `secret == null` -> false (returns ok:true with secret:null, which the
+  // window renders as a successfully revealed empty value), the `{}` object, the
+  // `ok: false` flip, and the message literal. `undefined` counts as absent too.
+  for (const missing of [null, undefined]) {
+    const svc = svcWith({ get: () => missing });
+    const r = svc.reveal('nope');
+    assert.strictEqual(r.ok, false);
+    assert.ok(!('secret' in r) || r.secret == null, 'no secret rides along with a failure');
+    // Matched by phrase, not verbatim: a copy edit is not a failure (Dexter, PR #73 F6).
+    assert.match(r.error, /not found/);
+  }
+});
+
+test('reveal of a found secret is exactly { ok: true, secret }', () => {
+  // Kills the success arm's `ok: true` -> false.
+  const svc = svcWith({ get: () => 'sk-live-123' });
+  assert.deepStrictEqual(svc.reveal('id0'), { ok: true, secret: 'sk-live-123' });
+});
+
+test('copy of something the vault does not have says why, and touches nothing', () => {
+  // Kills copy's message literal. Also pins that a miss neither writes to the
+  // clipboard nor schedules a wipe.
+  const calls = [];
+  const svc = createSecretService({
+    project: 'p',
+    vault: { get: () => null },
+    clipboard: { writeText: () => calls.push('write'), readText: () => '', clear: () => calls.push('clear') },
+    setTimer: () => { calls.push('timer'); return 1; },
+  });
+  const r = svc.copy('nope');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /not found/);
+  assert.deepStrictEqual(calls, []);
+});
+
+// --- the clipboard timer -------------------------------------------------------
+
+// A service whose timer and clipboard are fully observable.
+function copySvc({ handleFor } = {}) {
+  const log = { cleared: [], scheduled: [], cbClear: 0, unref: [] };
+  const clip = { value: '' };
+  const svc = createSecretService({
+    project: 'p',
+    vault: { get: (id) => (id === 'none' ? null : 'secret-' + id) },
+    clipboard: {
+      writeText: (t) => { clip.value = t; },
+      readText: () => clip.value,
+      clear: () => { log.cbClear += 1; clip.value = ''; },
+    },
+    setTimer: (fn, ms) => {
+      const n = log.scheduled.length + 1;
+      log.scheduled.push({ fn, ms, n });
+      return handleFor ? handleFor(n, log) : n;
+    },
+    clearTimer: (h) => log.cleared.push(h),
+    clearAfterMs: 1234,
+  });
+  return { svc, log, clip };
+}
+
+test('the FIRST copy cancels nothing; the second cancels exactly the first timer', () => {
+  // Kills `if (pendingClear !== null)` -> true (clearTimer(null) on the first
+  // copy) and `!==` -> `===` (the first copy cancels null and the second cancels
+  // nothing, so the first timer wipes the second secret early). The existing
+  // test only asserted `cleared.length >= 1`, which both mutants satisfy.
+  const { svc, log } = copySvc();
+  svc.copy('a');
+  assert.deepStrictEqual(log.cleared, [], 'nothing to cancel on the first copy');
+  svc.copy('b');
+  assert.deepStrictEqual(log.cleared, [1], 'the second copy cancels the first timer, and only it');
+  svc.copy('c');
+  assert.deepStrictEqual(log.cleared, [1, 2]);
+});
+
+test('once a timer has fired, the next copy has nothing left to cancel', () => {
+  // Pins `pendingClear = null` in the timer callback: cancelling a handle that
+  // already fired is harmless in Node but is a stale reference kept alive.
+  const { svc, log } = copySvc();
+  svc.copy('a');
+  log.scheduled[0].fn();
+  svc.copy('b');
+  assert.deepStrictEqual(log.cleared, []);
+});
+
+test('the timer is scheduled for the configured delay, and reported back', () => {
+  const { svc, log } = copySvc();
+  assert.deepStrictEqual(svc.copy('a'), { ok: true, clearsInMs: 1234 });
+  assert.strictEqual(log.scheduled[0].ms, 1234);
+});
+
+test('the wipe timer is unref\'d, so it cannot keep the app alive', () => {
+  // Kills every mutant on the unref guard: `handle && typeof handle.unref ===
+  // 'function'` -> false, `===` -> `!==`, the 'function' literal, and deleting
+  // `handle.unref()`. Before this they were only ever caught as timeouts; this
+  // pins the behaviour itself: the handle is unref'd exactly once.
+  const unrefd = [];
+  const { svc } = copySvc({ handleFor: (n) => ({ n, unref() { unrefd.push(n); return this; } }) });
+  svc.copy('a');
+  assert.deepStrictEqual(unrefd, [1], 'the handle must be unref\'d exactly once');
+});
+
+test('a timer handle with no unref (a browser number, or nothing) does not break copy', () => {
+  // The guard's other half: `typeof handle.unref === 'function'` must be checked,
+  // not assumed. Kills `!==` (it would call `1.unref()`) and dropping the guard.
+  for (const handle of [7, null, undefined, {}, { unref: 'no' }]) {
+    const { svc } = copySvc({ handleFor: () => handle });
+    assert.deepStrictEqual(svc.copy('a'), { ok: true, clearsInMs: 1234 });
+  }
+});
+
+test('the wipe clears what we copied, and leaves anything the user copied since', () => {
+  const { svc, log, clip } = copySvc();
+  svc.copy('a');
+  log.scheduled[0].fn();
+  assert.strictEqual(log.cbClear, 1);
+  assert.strictEqual(clip.value, '');
+
+  svc.copy('b');
+  clip.value = 'the user copied this meanwhile';
+  log.scheduled[1].fn();
+  assert.strictEqual(log.cbClear, 1, 'must not clear someone else\'s clipboard');
+  assert.strictEqual(clip.value, 'the user copied this meanwhile');
+});
