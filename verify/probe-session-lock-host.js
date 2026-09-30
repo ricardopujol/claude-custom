@@ -15,7 +15,9 @@
  *      broadcasts lock.state 'override';
  *   4. A killed outright (no exit handler runs) leaves its lock behind with a
  *      dead pid; host C takes it over silently;
- *   5. C's session gets WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE.
+ *   5. C's session gets WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE;
+ *   6. host D, blocked by C, exits on its own once its only window closes
+ *      (a blocked host has no session to keep alive).
  *
  * SAFE: `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing is billed. Side
  * effect: step 5 allocates a port block for the temp repo in the real
@@ -137,6 +139,19 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   check(typeof env.COMPOSE_PROJECT_NAME === 'string' && /^[a-z0-9][a-z0-9_-]*$/.test(env.COMPOSE_PROJECT_NAME),
     `COMPOSE_PROJECT_NAME is normalised (${env.COMPOSE_PROJECT_NAME})`);
   check(/^\d+$/.test(env.WORKTREE_PORT_BASE || ''), `WORKTREE_PORT_BASE is set (${env.WORKTREE_PORT_BASE})`);
+
+  // 6. A blocked host whose only window closes exits on its own.
+  const d = startHost('D', await freePort());
+  await waitFor(d, /session lock {2}:.*"state":"blocked"/);
+  await waitFor(d, /listening on ws:/);
+  const dConn = await attach(d);
+  await waitMsg(dConn, m => m.type === 'hello');
+  dConn.ws.close();
+  const until = Date.now() + 10000;
+  while (d.child.exitCode === null && Date.now() < until) await sleep(100);
+  check(d.child.exitCode === 0 && /blocked, no session and no window: exiting/.test(d.out),
+    'a blocked host exits once its last window has gone');
+  check(readLockFile().pid === c.child.pid, 'and leaves the holder\'s lock alone');
 
   console.log('PASS: the session lock holds in real hosts');
   finish(0);

@@ -32,4 +32,12 @@ function gateOverride(lock, started) {
   return { lock: { state: 'override', holder: lock.holder }, start: true };
 }
 
-module.exports = { gateFromAcquire, gateOverride };
+// A host is spawned detached so a SESSION outlives its window. A blocked host
+// has none: once its last window closes it has nothing to keep alive, and the
+// next window must re-check the lock instead of reattaching to a host that
+// decided "blocked" long ago.
+function idleExit(lock, started, clientCount) {
+  return Boolean(lock) && lock.state === 'blocked' && !started && clientCount === 0;
+}
+
+module.exports = { gateFromAcquire, gateOverride, idleExit };

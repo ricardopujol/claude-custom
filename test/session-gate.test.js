@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { gateFromAcquire, gateOverride } = require('../host/session-gate');
+const { gateFromAcquire, gateOverride, idleExit } = require('../host/session-gate');
 
 const HOLDER = { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 555 };
 
@@ -48,4 +48,22 @@ test('Open anyway does nothing unless the host is blocked and has no session yet
   assert.strictEqual(gateOverride({ state: 'blocked', holder: HOLDER }, true), null, 'already started');
   assert.strictEqual(gateOverride({ state: 'pending' }, false), null);
   assert.strictEqual(gateOverride(null, false), null);
+});
+
+// A host is spawned detached so a SESSION outlives its window. A blocked host
+// has no session: once its last window closes there is nothing left for it to
+// keep alive, and a later window must re-check the lock rather than reattach
+// to a host that decided "blocked" hours ago.
+
+test('a blocked host with no session and no window exits', () => {
+  assert.strictEqual(idleExit({ state: 'blocked', holder: HOLDER }, false, 0), true);
+});
+
+test('a host with a session, a window, or no block stays', () => {
+  assert.strictEqual(idleExit({ state: 'blocked', holder: HOLDER }, false, 1), false, 'a window is still open');
+  assert.strictEqual(idleExit({ state: 'blocked', holder: HOLDER }, true, 0), false, 'it has a session');
+  for (const lock of [{ state: 'held' }, { state: 'override', holder: HOLDER }, { state: 'pending' },
+    { state: 'unlocked', reason: 'not-a-repo' }, null]) {
+    assert.strictEqual(idleExit(lock, false, 0), false, JSON.stringify(lock));
+  }
 });

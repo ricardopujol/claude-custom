@@ -88,6 +88,8 @@ const ALLOWED_GLOBALS = new Set([
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
   // app/context-fill-display.js (BACKLOG #6)
   'contextFill', 'applyContextFill', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
+  // app/worktree-status-display.js (PR 1b, Extension X1/X4): one namespace object.
+  'worktreeStatus',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
   // renderer.js's key handler, like isPanelToggle.
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',

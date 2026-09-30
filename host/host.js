@@ -75,7 +75,7 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock } = require('./session-lock');
 const { createSelfStartTime } = require('./proc-start');
-const { gateFromAcquire, gateOverride } = require('./session-gate');
+const { gateFromAcquire, gateOverride, idleExit } = require('./session-gate');
 const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
@@ -2153,6 +2153,18 @@ wss.on('connection', (ws) => {
     console.log(`[host] client detached (${clients.size} remain)`);
     // NOTE: the pty deliberately keeps running. This is the detachable-session
     // property the phone/Remote Control workflow depends on.
+    //
+    // A BLOCKED host has no pty to keep (host/session-gate.js idleExit): it
+    // goes once its last window has been gone a moment -- the grace covers a
+    // reload reattaching.
+    if (idleExit(lockState, term !== null, clients.size)) {
+      setTimeout(() => {
+        if (!idleExit(lockState, term !== null, clients.size)) return;
+        console.log('[host] blocked, no session and no window: exiting');
+        shutdown();
+        process.exit(0);
+      }, 3000).unref();
+    }
   });
 });
 

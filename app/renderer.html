@@ -424,8 +424,45 @@
     #termwrap {
       flex: 1; min-width: 0; padding: 8px 10px;
       background: var(--bg);
+      position: relative;            /* the lock overlay and banner sit over it */
     }
     #term { width: 100%; height: 100%; }
+
+    /* Extension X1/X4 (PR 1b). */
+    .wt-health, .wt-lock { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .wt-health.wt-behind { color: var(--accent); }
+    .wt-health.wt-ahead  { color: var(--dim); }
+    .wt-lock { cursor: default; }
+    #lock-overlay {
+      position: absolute; inset: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+    }
+    #lock-overlay[hidden], #terminal-banner[hidden] { display: none; }
+    .lock-card {
+      max-width: 460px; padding: 18px 20px; border-radius: 8px;
+      background: var(--chrome); border: 1px solid var(--accent); color: var(--text);
+    }
+    #lock-overlay-title { font-weight: 600; margin-bottom: 8px; color: var(--accent); }
+    #lock-overlay-detail { font-size: 13px; line-height: 1.45; color: var(--text); }
+    .lock-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+    .lock-actions button {
+      padding: 5px 12px; border-radius: 4px; cursor: pointer;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    }
+    .lock-actions button:hover { border-color: var(--accent); }
+    #terminal-banner {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 15;
+      display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--accent) 16%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+    }
+    #terminal-banner-text { flex: 1; }
+    #terminal-banner-dismiss {
+      background: none; border: none; color: var(--dim); cursor: pointer; font-size: 15px; line-height: 1;
+    }
+    #terminal-banner-dismiss:hover { color: var(--text); }
 
     #diag {
       width: 340px; flex: 0 0 340px;
@@ -944,6 +981,11 @@
     <header>
       <span class="dot" id="dot"></span>
       <span class="title" id="title">claude-custom</span>
+      <!-- Extension X4/X1 (PR 1b): behind develop / develop ahead of main, and
+           an overridden or missing session lock. Painted by
+           app/worktree-status-display.js; hidden when there is nothing to say. -->
+      <span id="wt-health" class="wt-health" hidden></span>
+      <span id="wt-lock" class="wt-lock" hidden></span>
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
       <span id="hp" title="Project HP — click to run the test suite"></span>
@@ -962,7 +1004,26 @@
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
     <div id="body">
-      <div id="termwrap"><div id="term"></div></div>
+      <div id="termwrap"><div id="term"></div>
+        <!-- Extension X1 (PR 1b). Other live claude sessions in this worktree:
+             a warning, never a block. Dismissed until the set of sessions changes. -->
+        <div id="terminal-banner" role="status" hidden>
+          <span id="terminal-banner-text"></span>
+          <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
+        </div>
+        <!-- Another session holds this worktree's lock: no session starts here
+             until Open anyway. Over the terminal, which is empty meanwhile. -->
+        <div id="lock-overlay" role="alertdialog" aria-labelledby="lock-overlay-title" hidden>
+          <div class="lock-card">
+            <div id="lock-overlay-title"></div>
+            <div id="lock-overlay-detail"></div>
+            <div class="lock-actions">
+              <button type="button" id="lock-open-anyway">Open anyway</button>
+              <button type="button" id="lock-close">Close window</button>
+            </div>
+          </div>
+        </div>
+      </div>
       <!-- One sidebar, two tabs. The vault is a PANEL here, never inside the
            terminal: nothing in it is written to the pty, so a secret cannot
            reach the session by being rendered in the wrong place. -->
@@ -1126,6 +1187,7 @@
   <script src="./models-refresh.js"></script>
   <script src="./models-catalogue.js"></script>
   <script src="./paste-action.js"></script>
+  <script src="./worktree-status-display.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

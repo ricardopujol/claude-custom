@@ -37,6 +37,52 @@ function renderTitle() {
 }
 renderTitle();
 
+// --- worktree status (Extension X1/X4, PR 1b) --------------------------------
+// The session lock's overlay and header badge, other live claude sessions in
+// this worktree, and branch health. Every decision is in
+// app/worktree-status-display.js; this only paints what it returns.
+let dismissedTerminalKey = null;   // the banner stays dismissed for this set of sessions only
+function renderLock(lock) {
+  const overlay = worktreeStatus.lockOverlay(lock, Date.now());
+  const el = document.getElementById('lock-overlay');
+  el.hidden = !overlay;
+  if (overlay) {
+    document.getElementById('lock-overlay-title').textContent = overlay.title;
+    document.getElementById('lock-overlay-detail').textContent = overlay.detail;
+    document.getElementById('lock-open-anyway').hidden = !overlay.canOverride;
+  }
+  const badge = worktreeStatus.lockBadge(lock);
+  const b = document.getElementById('wt-lock');
+  b.hidden = !badge;
+  b.textContent = badge ? badge.text : '';
+  b.title = badge ? badge.title : '';
+}
+function renderTerminalSessions(result) {
+  const banner = worktreeStatus.terminalBanner(result);
+  const el = document.getElementById('terminal-banner');
+  const show = Boolean(banner) && banner.key !== dismissedTerminalKey;
+  el.hidden = !show;
+  el.dataset.key = banner ? banner.key : '';
+  document.getElementById('terminal-banner-text').textContent = show ? banner.text : '';
+}
+function renderBranchHealth(health) {
+  const m = worktreeStatus.healthMarker(health);
+  const el = document.getElementById('wt-health');
+  el.hidden = !m;
+  el.textContent = m ? m.text : '';
+  el.title = m ? m.title : '';
+  el.className = m ? `wt-health ${m.cls}` : 'wt-health';
+}
+document.getElementById('lock-open-anyway').addEventListener('click', () => {
+  send(JSON.stringify({ type: 'lock-override' }));
+});
+document.getElementById('lock-close').addEventListener('click', () => window.close());
+document.getElementById('terminal-banner-dismiss').addEventListener('click', () => {
+  const el = document.getElementById('terminal-banner');
+  dismissedTerminalKey = el.dataset.key || null;
+  el.hidden = true;
+});
+
 // --- terminal ---------------------------------------------------------------
 const term = new Terminal({
   allowProposedApi: true,          // required by the unicode11 addon
@@ -2970,6 +3016,10 @@ function handleControl(msg) {
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
     renderTitle();
+    // PR 1b: absent on an older host -> no overlay, no banner, no marker.
+    renderLock(msg.lock);
+    renderTerminalSessions(msg.terminalSessions);
+    renderBranchHealth(msg.branchHealth);
     // `msg.background` is already resolved through host/style.js (the
     // project's own copy wins over generated art) and `msg.theme` already has
     // the project's look merged in; `msg.style` carries WHY, for the panel.
@@ -3043,6 +3093,18 @@ function handleControl(msg) {
   if (msg.type === 'branch') {
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
     renderTitle();
+    return;
+  }
+  if (msg.type === 'lock') {
+    renderLock(msg.lock);
+    return;
+  }
+  if (msg.type === 'terminal-sessions') {
+    renderTerminalSessions(msg);
+    return;
+  }
+  if (msg.type === 'branch-health') {
+    renderBranchHealth(msg.health);
     return;
   }
   if (msg.type === 'processes') {
