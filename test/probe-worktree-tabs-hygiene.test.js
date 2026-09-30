@@ -1,0 +1,53 @@
+'use strict';
+/**
+ * verify/probe-worktree-tabs.js launches a real window and real hosts, so the
+ * properties that keep it safe are pinned as source assertions (it is not run
+ * by `npm test`), in the style of test/probe-avatar-hygiene.test.js.
+ *
+ * Repo-scanning, so deliberately NOT in Stryker's command.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+
+const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+const PROBE = strip(fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-worktree-tabs.js'), 'utf8'));
+
+test('nothing can bill: every host\'s claude is cmd.exe, and the window launch has no ELECTRON_RUN_AS_NODE', () => {
+  assert.match(PROBE, /CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd\.exe'/);
+  assert.match(PROBE, /delete env\.ELECTRON_RUN_AS_NODE/);
+  assert.match(PROBE, /delete env\.CLAUDE_CUSTOM_PORT/);
+  assert.match(PROBE, /delete env\.CLAUDE_CUSTOM_TOKEN/);
+});
+
+test('it never touches the real state: registry, portraits, uploads and user data are temp', () => {
+  for (const k of ['CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_UPLOADS']) {
+    assert.match(PROBE, new RegExp(`${k}: path\.join\(tmp,`), k);
+  }
+  assert.match(PROBE, /--user-data-dir=\$\{userData\}/);
+  assert.doesNotMatch(PROBE, /rmSync\([^)]*\.harness/);
+  assert.doesNotMatch(PROBE, /unlinkSync\([^)]*hosts/);
+});
+
+test('every process it starts is cleaned up on every exit path, including Ctrl+C', () => {
+  assert.match(PROBE, /require\('\.\/lib\/process-hygiene'\)/);
+  assert.match(PROBE, /hygiene\.install\(\)/);
+  assert.match(PROBE, /hygiene\.registerSpawnedTree\(child\.pid\)/);
+  assert.match(PROBE, /hygiene\.addCleanup\(killEverything\)/);
+  assert.match(PROBE, /hygiene\._emergencyCleanup\('done'\)/);
+  assert.match(PROBE, /killPidTree\(pid\)/);
+});
+
+test('the temp repo is removed, junctions unlinked first', () => {
+  assert.match(PROBE, /isSymbolicLink\(\)\) fs\.unlinkSync\(nm\)/);
+  assert.match(PROBE, /fs\.rmSync\(tmp, \{ recursive: true/);
+  assert.ok(PROBE.indexOf('isSymbolicLink') < PROBE.indexOf('fs.rmSync(tmp'), 'unlink before remove');
+});
+
+test('a run that never got going is a FAILURE, not a pass, and there is a summary line', () => {
+  assert.match(PROBE, /let skipped = false/);
+  assert.match(PROBE, /if \(skipped\) \{/);
+  assert.match(PROBE, /\$\{failures\} FAILED/);
+  assert.match(PROBE, /process\.exit\(failures \? 1 : 0\)/);
+});
