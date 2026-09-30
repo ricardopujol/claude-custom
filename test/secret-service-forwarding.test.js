@@ -646,11 +646,9 @@ test('without scopes (or with none usable) the service behaves exactly as before
 
 test('PROPERTY: an entry scoped to root or dev is visible to every tab of its project and to no other project', () => {
   const fc = require('fast-check');
-  const os = require('os');
   const path = require('path');
   const { createVault } = require('../app/secret-vault');
-  const fs = require('fs');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-scope-prop-'));
+  const dir = require('./tmp-dir').tmpDir('cc-scope-prop-');
   try {
     const crypto = { isEncryptionAvailable: () => true,
       encryptString: (s) => Buffer.from(s, 'utf8'), decryptString: (b) => Buffer.from(b).toString('utf8') };
@@ -672,6 +670,6 @@ test('PROPERTY: an entry scoped to root or dev is visible to every tab of its pr
       return JSON.stringify(inA) === JSON.stringify(['new', 'old']) && inB.length === 0;
     }), { numRuns: 25 });
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    require('./tmp-dir').cleanup();
   }
 });
