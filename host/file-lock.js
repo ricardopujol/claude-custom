@@ -35,7 +35,7 @@
  */
 
 const fs = require('fs');
-const { breakIfStale, readLock, removeIfSame, sleepSync, BREAK_WAIT_MS } = require('./lock-breaker');
+const { breakIfStale, readLock, sleepSync, BREAK_WAIT_MS } = require('./lock-breaker');
 
 // How long a lock may sit before its holder is presumed gone. Generously
 // longer than any write this codebase performs -- a serialize plus a
@@ -213,11 +213,19 @@ function withFileLock(lockPath, fn, opts = {}) {
     //
     // But only OUR lock (Dexter, PR #71 F3). A holder that outlived STALE_MS
     // had its lock broken and re-taken; unlinking the path would delete the
-    // new holder's lock and let a third in beside it. Removed only if it is
-    // still the bytes we wrote, through the same identity-checked removal the
-    // breaker uses.
+    // new holder's lock and let a third in beside it. So it goes only while it
+    // is still the bytes we wrote.
+    //
+    // By UNLINK, not the breaker's rename-aside: a rename fails with EPERM
+    // whenever a scanner holds the file for a moment (test/secret-vault.test.js
+    // measured it, 2026-09-18), and a release that fails leaves a live-pid lock
+    // refusing every write for STALE_MS. The window between this read and the
+    // unlink needs our lock to be judged stale and re-taken inside it, which
+    // takes a holder already past STALE_MS.
     const seen = readLock(lockPath);
-    if (!seen.gone && !seen.unreadable && seen.raw === written) removeIfSame(lockPath, seen);
+    if (!seen.gone && !seen.unreadable && seen.raw === written) {
+      try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+    }
   }
 }
 
