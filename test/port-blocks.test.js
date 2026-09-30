@@ -165,8 +165,9 @@ test('excluded ranges are the union of IPv4 and IPv6; a failed query contributes
   };
   const r = await excludedRanges({ exec });
   assert.deepStrictEqual(r, [{ start: 20400, end: 20400 }, { start: 21000, end: 21099 }, { start: 50000, end: 50059 }, { start: 50816, end: 50915 }]);
-  assert.ok(calls.some(c => /netsh int ipv4 show excludedportrange protocol=tcp/.test(c)));
-  assert.ok(calls.some(c => /netsh int ipv6 show excludedportrange protocol=tcp/.test(c)));
+  // By absolute path (Miguel, PR #71 G1), never a bare name the cwd could shadow.
+  assert.ok(calls.some(c => /^[A-Z]:\\.*System32\\netsh\.exe int ipv4 show excludedportrange protocol=tcp/i.test(c)), calls[0]);
+  assert.ok(calls.some(c => /System32\\netsh\.exe int ipv6 show excludedportrange protocol=tcp/i.test(c)));
 
   const failing = async (file, args) => { if (args.includes('ipv4')) throw new Error('x'); return '  21000  21099\r\n'; };
   assert.deepStrictEqual(await excludedRanges({ exec: failing }), [{ start: 21000, end: 21099 }]);

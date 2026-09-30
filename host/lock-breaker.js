@@ -23,10 +23,17 @@
  *
  * `.break` can itself be left behind by a breaker that died. It is cleared
  * when its pid is dead, or when it is older than BREAK_STALE_MS (a break takes
- * milliseconds). The one residual: a breaker that STALLS for BREAK_STALE_MS
- * inside the break can have its `.break` cleared under it, and then two
- * breakers overlap -- which is still safe for removal, because removal is
- * identity-checked, and at worst puts a live lock back.
+ * milliseconds).
+ *
+ * RESIDUAL, accepted (Dexter, PR #71 F5, Low). Clearing a stale `.break` is
+ * itself a break, one level up, and the three-waiter window reappears there:
+ * B2 moves the stale `.break` aside while B1 has just re-created it, B2's
+ * put-back loses the path to B3, and two breakers are inside at once. If a
+ * fourth host then takes the lock in the gap, an identity-checked removal can
+ * still delete its live lock. It needs a CRASHED breaker (a `.break` left
+ * behind) plus four processes contending inside a rename-read-link window, so
+ * it stays documented rather than chased with a third layer. A breaker that
+ * merely STALLS for BREAK_STALE_MS is the same case.
  */
 
 const fs = require('fs');

@@ -144,6 +144,18 @@ function main() {
   }
   console.log(`\nsummary: ${live} live (${exact} exact procStart match), ${dead} leftover, ${reused} mismatched`);
 
+  // Dexter, PR #71 F4: does "running, start unreadable" (null in the map)
+  // really fire? System (pid 4) has a StartTime getter that throws for a normal
+  // user. If this ever comes back absent, host/proc-start.js would report a
+  // live process as not running, and the session lock would break its lock.
+  const sys = require(path.join(__dirname, '..', 'host', 'proc-start'));
+  sys.startTimes([4]).then((m) => {
+    const ok = m !== null && m.has(4) && m.get(4) === null;
+    console.log(`\npid 4 (System): ${m === null ? 'query failed' : m.has(4) ? `start ${JSON.stringify(m.get(4))}` : 'ABSENT'}` +
+      ` -> ${ok ? 'ok: running, start unreadable (null)' : 'FAIL: proc-start would call a live process dead'}`);
+    if (!ok) process.exitCode = 1;
+  });
+
   // Our own process through the same query: is the value a host would write into
   // its lock the same one a competitor would read back from the OS?
   const self = osStartTimes([process.pid]).starts.get(process.pid);

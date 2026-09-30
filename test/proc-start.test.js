@@ -85,7 +85,10 @@ test('no valid pid means no process is spawned and the map is empty', async () =
 test('it asks powershell.exe without a profile, non-interactively', async () => {
   const { exec, calls } = fakeExec({ stdout: 'END\n' });
   await startTimes([12], opts({ exec }));
-  assert.strictEqual(calls[0].file, 'powershell.exe');
+  // By absolute path (Miguel, PR #71 G1): a bare name is looked up in the
+  // parent's cwd first, so a powershell.exe dropped in a project folder would run.
+  assert.ok(require('path').isAbsolute(calls[0].file), calls[0].file);
+  assert.match(calls[0].file, /System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i);
   assert.ok(calls[0].args.includes('-NoProfile'));
   assert.ok(calls[0].args.includes('-NonInteractive'));
 });

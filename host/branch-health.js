@@ -55,9 +55,9 @@ async function branchHealth(cwd, { run = defaultRun } = {}) {
   // The container itself is no worktree -- git would have nowhere to run.
   if (!project || (project.kind === 'container' && samePath(dir, project.root))) return null;
   if (isDevStyle(dir, project)) {
-    return { kind: 'dev', developAheadOfMain: await count(run, 'origin/main..origin/develop', cwd) };
+    return { kind: 'dev', developAheadOfMain: await count(run, 'origin/main..origin/develop', dir) };
   }
-  return { kind: 'tab', behindDevelop: await count(run, 'HEAD..origin/develop', cwd) };
+  return { kind: 'tab', behindDevelop: await count(run, 'HEAD..origin/develop', dir) };
 }
 
 module.exports = { branchHealth };

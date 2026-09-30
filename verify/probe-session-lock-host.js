@@ -23,7 +23,8 @@
  *   8. host F, blocked by E, with no window ever attached, exits by itself
  *      (Miguel, PR #71 Y3). Steps 6 and 8 each wait out IDLE_GRACE_MS (20 s).
  *
- * SAFE: `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing is billed. Side
+ * WINDOWS ONLY (cmd.exe, taskkill, `mode con`). SAFE: `claude` is cmd.exe
+ * (CLAUDE_CUSTOM_BIN), so nothing is billed. Side
  * effect: step 5 allocates a port block for the temp repo in the real
  * ~\.claude-custom\worktree-ports.json; the folder is deleted afterwards, so
  * the next allocation anywhere gives the block back.
@@ -201,6 +202,10 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   for (const h of hosts) console.log(`---- ${h.name} ----\n${h.out}`);
   finish(1);
 });
+
+// Ctrl+C mid-run must not orphan the hosts it started (Miguel, PR #71 G6):
+// each one holds a pty and, while held, a real session lock.
+process.on('SIGINT', () => { console.log('\ninterrupted: stopping the probe\'s hosts'); finish(130); });
 
 function finish(code) {
   for (const h of hosts) {

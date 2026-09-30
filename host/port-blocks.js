@@ -29,6 +29,10 @@ const { withFileLock } = require('./file-lock');
 const { renameWithRetry } = require('./atomic-write');
 const { normPath } = require('./project-layout');
 
+// By absolute path (Miguel, PR #71 G1): a bare name is looked up in the
+// parent's cwd first, and the host's cwd is a project folder.
+const NETSH = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'netsh.exe');
+
 const RANGE_START = 20000;
 const RANGE_LAST_BASE = 48900;       // its block ends at 48999
 const BLOCK = 100;
@@ -69,7 +73,7 @@ async function excludedRanges({ exec = defaultExec, platform = process.platform 
   if (platform !== 'win32') return [];
   const ask = async family => {
     try {
-      return parseExcludedRanges(await exec('netsh', ['int', family, 'show', 'excludedportrange', 'protocol=tcp']));
+      return parseExcludedRanges(await exec(NETSH, ['int', family, 'show', 'excludedportrange', 'protocol=tcp']));
     } catch {
       return [];
     }

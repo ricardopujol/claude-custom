@@ -20,11 +20,27 @@
  * Collapsing "couldn't ask" into "not running" would let a lock be broken
  * because powershell.exe was slow, which is the lost-lock failure this exists
  * to prevent.
+ *
+ * MEASURED "null in the map" (Dexter, PR #71 F4, doubted it could fire):
+ * `startTimes([4])` -- System, whose StartTime getter throws access denied --
+ * returns Map{4 => null} on this machine: under SilentlyContinue the throwing
+ * getter reads as $null and the `?` branch runs. verify/probe-session-
+ * registry.js asserts it on every run.
+ *
+ * OFF WINDOWS (Miguel G2) there is no query: every start time is null, so the
+ * session lock judges a holder on its pid alone. A dead holder is still taken
+ * over; a holder whose pid was REUSED reads as live, and the person gets the
+ * blocked view with *Open anyway* rather than a silent second session.
  */
 
+const path = require('path');
 const { execFile } = require('child_process');
 
 const QUERY_TIMEOUT_MS = 5000;
+// By absolute path (Miguel, PR #71 G1): a bare `powershell.exe` is looked up
+// in the parent's cwd first, and this host's cwd is a project folder.
+const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows',
+  'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 // Built, not typed: a literal U+FEFF in source is invisible (and
 // test/renderer-scope.test.js rejects it).
 const BOM_AT_START = new RegExp('^' + String.fromCharCode(0xfeff));
@@ -79,7 +95,7 @@ async function startTimes(pids, { exec = defaultExec, platform = process.platfor
 
   let out;
   try {
-    out = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+    out = await exec(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script]);
   } catch {
     return null;
   }
