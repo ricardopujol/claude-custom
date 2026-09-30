@@ -27,6 +27,12 @@ function createSecretService({
   // unticked. A default here is a silent grant, so there is none -- the
   // constructor refuses instead, like the two above it.
   project,
+  // EXTRA paths this window may also SEE (never add to): a tab window adds under
+  // its project's state root, but entries saved before the 2026-09-28 layout
+  // move are scoped to the container root, so both must be visible. `project`
+  // stays the single add-scope. Anything that is not a non-empty string is
+  // ignored, and no usable scope means behaviour exactly as before.
+  scopes = [],
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   clearAfterMs = CLIPBOARD_CLEAR_MS,
@@ -36,6 +42,9 @@ function createSecretService({
   if (typeof project !== 'string' || !project.trim()) {
     throw new Error('createSecretService: project is required -- secrets are scoped to one');
   }
+
+  const extra = Array.isArray(scopes) ? scopes.filter(s => typeof s === 'string' && s.trim()) : [];
+  const visibleIn = extra.length ? [project, ...extra] : project;
 
   let pendingClear = null;
   let lastCopied = null;
@@ -128,7 +137,7 @@ function createSecretService({
 
   function list({ query } = {}) {
     let entries;
-    try { entries = vault.list({ project }); } catch { return []; }
+    try { entries = vault.list({ project: visibleIn }); } catch { return []; }
     const q = String(query || '').trim().toLowerCase();
     if (!q) return entries;
     // Labels and notes only. Matching secret VALUES would put a secret on
@@ -147,17 +156,17 @@ function createSecretService({
   }
 
   function remove(id) {
-    try { return { ok: !!vault.remove(id, { project }) }; } catch (err) { return { ok: false, error: err.message }; }
+    try { return { ok: !!vault.remove(id, { project: visibleIn }) }; } catch (err) { return { ok: false, error: err.message }; }
   }
 
   function reveal(id) {
-    const secret = vault.get(id, { project });
+    const secret = vault.get(id, { project: visibleIn });
     if (secret == null) return { ok: false, error: 'not found or could not be decrypted' };
     return { ok: true, secret };
   }
 
   function copy(id) {
-    const secret = vault.get(id, { project });
+    const secret = vault.get(id, { project: visibleIn });
     if (secret == null) return { ok: false, error: 'not found or could not be decrypted' };
 
     clipboard.writeText(secret);
