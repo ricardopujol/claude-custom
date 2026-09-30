@@ -277,10 +277,33 @@ test('the open picker is a no-card-click region: its note and refusal text do no
   const base = D.toggle(seeded({ a: ['pace-haiku'] }), 'a');
   const refused = refuse(base, { reason: 'both set the model', itemId: 'pace-opus' });
   const html = D.html(D.view(refused, 'a', {}));
-  const open = html.indexOf('<div class="belt-picker" data-no-card-click>');
-  assert.ok(open !== -1, 'the picker must carry data-no-card-click');
-  assert.ok(html.indexOf('class="belt-note"') > open, 'the note sits inside it');
-  assert.ok(html.indexOf('class="belt-error"') > open, 'and so does the refusal');
+
+  // The picker's REAL attributes, read off the markup (order-independent) ...
+  const tag = /<div class="belt-picker"([^>]*)>/.exec(html);
+  assert.ok(tag, 'the open picker is drawn');
+  const attrs = {};
+  for (const m of tag[1].matchAll(/([\w-]+)(?:="([^"]*)")?/g)) attrs[m[1]] = m[2] === undefined ? '' : m[2];
+  const inside = (cls) => html.indexOf(`class="${cls}"`) > tag.index;
+  assert.ok(inside('belt-note') && inside('belt-error'), 'the note and the refusal sit inside the picker');
+
+  // ... composed with the card-click rule itself (Miguel, PR #72): a click on
+  // the note must open nothing, and the same click without the picker's
+  // attributes WOULD open the log -- so this pins the behaviour, not a string.
+  const { cardClickAgent } = require('../app/agent-log-display');
+  const el = (cls, parent, a = {}) => {
+    const n = { classes: [cls], attrs: a, dataset: {}, parent };
+    const hit = (e, sel) => sel.split(',').map(s => s.trim()).some(s =>
+      (s.startsWith('.') ? e.classes.includes(s.slice(1)) : s.startsWith('[') ? s.slice(1, -1) in e.attrs : false));
+    n.closest = sel => { for (let e = n; e; e = e.parent) if (hit(e, sel)) return e; return null; };
+    n.contains = o => { for (let e = o; e; e = e.parent) if (e === n) return true; return false; };
+    return n;
+  };
+  const row = el('agent', null);
+  row.dataset.agent = 'a';
+  const note = el('belt-note', el('belt-picker', row, attrs));
+  assert.strictEqual(cardClickAgent(note), null, 'a click on the note opened the agent log');
+  const bareNote = el('belt-note', el('belt-picker', row, {}));
+  assert.strictEqual(cardClickAgent(bareNote), 'a', 'control: without the attribute it would have');
 });
 
 test('names and reasons from the wire are escaped', () => {
