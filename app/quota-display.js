@@ -107,11 +107,18 @@ function formatCountdown(resetsAt, now = Date.now()) {
  *   reading  nothing has been read yet. A number here would be invented.
  *   absent   the read failed. We know NOTHING -- so no bars, and a note
  *            saying why rather than three bars sitting confidently at zero.
+ *   none     the read WORKED and the server listed no limits. Still no bars,
+ *            but the note must not say the read failed (Dexter, PR #73 F1).
  *   ready    draw the meters.
  */
 function quotaDisplay(quota, now = Date.now()) {
   if (!quota) {
     return { state: 'reading', note: 'reading account limits…', meters: [] };
+  }
+  // Only `ok: true` makes an empty list mean "none": host/quota.js sends
+  // `windows: []` on every failure too.
+  if (quota.ok === true && Array.isArray(quota.windows) && quota.windows.length === 0) {
+    return { state: 'none', note: 'no usage limits reported', meters: [] };
   }
   if (quota.ok === false || !Array.isArray(quota.windows) || quota.windows.length === 0) {
     const why = quota.error ? String(quota.error) : 'could not read account limits';
