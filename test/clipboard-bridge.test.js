@@ -145,7 +145,7 @@ test('with isSender, the handlers answer any of the window\'s views and nobody e
   const views = [{ id: 'a' }, { id: 'b' }];
   const isSender = (s) => views.includes(s);
   registerClipboardHandlers({
-    ipcMain, clipboard: fakeClipboard({ text: 'hi' }), win: { webContents: { id: 'strip' } }, isSender,
+    ipcMain, clipboard: Object.assign(fakeWritable(), { readText: () => 'hi' }), win: { webContents: { id: 'strip' } }, isSender,
   });
   const read = ipcMain.handlers.get(CLIPBOARD_READ);
   assert.deepStrictEqual(await read({ sender: views[0] }), { text: 'hi', hasImage: false });
