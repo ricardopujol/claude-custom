@@ -2,7 +2,15 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { tabStatus, afterSelected, sameStatus } = require('../app/tab-status');
-const { healthMarker } = require('../app/worktree-status-display');
+
+// A stand-in with the real marker's contract ({ text } or null). The renderer
+// injects worktreeStatus.healthMarker; requiring it here would put a mutated
+// module under this test (test/stryker-config.test.js).
+const healthMarker = (h) => {
+  if (h && h.kind === 'tab' && h.behindDevelop > 0) return { text: `↓${h.behindDevelop}` };
+  if (h && h.kind === 'dev' && h.developAheadOfMain > 0) return { text: `+${h.developAheadOfMain}` };
+  return null;
+};
 
 const ts = (inputs) => tabStatus(inputs, { healthMarker });
 
