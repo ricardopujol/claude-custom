@@ -197,7 +197,10 @@ function html(v) {
     `title="Equip items that change how this agent is spawned">belt</button>`;
   let picker = '';
   if (v.open) {
-    picker = `<div class="belt-picker"><div class="belt-note">${esc(v.note)}</div>` +
+    // data-no-card-click: the whole picker is a control region, so a click on
+    // its note or refusal text never falls through to the card and opens the
+    // agent log (agent-log-display.js cardClickAgent; PR #68's known bug).
+    picker = `<div class="belt-picker" data-no-card-click><div class="belt-note">${esc(v.note)}</div>` +
       v.rows.map(r =>
         `<button type="button" class="belt-row${r.equipped ? ' on' : ''}" data-loadout-act="${r.action}" ` +
         `data-loadout-agent="${a}" data-loadout-item="${esc(r.id)}" aria-pressed="${r.equipped ? 'true' : 'false'}" ` +
