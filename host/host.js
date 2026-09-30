@@ -2064,6 +2064,21 @@ wss.on('connection', (ws) => {
       overrideSession().catch((err) => console.log('[host] lock-override failed:', err && err.message));
       return;
     }
+    if (msg.type === 'stop') {
+      // A tab closed by hand (worktree tabs). The same teardown SIGTERM runs:
+      // release the lock, end the pty. Authorised like every control frame --
+      // the connection already presented the session token at the handshake.
+      console.log('[host] stop requested');
+      shutdown();
+      process.exit(0);
+    }
+    if (msg.type === 'raise') {
+      // *Go to that session*: every window attached here comes forward, and
+      // the sender learns how many there were (0 would mean nobody to raise).
+      broadcastControl({ type: 'raise' });
+      sendControl(ws, { type: 'raised', windows: clients.size });
+      return;
+    }
     if (msg.type === 'models') {
       // Asynchronous and yielding for the same reason the fog read is: the
       // loop here also accepts the hook helper's named-pipe connection, and
