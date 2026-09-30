@@ -88,3 +88,19 @@ test('F1: a blocked or overridden host re-checks the lock on the timer', () => {
 test('F1: one re-check or override at a time', () => {
   for (const fn of ['overrideSession', 'recheckLock']) assert.match(fnBody(fn), /lockBusy/, `${fn} honours lockBusy`);
 });
+
+test('Y3/F2: idle exit runs on the timer and on close, through the idle watch', () => {
+  const body = fnBody('checkIdle');
+  assert.match(body, /idleWatch\.update\(/);
+  const timer = HOST.slice(HOST.indexOf('const branchTimer = setInterval('), HOST.indexOf('branchTimer.unref()'));
+  assert.match(timer, /checkIdle\(\)/, 'a host whose window never connects still gets checked');
+  const close = HOST.slice(HOST.indexOf("ws.on('close'"), HOST.indexOf('});', HOST.indexOf("ws.on('close'")));
+  assert.match(close, /checkIdle\(\)/);
+  assert.doesNotMatch(close, /setTimeout\(/, 'no fixed wait racing a reopening window');
+});
+
+test('Y2: a blocked host allocates no port block -- the env is worked out when a session starts', () => {
+  assert.match(fnBody('startSession'), /workOutSessionEnv\(\)/);
+  assert.match(fnBody('workOutSessionEnv'), /allocatePortBlock\(/);
+  assert.doesNotMatch(bootBlock(), /allocatePortBlock\(|workOutSessionEnv\(/);
+});

@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck } = require('../host/session-gate');
+const { gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck, createIdleWatch, IDLE_GRACE_MS } = require('../host/session-gate');
 
 const HOLDER = { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 555 };
 
@@ -137,4 +137,47 @@ test('the periodic re-check never touches a held, unlocked or pending host', () 
   }
   assert.strictEqual(gateRecheck({ state: 'blocked', holder: HOLDER }, true, { state: 'held' }), null,
     'a blocked host that somehow has a session is not started twice');
+});
+
+// Miguel Y3 / Dexter F2: idle exit only ran on a socket 'close', so a blocked
+// host whose window never connected never left, and a window reopening inside
+// the fixed 3 s wait raced the exit. Now a watch on the timer: the host goes
+// only once it has been idle -- blocked, no session, no window -- for a whole
+// grace period, and anything that ends the idleness resets it.
+
+test('the idle watch fires only after a whole grace period of idleness', () => {
+  let t = 1000;
+  const w = createIdleWatch({ graceMs: 20000, now: () => t });
+  const blocked = { state: 'blocked', holder: HOLDER };
+  assert.strictEqual(w.update(blocked, false, 0), false, 'the first idle sighting only starts the clock');
+  t += 19999;
+  assert.strictEqual(w.update(blocked, false, 0), false);
+  t += 1;
+  assert.strictEqual(w.update(blocked, false, 0), true);
+});
+
+test('a window attaching during the grace resets it, so a reopen never races the exit', () => {
+  let t = 0;
+  const w = createIdleWatch({ graceMs: 20000, now: () => t });
+  const blocked = { state: 'blocked', holder: HOLDER };
+  w.update(blocked, false, 0);
+  t = 15000;
+  assert.strictEqual(w.update(blocked, false, 1), false, 'a window is back');
+  t = 25000;
+  assert.strictEqual(w.update(blocked, false, 0), false, 'idle again: the clock restarts');
+  t = 45000;
+  assert.strictEqual(w.update(blocked, false, 0), true);
+});
+
+test('a session that starts, or a lock that is no longer blocked, ends the idleness', () => {
+  let t = 0;
+  const w = createIdleWatch({ graceMs: 1000, now: () => t });
+  w.update({ state: 'blocked', holder: HOLDER }, false, 0);
+  t = 5000;
+  assert.strictEqual(w.update({ state: 'blocked', holder: HOLDER }, true, 0), false);
+  assert.strictEqual(w.update({ state: 'held' }, true, 0), false);
+});
+
+test('the grace is long enough for a slow first window and short enough not to linger', () => {
+  assert.ok(IDLE_GRACE_MS >= 15000 && IDLE_GRACE_MS <= 60000, String(IDLE_GRACE_MS));
 });

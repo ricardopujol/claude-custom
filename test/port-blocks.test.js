@@ -205,3 +205,17 @@ test('PROPERTY: blocks are unique, in range, on a boundary, clear of exclusions,
       }
     }), { numRuns: 200 });
 });
+
+test('IPv4 and IPv6 are asked at the same time, not one after the other (Miguel, PR #71 Y2)', async () => {
+  let inFlight = 0;
+  let most = 0;
+  const exec = async () => {
+    inFlight++;
+    most = Math.max(most, inFlight);
+    await new Promise(r => setImmediate(r));
+    inFlight--;
+    return '';
+  };
+  await excludedRanges({ exec, platform: 'win32' });
+  assert.strictEqual(most, 2);
+});

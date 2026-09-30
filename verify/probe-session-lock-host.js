@@ -19,7 +19,9 @@
  *   6. host D, blocked by C, exits on its own once its only window closes
  *      (a blocked host has no session to keep alive);
  *   7. host E, blocked by C: C dies, and *Open anyway* on E TAKES the free lock
- *      instead of overriding it (Dexter, PR #71 F1).
+ *      instead of overriding it (Dexter, PR #71 F1);
+ *   8. host F, blocked by E, with no window ever attached, exits by itself
+ *      (Miguel, PR #71 Y3). Steps 6 and 8 each wait out IDLE_GRACE_MS (20 s).
  *
  * SAFE: `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing is billed. Side
  * effect: step 5 allocates a port block for the temp repo in the real
@@ -161,7 +163,7 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   const dConn = await attach(d);
   await waitMsg(dConn, m => m.type === 'hello');
   dConn.ws.close();
-  const until = Date.now() + 10000;
+  const until = Date.now() + 35000;   // IDLE_GRACE_MS (20 s) + a timer tick
   while (d.child.exitCode === null && Date.now() < until) await sleep(100);
   check(d.child.exitCode === 0 && /blocked, no session and no window: exiting/.test(d.out),
     'a blocked host exits once its last window has gone');
@@ -182,6 +184,15 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   await waitFor(e, /pty pid {7}: \d+/);
   check(readLockFile().pid === e.child.pid, 'the lock now names E');
   eConn.ws.close();
+
+  // 8. Miguel, PR #71 Y3: a blocked host whose window NEVER connects still
+  // exits (the idle watch runs on the timer, not only on a socket close).
+  const f = startHost('F', await freePort());
+  await waitFor(f, /session lock {2}:.*"state":"blocked"/);
+  const fUntil = Date.now() + 35000;
+  while (f.child.exitCode === null && Date.now() < fUntil) await sleep(200);
+  check(f.child.exitCode === 0 && /blocked, no session and no window: exiting/.test(f.out),
+    'a blocked host that no window ever attached to exits by itself');
 
   console.log('PASS: the session lock holds in real hosts');
   finish(0);

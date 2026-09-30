@@ -86,4 +86,28 @@ function gateRecheck(lock, started, result) {
   return null;
 }
 
-module.exports = { gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck };
+// How long a blocked host with no session and no window lingers. Long enough
+// for a slow first window to attach after the host came up, short enough that
+// a closed window's host is gone before anyone wonders why it is still there.
+const IDLE_GRACE_MS = 20000;
+
+// idleExit, held for a whole grace period (Miguel Y3, Dexter F2, PR #71). Run
+// on the host's timer as well as on a socket close, so a host whose window
+// never connected also leaves; anything that ends the idleness -- a window
+// attaching, a session starting -- resets the clock, so a window reopening
+// during the grace never races the exit.
+function createIdleWatch({ graceMs = IDLE_GRACE_MS, now = Date.now } = {}) {
+  let since = null;
+  return {
+    update(lock, started, clientCount) {
+      if (!idleExit(lock, started, clientCount)) { since = null; return false; }
+      if (since === null) since = now();
+      return now() - since >= graceMs;
+    },
+  };
+}
+
+module.exports = {
+  gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck,
+  createIdleWatch, IDLE_GRACE_MS,
+};

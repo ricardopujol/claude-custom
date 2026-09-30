@@ -74,7 +74,10 @@ async function excludedRanges({ exec = defaultExec, platform = process.platform 
       return [];
     }
   };
-  const all = [...await ask('ipv4'), ...await ask('ipv6')];
+  // Together, not one after the other (Miguel, PR #71 Y2): each can take up
+  // to its 5 s timeout, and a session's start waits on the answer.
+  const [v4, v6] = await Promise.all([ask('ipv4'), ask('ipv6')]);
+  const all = [...v4, ...v6];
   const seen = new Set();
   return all
     .filter(r => { const k = `${r.start}-${r.end}`; if (seen.has(k)) return false; seen.add(k); return true; })

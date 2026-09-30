@@ -75,7 +75,7 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock } = require('./session-lock');
 const { createSelfStartTime } = require('./proc-start');
-const { gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck } =
+const { gateFromAcquire, gateOverride, gateOnBootError, gateAfterRecheck, gateRecheck, createIdleWatch } =
   require('./session-gate');
 const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
@@ -1330,13 +1330,31 @@ const SESSION_LOCK = lockPathFor(CWD);
 let lockOwner = null;                  // what we wrote into the lock, once taken
 let lockState = { state: 'pending' };  // host/session-gate.js documents the shapes
 // WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE (Extension X3),
-// worked out at boot. After cleanEnv() so a worktree's own values win over
-// whatever the launching shell exported; before providerEnv, which never
-// sets them.
-let sessionEnv = {};
+// worked out when a session starts -- never in a host the lock blocked, which
+// would pay for a port block it never uses (Miguel, PR #71 Y2). After
+// cleanEnv() so a worktree's own values win over whatever the launching shell
+// exported; before providerEnv, which never sets them.
+let sessionEnv = null;
+let excludedPorts = [];                // Windows' excluded ranges, read at boot
+
+function workOutSessionEnv() {
+  try {
+    // A port block belongs to the worktree, never a subfolder of it, and a
+    // folder that is no worktree takes none.
+    const root = worktreeRoot(CWD);
+    return worktreeEnv(CWD, { portBase: root ? allocatePortBlock(root, { excluded: excludedPorts }) : null });
+  } catch (err) {
+    console.log('[host] worktree env failed, starting without it:', err && err.message);
+    return {};
+  }
+}
 
 function startSession() {
   if (term) return;
+  if (sessionEnv === null) {
+    sessionEnv = workOutSessionEnv();
+    console.log('[host] worktree env  :', JSON.stringify(sessionEnv));
+  }
   // At the size the window last asked for (Miguel, PR #71 R1): a resize that
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
@@ -1570,7 +1588,9 @@ const branchTimer = setInterval(() => {
     changed = true;
     broadcastControl({ type: 'branch', branch });
   }
-  if (changed || ++branchTicks % 10 === 0) refreshBranchHealth();
+  branchTicks++;                     // every tick, change or not (Miguel G3)
+  checkIdle();
+  if (changed || branchTicks % 10 === 0) refreshBranchHealth();
   if (branchTicks % 10 === 0) {
     refreshTerminals();
     recheckLock().catch((err) => console.log('[host] lock re-check failed:', err && err.message));
@@ -1583,6 +1603,19 @@ branchTimer.unref();
 function setLockState(lock) {
   lockState = lock;
   broadcastControl({ type: 'lock', lock });
+}
+
+// A host the lock blocked, with no session and no window, has nothing to keep
+// alive: it goes once that has lasted a whole grace period (session-gate
+// createIdleWatch). Checked on every timer tick -- so a host whose first
+// window never connected goes too (Miguel Y3) -- and on every socket close. A
+// window attaching resets the clock, so a reopen never races the exit (F2).
+const idleWatch = createIdleWatch();
+function checkIdle() {
+  if (!idleWatch.update(lockState, term !== null, clients.size)) return;
+  console.log('[host] blocked, no session and no window: exiting');
+  shutdown();
+  process.exit(0);
 }
 
 // One re-check or override at a time: both call acquire, which can take a
@@ -2199,19 +2232,9 @@ wss.on('connection', (ws) => {
     agentLog.close();
     console.log(`[host] client detached (${clients.size} remain)`);
     // NOTE: the pty deliberately keeps running. This is the detachable-session
-    // property the phone/Remote Control workflow depends on.
-    //
-    // A BLOCKED host has no pty to keep (host/session-gate.js idleExit): it
-    // goes once its last window has been gone a moment -- the grace covers a
-    // reload reattaching.
-    if (idleExit(lockState, term !== null, clients.size)) {
-      setTimeout(() => {
-        if (!idleExit(lockState, term !== null, clients.size)) return;
-        console.log('[host] blocked, no session and no window: exiting');
-        shutdown();
-        process.exit(0);
-      }, 3000).unref();
-    }
+    // property the phone/Remote Control workflow depends on. A BLOCKED host has
+    // no pty to keep: checkIdle starts its clock here, and the timer ends it.
+    checkIdle();
   });
 });
 
@@ -2310,23 +2333,21 @@ process.on('SIGTERM', () => { shutdown(); process.exit(0); });
 process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOCK, lockOwner); });
 
 // --- boot: the session lock, then the session (Extension X1/X3) -------------
-// Our own OS start time (for the lock's pid-reuse check) and Windows' excluded
-// port ranges are asked for together, so the lock costs one powershell.exe
-// round trip (~250ms) before `claude` starts. A bug in any of this must not
-// cost the person their session: the catch starts it unlocked and says so.
+// Our own OS start time (for the lock's pid-reuse check: one powershell.exe,
+// ~250ms) and Windows' excluded port ranges (two netsh, in parallel, ~100ms)
+// are asked for together, so `claude` starts after the slower of the two plus
+// the lock itself -- measured ~0.3s, bounded by the 5s query timeouts. A host
+// the lock blocks skips the port block entirely (workOutSessionEnv). A bug in
+// any of this must not cost the person their session: see the catch.
 (async () => {
   const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges()]);
+  excludedPorts = excluded;
   lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null };
   const gate = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
   // Recorded FIRST (Miguel, PR #71 Y1): if anything below throws, the catch
   // must still know a blocked verdict was reached.
   setLockState(gate.lock);
   console.log('[host] session lock  :', SESSION_LOCK || '(not a repo)', JSON.stringify(gate.lock));
-  // A port block belongs to the worktree, never a subfolder of it, and a
-  // folder that is no worktree takes none.
-  const root = worktreeRoot(CWD);
-  sessionEnv = worktreeEnv(CWD, { portBase: root ? allocatePortBlock(root, { excluded }) : null });
-  console.log('[host] worktree env  :', JSON.stringify(sessionEnv));
   if (gate.start) startSession();
 })().catch((err) => {
   // host/session-gate.js gateOnBootError: a blocked verdict stands, a taken
