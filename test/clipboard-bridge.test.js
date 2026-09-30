@@ -137,3 +137,22 @@ test('the preload invokes the write channel with the text', () => {
   assert.ok(app('preload.js').includes(`ipcRenderer.invoke('${CLIPBOARD_WRITE}', text)`),
     `preload.js must invoke '${CLIPBOARD_WRITE}' with the text`);
 });
+
+// --- a window made of tab views (worktree tabs): the gate is a predicate -----
+
+test('with isSender, the handlers answer any of the window\'s views and nobody else', async () => {
+  const ipcMain = fakeIpc();
+  const views = [{ id: 'a' }, { id: 'b' }];
+  const isSender = (s) => views.includes(s);
+  registerClipboardHandlers({
+    ipcMain, clipboard: fakeClipboard({ text: 'hi' }), win: { webContents: { id: 'strip' } }, isSender,
+  });
+  const read = ipcMain.handlers.get(CLIPBOARD_READ);
+  assert.deepStrictEqual(await read({ sender: views[0] }), { text: 'hi', hasImage: false });
+  assert.deepStrictEqual(await read({ sender: views[1] }), { text: 'hi', hasImage: false });
+  // The window's OWN page (the strip) is not a view: the predicate decides.
+  assert.deepStrictEqual(await read({ sender: { id: 'strip' } }), { text: '', hasImage: false });
+  const write = ipcMain.handlers.get(CLIPBOARD_WRITE);
+  assert.strictEqual((await write({ sender: views[1] }, 'x')).ok, true);
+  assert.strictEqual((await write({ sender: {} }, 'x')).ok, false);
+});
