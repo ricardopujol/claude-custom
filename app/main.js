@@ -87,6 +87,16 @@ const STRIP_HEIGHT = 34;
 const POLL_MS = 3000;
 const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
 
+// A window another window covers is "occluded", and Chromium then stops
+// painting it: capturePage answers an EMPTY image. That is the intermittent
+// empty capture the screenshot path retries around (measured 2026-09-30: the
+// tab probe failed 1 run in 7 with "capturePage returned an empty image 4
+// times" for the strip AND the view, both at once). Only the headless paths
+// switch occlusion tracking off, so a person's window is unchanged.
+if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+}
+
 // The token of the host on THIS port, preferred over the shared file, which is
 // last-writer-wins once a second project is open. Falling back to the shared
 // one keeps a host started before this change reattachable. Null when none can

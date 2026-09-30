@@ -175,3 +175,8 @@ test('every tab view is created with context isolation on and node integration o
 test('the tab view learns its mode from the shell', () => {
   assert.match(MAIN, /tabmode: tabShell\.tabmodeOf\(tab\)/);
 });
+
+test('only the headless paths switch native occlusion tracking off (an occluded window captures EMPTY)', () => {
+  assert.match(MAIN, /if \(process\.env\.CLAUDE_CUSTOM_SCREENSHOT \|\| PROBE_PORT\) \{\s*app\.commandLine\.appendSwitch\('disable-features', 'CalculateNativeWinOcclusion'\);/);
+  assert.strictEqual((MAIN.match(/CalculateNativeWinOcclusion/g) || []).length, 1);
+});

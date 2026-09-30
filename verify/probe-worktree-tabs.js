@@ -25,6 +25,9 @@
  *   criterion 6  dev has no close, in the strip or by command
  *   launcher     opened from a sibling's folder, THAT tab is selected
  *   criterion 7  a flat repo opens single-tab
+ *   explicit port  CLAUDE_CUSTOM_PORT keeps a window single-tab on one host on that
+ *                port (the path every older probe and the hand check use), and the
+ *                CLAUDE_CUSTOM_SCREENSHOT path captures the selected view AND the strip
  *
  * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing runs
  * that bills; ELECTRON_RUN_AS_NODE is deleted before each window launch (Claude
@@ -114,7 +117,7 @@ function makeFlat() {
 
 // --- one app instance = one "window" --------------------------------------------------
 let windowNo = 0;
-async function launchApp(cwd) {
+async function launchApp(cwd, extraEnv = {}) {
   windowNo++;
   const port = await freePort();
   const env = {
@@ -131,6 +134,7 @@ async function launchApp(cwd) {
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CLAUDE_CUSTOM_PORT;
   delete env.CLAUDE_CUSTOM_TOKEN;
+  Object.assign(env, extraEnv);
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
@@ -373,6 +377,36 @@ async function main() {
       !!s && s.tabs[0].closable === false && Array.isArray(s.stripDom) && s.stripDom.length === 1 && s.stripDom[0].hasClose === false);
     check('and its session started', !!s && s.tabs[0].started && !!hostOf(s, s.tabs[0].label) && alive(hostOf(s, s.tabs[0].label).pid));
     await quit(app);
+
+    // ===== CLAUDE_CUSTOM_PORT: one host on one folder, by port, unchanged =====
+    // The launch every older probe and the hand check use. Even at a CONTAINER
+    // path it must stay one tab on that folder, on exactly that port.
+    const xport = await freePort();
+    const shot2 = path.join(tmp, 'explicit.png');
+    app = await launchApp(container, {
+      CLAUDE_CUSTOM_PORT: String(xport), CLAUDE_CUSTOM_TOKEN: 'probe-explicit-token',
+      CLAUDE_CUSTOM_SCREENSHOT: shot2, CLAUDE_CUSTOM_SCREENSHOT_DELAY: '16000',
+    });
+    const up = await waitFor(() => app.exited || /probe driver listening/.test(app.out), 40000, 250);
+    check('the explicit-port window came up', !!up && !app.exited, app.exited ? `exited ${app.exitCode}` : '');
+    const listeningNow = await waitFor(() => new Promise((res) => {
+      const sock = net.connect({ host: '127.0.0.1', port: xport });
+      sock.once('connect', () => { sock.destroy(); res(true); });
+      sock.once('error', () => res(false));
+    }), 30000, 300);
+    const xid = await waitFor(() => readIdentity({ dir: HARNESS_DIR, port: xport }), 10000, 250);
+    if (xid) seenPids.add(xid.pid);
+    check('its host is on EXACTLY the named port and serves the folder it was given',
+      !!listeningNow && !!xid && path.resolve(xid.cwd).toLowerCase() === path.resolve(container).toLowerCase(),
+      xid ? `port ${xport}, cwd ${xid.cwd}` : 'no identity');
+    const xs = await state(app);
+    check('and the window is single-tab, not a tab shell (CLAUDE_CUSTOM_PORT set)',
+      !!xs && xs.mode === 'single' && xs.tabs.length === 1 && xs.tabs[0].closable === false, xs && `${xs.mode}, ${(xs.tabs || []).length} tab(s)`);
+    await waitFor(() => app.exited, 40000, 300);
+    check('the screenshot path finished and exited on its own', app.exited && app.exitCode === 0, `exit ${app.exitCode}`);
+    const pngOk2 = (f) => { try { const b = fs.readFileSync(f); return b.length > 2000 && b.slice(0, 8).toString('hex') === '89504e470d0a1a0a'; } catch { return false; } };
+    check('it captured the selected view', pngOk2(shot2), shot2);
+    check('and the strip beside it', pngOk2(shot2.replace(/.png$/i, '.strip.png')));
   }
 }
 
