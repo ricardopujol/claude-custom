@@ -199,3 +199,31 @@ test('the registry lives under CLAUDE_CONFIG_DIR when it is set', () => {
     if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was;
   }
 });
+
+// Dexter, PR #71 F7: `verified: true` must mean "every live session here is
+// accounted for". A file we could not read, or one that has lost the fields
+// we read, may be a session we cannot see; a live session whose start time
+// the OS will not give is one we cannot confirm. Either way: not verified,
+// so the banner never claims "1 other session" when there may be two.
+
+test('an unreadable session file among good ones means the answer is not verified', async () => {
+  const { wt } = makeContainer();
+  const dir = registry([{ file: '10.json', doc: '{not json' }, entry(11, wt)]);
+  const r = await liveSessionsIn(wt, { dir, ...osWith({ 11: true }) });
+  assert.strictEqual(r.format, 'ok');
+  assert.strictEqual(r.verified, false);
+});
+
+test('a file in an old or new format beside good ones means not verified either', async () => {
+  const { wt } = makeContainer();
+  const dir = registry([{ file: '10.json', doc: { id: 10, dir: wt } }, entry(11, wt)]);
+  assert.strictEqual((await liveSessionsIn(wt, { dir, ...osWith({ 11: true }) })).verified, false);
+});
+
+test('a live candidate whose start time the OS will not give means not verified', async () => {
+  const { wt } = makeContainer();
+  const dir = registry([entry(11, wt), entry(12, wt)]);
+  const r = await liveSessionsIn(wt, { dir, ...osWith({ 11: true, 12: null }) });
+  assert.strictEqual(r.verified, false);
+  assert.deepStrictEqual(r.sessions.map(s => s.pid), [11], 'what it could confirm is still listed');
+});

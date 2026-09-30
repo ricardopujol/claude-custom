@@ -108,6 +108,17 @@ function holderOf(seen) {
   };
 }
 
+/**
+ * Who holds the lock right now, or null when there is no lock. A blocked host
+ * read the holder once, possibly before the holder wrote its claude pid in
+ * (updateOwn) -- this re-reads it (Dexter, PR #71 F8).
+ */
+function readHolder(lockPath) {
+  if (!lockPath) return null;
+  const seen = readLock(lockPath);
+  return seen.parsed ? holderOf(seen) : null;
+}
+
 const record = o => ({
   pid: o.pid,
   processStartedAt: o.processStartedAt,
@@ -228,4 +239,4 @@ function updateOwn(lockPath, owner, patch) {
   }
 }
 
-module.exports = { lockPathFor, judgeHolder, acquire, release, updateOwn, LOCK_NAME, GRACE_MS, UNKNOWN_WAIT_MS };
+module.exports = { lockPathFor, judgeHolder, acquire, release, updateOwn, readHolder, LOCK_NAME, GRACE_MS, UNKNOWN_WAIT_MS };

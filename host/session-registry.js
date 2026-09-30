@@ -68,19 +68,27 @@ async function liveSessionsIn(worktree, opts = {}) {
     } catch { /* unreadable or mid-write: skipped */ }
   }
   if (jsonFiles > 0 && docs.length === 0) return unknown;
+  // `verified` means every live session here is accounted for (Dexter, PR #71
+  // F7). A file we couldn't read, or one without the fields we read, may be a
+  // session we can't see -- mid-write, or a format that has moved on beside an
+  // old leftover -- so the answer is only as good as "not verified".
+  const allRead = docs.length === jsonFiles;
 
   const ours = gitDirOf(worktree);
-  if (!ours) return { format: 'ok', verified: true, sessions: [] };
+  if (!ours) return { format: 'ok', verified: allRead, sessions: [] };
 
   const candidates = docs.filter(d =>
     validPid(d.pid) &&
     !excludedPids.has(d.pid) &&
     !(typeof d.sessionId === 'string' && excludedIds.has(d.sessionId)) &&
     samePath(gitDirOf(d.cwd), ours));
-  if (candidates.length === 0) return { format: 'ok', verified: true, sessions: [] };
+  if (candidates.length === 0) return { format: 'ok', verified: allRead, sessions: [] };
 
   const starts = await startTimes([...new Set(candidates.map(d => d.pid))]);
   if (starts === null) return { format: 'ok', verified: false, sessions: [] };
+  // A live candidate whose start time the OS won't give can't be confirmed as
+  // the session its file describes -- dropped, and the answer not verified.
+  const allConfirmable = candidates.every(d => starts.get(d.pid) !== null);
 
   const sessions = candidates
     .filter(d => starts.get(d.pid) === d.procStart)   // alive, and the same process
@@ -90,7 +98,7 @@ async function liveSessionsIn(worktree, opts = {}) {
       status: strOrNull(d.status),
       startedAt: finiteOrNull(d.startedAt),
     }));
-  return { format: 'ok', verified: true, sessions };
+  return { format: 'ok', verified: allRead && allConfirmable, sessions };
 }
 
 module.exports = { liveSessionsIn, defaultRegistryDir };

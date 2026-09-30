@@ -73,7 +73,7 @@ const { pickerPayload, createProjectsReader } = require('./project-picker');
 const { resolveLaunchTarget } = require('./launch-target');
 const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
-        updateOwn: updateSessionLock } = require('./session-lock');
+        updateOwn: updateSessionLock, readHolder } = require('./session-lock');
 const { createSelfStartTime } = require('./proc-start');
 const { gateFromAcquire, gateOverride, gateOnBootError, gateAfterRecheck, gateRecheck, createIdleWatch } =
   require('./session-gate');
@@ -1689,11 +1689,16 @@ async function refreshTerminals() {
   if (terminalsRunning) return;
   terminalsRunning = true;
   try {
-    const holder = lockState.holder;
+    // The holder re-read from the lock (Dexter, PR #71 F8): a host blocked
+    // before the holder wrote its claude pid in would otherwise list the
+    // holder's own session as "another session in this worktree".
+    const holder = lockState.holder ? (readHolder(SESSION_LOCK) || lockState.holder) : null;
     const pids = [term && term.pid, holder && holder.claudePid].filter(p => Number.isInteger(p));
     const next = await liveSessionsIn(CWD, { exclude: { pids, sessionIds: sessionId ? [sessionId] : [] } });
     if (next.format === 'unknown' && (!terminalSessions || terminalSessions.format !== 'unknown')) {
       console.log('[host] session registry: unknown format -- terminal sessions not checked (see verify/probe-session-registry.js)');
+    } else if (next.format === 'ok' && !next.verified && (!terminalSessions || terminalSessions.verified)) {
+      console.log('[host] session registry: some sessions could not be confirmed (unreadable files or start times) -- no warning shown');
     }
     if (JSON.stringify(next) !== JSON.stringify(terminalSessions)) {
       terminalSessions = next;

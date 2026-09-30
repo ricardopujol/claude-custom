@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const fc = require('fast-check');
 
-const { lockPathFor, judgeHolder, acquire, release, updateOwn, GRACE_MS, LOCK_NAME } =
+const { lockPathFor, judgeHolder, acquire, release, updateOwn, readHolder, GRACE_MS, LOCK_NAME } =
   require('../host/session-lock');
 const { readLock } = require('../host/lock-breaker');
 const { tmpDir } = require('./tmp-dir');
@@ -332,6 +332,23 @@ test('our OWN lock is held, not blocked: acquiring twice is harmless', async () 
   const t = table({ 201: '9' });
   assert.deepStrictEqual(await acquire(lock, me(), fast(t)), { state: 'held' });
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), me(), 'untouched');
+});
+
+// Dexter, PR #71 F8: a blocked host reads the holder once, possibly before the
+// holder wrote its claude pid in. readHolder re-reads it, so the holder's own
+// session is not shown as "another session in this worktree".
+
+test('readHolder reads who holds the lock now, fields strictly typed', () => {
+  const lock = lockFile();
+  fs.writeFileSync(lock, JSON.stringify(holder(101, '5', { claudePid: 777 })));
+  assert.deepStrictEqual(readHolder(lock), { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 777 });
+  fs.writeFileSync(lock, JSON.stringify({ pid: 101, claudePid: '777' }));
+  assert.deepStrictEqual(readHolder(lock), { pid: 101, startedAt: null, port: null, claudePid: null });
+});
+
+test('readHolder of no lock, or no lock path, is null', () => {
+  assert.strictEqual(readHolder(lockFile()), null);
+  assert.strictEqual(readHolder(null), null);
 });
 
 // --- PROPERTY: never two live holders -------------------------------------------

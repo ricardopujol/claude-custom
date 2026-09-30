@@ -104,3 +104,7 @@ test('Y2: a blocked host allocates no port block -- the env is worked out when a
   assert.match(fnBody('workOutSessionEnv'), /allocatePortBlock\(/);
   assert.doesNotMatch(bootBlock(), /allocatePortBlock\(|workOutSessionEnv\(/);
 });
+
+test('F8: the terminal check re-reads the lock holder, so its own claude is never "another session"', () => {
+  assert.match(fnBody('refreshTerminals'), /readHolder\(SESSION_LOCK\)/);
+});
