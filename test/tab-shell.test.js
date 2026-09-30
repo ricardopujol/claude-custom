@@ -1,0 +1,627 @@
+'use strict';
+/**
+ * The tab shell's decisions, with every effect faked (app/tab-shell.js).
+ *
+ * The properties that cost something get a PROPERTY test: spawns are
+ * serialised, `listening` is never false for a tab that is starting or not
+ * started, and a poll that lists no dev keeps every tab.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const path = require('path');
+const os = require('os');
+const fc = require('fast-check');
+
+const {
+  createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
+  handleProbeCommand, noWindowText,
+} = require('../app/tab-shell');
+const { normPath } = require('../host/project-layout');
+
+const ROOT = path.join(os.tmpdir(), 'cc-tabshell-proj');
+const wt = (name) => path.join(ROOT, name);
+const key = (name) => normPath(wt(name));
+
+const porcelain = (entries) => entries.map(([name, branch]) =>
+  `worktree ${wt(name).replace(/\\/g, '/')}\nHEAD 0123456789012345678901234567890123456789\n` +
+  (branch ? `branch refs/heads/${branch}\n` : 'detached\n')).join('\n') + '\n';
+
+const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
+
+/** A shell whose every effect is a recording fake. */
+function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false } = {}) {
+  const h = {
+    listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
+    spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
+    confirm: true, resolveCalls: [], tokens: 0, failWait: false, gitInFlight: 0, gitMax: 0,
+  };
+  const base = 7700;
+  const deps = {
+    mode, container: ROOT, cwd: wt('dev'), launchedFrom,
+    log: () => {},
+    git: { list: async () => {
+      h.gitInFlight++; h.gitMax = Math.max(h.gitMax, h.gitInFlight);
+      await settle();
+      h.gitInFlight--;
+      if (h.listFails) throw new Error('git broke');
+      return h.listText;
+    } },
+    hosts: {
+      choosePort: async (tab) => {
+        h.resolveCalls.push(tab.key);
+        for (let p = base; p < base + 50; p++) {
+          const occ = h.running[p];
+          if (occ === undefined) return { port: p, action: 'spawn' };
+          if (normPath(occ) === tab.key) return { port: p, action: 'attach' };
+        }
+        return null;
+      },
+      isListening: async (port) => h.running[port] !== undefined,
+      spawn: ({ tab, port, token }) => {
+        if (spawnFails) throw new Error('spawn exploded');
+        h.spawns.push({ key: tab.key, port, token });
+        h.running[port] = tab.cwd;
+      },
+      wait: async () => !h.failWait,
+      tokenFor: (port) => (h.running[port] !== undefined ? `tok-${port}` : null),
+      newToken: () => `fresh-${++h.tokens}`,
+      control: async (c) => { h.controls.push(c); return h.controlReply ? h.controlReply(c) : { ok: true, reply: null }; },
+      identity: () => null,
+      readToken: () => null,
+    },
+    views: {
+      create: (tab) => { const v = { tab: tab.key, id: h.viewsMade.length }; h.viewsMade.push(v); return v; },
+      destroy: (tab) => h.viewsGone.push(tab.key),
+      send: (tab, channel, payload) => h.sent.push([tab.key, channel, payload]),
+      owns: (tab, sender) => tab.view === sender,
+    },
+    ui: {
+      confirmClose: async () => h.confirm,
+      changed: (snap) => h.changes.push(snap),
+      focusWindow: () => { h.focusCalls++; },
+      isFocused: () => focused,
+    },
+  };
+  h.shell = createShell(deps);
+  return h;
+}
+
+const labels = (h) => h.shell.model().map(e => e.label);
+const settle = () => new Promise(r => setImmediate(r));
+const flush = async () => { for (let i = 0; i < 6; i++) await settle(); };
+
+// --- pure helpers ------------------------------------------------------------
+
+test('createQueue runs in order, one at a time, and survives a failure', async () => {
+  const q = createQueue();
+  const order = [];
+  let running = 0;
+  let maxRunning = 0;
+  const job = (name, ms, fail) => q.run(async () => {
+    running++; maxRunning = Math.max(maxRunning, running);
+    await new Promise(r => setTimeout(r, ms));
+    order.push(name); running--;
+    if (fail) throw new Error(name);
+  });
+  const results = await Promise.allSettled([job('a', 15), job('b', 1, true), job('c', 5)]);
+  assert.deepStrictEqual(order, ['a', 'b', 'c']);
+  assert.strictEqual(maxRunning, 1);
+  assert.deepStrictEqual(results.map(r => r.status), ['fulfilled', 'rejected', 'fulfilled']);
+});
+
+test('captureListening: true for started tabs that answer; everything else is left OUT', async () => {
+  const tabs = [
+    { key: 'a', started: true, starting: false, port: 1 },
+    { key: 'b', started: true, starting: false, port: 2 },        // does not answer
+    { key: 'c', started: false, starting: true, port: null },     // starting
+    { key: 'd', started: false, starting: false, port: null },    // never started
+    { key: 'e', started: true, starting: true, port: 5 },         // mid-restart: unknown
+    { key: 'f', started: true, starting: false, port: 6 },        // probe throws
+  ];
+  const out = await captureListening(tabs, async (p) => {
+    if (p === 6) throw new Error('boom');
+    return p === 1;
+  });
+  assert.deepStrictEqual(out, { a: true });
+  assert.ok(!Object.values(out).includes(false));
+});
+
+test('buildObservation: no text is NO observation; merged is always {}', () => {
+  assert.strictEqual(buildObservation(null, ROOT, {}), null);
+  assert.strictEqual(buildObservation(undefined, ROOT, {}), null);
+  const o = buildObservation(porcelain(THREE), ROOT, { x: true });
+  assert.deepStrictEqual(o.merged, {});
+  assert.deepStrictEqual(o.listening, { x: true });
+  assert.deepStrictEqual(o.worktrees.map(w => [w.isDev, w.branch]), [[true, 'develop'], [false, 'feat/a'], [false, 'feat/b']]);
+  assert.deepStrictEqual(buildObservation('', ROOT, undefined).listening, {});
+});
+
+test('sanitizeStatus keeps four fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, lock: null, health: null });
+  assert.deepStrictEqual(
+    sanitizeStatus({ working: 'yes', needsInput: 1, lock: '', health: '', extra: 1 }),
+    { working: false, needsInput: false, lock: null, health: null });
+  assert.deepStrictEqual(
+    sanitizeStatus({ working: true, needsInput: true, lock: 'blocked', health: '↓3' }),
+    { working: true, needsInput: true, lock: 'blocked', health: '↓3' });
+});
+
+// --- open: criterion 1, X5, criterion 8 --------------------------------------
+
+test('open lists three tabs, dev first, and starts ONLY dev (criterion 1, X5)', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  const m = h.shell.model();
+  assert.deepStrictEqual(m.map(e => e.started), [true, false, false]);
+  assert.deepStrictEqual(m.map(e => e.selected), [true, false, false]);
+  assert.strictEqual(h.spawns.length, 1);
+  assert.strictEqual(h.spawns[0].key, key('dev'));
+  assert.strictEqual(h.viewsMade.length, 1);
+});
+
+test('a session that is already running is attached at open, with a view and no spawn (criterion 8)', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.spawns.length, 0);
+  assert.deepStrictEqual(h.shell.model().map(e => e.started), [true, true, false]);
+  assert.deepStrictEqual(h.viewsMade.map(v => v.tab).sort(), [key('dev'), key('feat-a')].sort());
+});
+
+test('the token of an attached host is the RUNNING host\'s, not a fresh one', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('dev')).token, 'tok-7700');
+  assert.strictEqual(h.tokens, 0);
+});
+
+test('selecting an unstarted tab starts it, and the port is chosen AT THAT MOMENT', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  const before = h.resolveCalls.filter(k => k === key('feat-a')).length;
+  assert.strictEqual(before, 1, 'one probe at open, to see whether a session is running');
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(h.resolveCalls.filter(k => k === key('feat-a')).length, 2, 'asked again when it started');
+  assert.strictEqual(h.spawns.length, 2);
+  assert.ok(h.shell.model().find(e => e.label === 'feat/a').started);
+  assert.ok(h.sent.some(([k, ch]) => k === key('feat-a') && ch === 'tab-selected') === false,
+    'a view that did not exist yet is not messaged');
+});
+
+test('a start that fails shows the reason, leaves the other tabs alone, and Retry (select) starts it', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  await h.shell.select(key('feat-b'));
+  const tab = h.shell.tabByKey(key('feat-b'));
+  assert.strictEqual(tab.started, false);
+  assert.match(tab.error, /did not come up on port \d+ in time/);
+  assert.strictEqual(h.shell.model().find(e => e.label === 'feat/b').startError, tab.error);
+  assert.strictEqual(h.shell.model().find(e => e.label === 'develop').started, true, 'dev unaffected');
+  h.failWait = false;
+  await h.shell.select(key('feat-b'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.error, null);
+});
+
+test('no free port for a folder is a tab error too', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  for (let p = 7700; p < 7750; p++) if (h.running[p] === undefined) h.running[p] = path.join(os.tmpdir(), 'stranger' + p);
+  await h.shell.select(key('feat-b'));
+  assert.match(h.shell.tabByKey(key('feat-b')).error, /no usable port/);
+});
+
+test('a spawn that throws is a tab error, not a crashed shell', async () => {
+  const h = harness({ spawnFails: true });
+  await h.shell.open();
+  await flush();
+  const dev = h.shell.tabByKey(key('dev'));
+  assert.strictEqual(dev.started, false);
+  assert.match(dev.error, /spawn exploded/);
+  assert.strictEqual(dev.starting, false);
+});
+
+test('single mode reports a host that never comes up on the tab it returns', async () => {
+  const h = harness({ mode: 'single' });
+  h.failWait = true;
+  const tab = await h.shell.open();
+  assert.strictEqual(tab.started, false);
+  assert.match(tab.error, /did not come up on port 7700/);
+});
+
+test('single mode: one tab on the given folder, started at once, never closable, never polled', async () => {
+  const h = harness({ mode: 'single' });
+  const tab = await h.shell.open();
+  assert.strictEqual(tab.cwd, wt('dev'));
+  assert.strictEqual(tab.started, true);
+  const m = h.shell.model();
+  assert.strictEqual(m.length, 1);
+  assert.strictEqual(m[0].closable, false);
+  assert.strictEqual(h.shell.tabmodeOf(tab), 'single');
+  h.listText = porcelain(THREE);
+  await h.shell.poll();
+  assert.strictEqual(h.shell.model().length, 1, 'a single-tab window ignores worktrees');
+  assert.strictEqual((await h.shell.closeTab(tab.key)).ok, false);
+});
+
+test('tabmodeOf: dev is dev, a worktree is a tab', async () => {
+  const h = harness();
+  await h.shell.open();
+  assert.strictEqual(h.shell.tabmodeOf(h.shell.tabByKey(key('dev'))), 'dev');
+  assert.strictEqual(h.shell.tabmodeOf(h.shell.tabByKey(key('feat-a'))), 'tab');
+});
+
+test('launching from a sibling selects THAT tab (criterion 8 / launcher)', async () => {
+  const h = harness({ launchedFrom: path.join(wt('feat-b'), 'src') });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'));
+  assert.ok(h.shell.tabByKey(key('feat-b')).started, 'the selected tab starts');
+  assert.ok(!h.shell.tabByKey(key('dev')).started, 'dev does not, when it is not selected');
+});
+
+// --- the poller: W3 ----------------------------------------------------------
+
+test('a worktree added while open becomes a tab on the next poll, not started (W3)', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.listText = porcelain([...THREE, ['feat-c', 'feat/c']]);
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b', 'feat/c']);
+  assert.strictEqual(h.shell.tabByKey(key('feat-c')).started, false);
+});
+
+test('a worktree git no longer lists: its host is stopped and its tab closed', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.listText = porcelain([THREE[0], THREE[2]]);
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/b']);
+  assert.deepStrictEqual(h.controls, [{ port: 7701, token: 'tok-7701', msg: { type: 'stop' } }]);
+  assert.deepStrictEqual(h.viewsGone, [key('feat-a')]);
+});
+
+test('the selected tab going away moves the selection to a neighbour, never to nothing', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  await h.shell.select(key('feat-a'));
+  h.listText = porcelain([THREE[0], THREE[2]]);
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'));
+  assert.ok(h.shell.tabByKey(key('feat-b')).started, 'and the neighbour starts');
+});
+
+test('a git failure is NO observation: every tab stays, and the notice says why', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.listFails = true;
+  await h.shell.poll();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.match(h.shell.snapshot().notice, /can't list worktrees: git broke/);
+  h.listFails = false;
+  await h.shell.poll();
+  assert.strictEqual(h.shell.snapshot().notice, null);
+});
+
+test('a poll whose list has no dev keeps every tab', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.listText = porcelain([['feat-a', 'feat/a']]);
+  await h.shell.poll();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.deepStrictEqual(h.controls, []);
+});
+
+test('only one poll runs at a time: a tick that finds one running does nothing', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.gitMax = 0;
+  await Promise.all([h.shell.poll(), h.shell.poll(), h.shell.poll()]);
+  assert.strictEqual(h.gitMax, 1);
+});
+
+// --- hand close: criterion 5 -------------------------------------------------
+
+test('hand close: confirm, then stop + close; the tab stays closed while git lists it, and dev cannot', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual((await h.shell.closeTab(key('dev'))).ok, false, 'dev has no close (criterion 6)');
+  h.confirm = false;
+  assert.strictEqual((await h.shell.closeTab(key('feat-a'))).cancelled, true);
+  assert.deepStrictEqual(h.controls, []);
+  assert.strictEqual(h.shell.model().length, 3);
+  h.confirm = true;
+  assert.strictEqual((await h.shell.closeTab(key('feat-a'))).ok, true);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/b']);
+  assert.deepStrictEqual(h.controls, [{ port: 7701, token: 'tok-7701', msg: { type: 'stop' } }]);
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/b'], 'git still lists it, so it stays closed');
+});
+
+test('closing the selected tab selects a neighbour', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  await h.shell.select(key('feat-a'));
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'));
+});
+
+test('a tab closed while it is still starting does not leave its host behind', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  const pending = h.shell.select(key('feat-a'));
+  const closing = h.shell.closeTab(key('feat-a'));
+  await Promise.all([pending, closing]);
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  const spawnedForA = h.spawns.filter(s => s.key === key('feat-a'));
+  const stops = h.controls.filter(c => c.msg.type === 'stop');
+  assert.strictEqual(stops.length, spawnedForA.length, 'every host spawned for the closed tab was stopped');
+});
+
+// --- what a tab reports ------------------------------------------------------
+
+test('report maps the sender to its tab, sanitises, and dedupes', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  assert.strictEqual(h.shell.report({}, { working: true }), false, 'a stranger is nobody');
+  const n = h.changes.length;
+  assert.strictEqual(h.shell.report(aView, { working: true, lock: 'blocked', health: '↓2', junk: 1 }), true);
+  const e = h.shell.model().find(x => x.label === 'feat/a');
+  assert.deepStrictEqual([e.working, e.lockGlyph, e.health], [true, 'blocked', '↓2']);
+  const n2 = h.changes.length;
+  assert.ok(n2 > n);
+  h.shell.report(aView, { working: true, lock: 'blocked', health: '↓2' });
+  assert.strictEqual(h.changes.length, n2, 'an unchanged status is not re-published');
+  assert.strictEqual(h.shell.isTabView(devView), true);
+  assert.strictEqual(h.shell.isTabView({}), false);
+});
+
+test('needsInput shows on a tab you are not looking at, and clears on selection', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  h.shell.report(aView, { needsInput: true });
+  assert.strictEqual(h.shell.model().find(x => x.label === 'feat/a').needsInput, true);
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.label === 'feat/a').needsInput, false);
+  assert.ok(h.sent.some(([k, ch]) => k === key('feat-a') && ch === 'tab-selected'), 'the page is told, so it clears its own flag');
+});
+
+test('needsInput from the tab you are looking at (window focused) does not light the strip', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(devView, { needsInput: true });
+  assert.strictEqual(h.shell.model().find(x => x.isDev).needsInput, false);
+  const h2 = harness({ running: { 7700: wt('dev') }, focused: false });
+  await h2.shell.open();
+  await flush();
+  h2.shell.report(h2.shell.tabByKey(key('dev')).view, { needsInput: true });
+  assert.strictEqual(h2.shell.model().find(x => x.isDev).needsInput, true, 'window in the background: the strip shows it');
+});
+
+test('a raise and an attention click select the sender\'s tab and bring the window forward', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  assert.strictEqual(h.shell.raise({}), false);
+  assert.strictEqual(h.focusCalls, 0);
+  assert.strictEqual(h.shell.raise(aView), true);
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
+  assert.strictEqual(h.focusCalls, 1);
+  await h.shell.select(key('dev'));
+  assert.strictEqual(h.shell.attentionClick(aView), true);
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
+  assert.strictEqual(h.focusCalls, 2);
+});
+
+// --- Go to that session ------------------------------------------------------
+
+test('goTo: a tab in THIS window is selected', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const r = await h.shell.goTo(devView, { pid: 5, port: 7701, install: 'C:/x' });
+  assert.deepStrictEqual(r, { kind: 'select-tab' });
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
+});
+
+test('goTo: another install raises its window; windows 0 is explained, a refusal is explained', async () => {
+  const holder = { pid: 4242, port: 7999, install: 'C:/other' };
+  const calls = [];
+  let reply = { ok: true, reply: { type: 'raised', windows: 2 } };
+  const s = createShell({
+    mode: 'tabs', container: ROOT, log: () => {},
+    git: { list: async () => porcelain([THREE[0]]) },
+    hosts: {
+      choosePort: async () => ({ port: 7700, action: 'attach' }), isListening: async () => true,
+      spawn: () => {}, wait: async () => true, tokenFor: () => 'tok', newToken: () => 't',
+      control: async (c) => { calls.push(c); return reply; },
+      identity: ({ install, port }) => (install === 'C:/other' && port === 7999 ? { pid: 4242 } : null),
+      readToken: (install, port) => (install === 'C:/other' ? 'secret' : null),
+    },
+    views: { create: () => ({ v: 1 }), destroy: () => {}, send: () => {}, owns: (t, s2) => t.view === s2 },
+    ui: { confirmClose: async () => true, changed: () => {}, focusWindow: () => {}, isFocused: () => true },
+  });
+  await s.open();
+  await flush();
+  const view = s.tabByKey(key('dev')).view;
+  assert.deepStrictEqual(await s.goTo(view, holder), { kind: 'raised' });
+  assert.deepStrictEqual(calls, [{ port: 7999, token: 'secret', msg: { type: 'raise' } }]);
+  reply = { ok: true, reply: { type: 'raised', windows: 0 } };
+  assert.deepStrictEqual(await s.goTo(view, holder), { kind: 'explain', text: noWindowText(holder) });
+  reply = { ok: false, error: 'connection refused' };
+  const bad = await s.goTo(view, holder);
+  assert.strictEqual(bad.kind, 'explain');
+  assert.match(bad.text, /connection refused/);
+  // A stale lock: the identity's pid is not the holder's -> no token, nothing sent.
+  calls.length = 0;
+  const stale = await s.goTo(view, { ...holder, pid: 1 });
+  assert.strictEqual(stale.kind, 'explain');
+  assert.deepStrictEqual(calls, []);
+});
+
+test('goTo from something that is not a tab view is refused with words', async () => {
+  const h = harness();
+  const r = await h.shell.goTo({}, { pid: 1, port: 7700 });
+  assert.strictEqual(r.kind, 'explain');
+  assert.deepStrictEqual(h.controls, []);
+});
+
+// --- menus, override, Ctrl+Tab -----------------------------------------------
+
+test('the override is offered only for a blocked tab, and reaches only that view', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(h.shell.menuState(key('feat-a')), { key: key('feat-a'), override: false, close: true });
+  assert.strictEqual(h.shell.override(key('feat-a')), false, 'not blocked: nothing is sent');
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { lock: 'blocked' });
+  assert.strictEqual(h.shell.menuState(key('feat-a')).override, true);
+  assert.strictEqual(h.shell.override(key('feat-a')), true);
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'lock-override'), [[key('feat-a'), 'lock-override', undefined]]);
+  assert.deepStrictEqual(h.shell.menuState(key('dev')), { key: key('dev'), override: false, close: false }, 'dev has no close');
+  assert.deepStrictEqual(h.shell.menuState('nope'), { key: 'nope', override: false, close: false });
+});
+
+test('next/previous cycle through every tab and wrap, starting what they land on', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  const seen = [];
+  for (let i = 0; i < 3; i++) { await h.shell.next(); seen.push(h.shell.snapshot().selectedKey); }
+  assert.deepStrictEqual(seen, [key('feat-a'), key('feat-b'), key('dev')]);
+  await h.shell.previous();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'));
+  assert.ok(h.shell.tabByKey(key('feat-b')).started);
+});
+
+// --- the probe driver ----------------------------------------------------------
+
+test('handleProbeCommand dispatches known commands and refuses the rest by name, never throwing', async () => {
+  const log = [];
+  const api = {
+    state: async () => ({ tabs: [1] }),
+    select: async (l) => { log.push(['select', l]); return { ok: true }; },
+    close: async (l) => { log.push(['close', l]); return { ok: true }; },
+    screenshot: async (f) => { log.push(['shot', f]); return { ok: true, file: f }; },
+    quit: async () => ({ ok: true }),
+  };
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"state"}', api), { ok: true, tabs: [1] });
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"select","label":"feat/a"}', api), { ok: true });
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"close","label":"feat/a"}', api), { ok: true });
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"screenshot","file":"x.png"}', api), { ok: true, file: 'x.png' });
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"quit"}', api), { ok: true });
+  assert.deepStrictEqual(log, [['select', 'feat/a'], ['close', 'feat/a'], ['shot', 'x.png']]);
+  assert.deepStrictEqual(await handleProbeCommand('nope', api), { ok: false, error: 'not JSON' });
+  assert.deepStrictEqual(await handleProbeCommand('{"x":1}', api), { ok: false, error: 'no cmd' });
+  assert.deepStrictEqual(await handleProbeCommand('null', api), { ok: false, error: 'no cmd' });
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"rm"}', api), { ok: false, error: 'unknown command: rm' });
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"screenshot"}', api), { ok: false, error: 'screenshot needs a file' });
+  const boom = await handleProbeCommand('{"cmd":"state"}', { state: async () => { throw new Error('kaput'); } });
+  assert.deepStrictEqual(boom, { ok: false, error: 'kaput' });
+});
+
+// --- properties ----------------------------------------------------------------
+
+test('PROPERTY: spawns are serialised -- tabs that hash to one port never both get it', async () => {
+  await fc.assert(fc.asyncProperty(
+    fc.integer({ min: 2, max: 6 }),
+    fc.array(fc.integer({ min: 0, max: 12 }), { minLength: 6, maxLength: 6 }),
+    async (n, delays) => {
+      const occupied = new Map();          // port -> cwd
+      const granted = [];
+      const names = Array.from({ length: n }, (_, i) => `t${i}`);
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const shell = createShell({
+        mode: 'tabs', container: ROOT, log: () => {},
+        git: { list: async () => porcelain([['dev', 'develop'], ...names.map(x => [x, `feat/${x}`])]) },
+        hosts: {
+          // Every tab "hashes" to 7700; the walk is resolvePort's.
+          choosePort: async (tab) => {
+            await sleep(delays[0]);
+            for (let p = 7700; p < 7800; p++) {
+              const occ = occupied.get(p);
+              if (occ === undefined) return { port: p, action: 'spawn' };
+              if (normPath(occ) === tab.key) return { port: p, action: 'attach' };
+            }
+            return null;
+          },
+          isListening: async (p) => occupied.has(p),
+          spawn: ({ tab, port }) => { granted.push(port); setTimeout(() => occupied.set(port, tab.cwd), delays[1]); },
+          wait: async (port) => { await sleep(delays[2] + 3); return occupied.has(port); },
+          tokenFor: () => 't', newToken: () => 't',
+          control: async () => ({ ok: true }), identity: () => null, readToken: () => null,
+        },
+        views: { create: () => ({}), destroy: () => {}, send: () => {}, owns: () => false },
+        ui: { confirmClose: async () => true, changed: () => {}, focusWindow: () => {}, isFocused: () => true },
+      });
+      await shell.open();
+      await sleep(40);
+      // Start every tab at once.
+      await Promise.all(names.map(x => shell.select(normPath(wt(x)))));
+      const ports = [...shell._tabs.values()].filter(t => t.started).map(t => t.port);
+      return new Set(ports).size === ports.length && new Set(granted).size === granted.length;
+    }), { numRuns: 25 });
+});
+
+test('PROPERTY: listening is never false, and never present for a tab that is starting or unstarted', async () => {
+  await fc.assert(fc.asyncProperty(
+    fc.array(fc.record({
+      started: fc.boolean(), starting: fc.boolean(), port: fc.option(fc.integer({ min: 1, max: 65535 }), { nil: null }),
+      answers: fc.boolean(),
+    }), { maxLength: 8 }),
+    async (specs) => {
+      const tabs = specs.map((s, i) => ({ key: `k${i}`, ...s }));
+      const answers = new Map(tabs.map(t => [t.port, t.answers]));
+      const out = await captureListening(tabs, async (p) => answers.get(p));
+      for (const [k, v] of Object.entries(out)) {
+        const t = tabs.find(x => x.key === k);
+        if (v !== true || !t.started || t.starting || t.port === null) return false;
+      }
+      return true;
+    }), { numRuns: 100 });
+});
+
+test('PROPERTY: a poll with no dev keeps every tab, whatever git lists', async () => {
+  await fc.assert(fc.asyncProperty(
+    fc.subarray(['feat-a', 'feat-b', 'feat-c', 'other'], { maxLength: 4 }),
+    async (names) => {
+      const h = harness();
+      await h.shell.open();
+      await flush();
+      const before = labels(h);
+      h.listText = porcelain(names.map(x => [x, `feat/${x}`]));
+      await h.shell.poll();
+      const noStop = h.controls.length === 0;
+      return noStop && JSON.stringify(labels(h)) === JSON.stringify(before);
+    }), { numRuns: 20 });
+});
