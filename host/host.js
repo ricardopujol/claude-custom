@@ -2368,7 +2368,7 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
 (async () => {
   const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges()]);
   excludedPorts = excluded;
-  lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null };
+  lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null, install: path.join(__dirname, '..') };
   const gate = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
   // Recorded FIRST (Miguel, PR #71 Y1): if anything below throws, the catch
   // must still know a blocked verdict was reached.
