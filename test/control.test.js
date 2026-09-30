@@ -75,6 +75,17 @@ test('parseControlFrame requires the frame to start with "{" literally -- leadin
   assert.strictEqual(parseControlFrame(' {"type":"health"}'), null);
 });
 
+test('a lock-override frame is control, never typed into the pty', () => {
+  // Extension X1's *Open anyway*. Off CONTROL_TYPES it would fall through to
+  // term.write -- which, in a BLOCKED host, is a null pty.
+  const written = [];
+  let dispatchedWith = null;
+  const result = handleFrame('{"type":"lock-override"}', (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+  assert.strictEqual(result.handled, true);
+  assert.deepStrictEqual(written, []);
+  assert.deepStrictEqual(dispatchedWith, { type: 'lock-override' });
+});
+
 test('parseControlFrame returns the parsed message for every known control type', () => {
   for (const type of CONTROL_TYPES) {
     assert.deepStrictEqual(parseControlFrame(JSON.stringify({ type, x: 1 })), { type, x: 1 });

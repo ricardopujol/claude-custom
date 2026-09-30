@@ -479,6 +479,30 @@ test('a lock whose mtime cannot be read is broken, not treated as a tombstone', 
   }
 });
 
+test('Finding A: an EMPTY lock whose mtime cannot be read is not broken', () => {
+  // Dexter, PR #57 re-review, Finding A (accepted then, fixed in #22). Empty
+  // is exactly what a live lock looks like between its `wx` and its write, so
+  // "no content and no age" tells us nothing about the holder. The test above
+  // still holds for content that IS there and isn't a lock: garbage has no
+  // creation window to be caught in, and must not become a tombstone.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, '');
+
+  const realStat = fs.statSync;
+  fs.statSync = (...a) => {
+    if (String(a[0]) === lock) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    return realStat.apply(fs, a);
+  };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 100 }), /lock/i);
+  } finally {
+    fs.statSync = realStat;
+  }
+  assert.strictEqual(ran, false);
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), '', 'the lock was broken');
+});
+
 // --- a successful break must get its retry, even past the deadline ----------
 //
 // The full-suite flake, 2026-09-26/27. Under load, four stale-lock tests
@@ -708,4 +732,20 @@ test('breaking a stale lock leaves nothing behind in the directory', () => {
   fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
   assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
   assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('release removes only OUR lock: one that replaced it while the work ran survives', () => {
+  // Dexter, PR #71 F3. A holder that outlives STALE_MS (the port allocator
+  // waiting on an offline network path) has its lock broken and re-taken by
+  // somebody else; its `finally` used to unlinkSync the path -- deleting the
+  // NEW holder's lock and letting a third in beside it.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  const theirs = JSON.stringify({ pid: process.ppid, at: Date.now(), theirs: true });
+  withFileLock(lock, () => {
+    fs.unlinkSync(lock);                   // ours was broken as stale ...
+    fs.writeFileSync(lock, theirs);        // ... and somebody else took it
+  });
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), theirs);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['thing.json.lock'], 'no tomb left behind');
 });

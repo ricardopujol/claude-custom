@@ -72,6 +72,15 @@ const { writeIdentity, fileFor } = require('./host-identity');
 const { pickerPayload, createProjectsReader } = require('./project-picker');
 const { resolveLaunchTarget } = require('./launch-target');
 const { samePath } = require('./project-path');
+const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
+        updateOwn: updateSessionLock, readHolder } = require('./session-lock');
+const { createSelfStartTime } = require('./proc-start');
+const { gateFromAcquire, gateOverride, gateOnBootError, gateAfterRecheck, gateRecheck, createIdleWatch } =
+  require('./session-gate');
+const { liveSessionsIn } = require('./session-registry');
+const { worktreeEnv, worktreeRoot } = require('./worktree-env');
+const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
+const { branchHealth } = require('./branch-health');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -647,6 +656,8 @@ function enqueuePty(text) {
   const step = () => {
     const next = ptyQueue.shift();
     if (next === undefined) { ptyDraining = false; return; }
+    // A window the session lock blocked has no pty yet: nothing to type into.
+    if (!term) { console.log('[host] no session yet; dropped a queued pty line'); setTimeout(step, 0); return; }
     try { term.write(next); } catch (err) {
       console.log('[host] pty write failed:', err && err.message);
     }
@@ -1308,22 +1319,66 @@ function cleanEnv() {
   return env;
 }
 
-const term = pty.spawn(CLAUDE_BIN, ARGS, {
-  name: 'xterm-256color',
-  cols: 120,
-  rows: 30,
-  cwd: CWD,
-  env: {
-    ...cleanEnv(),
-    TERM: 'xterm-256color',
-    COLORTERM: 'truecolor',
-    // Marks this session as harness-hosted; the hook bridge keys off it later.
-    CLAUDE_CUSTOM_SESSION: '1',
-    ...providerEnv,
-  },
-});
+// --- the session, behind the worktree's session lock (Extension X1) --------
+// One live `claude` per worktree across every window and host: the lock is
+// taken at boot (end of this file) BEFORE anything is spawned, so `term` is
+// null until the session starts -- and stays null in a window the lock
+// blocked, until the person picks *Open anyway*. Every use of `term` below is
+// guarded for that. Design: documentation/PLAN_WORKTREE_TABS.md, Extension X.
+let term = null;
+const SESSION_LOCK = lockPathFor(CWD);
+let lockOwner = null;                  // what we wrote into the lock, once taken
+let lockState = { state: 'pending' };  // host/session-gate.js documents the shapes
+// WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE (Extension X3),
+// worked out when a session starts -- never in a host the lock blocked, which
+// would pay for a port block it never uses (Miguel, PR #71 Y2). After
+// cleanEnv() so a worktree's own values win over whatever the launching shell
+// exported; before providerEnv, which never sets them.
+let sessionEnv = null;
+let excludedPorts = [];                // Windows' excluded ranges, read at boot
 
-console.log('[host] pty pid       :', term.pid);
+function workOutSessionEnv() {
+  try {
+    // A port block belongs to the worktree, never a subfolder of it, and a
+    // folder that is no worktree takes none.
+    const root = worktreeRoot(CWD);
+    return worktreeEnv(CWD, { portBase: root ? allocatePortBlock(root, { excluded: excludedPorts }) : null });
+  } catch (err) {
+    console.log('[host] worktree env failed, starting without it:', err && err.message);
+    return {};
+  }
+}
+
+function startSession() {
+  if (term) return;
+  if (sessionEnv === null) {
+    sessionEnv = workOutSessionEnv();
+    console.log('[host] worktree env  :', JSON.stringify(sessionEnv));
+  }
+  // At the size the window last asked for (Miguel, PR #71 R1): a resize that
+  // arrived while blocked or booting only reached termState, which starts at
+  // 120x30 and follows every validated resize since.
+  const { cols, rows } = termState.size();
+  term = pty.spawn(CLAUDE_BIN, ARGS, {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd: CWD,
+    env: {
+      ...cleanEnv(),
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      // Marks this session as harness-hosted; the hook bridge keys off it later.
+      CLAUDE_CUSTOM_SESSION: '1',
+      ...sessionEnv,
+      ...providerEnv,
+    },
+  });
+  console.log('[host] pty pid       :', term.pid);
+  // Whoever this lock blocks can see which `claude` is holding the worktree.
+  if (lockState.state === 'held') updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
+  wireTerm(term);
+}
 
 // --- attach surface ---------------------------------------------------------
 // The session token. Taken from the environment when the Electron main process
@@ -1465,13 +1520,29 @@ seedRosterIndex()
   .then((rosterIndex) => broadcastControl({ type: 'rosterIndex', rosterIndex }))
   .catch(() => { /* lastRosterIndex already reflects the failure; the next attach retries */ });
 
-term.onData((data) => {
-  termState.write(data);
-  const frame = Buffer.from(data, 'utf8');
-  for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
-  }
-});
+// The pty's two event handlers, attached when startSession() spawns it.
+function wireTerm(t) {
+  t.onData((data) => {
+    termState.write(data);
+    const frame = Buffer.from(data, 'utf8');
+    for (const ws of clients) {
+      if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
+    }
+  });
+
+  t.onExit(({ exitCode, signal }) => {
+    console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
+    releaseSessionLock(SESSION_LOCK, lockOwner);
+    for (const ws of clients) {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(
+          JSON.stringify({ type: 'exit', exitCode, signal })
+        );
+      }
+    }
+    process.exit(exitCode ?? 0);
+  });
+}
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
 // owns the clock and the transitions stay reproducible in tests.
@@ -1506,14 +1577,139 @@ moodTimer.unref();
 // tiny file three times a second for that would be pure waste. Broadcasts on
 // every CHANGE of value, not just a falling edge -- checking out a second
 // branch must update the header too, not just clear it.
+// Every tenth tick (30s) it also re-counts branch health and re-checks for
+// other sessions in this worktree -- both spawn a process, so not every 3s.
+let branchTicks = 0;
 const branchTimer = setInterval(() => {
   const branch = currentBranch(CWD);
+  let changed = false;
   if (branch !== branchWas) {
     branchWas = branch;
+    changed = true;
     broadcastControl({ type: 'branch', branch });
+  }
+  branchTicks++;                     // every tick, change or not (Miguel G3)
+  checkIdle();
+  if (changed || branchTicks % 10 === 0) refreshBranchHealth();
+  if (branchTicks % 10 === 0) {
+    refreshTerminals();
+    recheckLock().catch((err) => console.log('[host] lock re-check failed:', err && err.message));
   }
 }, 3000);
 branchTimer.unref();
+
+// --- the session lock, other sessions, branch health (Extension X1/X4) -----
+
+function setLockState(lock) {
+  lockState = lock;
+  broadcastControl({ type: 'lock', lock });
+}
+
+// A host the lock blocked, with no session and no window, has nothing to keep
+// alive: it goes once that has lasted a whole grace period (session-gate
+// createIdleWatch). Checked on every timer tick -- so a host whose first
+// window never connected goes too (Miguel Y3) -- and on every socket close. A
+// window attaching resets the clock, so a reopen never races the exit (F2).
+const idleWatch = createIdleWatch();
+function checkIdle() {
+  if (!idleWatch.update(lockState, term !== null, clients.size)) return;
+  console.log('[host] blocked, no session and no window: exiting');
+  shutdown();
+  process.exit(0);
+}
+
+// One re-check or override at a time: both call acquire, which can take a
+// second, and a second click must not start a second session.
+let lockBusy = false;
+
+// *Open anyway*, re-checked first (Dexter, PR #71 F1): if the holder has gone,
+// the lock is TAKEN rather than overridden -- an unlocked session on a free
+// lock would let the next window take it and start claude #2 unblocked.
+async function overrideSession() {
+  if (lockBusy) return;
+  lockBusy = true;
+  try {
+    const g = gateAfterRecheck(await acquireSessionLock(SESSION_LOCK, lockOwner), lockState);
+    if (term) return;                                  // started meanwhile
+    console.log(g.lock.state === 'override'
+      ? '[host] session lock overridden: a second session in this worktree'
+      : `[host] Open anyway found the lock ${g.lock.state === 'held' ? 'free and took it' : 'unavailable'}`);
+    setLockState(g.lock);
+    if (g.start) startSession();
+  } finally {
+    lockBusy = false;
+  }
+}
+
+// Every 30 s for a host the lock kept out (session-gate gateRecheck): a
+// blocked window whose holder has gone takes the lock and starts; an
+// overridden session takes the lock once it is free, so the next window on
+// this worktree IS blocked, as the badge promises.
+async function recheckLock() {
+  if (lockBusy || !lockOwner || (lockState.state !== 'blocked' && lockState.state !== 'override')) return;
+  lockBusy = true;
+  try {
+    const g = gateRecheck(lockState, term !== null, await acquireSessionLock(SESSION_LOCK, lockOwner));
+    if (!g) return;
+    console.log('[host] lock re-check:', JSON.stringify(g.lock));
+    setLockState(g.lock);
+    if (g.lock.state === 'held' && term) updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
+    if (g.start) startSession();
+  } finally {
+    lockBusy = false;
+  }
+}
+
+// Behind develop (a tab) or develop ahead of main (dev); counts are null when
+// unknown, never 0. One run at a time: git on a slow disk can outlast a tick.
+let branchHealthState = null;
+let branchHealthRunning = false;
+async function refreshBranchHealth() {
+  if (branchHealthRunning) return;
+  branchHealthRunning = true;
+  try {
+    const next = await branchHealth(CWD);
+    if (JSON.stringify(next) !== JSON.stringify(branchHealthState)) {
+      branchHealthState = next;
+      broadcastControl({ type: 'branch-health', health: next });
+    }
+  } catch (err) {
+    console.log('[host] branch health failed:', err && err.message);
+  } finally {
+    branchHealthRunning = false;
+  }
+}
+
+// Other live `claude` sessions in this worktree -- a terminal one, typically.
+// Warned about, never blocked. Our own session is excluded by pid and session
+// id, and so is the lock holder's (the blocked view already names it).
+let terminalSessions = null;
+let terminalsRunning = false;
+async function refreshTerminals() {
+  if (terminalsRunning) return;
+  terminalsRunning = true;
+  try {
+    // The holder re-read from the lock (Dexter, PR #71 F8): a host blocked
+    // before the holder wrote its claude pid in would otherwise list the
+    // holder's own session as "another session in this worktree".
+    const holder = lockState.holder ? (readHolder(SESSION_LOCK) || lockState.holder) : null;
+    const pids = [term && term.pid, holder && holder.claudePid].filter(p => Number.isInteger(p));
+    const next = await liveSessionsIn(CWD, { exclude: { pids, sessionIds: sessionId ? [sessionId] : [] } });
+    if (next.format === 'unknown' && (!terminalSessions || terminalSessions.format !== 'unknown')) {
+      console.log('[host] session registry: unknown format -- terminal sessions not checked (see verify/probe-session-registry.js)');
+    } else if (next.format === 'ok' && !next.verified && (!terminalSessions || terminalSessions.verified)) {
+      console.log('[host] session registry: some sessions could not be confirmed (unreadable files or start times) -- no warning shown');
+    }
+    if (JSON.stringify(next) !== JSON.stringify(terminalSessions)) {
+      terminalSessions = next;
+      broadcastControl({ type: 'terminal-sessions', ...next });
+    }
+  } catch (err) {
+    console.log('[host] terminal session check failed:', err && err.message);
+  } finally {
+    terminalsRunning = false;
+  }
+}
 
 // Usage is re-read from the transcripts on a timer rather than tracked here:
 // the transcripts are authoritative, and they already account for spend this
@@ -1590,18 +1786,6 @@ refreshAgentStats().then((stats) => {
 // client asks next.
 currentCatalogue().catch(() => {});
 
-term.onExit(({ exitCode, signal }) => {
-  console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
-  for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(
-        JSON.stringify({ type: 'exit', exitCode, signal })
-      );
-    }
-  }
-  process.exit(exitCode ?? 0);
-});
-
 wss.on('connection', (ws) => {
   clients.add(ws);
   console.log(`[host] client attached (${clients.size} total)`);
@@ -1636,6 +1820,12 @@ wss.on('connection', (ws) => {
     // so it can never read as a real branch of the same name.
     project: projectLabel(CWD),
     branch: branchWas,
+    // Extension X1/X4: whether this window has a session or was blocked by
+    // another one in the same worktree, other live sessions here, and how far
+    // the branch is from develop (null until first counted).
+    lock: lockState,
+    terminalSessions,
+    branchHealth: branchHealthState,
     theme: styleResolved.theme,
     hooks: helperExists,
     background: styleResolved.background,
@@ -1780,7 +1970,7 @@ wss.on('connection', (ws) => {
       // can desync the two permanently -- a serialized 2-column screen would
       // then be handed to every future attach.
       if (validResizeDims(msg.cols, msg.rows)) {
-        term.resize(msg.cols, msg.rows);
+        if (term) term.resize(msg.cols, msg.rows);   // null while blocked
         termState.resize(msg.cols, msg.rows);
       } else {
         // Dexter, 2026-09-15: every other rejection path in this file logs;
@@ -1860,7 +2050,18 @@ wss.on('connection', (ws) => {
       // node-pty's deferred write queue and can throw OUTSIDE this function's
       // caller's try/catch if the pty is not yet ready -- an uncaught
       // exception that kills the host and the session with it.
-      if (typeof msg.data === 'string') term.write(msg.data);
+      if (typeof msg.data === 'string' && term) term.write(msg.data);
+      return;
+    }
+    if (msg.type === 'lock-override') {
+      // *Open anyway* (Extension X1): only a BLOCKED window with no session
+      // yet can start one past the lock. Not saved -- the next window on this
+      // worktree is blocked again. overrideSession re-checks first.
+      if (!gateOverride(lockState, term !== null)) {
+        console.log('[host] lock-override ignored in state', lockState.state);
+        return;
+      }
+      overrideSession().catch((err) => console.log('[host] lock-override failed:', err && err.message));
       return;
     }
     if (msg.type === 'models') {
@@ -2019,7 +2220,7 @@ wss.on('connection', (ws) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
       const text = raw.toString();
-      const { error, msg } = handleFrame(text, dispatchControl, (t) => term.write(t));
+      const { error, msg } = handleFrame(text, dispatchControl, (t) => { if (term) term.write(t); });
       if (error) {
         // A handler that threw is not "not control JSON" -- `handleFrame`
         // guarantees this text was never passed to `term.write`. Log and
@@ -2028,7 +2229,7 @@ wss.on('connection', (ws) => {
       }
       return;
     }
-    term.write(raw.toString('utf8'));
+    if (term) term.write(raw.toString('utf8'));   // keystrokes into a blocked window go nowhere
   });
 
   ws.on('close', () => {
@@ -2036,7 +2237,9 @@ wss.on('connection', (ws) => {
     agentLog.close();
     console.log(`[host] client detached (${clients.size} remain)`);
     // NOTE: the pty deliberately keeps running. This is the detachable-session
-    // property the phone/Remote Control workflow depends on.
+    // property the phone/Remote Control workflow depends on. A BLOCKED host has
+    // no pty to keep: checkIdle starts its clock here, and the timer ends it.
+    checkIdle();
   });
 });
 
@@ -2111,7 +2314,8 @@ wss.on('error', (err) => {
 // file belongs to whoever did. Deleting it there would make the LIVE host
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
-  try { term.kill(); } catch {}
+  if (term) { try { term.kill(); } catch {} }
+  releaseSessionLock(SESSION_LOCK, lockOwner);
   killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }
   // Best effort. The reader already treats a leftover file as absent once the
@@ -2127,5 +2331,40 @@ function shutdown({ removeIdentity = true } = {}) {
 // fire, and leaving them unhandled is what orphans the child.
 process.on('SIGINT', () => { shutdown(); process.exit(0); });
 process.on('SIGTERM', () => { shutdown(); process.exit(0); });
-process.on('exit', () => { killTree(healthChild); });
+// The lock goes on every exit path that runs JS. A host that is killed
+// outright leaves it behind with a dead pid, which the next window takes over
+// silently -- release() only ever removes our own lock, so running it twice
+// (here and in shutdown) is harmless.
+process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOCK, lockOwner); });
+
+// --- boot: the session lock, then the session (Extension X1/X3) -------------
+// Our own OS start time (for the lock's pid-reuse check: one powershell.exe,
+// ~250ms) and Windows' excluded port ranges (two netsh, in parallel, ~100ms)
+// are asked for together, so `claude` starts after the slower of the two plus
+// the lock itself -- measured ~0.3s, bounded by the 5s query timeouts. A host
+// the lock blocks skips the port block entirely (workOutSessionEnv). A bug in
+// any of this must not cost the person their session: see the catch.
+(async () => {
+  const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges()]);
+  excludedPorts = excluded;
+  lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null };
+  const gate = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
+  // Recorded FIRST (Miguel, PR #71 Y1): if anything below throws, the catch
+  // must still know a blocked verdict was reached.
+  setLockState(gate.lock);
+  console.log('[host] session lock  :', SESSION_LOCK || '(not a repo)', JSON.stringify(gate.lock));
+  if (gate.start) startSession();
+})().catch((err) => {
+  // host/session-gate.js gateOnBootError: a blocked verdict stands, a taken
+  // lock is kept, anything else starts unlocked -- never a second session.
+  const g = gateOnBootError(lockState);
+  console.error(`[host] boot failed (${g.start ? 'starting' : 'staying blocked'}):`, err && err.stack || err);
+  setLockState(g.lock);
+  if (g.start) {
+    try { startSession(); } catch (e) { console.error('[host] could not start the session:', e && e.message); }
+  }
+}).finally(() => {
+  refreshBranchHealth();
+  refreshTerminals();
+});
 

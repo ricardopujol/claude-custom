@@ -35,7 +35,7 @@
  */
 
 const fs = require('fs');
-const crypto = require('crypto');
+const { breakIfStale, readLock, sleepSync, BREAK_WAIT_MS } = require('./lock-breaker');
 
 // How long a lock may sit before its holder is presumed gone. Generously
 // longer than any write this codebase performs -- a serialize plus a
@@ -53,18 +53,9 @@ const DEADLINE_MS = 3000;
 // finishing) is invisible, long enough not to spin.
 const RETRY_MS = 15;
 
-/**
- * Sleep without spinning, in a synchronous function.
- *
- * `store.write` is synchronous and so is the whole vault API above it, so this
- * cannot be async without rewriting both. `Atomics.wait` blocks the thread
- * properly rather than burning a core in a `while (Date.now() < end)` loop,
- * which is what a busy-wait would do to the host process that also owns the
- * pty.
- */
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+// `store.write` is synchronous and so is the whole vault API above it, so the
+// waiting here is too: host/lock-breaker.js's sleepSync blocks the thread with
+// Atomics.wait rather than burning a core in the process that owns the pty.
 
 /**
  * Is this lock's holder gone?
@@ -115,107 +106,31 @@ function isStale(lock, now) {
   }
 }
 
-// What is on disk. One of:
-//   { gone: true }        -- it vanished between our open and our read
-//   { unreadable: true }  -- it is there and could not be read
-//   { lock, identity }    -- `lock` is what isStale judges (null when nothing
-//                            usable could be learned, which is breakable);
-//                            `identity` is what breakStale later checks, so a
-//                            break can only ever remove THIS file.
-// An unparseable lock still has an mtime, and its age is read from that
-// instead: a corrupt lock file must not become a permanent tombstone.
-function readLock(lockPath) {
-  let raw;
-  try {
-    raw = fs.readFileSync(lockPath, 'utf8');
-  } catch (err) {
-    // Unreadable is NOT "nothing to judge, so break it". Dexter, PR #57 F1: a
-    // waiter may only delete the exact file it judged stale, and it judged
-    // nothing here -- a scanner's sharing violation on a LIVE lock looks
-    // exactly like this. Fail closed: wait, and refuse at the deadline.
-    return err.code === 'ENOENT' ? { gone: true } : { unreadable: true };
-  }
-  let parsed = null;
-  try {
-    const candidate = JSON.parse(raw);
-    if (candidate && typeof candidate === 'object') parsed = candidate;
-  } catch { /* not JSON, or written only partially -- mtime decides below */ }
-
-  // An age ALWAYS comes back, from the file itself when the contents do not
-  // carry a usable one. Without this a lock holding `{}` -- or caught in the
-  // instant between its creation and its first write -- would have no age, and
-  // isStale would never break it: a permanent tombstone over the vault.
-  let st = null;
-  try { st = fs.statSync(lockPath); } catch { /* age unknown, see below */ }
-  const identity = { raw, st };
-  if (st === null) return { lock: parsed, identity };
-  if (parsed === null) return { lock: { pid: null, at: st.mtimeMs }, identity };
-  return { lock: Number.isFinite(parsed.at) ? parsed : { ...parsed, at: st.mtimeMs }, identity };
-}
-
-// Is the file now in hand the one that was judged? Same bytes, and -- where
-// both stats are known -- the same file on disk. A fresh lock written in the
-// gap differs in its pid or its time, and in its inode and mtime besides.
-function sameFile(judged, raw, st) {
-  if (raw !== judged.raw) return false;
-  if (!judged.st || !st) return true;
-  return st.ino === judged.st.ino && st.size === judged.st.size && st.mtimeMs === judged.st.mtimeMs;
-}
-
 /**
- * Remove the lock at `lockPath` only if it is still the file that was judged
- * stale. Returns true when the path is now free (we removed it, or somebody
- * else already had), false when it is still held or could not be removed.
+ * The verdict host/lock-breaker.js asks for, from what it read off disk
+ * (`{ raw, st, parsed }`). Breaking, reading and the removal of exactly the
+ * judged file live there now (backlog #22); what counts as stale is this
+ * module's own business and stays here.
  *
- * WHY NOT unlinkSync(lockPath). Dexter, PR #57 review, F1 (High): unlink by
- * path deletes whatever is there NOW. Two waiters judge the same dead lock L0;
- * W1 removes it and takes a fresh L1; W2's late unlink removes L1, W2 takes
- * the lock, and both run fn -- a silently lost record, the exact failure this
- * module exists to prevent.
- *
- * `renameSync` to a name nobody else uses is atomic: it takes exactly one
- * file, whichever sits at the path at that instant. Only then is it checked.
- * If it is the judged file, deleting it is safe -- nobody can be holding it.
- * If not, it is somebody's live lock, and it goes straight back with a
- * create-or-fail link, which can never overwrite a lock taken in between.
+ * An age ALWAYS comes back when the file has one, from the file itself when the
+ * contents don't carry a usable one. Without that a lock holding `{}` would
+ * have no age and isStale would never break it: a permanent tombstone over the
+ * vault. A corrupt lock file is aged by its mtime the same way.
  */
-function breakStale(lockPath, judged) {
-  const tomb = `${lockPath}.stale-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
-  try {
-    fs.renameSync(lockPath, tomb);
-  } catch (err) {
-    // ENOENT: another waiter already removed it -- the outcome we wanted, safe
-    // to retry at once. ANYTHING ELSE means the path is there and will not
-    // move, and retrying that at full speed is how this loop once spun forever.
-    return err.code === 'ENOENT';
+function judge(seen) {
+  const { raw, st, parsed } = seen;
+  if (st === null && parsed === null) {
+    // Nothing usable in it and no age to read. Content that is there and isn't
+    // a lock is broken rather than left as a tombstone (Mortimer's second
+    // correction). But an EMPTY file is what a live lock looks like between
+    // its `wx` and its write, so it tells us nothing about the holder: wait,
+    // and refuse at the deadline (Dexter, PR #57 re-review, Finding A).
+    return raw === '' ? 'unknown' : 'stale';
   }
-
-  let raw = null;
-  let st = null;
-  try { raw = fs.readFileSync(tomb, 'utf8'); } catch { /* compared as a mismatch */ }
-  try { st = fs.statSync(tomb); } catch { /* compared on bytes alone */ }
-
-  if (raw !== null && sameFile(judged, raw, st)) {
-    try { fs.unlinkSync(tomb); } catch { /* litter at worst; the path is free */ }
-    return true;
-  }
-
-  // Not what we judged: a live holder's lock. Put it back, create-or-fail.
-  // If a third waiter took the empty path in the instant it was away, there
-  // is nothing safe left to do -- overwriting would hand the lock to a third
-  // holder -- so the tomb is simply dropped. That needs two races to coincide
-  // inside a window of a rename and a read, where unlink-by-path needed one.
-  try {
-    fs.linkSync(tomb, lockPath);
-  } catch (err) {
-    if (err.code !== 'EEXIST') {
-      // No hard links on this volume (FAT, some network shares): copy, still
-      // exclusive, so it too can only fill an empty path.
-      try { fs.copyFileSync(tomb, lockPath, fs.constants.COPYFILE_EXCL); } catch { /* see above */ }
-    }
-  }
-  try { fs.unlinkSync(tomb); } catch { /* litter at worst */ }
-  return false;
+  let lock = parsed;
+  if (parsed === null) lock = { pid: null, at: st.mtimeMs };
+  else if (st !== null && !Number.isFinite(parsed.at)) lock = { ...parsed, at: st.mtimeMs };
+  return isStale(lock, Date.now()) ? 'stale' : 'live';
 }
 
 /**
@@ -242,16 +157,15 @@ function withFileLock(lockPath, fn, opts = {}) {
       if (err.code !== 'EEXIST') throw err;        // a real filesystem problem
     }
 
-    // Somebody holds it. Break it only if its holder is gone -- and break
-    // only the very file that was judged (breakStale).
-    const seen = readLock(lockPath);
-    const held = seen.lock || null;
-    let broke = false;
-    if (seen.gone) {
-      broke = true;                                // already free; retry at once
-    } else if (!seen.unreadable && (held === null || isStale(held, Date.now()))) {
-      broke = breakStale(lockPath, seen.identity);
-    }
+    // Somebody holds it. Break it only if its holder is gone, only one breaker
+    // at a time, and only the very file that was judged (lock-breaker.js).
+    // The break waits at most this caller's whole deadline for another
+    // breaker -- never the remaining time, which would take another read of
+    // the injected clock.
+    const { outcome, seen } = breakIfStale(lockPath, judge,
+      { breakWaitMs: Math.min(BREAK_WAIT_MS, deadlineMs) });
+    const held = (seen && seen.parsed) || null;
+    const broke = outcome === 'freed';            // free now; retry at once
 
     // EVERY PATH REACHES HERE. Mortimer, PR #29 mutation gate: the breaking
     // branch used to end in `continue`, which jumped this check. A lock path
@@ -284,9 +198,10 @@ function withFileLock(lockPath, fn, opts = {}) {
     if (!broke) sleepSync(RETRY_MS);
   }
 
+  let written = JSON.stringify({ pid: process.pid, at: Date.now() });
   try {
-    fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
-  } catch { /* the lock is held either way; its contents are only a hint */ }
+    fs.writeSync(fd, written);
+  } catch { written = ''; /* the lock is held either way; its contents are only a hint */ }
   try { fs.closeSync(fd); } catch { /* already closed */ }
 
   try {
@@ -295,7 +210,22 @@ function withFileLock(lockPath, fn, opts = {}) {
     // Released even when fn throws. A leaked lock is a vault that refuses
     // every write for STALE_MS, which reads to the user as the feature being
     // broken.
-    try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+    //
+    // But only OUR lock (Dexter, PR #71 F3). A holder that outlived STALE_MS
+    // had its lock broken and re-taken; unlinking the path would delete the
+    // new holder's lock and let a third in beside it. So it goes only while it
+    // is still the bytes we wrote.
+    //
+    // By UNLINK, not the breaker's rename-aside: a rename fails with EPERM
+    // whenever a scanner holds the file for a moment (test/secret-vault.test.js
+    // measured it, 2026-09-18), and a release that fails leaves a live-pid lock
+    // refusing every write for STALE_MS. The window between this read and the
+    // unlink needs our lock to be judged stale and re-taken inside it, which
+    // takes a holder already past STALE_MS.
+    const seen = readLock(lockPath);
+    if (!seen.gone && !seen.unreadable && seen.raw === written) {
+      try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+    }
   }
 }
 
