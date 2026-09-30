@@ -42,9 +42,10 @@ const read = (f) => fs.readFileSync(path.join(APP, f), 'utf8');
 // it -- that exact trap was hit on this project's store.js header guard.
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
-test('every IPC channel main sends on is listened for in the preload', () => {
+test('every IPC channel main sends on is listened for in a preload', () => {
   const main = strip(read('main.js'));
-  const preload = strip(read('preload.js'));
+  // The tab views use preload.js; the strip page (the window's own page) has its own.
+  const preload = strip(read('preload.js')) + strip(read('preload-strip.js'));
 
   const sent = [...main.matchAll(/webContents\.send\(\s*['"]([^'"]+)['"]/g)].map(m => m[1]);
   assert.ok(sent.length > 0, 'the scan must find something for this check to mean anything');
@@ -164,8 +165,12 @@ test('main.js gives the secret service a project, or the whole scope reverts', (
   const head = call.slice(0, call.indexOf('});') + 3);
   assert.match(head, /project:/,
     'createSecretService must be given a project -- without it every secret is shared');
-  assert.match(head, /PROJECT_CWD/,
-    "and it must be the window's own project, not a literal or a default");
+  // PR 2: NEW entries go under the project's state root, and entries saved
+  // under the project root (before the layout move) stay visible via `scopes`.
+  assert.match(head, /project: STATE_ROOT/,
+    "and it must be the window's own project's state root, not a literal or a default");
+  assert.match(head, /scopes: \[PROJECT_ROOT, LAUNCH_CWD\]/,
+    'older entries stay visible: scoped to the project root or the launch folder');
 });
 
 test('every class the vault list renders is actually reachable by a rule', () => {

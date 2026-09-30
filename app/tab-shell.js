@@ -79,6 +79,9 @@ function buildObservation(porcelain, container, listening) {
   };
 }
 
+// What a tab says when no port could be found or refused for its folder.
+const NO_PORT_ERROR = 'no usable port for this folder';
+
 const noWindowText = (h) => `That session is in another claude-custom (pid ${h.pid}, port ${h.port}) ` +
   'with no window open. Open its project to see it.';
 
@@ -217,7 +220,7 @@ function createShell(deps) {
         if (tab.closed || destroyed) return;
         if (tab.started) return;
         const chosen = await hosts.choosePort(tab);
-        if (!chosen) throw new Error('no usable port for this folder');
+        if (!chosen) throw new Error(NO_PORT_ERROR);
         port = chosen.port;
         if (chosen.action === 'attach') {
           token = hosts.tokenFor(port);
@@ -495,5 +498,5 @@ async function handleProbeCommand(line, api) {
 
 module.exports = {
   createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText,
+  handleProbeCommand, noWindowText, NO_PORT_ERROR,
 };

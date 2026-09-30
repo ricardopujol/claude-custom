@@ -1,19 +1,34 @@
 'use strict';
 /**
- * claude-custom :: Electron main  (SPIKE — step 0 walking skeleton)
+ * claude-custom :: Electron main  -- the tab shell (PR 2, worktree tabs)
  *
- * Deliberately thin. The window is a pure view; all session state lives in the
- * host process. Main's only jobs are: make sure a host is listening, and open a
- * window pointed at it.
+ * One window per PROJECT, one tab per git worktree. The window's own page is
+ * the tab strip (app/tab-strip.html); each STARTED tab is a WebContentsView
+ * showing today's renderer.html against that tab's own detached host.
+ *
+ * Deliberately thin. The decisions -- which worktrees are tabs
+ * (host/tab-lifecycle.js), what the strip draws (app/tab-model.js), which port
+ * a starting tab gets, what a poll observes, who a message came from
+ * (app/tab-shell.js) -- are pure and tested. This file only builds the effects
+ * they are handed: sockets, child processes, views, menus, dialogs.
+ *
+ * MODES
+ *   tabs    CLAUDE_CUSTOM_CWD is inside a container project (`<root>\dev` +
+ *           sibling worktrees) and CLAUDE_CUSTOM_PORT is unset.
+ *   single  everything else: a flat repo, a folder in no project, or ANY launch
+ *           that names its port. One tab on that folder, no close, no poller --
+ *           exactly what a window was before tabs, so every verify/ probe that
+ *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, Notification, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { spawn } = require('child_process');
+const { createShell, handleProbeCommand, NO_PORT_ERROR } = require('./tab-shell');
+const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -25,6 +40,9 @@ const { readIdentity } = require('../host/host-identity');
 const { readLook } = require('../host/style');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
+const { hostEnv } = require('../host/tab-env');
+const { sendControl } = require('../host/host-client');
+const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -33,10 +51,9 @@ const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state
 const UI_KEY = 'look-global';
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
-// Resolved in whenReady, because choosing it needs to probe. An explicit
-// CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone who names a
-// port means that port, and quietly moving them to another one would be the
-// same class of silent substitution this whole change removes.
+// An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
+// who names a port means that port, and quietly moving them to another one would
+// be the same class of silent substitution this whole change removes.
 // PARSED STRICTLY. Dexter F10: `Number(x) || null` turns CLAUDE_CUSTOM_PORT=7742x
 // into NaN into null, and the port is then DERIVED with no message -- which is
 // the silent substitution the comment above says this whole change removes.
@@ -53,32 +70,37 @@ function explicitPort() {
   return n;
 }
 const EXPLICIT_PORT = explicitPort();
-let PORT = null;
 
-// One secret, handed to both children. Main spawns the host AND owns the
-// window, so it is the only place that can give them the same value without
-// either having to go looking for it.
-//
-// A reattaching window (the host was already running) reads the token the host
-// wrote, because that host generated its own.
-const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN
-  || require('crypto').randomBytes(24).toString('hex');
+// --- what this window is ----------------------------------------------------------
+const LAUNCH_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+const PROJECT = projectOf(LAUNCH_CWD);
+const MODE = (PROJECT && PROJECT.kind === 'container' && EXPLICIT_PORT === null) ? 'tabs' : 'single';
+// What hostEnv hands each host as its project. A folder in no project is its
+// own root and state, as the host would work out for itself.
+const HOST_PROJECT = PROJECT || { kind: 'none', root: LAUNCH_CWD, dev: LAUNCH_CWD };
+const PROJECT_ROOT = HOST_PROJECT.root;
+const STATE_ROOT = stateRoot(HOST_PROJECT);
+// The name on the window and on every tab's header: the same source the host
+// labels itself from (its PROJECT_ROOT).
+const WINDOW_LABEL = projectLabel(PROJECT_ROOT);
+const STRIP_HEIGHT = 34;
+const POLL_MS = 3000;
+const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
 
 // The token of the host on THIS port, preferred over the shared file, which is
 // last-writer-wins once a second project is open. Falling back to the shared
-// one keeps a host started before this change reattachable.
-function tokenForRunningHost() {
+// one keeps a host started before this change reattachable. Null when none can
+// be read: a tab then says so instead of connecting with a guess.
+function tokenForRunningHost(port) {
   try {
     return fs.readFileSync(
-      path.join(__dirname, '..', '.harness', 'hosts', `${PORT}.token`), 'utf8').trim();
+      path.join(__dirname, '..', '.harness', 'hosts', `${port}.token`), 'utf8').trim();
   } catch { /* fall through to the shared file */ }
   try {
     return fs.readFileSync(path.join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
-  } catch {
-    return SESSION_TOKEN;
-  }
+  } catch { /* fall through to the environment */ }
+  return process.env.CLAUDE_CUSTOM_TOKEN || null;
 }
-const PROJECT_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 
 function isHostListening(port) {
   return new Promise((resolve) => {
@@ -114,11 +136,12 @@ async function occupantAt(port) {
 }
 
 // Returns { port, action } or null when the user named a port we must not take.
-async function chooseHostPort() {
+// Per TAB: each tab's folder hashes to its own port.
+async function chooseHostPort(tab) {
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
   if (EXPLICIT_PORT) {
     const decision = decideAttach({
-      requestedCwd: PROJECT_CWD,
+      requestedCwd: tab.cwd,
       occupant: await occupantAt(EXPLICIT_PORT),
     });
     if (decision.action === 'refuse') {
@@ -129,10 +152,10 @@ async function chooseHostPort() {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: PROJECT_CWD, occupantAt });
+  return resolvePort({ cwd: tab.cwd, occupantAt });
 }
 
-function spawnHost() {
+function spawnHost(tab, port, token) {
   const hostPath = path.join(__dirname, '..', 'host', 'host.js');
   // detached:true is the point — the host must outlive this window so a session
   // driven from Remote Control survives the GUI being closed.
@@ -145,19 +168,17 @@ function spawnHost() {
   try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
   const logFd = fs.openSync(logPath, 'a');
 
+  // hostEnv drops the inherited per-tab keys and sets this tab's own, so one
+  // tab's token or port can never reach another's host. It passes everything
+  // else through, which is how CLAUDE_CUSTOM_BIN reaches a probe's host.
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-      CLAUDE_CUSTOM_PORT: String(PORT),
-      CLAUDE_CUSTOM_CWD: PROJECT_CWD,
-      CLAUDE_CUSTOM_TOKEN: SESSION_TOKEN,
-    },
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
+  try { fs.closeSync(logFd); } catch { /* the child has its own copy */ }
   return child;
 }
 
@@ -170,55 +191,53 @@ async function waitForHost(port, timeoutMs = 10000) {
   return false;
 }
 
-function createWindow(spawnedHost) {
-  const win = new BrowserWindow({
+// `git worktree list --porcelain` from dev. LC_ALL=C: git translates the lock
+// reason "initializing", and a localized git would make a half-created worktree
+// openable (Dexter R2 N5). Rejects on any failure: that is "no observation".
+function listWorktrees() {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['-C', HOST_PROJECT.dev, 'worktree', 'list', '--porcelain'], {
+      env: { ...process.env, LC_ALL: 'C' }, timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+    }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
+  });
+}
+
+let win = null;
+let tabShell = null;
+const liveViews = new Set();          // every WebContentsView that currently shows a tab
+
+const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
+const isTabView = (sender) => !!tabShell && tabShell.isTabView(sender);
+const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.isDestroyed()) fn(v); } };
+
+function layoutView(view) {
+  if (!win || win.isDestroyed()) return;
+  const [width, height] = win.getContentSize();
+  view.setBounds({ x: 0, y: STRIP_HEIGHT, width, height: Math.max(0, height - STRIP_HEIGHT) });
+}
+
+// The window's state that every tab view shows: focus (dim) and the
+// finished-task cue. Kept HERE, not only in the pages: `webContents.send`
+// before a page has registered its listener is dropped on the floor, and a
+// reload while the cue is up would clear it for good.
+let cueOn = false;
+let focused = false;
+
+function createWindow() {
+  win = new BrowserWindow({
     width: 1200,
     height: 800,
     // The project's own app colour when it has one, so a window does not
     // flash the default blue before the page paints its look.
-    backgroundColor: readLook(PROJECT_CWD).appColor || '#11131a',
-    title: projectLabel(PROJECT_CWD),
+    backgroundColor: readLook(STATE_ROOT).appColor || '#11131a',
+    title: WINDOW_LABEL,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload-strip.js'),
     },
   });
-
-  win.loadFile(path.join(__dirname, 'renderer.html'), {
-    query: { port: String(PORT), cwd: PROJECT_CWD,
-             // FF21: the header's project name, painted before the host even
-             // answers -- same source of truth as the OS window title above.
-             project: projectLabel(PROJECT_CWD),
-             // The token the host will demand. Read back from disk when we
-             // reattached to a host that was already running and therefore
-             // generated its own.
-             token: spawnedHost ? SESSION_TOKEN : tokenForRunningHost(),
-             tab: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
-             demosecret: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '',
-             flourish: process.env.CLAUDE_CUSTOM_FLOURISH || '' },
-  });
-
-  // Attention raised from main, not from the page. The renderer's own
-  // Notification is subject to page permission and can neither flash the
-  // taskbar nor focus the window when clicked; this can do all three.
-  // FF4: a cue that survives until the window is LOOKED AT. The taskbar flash
-  // below stops at the OS's discretion and is invisible in alt-tab, which
-  // shows a title and a thumbnail and nothing else. A border is part of the
-  // thumbnail, so it is legible exactly where you decide which window to
-  // return to.
-  //
-  // DECLARED ABOVE ITS CALLER. Miguel, PR #33, A7: it used to sit 23 lines
-  // below the handler that calls it, safe only because that handler runs
-  // asynchronously -- one synchronous call away from a TDZ ReferenceError, and
-  // a reader had to prove the asynchrony to themselves to know it was fine.
-  //
-  // The state is kept here, not only in the page. A5: `webContents.send`
-  // before the renderer has registered its listener is dropped on the floor,
-  // and a reload while the cue is up would clear it permanently -- a cue that
-  // silently stops meaning anything is worse than no cue, because the next
-  // real one says nothing either.
-  let cueOn = false;
+  win.loadFile(path.join(__dirname, 'tab-strip.html'));
 
   // FOCUS IS TRACKED, NOT ASKED FOR. Naomi, PR #33, measured in a real window:
   // `win.isFocused()` returns TRUE while the window is minimized, so the cue
@@ -229,29 +248,269 @@ function createWindow(spawnedHost) {
   //
   // The EVENTS fired reliably in every one of her runs; it is the
   // point-in-time query that lies. So the events are the source of truth.
-  let focused = win.isFocused();
-  // The page darkens itself while unfocused, so the window you are typing
+  focused = win.isFocused();
+  // The pages darken themselves while unfocused, so the window you are typing
   // into is the one that is not dimmed. The dim level is read FRESH on every
   // send: it is install-wide, so a slider moved in another project's window
   // takes effect here the next time this one loses focus, with no watcher.
+  const focusPayload = () => ({ focused, dim: readDim() });
   const sendFocus = () => {
-    if (!win.isDestroyed()) win.webContents.send('window-focus', { focused, dim: readDim() });
+    if (win.isDestroyed()) return;
+    const payload = focusPayload();
+    forEachView((v) => v.webContents.send('window-focus', payload));
   };
-  win.on('focus', () => { focused = true; sendFocus(); });
+  const focusSelected = () => {
+    const sel = selectedView();
+    if (sel && !sel.webContents.isDestroyed()) sel.webContents.focus();
+  };
+  win.on('focus', () => {
+    focused = true;
+    sendFocus();
+    win.flashFrame(false);
+    setCue(false);            // looked at: the cue has done its job
+    focusSelected();
+  });
   win.on('blur', () => { focused = false; sendFocus(); });
   win.on('minimize', () => { focused = false; });
   win.on('restore', () => { focused = win.isFocused(); sendFocus(); });
-  win.webContents.on('did-finish-load', sendFocus);
-  const setCue = (on) => {
-    cueOn = !!on;
-    if (!win.isDestroyed()) win.webContents.send('attention-cue', cueOn);
-  };
+  for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
+    win.on(ev, () => forEachView(layoutView));
+  }
+  // FF3: the page sets its own <title>, and a page title WINS over the one
+  // given to BrowserWindow. Without this the window silently reverts to
+  // whatever tab-strip.html says the moment it loads.
+  win.on('page-title-updated', (e) => {
+    e.preventDefault();
+    win.setTitle(WINDOW_LABEL);
+  });
+  // The strip is sent its model as it changes; a (re)load asks for the last one.
   win.webContents.on('did-finish-load', () => {
-    if (cueOn && !win.isDestroyed()) win.webContents.send('attention-cue', true);
+    if (lastStripPayload) win.webContents.send('strip-model', lastStripPayload);
+  });
+  win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
+  return win;
+}
+
+// Attention raised from main, not from the page. The renderer's own
+// Notification is subject to page permission and can neither flash the
+// taskbar nor focus the window when clicked; this can do all three.
+// FF4: a cue that survives until the window is LOOKED AT. The taskbar flash
+// stops at the OS's discretion and is invisible in alt-tab, which shows a title
+// and a thumbnail and nothing else. A border is part of the thumbnail, so it is
+// legible exactly where you decide which window to return to.
+//
+// DECLARED ABOVE ITS CALLER. Miguel, PR #33, A7: it used to sit 23 lines
+// below the handler that calls it, safe only because that handler runs
+// asynchronously -- one synchronous call away from a TDZ ReferenceError.
+//
+// The state is kept here, not only in the pages. A5: `webContents.send`
+// before the renderer has registered its listener is dropped on the floor,
+// and a reload while the cue is up would clear it permanently -- a cue that
+// silently stops meaning anything is worse than no cue, because the next
+// real one says nothing either.
+function setCue(on) {
+  cueOn = !!on;
+  forEachView((v) => v.webContents.send('attention-cue', cueOn));
+}
+
+function selectedView() {
+  if (!tabShell) return null;
+  const sel = tabShell.snapshot().selectedKey;
+  const tab = sel ? tabShell.tabByKey(sel) : null;
+  return tab && tab.view ? tab.view : null;
+}
+
+// --- the tab views ---------------------------------------------------------------
+
+function createTabView(tab) {
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  win.contentView.addChildView(view);
+  layoutView(view);
+  view.setVisible(false);       // shown by applySelection once it is the selected tab
+  liveViews.add(view);
+
+  const wc = view.webContents;
+  wc.on('did-finish-load', () => {
+    if (wc.isDestroyed()) return;
+    wc.send('window-focus', { focused, dim: readDim() });
+    if (cueOn) wc.send('attention-cue', true);
+  });
+  wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
+  wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
+  if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
+    wc.on('console-message', (_e, level, message, line, sourceId) => {
+      const tag = ['verbose', 'info', 'warn', 'error'][level] || level;
+      console.log(`[renderer:${tag}] ${message} (${String(sourceId).split('/').pop()}:${line})`);
+    });
+  }
+  // Any external link opens in the real browser, never in-app.
+  wc.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  wc.loadFile(path.join(__dirname, 'renderer.html'), {
+    query: { port: String(tab.port), cwd: tab.cwd,
+             // FF21: the header's project name, painted before the host even
+             // answers -- same source of truth as the OS window title above.
+             project: WINDOW_LABEL,
+             // The token the host will demand: this tab's own.
+             token: tab.token,
+             tab: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
+             demosecret: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '',
+             flourish: process.env.CLAUDE_CUSTOM_FLOURISH || '',
+             // Which close button the blocked pane offers: tab | dev | single.
+             tabmode: tabShell.tabmodeOf(tab) },
+  });
+  return view;
+}
+
+function destroyTabView(tab) {
+  const view = tab.view;
+  if (!view) return;
+  liveViews.delete(view);
+  try { win.contentView.removeChildView(view); } catch { /* the window is going away */ }
+  try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* already gone */ }
+}
+
+// --- pushing the model out: strip, visibility, menu ------------------------------
+
+let lastStripPayload = null;
+let lastSelectedKey = null;
+let lastMenuSig = null;
+
+function applySelection(snapshot) {
+  for (const tab of snapshot.tabs) {
+    if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.setVisible(tab.key === snapshot.selectedKey);
+  }
+  if (snapshot.selectedKey !== lastSelectedKey) {
+    lastSelectedKey = snapshot.selectedKey;
+    if (focused) {
+      const sel = selectedView();
+      if (sel && !sel.webContents.isDestroyed()) sel.webContents.focus();
+    }
+  }
+}
+
+function buildAppMenu(selectedKey) {
+  const st = selectedKey ? tabShell.menuState(selectedKey) : { override: false, close: false };
+  const tabbed = MODE === 'tabs';
+  const focusedView = () => selectedView();
+  return Menu.buildFromTemplate([
+    { label: 'Session', submenu: [
+      { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(selectedKey) },
+      { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(selectedKey) },
+      { type: 'separator' },
+      { label: 'Next tab', accelerator: 'Ctrl+Tab', enabled: tabbed, click: () => { tabShell.next(); } },
+      { label: 'Previous tab', accelerator: 'Ctrl+Shift+Tab', enabled: tabbed, click: () => { tabShell.previous(); } },
+    ] },
+    // Reload and DevTools act on the SELECTED TAB's page, not on the strip.
+    { label: 'View', submenu: [
+      { label: 'Reload tab', accelerator: 'Ctrl+R', click: () => { const v = focusedView(); if (v) v.webContents.reload(); } },
+      { label: 'Toggle Developer Tools', accelerator: 'Ctrl+Shift+I',
+        click: () => { const v = focusedView(); if (v) v.webContents.toggleDevTools(); } },
+    ] },
+  ]);
+}
+
+function updateMenu(snapshot) {
+  const st = snapshot.selectedKey ? tabShell.menuState(snapshot.selectedKey) : { override: false, close: false };
+  const sig = `${snapshot.selectedKey}|${st.override}|${st.close}`;
+  if (sig === lastMenuSig) return;
+  lastMenuSig = sig;
+  Menu.setApplicationMenu(buildAppMenu(snapshot.selectedKey));
+}
+
+function onShellChanged(snapshot) {
+  if (!win || win.isDestroyed()) return;
+  applySelection(snapshot);
+  lastStripPayload = { model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, mode: snapshot.mode };
+  win.webContents.send('strip-model', lastStripPayload);
+  updateMenu(snapshot);
+}
+
+// Hand close (criterion 5): ask first, every time; then the reducer's stop +
+// close. Nothing on disk is touched.
+async function closeTabFlow(key) {
+  if (!key || !tabShell) return null;
+  return tabShell.closeTab(key);
+}
+
+async function confirmClose(tab) {
+  // The probe driver has nobody to click.
+  if (PROBE_PORT) return true;
+  const label = tab.branch || projectLabel(tab.cwd);
+  const r = await dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['End session', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: `End the session in ${label}?`,
+    detail: 'The folder stays.',
+  });
+  return r.response === 0;
+}
+
+function focusWindow() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+// --- IPC ---------------------------------------------------------------------------
+
+function registerIpc() {
+  // The strip page's own channels: gated on the window's OWN webContents, so a
+  // tab's page (which has the other preload) cannot use them.
+  ipcMain.on('strip:select', (e, key) => {
+    if (!fromStrip(e) || typeof key !== 'string') return;
+    tabShell.select(key);
+  });
+  ipcMain.on('strip:close', (e, key) => {
+    if (!fromStrip(e) || typeof key !== 'string') return;
+    closeTabFlow(key);
+  });
+  ipcMain.on('strip:contextMenu', (e, key) => {
+    if (!fromStrip(e) || typeof key !== 'string') return;
+    const st = tabShell.menuState(key);
+    Menu.buildFromTemplate([
+      { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
+      { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
+    ]).popup({ window: win });
+  });
+
+  // A tab's page talking to main. Every one gated on "one of THIS window's tab
+  // views": a handler that answers anyone is not a boundary.
+  ipcMain.on('tab:status', (e, status) => {
+    if (!isTabView(e.sender)) return;
+    tabShell.report(e.sender, status);
+  });
+  ipcMain.on('tab:close', (e) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    if (!tab) return;
+    if (MODE === 'single') { if (win && !win.isDestroyed()) win.close(); return; }
+    if (!tab.isDev) closeTabFlow(tab.key);
+  });
+  ipcMain.handle('tab:goTo', (e, holder) => (isTabView(e.sender)
+    ? tabShell.goTo(e.sender, holder)
+    : { kind: 'explain', text: "That session's window can't be found." }));
+  // The receiving side of a host `raise`: select that tab and come forward.
+  // flashFrame as well, because Windows may refuse to hand focus to a
+  // background process.
+  ipcMain.on('tab:raise', (e) => {
+    if (!isTabView(e.sender)) return;
+    if (tabShell.raise(e.sender) && win && !win.isDestroyed()) win.flashFrame(true);
   });
 
   ipcMain.on('attention', (event, surfaces) => {
-    if (event.sender !== win.webContents || !surfaces) return;
+    if (!isTabView(event.sender) || !surfaces) return;
     // Logged even when nothing is shown. "Suppressed because you are looking at
     // it" and "never arrived" are the same silence otherwise, and telling those
     // two apart is what took two wrong diagnoses to learn.
@@ -262,16 +521,13 @@ function createWindow(spawnedHost) {
         body: String(surfaces.toast.body || ''),
         silent: !!surfaces.toast.silent,
       });
-      n.on('click', () => {
-        if (win.isMinimized()) win.restore();
-        win.show();
-        win.focus();
-      });
+      // The click goes to the tab that raised it, and to the window.
+      n.on('click', () => { tabShell.attentionClick(event.sender); });
       n.show();
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
-    if (surfaces.flashTaskbar && !focused) win.flashFrame(true);
+    if (surfaces.flashTaskbar && !focused && win && !win.isDestroyed()) win.flashFrame(true);
     // Raised for ANY unfocused attention, not only urgent ones: "a task
     // finished while you were elsewhere" is precisely the case this is for,
     // and it costs nothing when you are already looking at the window.
@@ -283,29 +539,20 @@ function createWindow(spawnedHost) {
     if (surfaces.toast) console.log(`[main] attention body: ${surfaces.toast.body}`);
   });
 
-  // FF3: the page sets its own <title>, and a page title WINS over the one
-  // given to BrowserWindow. Without this the window silently reverts to
-  // whatever renderer.html says the moment it loads, which is how it kept
-  // announcing a spike branch long after that branch was gone.
-  win.on('page-title-updated', (e) => {
-    e.preventDefault();
-    win.setTitle(projectLabel(PROJECT_CWD));
-  });
-
-  win.on('focus', () => {
-    win.flashFrame(false);
-    setCue(false);            // looked at: the cue has done its job
-  });
-
   // The secret store lives HERE, in main. Not in the host: the host owns the
   // pty, so keeping secrets out of it means no wiring mistake can put one into
   // the session. Not in the renderer: the window would then hold the file and
   // every value in it.
   const secrets = createSecretService({
-    // The window's project. Secrets are scoped to it unless explicitly shared;
-    // the vault file itself is per-INSTALL, which is why the scope has to be
-    // enforced rather than implied by where the file lives.
-    project: PROJECT_CWD,
+    // The project's STATE root: secrets are scoped to the project (every tab
+    // shares them) unless explicitly shared; the vault file itself is
+    // per-INSTALL, which is why the scope has to be enforced rather than implied
+    // by where the file lives. NEW entries go under it.
+    project: STATE_ROOT,
+    // ...and entries saved earlier stay visible: under the project root (the
+    // container path, before the 2026-09-28 layout move) or the folder this
+    // window was launched on. Visibility only; `add` still gets ONE path.
+    scopes: [PROJECT_ROOT, LAUNCH_CWD].filter((p) => !samePath(p, STATE_ROOT)),
     // DELIBERATELY NOT WRAPPED IN try/catch, and that rests on an invariant:
     // `createVault` CONSTRUCTS FOR ANY BYTES ON DISK, reporting the vault as
     // healthy or damaged rather than throwing.
@@ -333,7 +580,7 @@ function createWindow(spawnedHost) {
     },
   });
 
-  const fromWindow = (event) => event.sender === win.webContents;
+  const fromWindow = (event) => isTabView(event.sender);
   ipcMain.handle('secrets:available', (e) => fromWindow(e) && secrets.available());
   ipcMain.handle('secrets:list', (e, query) => (fromWindow(e) ? secrets.list({ query }) : []));
   ipcMain.handle('secrets:add', (e, entry) => (fromWindow(e) ? secrets.add(entry || {}) : { ok: false }));
@@ -359,21 +606,22 @@ function createWindow(spawnedHost) {
   ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
 
   // Ctrl+V (BACKLOG #12, #8): the page asks, main reads the clipboard.
-  registerClipboardHandlers({ ipcMain, clipboard, win });
+  registerClipboardHandlers({ ipcMain, clipboard, win, isSender: isTabView });
 
   // Model favourites (BACKLOG E #5, #3): a star on an OpenRouter row or a
   // Claude choice, persisted GLOBALLY next to look-global -- see
   // favourites-bridge.js's header for why main owns this store directly.
-  registerFavouriteHandlers({ ipcMain, store: uiStore, win });
+  registerFavouriteHandlers({ ipcMain, store: uiStore, win, isSender: isTabView });
 
   // Agent pictures (BACKLOG C #13, #18): the file picker for a portrait and the
   // install-wide "show agent images" toggle, persisted GLOBALLY next to
-  // look-global -- see avatar-bridge.js.
+  // look-global -- see avatar-bridge.js. A push goes to EVERY tab view.
   const avatarSync = {};
-  registerAvatarHandlers({ ipcMain, store: uiStore, win, dialog, sync: avatarSync });
+  const pushToViews = (channel, value) => forEachView((v) => v.webContents.send(channel, value));
+  registerAvatarHandlers({ ipcMain, store: uiStore, win, dialog, sync: avatarSync, isSender: isTabView, send: pushToViews });
   // Other project windows are other mains sharing this store: follow their toggle.
   watchImagesEnabled({
-    store: uiStore, win, sync: avatarSync,
+    store: uiStore, win, sync: avatarSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
   });
 
@@ -417,125 +665,234 @@ function createWindow(spawnedHost) {
       }
     }, 2500);
   }
+}
 
-  // Any external link opens in the real browser, never in-app.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: 'deny' };
+// --- headless verification ---------------------------------------------------------
+
+async function capture(wc, file) {
+  // RETRIED. capturePage intermittently returns an empty image -- observed
+  // several times in a row while the host, the hooks and the renderer all
+  // reported healthy, so it is the capture and not the page. Reporting it
+  // as a probe failure sent me looking for a product bug that was not
+  // there, more than once.
+  let png = null;
+  for (let attempt = 1; attempt <= 4 && !(png && png.length); attempt++) {
+    if (attempt > 1) {
+      console.log(`[main] capturePage came back empty, retry ${attempt - 1}`);
+      await new Promise(r => setTimeout(r, 700));
+    }
+    try {
+      png = (await wc.capturePage()).toPNG();
+    } catch (err) {
+      console.log('[main] capturePage threw:', err.message);
+    }
+  }
+  if (!png || png.length === 0) throw new Error('capturePage returned an empty image 4 times');
+  fs.writeFileSync(file, png);
+  // Verify before exiting. app.exit() is a hard exit that has been
+  // observed truncating the file to zero bytes even after a synchronous
+  // write, and a 0-byte PNG reads as "the GUI rendered nothing" rather
+  // than as the write race it actually is.
+  const onDisk = fs.statSync(file).size;
+  if (onDisk !== png.length) throw new Error(`wrote ${png.length}B but file is ${onDisk}B`);
+  return onDisk;
+}
+
+// The strip's file next to the view's: <name>.png -> <name>.strip.png
+const stripFileFor = (file) => file.replace(/(\.png)?$/i, '.strip.png');
+
+// CLAUDE_CUSTOM_SCREENSHOT=<file> renders the real window, waits for the TUI to
+// draw, writes a PNG and exits. The GUI is the one surface the headless probes
+// cannot reach, so this is how it gets checked at all rather than assumed to
+// look right. Since the window's own page is the strip, the PNG is of the
+// SELECTED TAB's view, and the strip is written beside it.
+function runScreenshotPath() {
+  const outFile = process.env.CLAUDE_CUSTOM_SCREENSHOT;
+  const waitMs = Number(process.env.CLAUDE_CUSTOM_SCREENSHOT_DELAY) || 12000;
+
+  // Optional keystroke drive. The renderer's custom key handler -- above all
+  // the hardcoded Shift+Enter -- is the one piece of the input path that the
+  // headless probes cannot reach, because it lives in xterm's browser-side
+  // event handling rather than on the wire.
+  if (process.env.CLAUDE_CUSTOM_INPUT_TEST) {
+    const type = text => {
+      const sel = selectedView();
+      if (!sel) return;
+      for (const ch of text) sel.webContents.sendInputEvent({ type: 'char', keyCode: ch });
+    };
+    const key = (keyCode, modifiers = []) => {
+      const sel = selectedView();
+      if (!sel) return;
+      sel.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+      sel.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+    };
+    setTimeout(() => {
+      win.focus();
+      const sel = selectedView();
+      if (sel) sel.webContents.focus();
+      type('LINE-ONE');
+      // If Shift+Enter is mishandled this SUBMITS instead of inserting a
+      // newline, which the screenshot shows unmistakably.
+      key('Enter', ['shift']);
+      type('LINE-TWO');
+    }, Math.max(1000, waitMs - 3000));
+  }
+
+  setTimeout(async () => {
+    try {
+      const sel = selectedView();
+      if (!sel) throw new Error('no selected tab has a view to capture');
+      const bytes = await capture(sel.webContents, outFile);
+      console.log(`[main] screenshot written: ${outFile} (${bytes} bytes)`);
+      const stripBytes = await capture(win.webContents, stripFileFor(outFile));
+      console.log(`[main] strip screenshot written: ${stripFileFor(outFile)} (${stripBytes} bytes)`);
+    } catch (err) {
+      console.error('[main] screenshot failed:', err.message);
+    }
+    // Let the filesystem settle before the hard exit.
+    setTimeout(() => app.exit(0), 400);
+  }, waitMs);
+}
+
+// The tab probe's driver (verify/probe-worktree-tabs.js). Does NOTHING unless
+// CLAUDE_CUSTOM_TABS_PROBE names a port. Newline-JSON over 127.0.0.1 only; the
+// commands are app/tab-shell.js's handleProbeCommand's and nothing else.
+function startProbeDriver(port) {
+  const labelKey = (label) => {
+    const e = tabShell.model().find((x) => x.label === label);
+    return e ? e.key : null;
+  };
+  const api = {
+    async state() {
+      const model = tabShell.model();
+      const hosts = tabShell.snapshot().tabs.map((t) => {
+        const id = Number.isInteger(t.port) ? readIdentity({ dir: HARNESS_DIR, port: t.port }) : null;
+        return { label: t.branch || projectLabel(t.cwd), key: t.key, cwd: t.cwd, started: t.started, port: t.port, pid: id ? id.pid : null };
+      });
+      // What the strip page ACTUALLY painted, read out of its DOM: this is what
+      // catches a page that loaded but drew nothing.
+      let stripDom = null;
+      try {
+        stripDom = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x') })))"));
+      } catch (err) { stripDom = { error: err.message }; }
+      let viewDom = null;
+      const sel = selectedView();
+      if (sel) {
+        try {
+          viewDom = JSON.parse(await sel.webContents.executeJavaScript(
+            "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined' })"));
+        } catch (err) { viewDom = { error: err.message }; }
+      }
+      return { mode: MODE, selectedKey: tabShell.snapshot().selectedKey, tabs: model, hosts, stripDom, viewDom };
+    },
+    async select(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      await tabShell.select(key);
+      const t = tabShell.tabByKey(key);
+      return { ok: true, started: !!(t && t.started), error: t ? t.error : null };
+    },
+    async close(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      return tabShell.closeTab(key);
+    },
+    async screenshot(file) {
+      const sel = selectedView();
+      const viewBytes = sel ? await capture(sel.webContents, file) : 0;
+      const stripBytes = await capture(win.webContents, stripFileFor(file));
+      return { ok: true, viewBytes, stripBytes, stripFile: stripFileFor(file) };
+    },
+    async quit() {
+      setTimeout(() => app.exit(0), 200);
+      return { ok: true };
+    },
+  };
+  const server = net.createServer((sock) => {
+    let buf = '';
+    sock.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        handleProbeCommand(line, api).then((r) => { try { sock.write(JSON.stringify(r) + '\n'); } catch { /* probe went away */ } });
+      }
+    });
+    sock.on('error', () => {});
   });
-
-  return win;
+  server.on('error', (err) => console.error('[main] probe driver:', err.message));
+  server.listen(port, '127.0.0.1', () => console.log(`[main] probe driver listening on ${port}`));
 }
 
 app.whenReady().then(async () => {
-  console.log('[main] project       :', PROJECT_CWD);
+  console.log('[main] project       :', PROJECT_ROOT, `(${MODE})`);
+  console.log('[main] launched on   :', LAUNCH_CWD);
 
-  let chosen;
-  try {
-    chosen = await chooseHostPort();
-  } catch (err) {
-    // The derived range is full. Nothing sensible is left to do, and opening a
-    // window anyway would show a terminal wired to nothing.
-    console.error('[main]', err.message);
-    app.exit(1);
-    return;
-  }
-  if (!chosen) { app.exit(1); return; }
+  // Named and refused (see explicitPort): nothing sensible is left to do, and
+  // opening a window anyway would show a terminal wired to nothing.
+  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
 
-  PORT = chosen.port;
-  let spawnedHost = false;
-  if (chosen.action === 'spawn') {
-    console.log('[main] no host for this project on', PORT, '— spawning one');
-    spawnHost();
-    spawnedHost = true;
-    const up = await waitForHost(PORT);
-    if (!up) console.error('[main] host did not come up in time');
-  } else {
-    // Verified as THIS project's host, not merely "something is listening".
-    // That check is the whole point: before it, opening project B while
-    // project A's detached host was alive silently attached the window to A.
-    console.log('[main] reattaching to this project\'s host on', PORT);
-  }
-
-  const win = createWindow(spawnedHost);
-
-  // Headless verification path. CLAUDE_CUSTOM_SCREENSHOT=<file> renders the
-  // real window, waits for the TUI to draw, writes a PNG and exits. The GUI is
-  // the one surface the headless probes cannot reach, so this is how it gets
-  // checked at all rather than assumed to look right.
-  if (process.env.CLAUDE_CUSTOM_SCREENSHOT) {
-    const outFile = process.env.CLAUDE_CUSTOM_SCREENSHOT;
-    const waitMs = Number(process.env.CLAUDE_CUSTOM_SCREENSHOT_DELAY) || 12000;
-
-    win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
-      const tag = ['verbose', 'info', 'warn', 'error'][level] || level;
-      console.log(`[renderer:${tag}] ${message} (${String(sourceId).split('/').pop()}:${line})`);
-    });
-    win.webContents.on('render-process-gone', (_e, d) => console.error('[main] renderer gone:', d.reason));
-    win.webContents.on('did-fail-load', (_e, code, desc) => console.error('[main] load failed:', code, desc));
-
-    // Optional keystroke drive. The renderer's custom key handler -- above all
-    // the hardcoded Shift+Enter -- is the one piece of the input path that the
-    // headless probes cannot reach, because it lives in xterm's browser-side
-    // event handling rather than on the wire.
-    if (process.env.CLAUDE_CUSTOM_INPUT_TEST) {
-      const type = text => {
-        for (const ch of text) win.webContents.sendInputEvent({ type: 'char', keyCode: ch });
-      };
-      const key = (keyCode, modifiers = []) => {
-        win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-        win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
-      };
-      setTimeout(() => {
-        win.focus();
-        type('LINE-ONE');
-        // If Shift+Enter is mishandled this SUBMITS instead of inserting a
-        // newline, which the screenshot shows unmistakably.
-        key('Enter', ['shift']);
-        type('LINE-TWO');
-      }, Math.max(1000, waitMs - 3000));
-    }
-
-    setTimeout(async () => {
-      try {
-        const fsMod = require('fs');
-        // RETRIED. capturePage intermittently returns an empty image -- observed
-        // several times in a row while the host, the hooks and the renderer all
-        // reported healthy, so it is the capture and not the page. Reporting it
-        // as a probe failure sent me looking for a product bug that was not
-        // there, more than once.
-        let png = null;
-        for (let attempt = 1; attempt <= 4 && !(png && png.length); attempt++) {
-          if (attempt > 1) {
-            console.log(`[main] capturePage came back empty, retry ${attempt - 1}`);
-            await new Promise(r => setTimeout(r, 700));
-          }
-          try {
-            png = (await win.webContents.capturePage()).toPNG();
-          } catch (err) {
-            console.log('[main] capturePage threw:', err.message);
-          }
-        }
-        if (!png || png.length === 0) throw new Error('capturePage returned an empty image 4 times');
-        fsMod.writeFileSync(outFile, png);
-        // Verify before exiting. app.exit() is a hard exit that has been
-        // observed truncating the file to zero bytes even after a synchronous
-        // write, and a 0-byte PNG reads as "the GUI rendered nothing" rather
-        // than as the write race it actually is.
-        const onDisk = fsMod.statSync(outFile).size;
-        if (onDisk !== png.length) throw new Error(`wrote ${png.length}B but file is ${onDisk}B`);
-        console.log(`[main] screenshot written: ${outFile} (${onDisk} bytes)`);
-      } catch (err) {
-        console.error('[main] screenshot failed:', err.message);
-      }
-      // Let the filesystem settle before the hard exit.
-      setTimeout(() => app.exit(0), 400);
-    }, waitMs);
-  }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(false);
+  tabShell = createShell({
+    mode: MODE,
+    container: PROJECT ? PROJECT.root : null,
+    cwd: LAUNCH_CWD,
+    launchedFrom: LAUNCH_CWD,
+    log: (...a) => console.log(...a),
+    git: { list: listWorktrees },
+    hosts: {
+      choosePort: chooseHostPort,
+      isListening: isHostListening,
+      spawn: ({ tab, port, token }) => spawnHost(tab, port, token),
+      wait: (port) => waitForHost(port),
+      tokenFor: tokenForRunningHost,
+      // One secret, handed to the host AND the tab's page. In a single-tab window
+      // a named CLAUDE_CUSTOM_TOKEN still wins, as it always did.
+      newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)
+        || require('crypto').randomBytes(24).toString('hex'),
+      control: (c) => sendControl(c),
+      // planGoTo's readers: another install's identity file and token, by its dir.
+      identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
+      readToken: (install, port) => {
+        try {
+          return fs.readFileSync(path.join(install, '.harness', 'hosts', `${port}.token`), 'utf8').trim() || null;
+        } catch { return null; }
+      },
+    },
+    views: {
+      create: createTabView,
+      destroy: destroyTabView,
+      send: (tab, channel, payload) => {
+        if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.send(channel, payload);
+      },
+      owns: (tab, sender) => !!tab.view && tab.view.webContents === sender,
+    },
+    ui: {
+      confirmClose,
+      changed: onShellChanged,
+      focusWindow,
+      isFocused: () => focused,
+    },
   });
+
+  createWindow();
+  registerIpc();
+  Menu.setApplicationMenu(buildAppMenu(null));
+
+  const first = await tabShell.open();
+  if (MODE === 'single' && first && !first.started) {
+    // The old behaviour, kept: a refused or unfindable port ends the launch.
+    // A host that merely was slow leaves the window up, with its reason and Retry.
+    console.error('[main] could not start:', first.error);
+    if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) { app.exit(1); return; }
+  }
+  if (MODE === 'tabs') setInterval(() => { tabShell.poll(); }, POLL_MS);
+
+  // Headless verification path.
+  if (process.env.CLAUDE_CUSTOM_SCREENSHOT) runScreenshotPath();
+  if (PROBE_PORT) startProbeDriver(PROBE_PORT);
 });
 
 // Closing the window detaches; it does not end the session.
