@@ -137,6 +137,7 @@ function createShell(deps) {
   let selectedKey = null;
   let polling = false;
   let lastError = null;
+  let closeNotice = null;        // a hand close whose stop failed; cleared by the next selection
   let destroyed = false;
 
   const keyOf = normPath;
@@ -159,7 +160,7 @@ function createShell(deps) {
   function snapshot() {
     const m = model();
     const sel = m.find(e => e.selected);
-    return { model: m, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, mode };
+    return { model: m, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, mode };
   }
 
   function publish() {
@@ -272,6 +273,7 @@ function createShell(deps) {
   function select(key) {
     const next = tabModel.select(model(), key);
     if (next === null) return Promise.resolve();
+    closeNotice = null;
     selectedKey = next;
     const tab = tabByKey(next);
     let started = Promise.resolve();
@@ -380,10 +382,36 @@ function createShell(deps) {
     try { yes = (await ui.confirmClose(tab)) === true; } catch { yes = false; }
     if (!yes) return { ok: false, cancelled: true };
     if (!tabs.has(key)) return { ok: true };     // gone while the dialog was up
+    // Dexter, PR #75 F3: a tab still attaching has no host to stop YET. Let the
+    // start finish (it is bounded by the host wait), then stop what it presented.
+    if (tab.starting && tab.startPromise) {
+      try { await tab.startPromise; } catch { /* start() reports its own errors */ }
+      if (!tabs.has(key)) return { ok: true };
+    }
+    const label = (model().find(e => e.key === key) || {}).label || tab.branch || tab.cwd;
+    let target = null;
+    if (tab.started && tab.port && tab.token) target = { port: tab.port, token: tab.token };
+    else if (tab.pending) target = { port: tab.pending.port, token: tab.pending.token };
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
-    apply(actions, before);
+    // The stop is sent here, where its outcome can be seen, not fire-and-forget.
+    apply(actions.filter(a => a.type !== 'stop'), before);
+    if (!target) return { ok: true };
+    let failure = null;
+    try {
+      const r = await hosts.control({ ...target, msg: { type: 'stop' } });
+      if (!r || r.ok !== true) failure = (r && r.error) || 'no answer';
+    } catch (err) {
+      failure = (err && err.message) || String(err);
+    }
+    if (failure !== null) {
+      closeNotice = `Couldn't end the session in ${label}: ${failure}. It may still be running.`;
+      log(`[shell] ${key}: ${closeNotice}`);
+      publish();
+      return { ok: true, stopError: failure };
+    }
+    log(`[shell] stop ${key}: sent`);
     return { ok: true };
   }
 

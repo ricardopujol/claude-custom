@@ -155,3 +155,15 @@ test('tab-strip.html loads only its own script and starts with the pane hidden',
   assert.match(html, /id="tabs"/);
   assert.match(html, /height: 34px/);
 });
+
+test('F3 (Dexter, PR #75): a failed stop is drawn IN the strip, as text, and cleared when gone', () => {
+  const doc = fakeDoc();
+  doc.byId['strip-alert'] = node('div');
+  const model = [entry({ selected: true })];
+  paint(doc, { model, closeNotice: "Couldn't end the session in feat/a: handshake refused (HTTP 403). It may still be running." }, bridgeSpy());
+  assert.strictEqual(doc.byId['strip-alert'].hidden, false);
+  assert.match(doc.byId['strip-alert'].textContent, /feat\/a.*403.*may still be running/);
+  paint(doc, { model, closeNotice: null }, bridgeSpy());
+  assert.strictEqual(doc.byId['strip-alert'].hidden, true);
+  assert.strictEqual(doc.byId['strip-alert'].textContent, '');
+});

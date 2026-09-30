@@ -435,6 +435,57 @@ test('F2: a host that never comes up is forgotten after one more wait, so the ne
   assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, true);
 });
 
+// --- Dexter, PR #75 F3: hand close must stop, and a failed stop is visible ----
+
+test('F3: closing a tab that is still attaching stops the session it ends up presenting', async () => {
+  const h = harness({ running: { 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  // A tab whose host is running but which has not been presented yet.
+  const tab = h.shell.tabByKey(key('feat-b'));
+  h.running[7702] = wt('feat-b');
+  const pending = h.shell.select(key('feat-b'));      // choosePort resolves `attach` AFTER the close starts
+  assert.strictEqual(tab.starting, true);
+  const closing = h.shell.closeTab(key('feat-b'));
+  await Promise.all([pending, closing]);
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-b')), null);
+  assert.deepStrictEqual(h.controls.filter(c => c.port === 7702),
+    [{ port: 7702, token: 'tok-7702', msg: { type: 'stop' } }], 'the attached session was stopped');
+});
+
+test('F3: a stop that is refused still closes the tab, and the strip notice names the branch and the error', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => ({ ok: false, error: 'handshake refused (HTTP 403)' });
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'the tab is closed either way');
+  const notice = h.shell.snapshot().closeNotice;
+  assert.strictEqual(notice, "Couldn't end the session in feat/a: handshake refused (HTTP 403). It may still be running.");
+  // ...and it is cleared by the next selection rather than sitting there forever.
+  await h.shell.select(key('dev'));
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('F3: a stop that throws is reported the same way', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => { throw new Error('socket gone'); };
+  await h.shell.closeTab(key('feat-a'));
+  assert.match(h.shell.snapshot().closeNotice, /feat\/a: socket gone\. It may still be running\./);
+});
+
+test('F3: a clean stop leaves no notice', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
 // --- what a tab reports ------------------------------------------------------
 
 test('report maps the sender to its tab, sanitises, and dedupes', async () => {

@@ -432,7 +432,7 @@ function registerShortcuts(wc) {
 function onShellChanged(snapshot) {
   if (!win || win.isDestroyed()) return;
   applySelection(snapshot);
-  lastStripPayload = { model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, mode: snapshot.mode };
+  lastStripPayload = { model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, mode: snapshot.mode };
   win.webContents.send('strip-model', lastStripPayload);
 }
 

@@ -90,6 +90,15 @@ function paint(doc, payload, bridge) {
   text.textContent = info ? info.text : '';
   retry.hidden = !(info && info.retry);
   retry.onclick = info && info.retry ? () => bridge.select(info.retry) : null;
+  // A hand close whose stop failed: in the STRIP, because the pane below is
+  // covered by the selected tab's view. Dexter, PR #75 F3.
+  const alertEl = doc.getElementById('strip-alert');
+  if (alertEl) {
+    const msg = payload && typeof payload.closeNotice === 'string' ? payload.closeNotice : '';
+    alertEl.textContent = msg;
+    alertEl.title = msg;
+    alertEl.hidden = msg === '';
+  }
 }
 
 const api = { paneFor, paint, GLYPHS };

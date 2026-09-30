@@ -33,6 +33,9 @@
     .x { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 14px;
       line-height: 1; padding: 0 2px; border-radius: 3px; }
     .x:hover { color: var(--text); background: var(--border); }
+    #strip-alert { flex: 1 1 auto; min-width: 0; align-self: center; margin: 0 10px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; color: var(--bad); }
+    #strip-alert[hidden] { display: none; }
     @keyframes pulse { 50% { opacity: 0.35; } }
     /* Visible only while the selected tab has no page of its own (starting,
        failed, or no worktrees yet); the tab's view covers it otherwise. */
@@ -47,7 +50,7 @@
   </style>
 </head>
 <body>
-  <div id="strip"><div id="tabs"></div></div>
+  <div id="strip"><div id="tabs"></div><div id="strip-alert" hidden></div></div>
   <div id="pane" hidden>
     <div id="pane-text"></div>
     <button type="button" id="pane-retry" hidden>Retry</button>
