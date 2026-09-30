@@ -203,4 +203,4 @@ function breakIfStale(lockPath, judge, opts = {}) {
   }
 }
 
-module.exports = { breakIfStale, readLock, removeIfSame, sleepSync, BREAK_STALE_MS, BREAK_WAIT_MS };
+module.exports = { breakIfStale, readLock, removeIfSame, sameFile, sleepSync, BREAK_STALE_MS, BREAK_WAIT_MS };
