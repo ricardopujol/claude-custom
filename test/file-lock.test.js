@@ -479,6 +479,30 @@ test('a lock whose mtime cannot be read is broken, not treated as a tombstone', 
   }
 });
 
+test('Finding A: an EMPTY lock whose mtime cannot be read is not broken', () => {
+  // Dexter, PR #57 re-review, Finding A (accepted then, fixed in #22). Empty
+  // is exactly what a live lock looks like between its `wx` and its write, so
+  // "no content and no age" tells us nothing about the holder. The test above
+  // still holds for content that IS there and isn't a lock: garbage has no
+  // creation window to be caught in, and must not become a tombstone.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, '');
+
+  const realStat = fs.statSync;
+  fs.statSync = (...a) => {
+    if (String(a[0]) === lock) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    return realStat.apply(fs, a);
+  };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 100 }), /lock/i);
+  } finally {
+    fs.statSync = realStat;
+  }
+  assert.strictEqual(ran, false);
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), '', 'the lock was broken');
+});
+
 // --- a successful break must get its retry, even past the deadline ----------
 //
 // The full-suite flake, 2026-09-26/27. Under load, four stale-lock tests
