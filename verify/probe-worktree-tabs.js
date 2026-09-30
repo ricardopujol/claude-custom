@@ -394,6 +394,64 @@ async function main() {
       !!bUp && hostOf(bUp, 'develop') && hostOf(bUp, 'develop').pid === before.dev);
     await quit(app);
 
+    // ===== PR #75 F1 / criterion 8: a stepped tab survives its neighbour closing =====
+    // Two worktrees whose paths hash to ONE port. The second's host is stepped
+    // up; close the first by hand, close the window, reopen: the second must
+    // still be attached (the old walk met the first's FREE port and drew it
+    // "not started" while its session ran on).
+    const { portForCwd } = require(path.join(ROOT, 'host', 'port-for-project'));
+    const coll = path.join(tmp, 'coll');
+    const names = Array.from({ length: 200 }, (_, i) => `w${i}`);
+    const seenHash = new Map();
+    let pair = null;
+    for (const n of names) {
+      const h = portForCwd(path.join(coll, n));
+      if (seenHash.has(h)) { pair = [seenHash.get(h), n]; break; }
+      seenHash.set(h, n);
+    }
+    if (!pair) {
+      console.log('SKIP  no two worktree names collided on the port hash; the stepped-tab check was not run');
+    } else {
+      const cdev = path.join(coll, 'dev');
+      fs.mkdirSync(cdev, { recursive: true });
+      git(cdev, 'init', '-q', '-b', 'develop');
+      git(cdev, 'commit', '-q', '--allow-empty', '-m', 'init');
+      for (const n of pair) git(cdev, 'worktree', 'add', '-q', path.join(coll, n), '-b', `feat/${n}`);
+      const [first, second] = pair.map(n => `feat/${n}`);
+      app = await launchApp(coll);
+      s = await driverUp(app);
+      if (!s) { check('the collision window came up', false, app.out.split('\n').slice(-15).join('\n')); return; }
+      await waitFor(async () => { const x = await state(app); return labelsOf(x).length >= 3 ? x : null; }, 30000);
+      await command(app, { cmd: 'select', label: first }, 60000);
+      await command(app, { cmd: 'select', label: second }, 60000);
+      s = await state(app);
+      remember(s);
+      const h1 = hostOf(s, first);
+      const h2 = hostOf(s, second);
+      check('two worktrees hashing to one port: the second is STEPPED to another port',
+        !!h1 && !!h2 && h1.port !== h2.port && alive(h1.pid) && alive(h2.pid),
+        h1 && h2 && `${first} ${h1.port}, ${second} ${h2.port}`);
+      if (h1 && h2) {
+        const closed1 = await command(app, { cmd: 'close', label: first });
+        const gone1 = await waitFor(async () => !alive(h1.pid), 15000, 250);
+        check('the first is closed by hand and its host ends', closed1.ok === true && !!gone1, JSON.stringify(closed1));
+        const count = hostsUnder(coll).length;
+        await quit(app);
+        app = await launchApp(coll);
+        s = await driverUp(app);
+        if (!s) { check('the collision window reopened', false, app.out.split('\n').slice(-15).join('\n')); return; }
+        s = await waitFor(async () => {
+          const x = await state(app);
+          return tabOf(x, second) && tabOf(x, second).started ? x : null;
+        }, 40000);
+        remember(s);
+        check('reopened: the stepped tab is still ATTACHED to its own host, pid unchanged, nothing spawned',
+          !!s && hostOf(s, second) && hostOf(s, second).pid === h2.pid && hostsUnder(coll).length === count,
+          s && `${second}: ${hostOf(s, second) && hostOf(s, second).pid}/${h2.pid}, hosts ${hostsUnder(coll).length}/${count}`);
+        await quit(app);
+      }
+    }
+
     // ===== criterion 7: a flat repo is single-tab =====
     makeFlat();
     app = await launchApp(flat);
