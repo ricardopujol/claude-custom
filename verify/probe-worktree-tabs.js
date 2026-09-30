@@ -23,6 +23,8 @@
  *   criterion 5  hand close: that host exits, the folder is still there; reopen
  *                and the tab is back
  *   criterion 6  dev has no close, in the strip or by command
+ *   raise        `raise` counts the OTHER clients: 1 with the window open, 0 after it
+ *                closes (what Go to that session turns into words)
  *   launcher     opened from a sibling's folder, THAT tab is selected
  *   criterion 7  a flat repo opens single-tab
  *   explicit port  CLAUDE_CUSTOM_PORT keeps a window single-tab on one host on that
@@ -52,6 +54,7 @@ const ROOT = path.join(__dirname, '..');
 const HARNESS_DIR = path.join(ROOT, '.harness');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
+const { sendControl } = require(path.join(ROOT, 'host', 'host-client'));
 
 if (process.platform !== 'win32') {
   console.log('SKIP: this probe drives cmd.exe and taskkill; Windows only');
@@ -301,10 +304,21 @@ async function main() {
     check('feat/b is still not started', !!tabOf(s, 'feat/b') && !tabOf(s, 'feat/b').started);
     check('the strip shows feat/a selected', (await state(app)).tabs.find(t => t.selected).label === 'feat/a');
 
+    // ===== raise: windows counts the window(s), never the sender =====
+    const tokenOf = (port) => fs.readFileSync(path.join(HARNESS_DIR, 'hosts', `${port}.token`), 'utf8').trim();
+    const raiseOpen = aHost ? await sendControl({ port: aHost.port, token: tokenOf(aHost.port), msg: { type: 'raise' } }) : null;
+    check('a raise to a host with its window open answers windows: 1 (the sender is not a window)',
+      !!raiseOpen && raiseOpen.ok === true && raiseOpen.reply.windows === 1, JSON.stringify(raiseOpen));
+
     // ===== criterion 8: close the window, reopen =====
     const before = { dev: devHost.pid, a: aHost && aHost.pid, count: hostsUnder(container).length };
     await quit(app);
     check('closing the window leaves the hosts running (detach)', alive(before.dev) && alive(before.a));
+    const raiseShut = aHost ? await waitFor(async () => {
+      const r = await sendControl({ port: aHost.port, token: tokenOf(aHost.port), msg: { type: 'raise' } });
+      return r.ok && r.reply.windows === 0 ? r : null;
+    }, 8000, 300) : null;
+    check('with the window closed, a raise answers windows: 0 -- "no window open" is reachable', !!raiseShut);
 
     app = await launchApp(container);
     s = await driverUp(app);
