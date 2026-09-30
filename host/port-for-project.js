@@ -37,8 +37,8 @@ function portForCwd(cwd) {
 /**
  * The port this project should actually use, and what to do when we get there.
  *
- * Walks from the derived port through the range, taking the first port that is
- * either free or already serving THIS project. A refusal of any kind -- another
+ * Walks the whole range from the derived port: a port already serving THIS
+ * project wins; otherwise the first free port is used (see F1 below). A refusal of any kind -- another
  * project, or an occupant that would not identify itself -- steps to the next
  * one, because both mean "not ours" and neither is the user's problem to solve.
  *
@@ -57,19 +57,37 @@ const DEADLINE_MS = 6000;
 async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS } = {}) {
   const first = portForCwd(cwd);
   const giveUpAt = Date.now() + deadlineMs;
+  // Dexter, PR #75 F1: a live host of ours ANYWHERE in the range wins over the
+  // first free port. Two projects can hash to one port, and the loser's host
+  // is stepped up; if the winner's tab is later closed, the loser's walk meets
+  // a FREE port first and would spawn a duplicate while its real session runs
+  // further along. So the walk remembers the first free port but keeps going.
+  // A free port answers ECONNREFUSED in about a millisecond, so the full walk
+  // is ~100 ms in practice.
+  //
+  // Known limit: if the wall-clock deadline hits after a free port was seen we
+  // return that port rather than throw, which can still miss an "ours" further
+  // along. That only happens when probes are being dropped, and a blank screen
+  // is the worse failure.
+  let firstFree = null;
+  let tried = 0;
   for (let i = 0; i < PORT_SPAN; i++) {
     if (Date.now() > giveUpAt) {
+      if (firstFree !== null) return { port: firstFree, action: 'spawn' };
       throw new Error(
         `resolvePort: probing for a free port took too long (>${deadlineMs}ms, ` +
-        `${i} of ${PORT_SPAN} ports tried) -- something is dropping connections on ` +
+        `${tried} of ${PORT_SPAN} ports tried) -- something is dropping connections on ` +
         `${PORT_BASE}-${PORT_BASE + PORT_SPAN - 1}`);
     }
     const port = PORT_BASE + ((first - PORT_BASE + i) % PORT_SPAN);
+    tried++;
     // Awaited because the real probe opens a socket. A synchronous answer --
     // which is what every test injects -- passes through await unchanged.
     const { action } = decideAttach({ requestedCwd: cwd, occupant: await occupantAt(port) });
-    if (action === 'spawn' || action === 'attach') return { port, action };
+    if (action === 'attach') return { port, action };
+    if (action === 'spawn' && firstFree === null) firstFree = port;
   }
+  if (firstFree !== null) return { port: firstFree, action: 'spawn' };
   throw new Error(
     `resolvePort: no free port for ${cwd} in ${PORT_BASE}-${PORT_BASE + PORT_SPAN - 1}`,
   );
