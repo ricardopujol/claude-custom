@@ -8,6 +8,9 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { inspect } = require('node:util');
 
 const { quotaDisplay, formatCountdown, toneFor, UNKNOWN } = require('../app/quota-display');
 
@@ -152,14 +155,11 @@ test('a reset under a minute away is not "0m"', () => {
 });
 
 // =============================================================================
-// KILLS FOR THE 51 SURVIVORS OF THE 2026-09-30 SCOPED STRYKER RUN (Mortimer).
+// KILLS FOR MUTATION SURVIVORS (Mortimer, PR #73).
 //
 // Each block names the mutants it kills, because a test written against a
 // survivor and not against a behaviour is how a suite ends up asserting nothing.
-// Mutants left alive on purpose are listed in the 2026-09-30 report: `n === null`
-// in percentOrNull (null < 0 is false, so the branch is invisible), `typeof v ===
-// 'number'` inside finiteOrNull (Number.isFinite already rejects non-numbers),
-// the default 'normal' severity literal, and fill's `pct === null => false`.
+// The mutants left alive on purpose, and why, are in the build log.
 // =============================================================================
 
 const meterFor = (over) => quotaDisplay(ready([win(over)]), NOW).meters[0];
@@ -173,8 +173,8 @@ test('a percent that is not a finite number is unknown, whatever it coerces to',
   // file exists to never turn "no value" into a confident number.
   for (const bad of ['50', '', NaN, Infinity, -Infinity, undefined, {}, [], true]) {
     const m = meterFor({ percent: bad });
-    assert.strictEqual(m.percent, null, `percent ${String(bad)} must be unknown`);
-    assert.strictEqual(m.text, UNKNOWN, `text for ${String(bad)}`);
+    assert.strictEqual(m.percent, null, `percent ${inspect(bad)} must be unknown`);
+    assert.strictEqual(m.text, UNKNOWN, `text for ${inspect(bad)}`);
     assert.strictEqual(m.fill, 0);
     assert.strictEqual(m.tone, 'unknown');
   }
@@ -237,9 +237,10 @@ test('exactly one day is "1d", not "24h"', () => {
 // --- quotaDisplay: the three states, exactly -----------------------------------
 
 test('the reading state says so in words', () => {
-  // Kills the 'reading account limits…' literal.
-  assert.strictEqual(quotaDisplay(null, NOW).note, 'reading account limits…');
-  assert.strictEqual(quotaDisplay(undefined, NOW).note, 'reading account limits…');
+  // Kills the 'reading account limits…' literal. Matched by phrase, so a copy
+  // edit (the ellipsis, say) is not a test failure (Dexter, PR #73 F6).
+  assert.match(quotaDisplay(null, NOW).note, /reading account limits/);
+  assert.match(quotaDisplay(undefined, NOW).note, /reading account limits/);
 });
 
 test('a read that FAILED is absent even when it still carries windows', () => {
@@ -259,7 +260,11 @@ test('an ok read with no windows is absent, not a header of zero meters', () => 
     const d = quotaDisplay(q, NOW);
     assert.strictEqual(d.state, 'absent', JSON.stringify(q));
     assert.deepStrictEqual(d.meters, []);
-    assert.strictEqual(d.note, 'could not read account limits');
+    // The NOTE is deliberately not pinned (Dexter, PR #73 F1): for
+    // `{ ok: true, windows: [] }` -- a successful read of an account with no
+    // limits (host/quota.js) -- the display says "could not read account
+    // limits", which is untrue. What it should say is an open product question,
+    // and this test must not freeze the wrong answer.
   }
 });
 
@@ -347,8 +352,6 @@ test('isActive is a real boolean, coerced the right way round', () => {
 // real code never touches `process`, so this changes nothing outside a mutation run.
 
 function loadAsScript(sandbox = {}) {
-  const fs = require('fs');
-  const vm = require('node:vm');
   // The file `require` resolves, evaluated as a script. Resolved rather than named so
   // this reads the code to RUN it, never to assert on its text: instrumentation
   // rewrites that text, which is what test/stryker-config.test.js guards against.
@@ -370,7 +373,13 @@ test('as a plain <script> with a window, it publishes on the WINDOW', () => {
   assert.strictEqual(w.quotaDisplay(null).state, 'reading');
   assert.strictEqual(w.formatQuotaCountdown('2026-09-15T17:00:00Z', NOW), '1h');
   assert.strictEqual(ctx.quotaDisplay, undefined, 'must not leak onto the global when a window exists');
-  assert.strictEqual(ctx.UNKNOWN, undefined, 'the IIFE must keep its constants private');
+  // The trap the IIFE exists for (CLAUDE.md): every plain <script> shares ONE
+  // global lexical scope, so a top-level `const UNKNOWN` here would make the
+  // next script's own `const UNKNOWN` a SyntaxError. A vm context shares that
+  // scope across runInContext calls the same way. (Checking ctx.UNKNOWN could
+  // never fail -- a top-level const never becomes a property; Dexter PR #73 F3.)
+  assert.doesNotThrow(() => vm.runInContext('const UNKNOWN = 1; const quotaDisplay = 2;', ctx),
+    'the file leaked a top-level binding into the shared script scope');
 });
 
 test('as a plain <script> with no window, it publishes on the global', () => {

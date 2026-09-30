@@ -337,17 +337,13 @@ test('list returns an ARRAY when the vault throws', () => {
 });
 
 // =============================================================================
-// KILLS FOR THE SURVIVORS OF THE 2026-09-30 SCOPED STRYKER RUN (Mortimer).
+// KILLS FOR MUTATION SURVIVORS (Mortimer, PR #73).
 //
 // The first two survivor clusters above were forwarding guards; these are the
 // rest of the file, which the forwarding pass never reached: the constructor's
 // refusals, removeKey/melt's catch arms, list()'s query handling, add/reveal/copy
-// results, and the clipboard timer's bookkeeping.
-//
-// Mutants left alive on purpose are listed in the 2026-09-30 report: `!q` in
-// list() (an empty query filters with includes('') and returns every entry, so
-// the output is identical), and the `let current = ''` initialiser in copy()'s
-// timer, which is overwritten before it is read on every path that reaches it.
+// results, and the clipboard timer's bookkeeping. The mutants left alive on
+// purpose, and why, are in the build log.
 // =============================================================================
 
 const GOOD_CLIPBOARD = { writeText: () => {}, readText: () => '', clear: () => {} };
@@ -397,14 +393,20 @@ test('removeKey reports a throw as an error, not as success', () => {
   // `ok: false` -> `ok: true`. setKey/unlock/lock/remove each had this pinned;
   // removeKey never did, and it is the operation that DELETES the user's key.
   const svc = svcWith({ removeKey: () => { throw new Error('key file locked'); } });
-  assert.deepStrictEqual(svc.removeKey(), { ok: false, error: 'key file locked' });
+  // ok and error only: extra fields (failed, leftovers) are harmless and the
+  // renderer already reads them (Dexter, PR #73 F5).
+  const r = svc.removeKey();
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, 'key file locked');
 });
 
 test('melt reports a throw as an error, not as success', () => {
   // Kills melt's catch arm the same three ways. A melt that throws has not
   // destroyed the vault; saying `ok: true` here tells the user it is gone.
   const svc = svcWith({ melt: () => { throw new Error('vault busy'); } });
-  assert.deepStrictEqual(svc.melt(), { ok: false, error: 'vault busy' });
+  const r = svc.melt();
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, 'vault busy');
 });
 
 // --- list(): the query ---------------------------------------------------------
@@ -466,7 +468,9 @@ test('add reports ok:true and hands back the vault entry untouched', () => {
   const svc = svcWith({ add: () => entry });
   const res = svc.add({ label: 'k', secret: 's' });
   assert.strictEqual(res.ok, true);
-  assert.strictEqual(res.entry, entry);
+  // Its content, not its identity: a hardening that returns a safe copy of the
+  // entry is not a behaviour change (Dexter, PR #73 F4).
+  assert.deepStrictEqual(res.entry, entry);
 });
 
 test('reveal of something the vault does not have is a failure, not an ok with no secret', () => {
@@ -475,8 +479,11 @@ test('reveal of something the vault does not have is a failure, not an ok with n
   // `ok: false` flip, and the message literal. `undefined` counts as absent too.
   for (const missing of [null, undefined]) {
     const svc = svcWith({ get: () => missing });
-    assert.deepStrictEqual(svc.reveal('nope'),
-      { ok: false, error: 'not found or could not be decrypted' });
+    const r = svc.reveal('nope');
+    assert.strictEqual(r.ok, false);
+    assert.ok(!('secret' in r) || r.secret == null, 'no secret rides along with a failure');
+    // Matched by phrase, not verbatim: a copy edit is not a failure (Dexter, PR #73 F6).
+    assert.match(r.error, /not found/);
   }
 });
 
@@ -496,7 +503,9 @@ test('copy of something the vault does not have says why, and touches nothing', 
     clipboard: { writeText: () => calls.push('write'), readText: () => '', clear: () => calls.push('clear') },
     setTimer: () => { calls.push('timer'); return 1; },
   });
-  assert.deepStrictEqual(svc.copy('nope'), { ok: false, error: 'not found or could not be decrypted' });
+  const r = svc.copy('nope');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /not found/);
   assert.deepStrictEqual(calls, []);
 });
 
@@ -558,10 +567,8 @@ test('the timer is scheduled for the configured delay, and reported back', () =>
 test('the wipe timer is unref\'d, so it cannot keep the app alive', () => {
   // Kills every mutant on the unref guard: `handle && typeof handle.unref ===
   // 'function'` -> false, `===` -> `!==`, the 'function' literal, and deleting
-  // `handle.unref()`. Stryker reported all four as TIMEOUTS, not kills: without
-  // the unref the real 30-second clipboard timer holds the test process open,
-  // so they were caught by a clock and not by an assertion (and under the
-  // repo's 60s ceiling they would have been survivors). This asserts it.
+  // `handle.unref()`. Before this they were only ever caught as timeouts; this
+  // pins the behaviour itself: the handle is unref'd exactly once.
   const unrefd = [];
   const { svc } = copySvc({ handleFor: (n) => ({ n, unref() { unrefd.push(n); return this; } }) });
   svc.copy('a');
