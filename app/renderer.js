@@ -14,6 +14,10 @@ const params = new URLSearchParams(location.search);
 const PORT = params.get('port') || '7681';
 const CWD = params.get('cwd') || '';
 const PROJECT = params.get('project') || '';
+// Where this page lives (PR 2, worktree tabs), added by app/main.js: 'tab' (a
+// worktree tab), 'dev' (the main checkout: no close), 'single' (a one-tab
+// window). Absent for a page opened any other way.
+const TABMODE = params.get('tabmode') || '';
 
 document.getElementById('cwd').textContent = CWD;
 
@@ -42,20 +46,29 @@ renderTitle();
 // this worktree, and branch health. Every decision is in
 // app/worktree-status-display.js; this only paints what it returns.
 let dismissedTerminalKey = null;   // the banner stays dismissed for this set of sessions only
+let tabLock = null;      // the last lock message, for the tab status and Go to that session
 function renderLock(lock) {
-  const overlay = worktreeStatus.lockOverlay(lock, Date.now());
+  tabLock = lock || null;
+  const overlay = worktreeStatus.lockOverlay(lock, Date.now(), { tabmode: TABMODE });
   const el = document.getElementById('lock-overlay');
   el.hidden = !overlay;
   if (overlay) {
     document.getElementById('lock-overlay-title').textContent = overlay.title;
     document.getElementById('lock-overlay-detail').textContent = overlay.detail;
     document.getElementById('lock-open-anyway').hidden = !overlay.canOverride;
+    // Only where there is a shell to ask (a plain page has no harness bridge).
+    document.getElementById('lock-go-to').hidden = !(overlay.canGoTo && window.harness && window.harness.goToSession);
+    const close = document.getElementById('lock-close');
+    close.hidden = overlay.closeLabel === null;
+    if (overlay.closeLabel !== null) close.textContent = overlay.closeLabel;
   }
+  document.getElementById('lock-goto-note').textContent = '';
   const badge = worktreeStatus.lockBadge(lock);
   const b = document.getElementById('wt-lock');
   b.hidden = !badge;
   b.textContent = badge ? badge.text : '';
   b.title = badge ? badge.title : '';
+  reportTabStatus();
 }
 function renderTerminalSessions(result) {
   const banner = worktreeStatus.terminalBanner(result);
@@ -65,18 +78,66 @@ function renderTerminalSessions(result) {
   el.dataset.key = banner ? banner.key : '';
   document.getElementById('terminal-banner-text').textContent = show ? banner.text : '';
 }
+let tabHealth = null;    // the last health message, for the tab status
 function renderBranchHealth(health) {
+  tabHealth = health || null;
   const m = worktreeStatus.healthMarker(health);
   const el = document.getElementById('wt-health');
   el.hidden = !m;
   el.textContent = m ? m.text : '';
   el.title = m ? m.title : '';
   el.className = m ? `wt-health ${m.cls}` : 'wt-health';
+  reportTabStatus();
 }
 document.getElementById('lock-open-anyway').addEventListener('click', () => {
   send(JSON.stringify({ type: 'lock-override' }));
 });
-document.getElementById('lock-close').addEventListener('click', () => window.close());
+// In a shell (a tab, or a single-tab window) window.close() would only tear down
+// THIS page, not end anything: main decides what closing means. A plain page
+// has no bridge and keeps today's window.close().
+document.getElementById('lock-close').addEventListener('click', () => {
+  if (window.harness && window.harness.closeTab) window.harness.closeTab();
+  else window.close();
+});
+// *Go to that session*: main plans it (select the tab, raise another window,
+// or explain), and an explanation is shown under the buttons.
+document.getElementById('lock-go-to').addEventListener('click', async () => {
+  const note = document.getElementById('lock-goto-note');
+  note.textContent = '';
+  if (!(window.harness && window.harness.goToSession) || !tabLock || !tabLock.holder) return;
+  try {
+    const r = await window.harness.goToSession(tabLock.holder);
+    if (r && r.kind === 'explain' && typeof r.text === 'string') note.textContent = r.text;
+  } catch (err) {
+    note.textContent = 'Could not reach that session.';
+  }
+});
+
+// What this tab tells the shell about itself (PR 2): working, needs input, lock,
+// health. tab-status.js decides; this only sends it when it changed.
+let tabPendingUrgent = false;
+let lastReportedTabStatus = null;
+function reportTabStatus() {
+  if (!(window.harness && window.harness.tabStatus && window.tabStatus)) return;
+  const anyWorking = typeof roster !== 'undefined' && [...roster.values()].some(r => r && r.state === 'working');
+  const status = window.tabStatus.tabStatus({
+    mainMood: anyWorking ? 'working' : null,
+    pendingUrgent: tabPendingUrgent,
+    lock: tabLock,
+    health: tabHealth,
+  }, { healthMarker: worktreeStatus.healthMarker });
+  if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
+  lastReportedTabStatus = status;
+  window.harness.tabStatus(status);
+}
+if (window.harness && window.harness.onTabSelected) {
+  // Looked at: whatever was waiting for you has been seen.
+  window.harness.onTabSelected(() => { tabPendingUrgent = false; reportTabStatus(); });
+}
+if (window.harness && window.harness.onLockOverride) {
+  // The shell's menu item is the same switch as the button, not a second one.
+  window.harness.onLockOverride(() => document.getElementById('lock-open-anyway').click());
+}
 document.getElementById('terminal-banner-dismiss').addEventListener('click', () => {
   const el = document.getElementById('terminal-banner');
   dismissedTerminalKey = el.dataset.key || null;
@@ -3057,6 +3118,7 @@ function handleControl(msg) {
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
+    reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
     // Before renderRoster, so the first paint already carries the careers and
@@ -3082,6 +3144,13 @@ function handleControl(msg) {
   if (msg.type === 'mood') {
     roster.set(msg.agent, msg);
     renderRoster();
+    reportTabStatus();
+    return;
+  }
+  if (msg.type === 'raise') {
+    // Another claude-custom asked to be taken to this session (Go to that
+    // session): the shell selects this tab and brings its window forward.
+    if (window.harness && window.harness.raise) window.harness.raise();
     return;
   }
   if (msg.type === 'hidden') {
@@ -3162,6 +3231,8 @@ function handleControl(msg) {
     // case the feature was built for: watching the terminal while a long task
     // runs and wanting to be told when it ends.
     const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
+    // An urgent message is waiting for you until this tab is looked at.
+    if (msg.urgent === true) { tabPendingUrgent = true; reportTabStatus(); }
 
     if (window.harness && window.harness.attention) {
       // Preferred path: main raises it, so it needs no page permission and can

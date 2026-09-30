@@ -116,3 +116,29 @@ test('the overlay says the window takes over by itself, and when Open anyway mak
   assert.match(o.detail, /checks again/);
   assert.match(o.detail, /if it is still running, starts a second claude/);
 });
+
+// --- PR 2 (worktree tabs): Go to that session, and the close button that fits ---
+
+test('canGoTo is true only when the holder has a positive integer port (null is never port 0)', () => {
+  const blocked = (port) => ({ state: 'blocked', holder: { pid: 7, startedAt: null, port, claudePid: null } });
+  assert.strictEqual(ws.lockOverlay(blocked(7701), NOW).canGoTo, true);
+  for (const port of [null, undefined, 0, -1, 1.5, '7701', NaN]) {
+    assert.strictEqual(ws.lockOverlay(blocked(port), NOW).canGoTo, false, String(port));
+  }
+  assert.strictEqual(ws.lockOverlay({ state: 'blocked' }, NOW).canGoTo, false, 'no holder at all');
+});
+
+test('closeLabel: Close tab in a tab, Close window in a single-tab window, none for dev', () => {
+  const lock = { state: 'blocked', holder: HOLDER };
+  assert.strictEqual(ws.lockOverlay(lock, NOW, { tabmode: 'tab' }).closeLabel, 'Close tab');
+  assert.strictEqual(ws.lockOverlay(lock, NOW, { tabmode: 'single' }).closeLabel, 'Close window');
+  assert.strictEqual(ws.lockOverlay(lock, NOW, { tabmode: 'dev' }).closeLabel, null);
+});
+
+test('closeLabel with no or an unknown tabmode is today\'s Close window', () => {
+  const lock = { state: 'blocked', holder: HOLDER };
+  assert.strictEqual(ws.lockOverlay(lock, NOW).closeLabel, 'Close window');
+  assert.strictEqual(ws.lockOverlay(lock, NOW, {}).closeLabel, 'Close window');
+  assert.strictEqual(ws.lockOverlay(lock, NOW, { tabmode: 'weird' }).closeLabel, 'Close window');
+  assert.strictEqual(ws.lockOverlay(lock, NOW, null).closeLabel, 'Close window');
+});

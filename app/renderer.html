@@ -451,6 +451,9 @@
       background: var(--panel); color: var(--text); border: 1px solid var(--border);
     }
     .lock-actions button:hover { border-color: var(--accent); }
+    .lock-actions button[hidden] { display: none; }
+    #lock-goto-note { margin-top: 10px; font-size: 12px; line-height: 1.4; color: var(--dim); }
+    #lock-goto-note:empty { display: none; }
     #terminal-banner {
       position: absolute; top: 6px; left: 10px; right: 10px; z-index: 15;
       display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 5px;
@@ -1018,9 +1021,11 @@
             <div id="lock-overlay-title"></div>
             <div id="lock-overlay-detail"></div>
             <div class="lock-actions">
+              <button type="button" id="lock-go-to" hidden>Go to that session</button>
               <button type="button" id="lock-open-anyway">Open anyway</button>
               <button type="button" id="lock-close">Close window</button>
             </div>
+            <div id="lock-goto-note" role="status"></div>
           </div>
         </div>
       </div>
@@ -1188,6 +1193,7 @@
   <script src="./models-catalogue.js"></script>
   <script src="./paste-action.js"></script>
   <script src="./worktree-status-display.js"></script>
+  <script src="./tab-status.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

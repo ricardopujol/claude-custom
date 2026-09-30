@@ -35,7 +35,16 @@ function sinceText(startedAt, now) {
   return `${Math.floor(s / 86400)} d ago`;
 }
 
-function lockOverlay(lock, now) {
+// `tabmode` is the shell's word for where this page lives (PR 2): 'tab' (a
+// worktree tab), 'dev' (the project's main checkout, which has no close) or
+// 'single' (a single-tab window). Absent or unknown is today's window.
+function closeLabelFor(tabmode) {
+  if (tabmode === 'tab') return 'Close tab';
+  if (tabmode === 'dev') return null;
+  return 'Close window';
+}
+
+function lockOverlay(lock, now, opts) {
   if (!lock || lock.state !== 'blocked') return null;
   const h = lock.holder || {};
   // host.js re-checks the lock every 30 s and on *Open anyway* (Dexter, PR #71
@@ -54,7 +63,14 @@ function lockOverlay(lock, now) {
       (since ? `, since ${since}` : '') +
       `. ${after}`;
   }
-  return { title: 'Another session is running in this worktree', detail, canOverride: true };
+  // *Go to that session* needs somewhere to go: a positive integer port. A null
+  // port is NOT port 0 (Number(null) is 0).
+  const canGoTo = typeof h.port === 'number' && Number.isInteger(h.port) && h.port > 0;
+  const tabmode = opts && typeof opts === 'object' ? opts.tabmode : undefined;
+  return {
+    title: 'Another session is running in this worktree', detail, canOverride: true,
+    canGoTo, closeLabel: closeLabelFor(tabmode),
+  };
 }
 
 function lockBadge(lock) {
