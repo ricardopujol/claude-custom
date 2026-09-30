@@ -78,6 +78,12 @@ async function judgeHolder(seen, deps = {}) {
     return now() - seen.st.mtimeMs > GRACE_MS ? 'stale' : 'unknown';
   }
 
+  // Our own pid (Dexter, PR #71 F6): no two live processes share a pid, so a
+  // lock naming ours that isn't our own record (acquire checks that first) was
+  // written by an earlier process that had it -- stale, start time or not.
+  const selfPid = Number.isInteger(deps.selfPid) ? deps.selfPid : process.pid;
+  if (p.pid === selfPid) return 'stale';
+
   const alive = isAlive(p.pid);
   if (alive === false) return 'stale';
   if (alive !== true) return 'live';                 // can't tell: fail closed
@@ -158,8 +164,10 @@ async function acquire(lockPath, owner, deps = {}) {
     let broke = false;
     if (seen.gone) {
       broke = true;                                  // free now; retry at once
+    } else if (isOurs(seen, owner)) {
+      return { state: 'held' };                      // already ours: acquiring twice is harmless
     } else if (!seen.unreadable) {
-      const verdict = await judgeHolder(seen, deps);
+      const verdict = await judgeHolder(seen, { ...deps, selfPid: owner.pid });
       if (verdict === 'live') return { state: 'blocked', holder: holderOf(seen) };
       if (verdict === 'stale') {
         // The verdict is about THIS file. Under .break the breaker re-reads;

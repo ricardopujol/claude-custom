@@ -307,6 +307,33 @@ test('updateOwn can never change who holds the lock', () => {
     [201, '9', 1790000001000, 4]);
 });
 
+// --- Dexter, PR #71 F6: our own pid ---------------------------------------------
+// A leftover lock naming OUR pid was written by an earlier process that had
+// it: no two live processes share a pid. With no start time to compare, the
+// judge called it live and the host was blocked by itself.
+
+test('a leftover lock naming our own pid is stale, even without a start time', async () => {
+  const lock = lockFile();
+  fs.writeFileSync(lock, JSON.stringify({ pid: 201, processStartedAt: null, startedAt: 1, port: 1, claudePid: null }));
+  const t = table({ 201: '9' });                          // us, alive
+  assert.deepStrictEqual(await acquire(lock, me(), fast(t)), { state: 'held' });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), me());
+});
+
+test('the judge calls a lock with our pid stale when asked about it directly', async () => {
+  const t = table({ 201: '9' });
+  const seen = seenOf({ pid: 201, processStartedAt: null, startedAt: 1 });
+  assert.strictEqual(await judgeHolder(seen, { ...t.deps, selfPid: 201 }), 'stale');
+});
+
+test('our OWN lock is held, not blocked: acquiring twice is harmless', async () => {
+  const lock = lockFile();
+  fs.writeFileSync(lock, JSON.stringify(me()));
+  const t = table({ 201: '9' });
+  assert.deepStrictEqual(await acquire(lock, me(), fast(t)), { state: 'held' });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), me(), 'untouched');
+});
+
 // --- PROPERTY: never two live holders -------------------------------------------
 //
 // Simulated hosts over one lock file and a fake process table. Commands: open
