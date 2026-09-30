@@ -72,9 +72,12 @@ async function waitFor(h, re, ms = 20000) {
 function attach(h) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${h.port}?token=${encodeURIComponent(h.token)}`);
-    const msgs = [];
-    ws.on('message', (raw, isBinary) => { if (!isBinary) { try { msgs.push(JSON.parse(raw.toString())); } catch { /* not control */ } } });
-    ws.on('open', () => resolve({ ws, msgs }));
+    const conn = { ws, msgs: [], out: '' };
+    ws.on('message', (raw, isBinary) => {
+      if (isBinary) { conn.out += raw.toString('utf8'); return; }   // the pty's own bytes
+      try { conn.msgs.push(JSON.parse(raw.toString())); } catch { /* not control */ }
+    });
+    ws.on('open', () => resolve(conn));
     ws.on('error', reject);
   });
 }
@@ -115,13 +118,22 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   check(!/pty pid/.test(b.out), 'B has not spawned a pty');
   check(readLockFile().pid === a.child.pid, 'the lock still names A');
 
-  // 3. Open anyway.
+  // 3. Open anyway -- after the blocked window was resized (Miguel, PR #71 R1:
+  // the session must start at the window's size, not a fixed 120x30).
+  bConn.ws.send(JSON.stringify({ type: 'resize', cols: 97, rows: 33 }));
+  await sleep(200);
   bConn.ws.send(JSON.stringify({ type: 'lock-override' }));
   const lockMsg = await waitMsg(bConn, m => m.type === 'lock' && m.lock.state === 'override');
   check(lockMsg.lock.holder.pid === a.child.pid, 'B broadcasts override, still naming A');
   await waitFor(b, /pty pid {7}: \d+/);
   check(true, 'B started its session after Open anyway');
   check(readLockFile().pid === a.child.pid, 'the override did not take the lock from A');
+  await sleep(800);
+  bConn.ws.send(JSON.stringify({ type: 'input', data: 'mode con\r' }));
+  const sizeUntil = Date.now() + 8000;
+  while (!/Columns:\s+\d+/.test(bConn.out) && Date.now() < sizeUntil) await sleep(100);
+  const cols = /Columns:\s+(\d+)/.exec(bConn.out);
+  check(cols && Number(cols[1]) === 97, `B's pty started at the window's 97 columns (mode con says ${cols ? cols[1] : 'nothing'})`);
   bConn.ws.close();
 
   // 4. A killed outright; C takes over.

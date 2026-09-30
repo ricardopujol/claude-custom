@@ -1336,10 +1336,14 @@ let sessionEnv = {};
 
 function startSession() {
   if (term) return;
+  // At the size the window last asked for (Miguel, PR #71 R1): a resize that
+  // arrived while blocked or booting only reached termState, which starts at
+  // 120x30 and follows every validated resize since.
+  const { cols, rows } = termState.size();
   term = pty.spawn(CLAUDE_BIN, ARGS, {
     name: 'xterm-256color',
-    cols: 120,
-    rows: 30,
+    cols,
+    rows,
     cwd: CWD,
     env: {
       ...cleanEnv(),
