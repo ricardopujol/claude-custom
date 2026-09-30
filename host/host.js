@@ -58,7 +58,7 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
-const { validResizeDims, handleFrame, validAgentLogRequest } = require('./control');
+const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
@@ -2080,9 +2080,11 @@ wss.on('connection', (ws) => {
     }
     if (msg.type === 'raise') {
       // *Go to that session*: every window attached here comes forward, and
-      // the sender learns how many there were (0 would mean nobody to raise).
-      broadcastControl({ type: 'raise' });
-      sendControl(ws, { type: 'raised', windows: clients.size });
+      // the sender learns how many there were (0 means nobody to raise). The
+      // sender is a one-shot client, not a window, so it is not counted.
+      const targets = raiseTargets(clients, ws);
+      for (const w of targets) sendControl(w, { type: 'raise' });
+      sendControl(ws, { type: 'raised', windows: targets.length });
       return;
     }
     if (msg.type === 'models') {

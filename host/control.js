@@ -146,8 +146,18 @@ function validAgentLogRequest(msg) {
   return null;
 }
 
+/**
+ * The clients a `raise` frame brings a window forward for: everyone attached
+ * EXCEPT the sender. The sender is a one-shot client (host/host-client.js), not
+ * a window -- counting it made `windows: 0` impossible, and 0 is the answer
+ * "no window open" that *Go to that session* turns into words.
+ */
+function raiseTargets(clients, sender) {
+  return [...(clients || [])].filter(c => c !== sender);
+}
+
 module.exports = {
-  validAgentLogRequest, MAX_AGENT_NAME,
+  raiseTargets, validAgentLogRequest, MAX_AGENT_NAME,
   validResizeDims, parseControlFrame, handleFrame,
   MIN_TERMINAL_DIM, MAX_TERMINAL_DIM, CONTROL_TYPES,
 };

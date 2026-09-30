@@ -422,8 +422,12 @@ for (const type of ['stop', 'raise']) {
 test('raise answers the sender with raised + a window count, and tells every window', () => {
   const at = HOST_SRC.indexOf("msg.type === 'raise'");
   const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));
-  assert.match(branch, /broadcastControl\(\{ type: 'raise' \}\)/);
-  assert.match(branch, /sendControl\(ws, \{ type: 'raised', windows: clients\.size \}\)/);
+  // The sender is a one-shot client, not a window: `windows` counts the OTHERS,
+  // and only they are told to come forward.
+  assert.match(branch, /const targets = raiseTargets\(clients, ws\)/);
+  assert.match(branch, /for \(const w of targets\) sendControl\(w, \{ type: 'raise' \}\)/);
+  assert.match(branch, /sendControl\(ws, \{ type: 'raised', windows: targets\.length \}\)/);
+  assert.doesNotMatch(branch, /clients\.size/);
 });
 
 test('stop runs shutdown() and then exits', () => {
