@@ -27,7 +27,7 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { createShell, handleProbeCommand, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, shortcutFor, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -248,6 +248,7 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'tab-strip.html'));
+  registerShortcuts(win.webContents);
 
   // FOCUS IS TRACKED, NOT ASKED FOR. Naomi, PR #33, measured in a real window:
   // `win.isFocused()` returns TRUE while the window is minimized, so the cue
@@ -346,6 +347,7 @@ function createTabView(tab) {
   liveViews.add(view);
 
   const wc = view.webContents;
+  registerShortcuts(wc);
   wc.on('did-finish-load', () => {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
@@ -393,7 +395,6 @@ function destroyTabView(tab) {
 
 let lastStripPayload = null;
 let lastSelectedKey = null;
-let lastMenuSig = null;
 
 function applySelection(snapshot) {
   for (const tab of snapshot.tabs) {
@@ -408,33 +409,24 @@ function applySelection(snapshot) {
   }
 }
 
-function buildAppMenu(selectedKey) {
-  const st = selectedKey ? tabShell.menuState(selectedKey) : { override: false, close: false };
-  const tabbed = MODE === 'tabs';
-  const focusedView = () => selectedView();
-  return Menu.buildFromTemplate([
-    { label: 'Session', submenu: [
-      { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(selectedKey) },
-      { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(selectedKey) },
-      { type: 'separator' },
-      { label: 'Next tab', accelerator: 'Ctrl+Tab', enabled: tabbed, click: () => { tabShell.next(); } },
-      { label: 'Previous tab', accelerator: 'Ctrl+Shift+Tab', enabled: tabbed, click: () => { tabShell.previous(); } },
-    ] },
-    // Reload and DevTools act on the SELECTED TAB's page, not on the strip.
-    { label: 'View', submenu: [
-      { label: 'Reload tab', accelerator: 'Ctrl+R', click: () => { const v = focusedView(); if (v) v.webContents.reload(); } },
-      { label: 'Toggle Developer Tools', accelerator: 'Ctrl+Shift+I',
-        click: () => { const v = focusedView(); if (v) v.webContents.toggleDevTools(); } },
-    ] },
-  ]);
-}
-
-function updateMenu(snapshot) {
-  const st = snapshot.selectedKey ? tabShell.menuState(snapshot.selectedKey) : { override: false, close: false };
-  const sig = `${snapshot.selectedKey}|${st.override}|${st.close}`;
-  if (sig === lastMenuSig) return;
-  lastMenuSig = sig;
-  Menu.setApplicationMenu(buildAppMenu(snapshot.selectedKey));
+// Keyboard shortcuts, with no menu bar to carry them. Registered on the strip
+// AND on every tab view (focus is usually in a view). preventDefault ONLY for a
+// key shortcutFor names: everything else reaches xterm untouched.
+function registerShortcuts(wc) {
+  wc.on('before-input-event', (event, input) => {
+    const action = shortcutFor(input);
+    if (!action) return;
+    event.preventDefault();
+    // A held key is swallowed (it must not type Tab into the terminal) but acts
+    // once: repeating would spin through tabs, starting a host on each.
+    if (input.isAutoRepeat) return;
+    if (action === 'next-tab') tabShell.next();
+    else if (action === 'prev-tab') tabShell.previous();
+    else if (action === 'devtools') {
+      const v = selectedView();
+      if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();
+    }
+  });
 }
 
 function onShellChanged(snapshot) {
@@ -442,7 +434,6 @@ function onShellChanged(snapshot) {
   applySelection(snapshot);
   lastStripPayload = { model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, mode: snapshot.mode };
   win.webContents.send('strip-model', lastStripPayload);
-  updateMenu(snapshot);
 }
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
@@ -794,7 +785,9 @@ function startProbeDriver(port) {
             "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined' })"));
         } catch (err) { viewDom = { error: err.message }; }
       }
-      return { mode: MODE, selectedKey: tabShell.snapshot().selectedKey, tabs: model, hosts, stripDom, viewDom };
+      // No menu bar: no application menu AND none on the window.
+      const noMenuBar = Menu.getApplicationMenu() === null && !win.isMenuBarVisible();
+      return { mode: MODE, selectedKey: tabShell.snapshot().selectedKey, tabs: model, hosts, stripDom, viewDom, noMenuBar };
     },
     async select(label) {
       const key = labelKey(label);
@@ -813,6 +806,15 @@ function startProbeDriver(port) {
       const viewBytes = sel ? await capture(sel.webContents, file) : 0;
       const stripBytes = await capture(win.webContents, stripFileFor(file));
       return { ok: true, viewBytes, stripBytes, stripFile: stripFileFor(file) };
+    },
+    async key(key, modifiers) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      const before = tabShell.snapshot().selectedKey;
+      // Down then up, as a keyboard does; the handler acts on the down only.
+      sel.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
+      sel.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
+      return { ok: true, before };
     },
     async quit() {
       setTimeout(() => app.exit(0), 200);
@@ -887,9 +889,12 @@ app.whenReady().then(async () => {
     },
   });
 
+  // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
+  // space). Electron paints its default File/Edit/View/Window/Help bar on
+  // Windows only because none was set; null removes it. Set before the window.
+  Menu.setApplicationMenu(null);
   createWindow();
   registerIpc();
-  Menu.setApplicationMenu(buildAppMenu(null));
 
   const first = await tabShell.open();
   if (MODE === 'single' && first && !first.started) {

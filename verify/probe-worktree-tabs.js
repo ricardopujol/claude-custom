@@ -304,6 +304,22 @@ async function main() {
     check('feat/b is still not started', !!tabOf(s, 'feat/b') && !tabOf(s, 'feat/b').started);
     check('the strip shows feat/a selected', (await state(app)).tabs.find(t => t.selected).label === 'feat/a');
 
+    // ===== no menu bar; Ctrl+Tab from the keyboard path =====
+    check('the window has no menu bar (no application menu, none on the window)', (await state(app)).noMenuBar === true,
+      String((await state(app)).noMenuBar));
+    // A synthetic key sent to the SELECTED VIEW's webContents: it goes through
+    // before-input-event, the same path as a real key while typing in the terminal.
+    const selectedLabel = async () => ((await state(app)).tabs.find(t => t.selected) || {}).label;
+    const kPrev = await command(app, { cmd: 'key', key: 'Tab', modifiers: ['control', 'shift'] });
+    const afterPrev = await waitFor(async () => (await selectedLabel()) === 'develop', 5000, 200);
+    check('Ctrl+Shift+Tab sent to the selected view selects the previous tab', !!kPrev.ok && !!afterPrev, JSON.stringify(kPrev));
+    const kNext = await command(app, { cmd: 'key', key: 'Tab', modifiers: ['control'] });
+    const afterNext = await waitFor(async () => (await selectedLabel()) === 'feat/a', 5000, 200);
+    check('Ctrl+Tab sent to the selected view selects the next tab', !!kNext.ok && !!afterNext, JSON.stringify(kNext));
+    const kPlain = await command(app, { cmd: 'key', key: 'Tab', modifiers: [] });
+    await sleep(800);
+    check('a plain Tab is NOT intercepted (the selection does not move)', !!kPlain.ok && (await selectedLabel()) === 'feat/a');
+
     // ===== raise: windows counts the window(s), never the sender =====
     const tokenOf = (port) => fs.readFileSync(path.join(HARNESS_DIR, 'hosts', `${port}.token`), 'utf8').trim();
     const raiseOpen = aHost ? await sendControl({ port: aHost.port, token: tokenOf(aHost.port), msg: { type: 'raise' } }) : null;

@@ -14,7 +14,7 @@ const fc = require('fast-check');
 
 const {
   createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText,
+  handleProbeCommand, noWindowText, shortcutFor,
 } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
 
@@ -550,7 +550,61 @@ test('handleProbeCommand dispatches known commands and refuses the rest by name,
   assert.deepStrictEqual(boom, { ok: false, error: 'kaput' });
 });
 
+test('handleProbeCommand: key is dispatched with its name, and needs one', async () => {
+  const seen = [];
+  const api = { key: async (k, m) => { seen.push([k, m]); return { ok: true }; } };
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"key","key":"Tab","modifiers":["control"]}', api), { ok: true });
+  assert.deepStrictEqual(seen, [['Tab', ['control']]]);
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"key"}', api), { ok: false, error: 'key needs a key' });
+  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"key","key":"Tab","modifiers":"control"}', api),
+    { ok: false, error: 'key modifiers must be a list' });
+});
+
+// --- keyboard shortcuts (no menu bar, so main owns them) -------------------------
+
+const kd = (key, mods = {}) => ({ type: 'keyDown', key, control: false, shift: false, alt: false, meta: false, ...mods });
+
+test('shortcutFor: Ctrl+Tab and Ctrl+Shift+Tab cycle tabs', () => {
+  assert.strictEqual(shortcutFor(kd('Tab', { control: true })), 'next-tab');
+  assert.strictEqual(shortcutFor(kd('Tab', { control: true, shift: true })), 'prev-tab');
+});
+
+test('shortcutFor: F12 and Ctrl+Shift+I (either case) toggle DevTools', () => {
+  assert.strictEqual(shortcutFor(kd('F12')), 'devtools');
+  assert.strictEqual(shortcutFor(kd('I', { control: true, shift: true })), 'devtools');
+  assert.strictEqual(shortcutFor(kd('i', { control: true, shift: true })), 'devtools');
+});
+
+test('shortcutFor: everything the terminal owns is left alone', () => {
+  for (const [key, mods] of [
+    ['c', { control: true }], ['v', { control: true }], ['Enter', { shift: true }],
+    ['Tab', {}], ['Tab', { shift: true }], ['r', { control: true }], ['R', { control: true, shift: true }],
+    ['i', { control: true }], ['i', { shift: true }], ['Tab', { control: true, alt: true }],
+  ]) assert.strictEqual(shortcutFor(kd(key, mods)), null, `${key} ${JSON.stringify(mods)}`);
+});
+
+test('shortcutFor: only a keyDown counts, so a key cannot fire twice', () => {
+  assert.strictEqual(shortcutFor({ ...kd('Tab', { control: true }), type: 'keyUp' }), null);
+  assert.strictEqual(shortcutFor({ ...kd('F12'), type: 'keyUp' }), null);
+  assert.strictEqual(shortcutFor({ ...kd('F12'), type: 'char' }), null);
+});
+
+test('shortcutFor: garbage in is null, never a throw', () => {
+  for (const bad of [null, undefined, 5, 'x', {}, { type: 'keyDown' }, { type: 'keyDown', key: 7 }]) {
+    assert.strictEqual(shortcutFor(bad), null);
+  }
+});
+
 // --- properties ----------------------------------------------------------------
+
+test('PROPERTY: an input with no control/meta and a key other than F12 is never intercepted', () => {
+  fc.assert(fc.property(
+    fc.string(), fc.boolean(), fc.boolean(), fc.constantFrom('keyDown', 'keyUp', 'char'), fc.boolean(),
+    (key, shift, alt, type, isAutoRepeat) => {
+      fc.pre(key.toLowerCase() !== 'f12');
+      assert.strictEqual(shortcutFor({ type, key, shift, alt, control: false, meta: false, isAutoRepeat }), null);
+    }));
+});
 
 test('PROPERTY: spawns are serialised -- tabs that hash to one port never both get it', async () => {
   await fc.assert(fc.asyncProperty(

@@ -128,12 +128,29 @@ test('a hand close asks first, every time', () => {
   assert.match(MAIN, /detail: 'The folder stays\.'/);
 });
 
-test('the Session menu carries the override, close, next and previous', () => {
-  assert.match(MAIN, /label: 'Allow a second session here'/);
-  assert.match(MAIN, /label: 'Close tab'/);
-  assert.match(MAIN, /accelerator: 'Ctrl\+Tab'/);
-  assert.match(MAIN, /accelerator: 'Ctrl\+Shift\+Tab'/);
-  assert.match(MAIN, /Menu\.setApplicationMenu\(/);
+test('there is NO application menu bar: it is nulled once, before the window, and never set', () => {
+  const calls = MAIN.match(/Menu\.setApplicationMenu\([^)]*\)/g) || [];
+  assert.deepStrictEqual(calls, ['Menu.setApplicationMenu(null)']);
+  assert.ok(MAIN.indexOf('Menu.setApplicationMenu(null)') < MAIN.indexOf('  createWindow();'),
+    'the bar is removed before the window is created');
+  assert.doesNotMatch(MAIN, /buildAppMenu|accelerator:/);
+});
+
+test('override and close live in the right-click popup only', () => {
+  const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
+  const body = MAIN.slice(at, at + 600);
+  assert.match(body, /label: 'Allow a second session here'/);
+  assert.match(body, /label: 'Close tab'/);
+  assert.match(body, /\.popup\(/);
+});
+
+test('the shortcuts are registered on the strip AND on every tab view, and only shortcutFor decides', () => {
+  assert.match(MAIN, /registerShortcuts\(win\.webContents\)/);
+  assert.match(MAIN, /const wc = view\.webContents;\s*registerShortcuts\(wc\);/);
+  const at = MAIN.indexOf('function registerShortcuts');
+  const body = MAIN.slice(at, at + 900);
+  assert.match(body, /shortcutFor\(input\)/);
+  assert.match(body, /if \(!action\) return;\s*event\.preventDefault\(\)/);
 });
 
 test('the raise flashes the frame as well as focusing (Windows may refuse to hand focus over)', () => {

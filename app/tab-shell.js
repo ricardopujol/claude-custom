@@ -468,6 +468,27 @@ function createShell(deps) {
   };
 }
 
+// --- keyboard shortcuts ------------------------------------------------------------
+
+/**
+ * There is no application menu bar, so the shortcuts live in main's
+ * `before-input-event`. This is the DECISION: an Electron `input` -> which
+ * shortcut it is, or null. Null means "leave it alone": every key not named
+ * here must reach xterm untouched (Ctrl+C / Ctrl+V / Shift+Enter are the app's
+ * own). Only a keyDown counts, so one press cannot fire on both edges.
+ * Auto-repeat is main's call, not this function's: main still swallows a
+ * repeating Ctrl+Tab (it must not type Tab into the terminal) but only acts once.
+ */
+function shortcutFor(input) {
+  if (!input || typeof input !== 'object' || input.type !== 'keyDown' || typeof input.key !== 'string') return null;
+  const key = input.key.toLowerCase();
+  if (key === 'f12') return 'devtools';
+  if (!input.control || input.alt) return null;
+  if (key === 'tab') return input.shift ? 'prev-tab' : 'next-tab';
+  if (key === 'i' && input.shift) return 'devtools';
+  return null;
+}
+
 // --- the probe driver's command handling ----------------------------------------
 
 /**
@@ -485,6 +506,12 @@ async function handleProbeCommand(line, api) {
       case 'state': return { ok: true, ...(await api.state()) };
       case 'select': return await api.select(String(cmd.label));
       case 'close': return await api.close(String(cmd.label));
+      case 'key': {
+        // A synthetic key sent to the SELECTED view: proves before-input-event is wired.
+        if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };
+        if (cmd.modifiers !== undefined && !Array.isArray(cmd.modifiers)) return { ok: false, error: 'key modifiers must be a list' };
+        return await api.key(cmd.key, (cmd.modifiers || []).map(String));
+      }
       case 'screenshot':
         if (typeof cmd.file !== 'string' || !cmd.file) return { ok: false, error: 'screenshot needs a file' };
         return await api.screenshot(cmd.file);
@@ -498,5 +525,5 @@ async function handleProbeCommand(line, api) {
 
 module.exports = {
   createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText, NO_PORT_ERROR,
+  handleProbeCommand, noWindowText, shortcutFor, NO_PORT_ERROR,
 };
