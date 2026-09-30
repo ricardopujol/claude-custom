@@ -113,6 +113,17 @@ function writeBlocks(file, blocks) {
   }
 }
 
+// A saved worktree whose block can be given back: a LOCAL drive path whose
+// drive is there and whose folder isn't (Miguel G5, Dexter F3, PR #71). A
+// network path is never asked about -- offline and gone look the same, and
+// asking can take ~20 s -- and neither is a path on a drive that is missing
+// (an unplugged disk comes back with its worktrees).
+function isGone(key, exists) {
+  if (!/^[a-z]:\\/i.test(key)) return false;
+  if (!exists(key.slice(0, 3))) return false;
+  return !exists(key);
+}
+
 /**
  * The port base for `worktree`, allocating one if it has none. null when no
  * block is free or the file can't be used.
@@ -127,6 +138,16 @@ function allocate(worktree, opts = {}) {
 
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
+
+    // Which saved worktrees are gone, asked BEFORE taking the lock (Dexter,
+    // PR #71 F3): one existence check on an offline network path takes ~20 s,
+    // past file-lock's 10 s stale rule, and a second host would break the lock
+    // and hand out the same block. A key saved after this read simply waits
+    // for the next allocation to be pruned.
+    let seen = {};
+    try { seen = readBlocks(file) || {}; } catch { /* the locked read decides */ }
+    const gone = new Set(Object.keys(seen).filter(k => k !== key && isGone(k, exists)));
+
     return withFileLock(`${file}.lock`, () => {
       let blocks = readBlocks(file);
       if (blocks === null) {
@@ -137,7 +158,7 @@ function allocate(worktree, opts = {}) {
       }
       const before = JSON.stringify(blocks);
 
-      for (const k of Object.keys(blocks)) if (k !== key && !exists(k)) delete blocks[k];
+      for (const k of gone) delete blocks[k];
 
       let base = blocks[key];
       if (base === undefined || overlaps(base, excluded)) {

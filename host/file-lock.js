@@ -35,7 +35,7 @@
  */
 
 const fs = require('fs');
-const { breakIfStale, sleepSync, BREAK_WAIT_MS } = require('./lock-breaker');
+const { breakIfStale, readLock, removeIfSame, sleepSync, BREAK_WAIT_MS } = require('./lock-breaker');
 
 // How long a lock may sit before its holder is presumed gone. Generously
 // longer than any write this codebase performs -- a serialize plus a
@@ -198,9 +198,10 @@ function withFileLock(lockPath, fn, opts = {}) {
     if (!broke) sleepSync(RETRY_MS);
   }
 
+  let written = JSON.stringify({ pid: process.pid, at: Date.now() });
   try {
-    fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
-  } catch { /* the lock is held either way; its contents are only a hint */ }
+    fs.writeSync(fd, written);
+  } catch { written = ''; /* the lock is held either way; its contents are only a hint */ }
   try { fs.closeSync(fd); } catch { /* already closed */ }
 
   try {
@@ -209,7 +210,14 @@ function withFileLock(lockPath, fn, opts = {}) {
     // Released even when fn throws. A leaked lock is a vault that refuses
     // every write for STALE_MS, which reads to the user as the feature being
     // broken.
-    try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+    //
+    // But only OUR lock (Dexter, PR #71 F3). A holder that outlived STALE_MS
+    // had its lock broken and re-taken; unlinking the path would delete the
+    // new holder's lock and let a third in beside it. Removed only if it is
+    // still the bytes we wrote, through the same identity-checked removal the
+    // breaker uses.
+    const seen = readLock(lockPath);
+    if (!seen.gone && !seen.unreadable && seen.raw === written) removeIfSame(lockPath, seen);
   }
 }
 

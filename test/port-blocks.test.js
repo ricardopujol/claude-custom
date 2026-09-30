@@ -25,7 +25,9 @@ const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 // Folders that "exist", compared the way the module keys them.
 function world(...paths) {
   const set = new Set(paths.map(normPath));
-  return { set, exists: p => set.has(normPath(p)) };
+  // A drive root is always there unless a test says otherwise: pruning only
+  // ever frees a block on a drive that is present (Miguel G5).
+  return { set, exists: p => set.has(normPath(p)) || /^[a-z]:\\$/.test(normPath(p)) };
 }
 
 test('the range and block size are what the design says', () => {
@@ -218,4 +220,41 @@ test('IPv4 and IPv6 are asked at the same time, not one after the other (Miguel,
   };
   await excludedRanges({ exec, platform: 'win32' });
   assert.strictEqual(most, 2);
+});
+
+// Dexter F3 / Miguel G5 (PR #71): pruning asked the filesystem about every
+// saved path INSIDE the file lock. An offline network path answers after ~20 s,
+// past file-lock's 10 s stale rule, so a second host broke the lock and both
+// handed out the same block. And an unplugged drive's worktree lost its block.
+
+test('a worktree on a drive that is not there keeps its block', () => {
+  const file = portsFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, blocks: { [normPath('X:\\usb\\wt')]: 20000 } }));
+  const exists = p => normPath(p) === normPath('C:\\p\\a');     // X:\ is unplugged
+  assert.strictEqual(allocate('C:\\p\\a', { file, exists }), 20100);
+  assert.strictEqual(read(file).blocks[normPath('X:\\usb\\wt')], 20000);
+});
+
+test('a network path is never pruned: offline and gone look the same', () => {
+  const file = portsFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const unc = normPath('\\\\nas\\share\\wt');
+  fs.writeFileSync(file, JSON.stringify({ version: 1, blocks: { [unc]: 20000 } }));
+  let askedAboutUnc = false;
+  const exists = p => { if (normPath(p).startsWith('\\\\')) askedAboutUnc = true; return true; };
+  assert.strictEqual(allocate('C:\\p\\a', { file, exists }), 20100);
+  assert.strictEqual(read(file).blocks[unc], 20000);
+  assert.strictEqual(askedAboutUnc, false, 'a network path is not even asked about');
+});
+
+test('the filesystem is asked about saved paths OUTSIDE the file lock', () => {
+  const file = portsFile();
+  const w = world('C:\\p\\a', 'C:\\p\\b');
+  allocate('C:\\p\\a', { file, exists: w.exists });
+  const heldDuring = [];
+  const exists = p => { heldDuring.push(fs.existsSync(`${file}.lock`)); return w.exists(p); };
+  allocate('C:\\p\\b', { file, exists });
+  assert.ok(heldDuring.length > 0, 'the saved path was checked at all');
+  assert.deepStrictEqual(heldDuring.filter(Boolean), [], 'no existence check ran while the lock was held');
 });

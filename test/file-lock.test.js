@@ -733,3 +733,19 @@ test('breaking a stale lock leaves nothing behind in the directory', () => {
   assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
   assert.deepStrictEqual(fs.readdirSync(dir), []);
 });
+
+test('release removes only OUR lock: one that replaced it while the work ran survives', () => {
+  // Dexter, PR #71 F3. A holder that outlives STALE_MS (the port allocator
+  // waiting on an offline network path) has its lock broken and re-taken by
+  // somebody else; its `finally` used to unlinkSync the path -- deleting the
+  // NEW holder's lock and letting a third in beside it.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  const theirs = JSON.stringify({ pid: process.ppid, at: Date.now(), theirs: true });
+  withFileLock(lock, () => {
+    fs.unlinkSync(lock);                   // ours was broken as stale ...
+    fs.writeFileSync(lock, theirs);        // ... and somebody else took it
+  });
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), theirs);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['thing.json.lock'], 'no tomb left behind');
+});
