@@ -38,7 +38,11 @@ function sinceText(startedAt, now) {
 function lockOverlay(lock, now) {
   if (!lock || lock.state !== 'blocked') return null;
   const h = lock.holder || {};
-  const after = 'Opening anyway starts a second claude in this worktree.';
+  // host.js re-checks the lock every 30 s and on *Open anyway* (Dexter, PR #71
+  // F1), so the copy says both: this window takes over by itself when that
+  // session ends, and the button only makes a SECOND claude if it hasn't.
+  const after = 'This window starts by itself when that session ends. ' +
+    'Open anyway checks again and, if it is still running, starts a second claude beside it.';
   let detail;
   if (!isPid(h.pid)) {
     detail = `Its holder could not be read -- it may be starting up right now. ${after}`;

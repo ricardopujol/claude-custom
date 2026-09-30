@@ -51,4 +51,39 @@ function gateOnBootError(lock) {
   return { lock: { state: 'unlocked', reason: 'error', code: 'BOOT' }, start: true };
 }
 
-module.exports = { gateFromAcquire, gateOverride, idleExit, gateOnBootError };
+const sameHolder = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
+
+// *Open anyway* re-checks the lock first (Dexter, PR #71 F1). If the holder
+// has gone since the window was blocked, the lock is TAKEN -- overriding a
+// free lock would start an unlocked session, and the next window would take
+// the lock and start a second one without being blocked. Only a lock that is
+// still held is overridden, and the person asked, so the session starts
+// whatever the re-check says.
+function gateAfterRecheck(result, lock) {
+  const state = result && result.state;
+  if (state === 'held' || state === 'unlocked') return gateFromAcquire(result);
+  const holder = (state === 'blocked' && result.holder) || (lock && lock.holder) || null;
+  return { lock: { state: 'override', holder }, start: true };
+}
+
+// The periodic re-check (every 30 s) for a host the lock kept out:
+//   blocked, holder gone      -> take the lock and start
+//   blocked, another holder   -> show who holds it now
+//   overridden, lock free     -> take it, so the next window IS blocked
+// null means nothing changes. Held, unlocked and pending hosts are never
+// re-checked.
+function gateRecheck(lock, started, result) {
+  const state = lock && lock.state;
+  const got = result && result.state;
+  if (state === 'blocked' && !started) {
+    if (got === 'held') return { lock: { state: 'held' }, start: true };
+    if (got === 'blocked' && !sameHolder(result.holder, lock.holder)) {
+      return { lock: { state: 'blocked', holder: result.holder }, start: false };
+    }
+    return null;
+  }
+  if (state === 'override' && got === 'held') return { lock: { state: 'held' }, start: false };
+  return null;
+}
+
+module.exports = { gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck };

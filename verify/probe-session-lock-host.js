@@ -17,7 +17,9 @@
  *      dead pid; host C takes it over silently;
  *   5. C's session gets WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE;
  *   6. host D, blocked by C, exits on its own once its only window closes
- *      (a blocked host has no session to keep alive).
+ *      (a blocked host has no session to keep alive);
+ *   7. host E, blocked by C: C dies, and *Open anyway* on E TAKES the free lock
+ *      instead of overriding it (Dexter, PR #71 F1).
  *
  * SAFE: `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing is billed. Side
  * effect: step 5 allocates a port block for the temp repo in the real
@@ -164,6 +166,22 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   check(d.child.exitCode === 0 && /blocked, no session and no window: exiting/.test(d.out),
     'a blocked host exits once its last window has gone');
   check(readLockFile().pid === c.child.pid, 'and leaves the holder\'s lock alone');
+
+  // 7. Dexter, PR #71 F1: E is blocked by C; C dies; *Open anyway* on E must
+  // TAKE the now-free lock, not start an unlocked second session beside it.
+  const e = startHost('E', await freePort());
+  await waitFor(e, /session lock {2}:.*"state":"blocked"/);
+  await waitFor(e, /listening on ws:/);
+  const eConn = await attach(e);
+  await waitMsg(eConn, m => m.type === 'hello');
+  execFileSync('taskkill', ['/PID', String(c.child.pid), '/T', '/F'], { stdio: 'ignore' });
+  await sleep(500);
+  eConn.ws.send(JSON.stringify({ type: 'lock-override' }));
+  const taken = await waitMsg(eConn, m => m.type === 'lock' && m.lock.state !== 'blocked');
+  check(taken.lock.state === 'held', `Open anyway on a dead holder's lock takes it (state ${taken.lock.state})`);
+  await waitFor(e, /pty pid {7}: \d+/);
+  check(readLockFile().pid === e.child.pid, 'the lock now names E');
+  eConn.ws.close();
 
   console.log('PASS: the session lock holds in real hosts');
   finish(0);

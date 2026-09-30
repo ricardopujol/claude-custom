@@ -57,3 +57,34 @@ test('Y1: boot\'s catch asks gateOnBootError and never throws out of itself', ()
   assert.match(katch, /gateOnBootError\(lockState\)/);
   assert.match(katch, /try\s*\{[^}]*startSession\(\)/, 'a startSession that throws in the catch is caught');
 });
+
+function dispatchBranch(type) {
+  const start = HOST.indexOf(`if (msg.type === '${type}')`);
+  assert.ok(start !== -1, `dispatchControl must handle ${type}`);
+  return HOST.slice(start, HOST.indexOf('if (msg.type ===', start + 10));
+}
+
+test('F1: Open anyway re-acquires the lock before it starts anything', () => {
+  // Dexter, PR #71 F1: overriding a lock whose holder had gone started an
+  // unlocked session, and the next window then took the free lock and started
+  // claude #2 without being blocked.
+  assert.match(dispatchBranch('lock-override'), /overrideSession\(\)/);
+  const body = fnBody('overrideSession');
+  const acquire = body.indexOf('acquireSessionLock(');
+  const decide = body.indexOf('gateAfterRecheck(');
+  const start = body.indexOf('startSession()');
+  assert.ok(acquire !== -1 && decide !== -1 && start > acquire && start > decide,
+    'acquire and gateAfterRecheck come before startSession');
+});
+
+test('F1: a blocked or overridden host re-checks the lock on the timer', () => {
+  const body = fnBody('recheckLock');
+  assert.match(body, /acquireSessionLock\(/);
+  assert.match(body, /gateRecheck\(/);
+  const timer = HOST.slice(HOST.indexOf('const branchTimer = setInterval('), HOST.indexOf('branchTimer.unref()'));
+  assert.match(timer, /recheckLock\(\)/);
+});
+
+test('F1: one re-check or override at a time', () => {
+  for (const fn of ['overrideSession', 'recheckLock']) assert.match(fnBody(fn), /lockBusy/, `${fn} honours lockBusy`);
+});

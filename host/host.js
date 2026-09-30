@@ -75,7 +75,8 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock } = require('./session-lock');
 const { createSelfStartTime } = require('./proc-start');
-const { gateFromAcquire, gateOverride, idleExit, gateOnBootError } = require('./session-gate');
+const { gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck } =
+  require('./session-gate');
 const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
@@ -1570,7 +1571,10 @@ const branchTimer = setInterval(() => {
     broadcastControl({ type: 'branch', branch });
   }
   if (changed || ++branchTicks % 10 === 0) refreshBranchHealth();
-  if (branchTicks % 10 === 0) refreshTerminals();
+  if (branchTicks % 10 === 0) {
+    refreshTerminals();
+    recheckLock().catch((err) => console.log('[host] lock re-check failed:', err && err.message));
+  }
 }, 3000);
 branchTimer.unref();
 
@@ -1579,6 +1583,48 @@ branchTimer.unref();
 function setLockState(lock) {
   lockState = lock;
   broadcastControl({ type: 'lock', lock });
+}
+
+// One re-check or override at a time: both call acquire, which can take a
+// second, and a second click must not start a second session.
+let lockBusy = false;
+
+// *Open anyway*, re-checked first (Dexter, PR #71 F1): if the holder has gone,
+// the lock is TAKEN rather than overridden -- an unlocked session on a free
+// lock would let the next window take it and start claude #2 unblocked.
+async function overrideSession() {
+  if (lockBusy) return;
+  lockBusy = true;
+  try {
+    const g = gateAfterRecheck(await acquireSessionLock(SESSION_LOCK, lockOwner), lockState);
+    if (term) return;                                  // started meanwhile
+    console.log(g.lock.state === 'override'
+      ? '[host] session lock overridden: a second session in this worktree'
+      : `[host] Open anyway found the lock ${g.lock.state === 'held' ? 'free and took it' : 'unavailable'}`);
+    setLockState(g.lock);
+    if (g.start) startSession();
+  } finally {
+    lockBusy = false;
+  }
+}
+
+// Every 30 s for a host the lock kept out (session-gate gateRecheck): a
+// blocked window whose holder has gone takes the lock and starts; an
+// overridden session takes the lock once it is free, so the next window on
+// this worktree IS blocked, as the badge promises.
+async function recheckLock() {
+  if (lockBusy || !lockOwner || (lockState.state !== 'blocked' && lockState.state !== 'override')) return;
+  lockBusy = true;
+  try {
+    const g = gateRecheck(lockState, term !== null, await acquireSessionLock(SESSION_LOCK, lockOwner));
+    if (!g) return;
+    console.log('[host] lock re-check:', JSON.stringify(g.lock));
+    setLockState(g.lock);
+    if (g.lock.state === 'held' && term) updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
+    if (g.start) startSession();
+  } finally {
+    lockBusy = false;
+  }
 }
 
 // Behind develop (a tab) or develop ahead of main (dev); counts are null when
@@ -1972,15 +2018,12 @@ wss.on('connection', (ws) => {
     if (msg.type === 'lock-override') {
       // *Open anyway* (Extension X1): only a BLOCKED window with no session
       // yet can start one past the lock. Not saved -- the next window on this
-      // worktree is blocked again.
-      const g = gateOverride(lockState, term !== null);
-      if (!g) {
+      // worktree is blocked again. overrideSession re-checks first.
+      if (!gateOverride(lockState, term !== null)) {
         console.log('[host] lock-override ignored in state', lockState.state);
         return;
       }
-      console.log('[host] session lock overridden: a second session in this worktree');
-      setLockState(g.lock);
-      startSession();
+      overrideSession().catch((err) => console.log('[host] lock-override failed:', err && err.message));
       return;
     }
     if (msg.type === 'models') {

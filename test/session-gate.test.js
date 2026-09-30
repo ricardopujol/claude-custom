@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { gateFromAcquire, gateOverride, idleExit, gateOnBootError } = require('../host/session-gate');
+const { gateFromAcquire, gateOverride, idleExit, gateOnBootError, gateAfterRecheck, gateRecheck } = require('../host/session-gate');
 
 const HOLDER = { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 555 };
 
@@ -86,4 +86,55 @@ test('a boot error before any verdict starts unlocked, and says so', () => {
   assert.deepStrictEqual(gateOnBootError(null), unlocked);
   assert.deepStrictEqual(gateOnBootError({ state: 'unlocked', reason: 'not-a-repo' }),
     { lock: { state: 'unlocked', reason: 'not-a-repo' }, start: true }, 'an unlocked verdict is kept as it was');
+});
+
+// Dexter, PR #71 F1: a blocked host never re-checked the lock. The holder
+// exits, *Open anyway* starts an UNLOCKED claude on a free lock, and the next
+// window takes that free lock and starts claude #2 without being blocked.
+
+const NEW_HOLDER = { pid: 202, startedAt: 1790000009000, port: 7720, claudePid: 666 };
+
+test('Open anyway re-checks first: a lock that is free now is TAKEN, not overridden', () => {
+  assert.deepStrictEqual(gateAfterRecheck({ state: 'held' }, { state: 'blocked', holder: HOLDER }),
+    { lock: { state: 'held' }, start: true });
+});
+
+test('Open anyway on a lock that is still held overrides it, naming whoever holds it now', () => {
+  assert.deepStrictEqual(gateAfterRecheck({ state: 'blocked', holder: NEW_HOLDER }, { state: 'blocked', holder: HOLDER }),
+    { lock: { state: 'override', holder: NEW_HOLDER }, start: true });
+});
+
+test('Open anyway where no lock can be taken at all starts unlocked, as boot would', () => {
+  assert.deepStrictEqual(gateAfterRecheck({ state: 'unlocked', reason: 'error', code: 'EACCES' }, { state: 'blocked', holder: HOLDER }),
+    { lock: { state: 'unlocked', reason: 'error', code: 'EACCES' }, start: true });
+});
+
+test('Open anyway with a garbled re-check result still honours the click, with the old holder', () => {
+  assert.deepStrictEqual(gateAfterRecheck(null, { state: 'blocked', holder: HOLDER }),
+    { lock: { state: 'override', holder: HOLDER }, start: true });
+});
+
+test('the periodic re-check: a blocked window whose holder has gone takes the lock and starts', () => {
+  assert.deepStrictEqual(gateRecheck({ state: 'blocked', holder: HOLDER }, false, { state: 'held' }),
+    { lock: { state: 'held' }, start: true });
+});
+
+test('the periodic re-check: still blocked by the same holder changes nothing; a new holder is shown', () => {
+  assert.strictEqual(gateRecheck({ state: 'blocked', holder: HOLDER }, false, { state: 'blocked', holder: { ...HOLDER } }), null);
+  assert.deepStrictEqual(gateRecheck({ state: 'blocked', holder: HOLDER }, false, { state: 'blocked', holder: NEW_HOLDER }),
+    { lock: { state: 'blocked', holder: NEW_HOLDER }, start: false });
+});
+
+test('the periodic re-check: an overridden session takes the lock once it is free, so the next window IS blocked', () => {
+  assert.deepStrictEqual(gateRecheck({ state: 'override', holder: HOLDER }, true, { state: 'held' }),
+    { lock: { state: 'held' }, start: false });
+  assert.strictEqual(gateRecheck({ state: 'override', holder: HOLDER }, true, { state: 'blocked', holder: HOLDER }), null);
+});
+
+test('the periodic re-check never touches a held, unlocked or pending host', () => {
+  for (const lock of [{ state: 'held' }, { state: 'unlocked', reason: 'not-a-repo' }, { state: 'pending' }, null]) {
+    assert.strictEqual(gateRecheck(lock, true, { state: 'held' }), null, JSON.stringify(lock));
+  }
+  assert.strictEqual(gateRecheck({ state: 'blocked', holder: HOLDER }, true, { state: 'held' }), null,
+    'a blocked host that somehow has a session is not started twice');
 });

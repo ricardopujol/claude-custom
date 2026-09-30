@@ -107,3 +107,12 @@ test('nothing to act on draws nothing, and unknown is never drawn as a number', 
     assert.strictEqual(ws.healthMarker(h), null, JSON.stringify(h));
   }
 });
+
+test('the overlay says the window takes over by itself, and when Open anyway makes a second claude', () => {
+  // Dexter, PR #71 F1: host.js now re-checks the lock on the timer and on the
+  // click, so the copy must not promise a second claude when there may be none.
+  const o = ws.lockOverlay({ state: 'blocked', holder: HOLDER }, NOW);
+  assert.match(o.detail, /starts by itself when that session ends/);
+  assert.match(o.detail, /checks again/);
+  assert.match(o.detail, /if it is still running, starts a second claude/);
+});
