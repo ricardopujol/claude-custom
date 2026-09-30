@@ -253,18 +253,35 @@ test('a read that FAILED is absent even when it still carries windows', () => {
   assert.strictEqual(d.note, 'stale');
 });
 
-test('an ok read with no windows is absent, not a header of zero meters', () => {
-  // Kills `quota.windows.length === 0` -> false and the `&&` regroupings.
-  for (const q of [{ ok: true, windows: [] }, { ok: true }, { ok: true, windows: null },
-                   { ok: true, windows: 'x' }, {}]) {
+test('an ok read with malformed windows is absent, not a header of zero meters', () => {
+  // Kills `Array.isArray(quota.windows)` -> true and the `||` regroupings.
+  for (const q of [{ ok: true }, { ok: true, windows: null }, { ok: true, windows: 'x' }, {}]) {
     const d = quotaDisplay(q, NOW);
     assert.strictEqual(d.state, 'absent', JSON.stringify(q));
     assert.deepStrictEqual(d.meters, []);
-    // The NOTE is deliberately not pinned (Dexter, PR #73 F1): for
-    // `{ ok: true, windows: [] }` -- a successful read of an account with no
-    // limits (host/quota.js) -- the display says "could not read account
-    // limits", which is untrue. What it should say is an open product question,
-    // and this test must not freeze the wrong answer.
+    assert.match(d.note, /could not read account limits/, JSON.stringify(q));
+  }
+});
+
+test('an ok read that lists NO windows says so, and never claims the read failed', () => {
+  // Dexter, PR #73 F1: `{ ok: true, windows: [] }` is a SUCCESSFUL read of an
+  // account the server lists no limits for (host/quota.js). "could not read
+  // account limits" is untrue there. Ricardo chose "no usage limits reported"
+  // (2026-09-30): true whether the account has no limits or the reply's format
+  // changed under normalizeWindows, so it claims neither.
+  const d = quotaDisplay({ ok: true, state: 'fresh', windows: [], error: null }, NOW);
+  assert.strictEqual(d.state, 'none');
+  assert.deepStrictEqual(d.meters, []);
+  assert.match(d.note, /no usage limits reported/);
+});
+
+test('an EMPTY read that is not ok is still a failure, not "no limits"', () => {
+  // Kills `quota.ok === true` -> true in the no-windows branch: host/quota.js
+  // sends `windows: []` on EVERY failure, so an empty list alone proves nothing.
+  for (const q of [{ ok: false, windows: [] }, { windows: [] }]) {
+    const d = quotaDisplay(q, NOW);
+    assert.strictEqual(d.state, 'absent', JSON.stringify(q));
+    assert.match(d.note, /could not read account limits/, JSON.stringify(q));
   }
 });
 
