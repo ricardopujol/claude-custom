@@ -123,11 +123,14 @@ let windowNo = 0;
 async function launchApp(cwd, extraEnv = {}) {
   windowNo++;
   const port = await freePort();
+  // The driver runs only the commands that carry this (PR #75 M4).
+  const token = require('crypto').randomBytes(16).toString('hex');
   const env = {
     ...process.env,
     CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd.exe',
     CLAUDE_CUSTOM_CWD: cwd,
     CLAUDE_CUSTOM_TABS_PROBE: String(port),
+    CLAUDE_CUSTOM_TABS_PROBE_TOKEN: token,
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
@@ -142,7 +145,7 @@ async function launchApp(cwd, extraEnv = {}) {
   const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
   hygiene.registerSpawnedTree(child.pid);
-  const app = { no: windowNo, port, child, out: '', exited: false, exitCode: null };
+  const app = { no: windowNo, port, token, child, out: '', exited: false, exitCode: null };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
   child.on('exit', (code) => { app.exited = true; app.exitCode = code; hygiene.unregisterSpawnedTree(child.pid); });
@@ -156,7 +159,7 @@ function command(app, cmd, timeoutMs = 30000) {
     let buf = '';
     const done = (v) => { clearTimeout(t); sock.destroy(); resolve(v); };
     const t = setTimeout(() => done({ ok: false, error: `no reply to ${cmd.cmd} in ${timeoutMs}ms` }), timeoutMs);
-    sock.on('connect', () => sock.write(JSON.stringify(cmd) + '\n'));
+    sock.on('connect', () => sock.write(JSON.stringify({ ...cmd, token: app.token }) + '\n'));
     sock.on('data', (d) => {
       buf += d;
       const i = buf.indexOf('\n');

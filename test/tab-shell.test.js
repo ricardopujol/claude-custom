@@ -14,7 +14,7 @@ const fc = require('fast-check');
 
 const {
   createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor, viewToFocus,
+  handleProbeCommand, noWindowText, shortcutFor, focusStep, probeLineReader,
 } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
 
@@ -34,8 +34,15 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
     confirm: true, resolveCalls: [], tokens: 0, failWait: false, spawnRegisters: true, gitInFlight: 0, gitMax: 0,
+    // port -> the token file the host that BOUND that port wrote (host.js writes
+    // it only on 'listening', PR #75 F2). Unset: a pre-existing host, `tok-<port>`.
+    tokenFiles: {},
+    onSpawn: null,      // (spawn) => void, runs before a registering spawn binds
+    hold: null,         // a promise every choosePort waits on while set
   };
   const base = 7700;
+  const fileToken = (port) => (h.running[port] === undefined ? null
+    : (h.tokenFiles[port] !== undefined ? h.tokenFiles[port] : `tok-${port}`));
   const deps = {
     mode, container: ROOT, cwd: wt('dev'), launchedFrom,
     log: () => {},
@@ -49,21 +56,31 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     hosts: {
       choosePort: async (tab) => {
         h.resolveCalls.push(tab.key);
+        if (h.hold) await h.hold;
+        // resolvePort's walk since PR #75 F1: a host of ours ANYWHERE in the
+        // range beats the first free port.
+        let free = null;
         for (let p = base; p < base + 50; p++) {
           const occ = h.running[p];
-          if (occ === undefined) return { port: p, action: 'spawn' };
+          if (occ === undefined) { if (free === null) free = p; continue; }
           if (normPath(occ) === tab.key) return { port: p, action: 'attach' };
         }
-        return null;
+        return free === null ? null : { port: free, action: 'spawn' };
       },
       isListening: async (port) => h.running[port] !== undefined,
       spawn: ({ tab, port, token }) => {
         if (spawnFails) throw new Error('spawn exploded');
         h.spawns.push({ key: tab.key, port, token });
-        if (h.spawnRegisters) h.running[port] = tab.cwd;
+        if (h.onSpawn) h.onSpawn({ key: tab.key, port, token });
+        // A registering spawn binds -- unless something else bound the port first.
+        if (h.spawnRegisters && h.running[port] === undefined) {
+          h.running[port] = tab.cwd;
+          h.tokenFiles[port] = token;
+        }
       },
       wait: async () => !h.failWait,
-      tokenFor: (port) => (h.running[port] !== undefined ? `tok-${port}` : null),
+      tokenFor: fileToken,
+      tokenFile: fileToken,
       newToken: () => `fresh-${++h.tokens}`,
       control: async (c) => { h.controls.push(c); return h.controlReply ? h.controlReply(c) : { ok: true, reply: null }; },
       identity: () => null,
@@ -393,13 +410,72 @@ test('F2: Retry after a timed-out start ATTACHES to the first host with its ORIG
   assert.match(tab.error, /did not come up/);
   assert.strictEqual(h.spawns.length - before, 1);
   const first = h.spawns[h.spawns.length - 1];
-  // The slow host finally binds (the fake tokenFor would answer a DIFFERENT token).
+  // The slow host finally binds, and writes ITS token file on 'listening'.
   h.failWait = false;
   h.running[first.port] = tab.cwd;
+  h.tokenFiles[first.port] = first.token;
   await h.shell.select(key('feat-a'));
   assert.strictEqual(tab.started, true);
-  assert.strictEqual(tab.token, first.token, 'the original token, not whatever the token file says now');
+  assert.strictEqual(tab.token, first.token, 'the first host bound, so its token');
   assert.strictEqual(h.spawns.length - before, 1, 'Retry spawned nothing');
+});
+
+// --- Dexter, PR #75 R2-2: present the BOUND host's token -------------------------
+// Since F2 only the host that wins the bind writes `hosts/<port>.token`, so that
+// file names the token of whoever is actually listening. A token the shell kept
+// is only a guess about who that is.
+
+test('R2-2: Retry attaches with the token file of the host that bound, not the token it kept', async () => {
+  const h = harness();
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  await h.shell.select(key('feat-a'));
+  const first = h.spawns[h.spawns.length - 1];
+  // Another window's spawn for the same worktree won the port, with its own token.
+  h.failWait = false;
+  h.running[first.port] = wt('feat-a');
+  h.tokenFiles[first.port] = 'T2-other-window';
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, 'T2-other-window');
+});
+
+test('R2-2: third Retry -- the FIRST host wins the bind while a new one is spawned: present the winner\'s token', async () => {
+  const h = harness();
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  await h.shell.select(key('feat-a'));      // spawn H1, wait fails
+  await h.shell.select(key('feat-a'));      // waits again, fails, H1 forgotten
+  const first = h.spawns[h.spawns.length - 1];
+  h.failWait = false;
+  h.spawnRegisters = true;
+  // H2 is spawned, but H1 binds first; H2 loses and writes nothing.
+  h.onSpawn = (s) => {
+    if (s.token !== first.token) { h.running[s.port] = wt('feat-a'); h.tokenFiles[s.port] = first.token; }
+  };
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.notStrictEqual(h.spawns[h.spawns.length - 1].token, first.token, 'a second host was spawned');
+  assert.strictEqual(tab.token, first.token, 'the tab speaks to H1, so it presents H1\'s token');
+});
+
+test('R2-2: our own spawn answers before its token file is written: present the token it was given', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  // It binds, but 'listening' hasn't written the file yet (`null` = unreadable).
+  h.spawnRegisters = false;
+  h.onSpawn = (s) => { h.running[s.port] = wt('feat-a'); h.tokenFiles[s.port] = null; };
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, h.spawns[h.spawns.length - 1].token);
 });
 
 test('F2: Retry while the first host is STILL not listening waits for it instead of spawning a second', async () => {
@@ -486,28 +562,111 @@ test('F3: a clean stop leaves no notice', async () => {
   assert.strictEqual(h.shell.snapshot().closeNotice, null);
 });
 
-// --- Dexter F4 / Miguel M1, PR #75: a lazily created view gets the keyboard ------
+// --- Dexter, PR #75 R2-3: a close is never silent about a session it left ---------
 
-test('F4: viewToFocus -- focus a selected view the window has not focused yet, only while the window is focused', () => {
-  const v = {};
-  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: v, lastFocused: null }), true);
-  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: v, lastFocused: v }), false, 'already has it');
-  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: v, lastFocused: {} }), true, 'a different view');
-  assert.strictEqual(viewToFocus({ windowFocused: false, selectedView: v, lastFocused: null }), false, 'window not focused');
-  assert.strictEqual(viewToFocus({ windowFocused: true, selectedView: null, lastFocused: null }), false, 'no view yet');
+test('R2-3: closing a tab whose open-time attach is still QUEUED stops the running session', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7702: wt('feat-b') } });
+  let release;
+  h.hold = new Promise((r) => { release = r; });
+  await h.shell.open();                              // every attach is queued behind the hold
+  const tab = h.shell.tabByKey(key('feat-b'));
+  assert.strictEqual(tab.started, false);
+  assert.strictEqual(tab.starting, false, 'an attach never sets starting -- the case F3 missed');
+  const closing = h.shell.closeTab(key('feat-b'));
+  await settle();
+  h.hold = null;
+  release();
+  const r = await closing;
+  await flush();
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.tabByKey(key('feat-b')), null);
+  assert.deepStrictEqual(h.controls.filter(c => c.port === 7702),
+    [{ port: 7702, token: 'tok-7702', msg: { type: 'stop' } }], 'the session found by the attach was stopped');
 });
 
-// Drives viewToFocus over the shell's own snapshots the way main's applySelection does.
+test('R2-3: closing a tab whose spawned host never answered twice says it may still be running', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  await h.shell.select(key('feat-a'));
+  await h.shell.select(key('feat-a'));               // second wait fails: no pending host any more
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.match(h.shell.snapshot().closeNotice, /feat\/a/);
+  assert.match(h.shell.snapshot().closeNotice, /may still be running/);
+});
+
+test('R2-3: closing a never-started tab with no host anywhere is quiet and sends nothing', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+  assert.deepStrictEqual(h.controls, []);
+});
+
+// --- Dexter, PR #75 R2-4: back to a tab that already had the keyboard ---------------
+
+test('R2-4: A (view) -> B (no view) -> A gives the keyboard back to A', async () => {
+  const h = harness({ running: { 7700: wt('dev') }, spawnFails: true });
+  await h.shell.open();
+  await flush();
+  await h.shell.select(key('feat-a'));               // its start fails: no view, the strip has the keys
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).view, null);
+  await h.shell.select(key('dev'));
+  await flush();
+  assert.deepStrictEqual(focusTrace(h), [key('dev'), key('dev')]);
+});
+
+// --- Dexter F4 / Miguel M1, PR #75: a lazily created view gets the keyboard ------
+
+test('F4: focusStep -- focus a selected view that lacks the keyboard, only while the window is focused', () => {
+  const v = {};
+  const w = {};
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: v }), { focus: true, lastFocused: v });
+  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: v }), { focus: false, lastFocused: v }, 'already has it');
+  assert.deepStrictEqual(focusStep(w, { windowFocused: true, selectedView: v }), { focus: true, lastFocused: v }, 'a different view');
+  assert.deepStrictEqual(focusStep(w, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: w }, 'window not focused');
+});
+
+test('R2-4: focusStep -- a selection with no view leaves nothing holding the keyboard', () => {
+  const v = {};
+  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null });
+  assert.deepStrictEqual(focusStep(v, { windowFocused: false, selectedView: null }), { focus: false, lastFocused: null });
+  assert.deepStrictEqual(focusStep(undefined, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: null });
+});
+
+test('R2-4: PROPERTY -- after any trace, the view last focused is the selected one whenever the window is focused', () => {
+  const views = [{}, {}, {}];
+  fc.assert(fc.property(
+    fc.array(fc.record({ sel: fc.integer({ min: -1, max: 2 }), focused: fc.boolean() }), { maxLength: 30 }),
+    (trace) => {
+      let last = null;
+      for (const s of trace) {
+        const selectedView = s.sel < 0 ? null : views[s.sel];
+        const r = focusStep(last, { windowFocused: s.focused, selectedView });
+        last = r.lastFocused;
+        if (s.focused && selectedView && last !== selectedView) return false;
+        if (!selectedView && last !== null) return false;
+      }
+      return true;
+    }));
+});
+
+// Drives focusStep over the shell's own snapshots the way main's applySelection does.
 function focusTrace(h) {
   const focusedKeys = [];
   let last = null;
   for (const snap of h.changes) {
     const t = snap.tabs.find(x => x.key === snap.selectedKey);
     const view = t && t.view ? t.view : null;
-    if (viewToFocus({ windowFocused: true, selectedView: view, lastFocused: last })) {
-      focusedKeys.push(t.key);
-      last = view;
-    }
+    const r = focusStep(last, { windowFocused: true, selectedView: view });
+    if (r.focus) focusedKeys.push(t.key);
+    last = r.lastFocused;
   }
   return focusedKeys;
 }
@@ -614,7 +773,7 @@ test('goTo: another install raises its window; windows 0 is explained, a refusal
     git: { list: async () => porcelain([THREE[0]]) },
     hosts: {
       choosePort: async () => ({ port: 7700, action: 'attach' }), isListening: async () => true,
-      spawn: () => {}, wait: async () => true, tokenFor: () => 'tok', newToken: () => 't',
+      spawn: () => {}, wait: async () => true, tokenFor: () => 'tok', tokenFile: () => 'tok', newToken: () => 't',
       control: async (c) => { calls.push(c); return reply; },
       identity: ({ install, port }) => (install === 'C:/other' && port === 7999 ? { pid: 4242 } : null),
       readToken: (install, port) => (install === 'C:/other' ? 'secret' : null),
@@ -675,7 +834,31 @@ test('next/previous cycle through every tab and wrap, starting what they land on
   assert.ok(h.shell.tabByKey(key('feat-b')).started);
 });
 
+test('createShell refuses deps missing a host function, by name, instead of failing inside a start', () => {
+  const base = {
+    mode: 'tabs', container: ROOT, git: { list: async () => '' },
+    views: { create: () => ({}), destroy: () => {}, send: () => {}, owns: () => false },
+    ui: { confirmClose: async () => true, changed: () => {}, focusWindow: () => {}, isFocused: () => true },
+  };
+  const hosts = {
+    choosePort: async () => null, isListening: async () => false, spawn: () => {}, wait: async () => false,
+    tokenFor: () => null, tokenFile: () => null, newToken: () => 't', control: async () => ({ ok: true }),
+    identity: () => null, readToken: () => null,
+  };
+  assert.doesNotThrow(() => createShell({ ...base, hosts }));
+  for (const k of Object.keys(hosts)) {
+    const partial = { ...hosts };
+    delete partial[k];
+    assert.throws(() => createShell({ ...base, hosts: partial }), new RegExp(`hosts\\.${k}`), k);
+  }
+});
+
 // --- the probe driver ----------------------------------------------------------
+
+// The probe's shared secret: every line carries it (Miguel, PR #75 M4).
+const PT = 'probe-token-0123456789abcdef';
+const line = (o) => JSON.stringify({ ...o, token: PT });
+const probeCmd = (l, api) => handleProbeCommand(l, api, PT);
 
 test('handleProbeCommand dispatches known commands and refuses the rest by name, never throwing', async () => {
   const log = [];
@@ -686,29 +869,66 @@ test('handleProbeCommand dispatches known commands and refuses the rest by name,
     screenshot: async (f) => { log.push(['shot', f]); return { ok: true, file: f }; },
     quit: async () => ({ ok: true }),
   };
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"state"}', api), { ok: true, tabs: [1] });
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"select","label":"feat/a"}', api), { ok: true });
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"close","label":"feat/a"}', api), { ok: true });
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"screenshot","file":"x.png"}', api), { ok: true, file: 'x.png' });
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"quit"}', api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'state' }), api), { ok: true, tabs: [1] });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'select', label: 'feat/a' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'close', label: 'feat/a' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'x.png' }), api), { ok: true, file: 'x.png' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'quit' }), api), { ok: true });
   assert.deepStrictEqual(log, [['select', 'feat/a'], ['close', 'feat/a'], ['shot', 'x.png']]);
-  assert.deepStrictEqual(await handleProbeCommand('nope', api), { ok: false, error: 'not JSON' });
-  assert.deepStrictEqual(await handleProbeCommand('{"x":1}', api), { ok: false, error: 'no cmd' });
-  assert.deepStrictEqual(await handleProbeCommand('null', api), { ok: false, error: 'no cmd' });
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"rm"}', api), { ok: false, error: 'unknown command: rm' });
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"screenshot"}', api), { ok: false, error: 'screenshot needs a file' });
-  const boom = await handleProbeCommand('{"cmd":"state"}', { state: async () => { throw new Error('kaput'); } });
+  assert.deepStrictEqual(await probeCmd('nope', api), { ok: false, error: 'not JSON' });
+  assert.deepStrictEqual(await probeCmd(line({ x: 1 }), api), { ok: false, error: 'no cmd' });
+  assert.deepStrictEqual(await probeCmd('null', api), { ok: false, error: 'no cmd' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'rm' }), api), { ok: false, error: 'unknown command: rm' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot' }), api), { ok: false, error: 'screenshot needs a .png file' });
+  const boom = await probeCmd(line({ cmd: 'state' }), { state: async () => { throw new Error('kaput'); } });
   assert.deepStrictEqual(boom, { ok: false, error: 'kaput' });
 });
 
 test('handleProbeCommand: key is dispatched with its name, and needs one', async () => {
   const seen = [];
   const api = { key: async (k, m) => { seen.push([k, m]); return { ok: true }; } };
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"key","key":"Tab","modifiers":["control"]}', api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'key', key: 'Tab', modifiers: ['control'] }), api), { ok: true });
   assert.deepStrictEqual(seen, [['Tab', ['control']]]);
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"key"}', api), { ok: false, error: 'key needs a key' });
-  assert.deepStrictEqual(await handleProbeCommand('{"cmd":"key","key":"Tab","modifiers":"control"}', api),
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'key' }), api), { ok: false, error: 'key needs a key' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'key', key: 'Tab', modifiers: 'control' }), api),
     { ok: false, error: 'key modifiers must be a list' });
+});
+
+// --- Miguel, PR #75 M4: the probe driver answers only the probe -------------------
+
+test('M4: a line without the token, or with another one, is refused and runs nothing', async () => {
+  const calls = [];
+  const api = { state: async () => { calls.push('state'); return {}; }, quit: async () => { calls.push('quit'); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd('{"cmd":"quit"}', api), { ok: false, error: 'bad token' });
+  assert.deepStrictEqual(await probeCmd(JSON.stringify({ cmd: 'quit', token: 'guess' }), api), { ok: false, error: 'bad token' });
+  assert.deepStrictEqual(await probeCmd(JSON.stringify({ cmd: 'quit', token: PT + 'x' }), api), { ok: false, error: 'bad token' });
+  assert.deepStrictEqual(await probeCmd(JSON.stringify({ cmd: 'quit', token: 7 }), api), { ok: false, error: 'bad token' });
+  assert.deepStrictEqual(calls, []);
+});
+
+test('M4: a driver started without a real token refuses everything, even a line that carries one', async () => {
+  const api = { quit: async () => ({ ok: true }) };
+  for (const expected of [undefined, null, '', 'short']) {
+    assert.deepStrictEqual(await handleProbeCommand(JSON.stringify({ cmd: 'quit', token: expected }), api, expected),
+      { ok: false, error: 'probe driver has no token' }, String(expected));
+  }
+});
+
+test('M4: screenshot writes only a .png', async () => {
+  const api = { screenshot: async (f) => ({ ok: true, file: f }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'C:\\Windows\\win.ini' }), api),
+    { ok: false, error: 'screenshot needs a .png file' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'shot.PNG' }), api), { ok: true, file: 'shot.PNG' });
+});
+
+test('M4: the line reader splits on newlines and gives up on a line longer than its cap', () => {
+  const r = probeLineReader(16);
+  assert.deepStrictEqual(r.push('ab\ncd'), { lines: ['ab'], overflow: false });
+  assert.deepStrictEqual(r.push('e\n\n'), { lines: ['cde'], overflow: false }, 'blank lines are dropped');
+  assert.deepStrictEqual(r.push('x'.repeat(17)), { lines: [], overflow: true });
+  const r2 = probeLineReader(16);
+  assert.deepStrictEqual(r2.push('0123456789'), { lines: [], overflow: false });
+  assert.deepStrictEqual(r2.push('0123456789'), { lines: [], overflow: true }, 'the cap counts what is buffered across chunks');
 });
 
 // --- keyboard shortcuts (no menu bar, so main owns them) -------------------------
@@ -783,7 +1003,7 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
           isListening: async (p) => occupied.has(p),
           spawn: ({ tab, port }) => { granted.push(port); setTimeout(() => occupied.set(port, tab.cwd), delays[1]); },
           wait: async (port) => { await sleep(delays[2] + 3); return occupied.has(port); },
-          tokenFor: () => 't', newToken: () => 't',
+          tokenFor: () => 't', tokenFile: () => 't', newToken: () => 't',
           control: async () => ({ ok: true }), identity: () => null, readToken: () => null,
         },
         views: { create: () => ({}), destroy: () => {}, send: () => {}, owns: () => false },

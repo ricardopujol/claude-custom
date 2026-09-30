@@ -112,6 +112,8 @@ function sanitizeStatus(s) {
  *   hosts.spawn({ tab, port, token })      starts a detached host (may throw)
  *   hosts.wait(port)       -> Promise<boolean>  the host came up
  *   hosts.tokenFor(port)   -> string | null     a RUNNING host's token
+ *   hosts.tokenFile(port)  -> string | null     ONLY `hosts/<port>.token`: written by
+ *                                               the host that won the bind, and nobody else
  *   hosts.newToken()       -> string
  *   hosts.control({ port, token, msg })    -> Promise<{ ok, reply? , error? }>
  *   hosts.identity({ install, port }), hosts.readToken(install, port)  (planGoTo's)
@@ -125,11 +127,19 @@ function sanitizeStatus(s) {
  *   ui.isFocused()
  *   log(...)
  */
+// Every host function the shell calls. A missing one used to throw INSIDE a
+// start, where it became a tab error and a view that never appeared.
+const HOST_DEPS = ['choosePort', 'isListening', 'spawn', 'wait', 'tokenFor', 'tokenFile', 'newToken', 'control',
+  'identity', 'readToken'];
+
 function createShell(deps) {
   const {
     mode = 'tabs', container = null, cwd = null, launchedFrom = null,
     git, hosts, views, ui, log = () => {},
   } = deps;
+  for (const k of HOST_DEPS) {
+    if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
+  }
 
   const queue = createQueue();
   const tabs = new Map();        // key -> record
@@ -180,6 +190,7 @@ function createShell(deps) {
       key: keyOf(entry.path), cwd: entry.path, branch: entry.branch === undefined ? null : entry.branch,
       isDev: entry.isDev === true, port: null, token: null, view: null,
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
+      attachPromise: null, unconfirmed: null,
     };
   }
 
@@ -189,12 +200,16 @@ function createShell(deps) {
     tab.token = token;
     tab.view = views.create(tab);
     tab.started = true;
+    // A host given up on earlier, if it ever binds, meets this one's lock and
+    // exits on its own (session-gate idleExit): nothing left to warn about.
+    tab.unconfirmed = null;
   }
 
   // At open: a tab whose session is ALREADY running gets its view now (its
   // markers should show). One that isn't records nothing and starts nothing.
+  // The promise is kept so a hand close can wait for it (Dexter, PR #75 R2-3).
   function attachIfRunning(tab) {
-    return queue.run(async () => {
+    tab.attachPromise = queue.run(async () => {
       if (tab.closed || tab.started || tab.starting || destroyed) return;
       let chosen = null;
       try { chosen = await hosts.choosePort(tab); } catch (err) { log('[shell] port probe failed:', err && err.message); }
@@ -203,6 +218,7 @@ function createShell(deps) {
       if (!token) { log(`[shell] ${tab.key}: a host is on ${chosen.port} but its token can't be read`); return; }
       present(tab, chosen.port, token);
     }).then(publish, publish);
+    return tab.attachPromise;
   }
 
   // First selection: choose the port NOW, spawn if nobody serves this folder,
@@ -232,8 +248,12 @@ function createShell(deps) {
         } else if (pend) {
           // Still not answering: give that host one more wait, spawn nothing.
           // A second failure forgets it, so the next Retry may spawn afresh
-          // (a loser of the bind no longer touches the token files).
-          if (!(await hosts.wait(port))) throw new Error(`the host did not come up on port ${port} in time`);
+          // (a loser of the bind no longer touches the token files). A hand
+          // close still says it may be running (Dexter, PR #75 R2-3).
+          if (!(await hosts.wait(port))) {
+            tab.unconfirmed = pend;
+            throw new Error(`the host did not come up on port ${port} in time`);
+          }
           token = pend.token;
         } else if (chosen.action === 'attach') {
           token = hosts.tokenFor(port);
@@ -247,6 +267,12 @@ function createShell(deps) {
             throw new Error(`the host did not come up on port ${port} in time`);
           }
         }
+        // Dexter, PR #75 R2-2: present the token of whoever BOUND the port. Only
+        // the winner of the bind writes `hosts/<port>.token` (F2), so the file
+        // names the host actually listening; a token kept or generated here is
+        // only a guess about who that is. It stands in only while the file isn't
+        // written yet -- our own host, just past its bind.
+        token = hosts.tokenFile(port) || token;
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind.
           if (spawned) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
@@ -388,22 +414,43 @@ function createShell(deps) {
       try { await tab.startPromise; } catch { /* start() reports its own errors */ }
       if (!tabs.has(key)) return { ok: true };
     }
+    // Dexter, PR #75 R2-3: an open-time attach never sets `starting`. Let a
+    // queued one finish too, so the session it finds can be stopped.
+    if (!tab.started && tab.attachPromise) {
+      try { await tab.attachPromise; } catch { /* attachIfRunning logs its own */ }
+      if (!tabs.has(key)) return { ok: true };
+    }
     const label = (model().find(e => e.key === key) || {}).label || tab.branch || tab.cwd;
     let target = null;
+    let failure = null;
     if (tab.started && tab.port && tab.token) target = { port: tab.port, token: tab.token };
     else if (tab.pending) target = { port: tab.pending.port, token: tab.pending.token };
+    else {
+      // Nothing presented and nothing pending: ask once more whether a host
+      // serves this folder (an attach that couldn't read the token, a host that
+      // bound after the shell gave up on it). Through the queue, like a start.
+      let found = null;
+      try { found = await queue.run(() => hosts.choosePort(tab)); } catch { found = null; }
+      if (found && found.action === 'attach') {
+        const token = hosts.tokenFile(found.port) || hosts.tokenFor(found.port);
+        if (token) target = { port: found.port, token };
+        else failure = `a host is on port ${found.port} but its token can't be read`;
+      } else if (tab.unconfirmed) {
+        failure = `its host on port ${tab.unconfirmed.port} never answered`;
+      }
+    }
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
     // The stop is sent here, where its outcome can be seen, not fire-and-forget.
     apply(actions.filter(a => a.type !== 'stop'), before);
-    if (!target) return { ok: true };
-    let failure = null;
-    try {
-      const r = await hosts.control({ ...target, msg: { type: 'stop' } });
-      if (!r || r.ok !== true) failure = (r && r.error) || 'no answer';
-    } catch (err) {
-      failure = (err && err.message) || String(err);
+    if (target) {
+      try {
+        const r = await hosts.control({ ...target, msg: { type: 'stop' } });
+        if (!r || r.ok !== true) failure = (r && r.error) || 'no answer';
+      } catch (err) {
+        failure = (err && err.message) || String(err);
+      }
     }
     if (failure !== null) {
       closeNotice = `Couldn't end the session in ${label}: ${failure}. It may still be running.`;
@@ -411,7 +458,7 @@ function createShell(deps) {
       publish();
       return { ok: true, stopError: failure };
     }
-    log(`[shell] stop ${key}: sent`);
+    if (target) log(`[shell] stop ${key}: sent`);
     return { ok: true };
   }
 
@@ -514,16 +561,25 @@ function createShell(deps) {
 // --- keyboard focus ----------------------------------------------------------------
 
 /**
- * Should main give the keyboard to the selected tab's view now? Dexter F4 /
- * Miguel M1, PR #75: keyed on a CHANGED SELECTION, a view created for a tab
- * that was already selected (first launch, Ctrl+Tab onto an unstarted tab)
- * never got focus, and keystrokes went to the strip. Keyed on the VIEW
- * instead: focus it when the window is focused and it is not the view that
- * last received focus. A non-selected tab presenting changes nothing here,
- * because only the selected tab's view is ever passed in.
+ * Should main give the keyboard to the selected tab's view now, and which view
+ * holds it afterwards? `lastFocused` is the view that has the keyboard, or null
+ * when nothing does.
+ *
+ * Dexter F4 / Miguel M1, PR #75: keyed on a CHANGED SELECTION, a view created
+ * for a tab that was already selected (first launch, Ctrl+Tab onto an unstarted
+ * tab) never got focus, and keystrokes went to the strip. So it is keyed on the
+ * VIEW: focus the selected view when the window is focused and that view
+ * doesn't have the keyboard.
+ *
+ * Dexter R2-4: selecting a tab with NO view (still starting, or failed) leaves
+ * the keyboard on the strip, so `lastFocused` becomes null. Without that, A ->
+ * B (no view) -> A still believed A had the keyboard and never focused it.
+ * Main also clears it when the strip page itself takes focus (a click on it).
  */
-function viewToFocus({ windowFocused, selectedView, lastFocused } = {}) {
-  return windowFocused === true && !!selectedView && selectedView !== lastFocused;
+function focusStep(lastFocused, { windowFocused, selectedView } = {}) {
+  if (!selectedView) return { focus: false, lastFocused: null };
+  if (windowFocused === true && selectedView !== lastFocused) return { focus: true, lastFocused: selectedView };
+  return { focus: false, lastFocused: lastFocused === undefined ? null : lastFocused };
 }
 
 // --- keyboard shortcuts ------------------------------------------------------------
@@ -549,16 +605,35 @@ function shortcutFor(input) {
 
 // --- the probe driver's command handling ----------------------------------------
 
+// The shortest token the driver will run with. The probe sends 32 hex chars.
+const PROBE_TOKEN_MIN = 16;
+
+function sameSecret(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && require('crypto').timingSafeEqual(x, y);
+}
+
 /**
  * One line of newline-JSON from the probe -> a reply object. NEVER throws.
  * `api` is main's: { state, select(label), close(label), screenshot(file),
  * quit() }. Anything else is refused by name, so a typo in the probe is a
  * failure it can see rather than a command that silently did nothing.
+ *
+ * Miguel, PR #75 M4: every line must carry `token`, the secret the probe put in
+ * CLAUDE_CUSTOM_TABS_PROBE_TOKEN. Loopback isn't a boundary -- any web page can
+ * POST a body to 127.0.0.1 -- and `screenshot` writes a file. A driver started
+ * without a real token refuses everything rather than trusting anyone.
  */
-async function handleProbeCommand(line, api) {
+async function handleProbeCommand(line, api, expectedToken) {
   let cmd;
   try { cmd = JSON.parse(line); } catch { return { ok: false, error: 'not JSON' }; }
-  if (!cmd || typeof cmd !== 'object' || typeof cmd.cmd !== 'string') return { ok: false, error: 'no cmd' };
+  if (typeof expectedToken !== 'string' || expectedToken.length < PROBE_TOKEN_MIN) {
+    return { ok: false, error: 'probe driver has no token' };
+  }
+  if (!cmd || typeof cmd !== 'object') return { ok: false, error: 'no cmd' };
+  if (typeof cmd.token !== 'string' || !sameSecret(cmd.token, expectedToken)) return { ok: false, error: 'bad token' };
+  if (typeof cmd.cmd !== 'string') return { ok: false, error: 'no cmd' };
   try {
     switch (cmd.cmd) {
       case 'state': return { ok: true, ...(await api.state()) };
@@ -571,7 +646,8 @@ async function handleProbeCommand(line, api) {
         return await api.key(cmd.key, (cmd.modifiers || []).map(String));
       }
       case 'screenshot':
-        if (typeof cmd.file !== 'string' || !cmd.file) return { ok: false, error: 'screenshot needs a file' };
+        // Only ever a picture: never a path to some other file it could clobber.
+        if (typeof cmd.file !== 'string' || !/\.png$/i.test(cmd.file)) return { ok: false, error: 'screenshot needs a .png file' };
         return await api.screenshot(cmd.file);
       case 'quit': return await api.quit();
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
@@ -581,7 +657,30 @@ async function handleProbeCommand(line, api) {
   }
 }
 
+/**
+ * The driver's socket reader: chunks in, complete non-blank lines out. A peer
+ * that sends more than `maxBytes` without a newline gets `overflow` and is cut
+ * off, so the buffer can't grow without bound (Miguel, PR #75 M4).
+ */
+function probeLineReader(maxBytes) {
+  let buf = '';
+  return {
+    push(chunk) {
+      buf += chunk;
+      const lines = [];
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.trim()) lines.push(line);
+      }
+      if (buf.length > maxBytes) { buf = ''; return { lines: [], overflow: true }; }
+      return { lines, overflow: false };
+    },
+  };
+}
+
 module.exports = {
   createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor, viewToFocus, NO_PORT_ERROR,
+  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, focusStep, NO_PORT_ERROR,
 };

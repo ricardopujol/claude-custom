@@ -25,8 +25,43 @@ const path = require('path');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const MAIN = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8'));
 
-const channels = [...MAIN.matchAll(/ipcMain\.(on|handle)\(\s*'([^']+)'/g)]
+const channelsIn = (src) => [...src.matchAll(/ipcMain\.(on|handle)\(\s*'([^']+)'/g)]
   .map(m => ({ kind: m[1], name: m[2], at: m.index }));
+const channels = channelsIn(MAIN);
+
+// The text of ONE registration's call, so the gate check reads only that
+// handler. Miguel, PR #75 M3: a fixed window after each registration let an
+// ungated handler pass whenever the NEXT one was gated.
+function callText(src, at) {
+  const open = src.indexOf('(', at);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      // Skip the string, so a ')' inside one doesn't end the call early.
+      for (i++; i < src.length && src[i] !== ch; i++) if (src[i] === '\\') i++;
+      continue;
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return src.slice(at, i + 1);
+  }
+  throw new Error(`unbalanced ipcMain call at ${at}`);
+}
+
+/** The channels in `src` whose own call text lacks `gate`. */
+function ungated(src, gate, filter = () => true) {
+  return channelsIn(src).filter(filter).filter(c => !gate.test(callText(src, c.at))).map(c => c.name);
+}
+
+test('the gate check reads each handler alone: an ungated handler right before a gated one is caught', () => {
+  const src = [
+    "ipcMain.handle('a:open', (e) => doIt());",
+    "ipcMain.handle('a:shut', (e) => (fromWindow(e) ? done() : null));",
+    "ipcMain.on('a:str', (e, s) => say(')' + s));",
+    "ipcMain.on('a:ok', (e) => { if (!isTabView(e.sender)) return; go(); });",
+  ].join('\n');
+  assert.deepStrictEqual(ungated(src, /isTabView\(|fromWindow\(/), ['a:open', 'a:str']);
+});
 
 test('the scan finds the channels this file registers', () => {
   const names = channels.map(c => c.name);
@@ -37,21 +72,14 @@ test('the scan finds the channels this file registers', () => {
 });
 
 test('every strip channel is gated on the window\'s own page, and only they', () => {
-  for (const c of channels) {
-    const body = MAIN.slice(c.at, c.at + 260);
-    if (c.name.startsWith('strip:')) {
-      assert.match(body, /fromStrip\(e\)/, `${c.name} must check fromStrip`);
-    } else {
-      assert.doesNotMatch(body, /fromStrip\(/, `${c.name} is a tab channel and must not be gated on the strip`);
-    }
+  assert.deepStrictEqual(ungated(MAIN, /fromStrip\(e\)/, c => c.name.startsWith('strip:')), []);
+  for (const c of channels.filter(x => !x.name.startsWith('strip:'))) {
+    assert.doesNotMatch(callText(MAIN, c.at), /fromStrip\(/, `${c.name} is a tab channel and must not be gated on the strip`);
   }
 });
 
 test('every other channel is gated on "one of this window\'s tab views"', () => {
-  for (const c of channels.filter(x => !x.name.startsWith('strip:'))) {
-    const body = MAIN.slice(c.at, c.at + 260);
-    assert.match(body, /isTabView\(|fromWindow\(/, `${c.name} must be gated on a tab view`);
-  }
+  assert.deepStrictEqual(ungated(MAIN, /isTabView\(|fromWindow\(/, c => !c.name.startsWith('strip:')), []);
 });
 
 test('nothing compares a sender to the window\'s own webContents except the strip gate', () => {
@@ -198,14 +226,20 @@ test('only the headless paths switch native occlusion tracking off (an occluded 
   assert.strictEqual((MAIN.match(/CalculateNativeWinOcclusion/g) || []).length, 1);
 });
 
-test('F4 (Dexter, PR #75): applySelection focuses by view IDENTITY via viewToFocus, not by a changed selection key', () => {
+test('F4 (Dexter, PR #75): applySelection focuses by view IDENTITY via focusStep, not by a changed selection key', () => {
   const start = MAIN.indexOf('function applySelection(');
   assert.ok(start !== -1);
   const body = MAIN.slice(start, MAIN.indexOf('\n}', start));
-  assert.ok(/viewToFocus\(/.test(body), 'applySelection must ask viewToFocus');
+  assert.ok(/focusStep\(\s*lastFocusedView\s*,/.test(body), 'applySelection must ask focusStep');
+  assert.ok(/lastFocusedView\s*=\s*\w+\.lastFocused/.test(body),
+    'and keep what focusStep says holds the keyboard, including null (R2-4)');
   assert.ok(!/selectedKey\s*!==\s*lastSelectedKey/.test(body),
     'a key that has not changed says nothing about whether its NEW view has the keyboard');
   assert.ok(/\.webContents\.focus\(\)/.test(body), 'and it must actually focus the view');
+});
+
+test('R2-4 (Dexter, PR #75): the strip page taking focus means no view has the keyboard', () => {
+  assert.match(MAIN, /win\.webContents\.on\('focus',\s*\(\)\s*=>\s*\{?\s*lastFocusedView\s*=\s*null/);
 });
 
 test('F4: the window-focus path records which view it focused, so applySelection does not repeat it', () => {

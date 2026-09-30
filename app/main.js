@@ -27,7 +27,7 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { createShell, handleProbeCommand, shortcutFor, viewToFocus, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -86,6 +86,10 @@ const WINDOW_LABEL = projectLabel(PROJECT_ROOT);
 const STRIP_HEIGHT = 34;
 const POLL_MS = 3000;
 const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
+// The probe's secret; every driver command must carry it (Miguel, PR #75 M4).
+// handleProbeCommand refuses everything when it's missing or short.
+const PROBE_TOKEN = process.env.CLAUDE_CUSTOM_TABS_PROBE_TOKEN || null;
+const PROBE_LINE_MAX = 64 * 1024;
 
 // A window another window covers is "occluded", and Chromium then stops
 // painting it: capturePage answers an EMPTY image. That is the intermittent
@@ -97,15 +101,27 @@ if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
+// `hosts/<port>.token`, and nothing else: written only by the host that won
+// that port's bind (PR #75 F2), so it names whoever is listening. Null when it
+// can't be read.
+function tokenFileFor(port) {
+  try {
+    return fs.readFileSync(path.join(__dirname, '..', '.harness', 'hosts', `${port}.token`), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 // The token of the host on THIS port, preferred over the shared file, which is
 // last-writer-wins once a second project is open. Falling back to the shared
-// one keeps a host started before this change reattachable. Null when none can
-// be read: a tab then says so instead of connecting with a guess.
+// one keeps a host started before this change reattachable -- in a single-tab
+// window only. In tabs mode the shared file is whichever of N hosts started
+// last, so a fallback there hands a tab another host's token (Dexter, PR #75
+// F5): the per-port file or nothing. Null when none can be read: a tab then
+// says so instead of connecting with a guess.
 function tokenForRunningHost(port) {
-  try {
-    return fs.readFileSync(
-      path.join(__dirname, '..', '.harness', 'hosts', `${port}.token`), 'utf8').trim();
-  } catch { /* fall through to the shared file */ }
+  const own = tokenFileFor(port);
+  if (own || MODE === 'tabs') return own;
   try {
     return fs.readFileSync(path.join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
   } catch { /* fall through to the environment */ }
@@ -298,6 +314,9 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     if (lastStripPayload) win.webContents.send('strip-model', lastStripPayload);
   });
+  // A click on the strip takes the keyboard from the view (Dexter, PR #75 R2-4),
+  // so the next selection -- even of the same tab -- focuses its view again.
+  win.webContents.on('focus', () => { lastFocusedView = null; });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
   return win;
 }
@@ -401,13 +420,13 @@ function applySelection(snapshot) {
     if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.setVisible(tab.key === snapshot.selectedKey);
   }
   // Keyed on the VIEW, not on a changed selection: a view created for the
-  // already-selected tab has never had the keyboard (Dexter F4 / Miguel M1).
+  // already-selected tab has never had the keyboard (Dexter F4 / Miguel M1),
+  // and a selection with no view leaves nothing holding it (Dexter R2-4).
   const sel = selectedView();
   const live = sel && !sel.webContents.isDestroyed() ? sel : null;
-  if (viewToFocus({ windowFocused: focused, selectedView: live, lastFocused: lastFocusedView })) {
-    live.webContents.focus();
-    lastFocusedView = live;
-  }
+  const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live });
+  if (step.focus) live.webContents.focus();
+  lastFocusedView = step.lastFocused;
 }
 
 // Keyboard shortcuts, with no menu bar to carry them. Registered on the strip
@@ -823,15 +842,14 @@ function startProbeDriver(port) {
     },
   };
   const server = net.createServer((sock) => {
-    let buf = '';
+    // Capped (Miguel, PR #75 M4): a peer that never sends a newline is cut off.
+    const reader = probeLineReader(PROBE_LINE_MAX);
     sock.on('data', (d) => {
-      buf += d;
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i);
-        buf = buf.slice(i + 1);
-        if (!line.trim()) continue;
-        handleProbeCommand(line, api).then((r) => { try { sock.write(JSON.stringify(r) + '\n'); } catch { /* probe went away */ } });
+      const { lines, overflow } = reader.push(String(d));
+      if (overflow) { sock.destroy(); return; }
+      for (const line of lines) {
+        handleProbeCommand(line, api, PROBE_TOKEN)
+          .then((r) => { try { sock.write(JSON.stringify(r) + '\n'); } catch { /* probe went away */ } });
       }
     });
     sock.on('error', () => {});
@@ -861,6 +879,7 @@ app.whenReady().then(async () => {
       spawn: ({ tab, port, token }) => spawnHost(tab, port, token),
       wait: (port) => waitForHost(port),
       tokenFor: tokenForRunningHost,
+      tokenFile: tokenFileFor,
       // One secret, handed to the host AND the tab's page. In a single-tab window
       // a named CLAUDE_CUSTOM_TOKEN still wins, as it always did.
       newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)
