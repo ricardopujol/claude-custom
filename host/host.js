@@ -1407,12 +1407,18 @@ const TOKEN_FILE = path.join(HARNESS_DIR, 'session-token');
 // Additive rather than moved: this fixes the window without touching them.
 const PORT_TOKEN_FILE = path.join(HARNESS_DIR, 'hosts', `${PORT}.token`);
 const SESSION_TOKEN = process.env.CLAUDE_CUSTOM_TOKEN || newToken();
-try {
-  fs.mkdirSync(path.dirname(PORT_TOKEN_FILE), { recursive: true });
-  fs.writeFileSync(TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
-  fs.writeFileSync(PORT_TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
-} catch (err) {
-  console.log('[host] could not write the session token file:', err.message);
+// Written from the 'listening' event, NOT here (Dexter, PR #75 F2). A host that
+// loses the bind (EADDRINUSE) must not have touched the winner's token files:
+// a Retry after a slow start spawns a second host for the same port, and if it
+// wrote first, every connect to the live host would present the loser's token.
+function writeTokenFiles() {
+  try {
+    fs.mkdirSync(path.dirname(PORT_TOKEN_FILE), { recursive: true });
+    fs.writeFileSync(TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
+    fs.writeFileSync(PORT_TOKEN_FILE, SESSION_TOKEN, { mode: 0o600 });
+  } catch (err) {
+    console.log('[host] could not write the session token file:', err.message);
+  }
 }
 
 const wss = new WebSocketServer({
@@ -2293,6 +2299,7 @@ let boundPort = null;                 // set only once the bind has succeeded
 wss.on('listening', () => {
   boundPort = PORT;
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
+  writeTokenFiles();
   try {
     console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD }));
   } catch (err) {

@@ -33,7 +33,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
-    confirm: true, resolveCalls: [], tokens: 0, failWait: false, gitInFlight: 0, gitMax: 0,
+    confirm: true, resolveCalls: [], tokens: 0, failWait: false, spawnRegisters: true, gitInFlight: 0, gitMax: 0,
   };
   const base = 7700;
   const deps = {
@@ -60,7 +60,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
       spawn: ({ tab, port, token }) => {
         if (spawnFails) throw new Error('spawn exploded');
         h.spawns.push({ key: tab.key, port, token });
-        h.running[port] = tab.cwd;
+        if (h.spawnRegisters) h.running[port] = tab.cwd;
       },
       wait: async () => !h.failWait,
       tokenFor: (port) => (h.running[port] !== undefined ? `tok-${port}` : null),
@@ -377,6 +377,62 @@ test('a tab closed while it is still starting does not leave its host behind', a
   const spawnedForA = h.spawns.filter(s => s.key === key('feat-a'));
   const stops = h.controls.filter(c => c.msg.type === 'stop');
   assert.strictEqual(stops.length, spawnedForA.length, 'every host spawned for the closed tab was stopped');
+});
+
+// --- Dexter, PR #75 F2: Retry after a timed-out spawn ---------------------------
+
+test('F2: Retry after a timed-out start ATTACHES to the first host with its ORIGINAL token; one spawn total', async () => {
+  const h = harness();
+  h.spawnRegisters = false;            // the real host is not listening yet
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  const before = h.spawns.length;
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.match(tab.error, /did not come up/);
+  assert.strictEqual(h.spawns.length - before, 1);
+  const first = h.spawns[h.spawns.length - 1];
+  // The slow host finally binds (the fake tokenFor would answer a DIFFERENT token).
+  h.failWait = false;
+  h.running[first.port] = tab.cwd;
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, first.token, 'the original token, not whatever the token file says now');
+  assert.strictEqual(h.spawns.length - before, 1, 'Retry spawned nothing');
+});
+
+test('F2: Retry while the first host is STILL not listening waits for it instead of spawning a second', async () => {
+  const h = harness();
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  const before = h.spawns.length;
+  await h.shell.select(key('feat-a'));
+  const first = h.spawns[h.spawns.length - 1];
+  h.failWait = false;                  // it comes up during the second wait
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(h.spawns.length - before, 1);
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, first.token);
+});
+
+test('F2: a host that never comes up is forgotten after one more wait, so the next Retry can spawn', async () => {
+  const h = harness();
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  const before = h.spawns.length;
+  await h.shell.select(key('feat-a'));
+  await h.shell.select(key('feat-a'));     // waits again, still nothing
+  assert.strictEqual(h.spawns.length - before, 1);
+  h.failWait = false;
+  await h.shell.select(key('feat-a'));     // gives up on it and spawns afresh
+  assert.strictEqual(h.spawns.length - before, 2);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, true);
 });
 
 // --- what a tab reports ------------------------------------------------------

@@ -112,3 +112,24 @@ test('F8: the terminal check re-reads the lock holder, so its own claude is neve
 test('the lock owner names this host\'s install dir', () => {
   assert.match(HOST, /lockOwner = \{[^}]*install: path\.join\(__dirname, '\.\.'\)/);
 });
+
+test('F2 (Dexter, PR #75): the token files are written only AFTER the bind succeeds', () => {
+  // A host that loses the bind (EADDRINUSE) must not have overwritten the
+  // winner's hosts/<port>.token. Retry after a slow start spawns exactly such
+  // a loser, and a clobbered file makes every later connect a 403.
+  const call = HOST.indexOf('writeTokenFiles();');
+  assert.ok(call !== -1, 'host.js must call writeTokenFiles()');
+  const listening = HOST.indexOf("wss.on('listening'");
+  const errorHandler = HOST.indexOf("wss.on('error'");
+  assert.ok(listening !== -1 && call > listening && call < errorHandler,
+    'writeTokenFiles() must be called inside the wss.on("listening") handler');
+  const between = HOST.slice(listening, call);
+  assert.ok(!between.includes('\n});'), 'and still inside that handler, not after it');
+  // And nothing writes them at module load, before the bind.
+  assert.strictEqual(HOST.split('writeFileSync(PORT_TOKEN_FILE').length - 1, 1,
+    'PORT_TOKEN_FILE is written in exactly one place');
+  const fn = HOST.indexOf('function writeTokenFiles(');
+  assert.ok(fn !== -1 && HOST.indexOf('writeFileSync(PORT_TOKEN_FILE') > fn);
+  assert.ok(HOST.indexOf('writeFileSync(PORT_TOKEN_FILE') < HOST.indexOf('new WebSocketServer('),
+    'the write lives in the helper, which is defined above but only CALLED after listening');
+});

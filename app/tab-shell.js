@@ -178,7 +178,7 @@ function createShell(deps) {
     return {
       key: keyOf(entry.path), cwd: entry.path, branch: entry.branch === undefined ? null : entry.branch,
       isDev: entry.isDev === true, port: null, token: null, view: null,
-      started: false, starting: false, error: null, status: null, closed: false, startPromise: null,
+      started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
     };
   }
 
@@ -222,14 +222,29 @@ function createShell(deps) {
         const chosen = await hosts.choosePort(tab);
         if (!chosen) throw new Error(NO_PORT_ERROR);
         port = chosen.port;
-        if (chosen.action === 'attach') {
+        // Dexter, PR #75 F2: a spawn whose wait timed out left a host that may
+        // still be coming up. Retry must not spawn a second one onto its port.
+        const pend = tab.pending && tab.pending.port === port ? tab.pending : null;
+        tab.pending = null;
+        if (pend && chosen.action === 'attach') {
+          token = pend.token;                      // the ORIGINAL host, its ORIGINAL token
+        } else if (pend) {
+          // Still not answering: give that host one more wait, spawn nothing.
+          // A second failure forgets it, so the next Retry may spawn afresh
+          // (a loser of the bind no longer touches the token files).
+          if (!(await hosts.wait(port))) throw new Error(`the host did not come up on port ${port} in time`);
+          token = pend.token;
+        } else if (chosen.action === 'attach') {
           token = hosts.tokenFor(port);
           if (!token) throw new Error(`a host is on port ${port} but its token can't be read`);
         } else {
           token = hosts.newToken();
           hosts.spawn({ tab, port, token });
           spawned = true;
-          if (!(await hosts.wait(port))) throw new Error(`the host did not come up on port ${port} in time`);
+          if (!(await hosts.wait(port))) {
+            tab.pending = { port, token };
+            throw new Error(`the host did not come up on port ${port} in time`);
+          }
         }
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind.
