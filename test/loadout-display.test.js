@@ -269,6 +269,20 @@ test('the open picker draws the note, and the refusal when there is one', () => 
   assert.match(html, /class="belt-error"[^>]*>[^<]*both set the model/);
 });
 
+test('the open picker is a no-card-click region: its note and refusal text do not open the agent log', () => {
+  // PR #68's known bug (build log, wave 2): a click on the picker's note or
+  // refusal text fell through to the card and opened the agent log, because
+  // only <button>s were exempt. agent-log-display.js's cardClickAgent skips
+  // anything inside [data-no-card-click], so marking the picker is the whole fix.
+  const base = D.toggle(seeded({ a: ['pace-haiku'] }), 'a');
+  const refused = refuse(base, { reason: 'both set the model', itemId: 'pace-opus' });
+  const html = D.html(D.view(refused, 'a', {}));
+  const open = html.indexOf('<div class="belt-picker" data-no-card-click>');
+  assert.ok(open !== -1, 'the picker must carry data-no-card-click');
+  assert.ok(html.indexOf('class="belt-note"') > open, 'the note sits inside it');
+  assert.ok(html.indexOf('class="belt-error"') > open, 'and so does the refusal');
+});
+
 test('names and reasons from the wire are escaped', () => {
   const evil = '"><img src=x onerror=alert(1)>';
   const s = D.toggle(seeded(), evil);
