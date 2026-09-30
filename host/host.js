@@ -52,9 +52,11 @@ const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
-const { readSessionHook, readStatus } = require('./hook-session');
+const { readSessionHook, readStatus, readContext } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
+const { createLoadoutControl } = require('./loadout-control');
+const { watchLoadout } = require('./loadout-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
@@ -307,6 +309,14 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
     scriptPath: path.join(__dirname, 'status-relay.js'),
     userStatusLine: findUserStatusLine({ home: os.homedir(), cwd: CWD }),
   },
+  // The tool belt (BACKLOG #17): rewrites an Agent spawn from state/loadout.json.
+  // Same node-from-PATH reasoning as the relay above; the hook re-reads the file
+  // on every spawn, so an equip needs no restart.
+  loadoutHook: {
+    nodePath: process.versions.electron ? 'node' : process.execPath,
+    scriptPath: path.join(__dirname, 'loadout-hook.js'),
+    stateDir: path.join(HARNESS_DIR, 'state'),
+  },
 }, PORT);
 
 // Attached only once the native helper exists (step 2). Wiring hooks to a
@@ -347,6 +357,17 @@ const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const cooldowns = createCooldowns({ store });
+const loadoutControl = createLoadoutControl({ store });
+// The loadout is install-wide and another host may change it: tell OUR windows.
+// The frame is QUIET (host/loadout-control.js changed()), so it never touches a
+// refusal on screen. PR #68, Dexter F1.
+watchLoadout({
+  dir: path.join(HARNESS_DIR, 'state'),
+  onChange: () => {
+    const frame = loadoutControl.changed();
+    if (frame) broadcastControl(frame);
+  },
+});
 // One record per distinct bug CLASS, so a recurring defect category is a
 // visible count instead of a memory hand-carried between review rounds in PR
 // comments. Persisted through the shared store under `vault.json`, same as
@@ -1034,10 +1055,20 @@ if (helperExists) {
     // status redraw. Not a hook: handled here and ONLY here, so the mood
     // engine, the process panel and the [hook] log never see it.
     if (ev.event === 'Status') {
+      // Every document, even one without a model: a document that cannot say
+      // must CLEAR the fill (unknown), never leave the last one standing.
+      setContext(readContext(ev.payload));
       const status = readStatus(ev.payload);
       if (status.model !== undefined) setLiveModel(status.model);
       if (status.effort !== undefined) setEffort(status.effort);
       return;
+    }
+    // The context was just replaced (/clear) or summarised (compaction): the
+    // last fill is no longer true, whether or not the CLI re-fires the
+    // statusLine right after. Unknown until a document says otherwise.
+    if (ev.event === 'SessionStart' && ev.payload
+        && (ev.payload.source === 'clear' || ev.payload.source === 'compact')) {
+      setContext(null);
     }
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
@@ -1391,6 +1422,16 @@ function setEffort(level) {
   broadcastControl({ type: 'effort', level: lastEffort, at: Date.now() });
 }
 
+// The context window as the statusLine reports it: { used, size } or null
+// (unknown -- see hook-session.js readContext). Broadcast only on a change.
+let lastContext = null;
+function setContext(ctx) {
+  if ((ctx === null && lastContext === null)
+    || (ctx && lastContext && ctx.used === lastContext.used && ctx.size === lastContext.size)) return;
+  lastContext = ctx;
+  broadcastControl({ type: 'context', context: lastContext, at: Date.now() });
+}
+
 function setLiveModel(model) {
   if (model === lastLiveModel) return;
   lastLiveModel = model;
@@ -1617,7 +1658,11 @@ wss.on('connection', (ws) => {
     // which the panel renders as "—" rather than a guessed default.
     effort: lastEffort,
     liveModel: lastLiveModel,
+    context: lastContext,
     cooldowns: cooldowns.list(),
+    // The tool belt: what is equipped on which agent type, plus the catalogue
+    // the renderer draws from. Read off disk here, so a reattach is never stale.
+    loadout: loadoutControl.payload(),
     vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
@@ -1877,6 +1922,13 @@ wss.on('connection', (ws) => {
     }
     if (msg.type === 'roster') {
       handleRosterMessage(msg);
+      return;
+    }
+    if (msg.type === 'loadout-equip' || msg.type === 'loadout-unequip') {
+      // Broadcast, refusal included: the frame carries the true state, and two
+      // windows disagreeing about a belt is worse than a redraw. No frame from
+      // host/loadout-control.js is `quiet` (PR #64 N1), so a refusal stays visible.
+      broadcastControl(loadoutControl.handle(msg));
       return;
     }
     if (msg.type === 'fog') {

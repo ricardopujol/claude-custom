@@ -72,6 +72,8 @@ const ALLOWED_GLOBALS = new Set([
   'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
+  // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
+  'loadoutDisplay',
   // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object
   // rather than six bare globals.
   'portraitMedia',
@@ -84,6 +86,8 @@ const ALLOWED_GLOBALS = new Set([
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
+  // app/context-fill-display.js (BACKLOG #6)
+  'contextFill', 'applyContextFill', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
   // renderer.js's key handler, like isPanelToggle.
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',
@@ -276,10 +280,13 @@ test('every module function renderer.js calls is actually exported to it', () =>
   let d;
   while ((d = OWN.exec(renderer))) ownDecls.add(d[1]);
 
+  // Whole-line comments are not calls: "the ... toggle (BACKLOG C #18)" read as
+  // a bare `toggle(` once app/loadout-display.js declared a `toggle`.
+  const code = renderer.replace(/^\s*\/\/.*$/gm, '');
   const missing = [];
   for (const [name, file] of declared) {
     if (ownDecls.has(name)) continue;
-    if (!new RegExp('(?:^|[^\\w$.])' + name + '\\s*\\(').test(renderer)) continue;   // not called at all
+    if (!new RegExp('(?:^|[^\\w$.])' + name + '\\s*\\(').test(code)) continue;   // not called at all
     if (!(name in ctx)) missing.push(name + ' (declared in ' + file + ')');
   }
   assert.deepStrictEqual(missing, [],

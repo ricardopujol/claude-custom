@@ -37,11 +37,25 @@ test('a payload carrying every required field passes', () => {
   const ok = checkPayload('PreToolUse', {
     hook_event_name: 'PreToolUse',
     tool_name: 'Agent',
-    tool_input: { subagent_type: 'code-reviewer' },
+    tool_input: { subagent_type: 'code-reviewer', prompt: 'Review it' },
     ...COMMON,
   });
   assert.deepStrictEqual(ok.missing, []);
   assert.strictEqual(ok.ok, true);
+});
+
+test('an agent launch is missing tool_input.prompt when it has none: the tool belt reads it (BACKLOG #17)', () => {
+  // host/loadout-hook.js prepends a Method instruction to the prompt. If the
+  // CLI stopped sending `prompt`, that item would silently do nothing -- the
+  // contract makes it a failing probe instead.
+  const res = checkPayload('PreToolUse', {
+    hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'code-reviewer' }, ...COMMON,
+  });
+  assert.deepStrictEqual(res.missing, ['tool_input.prompt']);
+  const field = CONTRACT.PreToolUse.fields['tool_input.prompt'];
+  assert.match(field.used, /loadout/);
+  assert.strictEqual(field.onlyWhen({ tool_name: 'Task' }), true);
+  assert.strictEqual(field.onlyWhen({ tool_name: 'Bash' }), false);
 });
 
 test('a missing field is named, not merely counted', () => {

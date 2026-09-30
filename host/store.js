@@ -4,15 +4,32 @@
  *
  * WHAT THIS STORE ACTUALLY CONTAINS TODAY:
  *
- *   .harness/state/cooldowns.json  the only file this store writes.
- *                                  host/cooldowns.js, STORE_KEY 'cooldowns'.
+ *   .harness/state/cooldowns.json  host/cooldowns.js, STORE_KEY 'cooldowns'.
+ *   .harness/state/loadout.json    host/loadout-control.js, STORE_KEY 'loadout'
+ *                                  (BACKLOG #17, the tool belt). Install-wide,
+ *                                  keyed by agent type. The host writes it; the
+ *                                  Node hook host/loadout-hook.js READS it with
+ *                                  a plain fs read on every Agent spawn.
  *
- * THAT IS THE WHOLE LIST. The four entries that used to stand here --
- * loadout.json, vault.json, map.json and stats.json -- named files that have
- * NEVER BEEN WRITTEN. Verified by grepping for each store key across host/ and
- * app/: 'loadout' 0 references, 'map' 0, 'stats' 0. The one real key,
- * 'cooldowns', was not in the list at all, so the header named four files that
- * do not exist and omitted the one that does.
+ *   .harness/state/vault.json      host/bugvault.js, STORE_KEY 'vault' (the bug
+ *                                  vault; irreplaceable, so it opts in to
+ *                                  withLock and readState).
+ *   .harness/state/council.json    host/host.js reads and writes 'council' (the
+ *                                  seated models).
+ *   .harness/state/provider.json   host/host.js READS 'provider'. Nothing in
+ *                                  this repo writes it; a missing file is the
+ *                                  default, 'claude-max'.
+ *   'look-global'                  written by Electron MAIN, app/main.js UI_KEY,
+ *                                  not by the host (see below).
+ *
+ * The list above was re-derived by grepping host/ and app/ for every store key
+ * (STORE_KEY / UI_KEY constants and store.read/write/update calls), and
+ * test/store.test.js now does that grep on every run and fails if a key in use
+ * is not named here. This header used to say "THAT IS THE WHOLE LIST" while
+ * naming two files; before that it named four -- loadout.json, vault.json,
+ * map.json and stats.json -- that had NEVER BEEN WRITTEN, and omitted the one
+ * real key, 'cooldowns'. Of those four, loadout.json and vault.json have since
+ * been built; 'map' and 'stats' still have zero references anywhere.
  *
  * It was a roadmap written in the present tense, and it cost real time:
  *
@@ -73,7 +90,10 @@
  * `loadout.json` directly, "which is what lets equipped items keep working
  * when the GUI is closed". Grep helper/: zero references. It described the
  * mechanism of a feature that was never built, in the present tense, as a
- * justification -- the most persuasive form a false comment can take.)
+ * justification -- the most persuasive form a false comment can take. The
+ * native helper still does not read it, by design: it is transport-only and
+ * must never block. The Node hook host/loadout-hook.js does, and that one is
+ * real and tested.)
  *
  * Every read defaults rather than throwing. All of this is regenerable
  * convenience state; none of it is worth an exception on a hot path, and a

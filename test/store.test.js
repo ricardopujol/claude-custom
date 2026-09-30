@@ -334,6 +334,30 @@ test('every file the store header names has a real producer', () => {
     `the header names these state files and nothing reads or writes them: ${phantom.join(', ')}`);
 });
 
+test('every key the code uses is NAMED in the store header (the converse of the check above)', () => {
+  // Miguel, PR #68, I1. The check above proves the header names nothing that is
+  // not produced. Its converse was never asserted, and that is how the header
+  // came to say "THAT IS THE WHOLE LIST" and "the other three still have no
+  // producer" while vault, council and provider all had one. Derived from the
+  // code by the same call shapes, not restated by hand.
+  const fs = require('fs');
+  const path = require('path');
+  const dirs = [path.join(__dirname, '..', 'host'), path.join(__dirname, '..', 'app')];
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const code = dirs.flatMap(d => fs.readdirSync(d).filter(f => f.endsWith('.js') && f !== 'store.js')
+    .map(f => strip(fs.readFileSync(path.join(d, f), 'utf8')))).join('\n');
+  const keys = new Set();
+  for (const m of code.matchAll(/(?:STORE_KEY|UI_KEY)\s*=\s*['"]([A-Za-z0-9_-]+)['"]/g)) keys.add(m[1]);
+  for (const m of code.matchAll(/\bstore\.(?:read|readState|write|update|withLock)\(\s*['"]([A-Za-z0-9_-]+)['"]/g)) keys.add(m[1]);
+  assert.ok(keys.size >= 5, `the scan found only ${[...keys]} -- it is broken, not the code`);
+
+  const src = fs.readFileSync(path.join(__dirname, '..', 'host', 'store.js'), 'utf8');
+  const header = src.slice(0, src.indexOf('*/'));
+  const unnamed = [...keys].filter(k => !header.includes(`'${k}'`) && !header.includes(`${k}.json`));
+  assert.deepStrictEqual(unnamed, [], `the code uses these store keys and the header does not name them: ${unnamed.join(', ')}`);
+  assert.ok(!/THAT IS THE WHOLE LIST/.test(header) || unnamed.length === 0);
+});
+
 test('a transient EPERM on the rename does NOT lose the write', () => {
   // MEASURED on this machine, 2026-09-18: a rename of a just-written temp
   // file failed with EPERM mid test run, nothing wrong with the file or the

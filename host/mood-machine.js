@@ -7,6 +7,8 @@
  * to one hook event or one elapsed timeout.
  *
  *   PreToolUse(Agent|Task)  -> working   (opens an invocation, parent-linked)
+ *   SendMessage resumed it  -> working   (reopens that ended run, background)
+ *   a queued message woke it-> working   (its first event after its end)
  *   PostToolUse ok          -> working
  *   PostToolUse error       -> stressed (err++)
  *   PostToolUseFailure      -> stressed (err++)  -- a failed call's ONLY event
@@ -149,12 +151,23 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // has arrived, a call WITHOUT one is the main session's own (Dexter, PR #56,
   // #3). Before that, it may be an older CLI that labels nobody.
   let saysWho = false;
-  // agent_ids whose run has ENDED here. "Ended" and "never seen" are
-  // different facts: without this, a duplicate or late event from an ended
-  // run took the next unbound sibling of its type and ended THAT (Dexter,
-  // PR #56, #4). Bounded, oldest out: ids are unique per session, so only a
-  // late echo needs remembering, not the whole history.
-  const endedIds = new Set();
+  // agent_id -> NAME of each run that has ENDED here. "Ended" and "never
+  // seen" are different facts: without this, a duplicate or late event from
+  // an ended run took the next unbound sibling of its type and ended THAT
+  // (Dexter, PR #56, #4). The name is the card a RESUME reopens it under.
+  // Bounded, oldest out: ids are unique per session, so only a late echo or
+  // a resume needs remembering, not the whole history. One map, not a set
+  // and a map beside it: a resume took an id out of one and not the other,
+  // and their eviction points drifted apart (Dexter, PR #69, F7).
+  const endedIds = new Map();
+  function rememberEnded(inv) {
+    endedIds.delete(inv.agentId);
+    endedIds.set(inv.agentId, inv.name);
+    if (endedIds.size > REMEMBER_MAX) endedIds.delete(endedIds.keys().next().value);
+  }
+  // agent_ids of runs holding a message they haven't drained yet (see
+  // message()). Bounded like the rest.
+  const queued = new Set();
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -283,7 +296,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const at = invs.indexOf(inv);
       if (at === -1) continue;
       invs.splice(at, 1);
-      if (inv.agentId) remember(endedIds, inv.agentId);
+      if (inv.agentId) rememberEnded(inv);
       if (inv.key !== null) { spawns.delete(inv.key); remember(endedKeys, inv.key); }
       names.set(inv.name, names.get(inv.name) || completed(inv));
     }
@@ -343,10 +356,91 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     if (isCompleted(r)) finish(inv);
   }
 
+  // A RUN THAT COMES BACK. The CLI runs a finished agent again on its OLD
+  // agent_id, with no Agent call: its calls and SubagentStop carry an id
+  // bind() drops as a late echo of the ended run. So a run this host watched
+  // end reopens as a new invocation bound to that id. It's background work:
+  // the main turn ends while it runs. Returns it, or null for an id this host
+  // never saw end (or one that's running: those aren't in endedIds).
+  function reopen(agentId, key) {
+    const name = endedIds.get(agentId);
+    if (name === undefined) return null;
+    endedIds.delete(agentId);
+    queued.delete(agentId);
+    const a = ensure(name);
+    if (!running(name)) {
+      a.errors = 0;
+      a.repeats = 0;
+      a.lastSignature = null;
+    }
+    a.flashUntil = 0;
+    a.lastActivity = now();
+    const inv = {
+      id: ++serial, key, name, agentId, parent: null, orphan: false, background: true,
+      description: undefined, startedAt: now(), lastActivity: now(),
+    };
+    invs.push(inv);
+    if (key !== null) spawns.set(key, inv);
+    setState(name, a, WORKING);
+    return inv;
+  }
+
+  // What a SendMessage did, read from its own RESULT, which names the run for
+  // certain however `to` addressed it: an id, a name, or "name [ref]".
+  // Measured with the real CLI (verify/probe-resume-queued-message.js):
+  //   { success: true, resumedAgentId, pin: { id } }   a run that had ended,
+  //       RESUMED ("Resuming agent ...");
+  //   { success: true, pin: { id } }   a run still going: "queued for
+  //       delivery ... at its next tool round";
+  //   { success: false }   nobody reachable by that name; nothing happened.
+  // Not on PreToolUse, which is only intent: a send that was denied, blocked
+  // or Esc'd has no result, and opening on it left a working card behind for
+  // the whole stall window (Dexter F5 / Miguel M1, PR #69). And not by
+  // resolving `to` here: the CLI gives a name to the newest agent that TOOK
+  // it, and a foreground pair's ids can be bound crosswise, so the host
+  // resumed the wrong run both ways (Dexter F1, F2).
+  function message(p) {
+    const r = p.tool_response;
+    if (!r || typeof r !== 'object' || r.success !== true) return;
+    const key = p.tool_use_id ?? null;
+    if (key !== null && (spawns.has(key) || endedKeys.has(key))) return;   // delivered twice
+    if (typeof r.resumedAgentId === 'string' && r.resumedAgentId) { reopen(r.resumedAgentId, key); return; }
+    // A run still going drains the message at its next tool round. If it has
+    // none left, because it's writing its last reply, it ENDS first, and the
+    // message wakes it afterwards on the same id (the probe's "late" timing:
+    // Dexter F3). So the id is marked until one of its calls shows the
+    // message drained, and a marked run's next event after its end reopens it.
+    const id = r.pin && typeof r.pin.id === 'string' ? r.pin.id : null;
+    if (id && invs.some(i => i.agentId === id)) remember(queued, id);
+  }
+
+  // A marked run's event after it ended: the queued message woke it. Not a
+  // SubagentStop, which a duplicate of the run's own stop would be: that
+  // would spend the wake. (A woken run that makes no call at all shows
+  // nothing.)
+  //
+  // KNOWN LIMITATION (Dexter F6, PR #69): once a run is open again, a late
+  // echo of its PREVIOUS run's events lands on it: nothing in the payload
+  // tells the two apart. A late SubagentStop then finishes the resumed run
+  // early. That echo would have to lag a whole model turn, so it's accepted,
+  // like the crosswise binding.
+  function wake(agentId) {
+    if (queued.has(agentId)) reopen(agentId, null);   // a no-op while the run is still going
+  }
+
   function handle({ event, payload }) {
     const p = payload || {};
     const tool = p.tool_name;
-    if (p.agent_id) saysWho = true;
+    if (p.agent_id) {
+      saysWho = true;
+      if (event !== 'SubagentStop') wake(p.agent_id);
+      // A tool round of that run COMPLETED, so a message queued for it drained.
+      if (event === 'PostToolUse' || event === 'PostToolUseFailure') queued.delete(p.agent_id);
+    }
+
+    // A SendMessage's result may bring a run back. The call itself is then the
+    // sender's own, handled below like any other.
+    if (event === 'PostToolUse' && tool === 'SendMessage') message(p);
 
     if (event === 'PreToolUse' && AGENT_TOOLS.has(tool)) {
       const input = p.tool_input || {};
@@ -473,6 +567,11 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       // NOT background work. Measured (test/hooks-real-subagent-failure):
       // Stop fires while a background agent still runs, and lists it in
       // `background_tasks` -- even one launched with no run_in_background.
+      //
+      // An ENDED id listed as running is not proof it came back: the list
+      // races the run's own SubagentStop, and names a run 1 ms before that
+      // stop arrives (verify/probe-resume-queued-message.js). So it's skipped,
+      // not reopened.
       for (const task of Array.isArray(p.background_tasks) ? p.background_tasks : []) {
         if (!task || !task.id || endedIds.has(task.id)) continue;
         // By id when we know it. Otherwise by name, but only among the runs
@@ -495,8 +594,10 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
 
     if (event === 'SessionEnd') {
       // Measured: /clear fires SessionEnd and KILLS background agents
-      // (verify/probe-clear-background.js). Everything is cut off.
+      // (verify/probe-clear-background.js). Everything is cut off, and no
+      // queued message will wake anything.
       cutOff([...invs]);
+      queued.clear();
     }
   }
 
@@ -559,7 +660,8 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   machine.stack = () => invs.map(i => i.name);
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state }));
   // Sizes of the per-host bookkeeping, for the test that it stays bounded.
-  machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size });
+  machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size,
+    queued: queued.size });
   // Whether this machine watched the run with that agent_id end, for the agent
   // log's "finished" (host/agent-log-session.js). Bounded by REMEMBER_MAX.
   machine.watchedEnd = agentId => typeof agentId === 'string' && endedIds.has(agentId);
@@ -572,4 +674,4 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   return machine;
 }
 
-module.exports = { createMoodMachine, STALL_MS, SLEEPING, WORKING, HAPPY, STRESSED };
+module.exports = { createMoodMachine, STALL_MS, REMEMBER_MAX, SLEEPING, WORKING, HAPPY, STRESSED };

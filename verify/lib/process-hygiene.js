@@ -37,10 +37,19 @@ const { killPidTree } = require('../../host/kill-tree');
 function createHygieneRegistry({ killFn = killPidTree } = {}) {
   const suspendedPids = new Set();
   const spawnedTrees = new Set();
+  const extraCleanups = new Set();
   let resumeFn = null;
   let installed = false;
 
   function emergencyCleanup(reason) {
+    // Anything a probe registered that is not a pid: restoring a file it
+    // touched, for instance (PR #68 B1). Run AFTER the trees are killed, so a
+    // host that is still alive cannot rewrite what is being restored.
+    const runExtras = () => {
+      for (const fn of [...extraCleanups]) {
+        try { fn(); } catch (err) { console.error(`[cleanup:${reason}] extra cleanup threw: ${err.message}`); }
+      }
+    };
     const suspended = [...suspendedPids];
     const trees = [...spawnedTrees];
     console.error(`\n[cleanup:${reason}] resuming ${suspended.length} suspended pid(s), ` +
@@ -71,6 +80,7 @@ function createHygieneRegistry({ killFn = killPidTree } = {}) {
       try { killFn(pid); } catch (err) { console.error(`[cleanup:${reason}] kill ${pid} failed: ${err.message}`); }
       spawnedTrees.delete(pid);
     }
+    runExtras();
     return { resumed, failedToResume, killed: trees };
   }
 
@@ -79,6 +89,8 @@ function createHygieneRegistry({ killFn = killPidTree } = {}) {
     registerSuspended(pid) { suspendedPids.add(pid); },
     clearSuspended(pid) { suspendedPids.delete(pid); },
     registerSpawnedTree(pid) { spawnedTrees.add(pid); },
+    addCleanup(fn) { extraCleanups.add(fn); },
+    removeCleanup(fn) { extraCleanups.delete(fn); },
     unregisterSpawnedTree(pid) { spawnedTrees.delete(pid); },
     isInstalled() { return installed; },
     install() {

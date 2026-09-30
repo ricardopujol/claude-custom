@@ -579,7 +579,9 @@
     #roster-subtabs { display: flex; align-items: center; }
     #images-toggle { margin-left: auto; cursor: pointer; }
     #images-toggle.off { opacity: .45; }
-    .agent .meta { min-width: 0; }
+    /* flex-basis 0 so the meta column is BOUNDED by the card: the tool belt's
+       picker is wider than a name, and unbounded it pushed past the panel. */
+    .agent .meta { min-width: 0; flex: 1 1 0; }
     .agent .name {
       font-size: clamp(10.5px, calc(var(--face, 34px) * .3), 15px); font-weight: 600;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -623,6 +625,31 @@
     #roster-show-hidden:hover { color: var(--accent); }
     .agent .agent-count { font-size: 10px; font-weight: 700; color: var(--accent);
       opacity: .85; margin-left: 4px; }
+
+    /* The tool belt (BACKLOG #17; app/loadout-display.js): what an agent carries
+       into its NEXT spawn. Every control is a <button>. */
+    .agent .belt { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+    .agent .belt-strip { display: flex; flex-wrap: wrap; gap: 3px; }
+    .agent .belt-item { font-size: 9.5px; color: var(--dim); border: 1px solid var(--border);
+      border-radius: 3px; padding: 0 4px; }
+    .agent .belt-glyph { color: var(--accent); margin-right: 3px; font-weight: 700; }
+    .agent .belt-off { font-size: 9.5px; color: var(--dim); opacity: .55; cursor: help; }
+    .agent .belt-btn, .agent .belt-row { font: inherit; font-size: 10px; color: var(--dim);
+      background: none; border: 1px solid var(--border); border-radius: 3px; padding: 0 5px;
+      cursor: pointer; }
+    .agent .belt-btn:hover, .agent .belt-row:hover, .agent .belt-btn.on { color: var(--text); border-color: var(--accent); }
+    .agent .belt-picker { flex: 1 0 100%; display: flex; flex-direction: column; gap: 2px;
+      padding: 4px; margin-top: 2px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 4px; }
+    .agent .belt-note { font-size: 9.5px; color: var(--dim); line-height: 1.35; }
+    .agent .belt-row { display: flex; align-items: flex-start; gap: 4px; text-align: left; padding: 1px 5px; }
+    .agent .belt-row.on { color: var(--text); border-color: var(--accent); }
+    .agent .belt-name { flex: 1 1 0; min-width: 0; }
+    .agent .belt-do { margin-left: auto; opacity: .7; white-space: nowrap; }
+    .agent .belt-hint { display: block; font-size: 9px; opacity: .6; }
+    /* A card with an open picker is tall: pin the portrait to the top rather than float mid-card. */
+    .agent:has(.belt-picker) { align-items: flex-start; }
+    .agent .belt-error { font-size: 10px; color: var(--bad); line-height: 1.35; }
 
     /* --- model browser ---------------------------------------------------- */
     #models-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
@@ -785,6 +812,17 @@
     /* A switch that did not take, or was not sent. The label still reports
        the truth; the dashed border says "look at the tooltip". */
     .tb-chip.notice { border-style: dashed; }
+    /* BACKLOG #6 context-fill circle. The palette is app/context-fill-display.js's
+       PALETTE (test/renderer-context-fill.test.js fails if these drift). Unknown
+       is hollow and dashed -- a shape of its own, never one of the five. */
+    .tb-ctx { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+              margin-left: 3px; box-sizing: border-box; flex: none; }
+    .ctx-0 { background: #8a8f98; }
+    .ctx-1 { background: #4caf6a; }
+    .ctx-2 { background: #e6c229; }
+    .ctx-3 { background: #f08a24; }
+    .ctx-4 { background: #e04848; }
+    .ctx-unknown { background: transparent; border: 1.5px dashed var(--text); opacity: .55; }
     .tb-menu .note { font-size: 10px; opacity: .6; padding: 3px 7px 0; max-width: 170px; }
     .tb-menu { position: fixed; left: 0; top: 0; z-index: 50; display: flex; flex-direction: column;
                gap: 2px; background: var(--chrome); border: 1px solid var(--border);
@@ -915,6 +953,7 @@
       <span id="top-bar">
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
+        <span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span>
       </span>
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
@@ -1080,7 +1119,9 @@
   <script src="./agent-card-display.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./agent-log-display.js"></script>
+  <script src="./loadout-display.js"></script>
   <script src="./top-bar-display.js"></script>
+  <script src="./context-fill-display.js"></script>
   <script src="./models-favourites.js"></script>
   <script src="./models-refresh.js"></script>
   <script src="./models-catalogue.js"></script>
