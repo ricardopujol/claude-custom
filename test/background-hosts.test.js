@@ -52,8 +52,8 @@ test('lists a proven host from every install, own first, with build and windows'
   const r = await list(deps);
   assert.strictEqual(r.verified, true);
   assert.deepStrictEqual(r.rows, [
-    { install: OWN, build: 'feat-a', own: true, port: 7701, pid: 101, cwd: 'C:\\proj', startedAt: 5000, processStartedAt: ft(4800), windows: 0 },
-    { install: OTHER, build: 'dev', own: false, port: 7702, pid: 202, cwd: 'C:\\other', startedAt: 9000, processStartedAt: ft(8700), windows: 2 },
+    { install: OWN, build: 'feat-a', own: true, port: 7701, pid: 101, cwd: 'C:\\proj', startedAt: 5000, processStartedAt: ft(4800), exact: false, windows: 0 },
+    { install: OTHER, build: 'dev', own: false, port: 7702, pid: 202, cwd: 'C:\\other', startedAt: 9000, processStartedAt: ft(8700), exact: false, windows: 2 },
   ]);
 });
 
@@ -179,11 +179,15 @@ test('property: shown exactly when proven', async () => {
     });
     const { deps } = world({ files, procs, windows: new Map() });
     const r = await list(deps);
-    const expected = entries
+    const provenFiles = entries
       .map((e, i) => ({ e, port: 7000 + i }))
-      .filter(({ e }) => procs.has(e.pid) && procs.get(e.pid) !== null && filetimeToMs(procs.get(e.pid)) <= e.startedAt)
-      .map(({ port }) => port);
-    assert.deepStrictEqual(r.rows.map(x => x.port).sort(), expected.sort());
+      .filter(({ e }) => procs.has(e.pid) && procs.get(e.pid) !== null && filetimeToMs(procs.get(e.pid)) <= e.startedAt);
+    // One row per proven pid (Miguel Y3), on a port one of its proven files names.
+    const pids = [...new Set(provenFiles.map(({ e }) => e.pid))].sort();
+    assert.deepStrictEqual(r.rows.map(x => x.pid).sort(), pids);
+    for (const row of r.rows) {
+      assert.ok(provenFiles.some(({ e, port }) => e.pid === row.pid && port === row.port), `row ${row.pid}:${row.port}`);
+    }
     for (const row of r.rows) assert.strictEqual(row.processStartedAt, procs.get(row.pid));
     const unreadable = entries.some(e => procs.get(e.pid) === null);
     assert.strictEqual(r.verified, !unreadable);
@@ -251,4 +255,69 @@ test('identitiesIn: a hosts dir that cannot be listed throws (so the list says u
   fs.mkdirSync(path.join(dir, '.harness'));
   fs.writeFileSync(path.join(dir, '.harness', 'hosts'), 'not a dir');
   assert.throws(() => identitiesIn(dir), { code: 'ENOTDIR' });
+});
+
+// --- Dexter, PR 2 F1 (High): an exact proof, where the identity carries one ---
+// `startedAt` is wall clock: set the clock back an hour and an unrelated process
+// that took a dead host's pid "started before the write". The OS start time in
+// the identity file can't be fooled that way.
+test('an identity with an OS start time is proven only by that exact time', async () => {
+  const exact = ft(4800);
+  const { w, deps } = world();
+  w.files[OWN][7701].processStartedAt = exact;
+  let r = await list(deps);
+  assert.deepStrictEqual(r.rows.find(x => x.pid === 101).exact, true);
+  // An impostor that "started before the write" by the wall clock: not proven.
+  w.procs.set(101, ft(4000));
+  r = await list(deps);
+  assert.strictEqual(r.rows.find(x => x.pid === 101), undefined);
+  assert.strictEqual(r.verified, true);
+});
+
+test('an older identity, with no start time, is proven by the wall clock and marked not exact', async () => {
+  const { deps } = world();
+  const r = await list(deps);
+  assert.deepStrictEqual(r.rows.map(x => [x.pid, x.exact]), [[101, false], [202, false]]);
+});
+
+test('a start time that is not a FILETIME string is no proof: the row is dropped', async () => {
+  for (const bad of ['', 'abc', 4800, null]) {
+    const { w, deps } = world();
+    w.files[OWN][7701].processStartedAt = bad;
+    const r = await list(deps);
+    assert.strictEqual(r.rows.find(x => x.pid === 101), undefined, String(bad));
+  }
+});
+
+// --- Miguel Y3, Dexter F3 (Low): one pid, several files -------------------------
+// A copied build folder carries the live host's identity file too. Which build
+// wrote it can't be told, so it shows once, and is never offered Open.
+test('a pid claimed by files in two builds shows once, and not as this build\'s own', async () => {
+  const { w, deps } = world();
+  w.files['C:\cc\dev - Copy'] = { 7701: { port: 7701, cwd: 'C:\proj', pid: 101, startedAt: 5000 } };
+  const r = await list(deps);
+  const mine = r.rows.filter(x => x.pid === 101);
+  assert.strictEqual(mine.length, 1);
+  assert.strictEqual(mine[0].own, false);
+});
+
+test('a pid claimed twice in this build alone is still this build\'s', async () => {
+  const { w, deps } = world();
+  w.files[OWN][7799] = { port: 7799, cwd: 'C:\proj', pid: 101, startedAt: 5000 };
+  const r = await list(deps);
+  const mine = r.rows.filter(x => x.pid === 101);
+  assert.strictEqual(mine.length, 1);
+  assert.strictEqual(mine[0].own, true);
+});
+
+test('property: an exact identity is shown iff the OS start equals it, whatever the wall clock says', async () => {
+  await fc.assert(fc.asyncProperty(
+    fc.integer({ min: 1000, max: 2000 }), fc.integer({ min: 1000, max: 2000 }), fc.integer({ min: 0, max: 3000 }),
+    async (recorded, osStart, writtenAt) => {
+      const files = { [OWN]: { 7001: { port: 7001, cwd: 'C:\p', pid: 9, startedAt: writtenAt, processStartedAt: ft(recorded) } } };
+      const { deps } = world({ files, procs: new Map([[9, ft(osStart)]]), windows: new Map() });
+      const r = await list(deps);
+      assert.strictEqual(r.rows.length, recorded === osStart ? 1 : 0);
+      if (r.rows.length) assert.strictEqual(r.rows[0].exact, true);
+    }), { numRuns: 300 });
 });

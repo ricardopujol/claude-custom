@@ -5,23 +5,33 @@
  * purpose, so it outlives its window; this is how a person finds one again.
  *
  *   listBackgroundHosts({ ownInstall }, deps) -> { rows, verified }
- *   rows: { install, build, own, port, pid, cwd, startedAt, processStartedAt, windows }
+ *   rows: { install, build, own, port, pid, cwd, startedAt, processStartedAt, exact, windows }
  *
  * Read from each build's identity files (`<install>/.harness/hosts/<port>.json`,
  * host/host-identity.js). A file outlives its host, and Windows reuses pids, so
- * a file is only a claim. A row is shown only once it is PROVEN:
+ * a file is only a claim. A row is shown only once it is PROVEN, two ways:
  *
- *   the pid is alive, and the OS says it started no later than the identity
- *   file was written (`startedAt`, Date.now() at the write).
+ *   exact  the file carries the host's OS start time (`processStartedAt`,
+ *          written since PR 2) and the live pid's OS start time is that one.
+ *          No clock is involved, so nothing can fake it.
+ *   wall   an older build's file has no start time: the pid is alive and the
+ *          OS says it started no later than the file was written (`startedAt`,
+ *          Date.now()). True while the clock never steps back -- and only then
+ *          (Dexter, PR 2 F1: set it back an hour and a process that took a dead
+ *          host's pid "started before the write"). So a wall-proven row is
+ *          `exact: false`, and host/stop-holder.js stopHost never kills one by
+ *          pid: it is stopped only by its own token-checked controls, which an
+ *          impostor can't answer. The reverse clock step can drop a live old
+ *          host from the list (F4); that only hides, never stops.
  *
- * That is a proof, not a heuristic: the writer held the pid when it wrote the
- * file, so any other process with that pid started after the writer ended --
- * after the write. It needs nothing the file doesn't already carry, so it holds
- * for every build, including the old ones (which are the Stop-only rows). An
- * unproven file is never displayed (dead or reused), never deleted either.
+ * An unproven file is never displayed (dead or reused), never deleted either.
+ * `processStartedAt` is the OS start time read here: a later stop re-proves
+ * the pid against exactly that, as PR 1 did with a lock's.
  *
- * `processStartedAt` is the OS start time read here (a FILETIME string): a
- * later stop re-proves the pid against exactly that, as PR 1 did with a lock's.
+ * ONE ROW PER PID (Miguel Y3, Dexter F3). A copied build folder carries the
+ * live host's file too, and which build wrote it can't be told: shown once,
+ * and `own` only when every file naming it is this build's -- Open is never
+ * offered on a guess.
  *
  * `verified: false` means some host may be missing: the OS couldn't be asked,
  * a live pid's start time couldn't be read, or an install couldn't be listed.
@@ -54,7 +64,10 @@ function claimOf(install, port, parsed) {
   if (!validPid(parsed.pid)) return null;
   if (parsed.port !== port) return null;               // moved or hand-edited
   if (typeof parsed.startedAt !== 'number' || !Number.isFinite(parsed.startedAt)) return null;
-  return { install, port, pid: parsed.pid, cwd: parsed.cwd, startedAt: parsed.startedAt };
+  // Present but not a FILETIME is no proof of anything: dropped, not downgraded.
+  const exactStart = parsed.processStartedAt;
+  if (exactStart !== undefined && filetimeToMs(exactStart) === null) return null;
+  return { install, port, pid: parsed.pid, cwd: parsed.cwd, startedAt: parsed.startedAt, exactStart };
 }
 
 async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
@@ -73,15 +86,22 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
   const starts = await deps.startTimes([...new Set(claims.map(c => c.pid))]);
   if (starts === null) return { rows: [], verified: false };
 
-  const proven = [];
+  const byPid = new Map();
   for (const c of claims) {
     if (!starts.has(c.pid)) continue;                  // not running
     const os = starts.get(c.pid);
     const osMs = filetimeToMs(os);
     if (osMs === null) { verified = false; continue; } // running, start unreadable
-    if (osMs > c.startedAt) continue;                  // a reused pid
-    proven.push({ ...c, processStartedAt: os });
+    const exact = c.exactStart !== undefined;
+    if (exact ? os !== c.exactStart : osMs > c.startedAt) continue;   // a reused pid
+    const own = samePath(c.install, ownInstall);
+    const seen = byPid.get(c.pid);
+    if (!seen) { byPid.set(c.pid, { ...c, processStartedAt: os, exact, own }); continue; }
+    // The newest file speaks for it; own only if every file is this build's.
+    const keep = c.startedAt > seen.startedAt ? { ...c, processStartedAt: os, exact } : seen;
+    byPid.set(c.pid, { ...keep, own: seen.own && own });
   }
+  const proven = [...byPid.values()];
   if (proven.length === 0) return { rows: [], verified };
 
   const counts = await deps.windowCounts(proven.map(c => ({ pid: c.pid, port: c.port })));
@@ -93,12 +113,13 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
   const rows = proven.map(c => ({
     install: c.install,
     build: path.basename(c.install),
-    own: samePath(c.install, ownInstall),
+    own: c.own,
     port: c.port,
     pid: c.pid,
     cwd: c.cwd,
     startedAt: c.startedAt,
     processStartedAt: c.processStartedAt,
+    exact: c.exact,
     windows: windowsOf(c.pid),
   }));
   // This build's own first (they can be opened), then newest first.

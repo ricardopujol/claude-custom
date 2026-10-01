@@ -9,7 +9,9 @@ const { stopHost } = require('../host/stop-holder');
 const { OLDER_HOST } = require('../host/host-client');
 
 const INSTALL = 'C:\\inst-b';
-const ROW = { install: INSTALL, port: 7718, pid: 37508, processStartedAt: '500', cwd: 'C:\\x', startedAt: 9, windows: 0 };
+const ROW = { install: INSTALL, port: 7718, pid: 37508, processStartedAt: '500', exact: true, cwd: 'C:\\x', startedAt: 9, windows: 0 };
+// An older build's row: proven by the wall clock only (Dexter, PR 2 F1).
+const WALL = { ...ROW, exact: false };
 const ALL = ['raise', 'stop', 'stop-if-idle'];
 
 function world(over = {}) {
@@ -168,4 +170,53 @@ test('property: never stops a host with a window, never acts on an unproven pid'
         assert.ok(['gone', 'unproven'].includes(r.outcome), r.outcome);
       }
     }), { numRuns: 400 });
+});
+
+// --- Dexter, PR 2 F1 (High): a row proven by the wall clock is never killed --
+// Its "proof" can be faked by a clock stepped back, so its pid may be anyone's.
+// Only its own token-checked controls may end it: an impostor can't answer.
+test('a wall-proven row that cannot be asked is NOT killed, even with no window', async () => {
+  const { w, deps } = world({ hung: true, osCount: 0 });
+  const r = await run(deps, WALL);
+  assert.strictEqual(r.outcome, 'unproven');
+  assert.match(r.text, /wasn't stopped/);
+  assert.deepStrictEqual(w.calls.kill, []);
+  assert.ok(w.procs.has(37508));
+});
+
+test('a row with no `exact` at all is treated as wall-proven: never killed', async () => {
+  const { w, deps } = world({ hung: true, osCount: 0 });
+  const { exact, ...row } = ROW;
+  void exact;
+  assert.strictEqual((await run(deps, row)).outcome, 'unproven');
+  assert.deepStrictEqual(w.calls.kill, []);
+});
+
+test('a wall-proven row still stops through its own controls', async () => {
+  const idle = world();
+  const r1 = await run(idle.deps, WALL);
+  assert.deepStrictEqual([r1.outcome, r1.how], ['stopped', 'stop-if-idle']);
+  const older = world({ controls: ['raise', 'stop'] });
+  const r2 = await run(older.deps, WALL);
+  assert.deepStrictEqual([r2.outcome, r2.how], ['stopped', 'stop']);
+  assert.deepStrictEqual(older.w.calls.kill, []);
+});
+
+test('property: a wall-proven row is never killed, in any world', async () => {
+  await fc.assert(fc.asyncProperty(
+    fc.record({
+      windows: fc.integer({ min: 0, max: 2 }),
+      osCount: fc.constantFrom(undefined, null, 0, 1),
+      hung: fc.boolean(),
+      controls: fc.constantFrom(ALL, ['raise', 'stop'], ['raise']),
+      tokenMissing: fc.boolean(),
+      otherOnPort: fc.boolean(),
+    }),
+    async (s) => {
+      const { w, deps } = world({ windows: s.windows, osCount: s.osCount, hung: s.hung, controls: s.controls });
+      if (s.tokenMissing) w.token = null;
+      if (s.otherOnPort) w.identity = { ...w.identity, pid: 4444 };
+      await run(deps, WALL);
+      assert.deepStrictEqual(w.calls.kill, []);
+    }), { numRuns: 300 });
 });
