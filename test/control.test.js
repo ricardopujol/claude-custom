@@ -237,6 +237,18 @@ test('stop and raise frames are control, never typed into the pty', () => {
   }
 });
 
+test('a lock-stop-holder frame is control, never typed into the pty', () => {
+  // *Stop that session*. Off CONTROL_TYPES it would be typed as literal JSON
+  // into the pty -- and the host's hello would not list it, so the pane's
+  // request would never be honoured.
+  const written = [];
+  let dispatchedWith = null;
+  const result = handleFrame('{"type":"lock-stop-holder"}', (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+  assert.strictEqual(result.handled, true);
+  assert.deepStrictEqual(written, []);
+  assert.deepStrictEqual(dispatchedWith, { type: 'lock-stop-holder' });
+});
+
 // --- raiseTargets: who a `raise` frame comes forward for ---------------------
 
 test('raiseTargets leaves out the sender: a one-shot client is not a window', () => {

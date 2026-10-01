@@ -142,3 +142,14 @@ test('closeLabel with no or an unknown tabmode is today\'s Close window', () => 
   assert.strictEqual(ws.lockOverlay(lock, NOW, { tabmode: 'weird' }).closeLabel, 'Close window');
   assert.strictEqual(ws.lockOverlay(lock, NOW, null).closeLabel, 'Close window');
 });
+
+// --- Stop that session (host/stop-holder.js does the proving) -----------------
+
+test('canStop is offered only when the holder names a pid to prove (null is never pid 0)', () => {
+  const blocked = (pid) => ({ state: 'blocked', holder: { pid, startedAt: 5, port: 7701, claudePid: null } });
+  assert.strictEqual(ws.lockOverlay(blocked(4242), NOW).canStop, true);
+  for (const pid of [null, undefined, 0, -1, 1.5, '4242', NaN]) {
+    assert.strictEqual(ws.lockOverlay(blocked(pid), NOW).canStop, false, String(pid));
+  }
+  assert.strictEqual(ws.lockOverlay({ state: 'blocked' }, NOW).canStop, false, 'no holder at all');
+});

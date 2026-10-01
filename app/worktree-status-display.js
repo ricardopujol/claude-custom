@@ -66,10 +66,13 @@ function lockOverlay(lock, now, opts) {
   // *Go to that session* needs somewhere to go: a positive integer port. A null
   // port is NOT port 0 (Number(null) is 0).
   const canGoTo = typeof h.port === 'number' && Number.isInteger(h.port) && h.port > 0;
+  // *Stop that session* needs a pid to prove (host/stop-holder.js does the
+  // proving, and refuses a holder with a window open).
+  const canStop = isPid(h.pid);
   const tabmode = opts && typeof opts === 'object' ? opts.tabmode : undefined;
   return {
     title: 'Another session is running in this worktree', detail, canOverride: true,
-    canGoTo, closeLabel: closeLabelFor(tabmode),
+    canGoTo, canStop, closeLabel: closeLabelFor(tabmode),
   };
 }
 

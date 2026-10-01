@@ -58,6 +58,7 @@ function renderLock(lock) {
     document.getElementById('lock-open-anyway').hidden = !overlay.canOverride;
     // Only where there is a shell to ask (a plain page has no harness bridge).
     document.getElementById('lock-go-to').hidden = !(overlay.canGoTo && window.harness && window.harness.goToSession);
+    document.getElementById('lock-stop').hidden = !overlay.canStop;
     const close = document.getElementById('lock-close');
     close.hidden = overlay.closeLabel === null;
     if (overlay.closeLabel !== null) close.textContent = overlay.closeLabel;
@@ -91,6 +92,12 @@ function renderBranchHealth(health) {
 }
 document.getElementById('lock-open-anyway').addEventListener('click', () => {
   send(JSON.stringify({ type: 'lock-override' }));
+});
+// *Stop that session*: the host proves the holder, refuses one with a window
+// open, and answers with a `lock-stop` message whose text lands in the note.
+document.getElementById('lock-stop').addEventListener('click', () => {
+  document.getElementById('lock-goto-note').textContent = 'Stopping that session...';
+  send(JSON.stringify({ type: 'lock-stop-holder' }));
 });
 // In a shell (a tab, or a single-tab window) window.close() would only tear down
 // THIS page, not end anything: main decides what closing means. A plain page
@@ -3166,6 +3173,12 @@ function handleControl(msg) {
   }
   if (msg.type === 'lock') {
     renderLock(msg.lock);
+    return;
+  }
+  if (msg.type === 'lock-stop') {
+    // What came of *Stop that session*. The host sends it after its re-check,
+    // whose `lock` repaint would otherwise clear this note.
+    document.getElementById('lock-goto-note').textContent = typeof msg.text === 'string' ? msg.text : '';
     return;
   }
   if (msg.type === 'terminal-sessions') {

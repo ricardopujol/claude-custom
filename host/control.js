@@ -78,6 +78,9 @@ const CONTROL_TYPES = new Set([
   // --dangerously-skip-permissions. `raise`: *Go to that session* asks the
   // host to bring its windows forward -- the same hole if it is left off.
   'stop', 'raise',
+  // *Stop that session* on a blocked pane: this host ends the lock's holder
+  // (host/stop-holder.js). Typed into the pty it would be the hole above.
+  'lock-stop-holder',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed

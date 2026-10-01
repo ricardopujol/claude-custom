@@ -192,3 +192,17 @@ test('an identity file holding a JSON scalar is ABSENT, not a crash', () => {
   assert.strictEqual(readIdentity({ dir, port: 7700, isAlive: ALIVE }), null,
     'a blank cwd is not an identity');
 });
+
+test('readTokenFile: the trimmed per-port token, or null for missing, empty or a bad port', () => {
+  const { readTokenFile } = require('../host/host-identity');
+  const dir = tmp();
+  fs.mkdirSync(path.join(dir, 'hosts'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'hosts', '7700.token'), 'abc123\r\n');
+  fs.writeFileSync(path.join(dir, 'hosts', '7701.token'), '  \n');
+  assert.strictEqual(readTokenFile({ dir, port: 7700 }), 'abc123');
+  assert.strictEqual(readTokenFile({ dir, port: 7701 }), null);
+  assert.strictEqual(readTokenFile({ dir, port: 7702 }), null);
+  for (const port of [null, 0, -1, 1.5, '7700', 70000]) {
+    assert.strictEqual(readTokenFile({ dir, port }), null, String(port));
+  }
+});

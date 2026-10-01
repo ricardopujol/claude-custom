@@ -133,3 +133,22 @@ test('F2 (Dexter, PR #75): the token files are written only AFTER the bind succe
   assert.ok(HOST.indexOf('writeFileSync(PORT_TOKEN_FILE') < HOST.indexOf('new WebSocketServer('),
     'the write lives in the helper, which is defined above but only CALLED after listening');
 });
+
+test('Stop that session: dispatched only for a blocked host with no session, one at a time', () => {
+  const at = HOST.indexOf("msg.type === 'lock-stop-holder'");
+  assert.ok(at !== -1, 'host.js must dispatch lock-stop-holder');
+  const branch = HOST.slice(at, HOST.indexOf('return;\n    }', at));
+  assert.match(branch, /lockState\.state !== 'blocked'/, 'only a blocked window may stop the holder');
+  assert.match(branch, /term !== null|term\)/, 'never once this host has a session of its own');
+  assert.match(branch, /stopLockHolder\(\)/);
+
+  const body = fnBody('stopLockHolder');
+  assert.match(body, /if \(lockBusy\b/, 'one stop, re-check or override at a time');
+  assert.match(body, /lockBusy = true/);
+  assert.match(body, /shown: lockState\.holder/, 'only the holder the pane showed');
+  assert.match(body, /broadcastControl\(\{ type: 'lock-stop'/, 'the pane is told what came of it');
+  assert.match(body, /finally \{\s*lockBusy = false;/);
+  // Once the holder is gone (or the lock changed), re-check at once rather
+  // than leave the pane up for up to 30 s.
+  assert.match(HOST, /STOP_RECHECKS\.has\(r\.outcome\)[\s\S]{0,80}recheckLock\(\)/);
+});

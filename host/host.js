@@ -23,7 +23,7 @@ const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
-const { killTree } = require('./kill-tree');
+const { killTree, killPidTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
@@ -69,13 +69,17 @@ const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
-const { writeIdentity, fileFor } = require('./host-identity');
+const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-identity');
 const { pickerPayload, createProjectsReader } = require('./project-picker');
 const { resolveLaunchTarget } = require('./launch-target');
 const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
-const { createSelfStartTime } = require('./proc-start');
+const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
+const { readLock } = require('./lock-breaker');
+// The one-shot client for ANOTHER host's controls; `sendControl` below is ours to our windows.
+const { sendControl: sendHostControl } = require('./host-client');
+const { stopHolder } = require('./stop-holder');
 const { gateFromAcquire, gateOverride, gateOnBootError, gateAfterRecheck, gateRecheck, createIdleWatch } =
   require('./session-gate');
 const { liveSessionsIn } = require('./session-registry');
@@ -1653,6 +1657,42 @@ async function overrideSession() {
   }
 }
 
+// *Stop that session* (host/stop-holder.js): end the holder the pane showed --
+// never one with a window open, never one that can't be proven to be the
+// lock's process -- then re-check at once, so this window takes the lock
+// without waiting out the 30 s timer. A changed lock is re-checked too: the
+// pane then names whoever holds it now.
+const STOP_RECHECKS = new Set(['stopped', 'gone', 'changed']);
+const harnessOf = install => path.join(install, '.harness');
+async function stopLockHolder() {
+  if (lockBusy) return;
+  lockBusy = true;
+  let r;
+  try {
+    r = await stopHolder({ lockPath: SESSION_LOCK, shown: lockState.holder }, {
+      readLock,
+      isAlive: procAlive,
+      startTimes,
+      readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
+      readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
+      sendControl: sendHostControl,
+      killPidTree,
+      sleep: ms => new Promise(res => setTimeout(res, ms)),
+      now: Date.now,
+    });
+  } catch (err) {
+    console.log('[host] Stop that session failed:', err && err.message);
+    r = { outcome: 'failed', text: "Couldn't stop that session." };
+  } finally {
+    lockBusy = false;
+  }
+  console.log(`[host] Stop that session: ${r.outcome}`);
+  // Re-checked BEFORE the answer goes out: the re-check's `lock` repaint
+  // clears the pane's note, so the answer has to land after it.
+  if (STOP_RECHECKS.has(r.outcome)) await recheckLock();
+  broadcastControl({ type: 'lock-stop', outcome: r.outcome, text: r.text });
+}
+
 // Every 30 s for a host the lock kept out (session-gate gateRecheck): a
 // blocked window whose holder has gone takes the lock and starts; an
 // overridden session takes the lock once it is free, so the next window on
@@ -2078,6 +2118,16 @@ wss.on('connection', (ws) => {
         return;
       }
       overrideSession().catch((err) => console.log('[host] lock-override failed:', err && err.message));
+      return;
+    }
+    if (msg.type === 'lock-stop-holder') {
+      // *Stop that session*: only a BLOCKED window with no session of its own
+      // asks. Once this host runs claude the holder is none of its business.
+      if (lockState.state !== 'blocked' || term !== null) {
+        console.log('[host] lock-stop-holder ignored in state', lockState.state);
+        return;
+      }
+      stopLockHolder().catch((err) => console.log('[host] lock-stop-holder failed:', err && err.message));
       return;
     }
     if (msg.type === 'stop') {

@@ -94,3 +94,22 @@ test('a dismissed banner stays dismissed only for the same set of sessions', () 
   assert.match(body, /\.key/);
   assert.match(body, /dismissedTerminalKey/);
 });
+
+test('Stop that session: its own hidden button sends lock-stop-holder, and nothing else does', () => {
+  assert.match(tag('lock-stop'), /\bhidden\b/, '#lock-stop must start hidden');
+  const sends = JS.match(/type: 'lock-stop-holder'/g) || [];
+  assert.strictEqual(sends.length, 1, 'exactly one place sends lock-stop-holder');
+  const at = JS.indexOf("type: 'lock-stop-holder'");
+  const handler = JS.slice(JS.lastIndexOf("'lock-stop'", at), at);
+  assert.ok(handler.length > 0 && handler.length < 400, 'it is the Stop button that sends it');
+});
+
+test('renderLock shows Stop only when the overlay offers it', () => {
+  assert.match(fnBody('renderLock'), /getElementById\('lock-stop'\)\.hidden = !overlay\.canStop/);
+});
+
+test('the host\'s answer to Stop is shown under the buttons', () => {
+  const b = branch('lock-stop');
+  assert.match(b, /lock-goto-note/);
+  assert.match(b, /msg\.text/);
+});

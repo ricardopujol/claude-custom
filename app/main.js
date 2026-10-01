@@ -36,7 +36,7 @@ const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
-const { readIdentity } = require('../host/host-identity');
+const { readIdentity, readTokenFile } = require('../host/host-identity');
 const { readLook } = require('../host/style');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
@@ -887,11 +887,7 @@ app.whenReady().then(async () => {
       control: (c) => sendControl(c),
       // planGoTo's readers: another install's identity file and token, by its dir.
       identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
-      readToken: (install, port) => {
-        try {
-          return fs.readFileSync(path.join(install, '.harness', 'hosts', `${port}.token`), 'utf8').trim() || null;
-        } catch { return null; }
-      },
+      readToken: (install, port) => readTokenFile({ dir: path.join(install, '.harness'), port }),
     },
     views: {
       create: createTabView,
