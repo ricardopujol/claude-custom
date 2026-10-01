@@ -8,7 +8,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
-  ZONES, MIN, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule, setSize, toggleAll,
+  ZONES, MIN, RAIL, TERM_MIN, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule, setSize, toggleAll,
+  fitSizes, shapeOf,
 } = require('../app/dock-layout');
 
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'models', 'projects', 'style'];
@@ -260,4 +261,67 @@ test('opening a zone by hand forgets the Ctrl+B memory', () => {
   const closed = toggleAll(defaultLayout(IDS));
   assert.strictEqual(selectModule(closed, 'vault').restore, null);
   assert.strictEqual(moveModule(closed, 'vault', 'top').restore, null);
+});
+
+// --- fitSizes: what the zones actually get in this window (S7) ---------------
+
+const open = (zones, size) => normalizeLayout({ zones, size }, IDS);
+
+test('a zone gets the size it was dragged to when the window has room', () => {
+  const s = fitSizes(open({ right: IDS }, { right: 260 }), { width: 1200, height: 800 });
+  assert.deepStrictEqual(s, { left: 0, right: 260, top: 0, bottom: 0 });
+});
+
+test('an empty zone takes no space; a collapsed one only its rail', () => {
+  const l = selectModule(moveModule(defaultLayout(IDS), 'vault', 'top'), 'vault');   // top collapsed
+  const s = fitSizes(l, { width: 1200, height: 800 });
+  assert.strictEqual(s.left, 0);
+  assert.strictEqual(s.bottom, 0);
+  assert.strictEqual(s.top, RAIL.wide);
+  const side = fitSizes(selectModule(defaultLayout(IDS), 'agents'), { width: 1200, height: 800 });
+  assert.strictEqual(side.right, RAIL.side);
+});
+
+test('two wide side zones shrink together so the terminal keeps its minimum width', () => {
+  const l = open({ left: ['vault'], right: IDS.filter(id => id !== 'vault') }, { left: 600, right: 600 });
+  const s = fitSizes(l, { width: 1000, height: 800 });
+  assert.ok(s.left + s.right <= 1000 - TERM_MIN.width, JSON.stringify(s));
+  assert.ok(s.left >= MIN.side && s.right >= MIN.side);
+  assert.strictEqual(s.left, s.right);          // proportional: equal asked, equal given
+});
+
+test('one wide side zone is capped at what leaves the terminal its minimum', () => {
+  const s = fitSizes(open({ right: IDS }, { right: 900 }), { width: 1000, height: 800 });
+  assert.strictEqual(s.right, 1000 - TERM_MIN.width);
+});
+
+test('a collapsed zone\'s rail counts against the room the open one may take', () => {
+  const l = selectModule(open({ left: ['vault'], right: IDS.filter(id => id !== 'vault') }, { right: 900 }), 'vault');
+  const s = fitSizes(l, { width: 1000, height: 800 });
+  assert.strictEqual(s.left, RAIL.side);
+  assert.strictEqual(s.right, 1000 - TERM_MIN.width - RAIL.side);
+});
+
+test('top and bottom shrink together the same way, against the height', () => {
+  const l = open({ top: ['vault'], bottom: ['fog'], right: IDS.filter(id => id !== 'vault' && id !== 'fog') },
+    { top: 400, bottom: 400 });
+  const s = fitSizes(l, { width: 1200, height: 800 });
+  assert.ok(s.top + s.bottom <= 800 - TERM_MIN.height, JSON.stringify(s));
+  assert.ok(s.top >= MIN.wide && s.bottom >= MIN.wide);
+});
+
+test('a window too small for the minimums still gives every open zone its minimum', () => {
+  const l = open({ left: ['vault'], right: IDS.filter(id => id !== 'vault') }, { left: 300, right: 300 });
+  const s = fitSizes(l, { width: 400, height: 300 });
+  assert.strictEqual(s.left, MIN.side);
+  assert.strictEqual(s.right, MIN.side);
+});
+
+test('a junk viewport is treated as no room, never as NaN sizes', () => {
+  const s = fitSizes(open({ right: IDS }, { right: 260 }), { width: undefined, height: null });
+  assert.strictEqual(s.right, MIN.side);
+});
+
+test('left and right are tall; top and bottom are wide', () => {
+  assert.deepStrictEqual(ZONES.map(shapeOf), ['tall', 'tall', 'wide', 'wide']);
 });

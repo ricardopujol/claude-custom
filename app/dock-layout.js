@@ -182,8 +182,46 @@ function toggleAll(layout) {
   return l;
 }
 
+// What a collapsed zone keeps: a vertical tab rail on the sides, the tab bar on top/bottom.
+const RAIL = { side: 28, wide: 30 };
+// The terminal is the point of the window: zones never squeeze it below this.
+const TERM_MIN = { width: 320, height: 160 };
+
+const shapeOf = z => (isSide(z) ? 'tall' : 'wide');
+
+/**
+ * The pixels each zone gets in a window this size: 0 when empty, its rail when
+ * collapsed, else what the user dragged -- shrunk, proportionally and never
+ * below the minimum, when the two zones on an axis would leave the terminal
+ * less than TERM_MIN. The stored size is untouched, so widening the window
+ * gives the user's own choice back (today's rosterWidth rule, kept).
+ */
+function fitSizes(layout, viewport) {
+  const vp = isObject(viewport) ? viewport : {};
+  const dim = v => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  const out = {};
+  const fitAxis = (a, b, room, termMin, min, rail) => {
+    const want = {};
+    let used = 0;
+    for (const z of [a, b]) {
+      if (!layout.zones[z].length) out[z] = 0;
+      else if (layout.active[z] === null) { out[z] = rail; used += rail; }
+      else want[z] = layout.size[z];
+    }
+    const openZones = Object.keys(want);
+    const total = openZones.reduce((s, z) => s + want[z], 0);
+    const avail = room - termMin - used;
+    const factor = total > avail ? Math.max(0, avail) / total : 1;
+    for (const z of openZones) out[z] = Math.max(min, Math.floor(want[z] * factor));
+  };
+  fitAxis('left', 'right', dim(vp.width), TERM_MIN.width, MIN.side, RAIL.side);
+  fitAxis('top', 'bottom', dim(vp.height), TERM_MIN.height, MIN.wide, RAIL.wide);
+  return { left: out.left, right: out.right, top: out.top, bottom: out.bottom };
+}
+
 const API = {
-  ZONES, MIN, DEFAULT_SIZE, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule, setSize, toggleAll,
+  ZONES, MIN, RAIL, TERM_MIN, DEFAULT_SIZE, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule,
+  setSize, toggleAll, fitSizes, shapeOf,
 };
 
 // One namespace on the page (`window.dockLayout`), not ten loose globals.
