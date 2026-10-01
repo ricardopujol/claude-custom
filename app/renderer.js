@@ -196,14 +196,39 @@ const term = new Terminal({
   // confirm()s, then window.open()s a BLANK page and fills the address in
   // afterwards -- main only ever saw `about:blank`, and Windows said no app
   // opens it (fix/terminal-links, 2026-10-01). Main opens it instead, http(s)
-  // only, in the default browser.
+  // only, in the default browser, on a plain click; hovering shows the REAL
+  // address first, since a link's text can name another site (Ricardo's
+  // choice, PR #81 Dexter F1).
   linkHandler: {
-    activate: (_event, uri) => openTerminalLink(uri),
+    activate: (event, uri) => openTerminalLink(event, uri),
+    hover: (_event, uri) => showLinkTarget(linkClick.targetText(uri)),
+    leave: () => showLinkTarget(null),
   },
 });
 
-function openTerminalLink(uri) {
-  if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(uri);
+// xterm calls `activate` on EVERY mouseup over a link: linkClick decides which
+// one is a click that opens it (PR #81 Dexter F2).
+let lastLinkOpened = null;
+function openTerminalLink(event, uri) {
+  const r = linkClick.shouldOpen(event, uri, lastLinkOpened, Date.now());
+  lastLinkOpened = r.last;
+  if (!r.open || !window.harness || typeof window.harness.openExternal !== 'function') return;
+  Promise.resolve(window.harness.openExternal(uri)).then((opened) => {
+    if (opened === false) flashLinkTarget(linkClick.refusedText(uri));
+  }, () => {});
+}
+
+// The line under the terminal that says where a link goes (or that it wasn't opened).
+let linkTargetTimer = null;
+function showLinkTarget(text) {
+  const el = document.getElementById('link-target');
+  clearTimeout(linkTargetTimer);
+  el.textContent = text || '';
+  el.hidden = !text;
+}
+function flashLinkTarget(text) {
+  showLinkTarget(text);
+  linkTargetTimer = setTimeout(() => showLinkTarget(null), 4000);
 }
 
 const fit = new FitAddon.FitAddon();

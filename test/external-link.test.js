@@ -48,6 +48,12 @@ test('an absurdly long link is refused', () => {
   assert.strictEqual(externalUrl(`https://example.com/${'a'.repeat(9000)}`), null);
 });
 
+test('Dexter F3 (PR #81): the cap holds for the NORMALISED link too (percent-encoding can grow it 9x)', () => {
+  const u = `https://a.example/${String.fromCharCode(0x20ac).repeat(1000)}`;    // 1018 chars in, 9018 out
+  assert.ok(u.length < 8192);
+  assert.strictEqual(externalUrl(u), null);
+});
+
 test('Miguel #7 PROPERTY: an accepted link is accepted again unchanged (normalising is idempotent)', () => {
   fc.assert(fc.property(fc.oneof(fc.webUrl(), fc.string()), (u) => {
     const once = externalUrl(u);

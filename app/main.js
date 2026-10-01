@@ -543,10 +543,10 @@ function registerIpc() {
     : { kind: 'explain', text: "That session's window can't be found." }));
   // A link clicked in a tab's terminal (fix/terminal-links): straight to the
   // default browser, no prompt -- only what openInBrowser accepts.
-  ipcMain.on('tab:openExternal', (e, url) => {
-    if (!isTabView(e.sender)) return;
+  ipcMain.handle('tab:openExternal', (e, url) => {
+    if (!isTabView(e.sender)) return false;
     const tab = tabShell.tabForSender(e.sender);
-    openInBrowser(url, tab ? tab.key : 'a tab');
+    return openInBrowser(url, tab ? tab.key : 'a tab');
   });
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a

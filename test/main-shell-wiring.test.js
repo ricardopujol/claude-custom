@@ -256,8 +256,9 @@ test('a link from a tab page opens only through openInBrowser, on a channel gate
   assert.ok(c, 'tab:openExternal is registered');
   const body = callText(MAIN, c.at);
   // Miguel #7: the gate is the handler's first statement, not merely present.
-  assert.match(body, /^ipcMain\.on\(\s*'tab:openExternal',\s*\(e, url\) => \{\s*if \(!isTabView\(e\.sender\)\) return;/);
-  assert.match(body, /openInBrowser\(url, /);
+  assert.match(body, /^ipcMain\.handle\(\s*'tab:openExternal',\s*\(e, url\) => \{\s*if \(!isTabView\(e\.sender\)\) return false;/);
+  // It answers whether the link was opened, so the page can say when it wasn't (Dexter F5).
+  assert.match(body, /return openInBrowser\(url, /);
 });
 
 test('nothing reaches shell.openExternal unchecked -- above all the about:blank of a blank window.open', () => {
