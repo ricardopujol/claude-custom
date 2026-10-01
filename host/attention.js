@@ -49,34 +49,30 @@ const runningAgents = p => (Array.isArray(p.background_tasks) ? p.background_tas
 // one event is how a notification system loses its credibility.
 const DEFAULT_DEBOUNCE_MS = 4000;
 
-// A held-back "finished" whose agents have all stopped, with no new turn: how
-// long the main session must stay quiet before it is raised anyway.
-const DEFAULT_SETTLE_MS = 60000;
-// A pending backstop is no reason for a process to stay alive.
-function unrefTimer(fn, ms) {
-  const t = setTimeout(fn, ms);
-  if (t && typeof t.unref === 'function') t.unref();
-  return t;
-}
+// Agents seen to stop, remembered so a Stop that still lists one as running
+// isn't held for it (Dexter, notify round 2 F2: its SubagentStop can reach us
+// first -- host/mood-machine.js guards the same race with its endedIds).
+// Bounded: only recent ones can race.
+const ENDED_MEMORY = 200;
 
 // `agents` is a provider, not a value: the roster changes between the moment
 // attention is wired up and the moment a turn ends.
 function createAttention({ now = Date.now, project = '', agents = () => [],
-                          debounceMs = DEFAULT_DEBOUNCE_MS, settleMs = DEFAULT_SETTLE_MS,
-                          setTimer = unrefTimer, clearTimer = clearTimeout } = {}) {
+                          debounceMs = DEFAULT_DEBOUNCE_MS } = {}) {
   const emitter = new EventEmitter();
   // Debounced per KIND, not globally: a request for input must not be swallowed
   // because a turn happened to end a moment earlier.
   const lastSent = new Map();
 
   // A Stop held back while agents ran (Dexter, notify F1): the agent ids it
-  // waited on, or null. Nothing guarantees another Stop -- a SubagentStop that
-  // lands just after (the measured 1 ms race), a resume that never notifies,
-  // a follow-up turn that ends in StopFailure -- so once every one of them has
-  // stopped, "finished" comes from the first of: a clean Stop, Claude Code's
-  // own idle_prompt, or `settleMs` of a quiet main session.
+  // waited on, or null. Nothing guarantees another Stop -- a resume that never
+  // notifies, a follow-up turn that ends in StopFailure -- so once every one
+  // of them has stopped, Claude Code's own idle_prompt raises "finished"
+  // (Ricardo, 2026-10-01: idle_prompt only). A settle timer was tried and
+  // fired into a working session: the host never sees UserPromptSubmit and
+  // hooks only Agent/Task/Bash, so it can't know the main session is quiet.
   let held = null;
-  let timer = null;
+  const ended = new Set();
 
   function raise(kind, { title, body, urgent }) {
     const t = now();
@@ -94,21 +90,13 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     });
   }
 
-  function disarm() {
-    if (timer !== null) { clearTimer(timer); timer = null; }
-  }
-  function release() { held = null; disarm(); }
   const settled = () => held !== null && held.ids.size === 0 && held.unnamed === 0;
-  function arm() {
-    disarm();
-    timer = setTimer(() => { timer = null; if (settled()) { release(); finished({}); } }, settleMs);
-  }
 
   function handle({ event, payload }) {
     const p = payload || {};
 
     if (event === 'Notification') {
-      if (p.notification_type === 'idle_prompt' && settled()) { release(); finished({}); return; }
+      if (p.notification_type === 'idle_prompt' && settled()) { held = null; finished({}); return; }
       if (p.notification_type !== undefined && !NEEDS_INPUT.has(p.notification_type)) return;
       raise('input-needed', {
         title: project ? `${project} needs you` : 'Claude needs you',
@@ -119,8 +107,8 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     }
 
     if (event === 'Stop') {
-      release();
-      const running = runningAgents(p);
+      held = null;
+      const running = runningAgents(p).filter(t => !ended.has(t.id));
       if (running.length) {
         const ids = new Set(running.map(t => t.id).filter(id => typeof id === 'string' && id));
         // One with no id can't be crossed off: only a later Stop resolves it.
@@ -131,18 +119,20 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
       return;
     }
 
-    if (held === null) return;
     if (event === 'SubagentStop') {
-      if (held.ids.delete(p.agent_id) && settled()) arm();
-    } else if (event === 'UserPromptSubmit' || event === 'SessionEnd') {
-      release();                                   // you're here, or it's over
-    } else if (timer !== null && (event === 'PreToolUse' || event === 'PostToolUse') && !p.agent_id) {
-      arm();                                       // the main session is working again
+      if (typeof p.agent_id === 'string' && p.agent_id) {
+        ended.add(p.agent_id);
+        if (ended.size > ENDED_MEMORY) ended.delete(ended.values().next().value);
+        if (held !== null) held.ids.delete(p.agent_id);
+      }
+      return;
     }
+
+    if (event === 'SessionEnd') { held = null; ended.clear(); }
   }
 
   emitter.handle = handle;
   return emitter;
 }
 
-module.exports = { createAttention, DEFAULT_DEBOUNCE_MS, DEFAULT_SETTLE_MS };
+module.exports = { createAttention, DEFAULT_DEBOUNCE_MS };

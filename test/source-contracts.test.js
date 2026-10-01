@@ -190,7 +190,10 @@ test('host.js logs every Notification hook with its notification_type', () => {
   assert.match(before, /notification_type/);
 });
 
-// The default settle timer must not hold a process open on its own.
-test('attention.js unrefs its default settle timer', () => {
-  assert.match(read('host/attention.js'), /\.unref\(\)/);
+// Dexter, notify round 2 F1 (High): a settle timer fired "finished" into a
+// working session, because the host never sees UserPromptSubmit and hooks only
+// Agent/Task/Bash. Ricardo chose idle_prompt only (2026-10-01): no timers here.
+test('attention.js arms no timer: only Claude Code knows when the session is quiet', () => {
+  const src = read('host/attention.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /setTimeout|setInterval/);
 });
