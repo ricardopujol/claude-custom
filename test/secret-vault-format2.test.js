@@ -322,6 +322,43 @@ test('MIGRATION, locked FORMAT 1: the first successful unlock seals every entry 
   assert.strictEqual(readVault(file).gen, gen1, 'no further write: the gen token must not move');
 });
 
+test('MIGRATION WRITE FAILS, THEN add(): the file stays FORMAT 1, opens, and the next unlock migrates', () => {
+  // Dexter #1 / Miguel B1, PR #79. The migration is best-effort, so a failed
+  // write is swallowed -- but persistLocked used to stamp FORMAT 2 on the
+  // NEXT write regardless, leaving a lock with no `fp` on a format-2 file,
+  // which `load()` rightly reads as a removed checksum: damaged, with the
+  // user holding the right key.
+  const file = tmp();
+  const v0 = open(file);
+  v0.add({ label: 'alpha', secret: 'sensitive-a', shared: true });
+  v0.setKey(KEY);
+  const j = readVault(file);
+  for (const e of j.entries) { delete e.sealed; e.label = 'alpha'; e.note = ''; }
+  delete j.lock.fp;
+  j.format = 1;
+  writeVault(file, j);
+
+  let failNext = true;
+  const v = createVault({
+    file, crypto: fakeCrypto(), scrypt: FAST,
+    onWrite: () => { if (failNext) { failNext = false; throw new Error('EPERM (simulated)'); } },
+  });
+  assert.strictEqual(v.unlock(KEY).ok, true, 'the unlock stands even though its migration did not land');
+  v.add({ label: 'beta', secret: 'sensitive-b', shared: true });
+
+  const onDisk = readVault(file);
+  assert.strictEqual(onDisk.lock.fp, undefined, 'precondition: the checksum is still missing');
+  assert.strictEqual(onDisk.format, 1, 'a lock with no fp must not be stamped FORMAT 2');
+
+  const reopened = open(file);
+  assert.notStrictEqual(reopened.lockState().damaged, true, 'the vault must not read as damaged');
+  assert.strictEqual(reopened.unlock(KEY).ok, true);
+  const migrated = readVault(file);
+  assert.strictEqual(migrated.format, 2, 'the next unlock retries the migration');
+  assert.ok(migrated.lock.fp);
+  assert.deepStrictEqual(reopened.list(ANY).map(r => r.label).sort(), ['alpha', 'beta']);
+});
+
 // ---------------------------------------------------------------------------
 // Migration: keyless FORMAT 1 vault
 // ---------------------------------------------------------------------------
@@ -564,4 +601,49 @@ test('a SEALED entry is visible from a list of paths and unseals there; scope it
   assert.deepStrictEqual(rows.map(r => [r.label, r.note, r.unreadable]), [['root-scoped', 'old layout', undefined]]);
   assert.strictEqual(v.get(e.id, { project: [DEV, ROOT] }), 's-root');
   assert.deepStrictEqual(v.list({ project: [OTHER, DEV] }), []);
+});
+
+// ---------------------------------------------------------------------------
+// A broken sealed label/note must not strand a healthy secret (Dexter #2, #3, PR #79)
+// ---------------------------------------------------------------------------
+
+const brokenNoteVault = () => {
+  const file = tmp();
+  const v0 = open(file);
+  v0.setKey(KEY);
+  const e = v0.add({ label: 'healthy', secret: 'still-here', note: 'will break', shared: true });
+  const j = readVault(file);
+  j.entries.find(x => x.id === e.id).note = 'AAAA';   // decodes, too short to unwrap
+  writeVault(file, j);
+  const v = open(file);
+  assert.strictEqual(v.unlock(KEY).ok, true);
+  return { v, id: e.id };
+};
+
+test('setKey re-keys the SECRET of a sealed entry whose note will not unwrap', () => {
+  const { v, id } = brokenNoteVault();
+  assert.strictEqual(v.get(id, ANY), 'still-here', 'precondition');
+  const res = v.setKey('a new key');
+  assert.strictEqual(res.ok, true);
+  assert.deepStrictEqual(res.failed, [], 'the secret was carried, so nothing is reported unreadable');
+  assert.strictEqual(v.get(id, ANY), 'still-here', 'the secret must follow the new key');
+});
+
+test('removeKey unwraps the SECRET of a sealed entry whose note will not unwrap', () => {
+  const { v, id } = brokenNoteVault();
+  const res = v.removeKey();
+  assert.strictEqual(res.ok, true);
+  assert.deepStrictEqual(res.failed, []);
+  assert.strictEqual(v.get(id, ANY), 'still-here');
+  const [row] = v.list(ANY);
+  assert.strictEqual(row.label, 'healthy');
+  assert.strictEqual(row.note, '');
+});
+
+test('list() keeps a sealed label that unwraps when only the NOTE is broken', () => {
+  const { v } = brokenNoteVault();
+  const [row] = v.list(ANY);
+  assert.strictEqual(row.label, 'healthy');
+  assert.strictEqual(row.note, '');
+  assert.strictEqual(row.unreadable, true, 'still flagged: part of the entry was lost');
 });

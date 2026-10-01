@@ -447,8 +447,16 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
           throw new Error('entry is marked sealed but no key was supplied to unseal it');
         }
         const raw = from ? unwrap(e.secret, from) : Buffer.from(e.secret, 'base64');
-        const label = e.sealed ? unwrap(e.label, from).toString('utf8') : e.label;
-        const note = e.sealed ? unwrap(e.note, from).toString('utf8') : (e.note || '');
+        // THE SECRET DECIDES WHETHER THE ENTRY IS CARRIED, not its label or
+        // note (Dexter #2, PR #79). A sealed label/note that will not unwrap
+        // under `from` is lost under every key this vault holds, so carrying
+        // it unchanged only stranded a HEALTHY secret under the old key. It
+        // becomes the placeholder `list()` already showed in its place.
+        const unseal = (field, fallback) => {
+          try { return unwrap(e[field], from).toString('utf8'); } catch { return fallback; }
+        };
+        const label = e.sealed ? unseal('label', `(unreadable entry ${e.id.slice(0, 8)})`) : e.label;
+        const note = e.sealed ? unseal('note', '') : (e.note || '');
         if (to) {
           return {
             ...e,
@@ -692,10 +700,10 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     //
     // ONE WRITE, NOT TWO. `rewrapAll(sessionKey, sessionKey)` looks like a
     // no-op key-for-key, but it is not: for an entry with no `sealed` marker it
-    // wraps `label`/`note` for the FIRST time; for one already sealed (a
-    // format-2 file that reached here with `format` still behind, an edge case
-    // `state.format < FORMAT` alone would not otherwise imply) it re-wraps them
-    // under the same key. Either way it is the same tolerant, per-entry
+    // wraps `label`/`note` for the FIRST time; for one already sealed (an
+    // `add()` that landed after an earlier migration write failed -- the file
+    // kept format 1 because its lock still had no `fp`, see `persistLocked`)
+    // it re-wraps them under the same key. Either way it is the same tolerant, per-entry
     // machinery as `setKey`, so a torn entry is reported in `failed` and
     // carried through rather than aborting the migration -- but `failed` has
     // nowhere to go from inside `unlock`, which is why the whole thing is
@@ -1147,7 +1155,16 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
     // write, whenever it comes, always lands on the current number. Read-only
     // paths (`load`, `list`, `get`) never reach here, so a vault nobody ever
     // touches again correctly stays exactly as old as it is.
-    candidate.format = FORMAT;
+    //
+    // EXCEPT a lock record with no `fp`, which FORMAT 2 forbids (Dexter #1 /
+    // Miguel B1, PR #79). Only `unlock`'s migration may add the checksum --
+    // it is the one place that has just proven the record intact -- and that
+    // migration is best-effort. Stamping 2 over a lock it failed to checksum
+    // made the next `load()` read the vault as damaged. Such a file keeps its
+    // old number, so the next unlock sees `format < FORMAT` and tries again.
+    candidate.format = lockMissingChecksum(candidate.lock, FORMAT)
+      ? (Number.isInteger(candidate.format) ? candidate.format : 1)
+      : FORMAT;
 
     if (onWrite) onWrite(tmp);
     // The WRITE is inside the try as well as the rename. Miguel, review of the
@@ -1171,9 +1188,10 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
       loadedGen = candidate.gen;        // our write is now the one on disk
     } catch (err) {
       // BEST EFFORT, and deliberately described as such. Each abandoned temp
-      // holds the WHOLE vault, and only the `secret` field is encrypted, so
-      // every one is a readable copy of every label and note -- with a
-      // millisecond in its name, so they accumulate.
+      // holds the WHOLE vault. With a key held, labels and notes are sealed
+      // like secrets; without one, only `secret` is encrypted, so every temp
+      // is a readable copy of every label and note -- with a millisecond in
+      // its name, so they accumulate.
       //
       // But this cleanup is most likely to fail under exactly the condition
       // that triggers it: the rename failed because something holds a handle
@@ -1304,9 +1322,11 @@ function createVault({ file, crypto, onWrite, scrypt = SCRYPT, lockDeadlineMs } 
         let note = e.note || '';
         let unreadable = false;
         if (e.sealed) {
+          // Note first, in its own `try`: a broken note costs the note, not a
+          // label that unwraps fine (Dexter #3, PR #79).
+          try { note = unwrap(e.note, sessionKey).toString('utf8'); } catch { note = ''; unreadable = true; }
           try {
             label = unwrap(e.label, sessionKey).toString('utf8');
-            note = unwrap(e.note, sessionKey).toString('utf8');
           } catch {
             // ONE UNREADABLE LABEL MUST NOT TAKE THE OTHERS WITH IT -- the same
             // rule `get` states two screens down: partial loss beats total
