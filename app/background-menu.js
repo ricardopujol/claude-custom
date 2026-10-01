@@ -61,7 +61,8 @@ function menuModel(list, { now, tabsByPort = new Map() } = {}) {
   });
   let footer = null;
   if (!verified) footer = UNVERIFIED;
-  else if (items.length === 0) footer = 'No sessions running.';
+  // Scoped as the list is (Miguel Y4): this build and the builds beside it.
+  else if (items.length === 0) footer = 'No sessions running in this build or the ones beside it.';
   return { items, footer };
 }
 

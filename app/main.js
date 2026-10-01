@@ -50,6 +50,7 @@ const { windowCount, windowCounts } = require('../host/window-count');
 const { killPidTree } = require('../host/kill-tree');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
+const { menuTemplate, createBackgroundActions, popupUntilClosed } = require('./background-actions');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -525,49 +526,22 @@ async function backgroundModel() {
   return menuModel(await listBackground(), { now: Date.now(), tabsByPort });
 }
 
-// Windows menus read `&` as a mnemonic marker; a folder name is not one.
-const menuText = s => String(s).replace(/&/g, '&&');
-
-async function showBackgroundMenu() {
-  const m = await backgroundModel();
-  const template = m.items.map(it => ({
-    label: menuText(it.label),
-    submenu: [
-      { label: it.open && it.open.kind === 'select-tab' ? 'Go to its tab' : 'Open', enabled: it.open !== null,
-        click: () => openBackground(it.open) },
-      { label: 'Stop…', enabled: it.stop, click: () => { stopBackground(it.row).catch(() => {}); } },
-    ],
-  }));
-  if (m.footer) {
-    if (template.length) template.push({ type: 'separator' });
-    template.push({ label: menuText(m.footer), enabled: false });
-  }
-  if (!win || win.isDestroyed()) return;
-  await new Promise(res => Menu.buildFromTemplate(template).popup({ window: win, callback: res }));
-}
-
-// A tab here is selected; anything else gets a window of its own on that
-// host's exact port, which attaches to it or refuses (host/launch-target.js).
-// Answers what it did: { selected } | { pid } of the new window | null.
-function openBackground(open) {
-  if (!open) return null;
-  if (open.kind === 'select-tab') { tabShell.select(open.key); focusWindow(); return { selected: open.key }; }
-  try {
+// The effects, with everything they touch handed in (app/background-actions.js).
+const backgroundActions = createBackgroundActions({
+  select: key => tabShell.select(key),
+  focusWindow,
+  // Attach-only: it attaches to that host or refuses (host/launch-target.js).
+  spawnWindow: ({ cwd, port }) => {
     const child = spawn(process.execPath, [INSTALL_DIR], {
-      detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd: open.cwd, port: open.port }),
+      detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd, port }),
     });
     child.on('error', err => console.log('[main] Open (background) failed:', err.message));
     child.unref();
-    console.log(`[main] Open (background): a window on port ${open.port} for ${open.cwd} (pid ${child.pid})`);
     return { pid: child.pid };
-  } catch (err) {
-    console.log('[main] Open (background) failed:', err && err.message);
-    return null;
-  }
-}
-
-async function stopBackground(row) {
-  if (!PROBE_PORT && win && !win.isDestroyed()) {
+  },
+  // The probe driver has nobody to click.
+  confirmStop: async (row) => {
+    if (PROBE_PORT || !win || win.isDestroyed()) return true;
     const ok = await dialog.showMessageBox(win, {
       type: 'question',
       buttons: ['Stop session', 'Cancel'],
@@ -576,32 +550,32 @@ async function stopBackground(row) {
       message: `Stop the session in ${row.cwd}?`,
       detail: `Build ${row.build}, pid ${row.pid}. Its claude ends with it. A session with a window open is never stopped.`,
     });
-    if (ok.response !== 0) return { outcome: 'cancelled' };
-  }
-  let r;
-  try {
-    r = await stopHost({ row }, {
-      isAlive: procAlive,
-      startTimes,
-      readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
-      readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
-      sendControl: c => sendControl(c),
-      windowCount,
-      killPidTree,
-      sleep: ms => new Promise(res => setTimeout(res, ms)),
-      now: Date.now,
-    });
-  } catch (err) {
-    console.log('[main] Stop (background) failed:', err && err.message);
-    r = { outcome: 'failed', text: "Couldn't stop that session.", how: null, reason: null };
-  }
-  console.log(`[main] Stop (background): ${r.outcome} (pid ${row.pid}, port ${row.port}, build ${row.build}, how ${r.how || 'none'}` +
-    (r.reason ? `, controls skipped: ${r.reason}` : '') + ')');
-  // Stopped is its own answer: the row is gone from the next list.
-  if (r.outcome !== 'stopped' && !PROBE_PORT && win && !win.isDestroyed()) {
-    await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: r.text });
-  }
-  return r;
+    return ok.response === 0;
+  },
+  inform: async (text) => {
+    if (PROBE_PORT || !win || win.isDestroyed()) return;
+    await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: text });
+  },
+  stopHost: row => stopHost({ row }, {
+    isAlive: procAlive,
+    startTimes,
+    readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
+    readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
+    sendControl: c => sendControl(c),
+    windowCount,
+    killPidTree,
+    sleep: ms => new Promise(res => setTimeout(res, ms)),
+    now: Date.now,
+  }),
+  log: msg => console.log(msg),
+});
+
+async function showBackgroundMenu() {
+  const template = menuTemplate(await backgroundModel(), {
+    open: o => backgroundActions.open(o),
+    stop: row => { backgroundActions.stop(row).catch(() => {}); },
+  });
+  await popupUntilClosed(Menu.buildFromTemplate(template), win);
 }
 
 // --- IPC ---------------------------------------------------------------------------
@@ -978,14 +952,14 @@ function startProbeDriver(port) {
     async backgroundStop(port) {
       const it = (await backgroundModel()).items.find(x => x.row.port === port);
       if (!it) return { ok: false, error: `no running session on port ${port}` };
-      const r = await stopBackground(it.row);
+      const r = await backgroundActions.stop(it.row);
       return { ok: true, outcome: r.outcome, how: r.how || null, text: r.text || null };
     },
     async backgroundOpen(port) {
       const it = (await backgroundModel()).items.find(x => x.row.port === port);
       if (!it) return { ok: false, error: `no running session on port ${port}` };
       if (!it.open) return { ok: false, error: 'that session has no Open' };
-      return { ok: true, ...(openBackground(it.open) || { failed: true }) };
+      return { ok: true, ...(backgroundActions.open(it.open) || { failed: true }) };
     },
   };
   const server = net.createServer((sock) => {

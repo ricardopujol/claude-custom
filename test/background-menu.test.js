@@ -77,7 +77,7 @@ test("a tab's port in another build's row is not this window's tab", () => {
 });
 
 test('the footer: nothing running, or not everything could be checked', () => {
-  assert.strictEqual(model([]).footer, 'No sessions running.');
+  assert.strictEqual(model([]).footer, 'No sessions running in this build or the ones beside it.');
   assert.strictEqual(menuModel({ rows: [], verified: false }, { now: NOW, tabsByPort: new Map() }).footer,
     "Couldn't check every session; some may be missing.");
   assert.strictEqual(menuModel({ rows: [row()], verified: false }, { now: NOW, tabsByPort: new Map() }).footer,

@@ -120,10 +120,10 @@ test('a host is spawned through hostEnv, never an inline environment', () => {
 });
 
 test('Open from the ▾ menu spawns a window through attachEnv, detached, never an inline environment', () => {
-  const at = MAIN.indexOf('function openBackground(');
-  assert.ok(at !== -1, 'openBackground must exist');
-  const body = MAIN.slice(at, MAIN.indexOf('async function stopBackground(', at));
-  assert.match(body, /env: attachEnv\(process\.env, \{ cwd: open\.cwd, port: open\.port \}\)/);
+  const at = MAIN.indexOf('spawnWindow: ({ cwd, port }) => {');
+  assert.ok(at !== -1, 'the ▾ actions must get a spawnWindow');
+  const body = MAIN.slice(at, MAIN.indexOf('confirmStop:', at));
+  assert.match(body, /env: attachEnv\(process\.env, \{ cwd, port \}\)/);
   assert.match(body, /spawn\(process\.execPath, \[INSTALL_DIR\]/);
   assert.match(body, /detached: true/);
   assert.doesNotMatch(body, /\.\.\.process\.env|ELECTRON_RUN_AS_NODE/);
