@@ -27,6 +27,7 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
+const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -710,6 +711,16 @@ function registerIpc() {
   watchImagesEnabled({
     store: uiStore, win, sync: avatarSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
+  });
+
+  // The global dock layout (layout pass L1): install-wide like the toggle above,
+  // and followed across project windows the same way -- see layout-bridge.js.
+  // A tab's OWN layout is its host's business, not main's.
+  const layoutSync = {};
+  registerLayoutHandlers({ ipcMain, store: uiStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
+  watchLayout({
+    store: uiStore, sync: layoutSync, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${LAYOUT_KEY}.json`),
   });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is

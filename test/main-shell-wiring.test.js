@@ -328,3 +328,32 @@ test('Miguel #4: the tab:raise handler keeps its own comment', () => {
   assert.ok(at !== -1);
   assert.match(raw.slice(-300), /The receiving side of a host `raise`/);
 });
+
+// --- layout pass L1 ----------------------------------------------------------
+
+test('L1: the global layout is served to this window\'s tab views and pushed to all of them', () => {
+  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY \} = require\('\.\/layout-bridge'\);/);
+  const at = MAIN.indexOf('registerLayoutHandlers({');
+  assert.ok(at !== -1, 'registerLayoutHandlers is called');
+  const call = callText(MAIN, at);
+  assert.match(call, /isSender: isTabView/);
+  assert.match(call, /send: pushToViews/);
+  assert.match(call, /store: uiStore/);
+  assert.match(call, /sync: layoutSync/);
+});
+
+test('L1: another project window\'s layout change reaches this one through the store file', () => {
+  const at = MAIN.indexOf('watchLayout({');
+  assert.ok(at !== -1, 'watchLayout is started');
+  const call = callText(MAIN, at);
+  assert.match(call, /sync: layoutSync/);
+  assert.match(call, /send: pushToViews/);
+  assert.match(call, /`\$\{LAYOUT_KEY\}\.json`/);
+});
+
+test('L1: the preload exposes the layout bridge with one listener at a time', () => {
+  const PRELOAD = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'));
+  assert.match(PRELOAD, /get: \(\) => ipcRenderer\.invoke\('layout:get'\)/);
+  assert.match(PRELOAD, /set: \(layout\) => ipcRenderer\.invoke\('layout:set', layout\)/);
+  assert.match(PRELOAD, /ipcRenderer\.removeAllListeners\('layout-global'\), ipcRenderer\.on\('layout-global'/);
+});

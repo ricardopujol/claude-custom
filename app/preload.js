@@ -150,4 +150,15 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(enabled === true); } catch (err) { console.error('[preload] avatar-images listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('avatar-images')),
   },
+  // The global dock layout (layout pass L1) -- see app/layout-bridge.js. `get`
+  // answers null when nothing is saved yet (the page migrates); `onChange`
+  // replaces its one listener, like onImagesEnabled.
+  layout: {
+    get: () => ipcRenderer.invoke('layout:get'),
+    set: (layout) => ipcRenderer.invoke('layout:set', layout),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('layout-global'), ipcRenderer.on('layout-global',
+      (_e, layout) => {
+        try { fn(layout); } catch (err) { console.error('[preload] layout-global listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('layout-global')),
+  },
 });
