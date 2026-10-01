@@ -5,8 +5,10 @@
  * actions; nothing here touches a process or the disk. Design:
  * documentation/PLAN_WORKTREE_TABS.md (W3 live pickup, W4 merged tabs).
  *
- *   state       = { tabs: [{ path, branch, isDev, phase, hostSeen, error? }], dismissed: [normPath] }
- *   phase       = 'live' | 'finishing' | 'removing' | 'remove-failed'
+ *   state       = { tabs: [{ path, branch, isDev, phase, hostSeen, error?, note? }], dismissed: [normPath] }
+ *   phase       = 'live' | 'finishing' | 'removing' | 'remove-failed' | 'kept'
+ *                 (`kept`: the remover kept the folder on purpose -- Contract C
+ *                 exit 2, the branch still has a handoff brief. Not an error.)
  *   observation = { worktrees: tabWorktrees(...)  -- every listed worktree, `openable` or not,
  *                   merged: { [normPath]: true }, listening: { [normPath]: bool } }
  *   action      = open | stop | close | mark-merged | remove | error, each with `path`
@@ -102,15 +104,16 @@ function reconcile(state, observation) {
   });
 
   // 2b. The branch follows the worktree (git switch, branch -m). Mid-rebase
-  //     there is no branch, so the tab keeps its last one. A finishing tab
-  //     that moved to another branch goes back to live: its marker was for
-  //     the old branch.
+  //     there is no branch, so the tab keeps its last one. A finishing or
+  //     kept tab that moved to another branch goes back to live: its marker
+  //     was for the old branch.
   for (const t of tabs) {
-    if (t.phase !== 'live' && t.phase !== 'finishing') continue;
+    if (t.phase !== 'live' && t.phase !== 'finishing' && t.phase !== 'kept') continue;
     const w = worktrees.find(x => samePath(x.path, t.path));
     if (!w || typeof w.branch !== 'string' || !w.branch || w.branch === t.branch) continue;
     t.branch = w.branch;
     t.phase = 'live';
+    delete t.note;
   }
 
   // 3. Merged: the tab shows it; the session keeps running until Ricardo ends
@@ -158,8 +161,10 @@ function closeByHand(state, p) {
 }
 
 // The outcome of a `remove` action. Success closes the tab and dismisses the
-// path (git's prune can lag a poll). Anything but `ok: true` is a failure: the
-// tab stays with git's error and is never retried automatically.
+// path (git's prune can lag a poll). `kept: true` (Contract C exit 2: the
+// branch still has a handoff brief, so more work is planned on it) keeps the
+// tab as `kept`, with the reason and no error. Anything else is a failure: the
+// tab stays with the remover's error. Neither is retried automatically.
 function removeResult(state, p, result) {
   const tab = state.tabs.find(t => samePath(t.path, p) && t.phase === 'removing');
   if (!tab) return unchanged(state);
@@ -167,6 +172,17 @@ function removeResult(state, p, result) {
     return {
       state: { tabs: state.tabs.filter(t => t !== tab), dismissed: dismiss(state.dismissed, tab.path) },
       actions: [{ type: 'close', path: tab.path }],
+    };
+  }
+  if (result && result.kept === true) {
+    const note = result.reason != null && String(result.reason) !== ''
+      ? String(result.reason) : 'kept: the branch still has a handoff brief';
+    return {
+      state: {
+        tabs: state.tabs.map(t => (t === tab ? { ...t, phase: 'kept', note } : t)),
+        dismissed: state.dismissed,
+      },
+      actions: [],
     };
   }
   const error = result && result.error != null ? String(result.error) : 'git worktree remove failed';
@@ -179,4 +195,12 @@ function removeResult(state, p, result) {
   };
 }
 
-module.exports = { initial, reconcile, closeByHand, removeResult };
+// The `+` menu's *Reopen* (PR 3): forget a hand close, so the next reconcile
+// opens that worktree again if git still lists it. Opens nothing itself.
+function reopen(state, p) {
+  const k = normPath(p);
+  if (k === null || !state.dismissed.includes(k)) return unchanged(state);
+  return { state: { tabs: state.tabs, dismissed: state.dismissed.filter(d => d !== k) }, actions: [] };
+}
+
+module.exports = { initial, reconcile, closeByHand, removeResult, reopen };

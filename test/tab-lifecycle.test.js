@@ -14,7 +14,7 @@ const assert = require('node:assert');
 const path = require('path');
 const fc = require('fast-check');
 
-const { initial, reconcile, closeByHand, removeResult } = require('../host/tab-lifecycle');
+const { initial, reconcile, closeByHand, removeResult, reopen } = require('../host/tab-lifecycle');
 const { normPath, samePath } = require('../host/project-layout');
 
 const C = path.resolve('/fake/proj');
@@ -357,6 +357,68 @@ test('removeResult for a tab that is not removing does nothing', () => {
   }
 });
 
+// --- kept on purpose (Contract C exit 2) and reopen (PR 3) ---------------------
+
+test('a remove KEPT on purpose (exit 2) is phase kept with the reason, and no error action', () => {
+  const r = removeResult(removingState(), A, { ok: false, kept: true, reason: 'feat/a still has a handoff brief' });
+  assert.deepStrictEqual(r.actions, []);
+  assert.strictEqual(r.state.tabs[1].phase, 'kept');
+  assert.strictEqual(r.state.tabs[1].note, 'feat/a still has a handoff brief');
+  assert.strictEqual(r.state.tabs[1].error, undefined, 'kept is not an error');
+});
+
+test('a kept result with no reason still says why', () => {
+  const r = removeResult(removingState(), A, { ok: false, kept: true });
+  assert.strictEqual(r.state.tabs[1].phase, 'kept');
+  assert.match(r.state.tabs[1].note, /handoff brief/);
+});
+
+test('a kept tab is never removed again by later polls', () => {
+  const kept = removeResult(removingState(), A, { ok: false, kept: true, reason: 'brief' }).state;
+  const r = run([
+    obs([DEV_WT, A_WT], { merged: [A], listening: { [A]: true } }),
+    obs([DEV_WT, A_WT], { merged: [A], listening: { [A]: false } }),
+  ], kept);
+  assert.deepStrictEqual(r.actions, []);
+  assert.strictEqual(r.state.tabs[1].phase, 'kept');
+});
+
+test('a kept tab whose worktree moved to another branch goes back to live', () => {
+  const kept = removeResult(removingState(), A, { ok: false, kept: true, reason: 'brief' }).state;
+  const { state } = reconcile(kept, obs([DEV_WT, wt(A, 'feat/a2')]));
+  assert.strictEqual(state.tabs[1].phase, 'live');
+  assert.strictEqual(state.tabs[1].branch, 'feat/a2');
+});
+
+test('a kept tab whose worktree vanishes (the reaper removed it later) is stopped and closed', () => {
+  const kept = removeResult(removingState(), A, { ok: false, kept: true, reason: 'brief' }).state;
+  const { state, actions } = reconcile(kept, obs([DEV_WT]));
+  assert.deepStrictEqual(actions, [{ type: 'stop', path: A }, { type: 'close', path: A }]);
+  assert.deepStrictEqual(state.tabs.map(t => t.path), [DEV]);
+});
+
+test('reopen drops a hand-closed path from dismissed; the next poll opens it again', () => {
+  const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
+  const closed = closeByHand(s1, A).state;
+  assert.deepStrictEqual(reconcile(closed, obs([DEV_WT, A_WT])).actions, [], 'dismissed: not reopened by a poll');
+  const r = reopen(closed, A);
+  assert.deepStrictEqual(r.actions, [], 'reopen opens nothing itself');
+  assert.deepStrictEqual(r.state.dismissed, []);
+  const again = reconcile(r.state, obs([DEV_WT, A_WT]));
+  assert.deepStrictEqual(again.actions, [{ type: 'open', path: A, branch: 'feat/a' }]);
+});
+
+test('reopen matches the path however it is spelled, and ignores a path that is not dismissed', () => {
+  const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
+  const closed = closeByHand(s1, A).state;
+  if (process.platform === 'win32') assert.deepStrictEqual(reopen(closed, A.toUpperCase()).state.dismissed, []);
+  for (const p of [B, DEV, null, '', 42]) {
+    const r = reopen(closed, p);
+    assert.deepStrictEqual(r.state, closed, String(p));
+    assert.deepStrictEqual(r.actions, []);
+  }
+});
+
 test('closing dev by hand does nothing', () => {
   const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
   const r = closeByHand(s1, DEV);
@@ -460,14 +522,22 @@ const obsArb = fc.record({
   return { kind: 'obs', o: obs(worktrees, { merged: e.merged, listening }) };
 });
 const closeArb = fc.constantFrom(...POOL.map(w => w.path)).map(p => ({ kind: 'close', p }));
-const resultArb = fc.tuple(fc.constantFrom(...POOL.map(w => w.path)), fc.boolean())
-  .map(([p, ok]) => ({ kind: 'result', p, ok }));
-const eventsArb = fc.array(fc.oneof({ arbitrary: obsArb, weight: 4 }, closeArb, resultArb), { maxLength: 30 });
+const resultArb = fc.tuple(fc.constantFrom(...POOL.map(w => w.path)), fc.constantFrom('ok', 'failed', 'kept'))
+  .map(([p, outcome]) => ({ kind: 'result', p, outcome }));
+const reopenArb = fc.constantFrom(...POOL.map(w => w.path)).map(p => ({ kind: 'reopen', p }));
+const eventsArb = fc.array(fc.oneof({ arbitrary: obsArb, weight: 4 }, closeArb, resultArb, reopenArb), { maxLength: 30 });
+
+const RESULTS = {
+  ok: { ok: true },
+  failed: { ok: false, error: 'failed' },
+  kept: { ok: false, kept: true, reason: 'still has a handoff brief' },
+};
 
 function apply(state, e) {
   if (e.kind === 'obs') return reconcile(state, e.o);
   if (e.kind === 'close') return closeByHand(state, e.p);
-  return removeResult(state, e.p, { ok: e.ok, error: 'failed' });
+  if (e.kind === 'reopen') return reopen(state, e.p);
+  return removeResult(state, e.p, RESULTS[e.outcome]);
 }
 
 // Runs the events, calling check(prevState, event, result) after each one.
@@ -519,11 +589,11 @@ test('PROPERTY: a poll stops or closes a tab only when git no longer lists its w
   }));
 });
 
-test('PROPERTY: after a poll, a live or finishing tab shows the branch git lists for it, when there is one', () => {
+test('PROPERTY: after a poll, a live, finishing or kept tab shows the branch git lists for it, when there is one', () => {
   fc.assert(fc.property(eventsArb, (events) => {
     walk(events, (_, e, r) => {
       if (e.kind !== 'obs' || !e.o.worktrees.some(w => w.isDev)) return;
-      for (const t of r.state.tabs.filter(x => x.phase === 'live' || x.phase === 'finishing')) {
+      for (const t of r.state.tabs.filter(x => ['live', 'finishing', 'kept'].includes(x.phase))) {
         const w = e.o.worktrees.find(x => samePath(x.path, t.path));
         if (w && w.branch) assert.strictEqual(t.branch, w.branch, t.path);
       }
@@ -557,10 +627,12 @@ test('PROPERTY: a dismissed path is never opened while dismissed, and stays dism
       for (const a of r.actions.filter(x => x.type === 'open')) {
         assert.ok(!prev.dismissed.includes(normPath(a.path)), a.path);
       }
-      // A path leaves `dismissed` only in a poll where git doesn't list it.
+      // A path leaves `dismissed` only by a reopen of that path, or in a poll
+      // where git doesn't list it.
       for (const d of prev.dismissed) {
         if (r.state.dismissed.includes(d)) continue;
-        assert.strictEqual(e.kind, 'obs', 'only a poll un-dismisses');
+        if (e.kind === 'reopen' && normPath(e.p) === d) continue;
+        assert.strictEqual(e.kind, 'obs', 'only a poll or a reopen of that path un-dismisses');
         assert.ok(!e.o.worktrees.some(w => normPath(w.path) === d), `${d} un-dismissed while listed`);
       }
     });
@@ -603,6 +675,33 @@ test('PROPERTY: whenever dev is among the worktrees, dev is the first tab, and n
         assert.ok(samePath(tabs[0].path, DEV));
       }
       assert.strictEqual(new Set(tabs.map(t => normPath(t.path))).size, tabs.length);
+    });
+  }));
+});
+
+test('PROPERTY: a kept tab is never removed, failed or errored by any later event until it goes back to live', () => {
+  fc.assert(fc.property(eventsArb, (events) => {
+    walk(events, (prev, e, r) => {
+      const keptBefore = prev.tabs.filter(t => t.phase === 'kept').map(t => normPath(t.path));
+      // Moved to another branch in this event: live again, and its new branch
+      // may be merged too. That is not the kept tab acting.
+      const leftKept = (k) => r.state.tabs.some(t => normPath(t.path) === k && t.phase !== 'kept');
+      for (const a of r.actions) {
+        const k = normPath(a.path);
+        if (!keptBefore.includes(k) || leftKept(k)) continue;
+        assert.ok(!['remove', 'error', 'mark-merged'].includes(a.type), `${a.type} for a kept tab`);
+      }
+    });
+  }));
+});
+
+test('PROPERTY: reopen never emits an action and never touches the tabs', () => {
+  fc.assert(fc.property(eventsArb, fc.constantFrom(...POOL.map(w => w.path)), (events, p) => {
+    walk(events, (_, __, r) => {
+      const again = reopen(r.state, p);
+      assert.deepStrictEqual(again.actions, []);
+      assert.deepStrictEqual(again.state.tabs, r.state.tabs);
+      assert.ok(!again.state.dismissed.includes(normPath(p)));
     });
   }));
 });
