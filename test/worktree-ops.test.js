@@ -70,6 +70,13 @@ test('checkBranch refuses only what cannot be passed safely; the script owns the
   assert.strictEqual(ops.checkBranch('  feat/x  '), null, 'surrounding spaces are trimmed by the caller');
 });
 
+test('Miguel G3: invisible bidi and zero-width characters are refused (a name must read as what it is)', () => {
+  for (const c of ['​', '‍', '‎', '‮', '⁦', '⁩', '﻿']) {
+    assert.strictEqual(typeof ops.checkBranch(`feat/a${c}b`), 'string', `U+${c.charCodeAt(0).toString(16)}`);
+  }
+  assert.strictEqual(ops.checkBranch('feat/café'), null, 'an ordinary accented letter is fine');
+});
+
 test('PROPERTY: checkBranch either refuses a string or it is safe to pass', () => {
   fc.assert(fc.property(fc.string(), (s) => {
     if (ops.checkBranch(s) !== null) return true;

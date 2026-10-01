@@ -279,6 +279,10 @@ test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so no
   }
 });
 
+test('PR #80 Miguel G3: a branch name in a native menu label goes through menuText', () => {
+  assert.match(MAIN, /`Reopen \$\{menuText\(r\.label\)\}/);
+});
+
 test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer than 200 characters', () => {
   const c = channels.find(x => x.name === 'strip:create');
   assert.match(callText(MAIN, c.at), /typeof branch !== 'string' \|\| branch\.length > 200\) return/);

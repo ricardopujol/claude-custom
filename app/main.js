@@ -27,7 +27,7 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -524,7 +524,7 @@ function registerIpc() {
     // The shortcut is named in the label, not as an accelerator: main registers
     // none (the key is handled in before-input-event).
     const reopen = m.reopen.map((r, i) => ({
-      label: i === 0 ? `Reopen ${r.label}  (Ctrl+Shift+T)` : `Reopen ${r.label}`,
+      label: `Reopen ${menuText(r.label)}${i === 0 ? '  (Ctrl+Shift+T)' : ''}`,
       click: () => tabShell.reopen(r.key).catch(logShellError('reopen')),
     }));
     Menu.buildFromTemplate([

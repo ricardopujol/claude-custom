@@ -792,6 +792,17 @@ function createShell(deps) {
   };
 }
 
+// --- native menu text ----------------------------------------------------------------
+
+/**
+ * Text for an Electron menu label. A single `&` marks the next letter as the
+ * item's mnemonic (and isn't drawn), so a branch like `feat/r&d` would lose
+ * its `&`: doubled, it is drawn as one (PR #80 Miguel G3).
+ */
+function menuText(s) {
+  return typeof s === 'string' ? s.replace(/&/g, '&&') : '';
+}
+
 // --- keyboard focus ----------------------------------------------------------------
 
 /**
@@ -928,5 +939,5 @@ function probeLineReader(maxBytes) {
 
 module.exports = {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, focusStep, NO_PORT_ERROR,
+  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, focusStep, menuText, NO_PORT_ERROR,
 };

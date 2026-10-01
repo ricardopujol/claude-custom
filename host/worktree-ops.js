@@ -75,6 +75,8 @@ function checkBranch(branch) {
   if (/\s/.test(b)) return 'A branch name can\'t contain spaces.';
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f"]/.test(b)) return 'A branch name can\'t contain quotes or control characters.';
+  // Miguel G3: zero-width and bidi controls make a name read as something else.
+  if (/[​-‏‪-‮⁠-⁩﻿]/.test(b)) return 'A branch name can\'t contain invisible characters.';
   return null;
 }
 

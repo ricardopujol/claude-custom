@@ -15,7 +15,7 @@ const fc = require('fast-check');
 
 const {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor, focusStep, probeLineReader,
+  handleProbeCommand, noWindowText, shortcutFor, focusStep, probeLineReader, menuText,
 } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
 const tabModel = require('../app/tab-model');
@@ -1123,6 +1123,13 @@ test('Miguel G1: a new tab git lists late does not steal the selection from one 
   await flush();
   assert.ok(labels(h).includes('feat/late'));
   assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'), 'the person chose feat-b; the late tab does not take it');
+});
+
+test('Miguel G3: menuText doubles & so a branch name is never read as a menu mnemonic', () => {
+  assert.strictEqual(menuText('feat/r&d'), 'feat/r&&d');
+  assert.strictEqual(menuText('feat/a&&b'), 'feat/a&&&&b');
+  assert.strictEqual(menuText('feat/plain'), 'feat/plain');
+  assert.strictEqual(menuText(null), '');
 });
 
 test('plusMenu: New branch is offered only with the scripts installed and nothing being created', async () => {
