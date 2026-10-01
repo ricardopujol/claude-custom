@@ -185,6 +185,25 @@ test('main.js still depends on createVault never throwing, and says so', () => {
     + 'vault panel, which is the class this repo has paid for four times');
 });
 
+// Dexter, notify F4 (Low): attention.js raises only the notification types it
+// names, so a NEW type that needs you would go silent. The hook log names the
+// type, so that is visible in host.log instead of invisible.
+test('host.js logs every Notification hook with its notification_type', () => {
+  const host = read('host/host.js');
+  const at = host.indexOf("console.log(`[hook] ${ev.event}");
+  assert.ok(at !== -1, 'the [hook] log line exists');
+  const before = host.slice(Math.max(0, at - 400), at);
+  assert.match(before, /notification_type/);
+});
+
+// Dexter, notify round 2 F1 (High): a settle timer fired "finished" into a
+// working session, because the host never sees UserPromptSubmit and hooks only
+// Agent/Task/Bash. Ricardo chose idle_prompt only (2026-10-01): no timers here.
+test('attention.js arms no timer: only Claude Code knows when the session is quiet', () => {
+  const src = read('host/attention.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /setTimeout|setInterval/);
+});
+
 // --- the tab strip (moved here in PR 3 so app/tab-strip.js can be mutated) --------
 
 test('the tab strip never uses innerHTML: a branch name is text, not markup', () => {
