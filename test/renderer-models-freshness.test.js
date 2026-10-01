@@ -17,10 +17,12 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'u
 
 // Dexter, PR #60 round 2: the round-1 version of this check matched the
 // literal line ANYWHERE in the file, so moving it into dead code or an
-// unrelated function would still satisfy it. Scoped to setTab's own body.
+// unrelated function would still satisfy it. Scoped to onModuleShown's own body
+// (layout pass L1: it replaced setTab as the one place a shown panel's side
+// effects run, for a click, Ctrl+B, a move or a pushed layout alike).
 function setTabBody() {
-  const start = SRC.indexOf('function setTab(tab) {');
-  assert.ok(start !== -1, 'precondition: setTab must still exist');
+  const start = SRC.indexOf('function onModuleShown(id) {');
+  assert.ok(start !== -1, 'precondition: onModuleShown must still exist');
   return SRC.slice(start, SRC.indexOf('\n}', start));
 }
 
@@ -29,10 +31,10 @@ test('F2/I1: the Models tab asks EVERY time it opens, not only the first time ev
   // stopped re-checking forever after the first answer -- a window kept open
   // past one FRESH_MS window never refreshed its own "just now" label again.
   const body = setTabBody();
-  assert.doesNotMatch(body, /tab === 'models' && !catalogueMeta/,
+  assert.doesNotMatch(body, /id === 'models' && !catalogueMeta/,
     'the tab-open request must not be gated on "never answered before"');
-  assert.match(body, /if \(tab === 'models'\) requestModels\(false\);/,
-    'setTab itself must ask every open -- host/openrouter.js\'s loadCatalogue decides freshness cheaply');
+  assert.match(body, /if \(id === 'models'\) requestModels\(false\);/,
+    'onModuleShown itself must ask every open -- host/openrouter.js\'s loadCatalogue decides freshness cheaply');
 });
 
 function onopenBody() {
@@ -57,6 +59,6 @@ test('N3: the onopen resume is not gated on the Models tab being the ACTIVE one'
   // gating the resume on `activeTab === 'models'` alone left it stuck until
   // the user happened to switch back.
   const body = onopenBody();
-  assert.match(body, /if \(activeTab === 'models' \|\| modelsRefreshPending\)/,
+  assert.match(body, /if \(shownModules\.has\('models'\) \|\| modelsRefreshPending\)/,
     'the resume condition must fire regardless of the active tab when a Refresh is pending');
 });

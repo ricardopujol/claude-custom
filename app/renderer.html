@@ -98,7 +98,7 @@
        background rather than a border decoration. */
     body.has-bg #termwrap { background: transparent; }
     body.has-bg header,
-    body.has-bg #roster,
+    body.has-bg .zone,
     body.has-bg #diag { background: color-mix(in srgb, var(--chrome) 72%, transparent); }
     body.has-bg .xterm-viewport { background: transparent !important; }
 
@@ -418,8 +418,23 @@
       border-radius: 3px; padding: 1px 5px; font-size: 11px;
       font-family: ui-monospace, monospace;
     }
+    /* Layout pass L1: the layout menu (▦) and focus mode (⛶). */
+    .hdr-btn {
+      flex: 0 0 auto; position: relative; cursor: pointer; -webkit-app-region: no-drag;
+      background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px;
+      font: inherit; font-size: 12px; line-height: 1; padding: 3px 6px;
+    }
+    .hdr-btn:hover { color: var(--text); border-color: var(--accent); }
+    /* This tab has its own layout (Just this tab): a dot on the button, so a tab
+       that ignores the global layout says so. */
+    #layout-btn.own { color: var(--accent); }
+    #layout-btn.own::after {
+      content: ''; position: absolute; top: -3px; right: -3px; width: 6px; height: 6px;
+      border-radius: 50%; background: var(--accent);
+    }
 
-    #body { flex: 1; display: flex; min-height: 0; }
+    #body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    #mid { flex: 1; display: flex; min-height: 0; }
 
     #termwrap {
       flex: 1; min-width: 0; padding: 8px 10px;
@@ -504,60 +519,71 @@
     /* --- agent roster ------------------------------------------------------
        Reactive, not a gallery: an agent appears when it first runs and its
        portrait reflects the mood machine's state. */
-    /* Width is user-set and persisted. Narrow trades portrait size for terminal
-       room; wide does the opposite. Portraits scale with it via --face. */
-    #roster {
-      width: var(--roster-w, 180px); flex: 0 0 var(--roster-w, 180px);
-      position: relative;
+    /* --- dock zones (layout pass L1, BACKLOG #22) ----------------------------
+       Every side panel is a module in one of four zones around the terminal.
+       Sizes come from app/dock-zones-display.js as --zone-<name> (0 for an
+       empty zone, the rail for a collapsed one); nothing here decides them.
+       The right zone's fallback is today's 180 px so the first paint, before
+       the script runs, looks like the old sidebar rather than a flash of none. */
+    .zone {
+      position: relative; min-width: 0; min-height: 0;
       background: var(--chrome);
-      border-left: 1px solid var(--border);
       display: flex; flex-direction: column;
     }
-    /* Collapsed: the sidebar is gone entirely, terminal takes the room. The
-       tab strip reappears with it, so the only way back is the header hint --
-       which is why the hint is always visible. */
-    /* COLLAPSED, NOT GONE. The tab bar lives inside #roster, so `display:none`
-       on the whole aside hid the tabs too -- leaving nothing to click and no
-       way back, because the only other route (Ctrl+B) was being eaten by the
-       terminal. A collapsed panel now keeps its tab rail, so the way back is
-       always visible and one click away. */
-    #roster.hidden { width: auto; min-width: 0; }
-    #roster.hidden .panel { display: none; }
-    #roster.hidden #side-tabs { border-right: 1px solid var(--border); }
+    .zone[data-empty] { display: none; }
+    .zone[data-zone="left"]   { width: var(--zone-left, 0px);    flex: 0 0 var(--zone-left, 0px);    border-right: 1px solid var(--border); }
+    .zone[data-zone="right"]  { width: var(--zone-right, 180px); flex: 0 0 var(--zone-right, 180px); border-left: 1px solid var(--border); }
+    .zone[data-zone="top"]    { height: var(--zone-top, 0px);    flex: 0 0 var(--zone-top, 0px);    border-bottom: 1px solid var(--border); }
+    .zone[data-zone="bottom"] { height: var(--zone-bottom, 0px); flex: 0 0 var(--zone-bottom, 0px); border-top: 1px solid var(--border); }
+    .zone-panels { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+    #panel-store { display: none; }
 
-    #side-tabs {
+    /* COLLAPSED, NOT GONE. A collapsed zone keeps its tab rail, so the way back
+       is always visible and one click away: the old sidebar once hid its own
+       tab bar with it, leaving nothing to click (and Ctrl+B was being eaten by
+       the terminal). On the sides the rail is vertical, 28 px. */
+    .zone[data-collapsed] .zone-panels,
+    .zone[data-collapsed] .zone-grip { display: none; }
+    .zone[data-shape="tall"][data-collapsed] .zone-tabs { flex-direction: column; border-bottom: 0; }
+    .zone[data-shape="tall"][data-collapsed] .zone-tabs button {
+      flex: 0 0 auto; writing-mode: vertical-rl; padding: 10px 0;
+      border-bottom: 0; border-left: 2px solid transparent;
+    }
+
+    .zone-tabs {
       display: flex; flex: 0 0 auto;
       border-bottom: 1px solid var(--border);
       -webkit-app-region: no-drag;
     }
-    #side-tabs button {
+    .zone-tabs button {
       flex: 1; min-width: 0;
-      font: inherit; font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-      padding: 9px 6px; cursor: pointer;
+      font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
+      padding: 8px 6px; cursor: pointer;
       background: transparent; color: var(--dim);
       border: 0; border-bottom: 2px solid transparent;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    #side-tabs button:hover { color: var(--text); }
+    .zone-tabs button:hover { color: var(--text); }
     /* FF12: the active-tab underline carries the model's colour cue, not the
        theme's own --accent -- one of the two surfaces (with the xterm
        cursor) Ricardo approved for the persistent per-model tint. Untinted,
        --model-accent is byte-equal to --accent, so this is a no-op look
        until a model is known. */
-    #side-tabs button.on { color: var(--model-accent); border-bottom-color: var(--model-accent); }
+    .zone-tabs button.on { color: var(--model-accent); border-bottom-color: var(--model-accent); }
 
-    /* Only the selected panel is in the layout at all -- a hidden panel that
+    /* Only the showing panel is in the layout at all -- a hidden panel that
        still occupies space is the usual way a tab strip goes wrong. */
-    #roster .panel { display: none; flex-direction: column; min-height: 0; flex: 1; }
-    #roster .panel.on { display: flex; }
+    .zone .panel { display: none; flex-direction: column; min-height: 0; min-width: 0; flex: 1; }
+    .zone .panel.on { display: flex; }
     #agents { flex: 1; overflow-y: auto; padding: 8px; }
 
-    /* Drag handle. Sits on the roster's left edge, over the terminal boundary. */
-    #roster-grip {
-      position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
-      cursor: col-resize; z-index: 5; -webkit-app-region: no-drag;
-    }
-    #roster-grip:hover, #roster-grip.dragging { background: var(--accent); opacity: .5; }
+    /* Each zone's grip sits on its inner edge, over the terminal boundary. */
+    .zone-grip { position: absolute; z-index: 5; -webkit-app-region: no-drag; }
+    .zone[data-zone="right"] .zone-grip  { left: -3px;  top: 0; bottom: 0; width: 7px; cursor: col-resize; }
+    .zone[data-zone="left"] .zone-grip   { right: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; }
+    .zone[data-zone="top"] .zone-grip    { bottom: -3px; left: 0; right: 0; height: 7px; cursor: row-resize; }
+    .zone[data-zone="bottom"] .zone-grip { top: -3px;   left: 0; right: 0; height: 7px; cursor: row-resize; }
+    .zone-grip:hover, .zone-grip.dragging { background: var(--accent); opacity: .5; }
     #agents .empty { color: var(--dim); font-size: 11px; padding: 8px; line-height: 1.5; }
 
     /* BACKLOG #10: a click on a card (anywhere but its face, which is the
@@ -1010,10 +1036,16 @@
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
-      <span class="hint" id="side-hint" title="Show or hide the side panel">panel <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
+      <button type="button" id="layout-btn" class="hdr-btn" title="Layout: where each panel sits">▦</button>
+      <span class="hint" id="side-hint" title="Show or hide every panel">panels <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
     <div id="body">
+      <!-- Layout pass L1: four dock zones around the terminal. app/dock-zones-display.js
+           moves the panels below into them; empty zones take no space. -->
+      <aside class="zone" data-zone="top" data-shape="wide" data-empty><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
+      <div id="mid">
+      <aside class="zone" data-zone="left" data-shape="tall" data-empty><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
       <div id="termwrap"><div id="term"></div>
         <!-- fix/terminal-links: where the link under the pointer really goes,
              or that a clicked one wasn't opened. Text only (app/link-click.js). -->
@@ -1040,20 +1072,19 @@
           </div>
         </div>
       </div>
-      <!-- One sidebar, two tabs. The vault is a PANEL here, never inside the
-           terminal: nothing in it is written to the pty, so a secret cannot
-           reach the session by being rendered in the wrong place. -->
-      <aside id="roster">
-        <div id="roster-grip" title="Drag to resize — portraits scale with width"></div>
-        <nav id="side-tabs">
-          <button data-tab="agents" title="Who is working, and on what">Agents</button>
-          <button data-tab="vault" title="Local encrypted secrets">Vault</button>
-          <button data-tab="bugvault" title="Recurring defect classes, grouped by category and by how they were found">Bug vault</button>
-          <button data-tab="fog" title="What this project has actually been read">Map</button>
-          <button data-tab="models" title="Browse every model OpenRouter offers, and seat the council">Models</button>
-          <button data-tab="projects" title="Switch to another project, each in its own window">Projects</button>
-          <button data-tab="style" title="How the harness looks">Style</button>
-        </nav>
+      <aside class="zone" data-zone="right" data-shape="tall"><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
+      <aside id="diag">
+        <h2>Key diagnostics</h2>
+        <div id="checks"></div>
+        <div id="log"></div>
+      </aside>
+      </div>
+      <aside class="zone" data-zone="bottom" data-shape="wide" data-empty><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
+      <!-- Every module's panel. A panel no zone is showing waits here. The vault
+           is a PANEL, never inside the terminal: nothing in it is written to the
+           pty, so a secret cannot reach the session by being rendered in the
+           wrong place. -->
+      <div id="panel-store" hidden>
         <div class="panel" data-panel="agents">
           <!-- BACKLOG D #16: Active is today's roster (unchanged); Inactive is
                the whole roster (every agent definition plus every name ever
@@ -1167,12 +1198,7 @@
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
         </div>
-      </aside>
-      <aside id="diag">
-        <h2>Key diagnostics</h2>
-        <div id="checks"></div>
-        <div id="log"></div>
-      </aside>
+      </div>
     </div>
   </div>
 
@@ -1181,6 +1207,8 @@
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="./side-tabs.js"></script>
+  <script src="./dock-layout.js"></script>
+  <script src="./dock-zones-display.js"></script>
   <script src="./secret-mask.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>

@@ -578,64 +578,216 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 // An isolated panel. Nothing in it is ever written to the pty: the secret only
 // ever travels renderer -> main -> OS clipboard, and the host that owns the
 // terminal never sees it. Pasting is then the user's own deliberate act.
-// --- side tabs --------------------------------------------------------------
-let activeTab = DEFAULT_TAB;
-let lastTab = DEFAULT_TAB;      // what Ctrl+B reopens after a collapse
+/// --- dock zones (layout pass L1, BACKLOG #22) -------------------------------
+// Every side panel is a module in one of four zones (app/dock-layout.js has
+// every rule; app/dock-zones-display.js draws). Two kinds of state, kept apart
+// on purpose:
+//   - PLACEMENT (which zone holds which module, hidden ones, sizes): the global
+//     layout in main (install-wide), or this tab's own, kept by its host.
+//   - SELECTION (which module each zone shows, collapsed zones, Ctrl+B's
+//     memory): this window's own, saved in localStorage and read at load, the
+//     way `sideTab` always was. Clicking Vault here must not switch every other
+//     project window to Vault.
+const MODULE_IDS = TABS.map(t => t.id);
+const DL = window.dockLayout;
+let globalLayout = DL.defaultLayout(MODULE_IDS);
+let ownLayout = null;            // this tab's own placement (host), or null
+let dragLayout = null;           // a grip being dragged: drawn, not yet saved
+let selection = null;            // { active, restore } or null = the layout's own
+let shownModules = new Set();
 
-function setTab(tab) {
-  activeTab = tab;
-  if (tab) lastTab = tab;
-
-  document.getElementById('roster').classList.toggle('hidden', tab === null);
-  for (const b of document.querySelectorAll('#side-tabs button')) {
-    b.classList.toggle('on', b.dataset.tab === tab);
-  }
-  for (const p of document.querySelectorAll('#roster .panel')) {
-    p.classList.toggle('on', p.dataset.panel === tab);
-  }
-
-  if (tab === 'fog') requestFog();
-  if (tab === 'projects') requestProjects();
-  // Inside setTab, not in the click handler, because setTab is the ONE place
-  // every path into a panel goes through -- a click, a keyboard toggle, and the
-  // restore of a saved tab on launch. Hanging it off the click alone meant a
-  // window that reopened with the panel already showing never asked for
-  // anything and sat on "loading" forever.
-  //
-  // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one ever
-  // (`!catalogueMeta` used to gate this, so a window kept open past one
-  // FRESH_MS window silently stopped re-checking and its "just now" label
-  // froze there for good). `host/openrouter.js`'s `loadCatalogue` already
-  // knows how to answer this cheaply -- a fresh cache is returned with no
-  // network call at all -- so asking every time costs nothing when there is
-  // nothing to refresh, and it is the host, not a client-side copy of
-  // FRESH_MS, that decides.
-  if (tab === 'models') requestModels(false);
-  if (tab === 'vault') {
-    renderVault();
-    setTimeout(() => document.getElementById('vault-search').focus(), 0);
-  } else {
-    // Leaving the vault puts every revealed secret back out of sight -- both
-    // the listed ones and whatever is half-typed in the field. A value left on
-    // screen outlives the moment someone needed it.
-    hideRevealed();
-    secretMask.left();
-    applyMask();
-    term.focus();
-  }
-  try { localStorage.setItem('sideTab', tab === null ? '' : tab); } catch {}
-  setTimeout(() => { fit.fit(); sendResize(); }, 0);
+function readSelection() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('dockSelection') || 'null');
+    return raw && typeof raw === 'object' ? raw : null;
+  } catch { return null; }
+}
+function saveSelection() {
+  try { localStorage.setItem('dockSelection', JSON.stringify(selection)); } catch {}
 }
 
+// The layout this window draws: placement from the drag / own / global layout,
+// selection from this window, the whole thing normalized (a module that moved
+// away from a zone makes that zone fall back to its first module).
+function effectiveLayout() {
+  const placement = dragLayout || ownLayout || globalLayout;
+  return DL.normalizeLayout(selection ? { ...placement, ...selection } : placement, MODULE_IDS);
+}
+
+// The room the zones share with the terminal: #body minus the diagnostics pane.
+function zonesViewport() {
+  const body = document.getElementById('body');
+  const diag = document.getElementById('diag');
+  const diagW = diag && diag.classList.contains('show') ? diag.offsetWidth : 0;
+  return { width: body.clientWidth - diagW, height: body.clientHeight };
+}
+
+function onModuleShown(id) {
+  if (id === 'fog') requestFog();
+  if (id === 'projects') requestProjects();
+  // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
+  // the host answers cheaply from a fresh cache, and decides freshness itself.
+  if (id === 'models') requestModels(false);
+  if (id === 'vault') {
+    renderVault();
+    setTimeout(() => document.getElementById('vault-search').focus(), 0);
+  }
+}
+
+// Leaving the vault puts every revealed secret back out of sight -- both the
+// listed ones and whatever is half-typed in the field. A value left on screen
+// outlives the moment someone needed it. "Leaving" is anything that stops it
+// showing: its zone collapsing, a move, Hide, or focus mode.
+function onVaultLeft() {
+  hideRevealed();
+  secretMask.left();
+  applyMask();
+}
+
+// The one place every path into a panel goes through -- a click, Ctrl+B, a
+// move, a layout pushed from another window, the restore at launch -- so the
+// side effects of showing a module can't be skipped by one of them (the old
+// setTab had the same job, for the same reason).
+function renderLayout() {
+  const plan = window.dockZones.zonePlan(effectiveLayout(), TABS, zonesViewport(), { faceSize: window.faceSize });
+  window.dockZones.applyPlan(plan, document);
+  const now = new Set(plan.shown);
+  for (const id of now) if (!shownModules.has(id)) onModuleShown(id);
+  if (shownModules.has('vault') && !now.has('vault')) onVaultLeft();
+  if (!now.has('vault') || shownModules.has('vault')) term.focus();
+  shownModules = now;
+  const btn = document.getElementById('layout-btn');
+  if (btn) btn.classList.toggle('own', ownLayout !== null);
+  // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
+  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+}
+
+// A selection change (tab click, Ctrl+B) stays in this window.
+function commitSelection(next) {
+  selection = { active: next.active, restore: next.restore };
+  saveSelection();
+  renderLayout();
+}
+
+// A placement change (move, hide, resize) goes to this tab's own layout when it
+// has one or `justThisTab` asks for one, else to the global layout.
+function commitPlacement(next, { justThisTab = false } = {}) {
+  const l = DL.normalizeLayout(next, MODULE_IDS);
+  selection = { active: l.active, restore: l.restore };
+  saveSelection();
+  if (justThisTab || ownLayout) {
+    ownLayout = l;
+    try { ws.send(JSON.stringify({ type: 'layout-override', layout: l })); } catch { /* not attached */ }
+  } else {
+    globalLayout = l;
+    if (window.harness && window.harness.layout) window.harness.layout.set(l).catch(() => {});
+  }
+  renderLayout();
+}
+
+// Reset to global (the tab drops its own) and Make this global.
+function dropOwnLayout({ makeGlobal = false } = {}) {
+  if (!ownLayout) return;
+  if (makeGlobal) {
+    globalLayout = ownLayout;
+    if (window.harness && window.harness.layout) window.harness.layout.set(ownLayout).catch(() => {});
+  }
+  ownLayout = null;
+  try { ws.send(JSON.stringify({ type: 'layout-override', layout: null })); } catch { /* not attached */ }
+  renderLayout();
+}
+
+function toggleAllZones() { commitSelection(DL.toggleAll(effectiveLayout())); }
+
 document.addEventListener('click', (e) => {
-  const button = e.target.closest('#side-tabs button');
+  const button = e.target.closest('.zone-tabs button[data-module]');
   if (!button) return;
-  setTab(nextTab(activeTab, button.dataset.tab));
+  commitSelection(DL.selectModule(effectiveLayout(), button.dataset.module));
 });
 
-document.getElementById('side-hint').addEventListener('click', () => {
-  setTab(activeTab === null ? lastTab : null);
-});
+document.getElementById('side-hint').addEventListener('click', toggleAllZones);
+
+// S2: the first launch after the upgrade has no global layout yet; it starts
+// from this window's old per-window settings so nothing moves under anyone.
+function legacyLayout() {
+  let legacy = {};
+  try { legacy = { sideTab: localStorage.getItem('sideTab'), rosterWidth: localStorage.getItem('rosterWidth') }; } catch {}
+  return DL.fromLegacy(legacy, MODULE_IDS);
+}
+
+async function loadLayout() {
+  globalLayout = legacyLayout();
+  selection = readSelection();
+  renderLayout();                          // draw at once; the stored layout may take a moment
+  const bridge = window.harness && window.harness.layout;
+  if (!bridge) return;
+  bridge.onChange((l) => {
+    globalLayout = DL.normalizeLayout(l, MODULE_IDS);
+    if (!ownLayout) renderLayout();
+  });
+  let stored = null;
+  try { stored = await bridge.get(); } catch {}
+  if (stored === null) {
+    bridge.set(globalLayout).catch(() => {});
+  } else {
+    globalLayout = DL.normalizeLayout(stored, MODULE_IDS);
+    renderLayout();
+  }
+}
+
+// The host's word on this tab's own layout: in `hello` and on every change.
+function applyLayoutOverride(layout) {
+  ownLayout = layout && typeof layout === 'object' ? DL.normalizeLayout(layout, MODULE_IDS) : null;
+  renderLayout();
+}
+
+// verify/probe-dock-zones.js drives and measures the zones through named
+// actions, defined only on a page main opened with ?probe=1 (its probe driver
+// is running). Answers JSON text.
+if (new URLSearchParams(location.search).get('probe') === '1') {
+  const rectOf = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+  window.__dockProbe = (req) => {
+    const a = (req && req.args) || {};
+    switch (req && req.action) {
+      case 'state': {
+        const zones = {};
+        for (const el of document.querySelectorAll('.zone')) {
+          zones[el.dataset.zone] = {
+            empty: el.hasAttribute('data-empty'), collapsed: el.hasAttribute('data-collapsed'), rect: rectOf(el),
+            tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
+            panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
+          };
+        }
+        let proposed = null;
+        try { proposed = fit.proposeDimensions() || null; } catch {}
+        return JSON.stringify({
+          ok: true, layout: effectiveLayout(), own: ownLayout !== null, shown: [...shownModules], zones,
+          term: { cols: term.cols, rows: term.rows }, fit: proposed, sent: lastSentResize,
+          termwrap: rectOf(document.getElementById('termwrap')),
+          header: !!document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none',
+        });
+      }
+      case 'move': commitPlacement(DL.moveModule(effectiveLayout(), a.id, a.target), { justThisTab: a.justThisTab === true }); break;
+      case 'select': commitSelection(DL.selectModule(effectiveLayout(), a.id)); break;
+      case 'toggleAll': toggleAllZones(); break;
+      case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
+      case 'measure': {
+        // #9: does each showing panel's content reach the bottom of its zone?
+        const out = {};
+        for (const p of document.querySelectorAll('.zone-panels > .panel.on')) {
+          const kids = [...p.children].filter(c => getComputedStyle(c).display !== 'none');
+          out[p.dataset.panel] = {
+            holderBottom: p.parentElement.getBoundingClientRect().bottom,
+            contentBottom: Math.max(...kids.map(c => c.getBoundingClientRect().bottom)),
+          };
+        }
+        return JSON.stringify({ ok: true, panels: out });
+      }
+      default: return JSON.stringify({ ok: false, error: 'unknown action' });
+    }
+    return JSON.stringify({ ok: true });
+  };
+}
 
 window.addEventListener('DOMContentLoaded', () => {
   wireModelPanel();
@@ -652,24 +804,21 @@ window.addEventListener('DOMContentLoaded', () => {
       renderModels();
     }).catch(() => {});
   }
-  // Restored per window, so a collapsed sidebar stays collapsed across a
-  // restart rather than springing back every launch.
-  let saved = DEFAULT_TAB;
-  try {
-    const stored = localStorage.getItem('sideTab');
-    // A stored tab this build does not have leaves the sidebar BLANK: no tab
-    // is active, no panel matches, and the whole thing renders empty. Seen for
-    // real -- a 'fog' tab saved by another branch emptied the sidebar here.
-    if (stored === '') saved = null;
-    else if (stored !== null) saved = isKnownTab(stored) ? stored : DEFAULT_TAB;
-  } catch {}
-  // A screenshot probe can pin the tab: the sidebar is the one surface the
-  // headless checks cannot look at.
-  // Validated too. The guard above was applied to the STORED value and not
-  // to this one, so ?tab=fog reproduced the blank sidebar exactly -- and
-  // then persisted it, because setTab writes whatever it is given.
+  // The layout: drawn at once from this window's old settings, then from the
+  // stored global layout once main answers (see loadLayout).
+  //
+  // A screenshot probe can pin the tab: the side panel is the one surface the
+  // headless checks cannot look at. Validated (an unknown ?tab= once blanked the
+  // sidebar) and NEVER saved -- the old pin wrote itself into the user's choice.
   const forced = new URLSearchParams(location.search).get('tab');
-  setTab(forced && isKnownTab(forced) ? forced : saved);
+  loadLayout().then(() => {
+    if (!forced || !isKnownTab(forced)) return;
+    const l = effectiveLayout();
+    if (DL.ZONES.some(z => l.active[z] === forced)) return;
+    const pinned = DL.selectModule(l, forced);
+    selection = { active: pinned.active, restore: pinned.restore };
+    renderLayout();
+  });
 
   // Screenshot support only: type a value into the new-secret field and reveal
   // it, so the toggle can actually be LOOKED at. Never a real secret -- the
@@ -2289,105 +2438,57 @@ function renderProcesses(running) {
   }).join('');
 }
 
-// --- roster width -----------------------------------------------------------
-// Narrow trades portrait size for terminal room; wide does the opposite. The
-// portrait scales with the panel, so "wider" actually buys bigger faces rather
-// than just more whitespace -- which matters because at 34px an expression is a
-// few pixels of mouth and unreadable.
-// --- roster width -----------------------------------------------------------
-// The POLICY lives in app/roster-width.js, where it can be tested: the three
-// tuned numbers (min, floor, share) and the clamp were inline here, which is
-// what FF1 and FF3 were moved out for and what FF5 failed to do. Miguel, A1.
-const rosterEl = document.getElementById('roster');
+// --- zone sizes (layout pass L1) ---------------------------------------------
+// Every zone resizes from its inner edge (the old roster grip, for all four).
+// The SIZE POLICY lives in app/dock-layout.js (minimums, the terminal's room,
+// shrinking with the window) and the portrait size follows the Agents zone in
+// app/dock-zones-display.js; nothing here decides either.
+//
+// While a grip is dragged the layout is DRAWN (dragLayout) but not saved; the
+// one write happens on release. A store write per mousemove frame is what let
+// the old width ratchet run frame by frame (Miguel, A18).
+(function initZoneGrips() {
+  let dragging = null;     // { zone, grip, el }
+  document.getElementById('body').addEventListener('mousedown', (e) => {
+    const grip = e.target.closest('.zone-grip');
+    if (!grip) return;
+    const el = grip.closest('.zone');
+    dragging = { zone: el.dataset.zone, grip, el };
+    grip.classList.add('dragging');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    // Measured from the zone's own anchored edge, not the window's: the
+    // diagnostics pane can sit between the right zone and the window edge.
+    const px = window.dockZones.dragSize(dragging.zone, { x: e.clientX, y: e.clientY },
+      dragging.el.getBoundingClientRect());
+    if (px === null) return;
+    dragLayout = DL.setSize(dragLayout || effectiveLayout(), dragging.zone, px);
+    renderLayout();
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging.grip.classList.remove('dragging');
+    dragging = null;
+    const l = dragLayout;
+    dragLayout = null;
+    if (l) commitPlacement(l);     // the one real choice, saved once
+  });
+})();
 
-// `persist` defaults to FALSE, so a width is only stored when the user
-// actually chose one. Miguel's R5 was that persisting the CLAMPED result let
-// the first shrink overwrite the choice forever; my fix for it defaulted this
-// to true and closed only the resize path.
-//
-// Naomi then measured the load path in a real window -- the one that runs on
-// EVERY launch:
-//
-//   stored 762 (chosen at 1400px), window opens at 800px
-//     -> applied 432, stored 432    the choice is destroyed
-//   window grows back to 1400px
-//     -> still 432                  it never comes back
-//
-// And it needs no second monitor: the app's own default window is 1200x800,
-// cap 660, so any stored width above 660 died on the next ordinary launch.
-//
-// Defaulting to false is what makes that class of mistake harmless. Forgetting
-// the flag now loses persistence, which is invisible and recoverable;
-// remembering it wrongly destroyed the only copy of the user's choice. One
-// call site opts in, and it is the one where a human dragged something.
-function applyRosterWidth(px, { persist = false } = {}) {
-  const w = window.rosterWidth(px, window.innerWidth);
-  const root = document.documentElement.style;
-  root.setProperty('--roster-w', w + 'px');
-  root.setProperty('--face', window.faceSize(w) + 'px');
-  if (persist) { try { localStorage.setItem('rosterWidth', String(w)); } catch {} }
-  // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
-  return w;
-}
-
-// RE-CLAMP WHEN THE WINDOW CHANGES SIZE. Miguel, A1: there was no resize
-// listener in this file at all, so a width stored on a large monitor stayed
-// applied on a small one and the panel ended up wider than the window,
-// covering the terminal the harness exists to show. The flat 420 cap was at
-// least bounded; making the cap proportional without this made it unbounded
-// on a shrinking window.
-//
-// Reading the stored value rather than the applied one, so that widening the
-// window restores the width the user actually chose instead of leaving it
-// pinned at whatever the smallest screen allowed.
-// Re-clamp on resize, WITHOUT persisting -- see applyRosterWidth. Coalesced
-// to one frame: a window drag fires `resize` continuously, and each one wrote
-// storage and scheduled a pty resize, which is what let R5's ratchet run
-// frame by frame rather than once (Miguel, A18).
-//
-// The stored value is read with a strict typeof rather than `Number(...)`:
-// `Number(null)` is 0 and `Number.isFinite(0)` is true, so a coercing read of
-// an absent key survives only on the `> 0` check -- the trap that heads this
-// project's own list, and one this branch fixed elsewhere (A17).
+// The window changing size re-fits the zones, never saving: the stored sizes
+// are what the user dragged, so widening the window gives them back. Coalesced
+// to one frame -- a window drag fires `resize` continuously.
 let resizePending = false;
 window.addEventListener('resize', () => {
   if (resizePending) return;
   resizePending = true;
   requestAnimationFrame(() => {
     resizePending = false;
-    let stored = null;
-    try { stored = localStorage.getItem('rosterWidth'); } catch {}
-    const want = typeof stored === 'string' && stored.trim() !== '' ? Number(stored) : NaN;
-    applyRosterWidth(Number.isFinite(want) && want > 0 ? want : rosterEl.offsetWidth);
+    renderLayout();
   });
 });
-
-(function initRosterResize() {
-  let stored = 180;
-  try { stored = Number(localStorage.getItem('rosterWidth')) || 180; } catch {}
-  applyRosterWidth(stored);          // a load is not a choice: never persists
-
-  const grip = document.getElementById('roster-grip');
-  if (!grip) return;
-  let dragging = false;
-
-  grip.addEventListener('mousedown', (e) => {
-    dragging = true;
-    grip.classList.add('dragging');
-    e.preventDefault();
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    // Measured from the right edge, because the panel is right-anchored.
-    applyRosterWidth(window.innerWidth - e.clientX, { persist: true });   // the one real choice
-  });
-  window.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    grip.classList.remove('dragging');
-  });
-})();
 
 // --- attention --------------------------------------------------------------
 // A visible cue in the window as well as the OS toast, so the reason is still
@@ -3147,6 +3248,9 @@ function handleControl(msg) {
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
     renderTitle();
+    // Layout pass L1: this tab's own layout survives a reattach because the host
+    // kept it. Absent on an older host -> the global layout, as before.
+    if ('layoutOverride' in msg) applyLayoutOverride(msg.layoutOverride);
     // PR 1b: absent on an older host -> no overlay, no banner, no marker.
     renderLock(msg.lock);
     renderTerminalSessions(msg.terminalSessions);
@@ -3236,6 +3340,12 @@ function handleControl(msg) {
   }
   if (msg.type === 'lock') {
     renderLock(msg.lock);
+    return;
+  }
+  // Layout pass L1: this tab's own layout, changed here or in another window
+  // attached to the same host.
+  if (msg.type === 'layout-override') {
+    applyLayoutOverride(msg.layout);
     return;
   }
   if (msg.type === 'lock-note') {
@@ -3510,8 +3620,8 @@ function connect() {
     if (agentLog.open) openAgentLog(agentLog.agent);
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
-    if (activeTab === 'fog') requestFog();
-    if (activeTab === 'projects') requestProjects();
+    if (shownModules.has('fog')) requestFog();
+    if (shownModules.has('projects')) requestProjects();
     // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
     // `ws.send` throws (InvalidStateError) while the socket is still
     // CONNECTING -- e.g. a Refresh click, or a tab reopen, during the 1s
@@ -3530,7 +3640,7 @@ function connect() {
     // as if this fix did not exist. The resend gets its OWN fresh `seq`,
     // which supersedes the original click's seq -- that request never
     // reached the host at all, so nothing will ever answer it.
-    if (activeTab === 'models' || modelsRefreshPending) {
+    if (shownModules.has('models') || modelsRefreshPending) {
       const seq = requestModels(modelsRefreshPending);
       if (modelsRefreshPending) refreshRequestSeq = seq;
     }
@@ -3565,9 +3675,13 @@ function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
 }
 
+// The last size the host was sent: verify/probe-dock-zones.js compares it with
+// xterm's own and with what fits the container after every layout change.
+let lastSentResize = null;
 function sendResize() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    lastSentResize = { cols: term.cols, rows: term.rows };
   }
 }
 
@@ -3680,7 +3794,7 @@ term.attachCustomKeyEventHandler((e) => {
   // as backward-char. The binding looked dead while quietly editing the command
   // line. Returning false is what stops the terminal taking it.
   if (isPanelToggle(e)) {
-    setTab(activeTab === null ? (lastTab || DEFAULT_TAB) : null);
+    toggleAllZones();
     e.preventDefault();
     return false;
   }

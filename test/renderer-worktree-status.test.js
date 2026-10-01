@@ -57,7 +57,8 @@ test('the health and lock marks sit in the header beside the project title', () 
 test('the overlay sits over the terminal, not in the side panel', () => {
   const wrap = HTML.indexOf('<div id="termwrap">');
   const overlay = HTML.indexOf('id="lock-overlay"');
-  const roster = HTML.indexOf('<aside id="roster">');
+  // Layout pass L1: the side panel is now the right dock zone, after the terminal.
+  const roster = HTML.indexOf('<aside class="zone" data-zone="right"');
   assert.ok(wrap !== -1 && overlay > wrap && overlay < roster);
 });
 

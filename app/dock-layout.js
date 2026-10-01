@@ -58,7 +58,7 @@ function normalizeLayout(raw, moduleIds) {
   const rawZones = isObject(raw.zones) ? raw.zones : {};
   const zones = {};
   for (const z of ZONES) zones[z] = claim(rawZones[z]);
-  const hidden = claim(raw.hidden);
+  const hiddenIds = claim(raw.hidden);
   for (const id of moduleIds) if (!placed.has(id)) { zones.right.push(id); placed.add(id); }
 
   const rawActive = isObject(raw.active) ? raw.active : {};
@@ -87,7 +87,7 @@ function normalizeLayout(raw, moduleIds) {
     }
   }
 
-  return { version: 1, zones, active, hidden, size, restore };
+  return { version: 1, zones, active, hidden: hiddenIds, size, restore };
 }
 
 const MIN = { side: 120, wide: 80 };

@@ -412,6 +412,7 @@ function createTabView(tab) {
              tab: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
              demosecret: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '',
              flourish: process.env.CLAUDE_CUSTOM_FLOURISH || '',
+             probe: PROBE_PORT ? '1' : '',
              // Which close button the blocked pane offers: tab | dev | single.
              tabmode: tabShell.tabmodeOf(tab) },
   });
@@ -912,6 +913,17 @@ function startProbeDriver(port) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
       return tabShell.closeTab(key);
+    },
+    // Layout pass L1: a named action in the selected view (renderer.js
+    // window.__dockProbe, defined only on a page opened with ?probe=1). The
+    // request is passed as JSON data, never spliced in as code.
+    async view(action, args) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      const req = JSON.stringify(JSON.stringify({ action, args }));
+      const out = await sel.webContents.executeJavaScript(
+        `window.__dockProbe ? window.__dockProbe(JSON.parse(${req})) : JSON.stringify({ ok: false, error: 'no probe hook' })`);
+      return JSON.parse(out);
     },
     async screenshot(file) {
       const sel = selectedView();

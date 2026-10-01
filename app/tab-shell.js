@@ -874,6 +874,9 @@ function shortcutFor(input) {
 
 // The shortest token the driver will run with. The probe sends 32 hex chars.
 const PROBE_TOKEN_MIN = 16;
+// The selected view's probe actions (layout pass L1): named, so the driver can
+// never hand the page a string of code to run.
+const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));
@@ -922,6 +925,13 @@ async function handleProbeCommand(line, api, expectedToken) {
         return await api.create(cmd.branch);
       case 'reopen': return await api.reopen();
       case 'cancelCreate': return await api.cancelCreate();
+      case 'view':
+        // Layout pass L1: one of the selected view's NAMED probe actions
+        // (renderer.js window.__dockProbe), never a string of code.
+        if (typeof cmd.action !== 'string' || !VIEW_PROBE_ACTIONS.has(cmd.action)) {
+          return { ok: false, error: 'view needs a known action' };
+        }
+        return await api.view(cmd.action, cmd.args && typeof cmd.args === 'object' ? cmd.args : {});
       case 'quit': return await api.quit();
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
     }

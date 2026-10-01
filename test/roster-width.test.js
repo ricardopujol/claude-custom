@@ -126,59 +126,38 @@ test('a resize does not destroy the width the user chose', () => {
 });
 
 test('persistence fails CLOSED: only an explicit choice is stored', () => {
-  // Naomi, PR #33, measured in a real window. My R5 fix defaulted `persist` to
-  // true and closed only the resize path, leaving the LOAD path -- which runs
-  // on every launch:
+  // R5's lesson, restated for the dock zones (layout pass L1). A width was once
+  // stored from the load path and from every window resize, and a narrow
+  // window destroyed the only copy of the user's choice. The rule is the same
+  // now that every zone has a grip: a size is SAVED only when a human releases
+  // a grip; a load and a window resize only DRAW.
   //
-  //   stored 762 (chosen at 1400px); window opens at 800px
-  //     -> applied 432, stored 432   the choice is destroyed
-  //   window grows back to 1400px
-  //     -> still 432                 it never comes back
-  //
-  // And it needed no second monitor: the app's default window is 1200x800,
-  // cap 660, so any stored width above 660 died on the next ordinary launch.
-  //
-  // The renderer half is a default flipped to false, so forgetting the flag
-  // now loses persistence (invisible, recoverable) instead of destroying the
-  // only copy of a choice. This asserts the SOURCE, because the call sites
-  // live in renderer.js where nothing renders.
+  // This asserts the SOURCE, because the call sites live in renderer.js where
+  // nothing renders. Comments stripped first: prose describing the rule must
+  // not satisfy the detector for it (test/bridge-contract.test.js's lesson).
   const fs = require('fs');
   const path = require('path');
   const raw = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
-
-  // Comments stripped FIRST. test/bridge-contract.test.js learned this the
-  // hard way and this test did not: prose describing the rule must not satisfy
-  // the detector for the rule, which is the trap store.js's header guard hit.
   const NL = String.fromCharCode(10);
   const src = raw.replace(/\/\*[\s\S]*?\*\//g, '')
                  .replace(new RegExp('^\\s*//[^' + NL + ']*', 'gm'), '');
 
-  assert.ok(src.includes('function applyRosterWidth(px, { persist = false } = {})'),
-    'the default must be false -- a load and a resize are not choices');
+  const grips = src.slice(src.indexOf('(function initZoneGrips() {'), src.indexOf('})();', src.indexOf('(function initZoneGrips() {')));
+  assert.ok(grips.length > 100, 'the grip code must be findable for this check to mean anything');
 
-  // COUNT THE OPT-INS, do not try to parse the call. Mortimer, PR #33 mutation
-  // gate: the first version matched `applyRosterWidth\([^)]*persist:\s*true`,
-  // and he measured that a second persisting site written as
-  //
-  //     applyRosterWidth(readStored(), { persist: true })
-  //
-  // matches ZERO times, because `[^)]*` cannot cross the inner `)`. So the
-  // assertion `optIns.length === 1` passed while two sites persisted -- which
-  // is precisely the load-path regression this test exists to prevent, waved
-  // through by the test written to catch it.
-  //
-  // It was also his answer to "find a test asserting the SPELLING rather than
-  // the rule": it pinned the shape of a call instead of the rule that only a
-  // deliberate choice is stored. Counting the opt-ins states the rule and
-  // cannot be evaded by nesting.
-  const optIns = [...src.matchAll(/persist:\s*true/g)];
-  assert.strictEqual(optIns.length, 1,
-    `exactly one call site may persist; found ${optIns.length}`);
+  // COUNT THE SAVES, don't parse the calls (Mortimer, PR #33: a pattern that
+  // matched the call's shape waved a second persisting site through).
+  const saves = [...grips.matchAll(/commitPlacement\(/g)];
+  assert.strictEqual(saves.length, 1, `exactly one grip path may save; found ${saves.length}`);
+  const up = grips.indexOf("addEventListener('mouseup'");
+  const move = grips.indexOf("addEventListener('mousemove'");
+  assert.ok(up !== -1 && move !== -1 && saves[0].index > up,
+    'the one save must be on release -- a human choosing a size -- never while moving');
 
-  // And it must be the drag. `mousemove` .. `mouseup` is the drag handler.
-  const dragStart = src.indexOf('mousemove');
-  const dragEnd = src.indexOf('mouseup');
-  assert.ok(dragStart !== -1 && dragEnd > dragStart, 'the drag handler must be findable');
-  assert.ok(optIns[0].index > dragStart && optIns[0].index < dragEnd + 400,
-    'the one call that persists must be the drag -- a human choosing a width');
+  // And the window resize only draws.
+  const at = src.indexOf("window.addEventListener('resize', () => {");
+  assert.ok(at !== -1, 'the resize listener must be findable');
+  const onResize = src.slice(at, src.indexOf('});', src.indexOf('requestAnimationFrame', at)));
+  assert.match(onResize, /renderLayout\(\)/);
+  assert.doesNotMatch(onResize, /commitPlacement|layout\.set|localStorage\.setItem/);
 });
