@@ -116,8 +116,10 @@ function phaseText(entry) {
     default: break;
   }
   if (setupFailed(entry)) {
+    // The script's own message usually quotes its log already: name it once.
     const log = text(entry.setup.log);
-    return `Setup failed: ${entry.setup.error}${log ? ` Log: ${log}` : ''}`;
+    const named = log && entry.setup.error.includes(log);
+    return `Setup failed: ${entry.setup.error}${log && !named ? ` Log: ${log}` : ''}`;
   }
   if (text(entry.createdWarning)) return `Created, but: ${entry.createdWarning}`;
   return null;

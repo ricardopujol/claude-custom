@@ -1045,7 +1045,7 @@ test('criterion 10: a failing setup still starts the session, and the error stay
   await flush();
   assert.ok(h.shell.tabByKey(key('feat-demo')).started);
   const e = h.shell.model().find(x => x.key === key('feat-demo'));
-  assert.strictEqual(tabModel.phaseText(e), "Setup failed: run: 'npm ci' exited with 1 (output in L). Log: L");
+  assert.strictEqual(tabModel.phaseText(e), "Setup failed: run: 'npm ci' exited with 1 (output in L).");
 });
 
 test('a tab closed by hand while its setup runs leaves no setup error behind for a reopen', async () => {

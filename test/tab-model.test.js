@@ -102,6 +102,9 @@ test('phaseText for a setup and a creation warning; nothing for a plain live tab
     'Setup failed: run failed Log: C:\\l.log');
   assert.strictEqual(m.phaseText(entry({ setup: { running: false, error: 'bad manifest', log: null } })),
     'Setup failed: bad manifest');
+  // The real script quotes its log in the message: never name it twice (probe, 2026-09-30).
+  assert.strictEqual(m.phaseText(entry({ setup: { running: false, error: "run: 'npm ci' exited with 1 (output in C:\\l.log).", log: 'C:\\l.log' } })),
+    "Setup failed: run: 'npm ci' exited with 1 (output in C:\\l.log).");
   assert.strictEqual(m.phaseText(entry({ setup: { running: true, line: 'x', error: null } })), null,
     'a running setup is the pane\'s to show, not the alert\'s');
   assert.strictEqual(m.phaseText(entry({ createdWarning: 'Active Lanes row not added' })),
