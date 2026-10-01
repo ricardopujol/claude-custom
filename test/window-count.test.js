@@ -39,5 +39,30 @@ test('the pid and port reach the script as plain integers, and nothing else does
   assert.match(script, /-LocalPort 7787 /);
   assert.match(script, /OwningProcess -eq 4242 /);
   assert.match(script, /-State Established/);
-  assert.match(script, /ObjectNotFound/, 'no matching connection is 0, any other failure is not');
+  // No matching connection is 0, any other failure is not -- told apart by the
+  // error id, never the category a missing cmdlet shares (Dexter R2-1).
+  assert.match(script, /FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound\*'/);
+  assert.doesNotMatch(script, /CategoryInfo/);
+});
+
+// Against the REAL powershell.exe (Dexter, PR #76 R2-1): a missing or
+// unloadable Get-NetTCPConnection throws ObjectNotFound too -- the same
+// category as "no rows" -- and must read as "couldn't tell", never as 0.
+const onWindows = process.platform === 'win32';
+
+test('real shell: a cmdlet that is not there is "couldn\'t tell" (null), never 0', { skip: !onWindows }, async () => {
+  assert.strictEqual(await windowCount(4242, 7999, { cmdlet: 'Get-NetTCPConnectionX' }), null);
+});
+
+test('real shell: a port with no connections is 0', { skip: !onWindows }, async () => {
+  assert.strictEqual(await windowCount(process.pid, 1, {}), 0);
+});
+
+test('the cmdlet name is only ever a plain identifier', async () => {
+  let ran = 0;
+  const exec = async () => { ran += 1; return 'COUNT 0\nEND'; };
+  for (const cmdlet of ['Get-X; Remove-Item -Recurse C:/', 'Get X', '$(evil)', '', 42]) {
+    assert.strictEqual(await windowCount(4242, 7787, { exec, platform: 'win32', cmdlet }), null, String(cmdlet));
+  }
+  assert.strictEqual(ran, 0);
 });

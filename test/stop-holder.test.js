@@ -17,7 +17,7 @@ const ALL = ['raise', 'stop', 'stop-if-idle'];
 // windows it REALLY has, and what the OS reports about them.
 function world(over = {}) {
   const procs = new Map([[4242, '1000'], [9, 'c9']]);
-  const calls = { control: [], kill: [], token: [], count: 0 };
+  const calls = { control: [], kill: [], token: [], count: 0, countArgs: [] };
   const w = {
     procs, calls,
     lock: { ...LOCK },
@@ -57,7 +57,13 @@ function world(over = {}) {
       if (w.stopEnds) end();
       return { ok: true, reply: { type: 'stop-if-idle', stopped: true } };
     },
-    windowCount: async () => { calls.count += 1; return w.osCount === undefined ? w.windows : w.osCount; },
+    // Records what it was asked about (Dexter R2, Low): a swapped (port, pid)
+    // must not pass just because the fake ignored its arguments.
+    windowCount: async (pid, port) => {
+      calls.count += 1;
+      calls.countArgs.push([pid, port]);
+      return w.osCount === undefined ? w.windows : w.osCount;
+    },
     killPidTree: (pid) => { calls.kill.push(pid); procs.delete(pid); procs.delete(w.lock.claudePid); },
     sleep: async () => {},
     now: (() => { let t = 0; return () => (t += 100); })(),
@@ -392,13 +398,23 @@ test('property: nothing is stopped that is not proven, windowless and the shown 
         return r;
       };
       const realToken = deps.readToken;
-      deps.readToken = (i, p) => { assert.strictEqual(w.identity.pid, lock && lock.pid, 'token read for a stranger'); return realToken(i, p); };
+      // Recorded, not thrown (Dexter R2, Low): reach() reads the token inside a
+      // try/catch, which would swallow an assertion thrown here.
+      const strangerTokenReads = [];
+      deps.readToken = (i, p) => {
+        if (w.identity.pid !== (lock && lock.pid)) strangerTokenReads.push(w.identity.pid);
+        return realToken(i, p);
+      };
 
       const shown = { pid: s.shownPid, startedAt: s.shownStartedAt };
       const alivePre = lock && w.procs.get(lock.pid);
       await stopHolder({ lockPath: 'L', shown }, deps);
 
       const isShown = lock && lock.pid === shown.pid && lock.startedAt === shown.startedAt;
+      assert.deepStrictEqual(strangerTokenReads, [], 'token read for a stranger');
+      for (const args of w.calls.countArgs) {
+        assert.deepStrictEqual(args, [lock.pid, lock.port], 'the OS was asked about something other than the holder');
+      }
       for (const k of killed) {
         assert.ok(isShown, 'killed a holder the pane did not show');
         assert.strictEqual(k.p, lock.pid, 'killed a pid that is not the lock\'s');
