@@ -20,6 +20,26 @@
 const { EventEmitter } = require('events');
 const { summarize } = require('./attention-summary');
 
+// ONLY when it needs you, or is really done (Ricardo, 2026-10-01). Notification
+// also fires for an idle reminder (60 s after a turn ends -- the same "finished"
+// again), a login, a quota event, an MCP form closing... Of its
+// `notification_type`s, these are the ones that are waiting on you. A type added
+// later raises nothing until it is named here. No type at all is an older CLI,
+// which can't be told apart, so it raises as it always did.
+const NEEDS_INPUT = new Set(['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input']);
+
+// Stop fires at the end of every TURN, and a turn ends while background agents
+// are still working -- their results start the next one. It lists them in
+// `background_tasks` (measured, see host/mood-machine.js), each
+// { id, type: 'subagent', status: 'running', agent_type, description }. A
+// running subagent means the work isn't finished. A shell left running (a dev
+// server) is not work waiting to finish, so only subagents count; one with no
+// status, or no type but an agent_type, is read as running.
+const isRunningAgent = t => Boolean(t) && typeof t === 'object' &&
+  (t.type === 'subagent' || (t.type === undefined && typeof t.agent_type === 'string')) &&
+  (t.status === undefined || t.status === 'running');
+const stillWorking = p => Array.isArray(p.background_tasks) && p.background_tasks.some(isRunningAgent);
+
 // Stop can fire more than once around a single turn ending, and two toasts for
 // one event is how a notification system loses its credibility.
 const DEFAULT_DEBOUNCE_MS = 4000;
@@ -45,6 +65,7 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     const p = payload || {};
 
     if (event === 'Notification') {
+      if (p.notification_type !== undefined && !NEEDS_INPUT.has(p.notification_type)) return;
       raise('input-needed', {
         title: project ? `${project} needs you` : 'Claude needs you',
         body: summarize('Notification', p, {}),
@@ -54,6 +75,7 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     }
 
     if (event === 'Stop') {
+      if (stillWorking(p)) return;
       raise('finished', {
         title: project ? `${project} finished` : 'Claude finished',
         body: summarize('Stop', p, { agents: agents() }),

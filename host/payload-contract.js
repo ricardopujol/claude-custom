@@ -141,6 +141,10 @@ const CONTRACT = {
       message: { used: 'attention-summary.js, to say what is being asked for' },
       ...COMMON_FIELDS,
     },
+    // Also read, optional: notification_type. attention.js raises only for
+    // permission_prompt, elicitation_dialog, elicitation_url_dialog and
+    // agent_needs_input; an older CLI that sends none raises as before.
+    // Stop's background_tasks gates "finished" there too (a running subagent).
   },
 };
 

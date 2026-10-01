@@ -101,3 +101,77 @@ test('a SubagentStop is not a finished turn', () => {
   h.fire('SubagentStop', {});
   assert.deepStrictEqual(h.sent, []);
 });
+
+// --- only when it needs you, or is really done (Ricardo, 2026-10-01) -------------
+// Notification fires for many things that aren't a request for input, and Stop
+// fires at the end of every TURN -- including one that ends while background
+// agents are still working, which is not "finished".
+
+test('a Notification raises only for the types that need your input', () => {
+  for (const type of ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input']) {
+    const h = harness();
+    h.fire('Notification', { message: 'x', notification_type: type });
+    assert.deepStrictEqual(h.sent.map(e => e.kind), ['input-needed'], type);
+  }
+});
+
+test('a Notification that does not need input raises nothing', () => {
+  for (const type of ['idle_prompt', 'auth_success', 'elicitation_complete', 'elicitation_response',
+    'agent_completed', 'quota_auto_resume_fired', 'quota_auto_resume_stale', 'quota_auto_resume_disabled',
+    'some_type_added_later', '', 5, null]) {
+    const h = harness();
+    h.fire('Notification', { message: 'Claude is waiting for your input', notification_type: type });
+    assert.deepStrictEqual(h.sent, [], String(type));
+  }
+});
+
+test('a Notification with no type (an older CLI) still raises: it cannot be told apart', () => {
+  const h = harness();
+  h.fire('Notification', { message: 'Claude needs your permission to use Bash' });
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['input-needed']);
+});
+
+test('a Stop while a subagent still runs is not finished: nothing is raised', () => {
+  const h = harness();
+  h.fire('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running', agent_type: 'logic-reviewer' }] });
+  assert.deepStrictEqual(h.sent, []);
+});
+
+test('the Stop after the last agent returns is finished', () => {
+  const h = harness();
+  h.fire('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running' }] });
+  h.advance(60000);
+  h.fire('Stop', { background_tasks: [] });
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+});
+
+test('a held-back Stop does not debounce the real one', () => {
+  const h = harness({ debounceMs: 5000 });
+  h.fire('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running' }] });
+  h.advance(100);
+  h.fire('Stop', {});
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+});
+
+test('only a RUNNING subagent holds back finished: a shell, or a done task, does not', () => {
+  const cases = [
+    [{ id: 's1', type: 'shell', status: 'running', description: 'npm run dev' }],
+    [{ id: 'a1', type: 'subagent', status: 'completed' }],
+    [{ id: 'a1', type: 'subagent', status: 'failed' }],
+    [null, 'x', 5],
+    'not a list',
+  ];
+  for (const background_tasks of cases) {
+    const h = harness();
+    h.fire('Stop', { background_tasks });
+    assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished'], JSON.stringify(background_tasks));
+  }
+});
+
+test('a subagent with no status, or no type but an agent_type, still counts as running', () => {
+  for (const task of [{ id: 'a1', type: 'subagent' }, { id: 'a1', agent_type: 'Explore', status: 'running' }]) {
+    const h = harness();
+    h.fire('Stop', { background_tasks: [task] });
+    assert.deepStrictEqual(h.sent, [], JSON.stringify(task));
+  }
+});
