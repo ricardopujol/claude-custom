@@ -248,3 +248,21 @@ test('F4: the window-focus path records which view it focused, so applySelection
   const body = MAIN.slice(i, MAIN.indexOf('};', i));
   assert.ok(/lastFocusedView\s*=/.test(body));
 });
+
+// --- fix/terminal-links (2026-10-01) ------------------------------------------------
+
+test('a link from a tab page opens only through externalUrl, on a gated channel', () => {
+  const c = channels.find(x => x.name === 'tab:openExternal');
+  assert.ok(c, 'tab:openExternal is registered');
+  const body = callText(MAIN, c.at);
+  assert.match(body, /isTabView\(e\.sender\)/);
+  assert.match(body, /externalUrl\(url\)/);
+});
+
+test('nothing reaches shell.openExternal unchecked -- above all the about:blank of a blank window.open', () => {
+  const calls = [...MAIN.matchAll(/shell\.openExternal\(([^)]*)\)/g)].map(m => m[1]);
+  assert.ok(calls.length >= 2, `found ${calls.length}`);
+  for (const arg of calls) assert.strictEqual(arg, 'target', `shell.openExternal(${arg})`);
+  const n = (MAIN.match(/const target = externalUrl\(url\);/g) || []).length;
+  assert.strictEqual(n, calls.length, 'each call is fed by externalUrl');
+});

@@ -42,6 +42,7 @@ const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
 const { sendControl } = require('../host/host-client');
+const { externalUrl } = require('./external-link');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
@@ -380,9 +381,13 @@ function createTabView(tab) {
       console.log(`[renderer:${tag}] ${message} (${String(sourceId).split('/').pop()}:${line})`);
     });
   }
-  // Any external link opens in the real browser, never in-app.
+  // Any external link opens in the real browser, never in-app -- and only an
+  // http(s) one. A blank window.open() arrives here as `about:blank`, which
+  // Windows has no app for (fix/terminal-links): that is dropped, not opened.
   wc.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    const target = externalUrl(url);
+    if (target) shell.openExternal(target);
+    else console.log(`[main] ${tab.key}: not opening ${String(url).slice(0, 200)} (not an http(s) link)`);
     return { action: 'deny' };
   });
 
@@ -525,6 +530,14 @@ function registerIpc() {
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a
   // background process.
+  // A link clicked in a tab's terminal (fix/terminal-links): straight to the
+  // default browser, no prompt -- only http(s) gets this far (app/external-link.js).
+  ipcMain.on('tab:openExternal', (e, url) => {
+    if (!isTabView(e.sender)) return;
+    const target = externalUrl(url);
+    if (target) shell.openExternal(target).catch((err) => console.error('[main] openExternal failed:', err && err.message));
+    else console.log(`[main] not opening ${String(url).slice(0, 200)} (not an http(s) link)`);
+  });
   ipcMain.on('tab:raise', (e) => {
     if (!isTabView(e.sender)) return;
     if (tabShell.raise(e.sender) && win && !win.isDestroyed()) win.flashFrame(true);

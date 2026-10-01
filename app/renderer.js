@@ -192,7 +192,19 @@ const term = new Terminal({
     cursor: '#d08c4a',
     selectionBackground: '#2d3446',
   },
+  // Claude Code prints its links as OSC 8 hyperlinks. xterm's default handler
+  // confirm()s, then window.open()s a BLANK page and fills the address in
+  // afterwards -- main only ever saw `about:blank`, and Windows said no app
+  // opens it (fix/terminal-links, 2026-10-01). Main opens it instead, http(s)
+  // only, in the default browser.
+  linkHandler: {
+    activate: (_event, uri) => openLink(uri),
+  },
 });
+
+function openLink(uri) {
+  if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(uri);
+}
 
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);

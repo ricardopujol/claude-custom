@@ -113,3 +113,18 @@ test('the preload exposes exactly the tab bridge on the tab:* channels, replace-
   assert.match(p, /onTabSelected: \(fn\) => \(ipcRenderer\.removeAllListeners\('tab-selected'\)/);
   assert.match(p, /onLockOverride: \(fn\) => \(ipcRenderer\.removeAllListeners\('lock-override'\)/);
 });
+
+// --- fix/terminal-links (2026-10-01) ------------------------------------------------
+
+test('a link clicked in the terminal goes to main through the bridge: no confirm, no window.open', () => {
+  const opts = JS.slice(JS.indexOf('const term = new Terminal({'), JS.indexOf('\n});', JS.indexOf('const term = new Terminal({')));
+  assert.match(opts, /linkHandler: \{/, 'xterm\'s default handler confirm()s, then window.open()s a blank page');
+  assert.match(opts, /activate: \(_event, uri\) => openLink\(uri\)/);
+  const body = fnBody('openLink');
+  assert.match(body, /window\.harness\.openExternal\(uri\)/);
+  assert.doesNotMatch(body, /confirm\(|window\.open\(/);
+});
+
+test('the bridge sends a link to main on its own channel', () => {
+  assert.match(strip(PRELOAD), /openExternal: \(url\) => ipcRenderer\.send\('tab:openExternal', url\)/);
+});
