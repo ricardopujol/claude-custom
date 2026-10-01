@@ -1109,6 +1109,22 @@ test('one creation at a time; while it runs, a tab for that branch selected by h
   assert.ok(h.shell.tabByKey(key('feat-demo')).started);
 });
 
+test('Miguel G1: a new tab git lists late does not steal the selection from one picked meanwhile', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  h.available = { create: true, setup: false, remove: true };
+  await h.shell.open();
+  await flush();
+  // The script answers, but git doesn't list the worktree until a later poll.
+  h.createResult = (branch) => ({ ok: true, path: wt('feat-late'), branch, warning: null });
+  await h.shell.createWorktree('feat/late');
+  await h.shell.select(key('feat-b'));
+  h.addWorktree('feat-late', 'feat/late');
+  await h.shell.poll();
+  await flush();
+  assert.ok(labels(h).includes('feat/late'));
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'), 'the person chose feat-b; the late tab does not take it');
+});
+
 test('plusMenu: New branch is offered only with the scripts installed and nothing being created', async () => {
   const h = harness();
   await h.shell.open();

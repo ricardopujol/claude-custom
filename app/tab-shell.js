@@ -763,7 +763,15 @@ function createShell(deps) {
     const m = model();
     const sel = m.find(e => e.selected);
     const next = tabModel.neighbour(m, sel ? sel.key : null, n);
-    return next === null ? Promise.resolve() : select(next);
+    return next === null ? Promise.resolve() : userSelect(next);
+  }
+
+  // A selection the PERSON made (a click, Ctrl+Tab) wins over a tab the shell
+  // was waiting to select once git lists it (PR #80 Miguel G1): that tab still
+  // opens, it just doesn't take the selection later.
+  function userSelect(key) {
+    selectWhenListed = null;
+    return select(key);
   }
 
   /** view query: which close button the blocked pane offers. */
@@ -775,7 +783,7 @@ function createShell(deps) {
   function destroy() { destroyed = true; }
 
   return {
-    open, poll, select, closeTab, report, raise, attentionClick, goTo, menuState, override,
+    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy,
