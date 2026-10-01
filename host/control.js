@@ -73,6 +73,11 @@ const CONTROL_TYPES = new Set([
   // Extension X1: *Open anyway* on a window the session lock blocked. Typed
   // into the pty instead, it would reach a pty that doesn't exist yet.
   'lock-override',
+  // Worktree tabs (PR 2). `stop`: closing a tab by hand ends its host; typed
+  // into the pty it would land in a session that may be running
+  // --dangerously-skip-permissions. `raise`: *Go to that session* asks the
+  // host to bring its windows forward -- the same hole if it is left off.
+  'stop', 'raise',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
@@ -141,8 +146,18 @@ function validAgentLogRequest(msg) {
   return null;
 }
 
+/**
+ * The clients a `raise` frame brings a window forward for: everyone attached
+ * EXCEPT the sender. The sender is a one-shot client (host/host-client.js), not
+ * a window -- counting it made `windows: 0` impossible, and 0 is the answer
+ * "no window open" that *Go to that session* turns into words.
+ */
+function raiseTargets(clients, sender) {
+  return [...(clients || [])].filter(c => c !== sender);
+}
+
 module.exports = {
-  validAgentLogRequest, MAX_AGENT_NAME,
+  raiseTargets, validAgentLogRequest, MAX_AGENT_NAME,
   validResizeDims, parseControlFrame, handleFrame,
   MIN_TERMINAL_DIM, MAX_TERMINAL_DIM, CONTROL_TYPES,
 };

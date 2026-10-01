@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <!-- Replaced at runtime by the project folder; main.js preventDefaults
+       page-title-updated so the page can never take it back. -->
+  <title>claude-custom</title>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <style>
+    :root {
+      --bg: #11131a; --chrome: #171a23; --border: #262b38; --text: #c7cede;
+      --dim: #6d7689; --accent: #d08c4a; --ok: #5fb07a; --bad: #cc5f5f;
+    }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 12px/1.3 "Segoe UI", system-ui, sans-serif; overflow: hidden; user-select: none; }
+    /* The strip is a fixed 34px; main places the tab views below it. */
+    #strip { height: 34px; box-sizing: border-box; display: flex; align-items: stretch;
+      background: var(--chrome); border-bottom: 1px solid var(--border); }
+    #tabs { display: flex; align-items: stretch; min-width: 0; overflow: hidden; }
+    .tab { display: flex; align-items: center; gap: 6px; padding: 0 10px; max-width: 240px;
+      border-right: 1px solid var(--border); cursor: default; white-space: nowrap; }
+    .tab:hover { background: color-mix(in srgb, var(--accent) 10%, var(--chrome)); }
+    .tab.selected { background: var(--bg); box-shadow: inset 0 -2px 0 var(--accent); }
+    .tab.dim .label { color: var(--dim); }
+    .tab.dim { opacity: 0.75; }
+    .label { overflow: hidden; text-overflow: ellipsis; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+    .dot.working { background: var(--ok); animation: pulse 1.2s ease-in-out infinite; }
+    .dot.needs { background: var(--accent); }
+    .glyph { font-size: 11px; }
+    .health { font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+    .x { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 14px;
+      line-height: 1; padding: 0 2px; border-radius: 3px; }
+    .x:hover { color: var(--text); background: var(--border); }
+    #strip-alert { flex: 1 1 auto; min-width: 0; align-self: center; margin: 0 10px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; color: var(--bad); }
+    #strip-alert[hidden] { display: none; }
+    @keyframes pulse { 50% { opacity: 0.35; } }
+    /* Visible only while the selected tab has no page of its own (starting,
+       failed, or no worktrees yet); the tab's view covers it otherwise. */
+    #pane { position: absolute; top: 34px; left: 0; right: 0; bottom: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+    #pane[hidden] { display: none; }
+    #pane-text { max-width: 560px; text-align: center; color: var(--dim); font-size: 13px; }
+    #pane-retry { padding: 5px 14px; border-radius: 4px; cursor: pointer;
+      background: var(--chrome); color: var(--text); border: 1px solid var(--border); }
+    #pane-retry:hover { border-color: var(--accent); }
+    #pane-retry[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <div id="strip"><div id="tabs"></div><div id="strip-alert" hidden></div></div>
+  <div id="pane" hidden>
+    <div id="pane-text"></div>
+    <button type="button" id="pane-retry" hidden>Retry</button>
+  </div>
+  <script src="./tab-strip.js"></script>
+</body>
+</html>

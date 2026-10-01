@@ -14,6 +14,26 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('harness', {
   attention: (surfaces) => ipcRenderer.send('attention', surfaces),
 
+  // Worktree tabs (PR 2). This page is one tab of a shell window; main owns the
+  // strip and decides what these mean.
+  //   tabStatus   what this tab reports about itself (app/tab-status.js)
+  //   closeTab    the blocked pane's close button: end this tab (or the window)
+  //   goToSession the lock holder -> { kind, text? } (select / raise / explain)
+  //   raise       a host said `raise`: select this tab, bring the window forward
+  //   onTabSelected / onLockOverride: main -> page, replace-don't-accumulate
+  tabStatus: (status) => ipcRenderer.send('tab:status', status),
+  closeTab: () => ipcRenderer.send('tab:close'),
+  goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
+  raise: () => ipcRenderer.send('tab:raise'),
+  onTabSelected: (fn) => (ipcRenderer.removeAllListeners('tab-selected'), ipcRenderer.on('tab-selected',
+    () => {
+      try { fn(); } catch (err) { console.error('[preload] tab-selected listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('tab-selected')),
+  onLockOverride: (fn) => (ipcRenderer.removeAllListeners('lock-override'), ipcRenderer.on('lock-override',
+    () => {
+      try { fn(); } catch (err) { console.error('[preload] lock-override listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('lock-override')),
+
   // FF4. Main raises and clears the finished-task cue, because only main knows
   // whether the window is focused -- the page cannot tell "you are looking at
   // me" from "I am merely visible". One boolean, one direction.

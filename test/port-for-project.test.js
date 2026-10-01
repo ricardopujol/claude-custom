@@ -213,3 +213,75 @@ test('the port-probe deadline is pinned, including the direction that reintroduc
   assert.strictEqual(DEADLINE_MS, 6000,
     'a longer deadline is a longer blank screen; changing this needs a reason');
 });
+
+// ---- Dexter, PR #75 F1: a live host of ours ANYWHERE in the range wins ----
+// Tabs A and B both hash to 7742; B's host was stepped to 7743. Close A, reopen:
+// the old walk hit 7742 (free) and returned 'spawn', so B was drawn "not
+// started" while its session ran on 7743. Free ports answer ECONNREFUSED in
+// about a millisecond, so walking the whole range costs ~100 ms.
+const OURS = { cwd: PROJ };
+const STRANGER = { cwd: 'C:/some/other/project' };
+const at = (map, fallback = STRANGER) => port => (port in map ? map[port] : fallback);
+
+test('F1: ours on a later port beats a free port earlier in the walk', async () => {
+  const base = portForCwd(PROJ);
+  const r = await resolvePort({
+    cwd: PROJ,
+    occupantAt: at({ [base]: null, [base + 1 <= 7799 ? base + 1 : 7700]: OURS }),
+  });
+  assert.deepStrictEqual(r, { port: base + 1 <= 7799 ? base + 1 : 7700, action: 'attach' });
+});
+
+test('F1: ours behind a stranger AND a free port is still found', async () => {
+  const p = i => PORT_BASE + ((portForCwd(PROJ) - PORT_BASE + i) % PORT_SPAN);
+  const r = await resolvePort({
+    cwd: PROJ,
+    occupantAt: at({ [p(0)]: STRANGER, [p(1)]: null, [p(40)]: OURS }),
+  });
+  assert.deepStrictEqual(r, { port: p(40), action: 'attach' });
+});
+
+test('F1: no ours anywhere gives the FIRST free port, not the last', async () => {
+  const p = i => PORT_BASE + ((portForCwd(PROJ) - PORT_BASE + i) % PORT_SPAN);
+  const r = await resolvePort({
+    cwd: PROJ,
+    occupantAt: at({ [p(3)]: null, [p(9)]: null, [p(90)]: null }),
+  });
+  assert.deepStrictEqual(r, { port: p(3), action: 'spawn' });
+});
+
+test('F1: a deadline that hits AFTER a free port was seen returns that port', async () => {
+  const first = portForCwd(PROJ);
+  const occupantAt = async port => {
+    if (port === first) return null;
+    await new Promise(r => setTimeout(r, 30));
+    return STRANGER;
+  };
+  const r = await resolvePort({ cwd: PROJ, occupantAt, deadlineMs: 100 });
+  assert.deepStrictEqual(r, { port: first, action: 'spawn' });
+});
+
+test('F1 property: any occupancy with an "ours" attaches to one; none spawns on the lowest-offset free port', async () => {
+  const fc = require('fast-check');
+  const first = portForCwd(PROJ);
+  const portAt = i => PORT_BASE + ((first - PORT_BASE + i) % PORT_SPAN);
+  await fc.assert(fc.asyncProperty(
+    fc.array(fc.constantFrom('free', 'stranger', 'ours'), { minLength: PORT_SPAN, maxLength: PORT_SPAN }),
+    async kinds => {
+      const map = {};
+      kinds.forEach((k, i) => { map[portAt(i)] = k === 'free' ? null : k === 'ours' ? OURS : STRANGER; });
+      const oursPorts = kinds.map((k, i) => (k === 'ours' ? portAt(i) : null)).filter(x => x !== null);
+      const freeIdx = kinds.indexOf('free');
+      if (oursPorts.length === 0 && freeIdx === -1) {
+        await assert.rejects(() => resolvePort({ cwd: PROJ, occupantAt: at(map) }), /no free port/i);
+        return;
+      }
+      const r = await resolvePort({ cwd: PROJ, occupantAt: at(map) });
+      if (oursPorts.length > 0) {
+        assert.strictEqual(r.action, 'attach');
+        assert.ok(oursPorts.includes(r.port));
+      } else {
+        assert.deepStrictEqual(r, { port: portAt(freeIdx), action: 'spawn' });
+      }
+    }), { numRuns: 200 });
+});

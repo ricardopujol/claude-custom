@@ -109,3 +109,37 @@ test('pick answers null when the dialog itself throws', async () => {
   const { call } = setup({ dialog: { showOpenDialog: async () => { throw new Error('boom'); } } });
   assert.strictEqual(await call(PICK_CHANNEL), null);
 });
+
+// --- a window made of tab views (worktree tabs) ------------------------------
+
+test('with isSender and send, every view is served and the push goes through send', async () => {
+  const ipcMain = fakeIpc();
+  const store = fakeStore();
+  const pushed = [];
+  const view = { id: 'v' };
+  registerAvatarHandlers({
+    ipcMain, store, win: { webContents: { id: 'strip', send: () => { throw new Error('must not use the strip'); } } },
+    dialog: {}, isSender: (s) => s === view, send: (ch, v) => pushed.push([ch, v]),
+  });
+  assert.strictEqual(await ipcMain.handlers.get(SET_CHANNEL)({ sender: view }, false), false);
+  assert.deepStrictEqual(pushed, [[PUSH_CHANNEL, false]]);
+  assert.strictEqual(await ipcMain.handlers.get(GET_CHANNEL)({ sender: view }), false);
+  // The strip is not a view.
+  assert.strictEqual(await ipcMain.handlers.get(SET_CHANNEL)({ sender: { id: 'strip' } }, true), null);
+  assert.strictEqual(await ipcMain.handlers.get(GET_CHANNEL)({ sender: {} }), true);
+});
+
+test('watchImagesEnabled pushes through send when given one', () => {
+  const { watchImagesEnabled } = require('../app/avatar-bridge');
+  const store = fakeStore({ [AVATAR_KEY]: { imagesEnabled: true } });
+  const pushed = [];
+  let listener;
+  watchImagesEnabled({
+    store, file: 'f', win: { webContents: { send: () => { throw new Error('no'); } } },
+    send: (ch, v) => pushed.push([ch, v]),
+    watchFile: (f, o, l) => { listener = l; }, unwatchFile: () => {},
+  });
+  store.data[AVATAR_KEY] = { imagesEnabled: false };
+  listener();
+  assert.deepStrictEqual(pushed, [[PUSH_CHANNEL, false]]);
+});

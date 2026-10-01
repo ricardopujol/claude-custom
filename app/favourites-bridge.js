@@ -69,8 +69,12 @@ function readFavourites(store) {
  * handler that answers anyone is not a boundary, even for state this
  * low-stakes. Consistency, not because a starred model is a secret.
  */
-function registerFavouriteHandlers({ ipcMain, store, win }) {
-  const fromWindow = (e) => !!(e && win && e.sender === win.webContents);
+function registerFavouriteHandlers({ ipcMain, store, win, isSender }) {
+  // `isSender` (worktree tabs): the window is a shell of tab views, so "from
+  // this window" means "from one of its views". Absent, the old rule.
+  const fromWindow = (e) => !!e && (typeof isSender === 'function'
+    ? isSender(e.sender) === true
+    : !!(win && e.sender === win.webContents));
 
   ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readFavourites(store) : emptyFavourites()));
 

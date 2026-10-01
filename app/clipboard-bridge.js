@@ -46,13 +46,20 @@ function writeClipboard(clipboard, text) {
 // Same `fromWindow` gate as every secrets:* handler in main.js: a clipboard
 // routinely holds a password, and a handler that answers anyone is not a
 // boundary.
-function registerClipboardHandlers({ ipcMain, clipboard, win }) {
+//
+// `isSender(webContents)` replaces "the window's own page" when the window is a
+// shell of tab views (worktree tabs): the sender is then one of its views, and
+// the window's own webContents is only the tab strip. Absent, the old rule.
+function registerClipboardHandlers({ ipcMain, clipboard, win, isSender }) {
+  const allowed = (event) => !!event && (typeof isSender === 'function'
+    ? isSender(event.sender) === true
+    : event.sender === win.webContents);
   ipcMain.handle(CLIPBOARD_READ, (event) =>
-    (event && event.sender === win.webContents ? readClipboard(clipboard) : { ...EMPTY }));
+    (allowed(event) ? readClipboard(clipboard) : { ...EMPTY }));
   // Writing is gated too: a page that could set the clipboard could plant a
   // command for the user's next Ctrl+V.
   ipcMain.handle(CLIPBOARD_WRITE, (event, text) =>
-    (event && event.sender === win.webContents ? writeClipboard(clipboard, text) : { ok: false, error: 'not this window' }));
+    (allowed(event) ? writeClipboard(clipboard, text) : { ok: false, error: 'not this window' }));
 }
 
 module.exports = { readClipboard, writeClipboard, registerClipboardHandlers, CLIPBOARD_READ, CLIPBOARD_WRITE };

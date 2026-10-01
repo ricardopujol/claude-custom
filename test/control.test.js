@@ -223,3 +223,36 @@ test('every type host.js dispatches is on the control allow-list', () => {
     'host.js dispatches these types, but parseControlFrame does not recognise them, ' +
     'so the frames are written to the pty as literal keystrokes instead');
 });
+
+test('stop and raise frames are control, never typed into the pty', () => {
+  // Worktree tabs. Off CONTROL_TYPES either would be typed as literal JSON
+  // into a session that may run --dangerously-skip-permissions.
+  for (const type of ['stop', 'raise']) {
+    const written = [];
+    let dispatchedWith = null;
+    const result = handleFrame(JSON.stringify({ type }), (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+    assert.strictEqual(result.handled, true, type);
+    assert.deepStrictEqual(written, [], type);
+    assert.deepStrictEqual(dispatchedWith, { type }, type);
+  }
+});
+
+// --- raiseTargets: who a `raise` frame comes forward for ---------------------
+
+test('raiseTargets leaves out the sender: a one-shot client is not a window', () => {
+  const { raiseTargets } = require('../host/control');
+  const sender = { id: 'sender' };
+  const w1 = { id: 'w1' };
+  const w2 = { id: 'w2' };
+  assert.deepStrictEqual(raiseTargets(new Set([w1, sender, w2]), sender), [w1, w2]);
+  // The sender alone means "no window open": 0, never 1.
+  assert.deepStrictEqual(raiseTargets(new Set([sender]), sender), []);
+  assert.deepStrictEqual(raiseTargets(new Set(), sender), []);
+});
+
+test('raiseTargets copes with a missing set and keeps every non-sender', () => {
+  const { raiseTargets } = require('../host/control');
+  assert.deepStrictEqual(raiseTargets(null, {}), []);
+  const a = {}; const b = {};
+  assert.deepStrictEqual(raiseTargets([a, b], null), [a, b]);
+});

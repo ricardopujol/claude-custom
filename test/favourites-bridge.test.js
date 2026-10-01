@@ -185,3 +185,17 @@ test('main.js does not widen look:setDim into a generic store-key setter', () =>
   assert.match(body, /uiStore\.update\(UI_KEY,/,
     'look:setDim must still write its own fixed UI_KEY literal, not a caller-supplied key');
 });
+
+// --- a window made of tab views (worktree tabs): the gate is a predicate -----
+
+test('with isSender, both channels answer any of the window\'s views and nobody else', async () => {
+  const ipcMain = fakeIpc();
+  const store = fakeStore();
+  const view = { id: 'v' };
+  registerFavouriteHandlers({ ipcMain, store, win: { webContents: { id: 'strip' } }, isSender: (s) => s === view });
+  const set = await ipcMain.handlers.get(SET_CHANNEL)({ sender: view }, 'openrouter', 'a/b', true);
+  assert.deepStrictEqual(set.openrouter, ['a/b']);
+  assert.deepStrictEqual((await ipcMain.handlers.get(GET_CHANNEL)({ sender: view })).openrouter, ['a/b']);
+  assert.strictEqual(await ipcMain.handlers.get(SET_CHANNEL)({ sender: { id: 'strip' } }, 'openrouter', 'c/d', true), null);
+  assert.deepStrictEqual(await ipcMain.handlers.get(GET_CHANNEL)({ sender: {} }), { openrouter: [], claude: [] });
+});

@@ -53,8 +53,14 @@ function pickerOptions() {
   };
 }
 
-function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {} }) {
-  const fromWindow = (e) => !!(e && win && e.sender === win.webContents);
+// `isSender` and `send` (worktree tabs): the window is a shell of tab views, so
+// "from this window" means "from one of its views", and a push goes to every
+// view. Absent, the old single-page rule and `win.webContents.send`.
+function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSender, send }) {
+  const fromWindow = (e) => !!e && (typeof isSender === 'function'
+    ? isSender(e.sender) === true
+    : !!(win && e.sender === win.webContents));
+  const push = typeof send === 'function' ? send : (ch, v) => win.webContents.send(ch, v);
 
   ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readImagesEnabled(store) : true));
 
@@ -72,7 +78,7 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {} }) {
     // The watcher must know what this window was just told, or a later change
     // back would compare equal to its stale memory and never be pushed (Dexter N2).
     sync.last = enabled;
-    try { win.webContents.send(PUSH_CHANNEL, enabled); } catch { /* window is going away */ }
+    try { push(PUSH_CHANNEL, enabled); } catch { /* window is going away */ }
     return enabled;
   });
 
@@ -98,8 +104,9 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {} }) {
  * Returns stop(). A window that has gone away is not an error.
  */
 function watchImagesEnabled({
-  store, file, win, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile, sync = {},
+  store, file, win, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile, sync = {}, send,
 }) {
+  const push = typeof send === 'function' ? send : (ch, v) => win.webContents.send(ch, v);
   sync.last = readImagesEnabled(store);
   const listener = () => {
     // A read that FAILED (EBUSY under an antivirus scan) or found a corrupt file
@@ -113,7 +120,7 @@ function watchImagesEnabled({
     now = readImagesEnabled(store);
     if (now === sync.last) return;
     sync.last = now;
-    try { win.webContents.send(PUSH_CHANNEL, now); } catch { /* window is going away */ }
+    try { push(PUSH_CHANNEL, now); } catch { /* window is going away */ }
   };
   watchFile(file, { interval: intervalMs, persistent: false }, listener);
   return () => unwatchFile(file, listener);

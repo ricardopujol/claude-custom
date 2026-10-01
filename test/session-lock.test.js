@@ -185,7 +185,7 @@ test('a live holder blocks, and says who it is, since when and where', async () 
   fs.writeFileSync(lock, theirs);
   const t = table({ 101: '5', 201: '9' });
   const r = await acquire(lock, me(), fast(t));
-  assert.deepStrictEqual(r, { state: 'blocked', holder: { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 555 } });
+  assert.deepStrictEqual(r, { state: 'blocked', holder: { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 555, install: null } });
   assert.strictEqual(fs.readFileSync(lock, 'utf8'), theirs, 'the live lock was touched');
 });
 
@@ -211,7 +211,7 @@ test('a lock being written right now is waited on, then reported blocked by an u
   const t = table({ 201: '9' });
   const started = Date.now();
   const r = await acquire(lock, me(), fast(t));
-  assert.deepStrictEqual(r, { state: 'blocked', holder: { pid: null, startedAt: null, port: null, claudePid: null } });
+  assert.deepStrictEqual(r, { state: 'blocked', holder: { pid: null, startedAt: null, port: null, claudePid: null, install: null } });
   assert.ok(Date.now() - started >= 140, 'it waited for the writer');
   assert.strictEqual(fs.readFileSync(lock, 'utf8'), '');
 });
@@ -229,7 +229,7 @@ test('holder fields of the wrong type come back as null, never coerced', async (
   fs.writeFileSync(lock, JSON.stringify({ pid: 101, processStartedAt: '5', startedAt: '1790', port: null, claudePid: '555' }));
   const t = table({ 101: '5' });
   const r = await acquire(lock, me(), fast(t));
-  assert.deepStrictEqual(r.holder, { pid: 101, startedAt: null, port: null, claudePid: null });
+  assert.deepStrictEqual(r.holder, { pid: 101, startedAt: null, port: null, claudePid: null, install: null });
 });
 
 test('a lock replaced while its holder was being judged is not broken', async () => {
@@ -341,9 +341,9 @@ test('our OWN lock is held, not blocked: acquiring twice is harmless', async () 
 test('readHolder reads who holds the lock now, fields strictly typed', () => {
   const lock = lockFile();
   fs.writeFileSync(lock, JSON.stringify(holder(101, '5', { claudePid: 777 })));
-  assert.deepStrictEqual(readHolder(lock), { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 777 });
+  assert.deepStrictEqual(readHolder(lock), { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 777, install: null });
   fs.writeFileSync(lock, JSON.stringify({ pid: 101, claudePid: '777' }));
-  assert.deepStrictEqual(readHolder(lock), { pid: 101, startedAt: null, port: null, claudePid: null });
+  assert.deepStrictEqual(readHolder(lock), { pid: 101, startedAt: null, port: null, claudePid: null, install: null });
 });
 
 test('readHolder of no lock, or no lock path, is null', () => {
@@ -418,4 +418,48 @@ test('PROPERTY: no sequence of open / close / crash / takeover leaves two live h
         }
       }
     }), { numRuns: 150 });
+});
+
+// --- install: which harness install holds the lock (worktree tabs, additive) ---
+
+test('install is written to the lock and read back through holder and readHolder', async () => {
+  const lock = lockFile();
+  const t = table({ 201: '9' });
+  assert.deepStrictEqual(await acquire(lock, me({ install: 'C:\harness' }), fast(t)), { state: 'held' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(lock, 'utf8')).install, 'C:\harness');
+  assert.strictEqual(readHolder(lock).install, 'C:\harness');
+  // A second window is blocked by it, and told which install to look to.
+  const blocked = await acquire(lock, me({ pid: 301, install: 'C:\other' }), fast(table({ 201: '9', 301: '1' })));
+  assert.strictEqual(blocked.state, 'blocked');
+  assert.strictEqual(blocked.holder.install, 'C:\harness');
+});
+
+test('install survives updateOwn', async () => {
+  const lock = lockFile();
+  await acquire(lock, me({ install: 'C:\harness' }), fast(table({ 201: '9' })));
+  assert.strictEqual(updateOwn(lock, me({ install: 'C:\harness' }), { claudePid: 4321 }), true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(lock, 'utf8')).install, 'C:\harness');
+});
+
+test('a lock without install is judged exactly as before, and reads install: null', async () => {
+  const lock = lockFile();
+  fs.writeFileSync(lock, JSON.stringify(holder(101, '5')));
+  const live = await acquire(lock, me(), fast(table({ 101: '5', 201: '9' })));
+  assert.deepStrictEqual(live, { state: 'blocked', holder: { pid: 101, startedAt: 1790000000000, port: 7710, claudePid: 555, install: null } });
+  assert.strictEqual(await judgeHolder(seenOf(holder(101, '5')), table({ 101: '5' }).deps), 'live');
+  assert.strictEqual(await judgeHolder(seenOf(holder(101, '5')), table({}).deps), 'stale');
+  assert.strictEqual(readHolder(lock).install, null);
+});
+
+test('an owner without install writes a lock with no install field at all', async () => {
+  const lock = lockFile();
+  await acquire(lock, me(), fast(table({ 201: '9' })));
+  assert.ok(!('install' in JSON.parse(fs.readFileSync(lock, 'utf8'))));
+});
+
+test('a non-string install reads as null and does not change the verdict', async () => {
+  const lock = lockFile();
+  fs.writeFileSync(lock, JSON.stringify(holder(101, '5', { install: 42 })));
+  assert.strictEqual(readHolder(lock).install, null);
+  assert.strictEqual(await judgeHolder(seenOf(holder(101, '5', { install: 42 })), table({ 101: '5' }).deps), 'live');
 });

@@ -42,9 +42,10 @@ const read = (f) => fs.readFileSync(path.join(APP, f), 'utf8');
 // it -- that exact trap was hit on this project's store.js header guard.
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
-test('every IPC channel main sends on is listened for in the preload', () => {
+test('every IPC channel main sends on is listened for in a preload', () => {
   const main = strip(read('main.js'));
-  const preload = strip(read('preload.js'));
+  // The tab views use preload.js; the strip page (the window's own page) has its own.
+  const preload = strip(read('preload.js')) + strip(read('preload-strip.js'));
 
   const sent = [...main.matchAll(/webContents\.send\(\s*['"]([^'"]+)['"]/g)].map(m => m[1]);
   assert.ok(sent.length > 0, 'the scan must find something for this check to mean anything');
@@ -164,8 +165,12 @@ test('main.js gives the secret service a project, or the whole scope reverts', (
   const head = call.slice(0, call.indexOf('});') + 3);
   assert.match(head, /project:/,
     'createSecretService must be given a project -- without it every secret is shared');
-  assert.match(head, /PROJECT_CWD/,
-    "and it must be the window's own project, not a literal or a default");
+  // PR 2: NEW entries go under the project's state root, and entries saved
+  // under the project root (before the layout move) stay visible via `scopes`.
+  assert.match(head, /project: STATE_ROOT/,
+    "and it must be the window's own project's state root, not a literal or a default");
+  assert.match(head, /scopes: \[PROJECT_ROOT, LAUNCH_CWD\]/,
+    'older entries stay visible: scoped to the project root or the launch folder');
 });
 
 test('every class the vault list renders is actually reachable by a rule', () => {
@@ -400,4 +405,48 @@ test('every password field in the lock panel has a real label', () => {
     'the key field must carry a label element');
   assert.ok(html.includes('.sr-only'),
     'and renderer.html must style it as visually hidden rather than dropping it');
+});
+
+// --- host control frames added by worktree tabs ------------------------------
+// A control type missing from CONTROL_TYPES is typed into the pty as literal
+// JSON (happened twice). Each of these must be a known type AND have a
+// dispatch branch in host.js, or the frame is dropped after being classified.
+const { parseControlFrame } = require('../host/control');
+const HOST_SRC = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+
+for (const type of ['stop', 'raise']) {
+  test(`the ${type} frame is a known control type, never pty input`, () => {
+    assert.deepStrictEqual(parseControlFrame(JSON.stringify({ type })), { type });
+  });
+
+  test(`host.js dispatches ${type}`, () => {
+    assert.ok(HOST_SRC.includes(`msg.type === '${type}'`), `dispatchControl must handle ${type}`);
+  });
+}
+
+test('hello tells every client which control types this host accepts', () => {
+  // host/host-client.js sends stop/raise only to a host that lists them: an
+  // older host types an unknown frame into the session instead.
+  const at = HOST_SRC.indexOf("type: 'hello'");
+  assert.ok(at !== -1);
+  const hello = HOST_SRC.slice(at, HOST_SRC.indexOf('});', at));
+  assert.match(hello, /controls:\s*\[\.\.\.CONTROL_TYPES\]/);
+  assert.match(HOST_SRC, /\bCONTROL_TYPES\b[^;]*\}\s*=\s*require\('\.\/control'\)/);
+});
+
+test('raise answers the sender with raised + a window count, and tells every window', () => {
+  const at = HOST_SRC.indexOf("msg.type === 'raise'");
+  const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));
+  // The sender is a one-shot client, not a window: `windows` counts the OTHERS,
+  // and only they are told to come forward.
+  assert.match(branch, /const targets = raiseTargets\(clients, ws\)/);
+  assert.match(branch, /for \(const w of targets\) sendControl\(w, \{ type: 'raise' \}\)/);
+  assert.match(branch, /sendControl\(ws, \{ type: 'raised', windows: targets\.length \}\)/);
+  assert.doesNotMatch(branch, /clients\.size/);
+});
+
+test('stop runs shutdown() and then exits', () => {
+  const at = HOST_SRC.indexOf("msg.type === 'stop'");
+  const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));
+  assert.ok(branch.indexOf('shutdown()') !== -1 && branch.indexOf('process.exit(0)') > branch.indexOf('shutdown()'));
 });

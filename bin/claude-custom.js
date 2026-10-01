@@ -3,7 +3,10 @@
 /**
  * claude-custom <folder>
  *
- * Opens the harness on any project. Deliberately thin: every decision it makes
+ * Opens the harness on any project. The folder is passed through as given:
+ * app/main.js folds it with projectOf (host/project-layout.js), so a folder
+ * inside a container project opens that project's tab window with the
+ * folder's own tab selected. Deliberately thin: every decision it makes
  * is already tested elsewhere, so what is left here is argument handling and a
  * spawn. The PORT is not chosen here -- app/main.js resolves it, because only
  * main can probe for an occupant and it must do so at the moment it attaches,
@@ -24,9 +27,14 @@ if (argv.includes('-h') || argv.includes('--help')) {
   Opens the claude-custom harness on a project folder.
   With no folder, opens the one you are standing in.
 
-  The port is derived from the project path, so two projects can be open at
-  once and reopening a window finds the host it left running. Set
-  CLAUDE_CUSTOM_PORT to override it for one launch.`);
+  A project laid out as a container (<root>/dev plus a sibling folder per git
+  worktree) opens ONE window with a tab per worktree, whichever of those folders
+  you name: launching from dev/ or from a sibling opens the project window with
+  THAT worktree's tab selected. Any other folder opens as a single-tab window.
+
+  The port is derived from each worktree's path, so two projects can be open at
+  once and reopening a window finds the hosts it left running. Set
+  CLAUDE_CUSTOM_PORT to override it for one launch (that launch is single-tab).`);
   process.exit(0);
 }
 

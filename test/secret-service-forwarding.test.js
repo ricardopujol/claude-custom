@@ -597,3 +597,79 @@ test('the wipe clears what we copied, and leaves anything the user copied since'
   assert.strictEqual(log.cbClear, 1, 'must not clear someone else\'s clipboard');
   assert.strictEqual(clip.value, 'the user copied this meanwhile');
 });
+
+// --- visibility scopes (worktree tabs, PR 2) ---------------------------------
+// A tab window's secrets are ADDED under the state root but SEEN from the state
+// root AND the project root, where entries saved before the 2026-09-28 layout
+// move are scoped. `project` stays the single add-scope.
+
+function scopedService(extra) {
+  const seen = { list: [], add: [], get: [], remove: [] };
+  const vault = {
+    available: () => true,
+    list: (o) => { seen.list.push(o); return []; },
+    add: (e) => { seen.add.push(e); return { id: 'a', label: 'l', note: '', createdAt: 0 }; },
+    get: (id, o) => { seen.get.push(o); return 's'; },
+    remove: (id, o) => { seen.remove.push(o); return true; },
+  };
+  const svc = createSecretService({
+    project: 'C:/p/dev', vault, ...extra,
+    clipboard: { writeText: () => {}, readText: () => '', clear: () => {} },
+  });
+  return { svc, seen };
+}
+
+test('with scopes, list/get/remove see project AND every scope, but add uses ONE path', () => {
+  const { svc, seen } = scopedService({ scopes: ['C:/p'] });
+  svc.list();
+  svc.reveal('x');
+  svc.copy('x');
+  svc.remove('x');
+  svc.add({ label: 'k', secret: 's' });
+  assert.deepStrictEqual(seen.list, [{ project: ['C:/p/dev', 'C:/p'] }]);
+  assert.deepStrictEqual(seen.get, [{ project: ['C:/p/dev', 'C:/p'] }, { project: ['C:/p/dev', 'C:/p'] }]);
+  assert.deepStrictEqual(seen.remove, [{ project: ['C:/p/dev', 'C:/p'] }]);
+  assert.strictEqual(seen.add[0].project, 'C:/p/dev', 'add must receive exactly one path');
+});
+
+test('without scopes (or with none usable) the service behaves exactly as before: one path', () => {
+  for (const scopes of [undefined, [], ['', '   ', 7, null]]) {
+    const { svc, seen } = scopedService({ scopes });
+    svc.list();
+    svc.reveal('x');
+    svc.remove('x');
+    assert.deepStrictEqual(seen.list, [{ project: 'C:/p/dev' }], JSON.stringify(scopes));
+    assert.deepStrictEqual(seen.get, [{ project: 'C:/p/dev' }], JSON.stringify(scopes));
+    assert.deepStrictEqual(seen.remove, [{ project: 'C:/p/dev' }], JSON.stringify(scopes));
+  }
+});
+
+test('PROPERTY: an entry scoped to root or dev is visible to every tab of its project and to no other project', () => {
+  const fc = require('fast-check');
+  const path = require('path');
+  const { createVault } = require('../app/secret-vault');
+  const dir = require('./tmp-dir').tmpDir('cc-scope-prop-');
+  try {
+    const crypto = { isEncryptionAvailable: () => true,
+      encryptString: (s) => Buffer.from(s, 'utf8'), decryptString: (b) => Buffer.from(b).toString('utf8') };
+    const seg = fc.stringMatching(/^[a-z]{1,6}$/);
+    fc.assert(fc.property(seg, seg, seg, (a, b, c) => {
+      fc.pre(a !== b);
+      const rootA = `C:/${a}/${c}`; const devA = `${rootA}/dev`;
+      const rootB = `C:/${b}/${c}`; const devB = `${rootB}/dev`;
+      const vault = createVault({ file: path.join(dir, `v-${a}-${b}-${c}.enc`), crypto });
+      const mk = (project) => createSecretService({
+        project, scopes: [project === devA ? rootA : rootB], vault,
+        clipboard: { writeText: () => {}, readText: () => '', clear: () => {} },
+      });
+      // Saved under the OLD layout (scoped to the container root) and the new (dev).
+      vault.add({ label: 'old', secret: 'x', project: rootA });
+      vault.add({ label: 'new', secret: 'y', project: devA });
+      const inA = mk(devA).list().map(e => e.label).sort();
+      const inB = mk(devB).list().map(e => e.label);
+      return JSON.stringify(inA) === JSON.stringify(['new', 'old']) && inB.length === 0;
+    }), { numRuns: 25 });
+  } finally {
+    require('./tmp-dir').cleanup();
+  }
+});
