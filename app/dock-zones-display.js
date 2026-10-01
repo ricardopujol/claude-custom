@@ -133,7 +133,29 @@ function applyPlan(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { zonePlan, dragSize, applyPlan, WIDE_FACE_CHROME };
+/**
+ * The layout menu (▦): every module, in TABS order, with where it is now --
+ * 'left' | 'right' | 'top' | 'bottom' | 'hidden'. It lists hidden modules on
+ * purpose: it is the way back for one, and the way out when every module is
+ * hidden and there is no tab left to right-click.
+ */
+function layoutRows(layout, tabs) {
+  return tabs.map((t) => {
+    const at = ZONES.find(z => layout.zones[z].includes(t.id)) || (layout.hidden.includes(t.id) ? 'hidden' : null);
+    return { id: t.id, label: t.label, at };
+  }).filter(r => r.at !== null);
+}
+
+const TARGET_LABELS = { left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom', hide: 'Hide' };
+
+/** A module's right-click menu: every zone and Hide, with where it already is disabled. */
+function moveTargets(layout, id) {
+  const at = ZONES.find(z => layout.zones[z].includes(id)) || (layout.hidden.includes(id) ? 'hide' : null);
+  if (at === null) return [];
+  return [...ZONES, 'hide'].map(target => ({ target, label: TARGET_LABELS[target], enabled: target !== at }));
+}
+
+const API = { zonePlan, dragSize, applyPlan, layoutRows, moveTargets, WIDE_FACE_CHROME };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.dockZones = API;

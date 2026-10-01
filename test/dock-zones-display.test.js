@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { zonePlan, dragSize } = require('../app/dock-zones-display');
+const { zonePlan, dragSize, layoutRows, moveTargets } = require('../app/dock-zones-display');
 const { defaultLayout, moveModule, selectModule, MIN, RAIL } = require('../app/dock-layout');
 const { TABS } = require('../app/side-tabs');
 const { faceSize } = require('../app/roster-width');
@@ -95,4 +95,28 @@ test('a pointer past the anchored edge or a junk point gives null, not a negativ
 
 test('MIN is respected later by setSize, so dragSize may answer below it', () => {
   assert.ok(dragSize('right', { x: 1090, y: 0 }, RECT) < MIN.side);
+});
+
+// --- the layout menu and the right-click menu (Task 7) ------------------------
+
+test('the layout menu lists every module with where it is, hidden ones included', () => {
+  const l = moveModule(moveModule(defaultLayout(IDS), 'vault', 'left'), 'style', 'hide');
+  const rows = layoutRows(l, TABS);
+  assert.deepStrictEqual(rows.map(r => r.id), IDS);           // TABS order, stable
+  assert.deepStrictEqual(rows.find(r => r.id === 'vault'), { id: 'vault', label: 'Vault', at: 'left' });
+  assert.strictEqual(rows.find(r => r.id === 'style').at, 'hidden');
+  assert.strictEqual(rows.find(r => r.id === 'agents').at, 'right');
+});
+
+test('the right-click menu offers every zone and Hide, except where the module already is', () => {
+  const t = moveTargets(defaultLayout(IDS), 'vault');
+  assert.deepStrictEqual(t.map(x => x.target), ['left', 'right', 'top', 'bottom', 'hide']);
+  assert.deepStrictEqual(t.map(x => x.label), ['Left', 'Right', 'Top', 'Bottom', 'Hide']);
+  assert.deepStrictEqual(t.filter(x => !x.enabled).map(x => x.target), ['right']);
+  const hidden = moveTargets(moveModule(defaultLayout(IDS), 'vault', 'hide'), 'vault');
+  assert.deepStrictEqual(hidden.filter(x => !x.enabled).map(x => x.target), ['hide']);
+});
+
+test('an unknown module has nowhere to go', () => {
+  assert.deepStrictEqual(moveTargets(defaultLayout(IDS), 'ghost'), []);
 });

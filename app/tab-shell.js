@@ -876,7 +876,7 @@ function shortcutFor(input) {
 const PROBE_TOKEN_MIN = 16;
 // The selected view's probe actions (layout pass L1): named, so the driver can
 // never hand the page a string of code to run.
-const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure']);
+const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

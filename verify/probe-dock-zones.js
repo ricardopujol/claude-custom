@@ -19,6 +19,10 @@
  *   3  #9: each showing panel's content reaches the bottom of its zone
  *   4  a zone collapses to its rail and back; Ctrl+B's toggle closes all and
  *      brings back exactly what was showing; Hide and back
+ *   5  the right-click menu and the layout menu offer the right moves
+ *   6  Just this tab: one tab gets its own layout, the other keeps the global
+ *      one; the own layout survives the window closing and reattaching (the
+ *      host kept it); Make this global hands it to the other tab
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills;
  * ELECTRON_RUN_AS_NODE is deleted; registry, portraits, uploads and user data
@@ -169,8 +173,9 @@ function hostsUnder(dir) {
   }
   return out;
 }
+const featA = path.join(container, 'feat-a');
 function killEverything() {
-  for (const id of hostsUnder(dev)) seenPids.add(id.pid);
+  for (const id of [...hostsUnder(dev), ...hostsUnder(featA)]) seenPids.add(id.pid);
   for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
 }
 hygiene.addCleanup(killEverything);
@@ -180,17 +185,11 @@ async function main() {
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
+  git(dev, 'worktree', 'add', '-q', featA, '-b', 'feat/a');
   setAsideLayout();
 
-  const app = await launchApp(container);
-  const ready = await waitFor(async () => {
-    const st = await command(app, { cmd: 'state' });
-    const h = st && st.hosts && st.hosts.find(x => x.started && Number.isInteger(x.port));
-    if (h && Number.isInteger(h.pid)) seenPids.add(h.pid);
-    if (!h) return null;
-    const v = await viewState(app);
-    return v && v.ok && v.sent ? v : null;
-  }, 45000);
+  let app = await launchApp(container);
+  const ready = await viewReady(app);
   check('the window came up with a session and the probe hook', !!ready, ready ? '' : app.out.slice(-600));
   if (!ready) return;
 
@@ -277,7 +276,66 @@ async function main() {
   const backV = await viewState(app);
   check('4: ...and moving it to a zone brings it back, showing', backV.zones.right.panels.includes('style'));
 
+  // 5 -----------------------------------------------------------------------------
+  const mm = await view(app, 'openMenu', { which: 'move', id: 'vault' });
+  const where = (await viewState(app)).zones;
+  const vaultAt = Object.keys(where).find(z => where[z].tabs.includes('vault'));
+  const labels = (mm.items || []).map(i => i.text);
+  const disabled = (mm.items || []).filter(i => i.disabled).map(i => i.text.toLowerCase());
+  check('5: right-click offers Left, Right, Top, Bottom, Hide, with its own zone disabled',
+    JSON.stringify(labels) === JSON.stringify(['Left', 'Right', 'Top', 'Bottom', 'Hide']) && JSON.stringify(disabled) === JSON.stringify([vaultAt]),
+    `${labels} / disabled ${disabled} / vault is ${vaultAt}`);
+  await command(app, { cmd: 'screenshot', file: path.join(shots, '5-move-menu.png') });
+  await view(app, 'closeMenu');
+  const lm = await view(app, 'openMenu', { which: 'layout' });
+  const rowButtons = (lm.items || []).filter(i => ['L', 'R', 'T', 'B', '–'].includes(i.text));
+  check('5: the layout menu has a row for every module, one place marked for each',
+    rowButtons.length === IDS.length * 5 && rowButtons.filter(i => i.on).length === IDS.length
+      && (lm.items || []).some(i => i.text === 'Reset to default'),
+    `${rowButtons.length} buttons, ${rowButtons.filter(i => i.on).length} marked`);
+  await command(app, { cmd: 'screenshot', file: path.join(shots, '5-layout-menu.png') });
+  await view(app, 'closeMenu');
+
+  // 6 -----------------------------------------------------------------------------
+  const onTab = async (label) => {
+    await command(app, { cmd: 'select', label });
+    return viewReady(app);
+  };
+  let a = await onTab('feat/a');
+  check('6: the second tab is up', !!a);
+  await view(app, 'move', { id: 'fog', target: 'bottom', justThisTab: true });
+  a = await waitFor(async () => { const v = await viewState(app); return v.own && v.zones.bottom.tabs.includes('fog') ? v : null; }, 4000);
+  check('6: Just this tab gives feat/a its own layout', !!a);
+  let d = await onTab('develop');
+  check('6: ...while develop keeps the global one', !!d && !d.own && !d.zones.bottom.tabs.includes('fog'),
+    d ? `own ${d.own}, bottom ${d.zones.bottom.tabs}` : 'no view');
   await command(app, { cmd: 'quit' });
+  await waitFor(() => app.exited, 15000);
+  app = await launchApp(container);
+  await viewReady(app);
+  a = await onTab('feat/a');
+  const kept = await waitFor(async () => { const v = await viewState(app); return v.own && v.zones.bottom.tabs.includes('fog') ? v : null; }, 6000);
+  check('6: feat/a\'s own layout survives the window closing and reattaching (the host kept it)', !!kept);
+  await view(app, 'dropOwn', { makeGlobal: true });
+  d = await onTab('develop');
+  const follows = await waitFor(async () => { const v = await viewState(app); return !v.own && v.zones.bottom.tabs.includes('fog') ? v : null; }, 6000);
+  check('6: Make this global: develop takes the layout feat/a had', !!follows);
+  a = await onTab('feat/a');
+  check('6: ...and feat/a follows the global one again', !!a && !a.own);
+
+  await command(app, { cmd: 'quit' });
+}
+
+// The selected tab's view is up, its session started and the page sent a size.
+async function viewReady(app) {
+  return waitFor(async () => {
+    const st = await command(app, { cmd: 'state' });
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+    const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
+    if (!sel || !sel.started) return null;
+    const v = await viewState(app);
+    return v && v.ok && v.sent ? v : null;
+  }, 45000);
 }
 
 main()

@@ -119,10 +119,12 @@ test('the pending timeout re-arms until its own request resolves (Dexter #8)', (
 });
 
 test('Esc closes an open menu without reaching the terminal, and only then', () => {
-  const i = JS.indexOf("e.key === 'Escape'");
-  assert.ok(i !== -1);
+  // The top bar's own Escape handler, not merely the first one in the file:
+  // the layout menu (layout pass L1) has its own, earlier.
+  const i = JS.indexOf("e.key === 'Escape' && closeTopBarMenus()");
+  assert.ok(i !== -1, 'Escape must close the top bar menus');
   const line = JS.slice(i - 80, JS.indexOf('\n', i + 60));
-  assert.match(line, /closeTopBarMenus\(\)/);
+  assert.match(line, /closeTopBarMenus\(\)\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); \}/);
 });
 
 // --- the dropdowns (Ricardo, 2026-09-26: the model menu hid the whole header

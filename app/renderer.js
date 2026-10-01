@@ -699,6 +699,170 @@ function dropOwnLayout({ makeGlobal = false } = {}) {
 
 function toggleAllZones() { commitSelection(DL.toggleAll(effectiveLayout())); }
 
+// --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
+// Three ways in, one rule (DL.moveModule) and one save path (commitPlacement).
+// *Just this tab* sends the change to this tab's own layout; once a tab has
+// one, every change goes there until Reset to global.
+const layoutMenu = document.getElementById('layout-menu');
+let layoutMenuFor = null;               // 'menu' | a module id (right-click) | null
+
+function closeLayoutMenu() {
+  if (layoutMenu.hidden) return false;
+  layoutMenu.hidden = true;
+  layoutMenu.textContent = '';
+  layoutMenuFor = null;
+  return true;
+}
+
+function node(tag, props = {}, kids = []) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'text') n.textContent = v;
+    else if (k === 'on') for (const [ev, fn] of Object.entries(v)) n.addEventListener(ev, fn);
+    else if (k in n) n[k] = v;
+    else n.setAttribute(k, v);
+  }
+  for (const c of kids) n.appendChild(c);
+  return n;
+}
+
+// The *Just this tab* check: checked and locked once the tab has its own
+// layout, because every change then goes there anyway.
+function justThisTabCheck() {
+  const box = node('input', { type: 'checkbox', checked: ownLayout !== null, disabled: ownLayout !== null });
+  const row = node('label', { title: 'Change only this tab\'s layout; every other tab keeps the global one' },
+    [box, node('span', { text: 'Just this tab' })]);
+  return { row, box };
+}
+
+function showLayoutMenu(x, y) {
+  layoutMenu.hidden = false;
+  const r = layoutMenu.getBoundingClientRect();
+  layoutMenu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 4))}px`;
+  layoutMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
+}
+
+// A module tab's right-click: Move to Left / Right / Top / Bottom / Hide.
+function openMoveMenu(id, x, y) {
+  closeLayoutMenu();
+  layoutMenuFor = id;
+  const label = (TABS.find(t => t.id === id) || {}).label || id;
+  const check = justThisTabCheck();
+  layoutMenu.appendChild(node('div', { className: 'lm-title', text: `Move ${label} to` }));
+  for (const t of window.dockZones.moveTargets(effectiveLayout(), id)) {
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: t.label, disabled: !t.enabled,
+      on: { click: () => {
+        commitPlacement(DL.moveModule(effectiveLayout(), id, t.target), { justThisTab: check.box.checked });
+        closeLayoutMenu();
+      } },
+    }));
+  }
+  layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
+  layoutMenu.appendChild(check.row);
+  showLayoutMenu(x, y);
+}
+
+// The ▦ layout menu: every module and where it sits, hidden ones included, so
+// there is never a layout with nothing left to click.
+const ROW_TARGETS = [['left', 'L', 'Left'], ['right', 'R', 'Right'], ['top', 'T', 'Top'], ['bottom', 'B', 'Bottom'], ['hide', '–', 'Hidden']];
+function openLayoutMenu() {
+  const anchor = document.getElementById('layout-btn').getBoundingClientRect();
+  closeLayoutMenu();
+  layoutMenuFor = 'menu';
+  const check = justThisTabCheck();
+  layoutMenu.appendChild(node('div', { className: 'lm-title', text: ownLayout ? 'This tab\'s own layout' : 'Layout (every tab)' }));
+  for (const row of window.dockZones.layoutRows(effectiveLayout(), TABS)) {
+    const at = row.at === 'hidden' ? 'hide' : row.at;
+    layoutMenu.appendChild(node('div', { className: 'lm-row' }, [
+      node('span', { className: 'lm-name', text: row.label }),
+      ...ROW_TARGETS.map(([target, short, long]) => node('button', {
+        type: 'button', text: short, title: long, className: target === at ? 'on' : '',
+        on: { click: () => {
+          if (target === at) return;
+          commitPlacement(DL.moveModule(effectiveLayout(), row.id, target), { justThisTab: check.box.checked });
+          openLayoutMenu();                       // redrawn in place, still open
+        } },
+      })),
+    ]));
+  }
+  layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
+  layoutMenu.appendChild(check.row);
+  layoutMenu.appendChild(node('button', {
+    type: 'button', text: 'Reset to default', title: 'Every panel back on the right, default sizes',
+    on: { click: () => { commitPlacement(DL.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
+  }));
+  if (ownLayout) {
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Reset to global', title: 'Drop this tab\'s own layout and follow the global one',
+      on: { click: () => { dropOwnLayout(); closeLayoutMenu(); } },
+    }));
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Make this global', title: 'Every tab without its own layout takes this one',
+      on: { click: () => { dropOwnLayout({ makeGlobal: true }); closeLayoutMenu(); } },
+    }));
+  }
+  showLayoutMenu(anchor.left, anchor.bottom + 4);
+}
+
+document.getElementById('layout-btn').addEventListener('click', () => {
+  if (layoutMenuFor === 'menu') closeLayoutMenu(); else openLayoutMenu();
+});
+document.addEventListener('contextmenu', (e) => {
+  const button = e.target.closest('.zone-tabs button[data-module]');
+  if (!button) return;
+  e.preventDefault();
+  openMoveMenu(button.dataset.module, e.clientX, e.clientY);
+});
+window.addEventListener('mousedown', (e) => {
+  if (!layoutMenu.hidden && !layoutMenu.contains(e.target) && !e.target.closest('#layout-btn')) closeLayoutMenu();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && closeLayoutMenu()) { e.preventDefault(); e.stopPropagation(); }
+}, true);
+
+// Drag a module's tab onto one of four edge strips that appear while dragging.
+const dropStrips = ['left', 'right', 'top', 'bottom'].map((target) => {
+  const s = node('div', { className: 'dock-drop', title: `Move here (${target})` });
+  s.dataset.target = target;
+  document.body.appendChild(s);
+  return s;
+});
+function placeDropStrips() {
+  const b = document.getElementById('body').getBoundingClientRect();
+  const T = 56;   // strip thickness
+  const at = { left: [b.left, b.top, T, b.height], right: [b.right - T, b.top, T, b.height],
+    top: [b.left, b.top, b.width, T], bottom: [b.left, b.bottom - T, b.width, T] };
+  for (const s of dropStrips) {
+    const [l, t, w, h] = at[s.dataset.target];
+    Object.assign(s.style, { left: `${l}px`, top: `${t}px`, width: `${w}px`, height: `${h}px` });
+  }
+}
+let draggingModule = null;
+document.addEventListener('dragstart', (e) => {
+  const button = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
+  if (!button) return;
+  draggingModule = button.dataset.module;
+  e.dataTransfer.setData('text/x-dock-module', draggingModule);
+  e.dataTransfer.effectAllowed = 'move';
+  placeDropStrips();
+  document.body.classList.add('dock-dragging');
+});
+for (const s of dropStrips) {
+  s.addEventListener('dragover', (e) => { if (draggingModule) { e.preventDefault(); s.classList.add('over'); } });
+  s.addEventListener('dragleave', () => s.classList.remove('over'));
+  s.addEventListener('drop', (e) => {
+    e.preventDefault();
+    s.classList.remove('over');
+    if (draggingModule) commitPlacement(DL.moveModule(effectiveLayout(), draggingModule, s.dataset.target));
+  });
+}
+document.addEventListener('dragend', () => {
+  draggingModule = null;
+  document.body.classList.remove('dock-dragging');
+  for (const s of dropStrips) s.classList.remove('over');
+});
+
 document.addEventListener('click', (e) => {
   const button = e.target.closest('.zone-tabs button[data-module]');
   if (!button) return;
@@ -771,6 +935,11 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'select': commitSelection(DL.selectModule(effectiveLayout(), a.id)); break;
       case 'toggleAll': toggleAllZones(); break;
       case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
+      // The menus, opened as a click would, so a screenshot can look at them.
+      case 'openMenu':
+        if (a.which === 'move') openMoveMenu(String(a.id), 300, 200); else openLayoutMenu();
+        return JSON.stringify({ ok: true, items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })) });
+      case 'closeMenu': closeLayoutMenu(); break;
       case 'measure': {
         // #9: does each showing panel's content reach the bottom of its zone?
         const out = {};
@@ -3719,6 +3888,8 @@ term.onBinary((data) => send(data));
 const dropZone = document.getElementById('app') || document.body;
 
 dropZone.addEventListener('dragover', (e) => {
+  // A module tab being dragged to another zone is not a file (layout pass L1).
+  if (draggingModule) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'copy';
   dropZone.classList.add('dropping');
@@ -3730,6 +3901,7 @@ for (const leave of ['dragleave', 'dragend']) {
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropZone.classList.remove('dropping');
+  if (draggingModule) return;
 
   // Dropping ONTO an agent's face is a portrait upload, not a path-into-the-
   // prompt drop -- checked first and returned early, because `.face` sits
