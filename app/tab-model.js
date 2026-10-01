@@ -14,8 +14,10 @@
  *
  * RUNTIME, per key: `{ started, port, token, status }` where `status` is
  * `{ working, needsInput, lock, health }` as that tab's renderer last reported
- * it (app/tab-status.js), or `null` before it reports. `runtime` is a
- * `Map<key, runtime>` or a plain object keyed by key.
+ * it (app/tab-status.js), or `null` before it reports. PR 3 adds `setup`
+ * (`{ running, line, error, log }` while or after Contract E ran for a tab the
+ * `+` made) and `createdWarning` (Contract A's optional warning). `runtime` is
+ * a `Map<key, runtime>` or a plain object keyed by key.
  *
  * Absence is never drawn as a value: no status means working/needsInput
  * false and lockGlyph/health null. An unknown lock draws no glyph.
@@ -58,7 +60,7 @@ function glyphFor(lock) {
 /**
  * stripModel({ tabs }, runtime, selectedKey, { keyOf }) ->
  *   [{ key, label, isDev, selected, started, closable, working, needsInput,
- *      lockGlyph, health, phase, error }]
+ *      lockGlyph, health, phase, error, note, setup, createdWarning }]
  * Dev first (order otherwise as given). Exactly one entry is selected: the one
  * matching `selectedKey`, else dev (else the first entry).
  */
@@ -87,8 +89,46 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       health: st && isString(st.health) && st.health !== '' ? st.health : null,
       phase: isString(t.phase) ? t.phase : null,
       error: t.error === undefined ? null : t.error,
+      note: isString(t.note) && t.note !== '' ? t.note : null,
+      setup: rt && rt.setup && typeof rt.setup === 'object' ? rt.setup : null,
+      createdWarning: rt && isString(rt.createdWarning) && rt.createdWarning !== '' ? rt.createdWarning : null,
     };
   });
+}
+
+const MERGED_PHASES = ['finishing', 'removing', 'kept'];
+const text = s => (isString(s) && s !== '' ? s : null);
+const setupFailed = e => !!(e && e.setup && e.setup.running !== true && text(e.setup.error));
+
+/**
+ * What the strip's alert line says about a tab (PR 3), or null. The worktree's
+ * merged phase outranks a setup failure, which outranks a creation warning. A
+ * RUNNING setup is the pane's to show, not this line's.
+ */
+function phaseText(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  switch (entry.phase) {
+    case 'finishing': return 'Merged. When its session ends, this worktree is removed.';
+    case 'removing': return 'Removing this worktree…';
+    case 'kept': return text(entry.note) ? `Merged, and kept: ${entry.note}` : 'Merged, and kept.';
+    case 'remove-failed':
+      return text(entry.error) ? `Couldn't remove this worktree: ${entry.error}` : "Couldn't remove this worktree.";
+    default: break;
+  }
+  if (setupFailed(entry)) {
+    const log = text(entry.setup.log);
+    return `Setup failed: ${entry.setup.error}${log ? ` Log: ${log}` : ''}`;
+  }
+  if (text(entry.createdWarning)) return `Created, but: ${entry.createdWarning}`;
+  return null;
+}
+
+/** The small mark on a tab: 'merged', 'warn', or null. */
+function badgeFor(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (MERGED_PHASES.includes(entry.phase)) return 'merged';
+  if (entry.phase === 'remove-failed' || setupFailed(entry)) return 'warn';
+  return null;
 }
 
 const selectedKeyOf = model => {
@@ -147,7 +187,7 @@ function initialSelection(tabs, launchedFrom, { keyOf = identity, isInside = () 
   return keyOf(containing[0].path);
 }
 
-const api = { stripModel, select, neighbour, afterClose, initialSelection };
+const api = { stripModel, select, neighbour, afterClose, initialSelection, phaseText, badgeFor };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

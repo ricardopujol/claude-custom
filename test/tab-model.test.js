@@ -71,6 +71,72 @@ test('phase and error come from the reducer', () => {
   assert.strictEqual(strip([DEV])[0].error, null);
 });
 
+// --- PR 3: what the strip says about a phase, a setup, a creation warning --------
+
+test('note, setup and createdWarning come through; absent ones are null', () => {
+  const k = keyOf(A.path);
+  const e = strip([DEV, { ...A, phase: 'kept', note: 'still has a brief' }],
+    { [k]: { started: true, setup: { running: true, line: 'npm ci', error: null, log: null }, createdWarning: 'no lane row' } })[1];
+  assert.strictEqual(e.note, 'still has a brief');
+  assert.deepStrictEqual(e.setup, { running: true, line: 'npm ci', error: null, log: null });
+  assert.strictEqual(e.createdWarning, 'no lane row');
+  const d = strip([DEV])[0];
+  assert.strictEqual(d.note, null);
+  assert.strictEqual(d.setup, null);
+  assert.strictEqual(d.createdWarning, null);
+});
+
+const entry = (over = {}) => ({ label: 'feat/a', phase: 'live', error: null, note: null, setup: null, createdWarning: null, ...over });
+
+test('phaseText for each phase of a merged worktree', () => {
+  assert.strictEqual(m.phaseText(entry({ phase: 'finishing' })), 'Merged. When its session ends, this worktree is removed.');
+  assert.strictEqual(m.phaseText(entry({ phase: 'removing' })), 'Removing this worktree…');
+  assert.strictEqual(m.phaseText(entry({ phase: 'kept', note: 'feat/a still has a handoff brief' })),
+    'Merged, and kept: feat/a still has a handoff brief');
+  assert.strictEqual(m.phaseText(entry({ phase: 'remove-failed', error: 'has uncommitted changes' })),
+    "Couldn't remove this worktree: has uncommitted changes");
+});
+
+test('phaseText for a setup and a creation warning; nothing for a plain live tab', () => {
+  assert.strictEqual(m.phaseText(entry({ setup: { running: false, error: 'run failed', log: 'C:\\l.log' } })),
+    'Setup failed: run failed Log: C:\\l.log');
+  assert.strictEqual(m.phaseText(entry({ setup: { running: false, error: 'bad manifest', log: null } })),
+    'Setup failed: bad manifest');
+  assert.strictEqual(m.phaseText(entry({ setup: { running: true, line: 'x', error: null } })), null,
+    'a running setup is the pane\'s to show, not the alert\'s');
+  assert.strictEqual(m.phaseText(entry({ createdWarning: 'Active Lanes row not added' })),
+    'Created, but: Active Lanes row not added');
+  assert.strictEqual(m.phaseText(entry()), null);
+  assert.strictEqual(m.phaseText(null), null);
+});
+
+test('a phase outranks a setup failure, which outranks a creation warning', () => {
+  const all = entry({ phase: 'finishing', setup: { running: false, error: 'e' }, createdWarning: 'w' });
+  assert.match(m.phaseText(all), /^Merged/);
+  assert.match(m.phaseText({ ...all, phase: 'live' }), /^Setup failed/);
+});
+
+test('badgeFor: merged for a merged worktree, warn for a failure, else null', () => {
+  for (const phase of ['finishing', 'removing', 'kept']) assert.strictEqual(m.badgeFor(entry({ phase })), 'merged', phase);
+  assert.strictEqual(m.badgeFor(entry({ phase: 'remove-failed', error: 'x' })), 'warn');
+  assert.strictEqual(m.badgeFor(entry({ setup: { running: false, error: 'x' } })), 'warn');
+  assert.strictEqual(m.badgeFor(entry({ setup: { running: true, error: null } })), null);
+  assert.strictEqual(m.badgeFor(entry()), null);
+  assert.strictEqual(m.badgeFor(undefined), null);
+});
+
+test('PROPERTY: phaseText never prints "null" or "undefined"', () => {
+  const maybe = fc.option(fc.string(), { nil: null });
+  fc.assert(fc.property(
+    fc.constantFrom('live', 'finishing', 'removing', 'kept', 'remove-failed', null, undefined),
+    maybe, maybe, fc.option(fc.record({ running: fc.boolean(), line: maybe, error: maybe, log: maybe }), { nil: null }), maybe,
+    (phase, error, note, setup, createdWarning) => {
+      const t = m.phaseText({ label: 'x', phase, error, note, setup, createdWarning });
+      return t === null || (!t.includes('null') && !t.includes('undefined')) ||
+        [error, note, createdWarning, setup && setup.error, setup && setup.log].some(v => typeof v === 'string' && /null|undefined/.test(v));
+    }), { numRuns: 300 });
+});
+
 test('selection: matching key, else dev', () => {
   const sel = model => model.filter(e => e.selected).map(e => e.key);
   assert.deepStrictEqual(sel(strip([DEV, A, B], {}, keyOf(B.path))), [keyOf(B.path)]);
