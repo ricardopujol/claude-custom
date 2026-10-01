@@ -31,6 +31,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
+const { StringDecoder } = require('string_decoder');
 const { POWERSHELL, BOM_AT_START } = require('./proc-start');
 const { resolveWorktreeGitDir } = require('./git-branch');
 const { isSibling } = require('./worktree-list');
@@ -40,6 +41,10 @@ const SCRIPTS = Object.freeze({ create: 'new-worktree.ps1', setup: 'setup-worktr
 const TIMEOUT_MS = Object.freeze({ create: 5 * 60 * 1000, remove: 10 * 60 * 1000, setup: 2 * 60 * 60 * 1000 });
 const LOG_POLL_MS = 500;
 const LINE_MAX = 200;
+// Miguel Y1: a setup can run for hours. Each stream keeps only its TAIL (the
+// answer is the last line), and the one line shown in the strip is capped.
+const STREAM_KEEP = 64 * 1024;
+const LINE_SHOWN_MAX = 600;
 
 const message = (err) => (err && err.message) || String(err);
 
@@ -76,12 +81,26 @@ function checkBranch(branch) {
 /** stderr as one line, word for word: no BOM, no CLIXML progress block. */
 function cleanStderr(text) {
   if (typeof text !== 'string') return '';
-  return text.replace(BOM_AT_START, '')
+  const line = text.replace(BOM_AT_START, '')
     .replace(/<Objs[\s\S]*?<\/Objs>/g, '')
     .split(/\r?\n/)
     .map(l => l.trim())
     .filter(l => l !== '' && !l.startsWith('#< CLIXML'))
     .join(' ');
+  return line.length > LINE_SHOWN_MAX ? `${line.slice(0, LINE_SHOWN_MAX - 1)}…` : line;
+}
+
+// Text from a stream, decoded across chunk boundaries, keeping only the tail.
+function streamTail() {
+  const decoder = new StringDecoder('utf8');
+  let text = '';
+  return {
+    push(chunk) {
+      text += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      if (text.length > STREAM_KEEP) text = text.slice(text.length - STREAM_KEEP);
+    },
+    get text() { return text; },
+  };
 }
 
 /** The last stdout line that parses as a JSON object, or null. */
@@ -104,8 +123,8 @@ function jsonLine(stdout) {
  */
 function runScript({ script, args = [], timeoutMs, spawn = childProcess.spawn, graceMs = STREAM_GRACE_MS, exe = POWERSHELL } = {}) {
   return new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
+    const stdout = streamTail();
+    const stderr = streamTail();
     let code = null;
     let exited = false;
     let settled = false;
@@ -123,7 +142,7 @@ function runScript({ script, args = [], timeoutMs, spawn = childProcess.spawn, g
       for (const s of child ? [child.stdout, child.stderr] : []) {
         if (s && typeof s.unref === 'function') { try { s.unref(); } catch { /* fine */ } }
       }
-      resolve({ code, stdout, stderr, timedOut: false, spawnError: null, ...extra });
+      resolve({ code, stdout: stdout.text, stderr: stderr.text, timedOut: false, spawnError: null, ...extra });
     };
 
     try {
@@ -134,8 +153,8 @@ function runScript({ script, args = [], timeoutMs, spawn = childProcess.spawn, g
       return settle({ spawnError: message(err) });
     }
 
-    if (child.stdout) child.stdout.on('data', (d) => { stdout += String(d); });
-    if (child.stderr) child.stderr.on('data', (d) => { stderr += String(d); });
+    if (child.stdout) child.stdout.on('data', (d) => stdout.push(d));
+    if (child.stderr) child.stderr.on('data', (d) => stderr.push(d));
     child.on('error', (err) => settle({ spawnError: message(err) }));
     child.on('exit', (c) => {
       exited = true;
@@ -271,5 +290,5 @@ function createOps({
 
 module.exports = {
   scriptsDir, available, psArg, checkBranch, cleanStderr, runScript, parseCreate, parseSetup, parseRemove,
-  setupLogPath, lastLine, createOps, STREAM_GRACE_MS, SCRIPTS,
+  setupLogPath, lastLine, createOps, STREAM_GRACE_MS, SCRIPTS, STREAM_KEEP, LINE_SHOWN_MAX,
 };

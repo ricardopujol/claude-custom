@@ -117,6 +117,41 @@ test('runScript collects stdout and stderr and reports the exit code', async () 
   assert.deepStrictEqual(r, { code: 2, stdout: '{"a":1}\r\n', stderr: 'warn\r\n', timedOut: false, spawnError: null });
 });
 
+test('Miguel Y1: a character split across two chunks is decoded whole', async () => {
+  const child = fakeChild();
+  const p = ops.runScript({ script: 's.ps1', timeoutMs: 1000, spawn: spawnOf(child) });
+  const euro = Buffer.from('{"p":"C:\\\\caf\u00e9 \u20ac"}\n', 'utf8');
+  const cut = euro.indexOf(0xe2) + 1;              // inside the euro sign's three bytes
+  child.stdout.emit('data', euro.subarray(0, cut));
+  child.stdout.emit('data', euro.subarray(cut));
+  child.emit('exit', 0, null);
+  child.emit('close', 0, null);
+  assert.strictEqual((await p).stdout, '{"p":"C:\\\\caf\u00e9 \u20ac"}\n');
+});
+
+test('Miguel Y1: a long run keeps only the TAIL of each stream (the answer is the last line)', async () => {
+  const child = fakeChild();
+  const p = ops.runScript({ script: 's.ps1', timeoutMs: 1000, spawn: spawnOf(child) });
+  const noise = 'x'.repeat(1024) + '\n';
+  for (let i = 0; i < 200; i++) { child.stdout.emit('data', noise); child.stderr.emit('data', noise); }
+  child.stdout.emit('data', '{"ok":true}\n');
+  child.stderr.emit('data', 'the real error\n');
+  child.emit('exit', 0, null);
+  child.emit('close', 0, null);
+  const r = await p;
+  assert.ok(r.stdout.length <= ops.STREAM_KEEP, `stdout kept ${r.stdout.length}`);
+  assert.ok(r.stderr.length <= ops.STREAM_KEEP, `stderr kept ${r.stderr.length}`);
+  assert.ok(r.stdout.endsWith('{"ok":true}\n'));
+  assert.ok(r.stderr.endsWith('the real error\n'));
+});
+
+test('Miguel Y1: the one line shown in the strip is capped', () => {
+  const t = ops.cleanStderr('e'.repeat(5000));
+  assert.ok(t.length <= ops.LINE_SHOWN_MAX, `${t.length}`);
+  assert.ok(t.endsWith('…'));
+  assert.strictEqual(ops.cleanStderr('short'), 'short');
+});
+
 test('runScript keys completion on EXIT: a stream held open by a background process does not hold it', async () => {
   const child = fakeChild();
   const t0 = Date.now();
