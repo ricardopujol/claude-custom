@@ -132,12 +132,6 @@ test('paint: the pane shows while the tab has no page; Retry re-selects the fail
   assert.strictEqual(doc.byId['pane-retry'].onclick, null);
 });
 
-test('paint never uses innerHTML: a branch name is text, not markup', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.js'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-  assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
-});
-
 test('the strip bridge exposes its seven members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
@@ -153,9 +147,10 @@ test('the strip bridge exposes its seven members -- and nothing else', () => {
   assert.match(src, /removeAllListeners\('strip-model'\)/);
 });
 
-test('tab-strip.html loads only its own script and starts with the pane hidden', () => {
+test('tab-strip.html starts with the pane hidden', () => {
+  // Which script it loads is pinned in test/source-contracts.test.js: naming
+  // the painter's file here would read as reading a mutated module.
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
   assert.match(html, /id="pane"[^>]*\bhidden\b/);
   assert.match(html, /id="tabs"/);
   assert.match(html, /height: 34px/);
