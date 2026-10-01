@@ -268,6 +268,22 @@ test('PR 3: the + channels exist and are the strip page’s alone', () => {
   }
 });
 
+test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so nothing rejects unhandled in main', () => {
+  // A call that is returned or awaited hands its rejection to its caller.
+  const calls = [...MAIN.matchAll(/tabShell\.(createWorktree|reopen)\(/g)]
+    .filter(m => !/(return|await)\s+$/.test(MAIN.slice(Math.max(0, m.index - 8), m.index)));
+  assert.ok(calls.length >= 4, `found ${calls.length}`);
+  for (const m of calls) {
+    const rest = MAIN.slice(m.index, MAIN.indexOf('\n', m.index));
+    assert.match(rest, /\)\.catch\(/, rest.trim());
+  }
+});
+
+test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer than 200 characters', () => {
+  const c = channels.find(x => x.name === 'strip:create');
+  assert.match(callText(MAIN, c.at), /typeof branch !== 'string' \|\| branch\.length > 200\) return/);
+});
+
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);

@@ -444,7 +444,7 @@ function registerShortcuts(wc) {
     if (input.isAutoRepeat) return;
     if (action === 'next-tab') tabShell.next();
     else if (action === 'prev-tab') tabShell.previous();
-    else if (action === 'reopen-tab') tabShell.reopen();
+    else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
     else if (action === 'devtools') {
       const v = selectedView();
       if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();
@@ -484,6 +484,10 @@ async function confirmClose(tab) {
   return r.response === 0;
 }
 
+// A fire-and-forget shell call from IPC or a key never rejects unhandled
+// (PR #80 Miguel Y2): it is logged with what was being done.
+const logShellError = (what) => (err) => console.error(`[main] ${what} failed:`, (err && err.stack) || err);
+
 function focusWindow() {
   if (!win || win.isDestroyed()) return;
   if (win.isMinimized()) win.restore();
@@ -521,7 +525,7 @@ function registerIpc() {
     // none (the key is handled in before-input-event).
     const reopen = m.reopen.map((r, i) => ({
       label: i === 0 ? `Reopen ${r.label}  (Ctrl+Shift+T)` : `Reopen ${r.label}`,
-      click: () => tabShell.reopen(r.key),
+      click: () => tabShell.reopen(r.key).catch(logShellError('reopen')),
     }));
     Menu.buildFromTemplate([
       {
@@ -534,7 +538,7 @@ function registerIpc() {
   });
   ipcMain.on('strip:create', (e, branch) => {
     if (!fromStrip(e) || typeof branch !== 'string' || branch.length > 200) return;
-    tabShell.createWorktree(branch);
+    tabShell.createWorktree(branch).catch(logShellError('create'));
   });
   ipcMain.on('strip:cancelCreate', (e) => {
     if (!fromStrip(e)) return;
@@ -855,7 +859,7 @@ function startProbeDriver(port) {
     },
     // PR 3: what the + menu and the branch form do, without a mouse.
     // Started, not awaited: the probe watches the setup's progress through `state`.
-    async create(branch) { tabShell.createWorktree(branch); return { ok: true }; },
+    async create(branch) { tabShell.createWorktree(branch).catch(logShellError('create')); return { ok: true }; },
     async reopen() { return tabShell.reopen(); },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
     async select(label) {
