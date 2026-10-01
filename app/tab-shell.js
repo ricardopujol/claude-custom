@@ -867,6 +867,9 @@ function shortcutFor(input) {
   if (key === 'i' && input.shift) return 'devtools';
   // PR 3: reopen the last tab closed by hand, as a browser does.
   if (key === 't' && input.shift) return 'reopen-tab';
+  // Layout pass L1 (#1): only the terminal shows. Main's, so it works from any
+  // tab view and the key never reaches the pty.
+  if (key === 'f' && input.shift) return 'focus-mode';
   return null;
 }
 

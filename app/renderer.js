@@ -863,6 +863,27 @@ document.addEventListener('dragend', () => {
   for (const s of dropStrips) s.classList.remove('over');
 });
 
+// --- focus mode (layout pass L1, #1) -----------------------------------------
+// Only the terminal: main lifts this view over the tab strip and tells every
+// view; this page hides its header, zones and diagnostics. Ways back: the same
+// key (Ctrl+Shift+F, main's), the exit in the top-right corner, and Ctrl+B.
+const focusBridge = window.harness && window.harness.focus;
+let focusOn = false;
+function applyFocusMode(on) {
+  if (on === focusOn) return;
+  focusOn = on;
+  document.body.classList.toggle('focus-mode', on);
+  closeLayoutMenu();
+  // Focus mode hides the vault too, so it is "left": revealed secrets go.
+  if (on && shownModules.has('vault')) onVaultLeft();
+  if (!on && shownModules.has('vault')) renderVault();
+  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+}
+if (focusBridge) focusBridge.onChange(applyFocusMode);
+for (const id of ['focus-btn', 'focus-exit']) {
+  document.getElementById(id).addEventListener('click', () => { if (focusBridge) focusBridge.toggle(); });
+}
+
 document.addEventListener('click', (e) => {
   const button = e.target.closest('.zone-tabs button[data-module]');
   if (!button) return;
@@ -929,6 +950,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           term: { cols: term.cols, rows: term.rows }, fit: proposed, sent: lastSentResize,
           termwrap: rectOf(document.getElementById('termwrap')),
           header: !!document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none',
+          innerHeight: window.innerHeight, focus: focusOn,
         });
       }
       case 'move': commitPlacement(DL.moveModule(effectiveLayout(), a.id, a.target), { justThisTab: a.justThisTab === true }); break;
@@ -3972,7 +3994,8 @@ term.attachCustomKeyEventHandler((e) => {
   // as backward-char. The binding looked dead while quietly editing the command
   // line. Returning false is what stops the terminal taking it.
   if (isPanelToggle(e)) {
-    toggleAllZones();
+    // In focus mode the panels are hidden behind it: Ctrl+B brings them back.
+    if (focusOn && focusBridge) focusBridge.set(false); else toggleAllZones();
     e.preventDefault();
     return false;
   }

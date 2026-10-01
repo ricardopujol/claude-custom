@@ -962,6 +962,20 @@
     #layout-menu button:disabled { opacity: .4; cursor: default; }
     #layout-menu .lm-sep { border-top: 1px solid var(--border); margin: 4px 0; }
     #layout-menu label { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 7px; color: var(--text); }
+    /* Focus mode (#1): only the terminal. The exit lives in the top-right corner,
+       visible on hover; it covers only that corner, not the terminal's top row. */
+    body.focus-mode header, body.focus-mode .zone, body.focus-mode #diag { display: none; }
+    #focus-hot { display: none; }
+    body.focus-mode #focus-hot {
+      display: flex; justify-content: flex-end; align-items: flex-start;
+      position: fixed; top: 0; right: 0; width: 280px; height: 28px; z-index: 60;
+    }
+    #focus-exit {
+      visibility: hidden; margin: 3px 8px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11px;
+      background: var(--chrome); color: var(--text); border: 1px solid var(--accent); border-radius: 4px;
+    }
+    #focus-exit kbd { background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-size: 10px; }
+    body.focus-mode #focus-hot:hover #focus-exit, #focus-exit:focus-visible { visibility: visible; }
     /* While a module's tab is dragged: the four edges a zone can be dropped on. */
     .dock-drop { position: fixed; z-index: 40; background: color-mix(in srgb, var(--accent) 22%, transparent);
       border: 2px dashed var(--accent); display: none; }
@@ -1064,6 +1078,10 @@
        one element filled by renderer.js. At body level for the same reason as
        the menus above: inside a zone it would be clipped. -->
   <div id="layout-menu" class="tb-menu" role="menu" hidden></div>
+  <!-- Focus mode's way out by mouse: the window's top-right corner. Hovering it
+       shows the button; never a state with nothing to click (the dead end the
+       old sidebar once was). -->
+  <div id="focus-hot"><button type="button" id="focus-exit" title="Show the panels again">Exit focus <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></button></div>
 
   <div id="tb-effort-menu" class="tb-menu" hidden>
     <button type="button" data-effort="low">low</button>
@@ -1098,6 +1116,7 @@
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
       <button type="button" id="layout-btn" class="hdr-btn" title="Layout: where each panel sits">▦</button>
+      <button type="button" id="focus-btn" class="hdr-btn" title="Focus: only the terminal (Ctrl+Shift+F)">⛶</button>
       <span class="hint" id="side-hint" title="Show or hide every panel">panels <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>

@@ -234,10 +234,22 @@ const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sen
 const isTabView = (sender) => !!tabShell && tabShell.isTabView(sender);
 const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.isDestroyed()) fn(v); } };
 
+// Focus mode (layout pass L1, #1): only the terminal shows. Per window and not
+// saved. The tab view covers the strip, and every view hides its own header
+// and zones when told.
+let focusMode = false;
+
 function layoutView(view) {
   if (!win || win.isDestroyed()) return;
   const [width, height] = win.getContentSize();
-  view.setBounds({ x: 0, y: STRIP_HEIGHT, width, height: Math.max(0, height - STRIP_HEIGHT) });
+  const top = focusMode ? 0 : STRIP_HEIGHT;
+  view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
+}
+
+function setFocusMode(on) {
+  focusMode = !!on;
+  forEachView(layoutView);
+  forEachView((v) => v.webContents.send('focus-mode', focusMode));
 }
 
 // The window's state that every tab view shows: focus (dim) and the
@@ -251,6 +263,9 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
+    // Room for the terminal's minimum and two side zones (app/dock-layout.js S7).
+    minWidth: 640,
+    minHeight: 480,
     // The project's own app colour when it has one, so a window does not
     // flash the default blue before the page paints its look.
     backgroundColor: readLook(STATE_ROOT).appColor || '#11131a',
@@ -385,6 +400,7 @@ function createTabView(tab) {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
     if (cueOn) wc.send('attention-cue', true);
+    if (focusMode) wc.send('focus-mode', true);
   });
   wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
@@ -468,6 +484,7 @@ function registerShortcuts(wc) {
     if (action === 'next-tab') tabShell.next();
     else if (action === 'prev-tab') tabShell.previous();
     else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
+    else if (action === 'focus-mode') setFocusMode(!focusMode);
     else if (action === 'devtools') {
       const v = selectedView();
       if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();
@@ -570,6 +587,15 @@ function registerIpc() {
 
   // A tab's page talking to main. Every one gated on "one of THIS window's tab
   // views": a handler that answers anyone is not a boundary.
+  // Focus mode's button, its exit, and Ctrl+B while it's on (layout pass L1).
+  ipcMain.on('focus:toggle', (e) => {
+    if (!isTabView(e.sender)) return;
+    setFocusMode(!focusMode);
+  });
+  ipcMain.on('focus:set', (e, on) => {
+    if (!isTabView(e.sender) || typeof on !== 'boolean') return;
+    setFocusMode(on);
+  });
   ipcMain.on('tab:status', (e, status) => {
     if (!isTabView(e.sender)) return;
     tabShell.report(e.sender, status);

@@ -323,6 +323,30 @@ async function main() {
   a = await onTab('feat/a');
   check('6: ...and feat/a follows the global one again', !!a && !a.own);
 
+  // 7 -----------------------------------------------------------------------------
+  const pre = await viewState(app);
+  await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+  const inFocus = await waitFor(async () => { const v = await viewState(app); return v.focus && !v.header ? v : null; }, 4000);
+  check('7: Ctrl+Shift+F: only the terminal -- no header, no zones', !!inFocus
+    && Object.values(inFocus.zones).every(z => z.rect.width === 0 || z.rect.height === 0));
+  // ±1: with display scaling, the content size and innerHeight round separately (measured 33).
+  check('7: ...and the view took the strip\'s 34 px', !!inFocus && Math.abs(inFocus.innerHeight - pre.innerHeight - 34) <= 1,
+    inFocus ? `${pre.innerHeight} -> ${inFocus.innerHeight}` : '');
+  const focusAgree = await sizesAgree(app);
+  check('7: ...with terminal, fit and pty agreeing', focusAgree.ok, sizeText(focusAgree.s));
+  await command(app, { cmd: 'screenshot', file: path.join(shots, '7-focus.png') });
+  await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+  const outFocus = await waitFor(async () => { const v = await viewState(app); return !v.focus && v.header ? v : null; }, 4000);
+  check('7: Ctrl+Shift+F again brings everything back', !!outFocus && outFocus.innerHeight === pre.innerHeight);
+  await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+  await waitFor(async () => (await viewState(app)).focus, 4000);
+  await command(app, { cmd: 'key', key: 'B', modifiers: ['control'] });
+  const byB = await waitFor(async () => { const v = await viewState(app); return !v.focus ? v : null; }, 4000);
+  check('7: Ctrl+B leaves focus mode too', !!byB && JSON.stringify(byB.layout.active) === JSON.stringify(pre.layout.active),
+    byB ? '' : 'still in focus');
+  const backAgree = await sizesAgree(app);
+  check('7: ...with terminal, fit and pty agreeing again', backAgree.ok, sizeText(backAgree.s));
+
   await command(app, { cmd: 'quit' });
 }
 
