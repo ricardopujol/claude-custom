@@ -248,3 +248,28 @@ test('F4: the window-focus path records which view it focused, so applySelection
   const body = MAIN.slice(i, MAIN.indexOf('};', i));
   assert.ok(/lastFocusedView\s*=/.test(body));
 });
+
+// --- PR 3 -------------------------------------------------------------------------
+
+test('PR 3: the shell gets the marker reader, the three-answer probe and the contract scripts', () => {
+  const at = MAIN.indexOf('tabShell = createShell({');
+  const call = MAIN.slice(at, MAIN.indexOf('\n  });', at));
+  assert.match(call, /marker: readMergedMarker/);
+  assert.match(call, /probe: \(port\) => probePort\(port\)/);
+  assert.match(call, /ops: createOps\(\{ dir: scriptsDir\(process\.env\) \}\)/);
+  assert.doesNotMatch(call, /isListening/);
+});
+
+test('PR 3: the + channels exist and are the strip page’s alone', () => {
+  for (const name of ['strip:plus', 'strip:create', 'strip:cancelCreate']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, name);
+    assert.match(callText(MAIN, c.at), /fromStrip\(e\)/, name);
+  }
+});
+
+test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
+  assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
+  assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
+  assert.match(MAIN, /create: snapshot\.create/);
+});

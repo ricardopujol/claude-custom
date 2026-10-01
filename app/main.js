@@ -410,6 +410,7 @@ function destroyTabView(tab) {
 
 let lastStripPayload = null;
 let lastFocusedView = null;   // the tab view that last received keyboard focus
+let stripWasBusy = false;     // the branch form was open at the last publish
 
 function applySelection(snapshot) {
   for (const tab of snapshot.tabs) {
@@ -420,7 +421,12 @@ function applySelection(snapshot) {
   // and a selection with no view leaves nothing holding it (Dexter R2-4).
   const sel = selectedView();
   const live = sel && !sel.webContents.isDestroyed() ? sel : null;
-  const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live });
+  // PR 3: the branch form is in the strip page. It takes the keyboard when it
+  // opens, and keeps it until it closes.
+  const stripBusy = !!snapshot.create;
+  if (stripBusy && !stripWasBusy && win && !win.isDestroyed()) win.webContents.focus();
+  stripWasBusy = stripBusy;
+  const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live, stripBusy });
   if (step.focus) live.webContents.focus();
   lastFocusedView = step.lastFocused;
 }
@@ -438,6 +444,7 @@ function registerShortcuts(wc) {
     if (input.isAutoRepeat) return;
     if (action === 'next-tab') tabShell.next();
     else if (action === 'prev-tab') tabShell.previous();
+    else if (action === 'reopen-tab') tabShell.reopen();
     else if (action === 'devtools') {
       const v = selectedView();
       if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();
@@ -448,7 +455,10 @@ function registerShortcuts(wc) {
 function onShellChanged(snapshot) {
   if (!win || win.isDestroyed()) return;
   applySelection(snapshot);
-  lastStripPayload = { model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, mode: snapshot.mode };
+  lastStripPayload = {
+    model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice,
+    mode: snapshot.mode, create: snapshot.create,
+  };
   win.webContents.send('strip-model', lastStripPayload);
 }
 
@@ -501,6 +511,34 @@ function registerIpc() {
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
+  });
+  // PR 3: the + menu -- New branch… (Contract A, then E), then the tabs closed
+  // by hand in this window, most recent first.
+  ipcMain.on('strip:plus', (e) => {
+    if (!fromStrip(e)) return;
+    const m = tabShell.plusMenu();
+    // The shortcut is named in the label, not as an accelerator: main registers
+    // none (the key is handled in before-input-event).
+    const reopen = m.reopen.map((r, i) => ({
+      label: i === 0 ? `Reopen ${r.label}  (Ctrl+Shift+T)` : `Reopen ${r.label}`,
+      click: () => tabShell.reopen(r.key),
+    }));
+    Menu.buildFromTemplate([
+      {
+        label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
+        enabled: m.create.enabled,
+        click: () => tabShell.openCreate(),
+      },
+      ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
+    ]).popup({ window: win });
+  });
+  ipcMain.on('strip:create', (e, branch) => {
+    if (!fromStrip(e) || typeof branch !== 'string' || branch.length > 200) return;
+    tabShell.createWorktree(branch);
+  });
+  ipcMain.on('strip:cancelCreate', (e) => {
+    if (!fromStrip(e)) return;
+    tabShell.cancelCreate();
   });
 
   // A tab's page talking to main. Every one gated on "one of THIS window's tab
@@ -791,8 +829,14 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x') })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null })))"));
       } catch (err) { stripDom = { error: err.message }; }
+      // PR 3: the + and the strip's own line, as painted.
+      let stripChrome = null;
+      try {
+        stripChrome = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent })"));
+      } catch (err) { stripChrome = { error: err.message }; }
       let viewDom = null;
       const sel = selectedView();
       if (sel) {
@@ -803,8 +847,17 @@ function startProbeDriver(port) {
       }
       // No menu bar: no application menu AND none on the window.
       const noMenuBar = Menu.getApplicationMenu() === null && !win.isMenuBarVisible();
-      return { mode: MODE, selectedKey: tabShell.snapshot().selectedKey, tabs: model, hosts, stripDom, viewDom, noMenuBar };
+      const snap = tabShell.snapshot();
+      return {
+        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar,
+        create: snap.create, reopenable: tabShell.plusMenu().reopen,
+      };
     },
+    // PR 3: what the + menu and the branch form do, without a mouse.
+    // Started, not awaited: the probe watches the setup's progress through `state`.
+    async create(branch) { tabShell.createWorktree(branch); return { ok: true }; },
+    async reopen() { return tabShell.reopen(); },
+    async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
     async select(label) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };

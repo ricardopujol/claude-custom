@@ -802,7 +802,11 @@ function createShell(deps) {
  * B (no view) -> A still believed A had the keyboard and never focused it.
  * Main also clears it when the strip page itself takes focus (a click on it).
  */
-function focusStep(lastFocused, { windowFocused, selectedView } = {}) {
+function focusStep(lastFocused, { windowFocused, selectedView, stripBusy = false } = {}) {
+  // PR 3: the branch form is in the strip page. While it is open, every
+  // publish (3 s poll, status reports) would otherwise hand the keyboard back
+  // to the view mid-typing. Null, so the view is focused again once it closes.
+  if (stripBusy === true) return { focus: false, lastFocused: null };
   if (!selectedView) return { focus: false, lastFocused: null };
   if (windowFocused === true && selectedView !== lastFocused) return { focus: true, lastFocused: selectedView };
   return { focus: false, lastFocused: lastFocused === undefined ? null : lastFocused };
@@ -826,6 +830,8 @@ function shortcutFor(input) {
   if (!input.control || input.alt) return null;
   if (key === 'tab') return input.shift ? 'prev-tab' : 'next-tab';
   if (key === 'i' && input.shift) return 'devtools';
+  // PR 3: reopen the last tab closed by hand, as a browser does.
+  if (key === 't' && input.shift) return 'reopen-tab';
   return null;
 }
 
@@ -842,8 +848,9 @@ function sameSecret(a, b) {
 
 /**
  * One line of newline-JSON from the probe -> a reply object. NEVER throws.
- * `api` is main's: { state, select(label), close(label), screenshot(file),
- * quit() }. Anything else is refused by name, so a typo in the probe is a
+ * `api` is main's: { state, select(label), close(label), key(key, modifiers),
+ * screenshot(file), create(branch), reopen(), cancelCreate(), quit() }.
+ * Anything else is refused by name, so a typo in the probe is a
  * failure it can see rather than a command that silently did nothing.
  *
  * Miguel, PR #75 M4: every line must carry `token`, the secret the probe put in
@@ -875,6 +882,11 @@ async function handleProbeCommand(line, api, expectedToken) {
         // Only ever a picture: never a path to some other file it could clobber.
         if (typeof cmd.file !== 'string' || !/\.png$/i.test(cmd.file)) return { ok: false, error: 'screenshot needs a .png file' };
         return await api.screenshot(cmd.file);
+      case 'create':
+        if (typeof cmd.branch !== 'string') return { ok: false, error: 'create needs a branch' };
+        return await api.create(cmd.branch);
+      case 'reopen': return await api.reopen();
+      case 'cancelCreate': return await api.cancelCreate();
       case 'quit': return await api.quit();
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
     }

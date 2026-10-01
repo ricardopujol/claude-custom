@@ -1326,6 +1326,41 @@ test('shortcutFor: garbage in is null, never a throw', () => {
   }
 });
 
+test('shortcutFor: Ctrl+Shift+T (either case) reopens the last closed tab, like a browser; nothing near it does', () => {
+  assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true })), 'reopen-tab');
+  assert.strictEqual(shortcutFor(kd('t', { control: true, shift: true })), 'reopen-tab');
+  assert.strictEqual(shortcutFor(kd('t', { control: true })), null, 'Ctrl+T is the terminal’s');
+  assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true, alt: true })), null);
+  assert.strictEqual(shortcutFor(kd('T', { shift: true })), null);
+  assert.strictEqual(shortcutFor({ ...kd('T', { control: true, shift: true }), type: 'keyUp' }), null);
+});
+
+// --- PR 3: the branch form keeps the keyboard ------------------------------------
+
+test('focusStep: while the branch form is open, the keyboard stays with the strip', () => {
+  const v = { id: 'v' };
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: v, stripBusy: true }),
+    { focus: false, lastFocused: null });
+  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: v, stripBusy: true }),
+    { focus: false, lastFocused: null }, 'so the view is focused again once the form closes');
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: v, stripBusy: false }),
+    { focus: true, lastFocused: v });
+});
+
+test('handleProbeCommand: create, reopen and cancelCreate reach the driver; create needs a branch', async () => {
+  const seen = [];
+  const api = {
+    create: async (b) => { seen.push(['create', b]); return { ok: true }; },
+    reopen: async () => { seen.push(['reopen']); return { ok: true }; },
+    cancelCreate: async () => { seen.push(['cancel']); return { ok: true }; },
+  };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'create', branch: 'feat/demo' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'reopen' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'cancelCreate' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'create' }), api), { ok: false, error: 'create needs a branch' });
+  assert.deepStrictEqual(seen, [['create', 'feat/demo'], ['reopen'], ['cancel']]);
+});
+
 // --- properties ----------------------------------------------------------------
 
 test('PROPERTY: an input with no control/meta and a key other than F12 is never intercepted', () => {
