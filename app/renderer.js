@@ -198,11 +198,11 @@ const term = new Terminal({
   // opens it (fix/terminal-links, 2026-10-01). Main opens it instead, http(s)
   // only, in the default browser.
   linkHandler: {
-    activate: (_event, uri) => openLink(uri),
+    activate: (_event, uri) => openTerminalLink(uri),
   },
 });
 
-function openLink(uri) {
+function openTerminalLink(uri) {
   if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(uri);
 }
 

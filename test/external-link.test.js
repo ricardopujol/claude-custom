@@ -37,8 +37,22 @@ test('nothing usable is null, never a throw', () => {
   }
 });
 
+test('Miguel #2: a link with credentials in it is refused (https://github.com@evil.example reads as GitHub)', () => {
+  for (const u of ['https://github.com@evil.example/login', 'https://user:pass@example.com/', 'http://a:@example.com/',
+    'https://:p@example.com/']) {
+    assert.strictEqual(externalUrl(u), null, u);
+  }
+});
+
 test('an absurdly long link is refused', () => {
   assert.strictEqual(externalUrl(`https://example.com/${'a'.repeat(9000)}`), null);
+});
+
+test('Miguel #7 PROPERTY: an accepted link is accepted again unchanged (normalising is idempotent)', () => {
+  fc.assert(fc.property(fc.oneof(fc.webUrl(), fc.string()), (u) => {
+    const once = externalUrl(u);
+    return once === null || externalUrl(once) === once;
+  }), { numRuns: 500 });
 });
 
 test('PROPERTY: whatever comes in, what goes out is null or an http(s) URL', () => {

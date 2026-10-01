@@ -26,6 +26,9 @@ function externalUrl(u) {
   let url;
   try { url = new URL(s); } catch { return null; }
   if (!OPENABLE.has(url.protocol) || url.hostname === '') return null;
+  // `https://github.com@evil.example/` reads as GitHub and goes elsewhere: a
+  // link carrying credentials is refused (PR #81, Miguel #2).
+  if (url.username !== '' || url.password !== '') return null;
   return url.href;
 }
 

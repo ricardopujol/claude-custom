@@ -353,6 +353,22 @@ function selectedView() {
 
 // --- the tab views ---------------------------------------------------------------
 
+// The ONE way a link leaves the app (fix/terminal-links): only what
+// app/external-link.js accepts (http/https, no credentials) reaches
+// shell.openExternal; everything else -- above all the `about:blank` of a
+// blank window.open, which Windows has no app for -- is logged and dropped.
+// What was opened is logged too, so a link that misled is traceable.
+function openInBrowser(url, from) {
+  const target = externalUrl(url);
+  if (!target) {
+    console.log(`[main] ${from}: not opening ${String(url).slice(0, 200)} (not an http(s) link)`);
+    return false;
+  }
+  console.log(`[main] ${from}: opening ${target.slice(0, 200)} in the default browser`);
+  shell.openExternal(target).catch((err) => console.error('[main] openExternal failed:', err && err.message));
+  return true;
+}
+
 function createTabView(tab) {
   const view = new WebContentsView({
     webPreferences: {
@@ -385,9 +401,7 @@ function createTabView(tab) {
   // http(s) one. A blank window.open() arrives here as `about:blank`, which
   // Windows has no app for (fix/terminal-links): that is dropped, not opened.
   wc.setWindowOpenHandler(({ url }) => {
-    const target = externalUrl(url);
-    if (target) shell.openExternal(target);
-    else console.log(`[main] ${tab.key}: not opening ${String(url).slice(0, 200)} (not an http(s) link)`);
+    openInBrowser(url, tab.key);
     return { action: 'deny' };
   });
 
@@ -527,17 +541,16 @@ function registerIpc() {
   ipcMain.handle('tab:goTo', (e, holder) => (isTabView(e.sender)
     ? tabShell.goTo(e.sender, holder)
     : { kind: 'explain', text: "That session's window can't be found." }));
+  // A link clicked in a tab's terminal (fix/terminal-links): straight to the
+  // default browser, no prompt -- only what openInBrowser accepts.
+  ipcMain.on('tab:openExternal', (e, url) => {
+    if (!isTabView(e.sender)) return;
+    const tab = tabShell.tabForSender(e.sender);
+    openInBrowser(url, tab ? tab.key : 'a tab');
+  });
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a
   // background process.
-  // A link clicked in a tab's terminal (fix/terminal-links): straight to the
-  // default browser, no prompt -- only http(s) gets this far (app/external-link.js).
-  ipcMain.on('tab:openExternal', (e, url) => {
-    if (!isTabView(e.sender)) return;
-    const target = externalUrl(url);
-    if (target) shell.openExternal(target).catch((err) => console.error('[main] openExternal failed:', err && err.message));
-    else console.log(`[main] not opening ${String(url).slice(0, 200)} (not an http(s) link)`);
-  });
   ipcMain.on('tab:raise', (e) => {
     if (!isTabView(e.sender)) return;
     if (tabShell.raise(e.sender) && win && !win.isDestroyed()) win.flashFrame(true);

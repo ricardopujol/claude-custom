@@ -119,8 +119,8 @@ test('the preload exposes exactly the tab bridge on the tab:* channels, replace-
 test('a link clicked in the terminal goes to main through the bridge: no confirm, no window.open', () => {
   const opts = JS.slice(JS.indexOf('const term = new Terminal({'), JS.indexOf('\n});', JS.indexOf('const term = new Terminal({')));
   assert.match(opts, /linkHandler: \{/, 'xterm\'s default handler confirm()s, then window.open()s a blank page');
-  assert.match(opts, /activate: \(_event, uri\) => openLink\(uri\)/);
-  const body = fnBody('openLink');
+  assert.match(opts, /activate: \(_event, uri\) => openTerminalLink\(uri\)/);
+  const body = fnBody('openTerminalLink');
   assert.match(body, /window\.harness\.openExternal\(uri\)/);
   assert.doesNotMatch(body, /confirm\(|window\.open\(/);
 });
