@@ -268,3 +268,35 @@ test('raiseTargets copes with a missing set and keeps every non-sender', () => {
   const a = {}; const b = {};
   assert.deepStrictEqual(raiseTargets([a, b], null), [a, b]);
 });
+
+// --- stop-if-idle: the holder decides, in one step (Dexter, PR #76 F2) --------
+
+test('a stop-if-idle frame is control, never typed into the pty', () => {
+  const written = [];
+  const result = handleFrame('{"type":"stop-if-idle"}', () => {}, (t) => written.push(t));
+  assert.strictEqual(result.handled, true);
+  assert.deepStrictEqual(written, []);
+});
+
+test('idleStopVerdict stops only with no window attached and none that just left', () => {
+  const { idleStopVerdict, WINDOW_GONE_GRACE_MS } = require('../host/control');
+  const now = 100000;
+  assert.deepStrictEqual(idleStopVerdict({ windows: 0, lastWindowLeftAt: null, now }), { stop: true, windows: 0 });
+  assert.deepStrictEqual(idleStopVerdict({ windows: 0, lastWindowLeftAt: now - WINDOW_GONE_GRACE_MS, now }), { stop: true, windows: 0 });
+  assert.deepStrictEqual(idleStopVerdict({ windows: 2, lastWindowLeftAt: null, now }), { stop: false, windows: 2 });
+  // A window that left a moment ago is reloading or reconnecting (renderer.js
+  // reconnects within ~1 s): that session is in use.
+  assert.deepStrictEqual(idleStopVerdict({ windows: 0, lastWindowLeftAt: now - 1000, now }),
+    { stop: false, windows: 0, recent: true });
+  for (const windows of [undefined, null, -1, 1.5, '0', NaN]) {
+    assert.strictEqual(idleStopVerdict({ windows, lastWindowLeftAt: null, now }).stop, false, String(windows));
+  }
+  assert.ok(WINDOW_GONE_GRACE_MS >= 3000, 'longer than a reload and a reconnect');
+});
+
+test('leftAsWindow: a connection that lasted is a window leaving; a one-shot control client is not', () => {
+  const { leftAsWindow, ONE_SHOT_MAX_MS } = require('../host/control');
+  assert.strictEqual(leftAsWindow(1000, 1000 + ONE_SHOT_MAX_MS), true);
+  assert.strictEqual(leftAsWindow(1000, 1000 + 120), false, 'host/host-client.js lives for one frame');
+  assert.strictEqual(leftAsWindow(null, 5000), true, 'unknown opening time errs toward "a window left"');
+});

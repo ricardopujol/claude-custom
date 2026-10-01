@@ -76,6 +76,17 @@ function lockOverlay(lock, now, opts) {
   };
 }
 
+// What the first click on *Stop that session* says before anything happens
+// (Dexter, PR #76 F3; Miguel I4). "No window" isn't "unused": a session driven
+// from Remote Control has none, and an agent may be mid-task in it.
+function stopWarning(holder) {
+  const h = holder && typeof holder === 'object' ? holder : {};
+  const which = isPid(h.claudePid) ? `claude (pid ${h.claudePid})` : 'the claude';
+  return `Click again to stop it. This ends ${which} in that session, along with anything ` +
+    'an agent is doing there or anyone driving it from Remote Control. ' +
+    'Its conversation can be picked up again with --resume.';
+}
+
 function lockBadge(lock) {
   if (!lock) return null;
   if (lock.state === 'override') {
@@ -120,7 +131,7 @@ function healthMarker(health) {
   return null;
 }
 
-const api = { sinceText, lockOverlay, lockBadge, terminalBanner, healthMarker };
+const api = { sinceText, lockOverlay, stopWarning, lockBadge, terminalBanner, healthMarker };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.

@@ -97,6 +97,15 @@ test('the command and mutate list name only files that exist', () => {
   }
 });
 
+test('the modules that decide whether a session is stopped are mutated (Miguel, PR #76 I3)', () => {
+  // A wrong verdict here ends somebody's live claude. The scan above only
+  // checks the tests of modules ALREADY in `mutate`; it cannot see one that was
+  // never added, which is how host/stop-holder.js first shipped.
+  for (const rel of ['host/stop-holder.js', 'host/window-count.js', 'host/session-lock.js', 'host/session-gate.js']) {
+    assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
+  }
+});
+
 test('the deliberate exclusions are still deliberate', () => {
   // If one of these is dropped or renamed, the exemption becomes a silent hole
   // rather than a decision. Asserted so the list cannot rot.

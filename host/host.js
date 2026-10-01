@@ -58,7 +58,8 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
-const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, CONTROL_TYPES } = require('./control');
+const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
+        CONTROL_TYPES } = require('./control');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
@@ -80,6 +81,7 @@ const { readLock } = require('./lock-breaker');
 // The one-shot client for ANOTHER host's controls; `sendControl` below is ours to our windows.
 const { sendControl: sendHostControl } = require('./host-client');
 const { stopHolder } = require('./stop-holder');
+const { windowCount } = require('./window-count');
 const { gateFromAcquire, gateOverride, gateOnBootError, gateAfterRecheck, gateRecheck, createIdleWatch } =
   require('./session-gate');
 const { liveSessionsIn } = require('./session-registry');
@@ -1663,34 +1665,42 @@ async function overrideSession() {
 // without waiting out the 30 s timer. A changed lock is re-checked too: the
 // pane then names whoever holds it now.
 const STOP_RECHECKS = new Set(['stopped', 'gone', 'changed']);
+const LOCK_BUSY_TEXT = 'The lock is being checked right now. Try again in a moment.';
 const harnessOf = install => path.join(install, '.harness');
-async function stopLockHolder() {
+// The window says which holder it showed; only a pid and a start are taken from it.
+const paneHolder = h => (h && typeof h === 'object' ? { pid: h.pid, startedAt: h.startedAt } : null);
+let lastWindowLeftAt = null;           // stop-if-idle's grace (host/control.js)
+async function stopLockHolder(shownHolder) {
   if (lockBusy) return;
   lockBusy = true;
+  const holder = paneHolder(shownHolder);
+  const shownPid = holder && Number.isInteger(holder.pid) ? holder.pid : '?';
   let r;
   try {
-    r = await stopHolder({ lockPath: SESSION_LOCK, shown: lockState.holder }, {
+    r = await stopHolder({ lockPath: SESSION_LOCK, shown: holder }, {
       readLock,
       isAlive: procAlive,
       startTimes,
       readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
       readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
       sendControl: sendHostControl,
+      windowCount,
       killPidTree,
       sleep: ms => new Promise(res => setTimeout(res, ms)),
       now: Date.now,
     });
   } catch (err) {
     console.log('[host] Stop that session failed:', err && err.message);
-    r = { outcome: 'failed', text: "Couldn't stop that session." };
+    r = { outcome: 'failed', text: "Couldn't stop that session.", how: null, reason: null };
   } finally {
     lockBusy = false;
   }
-  console.log(`[host] Stop that session: ${r.outcome}`);
+  console.log(`[host] Stop that session: ${r.outcome} (holder pid ${shownPid}, how ${r.how || 'none'}` +
+    (r.reason ? `, controls skipped: ${r.reason}` : '') + ')');
   // Re-checked BEFORE the answer goes out: the re-check's `lock` repaint
   // clears the pane's note, so the answer has to land after it.
   if (STOP_RECHECKS.has(r.outcome)) await recheckLock();
-  broadcastControl({ type: 'lock-stop', outcome: r.outcome, text: r.text });
+  broadcastControl({ type: 'lock-note', outcome: r.outcome, text: r.text });
 }
 
 // Every 30 s for a host the lock kept out (session-gate gateRecheck): a
@@ -1840,6 +1850,7 @@ currentCatalogue().catch(() => {});
 
 wss.on('connection', (ws) => {
   clients.add(ws);
+  ws.openedAt = Date.now();
   console.log(`[host] client attached (${clients.size} total)`);
 
   // Dexter, logic review 2026-09-15: a malformed WEBSOCKET frame (invalid
@@ -2117,6 +2128,11 @@ wss.on('connection', (ws) => {
         console.log('[host] lock-override ignored in state', lockState.state);
         return;
       }
+      // A click during a re-check or a stop is answered, not dropped (Dexter, PR #76 F4).
+      if (lockBusy) {
+        sendControl(ws, { type: 'lock-note', text: LOCK_BUSY_TEXT });
+        return;
+      }
       overrideSession().catch((err) => console.log('[host] lock-override failed:', err && err.message));
       return;
     }
@@ -2127,7 +2143,33 @@ wss.on('connection', (ws) => {
         console.log('[host] lock-stop-holder ignored in state', lockState.state);
         return;
       }
-      stopLockHolder().catch((err) => console.log('[host] lock-stop-holder failed:', err && err.message));
+      if (lockBusy) {
+        sendControl(ws, { type: 'lock-note', text: LOCK_BUSY_TEXT });
+        return;
+      }
+      // The holder the PANE showed (Dexter F6): if a re-check repainted it to
+      // another holder meanwhile, host/stop-holder.js answers 'changed'.
+      stopLockHolder(msg.holder).catch((err) => console.log('[host] lock-stop-holder failed:', err && err.message));
+      return;
+    }
+    if (msg.type === 'stop-if-idle') {
+      // *Stop that session*, asked of THIS host by a window another one
+      // blocked. Counted and acted on in one step (Dexter, PR #76 F2): a
+      // session with a window -- or one that just left, likely reloading -- is
+      // in use, so its windows come forward instead and nothing ends.
+      const targets = raiseTargets(clients, ws);
+      const v = idleStopVerdict({ windows: targets.length, lastWindowLeftAt, now: Date.now() });
+      if (!v.stop) {
+        console.log(`[host] stop-if-idle refused: ${v.windows} window(s)${v.recent ? ', one just left' : ''}`);
+        for (const w of targets) sendControl(w, { type: 'raise' });
+        sendControl(ws, { type: 'stop-if-idle', stopped: false, windows: v.windows, recent: Boolean(v.recent) });
+        return;
+      }
+      console.log('[host] stop-if-idle: no window, stopping');
+      // The answer is flushed before the host goes; a second later it goes
+      // anyway. Whichever comes first exits, so the other never runs.
+      setTimeout(() => { shutdown(); process.exit(0); }, 1000);
+      ws.send(JSON.stringify({ type: 'stop-if-idle', stopped: true }), () => { shutdown(); process.exit(0); });
       return;
     }
     if (msg.type === 'stop') {
@@ -2317,6 +2359,9 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     clients.delete(ws);
+    // A WINDOW leaving (not a one-shot control client) starts stop-if-idle's
+    // grace: it may be reloading, and its session is in use.
+    if (leftAsWindow(ws.openedAt, Date.now())) lastWindowLeftAt = Date.now();
     agentLog.close();
     console.log(`[host] client detached (${clients.size} remain)`);
     // NOTE: the pty deliberately keeps running. This is the detachable-session

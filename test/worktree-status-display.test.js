@@ -153,3 +153,18 @@ test('canStop is offered only when the holder names a pid to prove (null is neve
   }
   assert.strictEqual(ws.lockOverlay({ state: 'blocked' }, NOW).canStop, false, 'no holder at all');
 });
+
+test('stopWarning says what stopping ends: claude by pid, an agent, Remote Control, and that it resumes', () => {
+  const t = ws.stopWarning({ pid: 7, claudePid: 4242 });
+  assert.match(t, /claude \(pid 4242\)/);
+  assert.match(t, /agent/);
+  assert.match(t, /Remote Control/);
+  assert.match(t, /--resume/);
+  assert.match(t, /[Cc]lick again/);
+  for (const claudePid of [null, undefined, 0, '4242']) {
+    const g = ws.stopWarning({ pid: 7, claudePid });
+    assert.doesNotMatch(g, /pid/, String(claudePid));
+    assert.match(g, /claude/);
+  }
+  assert.match(ws.stopWarning(null), /claude/);
+});

@@ -59,6 +59,7 @@ function renderLock(lock) {
     // Only where there is a shell to ask (a plain page has no harness bridge).
     document.getElementById('lock-go-to').hidden = !(overlay.canGoTo && window.harness && window.harness.goToSession);
     document.getElementById('lock-stop').hidden = !overlay.canStop;
+    disarmStop();
     const close = document.getElementById('lock-close');
     close.hidden = overlay.closeLabel === null;
     if (overlay.closeLabel !== null) close.textContent = overlay.closeLabel;
@@ -93,11 +94,36 @@ function renderBranchHealth(health) {
 document.getElementById('lock-open-anyway').addEventListener('click', () => {
   send(JSON.stringify({ type: 'lock-override' }));
 });
-// *Stop that session*: the host proves the holder, refuses one with a window
-// open, and answers with a `lock-stop` message whose text lands in the note.
-document.getElementById('lock-stop').addEventListener('click', () => {
-  document.getElementById('lock-goto-note').textContent = 'Stopping that session...';
-  send(JSON.stringify({ type: 'lock-stop-holder' }));
+// *Stop that session* takes two clicks (Dexter, PR #76 F3; Miguel I4): the
+// first says what stopping ends -- an agent mid-task, Remote Control -- and the
+// second asks the host, sending the holder this pane SHOWED (Dexter F6). The
+// host proves it, refuses one with a window open, and answers with a
+// `lock-note`. A repaint of the pane disarms it.
+const STOP_CONFIRM_MS = 8000;
+const stopButton = document.getElementById('lock-stop');
+let stopArmedUntil = 0;
+function disarmStop() {
+  stopArmedUntil = 0;
+  stopButton.textContent = 'Stop that session';
+  stopButton.disabled = false;
+}
+stopButton.addEventListener('click', () => {
+  const note = document.getElementById('lock-goto-note');
+  if (!tabLock || !tabLock.holder) return;
+  if (Date.now() > stopArmedUntil) {
+    stopArmedUntil = Date.now() + STOP_CONFIRM_MS;
+    stopButton.textContent = 'Click again to stop it';
+    note.textContent = worktreeStatus.stopWarning(tabLock.holder);
+    return;
+  }
+  stopArmedUntil = 0;
+  stopButton.disabled = true;
+  stopButton.textContent = 'Stopping...';
+  note.textContent = 'Stopping that session...';
+  send(JSON.stringify({
+    type: 'lock-stop-holder',
+    holder: { pid: tabLock.holder.pid, startedAt: tabLock.holder.startedAt },
+  }));
 });
 // In a shell (a tab, or a single-tab window) window.close() would only tear down
 // THIS page, not end anything: main decides what closing means. A plain page
@@ -3175,9 +3201,11 @@ function handleControl(msg) {
     renderLock(msg.lock);
     return;
   }
-  if (msg.type === 'lock-stop') {
-    // What came of *Stop that session*. The host sends it after its re-check,
-    // whose `lock` repaint would otherwise clear this note.
+  if (msg.type === 'lock-note') {
+    // What came of *Stop that session*, or "busy" for it or *Open anyway*.
+    // The host sends it after its re-check, whose `lock` repaint would
+    // otherwise clear this note.
+    disarmStop();
     document.getElementById('lock-goto-note').textContent = typeof msg.text === 'string' ? msg.text : '';
     return;
   }

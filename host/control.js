@@ -81,6 +81,9 @@ const CONTROL_TYPES = new Set([
   // *Stop that session* on a blocked pane: this host ends the lock's holder
   // (host/stop-holder.js). Typed into the pty it would be the hole above.
   'lock-stop-holder',
+  // ...and what it asks the holder: stop, but only with no window attached --
+  // decided by the holder in one step (idleStopVerdict below).
+  'stop-if-idle',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
@@ -159,8 +162,40 @@ function raiseTargets(clients, sender) {
   return [...(clients || [])].filter(c => c !== sender);
 }
 
+// A window that left this recently is reloading or reconnecting (the renderer
+// retries within ~1 s): its session is in use, not abandoned.
+const WINDOW_GONE_GRACE_MS = 5000;
+// host/host-client.js connects, sends one frame and goes, in well under this.
+const ONE_SHOT_MAX_MS = 2000;
+
+/**
+ * The holder's answer to `stop-if-idle` (*Stop that session*, Dexter PR #76
+ * F2): counted and acted on in ONE step, so no window can attach between a
+ * "how many windows?" and a "stop". `windows` excludes the asking client.
+ *   { stop: true, windows: 0 }
+ *   { stop: false, windows }                 a window is attached
+ *   { stop: false, windows: 0, recent: true } one left within the grace
+ * A count that isn't a non-negative integer never stops anything.
+ */
+function idleStopVerdict({ windows, lastWindowLeftAt, now, graceMs = WINDOW_GONE_GRACE_MS } = {}) {
+  if (!(Number.isInteger(windows) && windows >= 0)) return { stop: false, windows: null };
+  if (windows > 0) return { stop: false, windows };
+  if (typeof lastWindowLeftAt === 'number' && now - lastWindowLeftAt < graceMs) {
+    return { stop: false, windows: 0, recent: true };
+  }
+  return { stop: true, windows: 0 };
+}
+
+// Did a WINDOW just leave, or a one-shot control client? Only a window's going
+// starts the grace above -- else every `raise` would hold off the next stop.
+function leftAsWindow(openedAt, closedAt) {
+  if (typeof openedAt !== 'number') return true;
+  return closedAt - openedAt >= ONE_SHOT_MAX_MS;
+}
+
 module.exports = {
-  raiseTargets, validAgentLogRequest, MAX_AGENT_NAME,
+  raiseTargets, idleStopVerdict, leftAsWindow, WINDOW_GONE_GRACE_MS, ONE_SHOT_MAX_MS,
+  validAgentLogRequest, MAX_AGENT_NAME,
   validResizeDims, parseControlFrame, handleFrame,
   MIN_TERMINAL_DIM, MAX_TERMINAL_DIM, CONTROL_TYPES,
 };
