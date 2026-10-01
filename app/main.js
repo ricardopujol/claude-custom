@@ -43,6 +43,8 @@ const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
+const { createOps, scriptsDir } = require('../host/worktree-ops');
+const { readMergedMarker } = require('../host/merged-marker');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
@@ -866,7 +868,10 @@ app.whenReady().then(async () => {
     cwd: LAUNCH_CWD,
     launchedFrom: LAUNCH_CWD,
     log: (...a) => console.log(...a),
-    git: { list: listWorktrees },
+    git: { list: listWorktrees, marker: readMergedMarker },
+    // agent-creator's worktree scripts (Contracts A, C, E); the probe points
+    // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.
+    ops: createOps({ dir: scriptsDir(process.env) }),
     hosts: {
       choosePort: chooseHostPort,
       probe: (port) => probePort(port),
