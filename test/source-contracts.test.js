@@ -100,17 +100,23 @@ test('the two fail-open path gaps stay named in the module that owns them', () =
     'and the header must say the consequence changed, since that is what PR #40 changed');
 });
 
-test('the B2(a) cleartext limit stays written down in the vault module', () => {
-  // Miguel B2(a). The lock protects VALUES; labels and notes are cleartext, so the
-  // inventory is readable from secrets.enc by exactly the person the feature exists
-  // to stop. Not fixed on this branch — it changes the on-disk format of every
-  // entry — so the honest statement has to stay in the module, and this is what
-  // stops it being quietly deleted before the migration lands.
+test('the B2(a) cleartext limit is FIXED, and the vault module says so', () => {
+  // Miguel B2(a), and this is the inverse of what this test used to assert.
+  // The lock protected VALUES; labels and notes were cleartext, so the
+  // inventory was readable from secrets.enc by exactly the person the feature
+  // exists to stop. FIXED on the FORMAT 2 branch (VAULT_HARDENING_FOLLOWUP.md
+  // items 4/5): label and note are wrapped under the session key exactly like
+  // `secret`. The old limit paragraph must be GONE, not merely superseded --
+  // a paragraph naming a limit that no longer exists is the failure mode this
+  // whole file is about, one layer up from source code: a claim the disk no
+  // longer backs.
   const vault = read('app/secret-vault.js');
-  assert.match(vault, /A SECOND LIMIT, AND THE LOCK DOES NOT CLOSE IT/,
-    'the cleartext-inventory limit must stay named in the module header');
-  assert.match(vault, /hides your secrets, not your list/,
-    'including the one-line statement a reader will actually remember');
+  assert.doesNotMatch(vault, /A SECOND LIMIT, AND THE LOCK DOES NOT CLOSE IT/,
+    'the cleartext-inventory limit is fixed and must not still be claimed');
+  assert.doesNotMatch(vault, /hides your secrets, not your list/,
+    'the old one-line summary is the exact sentence the fix makes false');
+  assert.match(vault, /the lock hides the list too/i,
+    'and the module must say what replaced it');
 });
 
 test('host.js wires the tool belt: the hook, the handshake and both control types (BACKLOG #17)', () => {
@@ -177,4 +183,35 @@ test('main.js still depends on createVault never throwing, and says so', () => {
   assert.ok(!/try\s*\{[\s\S]{0,200}createVault\(/.test(main),
     'and must NOT wrap it — a caught throw gives a window with a silently dead '
     + 'vault panel, which is the class this repo has paid for four times');
+});
+
+// Dexter, notify F4 (Low): attention.js raises only the notification types it
+// names, so a NEW type that needs you would go silent. The hook log names the
+// type, so that is visible in host.log instead of invisible.
+test('host.js logs every Notification hook with its notification_type', () => {
+  const host = read('host/host.js');
+  const at = host.indexOf("console.log(`[hook] ${ev.event}");
+  assert.ok(at !== -1, 'the [hook] log line exists');
+  const before = host.slice(Math.max(0, at - 400), at);
+  assert.match(before, /notification_type/);
+});
+
+// Dexter, notify round 2 F1 (High): a settle timer fired "finished" into a
+// working session, because the host never sees UserPromptSubmit and hooks only
+// Agent/Task/Bash. Ricardo chose idle_prompt only (2026-10-01): no timers here.
+test('attention.js arms no timer: only Claude Code knows when the session is quiet', () => {
+  const src = read('host/attention.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /setTimeout|setInterval/);
+});
+
+// --- the tab strip (moved here in PR 3 so app/tab-strip.js can be mutated) --------
+
+test('the tab strip never uses innerHTML: a branch name is text, not markup', () => {
+  const src = read('app/tab-strip.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
+});
+
+test('tab-strip.html loads only its own script', () => {
+  const html = read('app/tab-strip.html');
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
 });

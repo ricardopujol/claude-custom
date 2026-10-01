@@ -27,7 +27,8 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, NO_PORT_ERROR } = require('./tab-shell');
+const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
+const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -42,6 +43,10 @@ const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
 const { sendControl } = require('../host/host-client');
+const { probePort } = require('../host/port-probe');
+const { createOps, scriptsDir } = require('../host/worktree-ops');
+const { readMergedMarker } = require('../host/merged-marker');
+const { externalUrl } = require('./external-link');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
 const { stopHost } = require('../host/stop-holder');
@@ -136,18 +141,11 @@ function tokenForRunningHost(port) {
   return process.env.CLAUDE_CUSTOM_TOKEN || null;
 }
 
-function isHostListening(port) {
-  return new Promise((resolve) => {
-    const sock = net.connect({ host: '127.0.0.1', port });
-    const done = (result) => {
-      sock.destroy();
-      resolve(result);
-    };
-    sock.setTimeout(400);
-    sock.once('connect', () => done(true));
-    sock.once('timeout', () => done(false));
-    sock.once('error', () => done(false));
-  });
+// One probe for every "is anyone there?" question. The tab shell's poll needs
+// its three answers (a refusal is "the session ended"; a timeout is not); the
+// port walk only needs to know whether something answered.
+async function isHostListening(port) {
+  return (await probePort(port)) === 'listening';
 }
 
 const HARNESS_DIR = path.join(__dirname, '..', '.harness');
@@ -255,10 +253,22 @@ const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sen
 const isTabView = (sender) => !!tabShell && tabShell.isTabView(sender);
 const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.isDestroyed()) fn(v); } };
 
+// Focus mode (layout pass L1, #1): only the terminal shows. Per window and not
+// saved. The tab view covers the strip, and every view hides its own header
+// and zones when told.
+let focusMode = false;
+
 function layoutView(view) {
   if (!win || win.isDestroyed()) return;
   const [width, height] = win.getContentSize();
-  view.setBounds({ x: 0, y: STRIP_HEIGHT, width, height: Math.max(0, height - STRIP_HEIGHT) });
+  const top = focusMode ? 0 : STRIP_HEIGHT;
+  view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
+}
+
+function setFocusMode(on) {
+  focusMode = !!on;
+  forEachView(layoutView);
+  forEachView((v) => v.webContents.send('focus-mode', focusMode));
 }
 
 // The window's state that every tab view shows: focus (dim) and the
@@ -272,6 +282,9 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
+    // Room for the terminal's minimum and two side zones (app/dock-layout.js S7).
+    minWidth: 640,
+    minHeight: 480,
     // The project's own app colour when it has one, so a window does not
     // flash the default blue before the page paints its look.
     backgroundColor: readLook(STATE_ROOT).appColor || '#11131a',
@@ -371,6 +384,22 @@ function selectedView() {
 
 // --- the tab views ---------------------------------------------------------------
 
+// The ONE way a link leaves the app (fix/terminal-links): only what
+// app/external-link.js accepts (http/https, no credentials) reaches
+// shell.openExternal; everything else -- above all the `about:blank` of a
+// blank window.open, which Windows has no app for -- is logged and dropped.
+// What was opened is logged too, so a link that misled is traceable.
+function openInBrowser(url, from) {
+  const target = externalUrl(url);
+  if (!target) {
+    console.log(`[main] ${from}: not opening ${String(url).slice(0, 200)} (not an http(s) link)`);
+    return false;
+  }
+  console.log(`[main] ${from}: opening ${target.slice(0, 200)} in the default browser`);
+  shell.openExternal(target).catch((err) => console.error('[main] openExternal failed:', err && err.message));
+  return true;
+}
+
 function createTabView(tab) {
   const view = new WebContentsView({
     webPreferences: {
@@ -390,6 +419,7 @@ function createTabView(tab) {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
     if (cueOn) wc.send('attention-cue', true);
+    if (focusMode) wc.send('focus-mode', true);
   });
   wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
@@ -399,9 +429,11 @@ function createTabView(tab) {
       console.log(`[renderer:${tag}] ${message} (${String(sourceId).split('/').pop()}:${line})`);
     });
   }
-  // Any external link opens in the real browser, never in-app.
+  // Any external link opens in the real browser, never in-app -- and only an
+  // http(s) one. A blank window.open() arrives here as `about:blank`, which
+  // Windows has no app for (fix/terminal-links): that is dropped, not opened.
   wc.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openInBrowser(url, tab.key);
     return { action: 'deny' };
   });
 
@@ -415,6 +447,7 @@ function createTabView(tab) {
              tab: process.env.CLAUDE_CUSTOM_SIDE_TAB || '',
              demosecret: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '',
              flourish: process.env.CLAUDE_CUSTOM_FLOURISH || '',
+             probe: PROBE_PORT ? '1' : '',
              // Which close button the blocked pane offers: tab | dev | single.
              tabmode: tabShell.tabmodeOf(tab) },
   });
@@ -433,6 +466,7 @@ function destroyTabView(tab) {
 
 let lastStripPayload = null;
 let lastFocusedView = null;   // the tab view that last received keyboard focus
+let stripWasBusy = false;     // the branch form was open at the last publish
 
 function applySelection(snapshot) {
   for (const tab of snapshot.tabs) {
@@ -443,7 +477,14 @@ function applySelection(snapshot) {
   // and a selection with no view leaves nothing holding it (Dexter R2-4).
   const sel = selectedView();
   const live = sel && !sel.webContents.isDestroyed() ? sel : null;
-  const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live });
+  // PR 3: the branch form is in the strip page. It takes the keyboard when it
+  // opens (and again when a creation fails), and keeps it while it takes
+  // typing -- not while Contract A runs, so Ctrl+Tab meanwhile reaches a view
+  // (PR #80 Dexter F7).
+  const stripBusy = !!snapshot.create && snapshot.create.phase !== 'running';
+  if (stripBusy && !stripWasBusy && win && !win.isDestroyed()) win.webContents.focus();
+  stripWasBusy = stripBusy;
+  const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live, stripBusy });
   if (step.focus) live.webContents.focus();
   lastFocusedView = step.lastFocused;
 }
@@ -461,6 +502,8 @@ function registerShortcuts(wc) {
     if (input.isAutoRepeat) return;
     if (action === 'next-tab') tabShell.next();
     else if (action === 'prev-tab') tabShell.previous();
+    else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
+    else if (action === 'focus-mode') setFocusMode(!focusMode);
     else if (action === 'devtools') {
       const v = selectedView();
       if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();
@@ -471,7 +514,10 @@ function registerShortcuts(wc) {
 function onShellChanged(snapshot) {
   if (!win || win.isDestroyed()) return;
   applySelection(snapshot);
-  lastStripPayload = { model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, mode: snapshot.mode };
+  lastStripPayload = {
+    model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice,
+    mode: snapshot.mode, create: snapshot.create,
+  };
   win.webContents.send('strip-model', lastStripPayload);
 }
 
@@ -496,6 +542,10 @@ async function confirmClose(tab) {
   });
   return r.response === 0;
 }
+
+// A fire-and-forget shell call from IPC or a key never rejects unhandled
+// (PR #80 Miguel Y2): it is logged with what was being done.
+const logShellError = (what) => (err) => console.error(`[main] ${what} failed:`, (err && err.stack) || err);
 
 function focusWindow() {
   if (!win || win.isDestroyed()) return;
@@ -599,6 +649,34 @@ function registerIpc() {
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
   });
+  // PR 3: the + menu -- New branch… (Contract A, then E), then the tabs closed
+  // by hand in this window, most recent first.
+  ipcMain.on('strip:plus', (e) => {
+    if (!fromStrip(e)) return;
+    const m = tabShell.plusMenu();
+    // The shortcut is named in the label, not as an accelerator: main registers
+    // none (the key is handled in before-input-event).
+    const reopen = m.reopen.map((r, i) => ({
+      label: `Reopen ${menuText(r.label)}${i === 0 ? '  (Ctrl+Shift+T)' : ''}`,
+      click: () => tabShell.reopen(r.key).catch(logShellError('reopen')),
+    }));
+    Menu.buildFromTemplate([
+      {
+        label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
+        enabled: m.create.enabled,
+        click: () => tabShell.openCreate(),
+      },
+      ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
+    ]).popup({ window: win });
+  });
+  ipcMain.on('strip:create', (e, branch) => {
+    if (!fromStrip(e) || typeof branch !== 'string' || branch.length > 200) return;
+    tabShell.createWorktree(branch).catch(logShellError('create'));
+  });
+  ipcMain.on('strip:cancelCreate', (e) => {
+    if (!fromStrip(e)) return;
+    tabShell.cancelCreate();
+  });
   // The ▾ menu. Answers when it closes, so the strip can show it was busy
   // (the list takes two powershell.exe, ~1-2 s); one at a time.
   let backgroundBusy = false;
@@ -612,6 +690,15 @@ function registerIpc() {
 
   // A tab's page talking to main. Every one gated on "one of THIS window's tab
   // views": a handler that answers anyone is not a boundary.
+  // Focus mode's button, its exit, and Ctrl+B while it's on (layout pass L1).
+  ipcMain.on('focus:toggle', (e) => {
+    if (!isTabView(e.sender)) return;
+    setFocusMode(!focusMode);
+  });
+  ipcMain.on('focus:set', (e, on) => {
+    if (!isTabView(e.sender) || typeof on !== 'boolean') return;
+    setFocusMode(on);
+  });
   ipcMain.on('tab:status', (e, status) => {
     if (!isTabView(e.sender)) return;
     tabShell.report(e.sender, status);
@@ -625,6 +712,13 @@ function registerIpc() {
   ipcMain.handle('tab:goTo', (e, holder) => (isTabView(e.sender)
     ? tabShell.goTo(e.sender, holder)
     : { kind: 'explain', text: "That session's window can't be found." }));
+  // A link clicked in a tab's terminal (fix/terminal-links): straight to the
+  // default browser, no prompt -- only what openInBrowser accepts.
+  ipcMain.handle('tab:openExternal', (e, url) => {
+    if (!isTabView(e.sender)) return false;
+    const tab = tabShell.tabForSender(e.sender);
+    return openInBrowser(url, tab ? tab.key : 'a tab');
+  });
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a
   // background process.
@@ -747,6 +841,16 @@ function registerIpc() {
   watchImagesEnabled({
     store: uiStore, win, sync: avatarSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
+  });
+
+  // The global dock layout (layout pass L1): install-wide like the toggle above,
+  // and followed across project windows the same way -- see layout-bridge.js.
+  // A tab's OWN layout is its host's business, not main's.
+  const layoutSync = {};
+  registerLayoutHandlers({ ipcMain, store: uiStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
+  watchLayout({
+    store: uiStore, sync: layoutSync, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${LAYOUT_KEY}.json`),
   });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
@@ -898,8 +1002,14 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x') })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null })))"));
       } catch (err) { stripDom = { error: err.message }; }
+      // PR 3: the + and the strip's own line, as painted.
+      let stripChrome = null;
+      try {
+        stripChrome = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent })"));
+      } catch (err) { stripChrome = { error: err.message }; }
       let viewDom = null;
       const sel = selectedView();
       if (sel) {
@@ -910,8 +1020,17 @@ function startProbeDriver(port) {
       }
       // No menu bar: no application menu AND none on the window.
       const noMenuBar = Menu.getApplicationMenu() === null && !win.isMenuBarVisible();
-      return { mode: MODE, selectedKey: tabShell.snapshot().selectedKey, tabs: model, hosts, stripDom, viewDom, noMenuBar };
+      const snap = tabShell.snapshot();
+      return {
+        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar,
+        create: snap.create, reopenable: tabShell.plusMenu().reopen,
+      };
     },
+    // PR 3: what the + menu and the branch form do, without a mouse.
+    // Started, not awaited: the probe watches the setup's progress through `state`.
+    async create(branch) { tabShell.createWorktree(branch).catch(logShellError('create')); return { ok: true }; },
+    async reopen() { return tabShell.reopen(); },
+    async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
     async select(label) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
@@ -923,6 +1042,17 @@ function startProbeDriver(port) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
       return tabShell.closeTab(key);
+    },
+    // Layout pass L1: a named action in the selected view (renderer.js
+    // window.__dockProbe, defined only on a page opened with ?probe=1). The
+    // request is passed as JSON data, never spliced in as code.
+    async view(action, args) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      const req = JSON.stringify(JSON.stringify({ action, args }));
+      const out = await sel.webContents.executeJavaScript(
+        `window.__dockProbe ? window.__dockProbe(JSON.parse(${req})) : JSON.stringify({ ok: false, error: 'no probe hook' })`);
+      return JSON.parse(out);
     },
     async screenshot(file) {
       const sel = selectedView();
@@ -993,10 +1123,13 @@ app.whenReady().then(async () => {
     cwd: LAUNCH_CWD,
     launchedFrom: LAUNCH_CWD,
     log: (...a) => console.log(...a),
-    git: { list: listWorktrees },
+    git: { list: listWorktrees, marker: readMergedMarker },
+    // agent-creator's worktree scripts (Contracts A, C, E); the probe points
+    // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.
+    ops: createOps({ dir: scriptsDir(process.env) }),
     hosts: {
       choosePort: chooseHostPort,
-      isListening: isHostListening,
+      probe: (port) => probePort(port),
       spawn: ({ tab, port, token }) => spawnHost(tab, port, token),
       wait: (port) => waitForHost(port),
       tokenFor: tokenForRunningHost,

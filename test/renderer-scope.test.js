@@ -39,6 +39,9 @@ const ALLOWED_GLOBALS = new Set([
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.
   'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
+  // app/dock-layout.js, app/dock-zones-display.js (layout pass L1): one
+  // namespace each, reached through `window.`.
+  'dockLayout', 'dockZones',
   // app/secret-mask.js, app/attention-surface.js
   'createMask', 'surfacesFor',
   // the display modules
@@ -92,6 +95,8 @@ const ALLOWED_GLOBALS = new Set([
   'worktreeStatus',
   // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
   'tabModel', 'tabStatus', 'goToSession',
+  // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
+  'linkClick',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
   // renderer.js's key handler, like isPanelToggle.
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',

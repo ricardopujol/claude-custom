@@ -25,6 +25,10 @@ contextBridge.exposeInMainWorld('harness', {
   closeTab: () => ipcRenderer.send('tab:close'),
   goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
   raise: () => ipcRenderer.send('tab:raise'),
+  // A link clicked in the terminal (fix/terminal-links). Main opens it in the
+  // default browser if, and only if, it is plain http(s), and answers whether
+  // it did, so the page can say when it didn't.
+  openExternal: (url) => ipcRenderer.invoke('tab:openExternal', url),
   onTabSelected: (fn) => (ipcRenderer.removeAllListeners('tab-selected'), ipcRenderer.on('tab-selected',
     () => {
       try { fn(); } catch (err) { console.error('[preload] tab-selected listener threw', err); }
@@ -145,5 +149,27 @@ contextBridge.exposeInMainWorld('harness', {
       (_e, enabled) => {
         try { fn(enabled === true); } catch (err) { console.error('[preload] avatar-images listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('avatar-images')),
+  },
+  // Focus mode (layout pass L1, #1): only the terminal shows. Main owns it (the
+  // tab view has to cover the strip); the page hides its header and zones when
+  // told through onChange, which replaces its one listener.
+  focus: {
+    toggle: () => ipcRenderer.send('focus:toggle'),
+    set: (on) => ipcRenderer.send('focus:set', on === true),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('focus-mode'), ipcRenderer.on('focus-mode',
+      (_e, on) => {
+        try { fn(on === true); } catch (err) { console.error('[preload] focus-mode listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('focus-mode')),
+  },
+  // The global dock layout (layout pass L1) -- see app/layout-bridge.js. `get`
+  // answers null when nothing is saved yet (the page migrates); `onChange`
+  // replaces its one listener, like onImagesEnabled.
+  layout: {
+    get: () => ipcRenderer.invoke('layout:get'),
+    set: (layout) => ipcRenderer.invoke('layout:set', layout),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('layout-global'), ipcRenderer.on('layout-global',
+      (_e, layout) => {
+        try { fn(layout); } catch (err) { console.error('[preload] layout-global listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('layout-global')),
   },
 });

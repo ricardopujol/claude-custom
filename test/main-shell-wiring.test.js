@@ -223,7 +223,8 @@ test('the notification click goes to the tab that raised it', () => {
 test('each tab view is shown only when selected and laid out below the strip', () => {
   assert.match(MAIN, /const STRIP_HEIGHT = 34/);
   assert.match(MAIN, /tab\.view\.setVisible\(tab\.key === snapshot\.selectedKey\)/);
-  assert.match(MAIN, /y: STRIP_HEIGHT/);
+  // Below the strip -- unless focus mode lifts it over the strip (layout pass L1, #1).
+  assert.match(MAIN, /const top = focusMode \? 0 : STRIP_HEIGHT;/);
   assert.match(MAIN, /for \(const ev of \['resize'/);
 });
 
@@ -269,4 +270,146 @@ test('F4: the window-focus path records which view it focused, so applySelection
   assert.ok(i !== -1);
   const body = MAIN.slice(i, MAIN.indexOf('};', i));
   assert.ok(/lastFocusedView\s*=/.test(body));
+});
+
+// --- PR 3 -------------------------------------------------------------------------
+
+test('PR 3: the shell gets the marker reader, the three-answer probe and the contract scripts', () => {
+  const at = MAIN.indexOf('tabShell = createShell({');
+  const call = MAIN.slice(at, MAIN.indexOf('\n  });', at));
+  assert.match(call, /marker: readMergedMarker/);
+  assert.match(call, /probe: \(port\) => probePort\(port\)/);
+  assert.match(call, /ops: createOps\(\{ dir: scriptsDir\(process\.env\) \}\)/);
+  assert.doesNotMatch(call, /isListening/);
+});
+
+test('PR 3: the + channels exist and are the strip page’s alone', () => {
+  for (const name of ['strip:plus', 'strip:create', 'strip:cancelCreate']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, name);
+    assert.match(callText(MAIN, c.at), /fromStrip\(e\)/, name);
+  }
+});
+
+test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so nothing rejects unhandled in main', () => {
+  // A call that is returned or awaited hands its rejection to its caller.
+  const calls = [...MAIN.matchAll(/tabShell\.(createWorktree|reopen)\(/g)]
+    .filter(m => !/(return|await)\s+$/.test(MAIN.slice(Math.max(0, m.index - 8), m.index)));
+  assert.ok(calls.length >= 4, `found ${calls.length}`);
+  for (const m of calls) {
+    const rest = MAIN.slice(m.index, MAIN.indexOf('\n', m.index));
+    assert.match(rest, /\)\.catch\(/, rest.trim());
+  }
+});
+
+test('PR #80 Miguel G3: a branch name in a native menu label goes through menuText', () => {
+  assert.match(MAIN, /`Reopen \$\{menuText\(r\.label\)\}/);
+});
+
+test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer than 200 characters', () => {
+  const c = channels.find(x => x.name === 'strip:create');
+  assert.match(callText(MAIN, c.at), /typeof branch !== 'string' \|\| branch\.length > 200\) return/);
+});
+
+test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
+  assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
+  assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
+  // Dexter F7 (PR #80): only while the field takes typing -- not during Contract A's fetch.
+  assert.match(MAIN, /const stripBusy = !!snapshot\.create && snapshot\.create\.phase !== 'running';/);
+  assert.match(MAIN, /create: snapshot\.create/);
+});
+
+// --- fix/terminal-links (2026-10-01) ------------------------------------------------
+
+test('a link from a tab page opens only through openInBrowser, on a channel gated FIRST', () => {
+  const c = channels.find(x => x.name === 'tab:openExternal');
+  assert.ok(c, 'tab:openExternal is registered');
+  const body = callText(MAIN, c.at);
+  // Miguel #7: the gate is the handler's first statement, not merely present.
+  assert.match(body, /^ipcMain\.handle\(\s*'tab:openExternal',\s*\(e, url\) => \{\s*if \(!isTabView\(e\.sender\)\) return false;/);
+  // It answers whether the link was opened, so the page can say when it wasn't (Dexter F5).
+  assert.match(body, /return openInBrowser\(url, /);
+});
+
+test('nothing reaches shell.openExternal unchecked -- above all the about:blank of a blank window.open', () => {
+  // Miguel #3: ONE call, inside openInBrowser, fed by externalUrl and caught.
+  const calls = [...MAIN.matchAll(/shell\.openExternal\(([^)]*)\)/g)].map(m => m[1]);
+  assert.deepStrictEqual(calls, ['target']);
+  const at = MAIN.indexOf('function openInBrowser(');
+  assert.ok(at !== -1, 'openInBrowser exists');
+  const fn = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  assert.match(fn, /const target = externalUrl\(url\);/);
+  assert.match(fn, /shell\.openExternal\(target\)\.catch\(/);
+  const handler = MAIN.slice(MAIN.indexOf('wc.setWindowOpenHandler('), MAIN.indexOf('});', MAIN.indexOf('wc.setWindowOpenHandler(')));
+  assert.match(handler, /openInBrowser\(url, /);
+});
+
+test('Miguel #4: the tab:raise handler keeps its own comment', () => {
+  const at = MAIN.indexOf("ipcMain.on('tab:raise'");
+  const before = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  const raw = before.slice(0, before.indexOf("ipcMain.on('tab:raise'"));
+  assert.ok(at !== -1);
+  assert.match(raw.slice(-300), /The receiving side of a host `raise`/);
+});
+
+// --- layout pass L1 ----------------------------------------------------------
+
+test('L1: the global layout is served to this window\'s tab views and pushed to all of them', () => {
+  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY \} = require\('\.\/layout-bridge'\);/);
+  const at = MAIN.indexOf('registerLayoutHandlers({');
+  assert.ok(at !== -1, 'registerLayoutHandlers is called');
+  const call = callText(MAIN, at);
+  assert.match(call, /isSender: isTabView/);
+  assert.match(call, /send: pushToViews/);
+  assert.match(call, /store: uiStore/);
+  assert.match(call, /sync: layoutSync/);
+});
+
+test('L1: another project window\'s layout change reaches this one through the store file', () => {
+  const at = MAIN.indexOf('watchLayout({');
+  assert.ok(at !== -1, 'watchLayout is started');
+  const call = callText(MAIN, at);
+  assert.match(call, /sync: layoutSync/);
+  assert.match(call, /send: pushToViews/);
+  assert.match(call, /`\$\{LAYOUT_KEY\}\.json`/);
+});
+
+test('L1: the preload exposes the layout bridge with one listener at a time', () => {
+  const PRELOAD = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'));
+  assert.match(PRELOAD, /get: \(\) => ipcRenderer\.invoke\('layout:get'\)/);
+  assert.match(PRELOAD, /set: \(layout\) => ipcRenderer\.invoke\('layout:set', layout\)/);
+  assert.match(PRELOAD, /ipcRenderer\.removeAllListeners\('layout-global'\), ipcRenderer\.on\('layout-global'/);
+});
+
+test('L1 #1: focus mode lifts the tab view over the strip, and every view is told', () => {
+  assert.match(MAIN, /\nlet focusMode = false;/);
+  const lv = MAIN.slice(MAIN.indexOf('function layoutView('), MAIN.indexOf('\n}', MAIN.indexOf('function layoutView(')));
+  assert.match(lv, /const top = focusMode \? 0 : STRIP_HEIGHT;/);
+  assert.match(lv, /y: top,/);
+  const set = MAIN.slice(MAIN.indexOf('function setFocusMode('), MAIN.indexOf('\n}', MAIN.indexOf('function setFocusMode(')));
+  assert.match(set, /forEachView\(layoutView\)/);
+  assert.match(set, /send\('focus-mode', focusMode\)/);
+});
+
+test('L1 #1: Ctrl+Shift+F toggles it, and only a tab view may ask through IPC', () => {
+  assert.match(MAIN, /action === 'focus-mode'\) setFocusMode\(!focusMode\)/);
+  for (const name of ['focus:toggle', 'focus:set']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, name);
+    assert.match(callText(MAIN, c.at), /if \(!isTabView\(e\.sender\)/, name);
+  }
+  assert.match(callText(MAIN, channels.find(x => x.name === 'focus:set').at), /typeof on !== 'boolean'/);
+});
+
+test('L1 #1: a tab view that loads while focus mode is on hears it too', () => {
+  const at = MAIN.indexOf("wc.on('did-finish-load', () => {");
+  assert.ok(at !== -1);
+  assert.match(MAIN.slice(at, MAIN.indexOf('\n  });', at)), /if \(focusMode\) wc\.send\('focus-mode', true\);/);
+});
+
+test('L1 S7: the window keeps room for the terminal and two side zones', () => {
+  const at = MAIN.indexOf('win = new BrowserWindow({');
+  const opts = MAIN.slice(at, MAIN.indexOf('});', at));
+  assert.match(opts, /minWidth: 640,/);
+  assert.match(opts, /minHeight: 480,/);
 });
