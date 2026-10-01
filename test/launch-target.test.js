@@ -152,7 +152,8 @@ test('attachEnv: a fresh window on THAT host: its folder and exact port, nothing
   const out = attachEnv({ PATH: '/x', ELECTRON_RUN_AS_NODE: '1', CLAUDE_CUSTOM_TOKEN: 't', CLAUDE_CUSTOM_PORT: '1' },
     { cwd: 'C:/proj', port: 7718 });
   assert.deepStrictEqual(Object.keys(out).filter(k => k.startsWith('CLAUDE_CUSTOM_')).sort(),
-    ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT']);
+    ['CLAUDE_CUSTOM_ATTACH_ONLY', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT']);
+  assert.strictEqual(out.CLAUDE_CUSTOM_ATTACH_ONLY, '1');
   assert.strictEqual(out.CLAUDE_CUSTOM_CWD, 'C:/proj');
   assert.strictEqual(out.CLAUDE_CUSTOM_PORT, '7718');
   assert.strictEqual('ELECTRON_RUN_AS_NODE' in out, false);
@@ -164,4 +165,25 @@ test('attachEnv: refuses a port that is not one, or no folder', () => {
     assert.throws(() => attachEnv({}, { cwd: 'C:/p', port }), /port/, String(port));
   }
   for (const cwd of ['', null, 5]) assert.throws(() => attachEnv({}, { cwd, port: 7718 }), /cwd/);
+});
+
+// Dexter, PR 2 F2 (Medium): Open is "attach or refuse". A host that ended
+// between the list and the click left the port free, and an explicit port
+// with nothing on it SPAWNS -- a fresh claude the person never asked for.
+const { attachOnlyDecision } = require('../host/launch-target');
+
+test('attachOnlyDecision: an attach-only window attaches, or refuses and says why', () => {
+  const on = { CLAUDE_CUSTOM_ATTACH_ONLY: '1' };
+  assert.deepStrictEqual(attachOnlyDecision({ action: 'attach' }, on), { action: 'attach' });
+  assert.deepStrictEqual(attachOnlyDecision({ action: 'spawn' }, on), { action: 'refuse', reason: 'ended', attachOnly: true });
+  assert.deepStrictEqual(attachOnlyDecision({ action: 'refuse', reason: 'other-project', occupiedBy: 'C:/b' }, on),
+    { action: 'refuse', reason: 'other-project', occupiedBy: 'C:/b', attachOnly: true });
+});
+
+test('attachOnlyDecision: any other window is unchanged', () => {
+  for (const env of [{}, { CLAUDE_CUSTOM_ATTACH_ONLY: '0' }, { CLAUDE_CUSTOM_ATTACH_ONLY: 'yes' }]) {
+    for (const d of [{ action: 'spawn' }, { action: 'attach' }, { action: 'refuse', reason: 'unidentified' }]) {
+      assert.deepStrictEqual(attachOnlyDecision(d, env), d, JSON.stringify([env, d]));
+    }
+  }
 });

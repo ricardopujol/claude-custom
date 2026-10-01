@@ -115,7 +115,7 @@ const closeWs = ws => new Promise((resolve) => { ws.once('close', resolve); ws.c
 
 // --- the window ------------------------------------------------------------------------
 const apps = [];
-async function launchApp(cwd) {
+async function launchApp(cwd, extraEnv = {}) {
   const port = await freePort();
   const token = require('crypto').randomBytes(16).toString('hex');
   const env = { ...process.env,
@@ -129,6 +129,7 @@ async function launchApp(cwd) {
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CLAUDE_CUSTOM_PORT;
   delete env.CLAUDE_CUSTOM_TOKEN;
+  Object.assign(env, extraEnv);
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${path.join(tmp, 'user-data')}`], { cwd: ROOT, env });
@@ -222,6 +223,8 @@ async function main() {
     check("W's own host is 'open here', Open selects its tab, no Stop",
       /open here$/.test(iw.label) && iw.open && iw.open.kind === 'select-tab' && iw.stop === false, iw.label);
   }
+  check("a real host is proven EXACTLY: its identity file carries its OS start time (Dexter F1)",
+    i1.exact === true && i2.exact === true, `${i1.exact}/${i2.exact}`);
   check('the label names the folder, not just a port', i1.label.startsWith(`${path.basename(tmp)}\\loose-one`), i1.label);
 
   // stop
@@ -237,6 +240,13 @@ async function main() {
   check('main logged pid, port, build and how', new RegExp(`Stop \\(background\\): stopped \\(pid ${h1.child.pid}, port ${h1.port}, build ${BUILD}, how stop-if-idle`).test(w.out));
   const after = await command(w, { cmd: 'background' });
   check('the next list no longer shows H1', after.ok && !itemOn(after, h1.port) && Boolean(itemOn(after, h2.port)));
+
+  // Open on a host that ended after the list was read (Dexter, PR 2 F2): the
+  // attach-only window refuses and ends; it never starts a fresh claude.
+  const ghost = await launchApp(loose1, { CLAUDE_CUSTOM_PORT: String(h1.port), CLAUDE_CUSTOM_ATTACH_ONLY: '1' });
+  const ghostGone = await waitFor(() => ghost.exited, 60000, 250);
+  check('Open on an ended session: the window refuses and exits', Boolean(ghostGone) && /Open refused: ended/.test(ghost.out), ghost.out.split('\n').filter(l => /refused/.test(l)).join(' | '));
+  check('and no host was started for it', !probeHostPids().some(x => path.resolve(x.cwd) === path.resolve(loose1)));
 
   // open
   await closeWs(h2Win);

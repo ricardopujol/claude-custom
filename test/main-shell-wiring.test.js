@@ -129,6 +129,18 @@ test('Open from the ▾ menu spawns a window through attachEnv, detached, never 
   assert.doesNotMatch(body, /\.\.\.process\.env|ELECTRON_RUN_AS_NODE/);
 });
 
+test('an attach-only window (Open from ▾) never spawns: it refuses and says why (Dexter, PR 2 F2)', () => {
+  const at = MAIN.indexOf('async function chooseHostPort(');
+  const body = MAIN.slice(at, MAIN.indexOf('function spawnHost(', at));
+  assert.match(body, /attachOnlyDecision\(decideAttach\(\{/);
+  assert.match(body, /attachOnlyRefusal = decision/);
+  const start = MAIN.indexOf('const first = await tabShell.open();');
+  const after = MAIN.slice(start, start + 1500);
+  assert.match(after, /if \(attachOnlyRefusal\)/);
+  assert.match(after, /attachOnlyText\(attachOnlyRefusal\)/);
+  assert.match(after, /app\.exit\(1\)/);
+});
+
 test('explicitPort, occupantAt, isHostListening and waitForHost survive', () => {
   for (const f of ['function explicitPort()', 'async function occupantAt(port)', 'function isHostListening(port)',
     'async function waitForHost(port']) assert.ok(MAIN.includes(f), f);

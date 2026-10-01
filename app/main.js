@@ -48,7 +48,7 @@ const { stopHost } = require('../host/stop-holder');
 const { isAlive: procAlive, startTimes } = require('../host/proc-start');
 const { windowCount, windowCounts } = require('../host/window-count');
 const { killPidTree } = require('../host/kill-tree');
-const { attachEnv } = require('../host/launch-target');
+const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
@@ -168,15 +168,26 @@ async function occupantAt(port) {
   return readIdentity({ dir: HARNESS_DIR, port }) || {};
 }
 
+// Set when an attach-only window (Open from ▾) was refused: the window says
+// why and ends, instead of starting a session nobody asked for.
+let attachOnlyRefusal = null;
+function attachOnlyText(d) {
+  if (d.reason === 'ended') return "That session has ended, so there's nothing to open.";
+  if (d.reason === 'other-project') return 'That port now serves another folder, so nothing was opened.';
+  return "That session couldn't be identified, so nothing was opened.";
+}
+
 // Returns { port, action } or null when the user named a port we must not take.
 // Per TAB: each tab's folder hashes to its own port.
 async function chooseHostPort(tab) {
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
   if (EXPLICIT_PORT) {
-    const decision = decideAttach({
+    // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
+    const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
       occupant: await occupantAt(EXPLICIT_PORT),
-    });
+    }), process.env);
+    if (decision.attachOnly) attachOnlyRefusal = decision;
     if (decision.action === 'refuse') {
       console.error(`[main] refusing port ${EXPLICIT_PORT}: ${decision.reason}` +
         (decision.occupiedBy ? ` (serving ${decision.occupiedBy})` : ''));
@@ -962,7 +973,7 @@ function startProbeDriver(port) {
       const m = await backgroundModel();
       const strip = await win.webContents.executeJavaScript(
         "JSON.stringify((b => b && { text: b.textContent, title: b.title })(document.getElementById('bg')))");
-      return { ok: true, footer: m.footer, items: m.items.map(it => ({ label: it.label, open: it.open, stop: it.stop, port: it.row.port })), button: JSON.parse(strip) };
+      return { ok: true, footer: m.footer, items: m.items.map(it => ({ label: it.label, open: it.open, stop: it.stop, port: it.row.port, exact: it.row.exact })), button: JSON.parse(strip) };
     },
     async backgroundStop(port) {
       const it = (await backgroundModel()).items.find(x => x.row.port === port);
@@ -1049,6 +1060,14 @@ app.whenReady().then(async () => {
   registerIpc();
 
   const first = await tabShell.open();
+  if (attachOnlyRefusal) {
+    console.error('[main] Open refused:', attachOnlyRefusal.reason);
+    if (!PROBE_PORT && win && !win.isDestroyed()) {
+      await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: attachOnlyText(attachOnlyRefusal) });
+    }
+    app.exit(1);
+    return;
+  }
   if (MODE === 'single' && first && !first.started) {
     // The old behaviour, kept: a refused or unfindable port ends the launch.
     // A host that merely was slow leaves the window up, with its reason and Retry.

@@ -70,12 +70,27 @@ function launchEnv(env, target) {
  * an explicit port is honoured and never stepped (app/main.js), so the window
  * attaches to that host or refuses; it never starts a second session beside it.
  */
+const ATTACH_ONLY = 'CLAUDE_CUSTOM_ATTACH_ONLY';
+
 function attachEnv(env, { cwd, port } = {}) {
   if (typeof cwd !== 'string' || cwd.length === 0) throw new Error('attachEnv: cwd must be a non-empty string');
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`attachEnv: port must be an integer in 1-65535, got ${String(port)}`);
   }
-  return { ...launchEnv(env, cwd), CLAUDE_CUSTOM_PORT: String(port) };
+  return { ...launchEnv(env, cwd), CLAUDE_CUSTOM_PORT: String(port), [ATTACH_ONLY]: '1' };
 }
 
-module.exports = { resolveLaunchTarget, launchEnv, attachEnv };
+/**
+ * Open's other half (Dexter, PR 2 F2): an explicit port with nothing on it
+ * SPAWNS, so a host that ended between the list and the click would hand the
+ * person a fresh claude they never asked for. An attach-only window takes
+ * app/main.js's decideAttach verdict and turns anything but `attach` into a
+ * refusal it can explain. Every other window is unchanged.
+ */
+function attachOnlyDecision(decision, env) {
+  if (!env || env[ATTACH_ONLY] !== '1' || decision.action === 'attach') return decision;
+  if (decision.action === 'spawn') return { action: 'refuse', reason: 'ended', attachOnly: true };
+  return { ...decision, attachOnly: true };
+}
+
+module.exports = { resolveLaunchTarget, launchEnv, attachEnv, attachOnlyDecision };
