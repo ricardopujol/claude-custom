@@ -42,6 +42,7 @@ const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
 const { sendControl } = require('../host/host-client');
+const { probePort } = require('../host/port-probe');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
@@ -128,18 +129,11 @@ function tokenForRunningHost(port) {
   return process.env.CLAUDE_CUSTOM_TOKEN || null;
 }
 
-function isHostListening(port) {
-  return new Promise((resolve) => {
-    const sock = net.connect({ host: '127.0.0.1', port });
-    const done = (result) => {
-      sock.destroy();
-      resolve(result);
-    };
-    sock.setTimeout(400);
-    sock.once('connect', () => done(true));
-    sock.once('timeout', () => done(false));
-    sock.once('error', () => done(false));
-  });
+// One probe for every "is anyone there?" question. The tab shell's poll needs
+// its three answers (a refusal is "the session ended"; a timeout is not); the
+// port walk only needs to know whether something answered.
+async function isHostListening(port) {
+  return (await probePort(port)) === 'listening';
 }
 
 const HARNESS_DIR = path.join(__dirname, '..', '.harness');
@@ -875,7 +869,7 @@ app.whenReady().then(async () => {
     git: { list: listWorktrees },
     hosts: {
       choosePort: chooseHostPort,
-      isListening: isHostListening,
+      probe: (port) => probePort(port),
       spawn: ({ tab, port, token }) => spawnHost(tab, port, token),
       wait: (port) => waitForHost(port),
       tokenFor: tokenForRunningHost,

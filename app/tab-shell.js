@@ -20,11 +20,13 @@
  *     hash to the same port would otherwise both see it free and both take it.
  *   - `resolvePort` is asked AT THE MOMENT a tab starts, never at open: another
  *     tab's spawn may have taken the port in between.
- *   - `listening` is `true` for a started tab whose host answers and is LEFT
- *     OUT otherwise. Never `false`: a starting host, an unstarted one and a
- *     probe that timed out are all "not known", and the reducer reads `false`
- *     as "confirmed gone". (`merged` is `{}` in this PR, so nothing removes a
- *     folder; PR 3 must tell "refused" from "timed out" before it emits false.)
+ *   - `listening` is `true` for a started tab whose host answers, `false` ONLY
+ *     for a started (not starting) tab whose port REFUSED the connection
+ *     (host/port-probe.js), and LEFT OUT otherwise. The reducer reads `false`
+ *     as "confirmed gone" and removes a merged worktree's folder on it, so a
+ *     probe that timed out, a starting host and an unstarted one are all "not
+ *     known" (PR 3, plan S3). A host exits with its claude, so a refusal is
+ *     "the session ended".
  *   - A poll that can't list worktrees produces NO observation; one that lists
  *     no dev is ignored by the reducer. Either way every tab stays.
  *   - Absence is never a number: a tab's port and token are null until known.
@@ -53,16 +55,20 @@ function createQueue() {
 }
 
 /**
- * The reducer's `listening` map: `true`, keyed by normPath, for every started
- * tab whose host answers. Everything else is left out.
+ * The reducer's `listening` map, keyed by normPath, for every started tab:
+ * `true` when its port answers, `false` when it refused. A timeout, a throw or
+ * any other answer leaves the tab out.
  */
-async function captureListening(tabs, isListening) {
+async function captureListening(tabs, probe) {
   const out = {};
   const started = [...tabs].filter(t => t.started === true && t.starting !== true && Number.isInteger(t.port));
   const answers = await Promise.all(started.map(async (t) => {
-    try { return (await isListening(t.port)) === true; } catch { return false; }
+    try { return await probe(t.port); } catch { return 'unknown'; }
   }));
-  started.forEach((t, i) => { if (answers[i]) out[t.key] = true; });
+  started.forEach((t, i) => {
+    if (answers[i] === 'listening') out[t.key] = true;
+    else if (answers[i] === 'refused') out[t.key] = false;
+  });
   return out;
 }
 
@@ -108,7 +114,7 @@ function sanitizeStatus(s) {
  *   launchedFrom    the folder the launcher was given (initial selection)
  *   git.list()      -> Promise<string>  `git worktree list --porcelain` text; rejects on failure
  *   hosts.choosePort(tab)  -> Promise<{ port, action: 'spawn'|'attach' } | null>
- *   hosts.isListening(port)-> Promise<boolean>
+ *   hosts.probe(port)      -> Promise<'listening'|'refused'|'unknown'>  (host/port-probe.js)
  *   hosts.spawn({ tab, port, token })      starts a detached host (may throw)
  *   hosts.wait(port)       -> Promise<boolean>  the host came up
  *   hosts.tokenFor(port)   -> string | null     a RUNNING host's token
@@ -129,7 +135,7 @@ function sanitizeStatus(s) {
  */
 // Every host function the shell calls. A missing one used to throw INSIDE a
 // start, where it became a tab error and a view that never appeared.
-const HOST_DEPS = ['choosePort', 'isListening', 'spawn', 'wait', 'tokenFor', 'tokenFile', 'newToken', 'control',
+const HOST_DEPS = ['choosePort', 'probe', 'spawn', 'wait', 'tokenFor', 'tokenFile', 'newToken', 'control',
   'identity', 'readToken'];
 
 function createShell(deps) {
@@ -375,7 +381,7 @@ function createShell(deps) {
         log('[shell]', lastError);
       }
       // Captured now, reconciled now, in this order, before the next poll starts.
-      const listening = await captureListening(tabs.values(), hosts.isListening);
+      const listening = await captureListening(tabs.values(), hosts.probe);
       const obs = buildObservation(text, container, listening);
       if (obs) reconcileWith(obs);
       else publish();

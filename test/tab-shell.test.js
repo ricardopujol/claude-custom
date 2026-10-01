@@ -3,8 +3,9 @@
  * The tab shell's decisions, with every effect faked (app/tab-shell.js).
  *
  * The properties that cost something get a PROPERTY test: spawns are
- * serialised, `listening` is never false for a tab that is starting or not
- * started, and a poll that lists no dev keeps every tab.
+ * serialised, `listening` is false only for a started tab whose port REFUSED
+ * (never a timeout, never a starting or unstarted tab), and a poll that lists
+ * no dev keeps every tab.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -67,7 +68,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
         }
         return free === null ? null : { port: free, action: 'spawn' };
       },
-      isListening: async (port) => h.running[port] !== undefined,
+      probe: async (port) => (h.running[port] !== undefined ? 'listening' : 'refused'),
       spawn: ({ tab, port, token }) => {
         if (spawnFails) throw new Error('spawn exploded');
         h.spawns.push({ key: tab.key, port, token });
@@ -126,21 +127,23 @@ test('createQueue runs in order, one at a time, and survives a failure', async (
   assert.deepStrictEqual(results.map(r => r.status), ['fulfilled', 'rejected', 'fulfilled']);
 });
 
-test('captureListening: true for started tabs that answer; everything else is left OUT', async () => {
+test('captureListening: true when it answers, false ONLY when a started tab port refused; else left OUT', async () => {
   const tabs = [
-    { key: 'a', started: true, starting: false, port: 1 },
-    { key: 'b', started: true, starting: false, port: 2 },        // does not answer
+    { key: 'a', started: true, starting: false, port: 1 },        // answers
+    { key: 'b', started: true, starting: false, port: 2 },        // refused: its session ended
     { key: 'c', started: false, starting: true, port: null },     // starting
     { key: 'd', started: false, starting: false, port: null },    // never started
     { key: 'e', started: true, starting: true, port: 5 },         // mid-restart: unknown
     { key: 'f', started: true, starting: false, port: 6 },        // probe throws
+    { key: 'g', started: true, starting: false, port: 7 },        // timed out: busy, NOT gone
+    { key: 'h', started: false, starting: false, port: 8 },       // refused, but this window never started it
   ];
+  const answer = { 1: 'listening', 2: 'refused', 5: 'refused', 7: 'unknown', 8: 'refused' };
   const out = await captureListening(tabs, async (p) => {
     if (p === 6) throw new Error('boom');
-    return p === 1;
+    return answer[p];
   });
-  assert.deepStrictEqual(out, { a: true });
-  assert.ok(!Object.values(out).includes(false));
+  assert.deepStrictEqual(out, { a: true, b: false });
 });
 
 test('buildObservation: no text is NO observation; merged is always {}', () => {
@@ -772,7 +775,7 @@ test('goTo: another install raises its window; windows 0 is explained, a refusal
     mode: 'tabs', container: ROOT, log: () => {},
     git: { list: async () => porcelain([THREE[0]]) },
     hosts: {
-      choosePort: async () => ({ port: 7700, action: 'attach' }), isListening: async () => true,
+      choosePort: async () => ({ port: 7700, action: 'attach' }), probe: async () => 'listening',
       spawn: () => {}, wait: async () => true, tokenFor: () => 'tok', tokenFile: () => 'tok', newToken: () => 't',
       control: async (c) => { calls.push(c); return reply; },
       identity: ({ install, port }) => (install === 'C:/other' && port === 7999 ? { pid: 4242 } : null),
@@ -841,7 +844,7 @@ test('createShell refuses deps missing a host function, by name, instead of fail
     ui: { confirmClose: async () => true, changed: () => {}, focusWindow: () => {}, isFocused: () => true },
   };
   const hosts = {
-    choosePort: async () => null, isListening: async () => false, spawn: () => {}, wait: async () => false,
+    choosePort: async () => null, probe: async () => 'unknown', spawn: () => {}, wait: async () => false,
     tokenFor: () => null, tokenFile: () => null, newToken: () => 't', control: async () => ({ ok: true }),
     identity: () => null, readToken: () => null,
   };
@@ -1000,7 +1003,7 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
             }
             return null;
           },
-          isListening: async (p) => occupied.has(p),
+          probe: async (p) => (occupied.has(p) ? 'listening' : 'refused'),
           spawn: ({ tab, port }) => { granted.push(port); setTimeout(() => occupied.set(port, tab.cwd), delays[1]); },
           wait: async (port) => { await sleep(delays[2] + 3); return occupied.has(port); },
           tokenFor: () => 't', tokenFile: () => 't', newToken: () => 't',
@@ -1018,22 +1021,28 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
     }), { numRuns: 25 });
 });
 
-test('PROPERTY: listening is never false, and never present for a tab that is starting or unstarted', async () => {
+test('PROPERTY: listening is false only for a started, not-starting tab whose port refused', async () => {
   await fc.assert(fc.asyncProperty(
     fc.array(fc.record({
       started: fc.boolean(), starting: fc.boolean(), port: fc.option(fc.integer({ min: 1, max: 65535 }), { nil: null }),
-      answers: fc.boolean(),
+      answer: fc.constantFrom('listening', 'refused', 'unknown', undefined, 'throw'),
     }), { maxLength: 8 }),
     async (specs) => {
       const tabs = specs.map((s, i) => ({ key: `k${i}`, ...s }));
-      const answers = new Map(tabs.map(t => [t.port, t.answers]));
-      const out = await captureListening(tabs, async (p) => answers.get(p));
+      const answers = new Map(tabs.map(t => [t.port, t.answer]));
+      const out = await captureListening(tabs, async (p) => {
+        const a = answers.get(p);
+        if (a === 'throw') throw new Error('boom');
+        return a;
+      });
       for (const [k, v] of Object.entries(out)) {
         const t = tabs.find(x => x.key === k);
-        if (v !== true || !t.started || t.starting || t.port === null) return false;
+        if (!t.started || t.starting || t.port === null) return false;
+        if (v === false && answers.get(t.port) !== 'refused') return false;
+        if (v === true && answers.get(t.port) !== 'listening') return false;
       }
       return true;
-    }), { numRuns: 100 });
+    }), { numRuns: 200 });
 });
 
 test('PROPERTY: a poll with no dev keeps every tab, whatever git lists', async () => {
