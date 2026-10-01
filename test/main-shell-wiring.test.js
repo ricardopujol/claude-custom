@@ -249,6 +249,53 @@ test('F4: the window-focus path records which view it focused, so applySelection
   assert.ok(/lastFocusedView\s*=/.test(body));
 });
 
+// --- PR 3 -------------------------------------------------------------------------
+
+test('PR 3: the shell gets the marker reader, the three-answer probe and the contract scripts', () => {
+  const at = MAIN.indexOf('tabShell = createShell({');
+  const call = MAIN.slice(at, MAIN.indexOf('\n  });', at));
+  assert.match(call, /marker: readMergedMarker/);
+  assert.match(call, /probe: \(port\) => probePort\(port\)/);
+  assert.match(call, /ops: createOps\(\{ dir: scriptsDir\(process\.env\) \}\)/);
+  assert.doesNotMatch(call, /isListening/);
+});
+
+test('PR 3: the + channels exist and are the strip page’s alone', () => {
+  for (const name of ['strip:plus', 'strip:create', 'strip:cancelCreate']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, name);
+    assert.match(callText(MAIN, c.at), /fromStrip\(e\)/, name);
+  }
+});
+
+test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so nothing rejects unhandled in main', () => {
+  // A call that is returned or awaited hands its rejection to its caller.
+  const calls = [...MAIN.matchAll(/tabShell\.(createWorktree|reopen)\(/g)]
+    .filter(m => !/(return|await)\s+$/.test(MAIN.slice(Math.max(0, m.index - 8), m.index)));
+  assert.ok(calls.length >= 4, `found ${calls.length}`);
+  for (const m of calls) {
+    const rest = MAIN.slice(m.index, MAIN.indexOf('\n', m.index));
+    assert.match(rest, /\)\.catch\(/, rest.trim());
+  }
+});
+
+test('PR #80 Miguel G3: a branch name in a native menu label goes through menuText', () => {
+  assert.match(MAIN, /`Reopen \$\{menuText\(r\.label\)\}/);
+});
+
+test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer than 200 characters', () => {
+  const c = channels.find(x => x.name === 'strip:create');
+  assert.match(callText(MAIN, c.at), /typeof branch !== 'string' \|\| branch\.length > 200\) return/);
+});
+
+test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
+  assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
+  assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
+  // Dexter F7 (PR #80): only while the field takes typing -- not during Contract A's fetch.
+  assert.match(MAIN, /const stripBusy = !!snapshot\.create && snapshot\.create\.phase !== 'running';/);
+  assert.match(MAIN, /create: snapshot\.create/);
+});
+
 // --- fix/terminal-links (2026-10-01) ------------------------------------------------
 
 test('a link from a tab page opens only through openInBrowser, on a channel gated FIRST', () => {

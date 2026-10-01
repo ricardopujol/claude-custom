@@ -184,3 +184,15 @@ test('main.js still depends on createVault never throwing, and says so', () => {
     'and must NOT wrap it — a caught throw gives a window with a silently dead '
     + 'vault panel, which is the class this repo has paid for four times');
 });
+
+// --- the tab strip (moved here in PR 3 so app/tab-strip.js can be mutated) --------
+
+test('the tab strip never uses innerHTML: a branch name is text, not markup', () => {
+  const src = read('app/tab-strip.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
+});
+
+test('tab-strip.html loads only its own script', () => {
+  const html = read('app/tab-strip.html');
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
+});
