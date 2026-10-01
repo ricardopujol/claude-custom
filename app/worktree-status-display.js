@@ -66,11 +66,25 @@ function lockOverlay(lock, now, opts) {
   // *Go to that session* needs somewhere to go: a positive integer port. A null
   // port is NOT port 0 (Number(null) is 0).
   const canGoTo = typeof h.port === 'number' && Number.isInteger(h.port) && h.port > 0;
+  // *Stop that session* needs a pid to prove (host/stop-holder.js does the
+  // proving, and refuses a holder with a window open).
+  const canStop = isPid(h.pid);
   const tabmode = opts && typeof opts === 'object' ? opts.tabmode : undefined;
   return {
     title: 'Another session is running in this worktree', detail, canOverride: true,
-    canGoTo, closeLabel: closeLabelFor(tabmode),
+    canGoTo, canStop, closeLabel: closeLabelFor(tabmode),
   };
+}
+
+// What the first click on *Stop that session* says before anything happens
+// (Dexter, PR #76 F3; Miguel I4). "No window" isn't "unused": a session driven
+// from Remote Control has none, and an agent may be mid-task in it.
+function stopWarning(holder) {
+  const h = holder && typeof holder === 'object' ? holder : {};
+  const which = isPid(h.claudePid) ? `claude (pid ${h.claudePid})` : 'the claude';
+  return `Click again to stop it. This ends ${which} in that session, along with anything ` +
+    'an agent is doing there or anyone driving it from Remote Control. ' +
+    'Its conversation can be picked up again with --resume.';
 }
 
 function lockBadge(lock) {
@@ -117,7 +131,7 @@ function healthMarker(health) {
   return null;
 }
 
-const api = { sinceText, lockOverlay, lockBadge, terminalBanner, healthMarker };
+const api = { sinceText, lockOverlay, stopWarning, lockBadge, terminalBanner, healthMarker };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.

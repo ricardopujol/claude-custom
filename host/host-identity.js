@@ -100,4 +100,20 @@ function readIdentity({ dir, port, isAlive = defaultIsAlive } = {}) {
   return { port: Number(port), cwd: parsed.cwd, pid: parsed.pid, startedAt: parsed.startedAt };
 }
 
-module.exports = { writeIdentity, readIdentity, defaultIsAlive, fileFor };
+/**
+ * `<dir>/hosts/<port>.token`, trimmed: the secret of the host that won that
+ * port's bind (PR #75 F2). Null when it can't be read, is empty, or the port
+ * isn't one -- `${null}.token` is a real file name and must never be read.
+ * Read it only for a host whose identity has been matched first (see
+ * app/go-to-session.js): the token is a credential.
+ */
+function readTokenFile({ dir, port } = {}) {
+  if (!(Number.isInteger(port) && port > 0 && port < 65536)) return null;
+  try {
+    return fs.readFileSync(path.join(dir, 'hosts', `${port}.token`), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { writeIdentity, readIdentity, readTokenFile, defaultIsAlive, fileFor };

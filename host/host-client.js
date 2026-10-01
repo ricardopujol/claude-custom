@@ -36,6 +36,8 @@ const OLDER_HOST = (type) =>
 const EXPECTED = Object.freeze({
   raise: { reply: 'raised' },
   stop: { reply: null },
+  // *Stop that session*: the holder answers whether it stopped (it then exits).
+  'stop-if-idle': { reply: 'stop-if-idle' },
 });
 
 const DEFAULT_TIMEOUT_MS = 3000;

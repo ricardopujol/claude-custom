@@ -94,3 +94,46 @@ test('a dismissed banner stays dismissed only for the same set of sessions', () 
   assert.match(body, /\.key/);
   assert.match(body, /dismissedTerminalKey/);
 });
+
+test('Stop that session: its own hidden button sends lock-stop-holder, and nothing else does', () => {
+  assert.match(tag('lock-stop'), /\bhidden\b/, '#lock-stop must start hidden');
+  const sends = JS.match(/type: 'lock-stop-holder'/g) || [];
+  assert.strictEqual(sends.length, 1, 'exactly one place sends lock-stop-holder');
+  // The send sits inside the Stop button's own click listener: no other
+  // listener is registered between the two (Miguel S6: a structural check,
+  // not a character budget).
+  const at = JS.indexOf("type: 'lock-stop-holder'");
+  const opener = "stopButton.addEventListener('click'";
+  const listener = JS.lastIndexOf(opener, at);
+  assert.ok(listener !== -1, "the send is in the Stop button's click listener");
+  assert.ok(!JS.slice(listener + opener.length, at).includes('addEventListener('), 'and in no other listener');
+  assert.match(JS, /const stopButton = document\.getElementById\('lock-stop'\)/);
+});
+
+test('Stop takes two clicks: the first warns, the second sends (Dexter F3, Miguel I4)', () => {
+  const at = JS.indexOf("stopButton.addEventListener('click'");
+  const src = JS.replace(/\r\n/g, '\n');
+  const from = src.indexOf("stopButton.addEventListener('click'");
+  const handler = src.slice(from, src.indexOf('\n});', from));
+  assert.ok(at !== -1 && handler.length > 0);
+  const warn = handler.indexOf('worktreeStatus.stopWarning(');
+  const sendAt = handler.indexOf("type: 'lock-stop-holder'");
+  assert.ok(warn !== -1 && sendAt !== -1 && warn < sendAt, 'the warning comes before the send');
+  assert.match(handler.slice(warn, sendAt), /return;/, 'the first click returns after warning');
+  assert.match(handler, /stopButton\.disabled = true/, 'disabled while the stop runs (Miguel S3)');
+  // The holder the PANE showed goes with it (Dexter F6).
+  assert.match(handler, /holder: \{ pid: tabLock\.holder\.pid, startedAt: tabLock\.holder\.startedAt \}/);
+});
+
+test('renderLock shows Stop only when the overlay offers it, and a repaint disarms it', () => {
+  const body = fnBody('renderLock');
+  assert.match(body, /getElementById\('lock-stop'\)\.hidden = !overlay\.canStop/);
+  assert.match(body, /disarmStop\(\)/);
+});
+
+test("the host's answer -- or its 'busy' -- is shown under the buttons and re-enables Stop", () => {
+  const b = branch('lock-note');
+  assert.match(b, /lock-goto-note/);
+  assert.match(b, /msg\.text/);
+  assert.match(b, /disarmStop\(\)/);
+});

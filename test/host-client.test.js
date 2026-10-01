@@ -203,6 +203,26 @@ test('the frame goes out only AFTER the hello, never on open', async () => {
   }
 });
 
-test('exactly stop and raise are known, and each names how it is answered', () => {
-  assert.deepStrictEqual(EXPECTED, { raise: { reply: 'raised' }, stop: { reply: null } });
+test('exactly stop, raise and stop-if-idle are known, and each names how it is answered', () => {
+  assert.deepStrictEqual(EXPECTED, {
+    raise: { reply: 'raised' }, stop: { reply: null }, 'stop-if-idle': { reply: 'stop-if-idle' },
+  });
+});
+
+test('stop-if-idle: resolves with the holder\'s verdict, sent only to a host that lists it', async () => {
+  const hello = { type: 'hello', controls: [...HELLO.controls, 'stop-if-idle'] };
+  await withServer((ws, text) => {
+    if (JSON.parse(text).type === 'stop-if-idle') ws.send(JSON.stringify({ type: 'stop-if-idle', stopped: false, windows: 1 }));
+  }, async ({ port, frames }) => {
+    const r = await sendControl({ port, token: TOKEN, msg: { type: 'stop-if-idle' }, timeoutMs: SHORT });
+    assert.deepStrictEqual(r, { ok: true, reply: { type: 'stop-if-idle', stopped: false, windows: 1 } });
+    assert.deepStrictEqual(frames, ['{"type":"stop-if-idle"}']);
+  }, { hello });
+  // A build with stop and raise but not this: nothing sent, OLDER_HOST.
+  await withServer(() => {}, async ({ port, frames }) => {
+    const r = await sendControl({ port, token: TOKEN, msg: { type: 'stop-if-idle' }, timeoutMs: SHORT });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.error, /older claude-custom/);
+    assert.deepStrictEqual(frames, []);
+  });
 });

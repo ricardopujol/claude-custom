@@ -129,4 +129,4 @@ function createSelfStartTime(opts = {}) {
   };
 }
 
-module.exports = { isAlive, startTimes, createSelfStartTime, QUERY_TIMEOUT_MS };
+module.exports = { isAlive, startTimes, createSelfStartTime, QUERY_TIMEOUT_MS, defaultExec, POWERSHELL, BOM_AT_START };
