@@ -86,6 +86,18 @@ test('a lock-override frame is control, never typed into the pty', () => {
   assert.deepStrictEqual(dispatchedWith, { type: 'lock-override' });
 });
 
+test('a layout-override frame is control, never typed into the pty', () => {
+  // Layout pass L1: a tab's own layout. Off CONTROL_TYPES this JSON would be
+  // TYPED into a session that may run --dangerously-skip-permissions.
+  const written = [];
+  let dispatchedWith = null;
+  const frame = '{"type":"layout-override","layout":{"version":1}}';
+  const result = handleFrame(frame, (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+  assert.strictEqual(result.handled, true);
+  assert.deepStrictEqual(written, []);
+  assert.deepStrictEqual(dispatchedWith, { type: 'layout-override', layout: { version: 1 } });
+});
+
 test('parseControlFrame returns the parsed message for every known control type', () => {
   for (const type of CONTROL_TYPES) {
     assert.deepStrictEqual(parseControlFrame(JSON.stringify({ type, x: 1 })), { type, x: 1 });
