@@ -64,4 +64,18 @@ function launchEnv(env, target) {
   return out;
 }
 
-module.exports = { resolveLaunchTarget, launchEnv };
+/**
+ * *Open* from the strip's ▾ menu (Windowless sessions PR 2): a fresh window
+ * on one running host. launchEnv's clean slate, plus that host's exact port --
+ * an explicit port is honoured and never stepped (app/main.js), so the window
+ * attaches to that host or refuses; it never starts a second session beside it.
+ */
+function attachEnv(env, { cwd, port } = {}) {
+  if (typeof cwd !== 'string' || cwd.length === 0) throw new Error('attachEnv: cwd must be a non-empty string');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`attachEnv: port must be an integer in 1-65535, got ${String(port)}`);
+  }
+  return { ...launchEnv(env, cwd), CLAUDE_CUSTOM_PORT: String(port) };
+}
+
+module.exports = { resolveLaunchTarget, launchEnv, attachEnv };

@@ -195,9 +195,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { installsBeside, identitiesIn } = require('../host/background-hosts');
+const { tmpDir } = require('./tmp-dir');
 
 function tree() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-hosts-'));
+  const root = tmpDir('bg-hosts-');
   const build = (name, { hostJs = true, hosts = true } = {}) => {
     const dir = path.join(root, name);
     if (hostJs) { fs.mkdirSync(path.join(dir, 'host'), { recursive: true }); fs.writeFileSync(path.join(dir, 'host', 'host.js'), ''); }

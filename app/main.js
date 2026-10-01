@@ -43,6 +43,13 @@ const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
 const { sendControl } = require('../host/host-client');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
+const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
+const { stopHost } = require('../host/stop-holder');
+const { isAlive: procAlive, startTimes } = require('../host/proc-start');
+const { windowCount, windowCounts } = require('../host/window-count');
+const { killPidTree } = require('../host/kill-tree');
+const { attachEnv } = require('../host/launch-target');
+const { menuModel } = require('./background-menu');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -485,6 +492,107 @@ function focusWindow() {
   win.focus();
 }
 
+// --- the ▾ menu: every running session (Windowless sessions PR 2) -----------------
+// Every host of every build beside this one (host/background-hosts.js), proven
+// by its OS start time. Open is for this build's own; Stop is PR 1's rules
+// (host/stop-holder.js stopHost): never a session with a window open.
+const INSTALL_DIR = path.join(__dirname, '..');
+const harnessOf = install => path.join(install, '.harness');
+
+function listBackground() {
+  return listBackgroundHosts({ ownInstall: INSTALL_DIR }, {
+    installs: () => installsBeside(INSTALL_DIR),
+    identities: identitiesIn,
+    startTimes,
+    windowCounts,
+  });
+}
+
+async function backgroundModel() {
+  const tabsByPort = new Map();
+  for (const t of tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key);
+  return menuModel(await listBackground(), { now: Date.now(), tabsByPort });
+}
+
+// Windows menus read `&` as a mnemonic marker; a folder name is not one.
+const menuText = s => String(s).replace(/&/g, '&&');
+
+async function showBackgroundMenu() {
+  const m = await backgroundModel();
+  const template = m.items.map(it => ({
+    label: menuText(it.label),
+    submenu: [
+      { label: it.open && it.open.kind === 'select-tab' ? 'Go to its tab' : 'Open', enabled: it.open !== null,
+        click: () => openBackground(it.open) },
+      { label: 'Stop…', enabled: it.stop, click: () => { stopBackground(it.row).catch(() => {}); } },
+    ],
+  }));
+  if (m.footer) {
+    if (template.length) template.push({ type: 'separator' });
+    template.push({ label: menuText(m.footer), enabled: false });
+  }
+  if (!win || win.isDestroyed()) return;
+  await new Promise(res => Menu.buildFromTemplate(template).popup({ window: win, callback: res }));
+}
+
+// A tab here is selected; anything else gets a window of its own on that
+// host's exact port, which attaches to it or refuses (host/launch-target.js).
+// Answers what it did: { selected } | { pid } of the new window | null.
+function openBackground(open) {
+  if (!open) return null;
+  if (open.kind === 'select-tab') { tabShell.select(open.key); focusWindow(); return { selected: open.key }; }
+  try {
+    const child = spawn(process.execPath, [INSTALL_DIR], {
+      detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd: open.cwd, port: open.port }),
+    });
+    child.on('error', err => console.log('[main] Open (background) failed:', err.message));
+    child.unref();
+    console.log(`[main] Open (background): a window on port ${open.port} for ${open.cwd} (pid ${child.pid})`);
+    return { pid: child.pid };
+  } catch (err) {
+    console.log('[main] Open (background) failed:', err && err.message);
+    return null;
+  }
+}
+
+async function stopBackground(row) {
+  if (!PROBE_PORT && win && !win.isDestroyed()) {
+    const ok = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: ['Stop session', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `Stop the session in ${row.cwd}?`,
+      detail: `Build ${row.build}, pid ${row.pid}. Its claude ends with it. A session with a window open is never stopped.`,
+    });
+    if (ok.response !== 0) return { outcome: 'cancelled' };
+  }
+  let r;
+  try {
+    r = await stopHost({ row }, {
+      isAlive: procAlive,
+      startTimes,
+      readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
+      readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
+      sendControl: c => sendControl(c),
+      windowCount,
+      killPidTree,
+      sleep: ms => new Promise(res => setTimeout(res, ms)),
+      now: Date.now,
+    });
+  } catch (err) {
+    console.log('[main] Stop (background) failed:', err && err.message);
+    r = { outcome: 'failed', text: "Couldn't stop that session.", how: null, reason: null };
+  }
+  console.log(`[main] Stop (background): ${r.outcome} (pid ${row.pid}, port ${row.port}, build ${row.build}, how ${r.how || 'none'}` +
+    (r.reason ? `, controls skipped: ${r.reason}` : '') + ')');
+  // Stopped is its own answer: the row is gone from the next list.
+  if (r.outcome !== 'stopped' && !PROBE_PORT && win && !win.isDestroyed()) {
+    await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: r.text });
+  }
+  return r;
+}
+
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
@@ -505,6 +613,16 @@ function registerIpc() {
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
+  });
+  // The ▾ menu. Answers when it closes, so the strip can show it was busy
+  // (the list takes two powershell.exe, ~1-2 s); one at a time.
+  let backgroundBusy = false;
+  ipcMain.handle('strip:background', async (e) => {
+    if (!fromStrip(e) || backgroundBusy) return;
+    backgroundBusy = true;
+    try { await showBackgroundMenu(); } catch (err) {
+      console.log('[main] background menu failed:', err && err.message);
+    } finally { backgroundBusy = false; }
   });
 
   // A tab's page talking to main. Every one gated on "one of THIS window's tab
@@ -839,6 +957,24 @@ function startProbeDriver(port) {
     async quit() {
       setTimeout(() => app.exit(0), 200);
       return { ok: true };
+    },
+    async background() {
+      const m = await backgroundModel();
+      const strip = await win.webContents.executeJavaScript(
+        "JSON.stringify((b => b && { text: b.textContent, title: b.title })(document.getElementById('bg')))");
+      return { ok: true, footer: m.footer, items: m.items.map(it => ({ label: it.label, open: it.open, stop: it.stop, port: it.row.port })), button: JSON.parse(strip) };
+    },
+    async backgroundStop(port) {
+      const it = (await backgroundModel()).items.find(x => x.row.port === port);
+      if (!it) return { ok: false, error: `no running session on port ${port}` };
+      const r = await stopBackground(it.row);
+      return { ok: true, outcome: r.outcome, how: r.how || null, text: r.text || null };
+    },
+    async backgroundOpen(port) {
+      const it = (await backgroundModel()).items.find(x => x.row.port === port);
+      if (!it) return { ok: false, error: `no running session on port ${port}` };
+      if (!it.open) return { ok: false, error: 'that session has no Open' };
+      return { ok: true, ...(openBackground(it.open) || { failed: true }) };
     },
   };
   const server = net.createServer((sock) => {

@@ -36,6 +36,11 @@
     #strip-alert { flex: 1 1 auto; min-width: 0; align-self: center; margin: 0 10px; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; color: var(--bad); }
     #strip-alert[hidden] { display: none; }
+    /* The ▾ menu of running sessions: pinned right, past the alert's flex. */
+    #bg { margin-left: auto; flex: 0 0 auto; width: 34px; border: 0; border-left: 1px solid var(--border);
+      background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; }
+    #bg:hover { color: var(--text); background: var(--border); }
+    #bg:disabled { cursor: progress; color: var(--accent); }
     @keyframes pulse { 50% { opacity: 0.35; } }
     /* Visible only while the selected tab has no page of its own (starting,
        failed, or no worktrees yet); the tab's view covers it otherwise. */
@@ -50,7 +55,7 @@
   </style>
 </head>
 <body>
-  <div id="strip"><div id="tabs"></div><div id="strip-alert" hidden></div></div>
+  <div id="strip"><div id="tabs"></div><div id="strip-alert" hidden></div><button type="button" id="bg" title="Running sessions">▾</button></div>
   <div id="pane" hidden>
     <div id="pane-text"></div>
     <button type="button" id="pane-retry" hidden>Retry</button>

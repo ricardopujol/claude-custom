@@ -136,16 +136,56 @@ test('paint never uses innerHTML: a branch name is text, not markup', () => {
   assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
 
-test('the strip bridge exposes select, close, contextMenu and onModel -- and nothing else', () => {
+test('the strip bridge exposes select, close, contextMenu, background and onModel -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
-  assert.deepStrictEqual(members, ['select', 'close', 'contextMenu', 'onModel']);
+  assert.deepStrictEqual(members, ['select', 'close', 'contextMenu', 'background', 'onModel']);
   assert.match(src, /'strip:select'/);
   assert.match(src, /'strip:close'/);
   assert.match(src, /'strip:contextMenu'/);
+  assert.match(src, /invoke\('strip:background'\)/);
   assert.match(src, /removeAllListeners\('strip-model'\)/);
+});
+
+test('paint: ▾ asks main for the running-sessions menu, and is busy until it closes', async () => {
+  const doc = fakeDoc();
+  doc.byId.bg = node('button');
+  let release;
+  let asked = 0;
+  const b = { ...bridgeSpy(), background: () => { asked += 1; return new Promise(r => { release = r; }); } };
+  paint(doc, { model: [entry()] }, b);
+  const bg = doc.byId.bg;
+  bg.onclick();
+  assert.strictEqual(asked, 1);
+  assert.strictEqual(bg.disabled, true);
+  bg.onclick();                                  // busy: not asked twice
+  assert.strictEqual(asked, 1);
+  paint(doc, { model: [entry()] }, b);           // a repaint mid-menu keeps it busy
+  assert.strictEqual(bg.disabled, true);
+  release();
+  await new Promise(r => setImmediate(r));
+  assert.strictEqual(bg.disabled, false);
+  bg.onclick();
+  assert.strictEqual(asked, 2);
+  release();                                     // leave the page's one flag as found
+  await new Promise(r => setImmediate(r));
+});
+
+test('paint: a menu that fails still frees the ▾ button', async () => {
+  const doc = fakeDoc();
+  doc.byId.bg = node('button');
+  const b = { ...bridgeSpy(), background: () => Promise.reject(new Error('gone')) };
+  paint(doc, { model: [] }, b);
+  doc.byId.bg.onclick();
+  await new Promise(r => setImmediate(r));
+  assert.strictEqual(doc.byId.bg.disabled, false);
+});
+
+test('tab-strip.html has the ▾ button, after the tabs', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.match(html, /id="tabs"[\s\S]*<button type="button" id="bg"[^>]*>▾<\/button>/);
 });
 
 test('tab-strip.html loads only its own script and starts with the pane hidden', () => {

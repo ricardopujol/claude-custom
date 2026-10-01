@@ -144,3 +144,24 @@ test('a variable added to the namespace LATER is stripped without anyone remembe
   const out = launchEnv({ CLAUDE_CUSTOM_INVENTED_TOMORROW: 'boom' }, 'C:/p');
   assert.strictEqual('CLAUDE_CUSTOM_INVENTED_TOMORROW' in out, false);
 });
+
+// --- attachEnv: Open from the strip's ▾ menu (Windowless sessions PR 2) ------
+const { attachEnv } = require('../host/launch-target');
+
+test('attachEnv: a fresh window on THAT host: its folder and exact port, nothing else of ours', () => {
+  const out = attachEnv({ PATH: '/x', ELECTRON_RUN_AS_NODE: '1', CLAUDE_CUSTOM_TOKEN: 't', CLAUDE_CUSTOM_PORT: '1' },
+    { cwd: 'C:/proj', port: 7718 });
+  assert.deepStrictEqual(Object.keys(out).filter(k => k.startsWith('CLAUDE_CUSTOM_')).sort(),
+    ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT']);
+  assert.strictEqual(out.CLAUDE_CUSTOM_CWD, 'C:/proj');
+  assert.strictEqual(out.CLAUDE_CUSTOM_PORT, '7718');
+  assert.strictEqual('ELECTRON_RUN_AS_NODE' in out, false);
+  assert.strictEqual(out.PATH, '/x');
+});
+
+test('attachEnv: refuses a port that is not one, or no folder', () => {
+  for (const port of [0, -1, 65536, 1.5, '7718', null]) {
+    assert.throws(() => attachEnv({}, { cwd: 'C:/p', port }), /port/, String(port));
+  }
+  for (const cwd of ['', null, 5]) assert.throws(() => attachEnv({}, { cwd, port: 7718 }), /cwd/);
+});
