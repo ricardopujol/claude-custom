@@ -92,6 +92,8 @@ const ALLOWED_GLOBALS = new Set([
   'worktreeStatus',
   // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
   'tabModel', 'tabStatus', 'goToSession',
+  // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
+  'linkClick',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
   // renderer.js's key handler, like isPanelToggle.
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',

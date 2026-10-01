@@ -295,3 +295,36 @@ test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while o
   assert.match(MAIN, /const stripBusy = !!snapshot\.create && snapshot\.create\.phase !== 'running';/);
   assert.match(MAIN, /create: snapshot\.create/);
 });
+
+// --- fix/terminal-links (2026-10-01) ------------------------------------------------
+
+test('a link from a tab page opens only through openInBrowser, on a channel gated FIRST', () => {
+  const c = channels.find(x => x.name === 'tab:openExternal');
+  assert.ok(c, 'tab:openExternal is registered');
+  const body = callText(MAIN, c.at);
+  // Miguel #7: the gate is the handler's first statement, not merely present.
+  assert.match(body, /^ipcMain\.handle\(\s*'tab:openExternal',\s*\(e, url\) => \{\s*if \(!isTabView\(e\.sender\)\) return false;/);
+  // It answers whether the link was opened, so the page can say when it wasn't (Dexter F5).
+  assert.match(body, /return openInBrowser\(url, /);
+});
+
+test('nothing reaches shell.openExternal unchecked -- above all the about:blank of a blank window.open', () => {
+  // Miguel #3: ONE call, inside openInBrowser, fed by externalUrl and caught.
+  const calls = [...MAIN.matchAll(/shell\.openExternal\(([^)]*)\)/g)].map(m => m[1]);
+  assert.deepStrictEqual(calls, ['target']);
+  const at = MAIN.indexOf('function openInBrowser(');
+  assert.ok(at !== -1, 'openInBrowser exists');
+  const fn = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  assert.match(fn, /const target = externalUrl\(url\);/);
+  assert.match(fn, /shell\.openExternal\(target\)\.catch\(/);
+  const handler = MAIN.slice(MAIN.indexOf('wc.setWindowOpenHandler('), MAIN.indexOf('});', MAIN.indexOf('wc.setWindowOpenHandler(')));
+  assert.match(handler, /openInBrowser\(url, /);
+});
+
+test('Miguel #4: the tab:raise handler keeps its own comment', () => {
+  const at = MAIN.indexOf("ipcMain.on('tab:raise'");
+  const before = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  const raw = before.slice(0, before.indexOf("ipcMain.on('tab:raise'"));
+  assert.ok(at !== -1);
+  assert.match(raw.slice(-300), /The receiving side of a host `raise`/);
+});

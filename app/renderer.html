@@ -454,6 +454,13 @@
     .lock-actions button[hidden] { display: none; }
     #lock-goto-note { margin-top: 10px; font-size: 12px; line-height: 1.4; color: var(--dim); }
     #lock-goto-note:empty { display: none; }
+    #link-target {
+      position: absolute; left: 10px; bottom: 6px; z-index: 15; max-width: calc(100% - 20px);
+      box-sizing: border-box; padding: 3px 8px; border-radius: 4px; pointer-events: none;
+      font-size: 12px; line-height: 1.4; color: var(--text); white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; background: var(--chrome); border: 1px solid var(--border);
+    }
+    #link-target[hidden] { display: none; }
     #terminal-banner {
       position: absolute; top: 6px; left: 10px; right: 10px; z-index: 15;
       display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 5px;
@@ -1008,6 +1015,9 @@
     </header>
     <div id="body">
       <div id="termwrap"><div id="term"></div>
+        <!-- fix/terminal-links: where the link under the pointer really goes,
+             or that a clicked one wasn't opened. Text only (app/link-click.js). -->
+        <div id="link-target" role="status" hidden></div>
         <!-- Extension X1 (PR 1b). Other live claude sessions in this worktree:
              a warning, never a block. Dismissed until the set of sessions changes. -->
         <div id="terminal-banner" role="status" hidden>
@@ -1195,6 +1205,7 @@
   <script src="./paste-action.js"></script>
   <script src="./worktree-status-display.js"></script>
   <script src="./tab-status.js"></script>
+  <script src="./link-click.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

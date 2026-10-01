@@ -25,6 +25,10 @@ contextBridge.exposeInMainWorld('harness', {
   closeTab: () => ipcRenderer.send('tab:close'),
   goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
   raise: () => ipcRenderer.send('tab:raise'),
+  // A link clicked in the terminal (fix/terminal-links). Main opens it in the
+  // default browser if, and only if, it is plain http(s), and answers whether
+  // it did, so the page can say when it didn't.
+  openExternal: (url) => ipcRenderer.invoke('tab:openExternal', url),
   onTabSelected: (fn) => (ipcRenderer.removeAllListeners('tab-selected'), ipcRenderer.on('tab-selected',
     () => {
       try { fn(); } catch (err) { console.error('[preload] tab-selected listener threw', err); }

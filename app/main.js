@@ -45,6 +45,7 @@ const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
+const { externalUrl } = require('./external-link');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
@@ -348,6 +349,22 @@ function selectedView() {
 
 // --- the tab views ---------------------------------------------------------------
 
+// The ONE way a link leaves the app (fix/terminal-links): only what
+// app/external-link.js accepts (http/https, no credentials) reaches
+// shell.openExternal; everything else -- above all the `about:blank` of a
+// blank window.open, which Windows has no app for -- is logged and dropped.
+// What was opened is logged too, so a link that misled is traceable.
+function openInBrowser(url, from) {
+  const target = externalUrl(url);
+  if (!target) {
+    console.log(`[main] ${from}: not opening ${String(url).slice(0, 200)} (not an http(s) link)`);
+    return false;
+  }
+  console.log(`[main] ${from}: opening ${target.slice(0, 200)} in the default browser`);
+  shell.openExternal(target).catch((err) => console.error('[main] openExternal failed:', err && err.message));
+  return true;
+}
+
 function createTabView(tab) {
   const view = new WebContentsView({
     webPreferences: {
@@ -376,9 +393,11 @@ function createTabView(tab) {
       console.log(`[renderer:${tag}] ${message} (${String(sourceId).split('/').pop()}:${line})`);
     });
   }
-  // Any external link opens in the real browser, never in-app.
+  // Any external link opens in the real browser, never in-app -- and only an
+  // http(s) one. A blank window.open() arrives here as `about:blank`, which
+  // Windows has no app for (fix/terminal-links): that is dropped, not opened.
   wc.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openInBrowser(url, tab.key);
     return { action: 'deny' };
   });
 
@@ -562,6 +581,13 @@ function registerIpc() {
   ipcMain.handle('tab:goTo', (e, holder) => (isTabView(e.sender)
     ? tabShell.goTo(e.sender, holder)
     : { kind: 'explain', text: "That session's window can't be found." }));
+  // A link clicked in a tab's terminal (fix/terminal-links): straight to the
+  // default browser, no prompt -- only what openInBrowser accepts.
+  ipcMain.handle('tab:openExternal', (e, url) => {
+    if (!isTabView(e.sender)) return false;
+    const tab = tabShell.tabForSender(e.sender);
+    return openInBrowser(url, tab ? tab.key : 'a tab');
+  });
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a
   // background process.
