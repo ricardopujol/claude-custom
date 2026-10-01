@@ -231,7 +231,11 @@ function createShell(deps) {
   function model() {
     return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
       const t = tabs.get(e.key);
-      return { ...e, starting: !!(t && t.starting), startError: t ? t.error : null };
+      // The strip paints these; it decides nothing (PR 3: badge and phase line).
+      return {
+        ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
+        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e),
+      };
     });
   }
 

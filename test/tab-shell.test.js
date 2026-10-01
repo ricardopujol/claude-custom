@@ -886,6 +886,12 @@ test('a marker for the branch of this poll marks the tab merged; a stale one nev
   assert.ok(!h.markerReads.some(([k]) => k === key('dev')), 'dev is never read');
   const e = h.shell.model().find(x => x.key === key('feat-a'));
   assert.strictEqual(tabModel.badgeFor(e), 'merged');
+  // What the strip paints, computed here: the strip decides nothing.
+  assert.strictEqual(e.badge, 'merged');
+  assert.strictEqual(e.phaseText, 'Merged. When its session ends, this worktree is removed.');
+  const plain = h.shell.model().find(x => x.key === key('feat-b'));
+  assert.strictEqual(plain.badge, null);
+  assert.strictEqual(plain.phaseText, null);
 });
 
 test('criterion 3: merged, then its session ends (port refused) -> ONE remove, then the tab closes', async () => {
