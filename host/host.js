@@ -1140,7 +1140,9 @@ if (helperExists) {
     if (said.effort !== undefined) setEffort(said.effort);
     // Logged because the roster silently showed nothing when agents ran, and
     // there was no way to tell whether hooks were arriving at all.
-    const what = ev.payload && (ev.payload.tool_input?.subagent_type || ev.payload.tool_name);
+    // A Notification names its notification_type: attention.js raises only the
+    // types it knows, so a new one must at least be visible here (Dexter F4).
+    const what = ev.payload && (ev.payload.tool_input?.subagent_type || ev.payload.tool_name || ev.payload.notification_type);
     console.log(`[hook] ${ev.event}${what ? ' ' + what : ''}`);
     // The shape Claude Code actually sends is the one thing no local test can
     // assert, because every test supplies the shape it expects.

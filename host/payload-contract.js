@@ -129,7 +129,8 @@ const CONTRACT = {
     // description, status }]. mood-machine.js ends the main session's
     // FOREGROUND runs on Stop and spares the ones listed here -- measured,
     // Stop fires while a background agent is still running
-    // (test/hooks-real-subagent-failure.fixture.jsonl).
+    // (test/hooks-real-subagent-failure.fixture.jsonl). attention.js holds
+    // "finished" back while one of them runs.
   },
   SessionEnd: {
     // The session is over; processes.js clears everything. No COMMON_FIELDS:
@@ -143,8 +144,9 @@ const CONTRACT = {
     },
     // Also read, optional: notification_type. attention.js raises only for
     // permission_prompt, elicitation_dialog, elicitation_url_dialog and
-    // agent_needs_input; an older CLI that sends none raises as before.
-    // Stop's background_tasks gates "finished" there too (a running subagent).
+    // agent_needs_input (idle_prompt only as a held "finished"'s backstop); an
+    // older CLI that sends none raises as before. Measured in CLI 2.1.286's own
+    // input schema; verify/probe-notification-type.js is the tripwire.
   },
 };
 

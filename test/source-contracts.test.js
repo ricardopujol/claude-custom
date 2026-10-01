@@ -178,3 +178,19 @@ test('main.js still depends on createVault never throwing, and says so', () => {
     'and must NOT wrap it — a caught throw gives a window with a silently dead '
     + 'vault panel, which is the class this repo has paid for four times');
 });
+
+// Dexter, notify F4 (Low): attention.js raises only the notification types it
+// names, so a NEW type that needs you would go silent. The hook log names the
+// type, so that is visible in host.log instead of invisible.
+test('host.js logs every Notification hook with its notification_type', () => {
+  const host = read('host/host.js');
+  const at = host.indexOf("console.log(`[hook] ${ev.event}");
+  assert.ok(at !== -1, 'the [hook] log line exists');
+  const before = host.slice(Math.max(0, at - 400), at);
+  assert.match(before, /notification_type/);
+});
+
+// The default settle timer must not hold a process open on its own.
+test('attention.js unrefs its default settle timer', () => {
+  assert.match(read('host/attention.js'), /\.unref\(\)/);
+});

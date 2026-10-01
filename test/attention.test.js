@@ -140,7 +140,7 @@ test('a Stop while a subagent still runs is not finished: nothing is raised', ()
 test('the Stop after the last agent returns is finished', () => {
   const h = harness();
   h.fire('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running' }] });
-  h.advance(60000);
+  assert.deepStrictEqual(h.sent, []);
   h.fire('Stop', { background_tasks: [] });
   assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
 });
@@ -173,5 +173,172 @@ test('a subagent with no status, or no type but an agent_type, still counts as r
     const h = harness();
     h.fire('Stop', { background_tasks: [task] });
     assert.deepStrictEqual(h.sent, [], JSON.stringify(task));
+  }
+});
+
+// --- Dexter, notify F1 (High): a held-back "finished" must come back ---------
+// Holding a Stop promises a later one that nothing guarantees: the measured
+// race (Stop lists r1, r1's SubagentStop lands 1 ms later, no new turn), a
+// resume that never notifies, a follow-up turn that ends in StopFailure. Once
+// every agent the held Stop waited on has stopped, "finished" is raised by the
+// first of: a clean Stop, Claude Code's own idle_prompt, or a settle timer.
+const fs = require('fs');
+const path = require('path');
+const RUN = id => ({ id, type: 'subagent', status: 'running', agent_type: 'general-purpose' });
+
+function timed(opts = {}) {
+  const timers = [];
+  const h = harness({
+    setTimer: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t; },
+    clearTimer: (t) => { if (t) t.live = false; },
+    ...opts,
+  });
+  h.live = () => timers.filter(t => t.live);
+  h.fireTimers = () => { for (const t of h.live()) { t.live = false; t.fn(); } };
+  return h;
+}
+
+test('the real capture: Stop (1 running) -> SubagentStop -> Stop (0 running) raises finished once', () => {
+  const lines = fs.readFileSync(path.join(__dirname, 'hooks-real-subagent-failure.fixture.jsonl'), 'utf8')
+    .split(/\r?\n/).filter(Boolean).map(l => JSON.parse(l));
+  const h = timed();
+  for (const l of lines) { const p = l.payload || l; h.a.handle({ event: p.hook_event_name, payload: p }); h.advance(10); }
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+});
+
+test('the race, with no new turn: the idle prompt after the last agent stops is finished', () => {
+  const h = timed();
+  h.fire('Stop', { background_tasks: [RUN('r1')] });
+  h.fire('SubagentStop', { agent_id: 'r1' });
+  h.fire('Notification', { message: 'Claude is waiting for your input', notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+  assert.deepStrictEqual(h.live(), [], 'the settle timer is cancelled once finished is raised');
+});
+
+test('the race, with no new turn and no idle prompt: the settle timer raises finished', () => {
+  const h = timed({ settleMs: 30000 });
+  h.fire('Stop', { background_tasks: [RUN('r1')] });
+  assert.deepStrictEqual(h.live(), [], 'no timer while an agent still runs');
+  h.fire('SubagentStop', { agent_id: 'r1' });
+  assert.deepStrictEqual(h.live().map(t => t.ms), [30000]);
+  h.fireTimers();
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+  // Once only: a late idle prompt adds nothing.
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+});
+
+test('an idle prompt while an agent still runs is not finished', () => {
+  const h = timed();
+  h.fire('Stop', { background_tasks: [RUN('r1'), RUN('r2')] });
+  h.fire('SubagentStop', { agent_id: 'r1' });
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent, []);
+  assert.deepStrictEqual(h.live(), []);
+  h.fire('SubagentStop', { agent_id: 'r2' });
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+});
+
+test('an idle prompt with nothing held back is still nothing', () => {
+  const h = timed();
+  h.fire('Stop', {});
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  h.advance(10000);
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished']);
+});
+
+test('a SubagentStop for an agent the held Stop did not list changes nothing', () => {
+  const h = timed();
+  h.fire('Stop', { background_tasks: [RUN('r1')] });
+  h.fire('SubagentStop', { agent_id: 'other' });
+  h.fire('SubagentStop', {});
+  assert.deepStrictEqual(h.live(), []);
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent, []);
+});
+
+test('the main session working again re-arms the settle timer; a subagent working does not', () => {
+  const h = timed();
+  h.fire('Stop', { background_tasks: [RUN('r1')] });
+  h.fire('SubagentStop', { agent_id: 'r1' });
+  const first = h.live()[0];
+  h.fire('PreToolUse', { tool_name: 'Bash', agent_id: 'r9' });
+  assert.strictEqual(h.live()[0], first, 'a subagent tool call leaves it alone');
+  h.fire('PreToolUse', { tool_name: 'Bash' });
+  assert.strictEqual(h.live().length, 1);
+  assert.notStrictEqual(h.live()[0], first, 'a main-session tool call re-arms it');
+});
+
+test('a new turn (prompt or Stop) takes over from the backstop', () => {
+  const p = timed();
+  p.fire('Stop', { background_tasks: [RUN('r1')] });
+  p.fire('SubagentStop', { agent_id: 'r1' });
+  p.fire('UserPromptSubmit', { prompt: 'x' });
+  assert.deepStrictEqual(p.live(), []);
+  p.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(p.sent, [], 'you were here: the prompt ended the held wait');
+  const s = timed();
+  s.fire('Stop', { background_tasks: [RUN('r1')] });
+  s.fire('SubagentStop', { agent_id: 'r1' });
+  s.fire('Stop', { background_tasks: [] });
+  assert.deepStrictEqual(s.live(), []);
+  s.fireTimers();
+  assert.deepStrictEqual(s.sent.map(e => e.kind), ['finished']);
+});
+
+test('SessionEnd drops anything held', () => {
+  const h = timed();
+  h.fire('Stop', { background_tasks: [RUN('r1')] });
+  h.fire('SubagentStop', { agent_id: 'r1' });
+  h.fire('SessionEnd', {});
+  assert.deepStrictEqual(h.live(), []);
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent, []);
+});
+
+// --- Dexter F2 (Low) / Miguel 2-3: which tasks hold it back ------------------
+test('any running subagent in a mixed list holds it back', () => {
+  for (const tasks of [
+    [{ id: 'a', type: 'subagent', status: 'completed' }, RUN('b')],
+    [RUN('b'), { id: 's', type: 'shell', status: 'running' }],
+  ]) {
+    const h = timed();
+    h.fire('Stop', { background_tasks: tasks });
+    assert.deepStrictEqual(h.sent, [], JSON.stringify(tasks));
+  }
+});
+
+test('a list with no running subagent does not hold it back', () => {
+  for (const tasks of [
+    [{ id: 's', type: 'shell', status: 'running' }, { id: 'a', type: 'subagent', status: 'completed' }],
+    [{ id: 'x', status: 'running' }],                       // neither a type nor an agent_type
+  ]) {
+    const h = timed();
+    h.fire('Stop', { background_tasks: tasks });
+    assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished'], JSON.stringify(tasks));
+  }
+});
+
+test('an unknown status, or a new kind of agent, holds it back (fails closed, the backstop resolves it)', () => {
+  for (const task of [
+    { id: 'a', type: 'subagent', status: 'pending' },
+    { id: 'a', type: 'remote_agent', status: 'running', agent_type: 'x' },
+  ]) {
+    const h = timed();
+    h.fire('Stop', { background_tasks: [task] });
+    assert.deepStrictEqual(h.sent, [], JSON.stringify(task));
+    h.fire('SubagentStop', { agent_id: 'a' });
+    h.fireTimers();
+    assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished'], JSON.stringify(task));
+  }
+});
+
+test('the terminal statuses do not hold it back', () => {
+  for (const status of ['completed', 'failed', 'killed', 'cancelled', 'stopped', 'error']) {
+    const h = timed();
+    h.fire('Stop', { background_tasks: [{ id: 'a', type: 'subagent', status }] });
+    assert.deepStrictEqual(h.sent.map(e => e.kind), ['finished'], status);
   }
 });
