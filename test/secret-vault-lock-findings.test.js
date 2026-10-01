@@ -198,9 +198,11 @@ test('melt destroys the ABANDONED TEMP COPIES, not just the vault file', () => {
   // `persist` writes a temp and renames it. When all five renames fail (the
   // Windows EPERM case measured against this very file on 2026-09-18) the
   // cleanup unlink is best-effort and, by its own comment, most likely to fail
-  // under exactly the condition that caused it. What is left behind is the WHOLE
-  // vault: every wrapped ciphertext, plus every label and note IN CLEARTEXT,
-  // since only `secret` is ever encrypted.
+  // under exactly the condition that caused it. What is left behind is the
+  // WHOLE vault: every wrapped ciphertext, UPDATED FOR ITEM 4 -- and, once a
+  // key exists, every wrapped label and note alongside it, not in cleartext
+  // any more. Either way it is melt's job to destroy the copy too, not only
+  // the file it points at.
   //
   // The old test asserted only on `readFileSync(file)` -- the one file
   // guaranteed clean, and none of the copies that are not.
@@ -210,11 +212,17 @@ test('melt destroys the ABANDONED TEMP COPIES, not just the vault file', () => {
   v0.add({ label: 'client-x prod database', secret: 'PLAINTEXT-MARKER', shared: true });
   v0.setKey(KEY);
 
+  // FORMAT 2 / item 4: the label is SEALED the moment a key exists, so the
+  // orphan below no longer holds it in cleartext -- it holds the WRAPPED
+  // label, which is exactly as sensitive-looking as the wrapped secret this
+  // test already checks for, and just as much melt's job to destroy.
+  const wrappedLabel = JSON.parse(fs.readFileSync(file, 'utf8')).entries[0].label;
+
   // Exactly what a failed rename leaves behind.
   const orphan = path.join(dir, `${TEMP_PREFIX}9999-1700000000000${TEMP_SUFFIX}`);
   fs.copyFileSync(file, orphan);
-  assert.ok(fs.readFileSync(orphan, 'utf8').includes('client-x prod database'),
-    'precondition: the orphan really does hold the label in cleartext');
+  assert.ok(fs.readFileSync(orphan, 'utf8').includes(wrappedLabel),
+    'precondition: the orphan really does hold the (now-sealed) label');
 
   const v = open(file);
   assert.strictEqual(v.lockState().locked, true, 'precondition: locked out');
@@ -225,7 +233,7 @@ test('melt destroys the ABANDONED TEMP COPIES, not just the vault file', () => {
   // THE ASSERTION THAT MATTERS: scan the directory, not the one file.
   for (const name of fs.readdirSync(dir)) {
     const body = fs.readFileSync(path.join(dir, name), 'utf8');
-    assert.ok(!body.includes('client-x prod database'),
+    assert.ok(!body.includes(wrappedLabel),
       `${name} still holds the label after a melt that promised no recovery`);
     assert.ok(!body.includes('PLAINTEXT-MARKER'), `${name} still holds the ciphertext`);
   }
@@ -506,6 +514,12 @@ test('a vault predating recorded parameters still opens, on the legacy defaults'
   // test failed. Worth keeping as a comment: the fixture was wrong, not the code.
   delete j.lock.scrypt;
   delete j.lock.fp;
+  // FORMAT 2, item 5: a build old enough to predate `scrypt` and `fp` predates
+  // the `format` field just as much, and `persistLocked` now stamps `format: 2`
+  // unconditionally on every write -- including the `legacy.setKey(KEY)` above.
+  // Left at 2, `load()`'s format-2-requires-`fp` check (`lockMissingChecksum`)
+  // would read this fixture as damage instead of the legacy vault it simulates.
+  j.format = 1;
   writeVault(file, j);
 
   const v = createVault({ file, crypto: fakeCrypto(), scrypt: SCRYPT });

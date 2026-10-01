@@ -103,30 +103,36 @@ test('while locked, the API returns nothing -- not even the labels', () => {
   assert.strictEqual(v.get(e.id, ANY), null);
 });
 
-test('the cleartext label limit is DOCUMENTED, since it is not yet fixed', () => {
-  // A deliberately uncomfortable test. It asserts the CURRENT, wrong-ish
-  // behaviour -- and it exists so that the day someone wraps labels, this fails
-  // and points them at the header paragraph that needs deleting.
+test('the cleartext label limit is FIXED: with a key, the file holds no label or note', () => {
+  // The inverse of what this test used to assert. It used to pin the CURRENT,
+  // wrong-ish behaviour on purpose -- labels and notes readable straight out of
+  // `secrets.enc` in Notepad -- so that the day someone wrapped them, this test
+  // would go red and point at the header paragraph that needed deleting.
   //
-  // Better than a TODO: a TODO cannot tell you when it stopped being true.
+  // That day is this branch. FORMAT 2 / item 4: whenever the vault holds a key,
+  // `label` and `note` are wrapped exactly like `secret`. Better than a TODO
+  // going the other way too: a TODO cannot tell you when it stopped being true,
+  // but a test that flips its own assertion can prove the day it happened.
   const file = tmp();
   const v0 = open(file);
   v0.add({ label: 'client-x prod db', secret: 's', note: 'renewal in March', shared: true });
   v0.setKey(KEY);
 
   const raw = fs.readFileSync(file, 'utf8');
-  assert.ok(raw.includes('client-x prod db'),
-    'if this fails, labels are now encrypted -- delete the B2(a) limit from '
-    + 'secret-vault.js\'s header and rename this test');
-  assert.ok(raw.includes('renewal in March'), 'same for notes');
+  assert.ok(!raw.includes('client-x prod db'),
+    'the label must not be recoverable from the file once a key exists');
+  assert.ok(!raw.includes('renewal in March'), 'same for the note');
 
-  // And the part that IS guaranteed: the value never appears.
+  // And the part that was ALREADY guaranteed, still true: the value never
+  // appears either.
   assert.ok(!raw.includes('"s"') || !raw.includes('secret":"s"'),
     'the VALUE must not be recoverable from the file');
 
   const header = fs.readFileSync(path.join(__dirname, '..', 'app', 'secret-vault.js'), 'utf8');
-  assert.match(header, /A SECOND LIMIT, AND THE LOCK DOES NOT CLOSE IT/,
-    'the limit must be stated in the module, not only known here');
+  assert.doesNotMatch(header, /A SECOND LIMIT, AND THE LOCK DOES NOT CLOSE IT/,
+    'the limit is fixed, so the module must no longer claim it as a limit');
+  assert.match(header, /the lock hides the list too/i,
+    'and must say what replaced it');
 });
 
 test('the ciphertext on disk is unreadable without the key', () => {
