@@ -10,6 +10,7 @@
  * third way out: end the holder, so this window can take the lock.
  *
  *   stopHolder({ lockPath, shown }, deps) -> { outcome, text, how, reason }
+ *   stopHost({ row }, deps)                -> the same, for a ▾ list row (no lock)
  *
  *   'stopped'     the holder ended, its claude too
  *   'gone'        it had already ended (dead pid, or the pid reused)
@@ -161,6 +162,25 @@ async function stopHolder({ lockPath, shown } = {}, deps = {}) {
   if (seen.gone) return result('gone');
   const lock = seen.parsed;
   if (!lock || !validPid(lock.pid) || !sameHolder(lock, shown)) return result('changed');
+  return stopProven(lock, deps);
+}
+
+/**
+ * *Stop* from the strip's ▾ list (Windowless sessions PR 2): a row of
+ * host/background-hosts.js, which may hold no lock at all (a host serving a
+ * non-repo folder). Proven the same way, against the OS start time the list
+ * read for it, and stopped by the same rules. Its claude pid isn't known
+ * without a lock; a stop or a tree kill ends it with its host.
+ */
+async function stopHost({ row } = {}, deps = {}) {
+  if (!row || !validPid(row.pid)) return result('unproven');
+  return stopProven({
+    pid: row.pid, processStartedAt: row.processStartedAt, port: row.port, install: row.install, claudePid: null,
+  }, deps);
+}
+
+// `lock` is the holder: { pid, processStartedAt, port, install, claudePid }.
+async function stopProven(lock, deps) {
   // Never this host or the window that started it (Miguel S1): a lock naming
   // either is not a holder to end, whatever else it says.
   const self = Number.isInteger(deps.selfPid) ? deps.selfPid : process.pid;
@@ -192,4 +212,4 @@ async function stopHolder({ lockPath, shown } = {}, deps = {}) {
   return stopUnasked(lock, deps, { reason: `stop-if-idle: ${error}`, asked: true });
 }
 
-module.exports = { stopHolder, WAIT_MS, POLL_MS, TEXT };
+module.exports = { stopHolder, stopHost, WAIT_MS, POLL_MS, TEXT };
