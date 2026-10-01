@@ -1565,3 +1565,12 @@ test('PROPERTY: a poll with no dev keeps every tab, whatever git lists', async (
       return noStop && JSON.stringify(labels(h)) === JSON.stringify(before);
     }), { numRuns: 20 });
 });
+
+test('shortcutFor: Ctrl+Shift+F (either case) is focus mode; plain Ctrl+F and Alt stay the terminal\'s', () => {
+  // Layout pass L1, #1. Main's, so it works from any tab view and never reaches the pty.
+  assert.strictEqual(shortcutFor(kd('F', { control: true, shift: true })), 'focus-mode');
+  assert.strictEqual(shortcutFor(kd('f', { control: true, shift: true })), 'focus-mode');
+  assert.strictEqual(shortcutFor(kd('f', { control: true })), null);
+  assert.strictEqual(shortcutFor(kd('f', { control: true, shift: true, alt: true })), null);
+  assert.strictEqual(shortcutFor({ ...kd('f', { control: true, shift: true }), type: 'keyUp' }), null);
+});

@@ -150,4 +150,26 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(enabled === true); } catch (err) { console.error('[preload] avatar-images listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('avatar-images')),
   },
+  // Focus mode (layout pass L1, #1): only the terminal shows. Main owns it (the
+  // tab view has to cover the strip); the page hides its header and zones when
+  // told through onChange, which replaces its one listener.
+  focus: {
+    toggle: () => ipcRenderer.send('focus:toggle'),
+    set: (on) => ipcRenderer.send('focus:set', on === true),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('focus-mode'), ipcRenderer.on('focus-mode',
+      (_e, on) => {
+        try { fn(on === true); } catch (err) { console.error('[preload] focus-mode listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('focus-mode')),
+  },
+  // The global dock layout (layout pass L1) -- see app/layout-bridge.js. `get`
+  // answers null when nothing is saved yet (the page migrates); `onChange`
+  // replaces its one listener, like onImagesEnabled.
+  layout: {
+    get: () => ipcRenderer.invoke('layout:get'),
+    set: (layout) => ipcRenderer.invoke('layout:set', layout),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('layout-global'), ipcRenderer.on('layout-global',
+      (_e, layout) => {
+        try { fn(layout); } catch (err) { console.error('[preload] layout-global listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('layout-global')),
+  },
 });

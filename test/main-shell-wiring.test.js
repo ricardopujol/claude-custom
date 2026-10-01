@@ -201,7 +201,8 @@ test('the notification click goes to the tab that raised it', () => {
 test('each tab view is shown only when selected and laid out below the strip', () => {
   assert.match(MAIN, /const STRIP_HEIGHT = 34/);
   assert.match(MAIN, /tab\.view\.setVisible\(tab\.key === snapshot\.selectedKey\)/);
-  assert.match(MAIN, /y: STRIP_HEIGHT/);
+  // Below the strip -- unless focus mode lifts it over the strip (layout pass L1, #1).
+  assert.match(MAIN, /const top = focusMode \? 0 : STRIP_HEIGHT;/);
   assert.match(MAIN, /for \(const ev of \['resize'/);
 });
 
@@ -327,4 +328,66 @@ test('Miguel #4: the tab:raise handler keeps its own comment', () => {
   const raw = before.slice(0, before.indexOf("ipcMain.on('tab:raise'"));
   assert.ok(at !== -1);
   assert.match(raw.slice(-300), /The receiving side of a host `raise`/);
+});
+
+// --- layout pass L1 ----------------------------------------------------------
+
+test('L1: the global layout is served to this window\'s tab views and pushed to all of them', () => {
+  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY \} = require\('\.\/layout-bridge'\);/);
+  const at = MAIN.indexOf('registerLayoutHandlers({');
+  assert.ok(at !== -1, 'registerLayoutHandlers is called');
+  const call = callText(MAIN, at);
+  assert.match(call, /isSender: isTabView/);
+  assert.match(call, /send: pushToViews/);
+  assert.match(call, /store: uiStore/);
+  assert.match(call, /sync: layoutSync/);
+});
+
+test('L1: another project window\'s layout change reaches this one through the store file', () => {
+  const at = MAIN.indexOf('watchLayout({');
+  assert.ok(at !== -1, 'watchLayout is started');
+  const call = callText(MAIN, at);
+  assert.match(call, /sync: layoutSync/);
+  assert.match(call, /send: pushToViews/);
+  assert.match(call, /`\$\{LAYOUT_KEY\}\.json`/);
+});
+
+test('L1: the preload exposes the layout bridge with one listener at a time', () => {
+  const PRELOAD = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'));
+  assert.match(PRELOAD, /get: \(\) => ipcRenderer\.invoke\('layout:get'\)/);
+  assert.match(PRELOAD, /set: \(layout\) => ipcRenderer\.invoke\('layout:set', layout\)/);
+  assert.match(PRELOAD, /ipcRenderer\.removeAllListeners\('layout-global'\), ipcRenderer\.on\('layout-global'/);
+});
+
+test('L1 #1: focus mode lifts the tab view over the strip, and every view is told', () => {
+  assert.match(MAIN, /\nlet focusMode = false;/);
+  const lv = MAIN.slice(MAIN.indexOf('function layoutView('), MAIN.indexOf('\n}', MAIN.indexOf('function layoutView(')));
+  assert.match(lv, /const top = focusMode \? 0 : STRIP_HEIGHT;/);
+  assert.match(lv, /y: top,/);
+  const set = MAIN.slice(MAIN.indexOf('function setFocusMode('), MAIN.indexOf('\n}', MAIN.indexOf('function setFocusMode(')));
+  assert.match(set, /forEachView\(layoutView\)/);
+  assert.match(set, /send\('focus-mode', focusMode\)/);
+});
+
+test('L1 #1: Ctrl+Shift+F toggles it, and only a tab view may ask through IPC', () => {
+  assert.match(MAIN, /action === 'focus-mode'\) setFocusMode\(!focusMode\)/);
+  for (const name of ['focus:toggle', 'focus:set']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, name);
+    assert.match(callText(MAIN, c.at), /if \(!isTabView\(e\.sender\)/, name);
+  }
+  assert.match(callText(MAIN, channels.find(x => x.name === 'focus:set').at), /typeof on !== 'boolean'/);
+});
+
+test('L1 #1: a tab view that loads while focus mode is on hears it too', () => {
+  const at = MAIN.indexOf("wc.on('did-finish-load', () => {");
+  assert.ok(at !== -1);
+  assert.match(MAIN.slice(at, MAIN.indexOf('\n  });', at)), /if \(focusMode\) wc\.send\('focus-mode', true\);/);
+});
+
+test('L1 S7: the window keeps room for the terminal and two side zones', () => {
+  const at = MAIN.indexOf('win = new BrowserWindow({');
+  const opts = MAIN.slice(at, MAIN.indexOf('});', at));
+  assert.match(opts, /minWidth: 640,/);
+  assert.match(opts, /minHeight: 480,/);
 });

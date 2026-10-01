@@ -60,6 +60,7 @@ const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
         CONTROL_TYPES } = require('./control');
+const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
@@ -1749,6 +1750,11 @@ async function refreshBranchHealth() {
 // id, and so is the lock holder's (the blocked view already names it).
 let terminalSessions = null;
 let terminalsRunning = false;
+
+// Layout pass L1: this tab's own layout (*Just this tab*), or null to follow
+// the global one. Memory only, on purpose: it survives the window reattaching
+// and dies with the session (host/layout-override.js).
+let layoutOverride = null;
 async function refreshTerminals() {
   if (terminalsRunning) return;
   terminalsRunning = true;
@@ -1922,6 +1928,8 @@ wss.on('connection', (ws) => {
     // The tool belt: what is equipped on which agent type, plus the catalogue
     // the renderer draws from. Read off disk here, so a reattach is never stale.
     loadout: loadoutControl.payload(),
+    // Layout pass L1: this tab's own layout, or null for the global one.
+    layoutOverride,
     vault: vaultPayload(),
     health: healthState,
     agentStats: lastAgentStats,
@@ -2120,6 +2128,19 @@ wss.on('connection', (ws) => {
       // caller's try/catch if the pty is not yet ready -- an uncaught
       // exception that kills the host and the session with it.
       if (typeof msg.data === 'string' && term) term.write(msg.data);
+      return;
+    }
+    if (msg.type === 'layout-override') {
+      // *Just this tab* / *Reset to global* (layout pass L1). Broadcast, not
+      // just stored: two windows can attach to one host, and the one that
+      // didn't make the change must not keep drawing the old layout.
+      const r = acceptOverride(msg.layout);
+      if (!r.ok) {
+        console.log('[host] rejected layout-override');
+        return;
+      }
+      layoutOverride = r.value;
+      broadcastControl({ type: 'layout-override', layout: layoutOverride });
       return;
     }
     if (msg.type === 'lock-override') {
