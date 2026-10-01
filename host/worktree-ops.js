@@ -45,6 +45,11 @@ const LINE_MAX = 200;
 // answer is the last line), and the one line shown in the strip is capped.
 const STREAM_KEEP = 64 * 1024;
 const LINE_SHOWN_MAX = 600;
+// Zero-width and bidi controls (U+200B-200F, 202A-202E, 2060-2069, FEFF).
+// Built from code points, never typed: a literal one in source is invisible,
+// and test/renderer-scope.test.js rejects it.
+const INVISIBLE = new RegExp(`[${[[0x200b, 0x200f], [0x202a, 0x202e], [0x2060, 0x2069], [0xfeff, 0xfeff]]
+  .map(([a, z]) => `${String.fromCharCode(a)}-${String.fromCharCode(z)}`).join('')}]`);
 
 const message = (err) => (err && err.message) || String(err);
 
@@ -76,7 +81,7 @@ function checkBranch(branch) {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f"]/.test(b)) return 'A branch name can\'t contain quotes or control characters.';
   // Miguel G3: zero-width and bidi controls make a name read as something else.
-  if (/[​-‏‪-‮⁠-⁩﻿]/.test(b)) return 'A branch name can\'t contain invisible characters.';
+  if (INVISIBLE.test(b)) return "A branch name can't contain invisible characters.";
   return null;
 }
 
