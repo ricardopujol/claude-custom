@@ -240,7 +240,10 @@ async function main() {
     const p = m && m.panels && m.panels[id];
     if (!p) { short.push(`${id}: not showing`); continue; }
     const gap = Math.round(p.holderBottom - p.contentBottom);
-    if (gap > 2) short.push(`${id}: ${gap}px short`);
+    if (gap > 2) {
+      short.push(`${id}: ${gap}px short (lowest: #${p.last}, panel bottom ${Math.round(p.panelBottom)}, scrolled ${p.scrollTop})`);
+      await command(app, { cmd: 'screenshot', file: path.join(shots, `3-short-${id}.png`) });
+    }
   }
   check('3 (#9): every panel\'s content reaches the bottom of its zone', short.length === 0, short.join('; '));
 

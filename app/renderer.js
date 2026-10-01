@@ -776,9 +776,15 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const out = {};
         for (const p of document.querySelectorAll('.zone-panels > .panel.on')) {
           const kids = [...p.children].filter(c => getComputedStyle(c).display !== 'none');
+          // The panel's own bottom padding is spacing, not blank space.
+          const pad = parseFloat(getComputedStyle(p).paddingBottom) || 0;
           out[p.dataset.panel] = {
-            holderBottom: p.parentElement.getBoundingClientRect().bottom,
+            holderBottom: p.parentElement.getBoundingClientRect().bottom - pad,
             contentBottom: Math.max(...kids.map(c => c.getBoundingClientRect().bottom)),
+            // Diagnostics for a FAIL: who ends lowest, and the panel itself.
+            last: (kids.reduce((a, c) => (!a || c.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? c : a), null) || {}).id || null,
+            panelBottom: p.getBoundingClientRect().bottom,
+            scrollTop: p.scrollTop,
           };
         }
         return JSON.stringify({ ok: true, panels: out });
