@@ -422,8 +422,10 @@ function applySelection(snapshot) {
   const sel = selectedView();
   const live = sel && !sel.webContents.isDestroyed() ? sel : null;
   // PR 3: the branch form is in the strip page. It takes the keyboard when it
-  // opens, and keeps it until it closes.
-  const stripBusy = !!snapshot.create;
+  // opens (and again when a creation fails), and keeps it while it takes
+  // typing -- not while Contract A runs, so Ctrl+Tab meanwhile reaches a view
+  // (PR #80 Dexter F7).
+  const stripBusy = !!snapshot.create && snapshot.create.phase !== 'running';
   if (stripBusy && !stripWasBusy && win && !win.isDestroyed()) win.webContents.focus();
   stripWasBusy = stripBusy;
   const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live, stripBusy });

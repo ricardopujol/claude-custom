@@ -70,7 +70,11 @@ function createQueue() {
  */
 async function captureListening(tabs, probe) {
   const out = {};
-  const started = [...tabs].filter(t => t.started === true && t.starting !== true && Number.isInteger(t.port));
+  // A tab whose port already refused has no host of its own any more: whatever
+  // answers on that port later is ANOTHER tab's host and must never vouch for
+  // it (PR #80 Dexter F2). It is watched again once it starts again.
+  const started = [...tabs].filter(t => t.started === true && t.starting !== true && t.ended !== true
+    && Number.isInteger(t.port));
   const answers = await Promise.all(started.map(async (t) => {
     try { return await probe(t.port); } catch { return 'unknown'; }
   }));
@@ -265,7 +269,7 @@ function createShell(deps) {
       key: keyOf(entry.path), cwd: entry.path, branch: entry.branch === undefined ? null : entry.branch,
       isDev: entry.isDev === true, port: null, token: null, view: null,
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
-      attachPromise: null, unconfirmed: null,
+      attachPromise: null, unconfirmed: null, ended: false,
     };
   }
 
@@ -275,6 +279,7 @@ function createShell(deps) {
     tab.token = token;
     tab.view = views.create(tab);
     tab.started = true;
+    tab.ended = false;          // a host of its own again: watched again (Dexter F2)
     // A host given up on earlier, if it ever binds, meets this one's lock and
     // exits on its own (session-gate idleExit): nothing left to warn about.
     tab.unconfirmed = null;
@@ -413,7 +418,9 @@ function createShell(deps) {
         if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
         t.view = null;
         tabs.delete(key);
-        setups.delete(key);
+        // A setup still running keeps holding the folder's session, so a
+        // Reopen meanwhile can't start it early (PR #80 Dexter F1).
+        if (!(setups.has(key) && setups.get(key).running === true)) setups.delete(key);
         createdWarnings.delete(key);
         if (key === selectedKey) {
           selectedKey = tabModel.afterClose(before, key, selectedKey);
@@ -483,6 +490,11 @@ function createShell(deps) {
       // starts: the markers first, then the hosts (see observeWorktrees).
       const seen = observeWorktrees(text, container, git.marker);
       const listening = await captureListening(tabs.values(), hosts.probe);
+      // Refused once: that session ended. Its port is free for another tab.
+      for (const [k, v] of Object.entries(listening)) {
+        const t = tabs.get(k);
+        if (v === false && t) t.ended = true;
+      }
       if (seen) reconcileWith({ ...seen, listening });
       else publish();
     } finally {
@@ -510,6 +522,8 @@ function createShell(deps) {
   async function closeTab(key) {
     const tab = tabByKey(key);
     if (!tab || tab.isDev || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
+    if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
     try { yes = (await ui.confirmClose(tab)) === true; } catch { yes = false; }
     if (!yes) return { ok: false, cancelled: true };
@@ -627,8 +641,10 @@ function createShell(deps) {
       } catch (err) {
         s = { ok: false, error: errorText(err), log: null };
       }
-      // A tab closed by hand meanwhile keeps no error for a later reopen.
-      if (s && s.ok === true || !tabs.has(key)) setups.delete(key);
+      // A tab closed by hand meanwhile keeps no error for a later reopen. One
+      // git simply hasn't listed yet keeps it (PR #80 Dexter F3): "no tab" is
+      // not "closed".
+      if ((s && s.ok === true) || state.dismissed.includes(key)) setups.delete(key);
       else setups.set(key, { running: false, line: null, error: (s && s.error) || 'setup failed', log: (s && s.log) || null });
       log(`[shell] setup ${key}: ${s && s.ok === true ? 'done' : `failed: ${s && s.error}`}`);
       if (destroyed) return { ok: true, path: made.path };

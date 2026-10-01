@@ -291,5 +291,7 @@ test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer tha
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
+  // Dexter F7 (PR #80): only while the field takes typing -- not during Contract A's fetch.
+  assert.match(MAIN, /const stripBusy = !!snapshot\.create && snapshot\.create\.phase !== 'running';/);
   assert.match(MAIN, /create: snapshot\.create/);
 });

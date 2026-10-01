@@ -1109,6 +1109,96 @@ test('one creation at a time; while it runs, a tab for that branch selected by h
   assert.ok(h.shell.tabByKey(key('feat-demo')).started);
 });
 
+// --- PR #80 Dexter --------------------------------------------------------------
+
+test('Dexter F1: closed and reopened while its setup runs, the tab still waits for setup', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  let release;
+  h.setupHold = new Promise(r => { release = r; });
+  const done = h.shell.createWorktree('feat/demo');
+  for (let i = 0; i < 4; i++) await flush();
+  await h.shell.closeTab(key('feat-demo'));
+  await h.shell.reopen();
+  for (let i = 0; i < 4; i++) await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-demo'));
+  assert.ok(!h.spawns.some(s => s.key === key('feat-demo')), 'no session while npm ci still runs');
+  release();
+  await done;
+  await flush();
+  assert.ok(h.shell.tabByKey(key('feat-demo')).started, 'and it starts once setup ends');
+});
+
+test('Dexter F2: a host that later takes a dead tab’s port never vouches for that tab', async () => {
+  const h = await startedA();                       // feat-a on 7701
+  delete h.running[7701];                           // A /exits, NOT merged
+  await h.shell.poll();
+  await flush();
+  // B starts and takes the freed 7701.
+  await h.shell.select(key('feat-b'));
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-b')).port, 7701, 'the sequence needs B on A’s old port');
+  h.markers[key('feat-a')] = 'feat/a';              // /merged lands for A
+  await h.shell.poll();                             // 7701 answers -- for B
+  await flush();
+  delete h.running[7701];                           // B exits
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(removes(h), [], 'A ended before its merge: never removed automatically');
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'finishing');
+});
+
+test('Dexter F2: a tab started again after its session ended is watched again', async () => {
+  const h = await startedA();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  h.shell.tabByKey(key('feat-a')).started = false;  // what a restart path resets...
+  await h.shell.select(key('feat-a'));              // ...and starts again
+  await flush();
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  await flush();
+  delete h.running[h.shell.tabByKey(key('feat-a')).port];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(removes(h).length, 1);
+});
+
+test('Dexter F3: a setup that fails before git lists the worktree keeps its error for the tab', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  h.createResult = (branch) => ({ ok: true, path: wt('feat-late'), branch, warning: null });   // not listed yet
+  h.setupResult = { ok: false, error: "copy: '.env' failed: missing in dev", log: null };
+  await h.shell.createWorktree('feat/late');
+  h.addWorktree('feat-late', 'feat/late');
+  await h.shell.poll();
+  await flush();
+  const e = h.shell.model().find(x => x.key === key('feat-late'));
+  assert.ok(e, 'listed');
+  assert.strictEqual(e.phaseText, "Setup failed: copy: '.env' failed: missing in dev");
+});
+
+test('Dexter F4: a tab whose folder is being removed cannot be closed (or reopened into it)', async () => {
+  const h = await startedA();
+  let release;
+  h.removeResult = () => new Promise(r => { release = r; });
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'removing');
+  assert.strictEqual(h.shell.model().find(e => e.key === key('feat-a')).closable, false);
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, []);
+  release({ ok: true, already: false });
+  await flush();
+});
+
 test('Miguel G1: a new tab git lists late does not steal the selection from one picked meanwhile', async () => {
   const h = harness({ running: { 7700: wt('dev') } });
   h.available = { create: true, setup: false, remove: true };

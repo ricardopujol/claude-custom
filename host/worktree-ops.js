@@ -182,8 +182,14 @@ function unrun(name, r) {
 
 function parseCreate(run, container) {
   const r = run || {};
+  // PR #80 Dexter F6: when the answer is lost, the worktree may still appear
+  // as a tab, but nothing set it up. Say so, rather than start it silently bare.
   if (r.timedOut) {
-    return { ok: false, error: `${SCRIPTS.create} didn't finish in time (it may still finish; a worktree it makes appears as a tab).` };
+    return {
+      ok: false,
+      error: `${SCRIPTS.create} didn't finish in time (it may still finish; a worktree it makes appears as a tab, ` +
+        `but ${SCRIPTS.setup} did not run for it).`,
+    };
   }
   if (r.spawnError || r.code !== 0) return { ok: false, error: unrun(SCRIPTS.create, r) };
   const j = jsonLine(r.stdout);
@@ -194,7 +200,7 @@ function parseCreate(run, container) {
   return {
     ok: false,
     error: `${SCRIPTS.create} finished, but its answer couldn't be read (${shown || 'no output'}). ` +
-      'If the worktree was made, it appears as a tab.',
+      `If the worktree was made, it appears as a tab, but ${SCRIPTS.setup} did not run for it.`,
   };
 }
 

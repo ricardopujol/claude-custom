@@ -82,7 +82,9 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       isDev: t.isDev === true,
       selected: i === selIdx,
       started: !!rt && rt.started === true,
-      closable: t.isDev !== true && !single,
+      // Not while its folder is being removed: a reopen could spawn a host
+      // into a folder `git worktree remove` is deleting (PR #80 Dexter F4).
+      closable: t.isDev !== true && !single && t.phase !== 'removing',
       working: !!st && st.working === true,
       needsInput: !!st && st.needsInput === true,
       lockGlyph: st ? glyphFor(st.lock) : null,

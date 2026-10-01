@@ -240,11 +240,14 @@ test('parseCreate: exit 0 with an unreadable answer is not success (the poll fin
     const r = ops.parseCreate(run({ stdout }), BOX);
     assert.strictEqual(r.ok, false, stdout);
     assert.match(r.error, /couldn't be read/, stdout);
+    // Dexter F6 (PR #80): the worktree may exist, but nothing set it up.
+    assert.match(r.error, /setup-worktree\.ps1 did not run/, stdout);
   }
 });
 
 test('parseCreate: a timeout or spawn failure has its own text', () => {
   assert.match(ops.parseCreate(run({ code: null, timedOut: true }), BOX).error, /didn't finish in time/);
+  assert.match(ops.parseCreate(run({ code: null, timedOut: true }), BOX).error, /setup-worktree\.ps1 did not run/, 'Dexter F6');
   assert.match(ops.parseCreate(run({ code: null, spawnError: 'ENOENT' }), BOX).error, /couldn't run new-worktree\.ps1: ENOENT/);
 });
 

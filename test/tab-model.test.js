@@ -22,6 +22,10 @@ test('a null or non-string branch labels with the folder name', () => {
   assert.strictEqual(strip([DEV, { ...A, path: '/p/feat-a', branch: null }])[1].label, 'feat-a');
 });
 
+test('Dexter F4 (PR #80): a tab whose folder is being removed is not closable', () => {
+  assert.deepStrictEqual(strip([DEV, { ...A, phase: 'removing' }, B]).map(e => e.closable), [false, false, true]);
+});
+
 test('closable: never dev, never a lone tab', () => {
   assert.deepStrictEqual(strip([DEV, A, B]).map(e => e.closable), [false, true, true]);
   assert.deepStrictEqual(strip([DEV]).map(e => e.closable), [false]);
