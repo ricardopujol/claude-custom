@@ -52,4 +52,43 @@ async function windowCount(pid, port, { exec = defaultExec, platform = process.p
   return counts.length === 1 ? Number(counts[0][1]) : null;
 }
 
-module.exports = { windowCount };
+/**
+ * The same count for a whole list, in ONE powershell.exe (each costs ~0.5-1.5 s):
+ *
+ *   windowCounts([{pid, port}]) -> Map pid -> integer >= 0, or null when it couldn't tell
+ *
+ * Keyed by pid: a host listens on one port. An invalid target gets no entry.
+ * The query lists every established row and the filtering happens here, so
+ * nothing from a target reaches the script -- and no per-port filter can throw
+ * "not found" for one port and lose the rows of the others.
+ */
+async function windowCounts(targets, { exec = defaultExec, platform = process.platform } = {}) {
+  if (platform !== 'win32') return null;
+  const wanted = (Array.isArray(targets) ? targets : [])
+    .filter(t => t && validPid(t.pid) && validPort(t.port));
+  const counts = new Map(wanted.map(t => [t.pid, 0]));
+  if (wanted.length === 0) return counts;
+  const script = "$ErrorActionPreference='Stop'; try { " +
+    'Get-NetTCPConnection -State Established | ForEach-Object { "ROW $($_.LocalPort) $($_.OwningProcess)" }; ' +
+    "'OK' } catch { if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound*') { 'OK' } else { 'FAILED' } }; 'END'";
+
+  let out;
+  try {
+    out = await exec(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script]);
+  } catch {
+    return null;
+  }
+  const lines = String(out).replace(BOM_AT_START, '').split(/\r?\n/).map(l => l.trim());
+  if (!lines.includes('END') || lines.includes('FAILED')) return null;
+  if (lines.filter(l => l === 'OK').length !== 1) return null;
+  const portOf = new Map(wanted.map(t => [t.pid, t.port]));
+  for (const line of lines) {
+    const m = /^ROW (\d+) (\d+)$/.exec(line);
+    if (!m) continue;
+    const pid = Number(m[2]);
+    if (portOf.get(pid) === Number(m[1])) counts.set(pid, counts.get(pid) + 1);
+  }
+  return counts;
+}
+
+module.exports = { windowCount, windowCounts };
