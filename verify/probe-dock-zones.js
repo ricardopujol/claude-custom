@@ -23,6 +23,9 @@
  *   6  Just this tab: one tab gets its own layout, the other keeps the global
  *      one; the own layout survives the window closing and reattaching (the
  *      host kept it); Make this global hands it to the other tab
+ *   8  PR #82 review: a real drop ends the drag though its source is gone; with
+ *      a secret half-typed, no redraw takes the focus out of the field
+ *   7  focus mode by key, and Ctrl+B out of it
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills;
  * ELECTRON_RUN_AS_NODE is deleted; registry, portraits, uploads and user data
@@ -322,6 +325,21 @@ async function main() {
   check('6: Make this global: develop takes the layout feat/a had', !!follows);
   a = await onTab('feat/a');
   check('6: ...and feat/a follows the global one again', !!a && !a.own);
+
+  // 8 (PR #82 review) ------------------------------------------------------------
+  const before8 = await viewState(app);
+  const fogAt = Object.keys(before8.zones).find(z => before8.zones[z].tabs.includes('fog'));
+  const target8 = fogAt === 'left' ? 'top' : 'left';
+  const dd = await view(app, 'dragDrop', { id: 'fog', target: target8 });
+  const afterDrop = await viewState(app);
+  check('8 (Dexter F1): a real drop moves the module and ENDS the drag, though its source button is gone',
+    dd.ok && dd.during && dd.sourceGone && dd.dragging === null && !dd.stripsUp && afterDrop.zones[target8].tabs.includes('fog'),
+    JSON.stringify(dd));
+  if (!(await viewState(app)).shown.includes('vault')) await view(app, 'select', { id: 'vault' });
+  await waitFor(async () => ((await viewState(app)).shown.includes('vault') ? true : null), 3000);
+  const sr = await view(app, 'secretRedraw');
+  check('8 (Dexter F2 / Miguel B1): with a secret half-typed, no redraw takes the focus out of the field',
+    sr.ok && sr.focusable && sr.after.every(id => id === 'vault-secret'), JSON.stringify(sr));
 
   // 7 -----------------------------------------------------------------------------
   const pre = await viewState(app);

@@ -968,8 +968,11 @@
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;
-      position: fixed; top: 0; right: 0; width: 280px; height: 28px; z-index: 60;
+      position: fixed; top: 0; right: 0; width: 280px; height: 8px; z-index: 60;
     }
+    /* 8 px: inside the terminal's own top padding, so the hidden hover area
+       covers no text (PR #82 Miguel S1); it grows to hold the button once hovered. */
+    body.focus-mode #focus-hot:hover { height: 32px; }
     #focus-exit {
       visibility: hidden; margin: 3px 8px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11px;
       background: var(--chrome); color: var(--text); border: 1px solid var(--accent); border-radius: 4px;

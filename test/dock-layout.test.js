@@ -9,7 +9,7 @@ const assert = require('node:assert');
 
 const {
   ZONES, MIN, RAIL, TERM_MIN, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule, setSize, toggleAll,
-  fitSizes, shapeOf,
+  fitSizes, shapeOf, selectionOf, mergeSelection,
 } = require('../app/dock-layout');
 
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'models', 'projects', 'style'];
@@ -347,4 +347,56 @@ test('found by P4: an absurd stored size is capped, never NaN in the window', ()
   const s = fitSizes(l, { width: 742, height: 320 });
   assert.strictEqual(s.right, 742 - TERM_MIN.width);
   assert.strictEqual(setSize(l, 'left', 1e306).size.left, 10000);
+});
+
+// --- a window's own selection (S3a; PR #82 Dexter F4/F5, Miguel S2) ----------
+
+test('selectionOf keeps what each zone shows, and which zones were collapsed on purpose', () => {
+  const l = selectModule(moveModule(defaultLayout(IDS), 'vault', 'left'), 'vault');   // left collapsed
+  const s = selectionOf(l);
+  assert.deepStrictEqual(s.active, { left: null, right: 'agents', top: null, bottom: null });
+  assert.deepStrictEqual(s.collapsed, { left: true, right: false, top: false, bottom: false });
+  assert.strictEqual(s.restore, null);
+});
+
+test('this window keeps showing its own module when another window\'s layout arrives (Dexter F4)', () => {
+  const mine = selectionOf(defaultLayout(IDS));                     // Agents showing here
+  const theirs = selectModule(moveModule(defaultLayout(IDS), 'fog', 'left'), 'vault');   // Vault there
+  const l = mergeSelection(theirs, mine, IDS);
+  assert.strictEqual(l.active.right, 'agents');
+  assert.strictEqual(l.active.left, 'fog');
+});
+
+test('a zone that was EMPTY here shows the module moved into it, not collapsed (Dexter F5)', () => {
+  const mine = selectionOf(defaultLayout(IDS));                     // left was empty: active null, not collapsed
+  const theirs = moveModule(defaultLayout(IDS), 'fog', 'left');
+  assert.strictEqual(mergeSelection(theirs, mine, IDS).active.left, 'fog');
+});
+
+test('a zone collapsed here on purpose stays collapsed when its modules change', () => {
+  const here = selectModule(moveModule(defaultLayout(IDS), 'vault', 'left'), 'vault');
+  const theirs = moveModule(moveModule(defaultLayout(IDS), 'vault', 'left'), 'fog', 'left');
+  assert.strictEqual(mergeSelection(theirs, selectionOf(here), IDS).active.left, null);
+});
+
+test('a module this window showed that has left its zone falls back to the zone\'s choice, then its first', () => {
+  const mine = selectionOf(selectModule(defaultLayout(IDS), 'models'));
+  const theirs = moveModule(defaultLayout(IDS), 'models', 'top');
+  const l = mergeSelection(theirs, mine, IDS);
+  assert.strictEqual(l.active.top, 'models');
+  assert.strictEqual(l.active.right, 'agents');
+});
+
+test('no selection, or junk, means the placement\'s own choices', () => {
+  const theirs = selectModule(defaultLayout(IDS), 'fog');
+  for (const sel of [null, undefined, 'x', [], { active: 'x', collapsed: 7 }]) {
+    assert.deepStrictEqual(mergeSelection(theirs, sel, IDS).active, theirs.active, JSON.stringify(sel));
+  }
+});
+
+test('the Ctrl+B memory comes from this window, not the other', () => {
+  const mine = selectionOf(toggleAll(defaultLayout(IDS)));
+  const l = mergeSelection(defaultLayout(IDS), mine, IDS);
+  for (const z of ZONES) assert.strictEqual(l.active[z], null, z);
+  assert.strictEqual(toggleAll(l).active.right, 'agents');
 });

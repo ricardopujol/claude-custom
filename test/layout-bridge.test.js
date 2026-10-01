@@ -23,7 +23,8 @@ function fakeStore(seed = {}, states = {}) {
     data,
     read: (name, fallback) => (name in data ? data[name] : fallback),
     update: (name, fallback, fn) => { data[name] = fn(name in data ? data[name] : fallback); return data[name]; },
-    readState: name => states[name] || { status: name in data ? 'ok' : 'missing' },
+    // Shaped like host/store.js readState: the value comes with `ok`.
+    readState: name => states[name] || (name in data ? { status: 'ok', value: data[name] } : { status: 'missing', value: null }),
   };
 }
 const VIEW = {};
@@ -50,9 +51,27 @@ test('a stored value that is not a layout object reads as null', () => {
   assert.strictEqual(readLayout({ read: () => { throw new Error('disk'); } }), null);
 });
 
-test('get answers the stored layout to a tab view', async () => {
+test('get answers the stored layout to a tab view, with the store\'s status', async () => {
   const { call } = setup(fakeStore({ [LAYOUT_KEY]: LAYOUT }));
-  assert.deepStrictEqual(await call(GET_CHANNEL), LAYOUT);
+  assert.deepStrictEqual(await call(GET_CHANNEL), { status: 'ok', layout: LAYOUT });
+});
+
+test('get says MISSING only when there is no file -- the one answer that lets the page migrate', async () => {
+  const { call } = setup(fakeStore());
+  assert.deepStrictEqual(await call(GET_CHANNEL), { status: 'missing', layout: null });
+});
+
+test('PR #82 Dexter F3 / Miguel I1: an unreadable or corrupt file is NOT missing', async () => {
+  // Antivirus holding the file (EBUSY) at launch read as "nothing saved", and
+  // the page's migration then overwrote the user's real global layout.
+  for (const status of ['unreadable', 'corrupt']) {
+    const { call } = setup(fakeStore({ [LAYOUT_KEY]: LAYOUT }, { [LAYOUT_KEY]: { status, value: null } }));
+    assert.deepStrictEqual(await call(GET_CHANNEL), { status, layout: null }, status);
+  }
+  const { call } = setup(fakeStore({ [LAYOUT_KEY]: [1, 2] }));
+  assert.deepStrictEqual(await call(GET_CHANNEL), { status: 'corrupt', layout: null }, 'ok JSON that is not a layout');
+  const throwing = setup({ readState: () => { throw new Error('disk'); }, read: () => { throw new Error('disk'); } });
+  assert.deepStrictEqual(await throwing.call(GET_CHANNEL), { status: 'unreadable', layout: null });
 });
 
 test('a sender that is not one of this window\'s tab views gets nothing and changes nothing', async () => {

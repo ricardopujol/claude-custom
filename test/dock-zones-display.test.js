@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { zonePlan, dragSize, layoutRows, moveTargets } = require('../app/dock-zones-display');
+const { zonePlan, dragSize, layoutRows, moveTargets, renderEffects, afterLayoutGet, overrideOnHello } = require('../app/dock-zones-display');
 const { defaultLayout, moveModule, selectModule, MIN, RAIL } = require('../app/dock-layout');
 const { TABS } = require('../app/side-tabs');
 const { faceSize } = require('../app/roster-width');
@@ -119,4 +119,74 @@ test('the right-click menu offers every zone and Hide, except where the module a
 
 test('an unknown module has nowhere to go', () => {
   assert.deepStrictEqual(moveTargets(defaultLayout(IDS), 'ghost'), []);
+});
+
+// --- what a redraw may do (PR #82 Dexter F2, Miguel B1) ------------------------
+
+const S = (...ids) => new Set(ids);
+
+test('THE REGRESSION: a redraw with the vault still showing never moves the keyboard focus', () => {
+  // A resize, a grip drag, a layout pushed from another window or a hello
+  // redraws. Moving focus to the terminal mid-secret typed the rest of the
+  // secret into the session.
+  const e = renderEffects(S('vault', 'agents'), S('vault', 'agents'));
+  assert.strictEqual(e.focus, null);
+  assert.deepStrictEqual(e.newlyShown, []);
+  assert.strictEqual(e.vaultLeft, false);
+});
+
+test('a redraw that changes nothing the user is looking at leaves focus alone', () => {
+  assert.strictEqual(renderEffects(S('agents'), S('agents')).focus, null);
+  assert.strictEqual(renderEffects(S('agents'), S('agents', 'fog')).focus, null);
+});
+
+test('opening the vault focuses its search; leaving it sends focus back to the terminal', () => {
+  const opened = renderEffects(S('agents'), S('vault'));
+  assert.strictEqual(opened.focus, 'vault');
+  assert.deepStrictEqual(opened.newlyShown, ['vault']);
+  const left = renderEffects(S('vault'), S('agents'));
+  assert.strictEqual(left.focus, 'term');
+  assert.strictEqual(left.vaultLeft, true);
+  assert.deepStrictEqual(left.newlyShown, ['agents']);
+});
+
+// --- reading the stored layout (PR #82 Dexter F3, Miguel I1) -------------------
+
+test('only a MISSING store file means "migrate"; unreadable or corrupt never overwrites it', () => {
+  assert.strictEqual(afterLayoutGet({ status: 'ok', layout: { version: 1 } }), 'use');
+  assert.strictEqual(afterLayoutGet({ status: 'missing', layout: null }), 'migrate');
+  for (const st of ['unreadable', 'corrupt', 'whatever']) {
+    assert.strictEqual(afterLayoutGet({ status: st, layout: null }), 'keep', st);
+  }
+  assert.strictEqual(afterLayoutGet({ status: 'ok', layout: [] }), 'keep', 'ok but not a layout object');
+  for (const bad of [null, undefined, 'x', 7]) assert.strictEqual(afterLayoutGet(bad), 'keep', String(bad));
+});
+
+// --- a tab's own layout changed while the socket was down (Dexter F8) ---------
+
+test('with nothing pending, the host\'s word is applied', () => {
+  assert.deepStrictEqual(overrideOnHello(null, { version: 1 }), { apply: { version: 1 }, resend: false, settled: false });
+  assert.deepStrictEqual(overrideOnHello(null, null), { apply: null, resend: false, settled: false });
+});
+
+test('a change the host has not heard yet wins over the hello that carries the old value, and is sent again', () => {
+  const pending = { layout: { version: 1, zones: { left: ['fog'] } } };
+  assert.deepStrictEqual(overrideOnHello(pending, null), { apply: pending.layout, resend: true, settled: false });
+  const reset = { layout: null };   // Reset to global, made offline
+  assert.deepStrictEqual(overrideOnHello(reset, { version: 1 }), { apply: null, resend: true, settled: false });
+});
+
+test('the host echoing the pending change settles it', () => {
+  const pending = { layout: { version: 1 } };
+  assert.deepStrictEqual(overrideOnHello(pending, { version: 1 }), { apply: { version: 1 }, resend: false, settled: true });
+  assert.deepStrictEqual(overrideOnHello({ layout: null }, null), { apply: null, resend: false, settled: true });
+});
+
+test('after the user\'s own click or key, focus returns to the terminal -- unless the vault is showing', () => {
+  // A tab click left focus on the clicked button, so the next keystroke went
+  // nowhere useful; the old setTab focused the terminal after every click.
+  assert.strictEqual(renderEffects(S('agents'), S('fog'), { userAction: true }).focus, 'term');
+  assert.strictEqual(renderEffects(S('agents'), S('agents'), { userAction: true }).focus, 'term');
+  assert.strictEqual(renderEffects(S('vault'), S('vault', 'fog'), { userAction: true }).focus, null);
+  assert.strictEqual(renderEffects(S('agents'), S('fog'), { userAction: false }).focus, null);
 });

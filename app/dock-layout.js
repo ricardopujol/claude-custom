@@ -238,9 +238,45 @@ function fitSizes(layout, viewport) {
   return { left: out.left, right: out.right, top: out.top, bottom: out.bottom };
 }
 
+/**
+ * S3a: which module each zone SHOWS belongs to the window, not to the layout.
+ * A window's selection is what it shows, its Ctrl+B memory, and which zones it
+ * collapsed ON PURPOSE -- `active: null` alone can't tell a collapsed zone from
+ * one that was empty, and a module moved into an empty zone must show, not
+ * arrive collapsed (PR #82 Dexter F5, Miguel S2).
+ */
+function selectionOf(layout) {
+  const collapsed = {};
+  for (const z of ZONES) collapsed[z] = layout.active[z] === null && layout.zones[z].length > 0;
+  return { active: { ...layout.active }, collapsed, restore: layout.restore ? { ...layout.restore } : null };
+}
+
+/**
+ * A placement (global or the tab's own) drawn with THIS window's selection.
+ * Per zone: the module this window shows if the zone still holds it; else
+ * collapsed if this window collapsed it on purpose; else the placement's own
+ * choice (e.g. a module just moved in); else the zone's first module. Another
+ * window's choices never override this one's (Dexter F4).
+ */
+function mergeSelection(placement, selection, moduleIds) {
+  const base = normalizeLayout(placement, moduleIds);
+  if (!isObject(selection)) return base;
+  const mineActive = isObject(selection.active) ? selection.active : {};
+  const mineCollapsed = isObject(selection.collapsed) ? selection.collapsed : {};
+  const active = {};
+  for (const z of ZONES) {
+    const ids = base.zones[z];
+    if (!ids.length) active[z] = null;
+    else if (ids.includes(mineActive[z])) active[z] = mineActive[z];
+    else if (mineCollapsed[z] === true) active[z] = null;
+    else active[z] = base.active[z] !== null ? base.active[z] : ids[0];
+  }
+  return normalizeLayout({ ...base, active, restore: selection.restore === undefined ? base.restore : selection.restore }, moduleIds);
+}
+
 const API = {
   ZONES, MIN, RAIL, TERM_MIN, DEFAULT_SIZE, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule,
-  setSize, toggleAll, fitSizes, shapeOf,
+  setSize, toggleAll, fitSizes, shapeOf, selectionOf, mergeSelection,
 };
 
 // One namespace on the page (`window.dockLayout`), not ten loose globals.

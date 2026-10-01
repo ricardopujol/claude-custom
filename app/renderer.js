@@ -304,7 +304,10 @@ function logLine(keyDesc, bytes) {
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.shiftKey && e.code === 'KeyD') {
     document.getElementById('diag').classList.toggle('show');
-    setTimeout(() => { fit.fit(); sendResize(); }, 0);
+    // The pane takes width from the zones' room: re-fit them too, or two side
+    // zones squeeze the terminal under its minimum (PR #82 Dexter F6).
+    // renderLayout refits the terminal and resizes the pty itself.
+    renderLayout();
     e.preventDefault();
   }
   // NOTE: Ctrl+B is handled inside term.attachCustomKeyEventHandler, not here.
@@ -580,20 +583,21 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 // terminal never sees it. Pasting is then the user's own deliberate act.
 /// --- dock zones (layout pass L1, BACKLOG #22) -------------------------------
 // Every side panel is a module in one of four zones (app/dock-layout.js has
-// every rule; app/dock-zones-display.js draws). Two kinds of state, kept apart
-// on purpose:
+// every rule; app/dock-zones-display.js draws and decides a redraw's effects).
+// Two kinds of state, kept apart on purpose:
 //   - PLACEMENT (which zone holds which module, hidden ones, sizes): the global
 //     layout in main (install-wide), or this tab's own, kept by its host.
-//   - SELECTION (which module each zone shows, collapsed zones, Ctrl+B's
-//     memory): this window's own, saved in localStorage and read at load, the
-//     way `sideTab` always was. Clicking Vault here must not switch every other
-//     project window to Vault.
+//   - SELECTION (which module each zone shows, zones collapsed on purpose,
+//     Ctrl+B's memory): this window's own, saved in localStorage and read at
+//     load, the way `sideTab` always was. Clicking Vault here must not switch
+//     every other project window to Vault (S3a; PR #82 Dexter F4).
 const MODULE_IDS = TABS.map(t => t.id);
 const DL = window.dockLayout;
 let globalLayout = DL.defaultLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
+let pendingOverride = null;      // { layout } sent to the host, not yet echoed back
 let dragLayout = null;           // a grip being dragged: drawn, not yet saved
-let selection = null;            // { active, restore } or null = the layout's own
+let selection = null;            // DL.selectionOf(...) or null = not seeded yet
 let shownModules = new Set();
 
 function readSelection() {
@@ -606,12 +610,11 @@ function saveSelection() {
   try { localStorage.setItem('dockSelection', JSON.stringify(selection)); } catch {}
 }
 
-// The layout this window draws: placement from the drag / own / global layout,
-// selection from this window, the whole thing normalized (a module that moved
-// away from a zone makes that zone fall back to its first module).
+function placementLayout() { return dragLayout || ownLayout || globalLayout; }
+
+// The layout this window draws: the placement, with THIS window's selection.
 function effectiveLayout() {
-  const placement = dragLayout || ownLayout || globalLayout;
-  return DL.normalizeLayout(selection ? { ...placement, ...selection } : placement, MODULE_IDS);
+  return DL.mergeSelection(placementLayout(), selection, MODULE_IDS);
 }
 
 // The room the zones share with the terminal: #body minus the diagnostics pane.
@@ -628,10 +631,7 @@ function onModuleShown(id) {
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
-  if (id === 'vault') {
-    renderVault();
-    setTimeout(() => document.getElementById('vault-search').focus(), 0);
-  }
+  if (id === 'vault') renderVault();
 }
 
 // Leaving the vault puts every revealed secret back out of sight -- both the
@@ -647,15 +647,20 @@ function onVaultLeft() {
 // The one place every path into a panel goes through -- a click, Ctrl+B, a
 // move, a layout pushed from another window, the restore at launch -- so the
 // side effects of showing a module can't be skipped by one of them (the old
-// setTab had the same job, for the same reason).
-function renderLayout() {
+// setTab had the same job, for the same reason). What a redraw may do besides
+// drawing is decided by dockZones.renderEffects, which is tested: above all,
+// a redraw never moves keyboard focus unless the vault opened or closed, or
+// the user acted (PR #82 Dexter F2, Miguel B1).
+function renderLayout({ userAction = false } = {}) {
   const plan = window.dockZones.zonePlan(effectiveLayout(), TABS, zonesViewport(), { faceSize: window.faceSize });
   window.dockZones.applyPlan(plan, document);
   const now = new Set(plan.shown);
-  for (const id of now) if (!shownModules.has(id)) onModuleShown(id);
-  if (shownModules.has('vault') && !now.has('vault')) onVaultLeft();
-  if (!now.has('vault') || shownModules.has('vault')) term.focus();
+  const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
+  for (const id of fx.newlyShown) onModuleShown(id);
+  if (fx.vaultLeft) onVaultLeft();
+  if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
+  if (fx.focus === 'term') term.focus();
   const btn = document.getElementById('layout-btn');
   if (btn) btn.classList.toggle('own', ownLayout !== null);
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
@@ -664,25 +669,42 @@ function renderLayout() {
 
 // A selection change (tab click, Ctrl+B) stays in this window.
 function commitSelection(next) {
-  selection = { active: next.active, restore: next.restore };
+  selection = DL.selectionOf(next);
   saveSelection();
-  renderLayout();
+  renderLayout({ userAction: true });
 }
 
+// This tab's own layout to its host. Kept as pending until the host echoes it
+// back, so a change made while the socket is down isn't undone by the next
+// hello carrying the host's old value (PR #82 Dexter F8).
+function sendOverride(layout) {
+  pendingOverride = { layout };
+  try { ws.send(JSON.stringify({ type: 'layout-override', layout })); } catch { /* not attached: hello resends */ }
+}
+
+const placementOf = l => JSON.stringify({ zones: l.zones, hidden: l.hidden, size: l.size });
+
 // A placement change (move, hide, resize) goes to this tab's own layout when it
-// has one or `justThisTab` asks for one, else to the global layout.
+// has one or `justThisTab` asks for one, else to the global layout. A change
+// that moves nothing is a selection change only: no store write, no push to
+// every window, no broadcast (PR #82 Miguel S3).
 function commitPlacement(next, { justThisTab = false } = {}) {
   const l = DL.normalizeLayout(next, MODULE_IDS);
-  selection = { active: l.active, restore: l.restore };
+  const toOwn = justThisTab || ownLayout !== null;
+  if (placementOf(l) === placementOf(toOwn && ownLayout ? ownLayout : globalLayout) && (!justThisTab || ownLayout)) {
+    commitSelection(l);
+    return;
+  }
+  selection = DL.selectionOf(l);
   saveSelection();
-  if (justThisTab || ownLayout) {
+  if (toOwn) {
     ownLayout = l;
-    try { ws.send(JSON.stringify({ type: 'layout-override', layout: l })); } catch { /* not attached */ }
+    sendOverride(l);
   } else {
     globalLayout = l;
     if (window.harness && window.harness.layout) window.harness.layout.set(l).catch(() => {});
   }
-  renderLayout();
+  renderLayout({ userAction: true });
 }
 
 // Reset to global (the tab drops its own) and Make this global.
@@ -693,8 +715,8 @@ function dropOwnLayout({ makeGlobal = false } = {}) {
     if (window.harness && window.harness.layout) window.harness.layout.set(ownLayout).catch(() => {});
   }
   ownLayout = null;
-  try { ws.send(JSON.stringify({ type: 'layout-override', layout: null })); } catch { /* not attached */ }
-  renderLayout();
+  sendOverride(null);
+  renderLayout({ userAction: true });
 }
 
 function toggleAllZones() { commitSelection(DL.toggleAll(effectiveLayout())); }
@@ -853,15 +875,23 @@ for (const s of dropStrips) {
   s.addEventListener('dragleave', () => s.classList.remove('over'));
   s.addEventListener('drop', (e) => {
     e.preventDefault();
-    s.classList.remove('over');
-    if (draggingModule) commitPlacement(DL.moveModule(effectiveLayout(), draggingModule, s.dataset.target));
+    const id = draggingModule;
+    // Ended HERE, before the move redraws: the redraw removes the dragged tab
+    // button, and a removed source never fires the dragend that was meant to
+    // clean up -- the strips stayed up and the file drop zone stayed disarmed
+    // (PR #82 Dexter F1, Miguel I2).
+    endModuleDrag();
+    if (id) commitPlacement(DL.moveModule(effectiveLayout(), id, s.dataset.target));
   });
 }
-document.addEventListener('dragend', () => {
+function endModuleDrag() {
   draggingModule = null;
   document.body.classList.remove('dock-dragging');
   for (const s of dropStrips) s.classList.remove('over');
-});
+}
+// A drag cancelled or dropped anywhere else: its source still exists, so
+// dragend arrives. Captured on window so nothing on the way can swallow it.
+window.addEventListener('dragend', endModuleDrag, true);
 
 // --- focus mode (layout pass L1, #1) -----------------------------------------
 // Only the terminal: main lifts this view over the tab strip and tells every
@@ -876,6 +906,11 @@ function applyFocusMode(on) {
   closeLayoutMenu();
   // Focus mode hides the vault too, so it is "left": revealed secrets go.
   if (on && shownModules.has('vault')) onVaultLeft();
+  // Only the terminal shows, so it takes the keyboard. Left in a panel field,
+  // focus stayed in an INVISIBLE input: typing went into the hidden vault field
+  // and Ctrl+B never reached the terminal's handler (probe check 7, found
+  // after check 8 left focus in #vault-secret).
+  if (on) term.focus();
   if (!on && shownModules.has('vault')) renderVault();
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
@@ -905,24 +940,40 @@ async function loadLayout() {
   selection = readSelection();
   renderLayout();                          // draw at once; the stored layout may take a moment
   const bridge = window.harness && window.harness.layout;
-  if (!bridge) return;
-  bridge.onChange((l) => {
-    globalLayout = DL.normalizeLayout(l, MODULE_IDS);
-    if (!ownLayout) renderLayout();
-  });
-  let stored = null;
-  try { stored = await bridge.get(); } catch {}
-  if (stored === null) {
-    bridge.set(globalLayout).catch(() => {});
-  } else {
-    globalLayout = DL.normalizeLayout(stored, MODULE_IDS);
-    renderLayout();
+  if (bridge) {
+    bridge.onChange((l) => {
+      globalLayout = DL.normalizeLayout(l, MODULE_IDS);
+      if (!ownLayout) renderLayout();
+    });
+    let answer = null;
+    try { answer = await bridge.get(); } catch { /* unreadable: keep */ }
+    // Only a MISSING file is a first launch to migrate and save. Unreadable or
+    // corrupt (antivirus holding it) keeps the old settings drawn and saves
+    // nothing, so the user's real layout is never overwritten (PR #82 Dexter F3,
+    // Miguel I1); their next real change saves as usual.
+    const what = window.dockZones.afterLayoutGet(answer);
+    if (what === 'migrate') bridge.set(globalLayout).catch(() => {});
+    else if (what === 'use') { globalLayout = DL.normalizeLayout(answer.layout, MODULE_IDS); renderLayout(); }
+  }
+  // This window's selection is seeded ONCE, from what it shows at load (S2), so
+  // a layout another window pushes later never brings that window's choices
+  // with it (PR #82 Dexter F4).
+  if (!selection) {
+    selection = DL.selectionOf(effectiveLayout());
+    saveSelection();
   }
 }
 
-// The host's word on this tab's own layout: in `hello` and on every change.
-function applyLayoutOverride(layout) {
-  ownLayout = layout && typeof layout === 'object' ? DL.normalizeLayout(layout, MODULE_IDS) : null;
+// The host's word on this tab's own layout: in `hello` and on every change. A
+// change this window made that the host hasn't echoed yet wins, and is sent
+// again (PR #82 Dexter F8; dockZones.overrideOnHello is the tested rule).
+function applyLayoutOverride(incoming) {
+  const r = window.dockZones.overrideOnHello(pendingOverride, incoming);
+  if (r.settled) pendingOverride = null;
+  ownLayout = r.apply && typeof r.apply === 'object' ? DL.normalizeLayout(r.apply, MODULE_IDS) : null;
+  if (r.resend && pendingOverride) {
+    try { ws.send(JSON.stringify({ type: 'layout-override', layout: pendingOverride.layout })); } catch { /* next hello */ }
+  }
   renderLayout();
 }
 
@@ -962,6 +1013,37 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (a.which === 'move') openMoveMenu(String(a.id), 300, 200); else openLayoutMenu();
         return JSON.stringify({ ok: true, items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })) });
       case 'closeMenu': closeLayoutMenu(); break;
+      // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
+      // dragged button is gone and no dragend will ever come; the drag must
+      // already be over when the drop returns.
+      case 'dragDrop': {
+        const btn = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        const strip = dropStrips.find(s => s.dataset.target === a.target);
+        if (!btn || !strip) return JSON.stringify({ ok: false, error: 'no such tab or strip' });
+        const dt = new DataTransfer();
+        btn.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        const during = document.body.classList.contains('dock-dragging');
+        strip.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        strip.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        return JSON.stringify({ ok: true, during, sourceGone: !btn.isConnected, dragging: draggingModule,
+          stripsUp: document.body.classList.contains('dock-dragging') });
+      }
+      // PR #82 Dexter F2 / Miguel B1: half a secret typed, then every kind of
+      // passive redraw. Focus must still be in the secret field after each.
+      case 'secretRedraw': return new Promise((resolve) => {
+        const field = document.getElementById('vault-secret');
+        field.focus();
+        const after = [document.activeElement && document.activeElement.id];   // [0]: did it take focus at all
+        renderLayout();
+        after.push(document.activeElement && document.activeElement.id);
+        applyLayoutOverride(ownLayout);
+        after.push(document.activeElement && document.activeElement.id);
+        window.dispatchEvent(new Event('resize'));
+        setTimeout(() => {
+          after.push(document.activeElement && document.activeElement.id);
+          resolve(JSON.stringify({ ok: true, focusable: field.offsetParent !== null, shown: [...shownModules], after }));
+        }, 150);
+      });
       case 'measure': {
         // #9: does each showing panel's content reach the bottom of its zone?
         const out = {};

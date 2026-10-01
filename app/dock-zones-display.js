@@ -101,22 +101,26 @@ function applyPlan(plan, doc) {
     el.toggleAttribute('data-collapsed', zp.collapsed);
     rootStyle.setProperty(`--zone-${z}`, `${zp.size}px`);
 
-    // Rebuilt only when what it shows changed, so a hover or focus survives a re-render.
+    // Rebuilt only when its MODULES change; a selection change just moves the
+    // `on` class, so the clicked button (and its focus) survives (PR #82 Miguel S4).
     const nav = el.querySelector('.zone-tabs');
-    const sig = JSON.stringify(zp.tabs);
-    if (nav && nav.dataset.sig !== sig) {
-      nav.dataset.sig = sig;
-      nav.textContent = '';
-      for (const t of zp.tabs) {
-        const b = doc.createElement('button');
-        b.type = 'button';
-        b.dataset.module = t.id;
-        b.title = t.title;
-        b.textContent = t.label;
-        b.draggable = true;
-        b.classList.toggle('on', t.on);
-        nav.appendChild(b);
+    if (nav) {
+      const sig = JSON.stringify(zp.tabs.map(t => [t.id, t.label, t.title]));
+      if (nav.dataset.sig !== sig) {
+        nav.dataset.sig = sig;
+        nav.textContent = '';
+        for (const t of zp.tabs) {
+          const b = doc.createElement('button');
+          b.type = 'button';
+          b.dataset.module = t.id;
+          b.title = t.title;
+          b.textContent = t.label;
+          b.draggable = true;
+          nav.appendChild(b);
+        }
       }
+      const on = new Set(zp.tabs.filter(t => t.on).map(t => t.id));
+      for (const b of nav.querySelectorAll('button[data-module]')) b.classList.toggle('on', on.has(b.dataset.module));
     }
 
     const holder = el.querySelector('.zone-panels');
@@ -155,7 +159,62 @@ function moveTargets(layout, id) {
   return [...ZONES, 'hide'].map(target => ({ target, label: TARGET_LABELS[target], enabled: target !== at }));
 }
 
-const API = { zonePlan, dragSize, applyPlan, layoutRows, moveTargets, WIDE_FACE_CHROME };
+/**
+ * What a redraw may do besides drawing, given what was showing before and
+ * after: which modules just appeared (their panels load), whether the vault
+ * was left (its secrets go out of sight), and where keyboard focus goes.
+ *
+ * Focus moves ONLY when the vault opens or closes. A redraw happens on a
+ * resize, a grip drag, a layout pushed from another window or a hello; moving
+ * focus to the terminal on those sent the rest of a half-typed secret into
+ * the session (PR #82 Dexter F2, Miguel B1).
+ */
+function renderEffects(before, after, { userAction = false } = {}) {
+  const newlyShown = [...after].filter(id => !before.has(id));
+  const vaultLeft = before.has('vault') && !after.has('vault');
+  const vaultOpened = after.has('vault') && !before.has('vault');
+  let focus = null;
+  if (vaultOpened) focus = 'vault';
+  else if (vaultLeft) focus = 'term';
+  // The user's own click or key: typing goes back to the session, as the old
+  // setTab did -- but never while the vault is showing.
+  else if (userAction && !after.has('vault')) focus = 'term';
+  return { newlyShown, vaultLeft, focus };
+}
+
+/**
+ * main's answer to `layout:get` -> what the page does. Only a MISSING store
+ * file means "first launch: migrate and save"; an unreadable or corrupt one
+ * (antivirus holding it, EBUSY) must never be overwritten by a migration
+ * (PR #82 Dexter F3, Miguel I1) -- the page keeps what it drew and saves
+ * nothing until the user changes something.
+ */
+function afterLayoutGet(answer) {
+  if (!answer || typeof answer !== 'object') return 'keep';
+  if (answer.status === 'missing') return 'migrate';
+  const l = answer.layout;
+  if (answer.status === 'ok' && l && typeof l === 'object' && !Array.isArray(l)) return 'use';
+  return 'keep';
+}
+
+/**
+ * A tab's own layout changed while the socket was down (PR #82 Dexter F8).
+ * `pending` is { layout } the host hasn't confirmed, or null; `incoming` is
+ * the host's word (hello or broadcast). The host echoing the pending value
+ * settles it; anything else is the host's OLD value and must not undo the
+ * user's change -- the pending one is drawn and sent again.
+ */
+function overrideOnHello(pending, incoming) {
+  const value = incoming === undefined ? null : incoming;
+  if (!pending) return { apply: value, resend: false, settled: false };
+  if (JSON.stringify(pending.layout) === JSON.stringify(value)) return { apply: value, resend: false, settled: true };
+  return { apply: pending.layout, resend: true, settled: false };
+}
+
+const API = {
+  zonePlan, dragSize, applyPlan, layoutRows, moveTargets, renderEffects, afterLayoutGet, overrideOnHello,
+  WIDE_FACE_CHROME,
+};
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.dockZones = API;

@@ -13,7 +13,7 @@ const assert = require('node:assert');
 const fc = require('fast-check');
 
 const {
-  ZONES, MIN, TERM_MIN, normalizeLayout, selectModule, moveModule, setSize, toggleAll, fitSizes,
+  ZONES, MIN, TERM_MIN, normalizeLayout, selectModule, moveModule, setSize, toggleAll, fitSizes, selectionOf, mergeSelection,
 } = require('../app/dock-layout');
 
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'models', 'projects', 'style'];
@@ -104,5 +104,26 @@ test('P5: Ctrl+B twice gives back what was showing', () => {
     const l = run(normalizeLayout(raw, IDS), ops);
     fc.pre(ZONES.some(z => l.active[z] !== null));
     assert.deepStrictEqual(toggleAll(toggleAll(l)).active, l.active);
+  }), RUNS);
+});
+
+test('P6: another window\'s placement drawn with this window\'s selection (stored, or junk) stays well formed', () => {
+  const selArb = fc.oneof(
+    fc.record({
+      active: perZone(fc.oneof(idOrJunk, fc.constant(null))),
+      collapsed: perZone(fc.oneof(fc.boolean(), junk)),
+      restore: fc.oneof(fc.constant(null), perZone(fc.oneof(idOrJunk, fc.constant(null)))),
+    }, { requiredKeys: [] }),
+    fc.anything(),
+  );
+  fc.assert(fc.property(rawArb, opsArb, rawArb, opsArb, selArb, (rawA, opsA, rawB, opsB, junkSel) => {
+    const theirs = run(normalizeLayout(rawA, IDS), opsA);
+    const mineLayout = run(normalizeLayout(rawB, IDS), opsB);
+    for (const sel of [selectionOf(mineLayout), junkSel]) {
+      const l = mergeSelection(theirs, sel, IDS);
+      assertWellFormed(l);
+      assert.deepStrictEqual(l.zones, theirs.zones, 'the selection never moves a module');
+      assert.deepStrictEqual(l.hidden, theirs.hidden);
+    }
   }), RUNS);
 });

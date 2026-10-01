@@ -35,10 +35,31 @@ function readLayout(store) {
   }
 }
 
+/**
+ * The stored layout WITH the store's status, for `layout:get`. The page may
+ * migrate (and save over the file) only on `missing` -- ENOENT and nothing
+ * else. An unreadable file (antivirus holding it, EBUSY) or a corrupt one is
+ * said so, never reported as "nothing saved" (PR #82 Dexter F3, Miguel I1).
+ */
+function readLayoutState(store) {
+  let st;
+  try {
+    st = typeof store.readState === 'function'
+      ? store.readState(LAYOUT_KEY)
+      : { status: 'ok', value: store.read(LAYOUT_KEY, null) };
+  } catch {
+    return { status: 'unreadable', layout: null };
+  }
+  if (st.status === 'missing') return { status: 'missing', layout: null };
+  if (st.status !== 'ok') return { status: st.status === 'corrupt' ? 'corrupt' : 'unreadable', layout: null };
+  if (st.value === null || st.value === undefined) return { status: 'missing', layout: null };
+  return isPlainObject(st.value) ? { status: 'ok', layout: st.value } : { status: 'corrupt', layout: null };
+}
+
 function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send }) {
   const fromView = e => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
 
-  ipcMain.handle(GET_CHANNEL, e => (fromView(e) ? readLayout(store) : null));
+  ipcMain.handle(GET_CHANNEL, e => (fromView(e) ? readLayoutState(store) : null));
 
   ipcMain.handle(SET_CHANNEL, (e, value) => {
     if (!fromView(e) || !isPlainObject(value)) return null;
@@ -86,6 +107,6 @@ function watchLayout({
 }
 
 module.exports = {
-  readLayout, registerLayoutHandlers, watchLayout,
+  readLayout, readLayoutState, registerLayoutHandlers, watchLayout,
   LAYOUT_KEY, GET_CHANNEL, SET_CHANNEL, PUSH_CHANNEL, MAX_LAYOUT_BYTES,
 };
