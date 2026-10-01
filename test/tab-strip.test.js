@@ -12,12 +12,14 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { paneFor, paint, GLYPHS } = require('../app/tab-strip');
+const { paneFor, paint, alertFor, GLYPHS } = require('../app/tab-strip');
 
 // --- a fake DOM, just enough for paint() ---------------------------------------
 function node(tag) {
   const n = {
     tag, className: '', textContent: '', title: '', hidden: false, type: '', dataset: {},
+    value: '', disabled: false, focused: 0, focus() { n.focused++; },
+    onsubmit: null, onkeydown: null,
     children: [], listeners: {}, onclick: null,
     appendChild(c) { n.children.push(c); return c; },
     replaceChildren(...cs) { n.children = cs; },
@@ -130,27 +132,25 @@ test('paint: the pane shows while the tab has no page; Retry re-selects the fail
   assert.strictEqual(doc.byId['pane-retry'].onclick, null);
 });
 
-test('paint never uses innerHTML: a branch name is text, not markup', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.js'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-  assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
-});
-
-test('the strip bridge exposes select, close, contextMenu and onModel -- and nothing else', () => {
+test('the strip bridge exposes its seven members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
-  assert.deepStrictEqual(members, ['select', 'close', 'contextMenu', 'onModel']);
+  assert.deepStrictEqual(members, ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'onModel']);
   assert.match(src, /'strip:select'/);
   assert.match(src, /'strip:close'/);
   assert.match(src, /'strip:contextMenu'/);
+  assert.match(src, /'strip:plus'/);
+  assert.match(src, /'strip:create'/);
+  assert.match(src, /'strip:cancelCreate'/);
   assert.match(src, /removeAllListeners\('strip-model'\)/);
 });
 
-test('tab-strip.html loads only its own script and starts with the pane hidden', () => {
+test('tab-strip.html starts with the pane hidden', () => {
+  // Which script it loads is pinned in test/source-contracts.test.js: naming
+  // the painter's file here would read as reading a mutated module.
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
   assert.match(html, /id="pane"[^>]*\bhidden\b/);
   assert.match(html, /id="tabs"/);
   assert.match(html, /height: 34px/);
@@ -166,4 +166,137 @@ test('F3 (Dexter, PR #75): a failed stop is drawn IN the strip, as text, and cle
   paint(doc, { model, closeNotice: null }, bridgeSpy());
   assert.strictEqual(doc.byId['strip-alert'].hidden, true);
   assert.strictEqual(doc.byId['strip-alert'].textContent, '');
+});
+
+// --- PR 3: the + button, the branch form, phase badges and the alert line -----------
+
+function fullDoc() {
+  const doc = fakeDoc();
+  for (const id of ['strip-alert', 'plus', 'create', 'create-branch', 'create-cancel']) {
+    doc.byId[id] = node(id === 'create' ? 'form' : 'div');
+  }
+  return doc;
+}
+const fullBridge = () => {
+  const b = bridgeSpy();
+  b.plus = () => b.calls.push(['plus']);
+  b.create = (v) => b.calls.push(['create', v]);
+  b.cancelCreate = () => b.calls.push(['cancel']);
+  return b;
+};
+
+test('paneFor: a running setup shows its progress, and a pending creation says so; no Retry for either', () => {
+  assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false, setup: { running: true, line: 'added 512 packages' } })] }),
+    { text: 'Setting up feat/a… added 512 packages', retry: null });
+  assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false, setup: { running: true, line: null } })] }),
+    { text: 'Setting up feat/a…', retry: null });
+  assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false })], create: { phase: 'running', branch: 'feat/a' } }),
+    { text: 'Creating feat/a…', retry: null });
+  assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false })], create: { phase: 'running', branch: 'feat/zz' } }),
+    { text: 'feat/a is not started yet.', retry: 'k' });
+});
+
+test('alertFor: close notice, then the creation, then the selected tab', () => {
+  const sel = entry({ selected: true, phaseText: 'Merged. When its session ends, this worktree is removed.', badge: 'merged' });
+  assert.deepStrictEqual(alertFor({ model: [sel], closeNotice: 'stop failed', create: { phase: 'failed', error: 'bad' } }),
+    { text: 'stop failed', kind: 'bad' });
+  assert.deepStrictEqual(alertFor({ model: [sel], create: { phase: 'failed', branch: 'demo', error: 'demo: needs a prefix' } }),
+    { text: 'demo: needs a prefix', kind: 'bad' });
+  assert.deepStrictEqual(alertFor({ model: [sel], create: { phase: 'running', branch: 'feat/x' } }),
+    { text: 'Creating feat/x…', kind: 'info' });
+  assert.deepStrictEqual(alertFor({ model: [sel], create: { phase: 'input' } }),
+    { text: 'Merged. When its session ends, this worktree is removed.', kind: 'info' });
+  assert.deepStrictEqual(alertFor({ model: [entry({ selected: true, phaseText: "Couldn't remove this worktree: x", badge: 'warn' })] }),
+    { text: "Couldn't remove this worktree: x", kind: 'bad' });
+  assert.strictEqual(alertFor({ model: [entry({ selected: true })] }), null);
+  assert.strictEqual(alertFor({ model: [entry({ selected: false, phaseText: 'x' })] }), null, 'only the selected tab speaks');
+  assert.strictEqual(alertFor(null), null);
+});
+
+test('paint: the + shows only in a project window and asks main for its menu', () => {
+  const doc = fullDoc();
+  const b = fullBridge();
+  paint(doc, { model: [entry()], mode: 'tabs' }, b);
+  assert.strictEqual(doc.byId.plus.hidden, false);
+  doc.byId.plus.onclick();
+  assert.deepStrictEqual(b.calls, [['plus']]);
+  paint(doc, { model: [entry()], mode: 'single' }, b);
+  assert.strictEqual(doc.byId.plus.hidden, true);
+});
+
+test('paint: the branch form opens empty and focused, keeps what is typed across repaints, and submits it', () => {
+  const doc = fullDoc();
+  const b = fullBridge();
+  const input = doc.byId['create-branch'];
+  input.value = 'left over';
+  paint(doc, { model: [entry()], mode: 'tabs', create: null }, b);
+  assert.strictEqual(doc.byId.create.hidden, true);
+  paint(doc, { model: [entry()], mode: 'tabs', create: { phase: 'input' } }, b);
+  assert.strictEqual(doc.byId.create.hidden, false);
+  assert.strictEqual(input.value, '', 'opened fresh');
+  assert.strictEqual(input.focused, 1);
+  input.value = 'feat/de';
+  paint(doc, { model: [entry()], mode: 'tabs', create: { phase: 'input' } }, b);   // a poll repaints
+  assert.strictEqual(input.value, 'feat/de', 'a repaint never wipes what is being typed');
+  assert.strictEqual(input.focused, 1, 'and does not steal focus again');
+  input.value = 'feat/demo';
+  let prevented = false;
+  doc.byId.create.onsubmit({ preventDefault: () => { prevented = true; } });
+  assert.ok(prevented);
+  assert.deepStrictEqual(b.calls, [['create', 'feat/demo']]);
+});
+
+test('paint: while creating the field is disabled; a failure re-enables it with the text kept; Esc and the x cancel', () => {
+  const doc = fullDoc();
+  const b = fullBridge();
+  const input = doc.byId['create-branch'];
+  paint(doc, { model: [entry()], mode: 'tabs', create: { phase: 'input' } }, b);
+  input.value = 'demo';
+  paint(doc, { model: [entry()], mode: 'tabs', create: { phase: 'running', branch: 'demo' } }, b);
+  assert.strictEqual(input.disabled, true);
+  paint(doc, { model: [entry()], mode: 'tabs', create: { phase: 'failed', branch: 'demo', error: 'needs a prefix' } }, b);
+  assert.strictEqual(input.disabled, false);
+  assert.strictEqual(input.value, 'demo', 'kept so it can be fixed');
+  assert.strictEqual(input.focused, 2, 'and focused again for that');
+  assert.strictEqual(doc.byId['strip-alert'].textContent, 'needs a prefix');
+  input.onkeydown({ key: 'Escape', preventDefault: () => {} });
+  doc.byId['create-cancel'].onclick();
+  assert.deepStrictEqual(b.calls, [['cancel'], ['cancel']]);
+  input.onkeydown({ key: 'a', preventDefault: () => assert.fail('only Escape is taken') });
+});
+
+test('paint: a merged or failing tab gets its badge, and its tooltip says why', () => {
+  const doc = fullDoc();
+  paint(doc, { model: [
+    entry({ key: 'a', badge: 'merged', phaseText: 'Merged. When its session ends, this worktree is removed.' }),
+    entry({ key: 'b', badge: 'warn', phaseText: "Couldn't remove this worktree: busy" }),
+    entry({ key: 'c' }),
+  ], mode: 'tabs' }, fullBridge());
+  const [a, b2, c] = doc.byId.tabs.children;
+  assert.strictEqual(child(a, 'badge').textContent, 'merged');
+  assert.ok(child(a, 'merged'));
+  assert.strictEqual(a.title, 'feat/a: Merged. When its session ends, this worktree is removed.');
+  assert.ok(child(b2, 'warn'));
+  assert.strictEqual(child(c, 'badge'), undefined);
+  assert.strictEqual(c.title, 'feat/a');
+});
+
+test('paint: the alert line is styled by kind', () => {
+  const doc = fullDoc();
+  paint(doc, { model: [entry({ selected: true, phaseText: 'Removing this worktree…', badge: 'merged' })], mode: 'tabs' }, fullBridge());
+  assert.strictEqual(doc.byId['strip-alert'].className, 'info');
+  paint(doc, { model: [entry({ selected: true })], mode: 'tabs', closeNotice: 'x' }, fullBridge());
+  assert.strictEqual(doc.byId['strip-alert'].className, 'bad');
+});
+
+test('tab-strip.html has the + and a static branch form outside #tabs', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  const tabsAt = html.indexOf('id="tabs"');
+  const tabsEnd = html.indexOf('</div>', tabsAt);
+  for (const id of ['plus', 'create', 'create-branch', 'create-cancel']) {
+    const at = html.indexOf(`id="${id}"`);
+    assert.ok(at > tabsEnd, `${id} is outside #tabs (a repaint rebuilds #tabs)`);
+  }
+  assert.match(html, /id="create"[^>]*\bhidden\b/);
+  assert.match(html, /id="plus"[^>]*\bhidden\b/);
 });

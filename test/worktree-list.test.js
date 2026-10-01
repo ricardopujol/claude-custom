@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const path = require('path');
 const fc = require('fast-check');
 
-const { parsePorcelain, tabWorktrees, removalCommands } = require('../host/worktree-list');
+const { parsePorcelain, tabWorktrees, isSibling } = require('../host/worktree-list');
 const { samePath, isInside } = require('../host/project-layout');
 const { isValidBranchName } = require('../host/git-branch');
 
@@ -131,7 +131,7 @@ test('an entry with an empty path gets no tab even when the cwd is a sibling', (
     { path: '', branch: 'refs/heads/a' },
   ];
   assert.deepStrictEqual(tabWorktrees(entries, container).map(x => x.isDev), [true]);
-  assert.deepStrictEqual(removalCommands(container, ''), []);
+  assert.strictEqual(isSibling(container, ''), false);
 });
 
 test('parsePorcelain keeps a path with spaces whole', () => {
@@ -251,22 +251,14 @@ test('tabWorktrees is [] when dev is missing, or the input is not usable', () =>
 });
 
 // ---------------------------------------------------------------------------
-// removalCommands
+// isSibling (PR 3: a path new-worktree.ps1 returns must be one)
 
-test('removalCommands removes then prunes, run from dev, never forced', () => {
-  const wt = path.join(C, 'feat-a');
-  assert.deepStrictEqual(removalCommands(C, wt), [
-    ['git', ['-C', DEV, 'worktree', 'remove', wt]],
-    ['git', ['-C', DEV, 'worktree', 'prune']],
-  ]);
-});
-
-test('removalCommands refuses dev, the container, and anything not directly inside it', () => {
-  for (const p of [DEV, C, path.join(C, 'feat-x', 'inner'), path.join(DEV, '.claude', 'worktrees', 'agent-x'),
+test('isSibling: a direct child of the container, nothing deeper, nothing else', () => {
+  assert.strictEqual(isSibling(C, path.join(C, 'feat-a')), true);
+  for (const p of [C, path.join(C, 'feat-x', 'inner'), path.join(DEV, '.claude', 'worktrees', 'agent-x'),
     path.resolve('/elsewhere/other'), null, '', 42]) {
-    assert.deepStrictEqual(removalCommands(C, p), [], String(p));
+    assert.strictEqual(isSibling(C, p), false, String(p));
   }
-  assert.deepStrictEqual(removalCommands(null, path.join(C, 'feat-a')), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -357,19 +349,6 @@ test('PROPERTY: openable exactly when on a valid branch, not bare, not prunable,
   }));
 });
 
-test('PROPERTY: removalCommands never forces, whatever path it is given', () => {
-  const anyPath = fc.oneof(pathArb, fc.string(), fc.constantFrom('-f', '--force', '-ff', '--force --force'));
-  fc.assert(fc.property(anyPath, (p) => {
-    const args = removalCommands(C, p).flatMap(([, a]) => a);
-    return !args.includes('--force') && !args.includes('-f') && !args.some(a => /^-f+$/.test(a));
-  }));
-});
-
-test('PROPERTY: removalCommands only ever targets a direct, non-dev child of the container', () => {
-  fc.assert(fc.property(pathArb, (p) => {
-    const cmds = removalCommands(C, p);
-    if (cmds.length === 0) return true;
-    const target = cmds[0][1][4];
-    return samePath(path.dirname(target), C) && !samePath(target, DEV);
-  }));
+test('PROPERTY: isSibling holds only for a direct child of the container', () => {
+  fc.assert(fc.property(pathArb, (p) => !isSibling(C, p) || samePath(path.dirname(path.resolve(p)), C)));
 });

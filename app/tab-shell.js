@@ -20,18 +20,29 @@
  *     hash to the same port would otherwise both see it free and both take it.
  *   - `resolvePort` is asked AT THE MOMENT a tab starts, never at open: another
  *     tab's spawn may have taken the port in between.
- *   - `listening` is `true` for a started tab whose host answers and is LEFT
- *     OUT otherwise. Never `false`: a starting host, an unstarted one and a
- *     probe that timed out are all "not known", and the reducer reads `false`
- *     as "confirmed gone". (`merged` is `{}` in this PR, so nothing removes a
- *     folder; PR 3 must tell "refused" from "timed out" before it emits false.)
+ *   - `listening` is `true` for a started tab whose host answers, `false` ONLY
+ *     for a started (not starting) tab whose port REFUSED the connection
+ *     (host/port-probe.js), and LEFT OUT otherwise. The reducer reads `false`
+ *     as "confirmed gone" and removes a merged worktree's folder on it, so a
+ *     probe that timed out, a starting host and an unstarted one are all "not
+ *     known" (PR 3, plan S3). A host exits with its claude, so a refusal is
+ *     "the session ended".
+ *   - A poll reads the merged markers BEFORE it probes the hosts
+ *     (observeWorktrees), so a host seen listening in that poll ran after the
+ *     merge was marked.
+ *   - Every `remove` gets exactly one removeResult (runRemove), even when the
+ *     remover throws.
+ *   - A tab the `+` made doesn't start its session until Contract E has
+ *     finished, and a setup failure never keeps it from starting (criterion 10).
  *   - A poll that can't list worktrees produces NO observation; one that lists
  *     no dev is ignored by the reducer. Either way every tab stays.
  *   - Absence is never a number: a tab's port and token are null until known.
  */
 
+const path = require('path');
 const lifecycle = require('../host/tab-lifecycle');
 const { parsePorcelain, tabWorktrees } = require('../host/worktree-list');
+const { checkBranch } = require('../host/worktree-ops');
 const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
 const tabStatusLib = require('./tab-status');
@@ -53,30 +64,49 @@ function createQueue() {
 }
 
 /**
- * The reducer's `listening` map: `true`, keyed by normPath, for every started
- * tab whose host answers. Everything else is left out.
+ * The reducer's `listening` map, keyed by normPath, for every started tab:
+ * `true` when its port answers, `false` when it refused. A timeout, a throw or
+ * any other answer leaves the tab out.
  */
-async function captureListening(tabs, isListening) {
+async function captureListening(tabs, probe) {
   const out = {};
-  const started = [...tabs].filter(t => t.started === true && t.starting !== true && Number.isInteger(t.port));
+  // A tab whose port already refused has no host of its own any more: whatever
+  // answers on that port later is ANOTHER tab's host and must never vouch for
+  // it (PR #80 Dexter F2). It is watched again once it starts again.
+  const started = [...tabs].filter(t => t.started === true && t.starting !== true && t.ended !== true
+    && Number.isInteger(t.port));
   const answers = await Promise.all(started.map(async (t) => {
-    try { return (await isListening(t.port)) === true; } catch { return false; }
+    try { return await probe(t.port); } catch { return 'unknown'; }
   }));
-  started.forEach((t, i) => { if (answers[i]) out[t.key] = true; });
+  started.forEach((t, i) => {
+    if (answers[i] === 'listening') out[t.key] = true;
+    else if (answers[i] === 'refused') out[t.key] = false;
+  });
   return out;
 }
 
 /**
- * The reducer's observation from `git worktree list --porcelain` text, or null
- * when there is no text (git failed): no observation at all.
+ * The worktrees and merged markers (Contract B) of one poll, from `git
+ * worktree list --porcelain` text, or null when there is no text (git failed):
+ * no observation at all. Each marker is read with the branch git lists in THIS
+ * poll (host/merged-marker.js compares it strictly), never for dev, and a
+ * reader that throws means "not merged".
+ *
+ * Called BEFORE the poll probes the hosts: a `listening: true` captured after
+ * the marker was read proves the host ran after the merge, which is what the
+ * reducer's hostSeen means.
  */
-function buildObservation(porcelain, container, listening) {
+function observeWorktrees(porcelain, container, readMarker) {
   if (typeof porcelain !== 'string') return null;
-  return {
-    worktrees: tabWorktrees(parsePorcelain(porcelain), container),
-    merged: {},
-    listening: listening || {},
-  };
+  const worktrees = tabWorktrees(parsePorcelain(porcelain), container);
+  const merged = {};
+  for (const w of worktrees) {
+    if (w.isDev || typeof w.branch !== 'string' || w.branch === '') continue;
+    let marker = null;
+    try { marker = readMarker(w.path, w.branch); } catch { marker = null; }
+    if (marker) merged[normPath(w.path)] = true;
+  }
+  return { worktrees, merged };
 }
 
 // What a tab says when no port could be found or refused for its folder.
@@ -107,8 +137,13 @@ function sanitizeStatus(s) {
  *   cwd             single mode: the one folder
  *   launchedFrom    the folder the launcher was given (initial selection)
  *   git.list()      -> Promise<string>  `git worktree list --porcelain` text; rejects on failure
+ *   git.marker(path, branch) -> marker | null   host/merged-marker.js readMergedMarker (Contract B)
+ *   ops.available() -> { create, setup, remove }   which contract scripts exist (host/worktree-ops.js)
+ *   ops.create({ container, branch }) -> Promise<{ ok, path, branch, warning } | { ok: false, error }>  (A)
+ *   ops.setup({ path, onLine })       -> Promise<{ ok, result } | { ok: false, error, log }>     (E)
+ *   ops.remove({ path })              -> Promise<{ ok, already } | { ok: false, kept, reason } | { ok: false, error }>  (C)
  *   hosts.choosePort(tab)  -> Promise<{ port, action: 'spawn'|'attach' } | null>
- *   hosts.isListening(port)-> Promise<boolean>
+ *   hosts.probe(port)      -> Promise<'listening'|'refused'|'unknown'>  (host/port-probe.js)
  *   hosts.spawn({ tab, port, token })      starts a detached host (may throw)
  *   hosts.wait(port)       -> Promise<boolean>  the host came up
  *   hosts.tokenFor(port)   -> string | null     a RUNNING host's token
@@ -129,17 +164,28 @@ function sanitizeStatus(s) {
  */
 // Every host function the shell calls. A missing one used to throw INSIDE a
 // start, where it became a tab error and a view that never appeared.
-const HOST_DEPS = ['choosePort', 'isListening', 'spawn', 'wait', 'tokenFor', 'tokenFile', 'newToken', 'control',
+const HOST_DEPS = ['choosePort', 'probe', 'spawn', 'wait', 'tokenFor', 'tokenFile', 'newToken', 'control',
   'identity', 'readToken'];
+// The same, for the worktree contract scripts (PR 3).
+const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
+
+// How many tabs closed by hand the `+` menu offers to reopen.
+const REOPEN_MAX = 10;
+
+const errorText = (err) => (err && err.message) || String(err);
 
 function createShell(deps) {
   const {
     mode = 'tabs', container = null, cwd = null, launchedFrom = null,
-    git, hosts, views, ui, log = () => {},
+    git, hosts, ops, views, ui, log = () => {},
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
   }
+  for (const k of OPS_DEPS) {
+    if (!ops || typeof ops[k] !== 'function') throw new TypeError(`createShell: ops.${k} is required`);
+  }
+  if (!git || typeof git.marker !== 'function') throw new TypeError('createShell: git.marker is required');
 
   const queue = createQueue();
   const tabs = new Map();        // key -> record
@@ -149,28 +195,61 @@ function createShell(deps) {
   let lastError = null;
   let closeNotice = null;        // a hand close whose stop failed; cleared by the next selection
   let destroyed = false;
+  // PR 3. `create` is the strip's branch form: null, or { phase: 'input' } /
+  // { phase: 'running', branch } / { phase: 'failed', branch, error }.
+  let create = null;
+  const pendingBranches = new Set();   // branches Contract A is creating right now
+  const setups = new Map();            // key -> { running, line, error, log }  (Contract E)
+  const createdWarnings = new Map();   // key -> Contract A's optional warning
+  let selectWhenListed = null;         // a tab to select as soon as a poll lists it
+  let closedByHand = [];               // [{ key, path, branch }], most recent first
 
   const keyOf = normPath;
 
   function runtime() {
     const rt = new Map();
     for (const t of tabs.values()) {
-      rt.set(t.key, { started: t.started, port: t.port, token: t.token, status: t.status });
+      rt.set(t.key, {
+        started: t.started, port: t.port, token: t.token, status: t.status,
+        setup: setups.has(t.key) ? { ...setups.get(t.key) } : null,
+        createdWarning: createdWarnings.get(t.key) || null,
+      });
     }
     return rt;
   }
 
+  function scriptsAvailable() {
+    try {
+      const a = ops.available() || {};
+      return { create: a.create === true, setup: a.setup === true, remove: a.remove === true };
+    } catch {
+      return { create: false, setup: false, remove: false };
+    }
+  }
+
+  // A tab whose worktree Contract A is still making, or Contract E is still
+  // setting up, doesn't start its session yet (criterion 10).
+  const setupHolds = (tab) => (typeof tab.branch === 'string' && pendingBranches.has(tab.branch))
+    || (setups.has(tab.key) && setups.get(tab.key).running === true);
+
   function model() {
     return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
       const t = tabs.get(e.key);
-      return { ...e, starting: !!(t && t.starting), startError: t ? t.error : null };
+      // The strip paints these; it decides nothing (PR 3: badge and phase line).
+      return {
+        ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
+        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e),
+      };
     });
   }
 
   function snapshot() {
     const m = model();
     const sel = m.find(e => e.selected);
-    return { model: m, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, mode };
+    return {
+      model: m, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, mode,
+      create: create ? { ...create } : null,
+    };
   }
 
   function publish() {
@@ -190,7 +269,7 @@ function createShell(deps) {
       key: keyOf(entry.path), cwd: entry.path, branch: entry.branch === undefined ? null : entry.branch,
       isDev: entry.isDev === true, port: null, token: null, view: null,
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
-      attachPromise: null, unconfirmed: null,
+      attachPromise: null, unconfirmed: null, ended: false,
     };
   }
 
@@ -200,6 +279,7 @@ function createShell(deps) {
     tab.token = token;
     tab.view = views.create(tab);
     tab.started = true;
+    tab.ended = false;          // a host of its own again: watched again (Dexter F2)
     // A host given up on earlier, if it ever binds, meets this one's lock and
     // exits on its own (session-gate idleExit): nothing left to warn about.
     tab.unconfirmed = null;
@@ -226,6 +306,8 @@ function createShell(deps) {
   function start(tab) {
     if (tab.started) return Promise.resolve();
     if (tab.starting) return tab.startPromise;
+    // Started when its setup ends (createWorktree), not before.
+    if (setupHolds(tab)) { publish(); return Promise.resolve(); }
     tab.starting = true;
     tab.error = null;
     publish();
@@ -336,6 +418,10 @@ function createShell(deps) {
         if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
         t.view = null;
         tabs.delete(key);
+        // A setup still running keeps holding the folder's session, so a
+        // Reopen meanwhile can't start it early (PR #80 Dexter F1).
+        if (!(setups.has(key) && setups.get(key).running === true)) setups.delete(key);
+        createdWarnings.delete(key);
         if (key === selectedKey) {
           selectedKey = tabModel.afterClose(before, key, selectedKey);
           reselect = true;
@@ -343,11 +429,33 @@ function createShell(deps) {
       } else if (a.type === 'error') {
         const t = tabByKey(key);
         if (t) t.error = a.error;
+      } else if (a.type === 'mark-merged') {
+        // The strip draws it from state.tabs; the session keeps running (W4).
+        log(`[shell] ${key}: merged (${a.branch})`);
+      } else if (a.type === 'remove') {
+        runRemove(a.path);
       }
-      // 'mark-merged' and 'remove' need `merged`, which is always {} in this PR.
     }
     if (reselect && selectedKey !== null) select(selectedKey);
     publish();
+  }
+
+  // Contract C, for a tab the reducer moved to `removing`: its session ended
+  // after the merge. Exactly one removeResult per remove, whatever happens.
+  function runRemove(p) {
+    Promise.resolve()
+      .then(() => ops.remove({ path: p }))
+      .then(r => r, err => ({ ok: false, error: errorText(err) }))
+      .then((r) => {
+        if (destroyed) return;
+        const what = r && r.ok === true ? (r.already ? 'already removed' : 'removed')
+          : (r && r.kept === true ? `kept: ${r.reason}` : `failed: ${r && r.error}`);
+        log(`[shell] remove ${keyOf(p)}: ${what}`);
+        const before = model();
+        const { state: next, actions } = lifecycle.removeResult(state, p, r);
+        state = next;
+        apply(actions, before);
+      });
   }
 
   function reconcileWith(observation) {
@@ -355,7 +463,11 @@ function createShell(deps) {
     const { state: next, actions } = lifecycle.reconcile(state, observation);
     state = next;
     apply(actions, before);
-    if (selectedKey === null || !tabs.has(selectedKey)) {
+    if (selectWhenListed !== null && tabs.has(selectWhenListed)) {
+      const k = selectWhenListed;
+      selectWhenListed = null;
+      select(k);
+    } else if (selectedKey === null || !tabs.has(selectedKey)) {
       const first = tabModel.initialSelection(state.tabs, launchedFrom, { keyOf, isInside });
       if (first !== null && tabs.has(first)) select(first);
     }
@@ -374,10 +486,16 @@ function createShell(deps) {
         lastError = `can't list worktrees: ${(err && err.message) || err}`;
         log('[shell]', lastError);
       }
-      // Captured now, reconciled now, in this order, before the next poll starts.
-      const listening = await captureListening(tabs.values(), hosts.isListening);
-      const obs = buildObservation(text, container, listening);
-      if (obs) reconcileWith(obs);
+      // Captured now, reconciled now, in this order, before the next poll
+      // starts: the markers first, then the hosts (see observeWorktrees).
+      const seen = observeWorktrees(text, container, git.marker);
+      const listening = await captureListening(tabs.values(), hosts.probe);
+      // Refused once: that session ended. Its port is free for another tab.
+      for (const [k, v] of Object.entries(listening)) {
+        const t = tabs.get(k);
+        if (v === false && t) t.ended = true;
+      }
+      if (seen) reconcileWith({ ...seen, listening });
       else publish();
     } finally {
       polling = false;
@@ -404,6 +522,8 @@ function createShell(deps) {
   async function closeTab(key) {
     const tab = tabByKey(key);
     if (!tab || tab.isDev || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
+    if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
     try { yes = (await ui.confirmClose(tab)) === true; } catch { yes = false; }
     if (!yes) return { ok: false, cancelled: true };
@@ -442,6 +562,8 @@ function createShell(deps) {
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
+    // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first.
+    closedByHand = [{ key, path: tab.cwd, branch: tab.branch }, ...closedByHand.filter(c => c.key !== key)];
     // The stop is sent here, where its outcome can be seen, not fire-and-forget.
     apply(actions.filter(a => a.type !== 'stop'), before);
     if (target) {
@@ -460,6 +582,125 @@ function createShell(deps) {
     }
     if (target) log(`[shell] stop ${key}: sent`);
     return { ok: true };
+  }
+
+  // --- `+`: a new worktree (Contract A, then E), and reopening a closed tab ---
+
+  /**
+   * *New branch…*: Contract A makes the worktree, a poll gives it a tab (and
+   * selects it), Contract E sets it up with its progress on the tab, and only
+   * then does its session start (criterion 10). A setup failure still starts
+   * it, with the error on the tab. One creation at a time.
+   */
+  async function createWorktree(branch) {
+    if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
+    if (create && create.phase === 'running') return { ok: false, error: 'already creating one' };
+    const wanted = typeof branch === 'string' ? branch.trim() : '';
+    const refused = checkBranch(wanted);
+    if (refused) {
+      create = { phase: 'failed', branch: wanted, error: refused };
+      publish();
+      return { ok: false, error: refused };
+    }
+    create = { phase: 'running', branch: wanted };
+    pendingBranches.add(wanted);
+    publish();
+
+    let made;
+    try { made = await ops.create({ container, branch: wanted }); } catch (err) { made = { ok: false, error: errorText(err) }; }
+    if (!made || made.ok !== true) {
+      pendingBranches.delete(wanted);
+      const error = (made && made.error) || 'new-worktree.ps1 failed';
+      if (!destroyed) { create = { phase: 'failed', branch: wanted, error }; publish(); }
+      return { ok: false, error };
+    }
+
+    const key = keyOf(made.path);
+    const withSetup = scriptsAvailable().setup;
+    // Held from here, so the poll that lists it can't start its session early.
+    if (withSetup) setups.set(key, { running: true, line: null, error: null, log: null });
+    if (typeof made.warning === 'string' && made.warning) createdWarnings.set(key, made.warning);
+    pendingBranches.delete(wanted);
+    create = null;
+    selectWhenListed = key;
+    log(`[shell] created ${made.branch} at ${made.path}`);
+    await poll();
+
+    if (withSetup) {
+      let s;
+      try {
+        s = await ops.setup({
+          path: made.path,
+          onLine: (line) => {
+            const cur = setups.get(key);
+            if (!cur || cur.running !== true) return;
+            cur.line = line;
+            publish();
+          },
+        });
+      } catch (err) {
+        s = { ok: false, error: errorText(err), log: null };
+      }
+      // A tab closed by hand meanwhile keeps no error for a later reopen. One
+      // git simply hasn't listed yet keeps it (PR #80 Dexter F3): "no tab" is
+      // not "closed".
+      if ((s && s.ok === true) || state.dismissed.includes(key)) setups.delete(key);
+      else setups.set(key, { running: false, line: null, error: (s && s.error) || 'setup failed', log: (s && s.log) || null });
+      log(`[shell] setup ${key}: ${s && s.ok === true ? 'done' : `failed: ${s && s.error}`}`);
+      if (destroyed) return { ok: true, path: made.path };
+      publish();
+    }
+    const tab = tabByKey(key);
+    if (tab && key === selectedKey && !tab.started && !tab.starting) start(tab);
+    return { ok: true, path: made.path };
+  }
+
+  /** The strip's branch form opens (`+` -> *New branch…*). */
+  function openCreate() {
+    if (mode !== 'tabs' || (create && create.phase === 'running')) return false;
+    create = { phase: 'input' };
+    publish();
+    return true;
+  }
+
+  /** Esc / ✕ on the form. A creation that is running can't be called off. */
+  function cancelCreate() {
+    if (!create || create.phase === 'running') return false;
+    create = null;
+    publish();
+    return true;
+  }
+
+  /** Tabs closed by hand that git still lists, most recent first. */
+  function reopenable() {
+    return closedByHand
+      .filter(c => state.dismissed.includes(c.key))
+      .slice(0, REOPEN_MAX)
+      .map(c => ({ key: c.key, label: typeof c.branch === 'string' && c.branch ? c.branch : path.basename(c.path) }));
+  }
+
+  /** *Reopen* / Ctrl+Shift+T: no key reopens the most recent one. */
+  async function reopen(key) {
+    const list = reopenable();
+    const target = key === undefined ? list[0] : list.find(c => c.key === key);
+    if (!target) return { ok: false, error: 'nothing to reopen' };
+    const entry = closedByHand.find(c => c.key === target.key);
+    state = lifecycle.reopen(state, entry.path).state;
+    closedByHand = closedByHand.filter(c => c.key !== target.key);
+    selectWhenListed = target.key;
+    await poll();
+    return { ok: true };
+  }
+
+  /** What the `+` menu offers. */
+  function plusMenu() {
+    const busy = !!(create && create.phase === 'running');
+    const scripts = scriptsAvailable();
+    let why = null;
+    if (mode !== 'tabs') why = 'not a project window';
+    else if (busy) why = 'creating…';
+    else if (!scripts.create) why = 'worktree scripts not installed';
+    return { create: { enabled: why === null, why }, reopen: mode === 'tabs' ? reopenable() : [] };
   }
 
   /** A renderer's own status. Kept as-is except: you're looking at it. */
@@ -538,7 +779,15 @@ function createShell(deps) {
     const m = model();
     const sel = m.find(e => e.selected);
     const next = tabModel.neighbour(m, sel ? sel.key : null, n);
-    return next === null ? Promise.resolve() : select(next);
+    return next === null ? Promise.resolve() : userSelect(next);
+  }
+
+  // A selection the PERSON made (a click, Ctrl+Tab) wins over a tab the shell
+  // was waiting to select once git lists it (PR #80 Miguel G1): that tab still
+  // opens, it just doesn't take the selection later.
+  function userSelect(key) {
+    selectWhenListed = null;
+    return select(key);
   }
 
   /** view query: which close button the blocked pane offers. */
@@ -550,12 +799,24 @@ function createShell(deps) {
   function destroy() { destroyed = true; }
 
   return {
-    open, poll, select, closeTab, report, raise, attentionClick, goTo, menuState, override,
+    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, menuState, override,
+    createWorktree, openCreate, cancelCreate, plusMenu, reopen,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy,
     // Exposed for tests and the probe driver.
     _tabs: tabs, _state: () => state,
   };
+}
+
+// --- native menu text ----------------------------------------------------------------
+
+/**
+ * Text for an Electron menu label. A single `&` marks the next letter as the
+ * item's mnemonic (and isn't drawn), so a branch like `feat/r&d` would lose
+ * its `&`: doubled, it is drawn as one (PR #80 Miguel G3).
+ */
+function menuText(s) {
+  return typeof s === 'string' ? s.replace(/&/g, '&&') : '';
 }
 
 // --- keyboard focus ----------------------------------------------------------------
@@ -576,7 +837,11 @@ function createShell(deps) {
  * B (no view) -> A still believed A had the keyboard and never focused it.
  * Main also clears it when the strip page itself takes focus (a click on it).
  */
-function focusStep(lastFocused, { windowFocused, selectedView } = {}) {
+function focusStep(lastFocused, { windowFocused, selectedView, stripBusy = false } = {}) {
+  // PR 3: the branch form is in the strip page. While it is open, every
+  // publish (3 s poll, status reports) would otherwise hand the keyboard back
+  // to the view mid-typing. Null, so the view is focused again once it closes.
+  if (stripBusy === true) return { focus: false, lastFocused: null };
   if (!selectedView) return { focus: false, lastFocused: null };
   if (windowFocused === true && selectedView !== lastFocused) return { focus: true, lastFocused: selectedView };
   return { focus: false, lastFocused: lastFocused === undefined ? null : lastFocused };
@@ -600,6 +865,8 @@ function shortcutFor(input) {
   if (!input.control || input.alt) return null;
   if (key === 'tab') return input.shift ? 'prev-tab' : 'next-tab';
   if (key === 'i' && input.shift) return 'devtools';
+  // PR 3: reopen the last tab closed by hand, as a browser does.
+  if (key === 't' && input.shift) return 'reopen-tab';
   return null;
 }
 
@@ -616,8 +883,9 @@ function sameSecret(a, b) {
 
 /**
  * One line of newline-JSON from the probe -> a reply object. NEVER throws.
- * `api` is main's: { state, select(label), close(label), screenshot(file),
- * quit() }. Anything else is refused by name, so a typo in the probe is a
+ * `api` is main's: { state, select(label), close(label), key(key, modifiers),
+ * screenshot(file), create(branch), reopen(), cancelCreate(), quit() }.
+ * Anything else is refused by name, so a typo in the probe is a
  * failure it can see rather than a command that silently did nothing.
  *
  * Miguel, PR #75 M4: every line must carry `token`, the secret the probe put in
@@ -649,6 +917,11 @@ async function handleProbeCommand(line, api, expectedToken) {
         // Only ever a picture: never a path to some other file it could clobber.
         if (typeof cmd.file !== 'string' || !/\.png$/i.test(cmd.file)) return { ok: false, error: 'screenshot needs a .png file' };
         return await api.screenshot(cmd.file);
+      case 'create':
+        if (typeof cmd.branch !== 'string') return { ok: false, error: 'create needs a branch' };
+        return await api.create(cmd.branch);
+      case 'reopen': return await api.reopen();
+      case 'cancelCreate': return await api.cancelCreate();
       case 'quit': return await api.quit();
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
     }
@@ -681,6 +954,6 @@ function probeLineReader(maxBytes) {
 }
 
 module.exports = {
-  createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, focusStep, NO_PORT_ERROR,
+  createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
+  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, focusStep, menuText, NO_PORT_ERROR,
 };

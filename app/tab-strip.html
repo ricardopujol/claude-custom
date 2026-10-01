@@ -36,6 +36,23 @@
     #strip-alert { flex: 1 1 auto; min-width: 0; align-self: center; margin: 0 10px; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; color: var(--bad); }
     #strip-alert[hidden] { display: none; }
+    #strip-alert.info { color: var(--dim); }
+    .badge { font-size: 10px; padding: 0 4px; border-radius: 3px; }
+    .badge.merged { color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); }
+    .badge.warn { color: var(--bad); font-size: 11px; }
+    /* PR 3: the + (main pops its menu) and the branch form. Both live outside
+       #tabs: a repaint rebuilds #tabs, and must not wipe what is being typed. */
+    #plus { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 17px;
+      line-height: 1; padding: 0 12px; flex: 0 0 auto; }
+    #plus:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, var(--chrome)); }
+    #plus[hidden], #create[hidden] { display: none; }
+    #create { display: flex; align-items: center; gap: 4px; margin: 0 0 0 6px; flex: 0 0 auto; }
+    #create-branch { width: 200px; height: 22px; box-sizing: border-box; padding: 0 6px; border-radius: 3px;
+      background: var(--bg); color: var(--text); border: 1px solid var(--border); font: inherit; user-select: text; }
+    #create-branch:focus { outline: none; border-color: var(--accent); }
+    #create-branch:disabled { color: var(--dim); }
+    #create-cancel { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
+    #create-cancel:hover { color: var(--text); }
     @keyframes pulse { 50% { opacity: 0.35; } }
     /* Visible only while the selected tab has no page of its own (starting,
        failed, or no worktrees yet); the tab's view covers it otherwise. */
@@ -50,7 +67,11 @@
   </style>
 </head>
 <body>
-  <div id="strip"><div id="tabs"></div><div id="strip-alert" hidden></div></div>
+  <div id="strip"><div id="tabs"></div><button type="button" id="plus" hidden
+      title="New branch, or reopen a tab you closed (Ctrl+Shift+T)">+</button><form id="create" hidden><input
+      id="create-branch" placeholder="feat/…" spellcheck="false" autocomplete="off"
+      aria-label="New branch name" /><button type="button" id="create-cancel" title="Cancel (Esc)">✕</button></form><div
+      id="strip-alert" hidden></div></div>
   <div id="pane" hidden>
     <div id="pane-text"></div>
     <button type="button" id="pane-retry" hidden>Retry</button>

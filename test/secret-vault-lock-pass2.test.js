@@ -174,12 +174,20 @@ test('G2: a legacy vault with no checksum GAINS one on its first successful unlo
 
   const j = readVault(file);
   delete j.lock.fp;                         // what every pre-d82ab9d vault is
+  // FORMAT 2, item 5: `persistLocked` now stamps `format` on every write
+  // unconditionally, so `v0.setKey(KEY)` above already left `format: 2` on
+  // disk -- a shape no vault could actually have had before this checksum
+  // existed. Reset it too, or `load()`'s new format-2-requires-`fp` check
+  // (`lockMissingChecksum`) reads this fixture as DAMAGE rather than as the
+  // legacy vault it is meant to simulate.
+  j.format = 1;
   writeVault(file, j);
   assert.strictEqual(readVault(file).lock.fp, undefined, 'precondition: no checksum');
 
   const v = open(file);
   assert.strictEqual(v.unlock(KEY).ok, true);
   assert.ok(readVault(file).lock.fp, 'the unlock must have migrated the record');
+  assert.strictEqual(readVault(file).format, 2, 'and the format number moved with it');
   assert.strictEqual(v.get(e.id, ANY), 'sensitive', 'and the secret is still readable');
 
   // And F1's counterexample is now caught on this vault, which it was not before.
@@ -200,6 +208,7 @@ test('G2: a failed migration write never turns a good unlock into a failure', ()
   v0.setKey(KEY);
   const j = readVault(file);
   delete j.lock.fp;
+  j.format = 1;                             // see the sibling G2 test: same fixture fix
   writeVault(file, j);
 
   const stale = open(file);                 // loaded at the pre-migration gen

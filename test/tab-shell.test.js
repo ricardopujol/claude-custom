@@ -3,8 +3,9 @@
  * The tab shell's decisions, with every effect faked (app/tab-shell.js).
  *
  * The properties that cost something get a PROPERTY test: spawns are
- * serialised, `listening` is never false for a tab that is starting or not
- * started, and a poll that lists no dev keeps every tab.
+ * serialised, `listening` is false only for a started tab whose port REFUSED
+ * (never a timeout, never a starting or unstarted tab), and a poll that lists
+ * no dev keeps every tab.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -13,10 +14,19 @@ const os = require('os');
 const fc = require('fast-check');
 
 const {
-  createShell, createQueue, captureListening, buildObservation, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor, focusStep, probeLineReader,
+  createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
+  handleProbeCommand, noWindowText, shortcutFor, focusStep, probeLineReader, menuText,
 } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
+const tabModel = require('../app/tab-model');
+
+// For the createShell calls that don't exercise PR 3: no scripts, no markers.
+const NO_OPS = {
+  available: () => ({ create: false, setup: false, remove: false }),
+  create: async () => ({ ok: false, error: 'no' }), setup: async () => ({ ok: false, error: 'no' }),
+  remove: async () => ({ ok: false, error: 'no' }),
+};
+const noMarker = () => null;
 
 const ROOT = path.join(os.tmpdir(), 'cc-tabshell-proj');
 const wt = (name) => path.join(ROOT, name);
@@ -39,20 +49,55 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     tokenFiles: {},
     onSpawn: null,      // (spawn) => void, runs before a registering spawn binds
     hold: null,         // a promise every choosePort waits on while set
+    // PR 3: normPath -> the branch /merged marked; the contract scripts' fakes.
+    markers: {}, markerReads: [], opsCalls: [], probeOverride: null,
+    available: { create: true, setup: true, remove: true },
+    createResult: null, setupHold: null, setupResult: { ok: true, result: null }, onLine: null,
+    removeResult: { ok: true, already: false },
   };
+  // A worktree appears in git's list (what new-worktree.ps1 does).
+  h.addWorktree = (name, branch) => { h.listText += '\n' + porcelain([[name, branch]]); };
   const base = 7700;
   const fileToken = (port) => (h.running[port] === undefined ? null
     : (h.tokenFiles[port] !== undefined ? h.tokenFiles[port] : `tok-${port}`));
   const deps = {
     mode, container: ROOT, cwd: wt('dev'), launchedFrom,
     log: () => {},
-    git: { list: async () => {
-      h.gitInFlight++; h.gitMax = Math.max(h.gitMax, h.gitInFlight);
-      await settle();
-      h.gitInFlight--;
-      if (h.listFails) throw new Error('git broke');
-      return h.listText;
-    } },
+    git: {
+      list: async () => {
+        h.gitInFlight++; h.gitMax = Math.max(h.gitMax, h.gitInFlight);
+        await settle();
+        h.gitInFlight--;
+        if (h.listFails) throw new Error('git broke');
+        return h.listText;
+      },
+      marker: (p, branch) => {
+        h.markerReads.push([normPath(p), branch]);
+        return h.markers[normPath(p)] === branch ? { branch, pr: 1, mergedAt: '2026-09-30T00:00:00Z' } : null;
+      },
+    },
+    ops: {
+      available: () => ({ ...h.available }),
+      create: async ({ branch }) => {
+        h.opsCalls.push(['create', branch]);
+        await settle();
+        if (h.createResult) return h.createResult(branch);
+        const dir = branch.replace(/\//g, '-');
+        h.addWorktree(dir, branch);
+        return { ok: true, path: wt(dir), branch, warning: null };
+      },
+      setup: async ({ path: p, onLine }) => {
+        h.opsCalls.push(['setup', normPath(p)]);
+        h.onLine = onLine;
+        if (h.setupHold) await h.setupHold;
+        return h.setupResult;
+      },
+      remove: async ({ path: p }) => {
+        h.opsCalls.push(['remove', normPath(p)]);
+        await settle();
+        return typeof h.removeResult === 'function' ? h.removeResult(p) : h.removeResult;
+      },
+    },
     hosts: {
       choosePort: async (tab) => {
         h.resolveCalls.push(tab.key);
@@ -67,7 +112,8 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
         }
         return free === null ? null : { port: free, action: 'spawn' };
       },
-      isListening: async (port) => h.running[port] !== undefined,
+      probe: async (port) => (h.probeOverride ? h.probeOverride(port)
+        : (h.running[port] !== undefined ? 'listening' : 'refused')),
       spawn: ({ tab, port, token }) => {
         if (spawnFails) throw new Error('spawn exploded');
         h.spawns.push({ key: tab.key, port, token });
@@ -126,31 +172,40 @@ test('createQueue runs in order, one at a time, and survives a failure', async (
   assert.deepStrictEqual(results.map(r => r.status), ['fulfilled', 'rejected', 'fulfilled']);
 });
 
-test('captureListening: true for started tabs that answer; everything else is left OUT', async () => {
+test('captureListening: true when it answers, false ONLY when a started tab port refused; else left OUT', async () => {
   const tabs = [
-    { key: 'a', started: true, starting: false, port: 1 },
-    { key: 'b', started: true, starting: false, port: 2 },        // does not answer
+    { key: 'a', started: true, starting: false, port: 1 },        // answers
+    { key: 'b', started: true, starting: false, port: 2 },        // refused: its session ended
     { key: 'c', started: false, starting: true, port: null },     // starting
     { key: 'd', started: false, starting: false, port: null },    // never started
     { key: 'e', started: true, starting: true, port: 5 },         // mid-restart: unknown
     { key: 'f', started: true, starting: false, port: 6 },        // probe throws
+    { key: 'g', started: true, starting: false, port: 7 },        // timed out: busy, NOT gone
+    { key: 'h', started: false, starting: false, port: 8 },       // refused, but this window never started it
   ];
+  const answer = { 1: 'listening', 2: 'refused', 5: 'refused', 7: 'unknown', 8: 'refused' };
   const out = await captureListening(tabs, async (p) => {
     if (p === 6) throw new Error('boom');
-    return p === 1;
+    return answer[p];
   });
-  assert.deepStrictEqual(out, { a: true });
-  assert.ok(!Object.values(out).includes(false));
+  assert.deepStrictEqual(out, { a: true, b: false });
 });
 
-test('buildObservation: no text is NO observation; merged is always {}', () => {
-  assert.strictEqual(buildObservation(null, ROOT, {}), null);
-  assert.strictEqual(buildObservation(undefined, ROOT, {}), null);
-  const o = buildObservation(porcelain(THREE), ROOT, { x: true });
-  assert.deepStrictEqual(o.merged, {});
-  assert.deepStrictEqual(o.listening, { x: true });
+test('observeWorktrees: no text is NO observation; markers are read with the branch of THIS poll, never for dev', () => {
+  assert.strictEqual(observeWorktrees(null, ROOT, noMarker), null);
+  assert.strictEqual(observeWorktrees(undefined, ROOT, noMarker), null);
+  const reads = [];
+  const o = observeWorktrees(porcelain(THREE), ROOT, (p, b) => {
+    reads.push([normPath(p), b]);
+    if (b === 'feat/b') throw new Error('unreadable');      // a throw is "not merged"
+    return b === 'feat/a' ? { branch: b } : null;
+  });
+  assert.deepStrictEqual(o.merged, { [key('feat-a')]: true });
+  assert.deepStrictEqual(reads, [[key('feat-a'), 'feat/a'], [key('feat-b'), 'feat/b']]);
   assert.deepStrictEqual(o.worktrees.map(w => [w.isDev, w.branch]), [[true, 'develop'], [false, 'feat/a'], [false, 'feat/b']]);
-  assert.deepStrictEqual(buildObservation('', ROOT, undefined).listening, {});
+  assert.deepStrictEqual(observeWorktrees(porcelain([...THREE, ['feat-c', null]]), ROOT, () => ({})).merged,
+    { [key('feat-a')]: true, [key('feat-b')]: true }, 'a detached worktree has no branch to read a marker for');
+  assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
 test('sanitizeStatus keeps four fields and never invents a value', () => {
@@ -770,9 +825,9 @@ test('goTo: another install raises its window; windows 0 is explained, a refusal
   let reply = { ok: true, reply: { type: 'raised', windows: 2 } };
   const s = createShell({
     mode: 'tabs', container: ROOT, log: () => {},
-    git: { list: async () => porcelain([THREE[0]]) },
+    git: { list: async () => porcelain([THREE[0]]), marker: noMarker }, ops: NO_OPS,
     hosts: {
-      choosePort: async () => ({ port: 7700, action: 'attach' }), isListening: async () => true,
+      choosePort: async () => ({ port: 7700, action: 'attach' }), probe: async () => 'listening',
       spawn: () => {}, wait: async () => true, tokenFor: () => 'tok', tokenFile: () => 'tok', newToken: () => 't',
       control: async (c) => { calls.push(c); return reply; },
       identity: ({ install, port }) => (install === 'C:/other' && port === 7999 ? { pid: 4242 } : null),
@@ -806,6 +861,424 @@ test('goTo from something that is not a tab view is refused with words', async (
   assert.deepStrictEqual(h.controls, []);
 });
 
+// --- PR 3: merged markers -> session ends -> remove (Contracts B, C) -------------
+
+const phaseOf = (h, name) => (h.shell._state().tabs.find(t => normPath(t.path) === key(name)) || {}).phase;
+const removes = (h) => h.opsCalls.filter(([op]) => op === 'remove');
+
+// dev and feat-a running and started (feat-a selected once), feat-b never started.
+async function startedA() {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  await h.shell.select(key('feat-a'));
+  await flush();
+  return h;
+}
+
+test('a marker for the branch of this poll marks the tab merged; a stale one never counts', async () => {
+  const h = await startedA();
+  h.markers[key('feat-b')] = 'feat/old-name';
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'finishing');
+  assert.strictEqual(phaseOf(h, 'feat-b'), 'live');
+  assert.ok(!h.markerReads.some(([k]) => k === key('dev')), 'dev is never read');
+  const e = h.shell.model().find(x => x.key === key('feat-a'));
+  assert.strictEqual(tabModel.badgeFor(e), 'merged');
+  // What the strip paints, computed here: the strip decides nothing.
+  assert.strictEqual(e.badge, 'merged');
+  assert.strictEqual(e.phaseText, 'Merged. When its session ends, this worktree is removed.');
+  const plain = h.shell.model().find(x => x.key === key('feat-b'));
+  assert.strictEqual(plain.badge, null);
+  assert.strictEqual(plain.phaseText, null);
+});
+
+test('criterion 3: merged, then its session ends (port refused) -> ONE remove, then the tab closes', async () => {
+  const h = await startedA();
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(removes(h), [], 'still listening: nothing removed');
+  delete h.running[7701];                  // the host exits with its claude
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(removes(h), [['remove', key('feat-a')]]);
+  assert.ok(!h.shell.tabByKey(key('feat-a')), 'tab closed after a successful remove');
+  assert.notStrictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(removes(h).length, 1, 'never removed twice');
+});
+
+test('criterion 9: no remove while the port answers or the probe can\u2019t tell (a timeout is not "gone")', async () => {
+  const h = await startedA();
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  delete h.running[7701];
+  h.probeOverride = () => 'unknown';
+  for (let i = 0; i < 3; i++) { await h.shell.poll(); await flush(); }
+  assert.deepStrictEqual(removes(h), []);
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'finishing');
+  h.probeOverride = null;
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(removes(h).length, 1);
+});
+
+test('a merged tab this window never started is not removed by its poll (left to the reaper)', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  h.markers[key('feat-b')] = 'feat/b';
+  for (let i = 0; i < 3; i++) { await h.shell.poll(); await flush(); }
+  assert.strictEqual(phaseOf(h, 'feat-b'), 'finishing');
+  assert.deepStrictEqual(removes(h), []);
+});
+
+test('criterion 4: a failed remove keeps the tab and says why; exit 2 keeps it as kept, not an error', async () => {
+  const h = await startedA();
+  h.removeResult = { ok: false, error: 'C:\\x\\feat-a has uncommitted changes. Nothing was removed.' };
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'remove-failed');
+  const e = h.shell.model().find(x => x.key === key('feat-a'));
+  assert.match(tabModel.phaseText(e), /uncommitted changes/);
+  assert.strictEqual(tabModel.badgeFor(e), 'warn');
+
+  const k = await startedA();
+  k.removeResult = { ok: false, kept: true, reason: 'feat/a still has a handoff brief' };
+  k.markers[key('feat-a')] = 'feat/a';
+  await k.shell.poll();
+  delete k.running[7701];
+  await k.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(k, 'feat-a'), 'kept');
+  const ke = k.shell.model().find(x => x.key === key('feat-a'));
+  assert.strictEqual(tabModel.phaseText(ke), 'Merged, and kept: feat/a still has a handoff brief');
+  assert.strictEqual(tabModel.badgeFor(ke), 'merged');
+});
+
+test('a remover that throws is a failed remove, never an unhandled rejection', async () => {
+  const h = await startedA();
+  h.removeResult = () => { throw new Error('spawn exploded'); };
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'remove-failed');
+});
+
+test('a remove that finishes after the window closed changes nothing and publishes nothing', async () => {
+  const h = await startedA();
+  let release;
+  h.removeResult = () => new Promise(r => { release = r; });
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  h.shell.destroy();
+  const published = h.changes.length;
+  release({ ok: true, already: false });
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'removing');
+  assert.strictEqual(h.changes.length, published);
+});
+
+// --- PR 3: + -> New branch (Contract A), then setup (Contract E) ---------------------
+
+test('createWorktree: a local refusal never runs the script', async () => {
+  const h = harness();
+  await h.shell.open();
+  const r = await h.shell.createWorktree('-Base');
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.opsCalls, []);
+  assert.strictEqual(h.shell.snapshot().create.phase, 'failed');
+});
+
+test('criterion 2: the script refusing shows its words and makes no tab', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.createResult = () => ({ ok: false, error: 'demo: a branch needs a prefix (feat/, fix/, ...)' });
+  const r = await h.shell.createWorktree('demo');
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.shell.snapshot().create, { phase: 'failed', branch: 'demo', error: 'demo: a branch needs a prefix (feat/, fix/, ...)' });
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+});
+
+test('criterion 2 + 10: a new branch gets a tab, selected, and its host starts only after setup', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  let release;
+  h.setupHold = new Promise(r => { release = r; });
+  const done = h.shell.createWorktree('feat/demo');
+  for (let i = 0; i < 4; i++) await flush();
+  assert.ok(labels(h).includes('feat/demo'));
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-demo'));
+  assert.ok(!h.spawns.some(s => s.key === key('feat-demo')), 'no session while setup runs');
+  h.onLine('added 512 packages');
+  const during = h.shell.model().find(e => e.key === key('feat-demo'));
+  assert.deepStrictEqual(during.setup, { running: true, line: 'added 512 packages', error: null, log: null });
+  assert.strictEqual(h.shell.snapshot().create, null);
+  release();
+  await done;
+  await flush();
+  assert.ok(h.spawns.some(s => s.key === key('feat-demo')), 'started once setup finished');
+  assert.ok(h.shell.tabByKey(key('feat-demo')).started);
+  assert.strictEqual(h.shell.model().find(e => e.key === key('feat-demo')).setup, null);
+  assert.deepStrictEqual(h.opsCalls.map(([op]) => op), ['create', 'setup']);
+});
+
+test('criterion 10: a failing setup still starts the session, and the error stays on the tab', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  h.setupResult = { ok: false, error: "run: 'npm ci' exited with 1 (output in L).", log: 'L' };
+  await h.shell.createWorktree('feat/demo');
+  await flush();
+  assert.ok(h.shell.tabByKey(key('feat-demo')).started);
+  const e = h.shell.model().find(x => x.key === key('feat-demo'));
+  assert.strictEqual(tabModel.phaseText(e), "Setup failed: run: 'npm ci' exited with 1 (output in L).");
+});
+
+test('a tab closed by hand while its setup runs leaves no setup error behind for a reopen', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  let release;
+  h.setupHold = new Promise(r => { release = r; });
+  h.setupResult = { ok: false, error: 'late failure', log: null };
+  const done = h.shell.createWorktree('feat/demo');
+  for (let i = 0; i < 4; i++) await flush();
+  await h.shell.closeTab(key('feat-demo'));
+  release();
+  await done;
+  await h.shell.reopen(key('feat-demo'));
+  await flush();
+  const e = h.shell.model().find(x => x.key === key('feat-demo'));
+  assert.strictEqual(e.setup, null);
+  assert.strictEqual(tabModel.phaseText(e), null);
+});
+
+test('no setup script: the new tab starts at once, and Contract A\u2019s warning is shown', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  h.available = { create: true, setup: false, remove: true };
+  await h.shell.open();
+  await flush();
+  h.createResult = (branch) => {
+    h.addWorktree('feat-demo', branch);
+    return { ok: true, path: wt('feat-demo'), branch, warning: 'Active Lanes row not added' };
+  };
+  await h.shell.createWorktree('feat/demo');
+  await flush();
+  assert.ok(h.shell.tabByKey(key('feat-demo')).started);
+  assert.ok(!h.opsCalls.some(([op]) => op === 'setup'));
+  const e = h.shell.model().find(x => x.key === key('feat-demo'));
+  assert.strictEqual(tabModel.phaseText(e), 'Created, but: Active Lanes row not added');
+});
+
+test('one creation at a time; while it runs, a tab for that branch selected by hand does not start', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  let release;
+  h.createResult = (branch) => new Promise((r) => {
+    release = () => r({ ok: true, path: wt('feat-demo'), branch, warning: null });
+    h.addWorktree('feat-demo', branch);    // git lists it before the script returns
+  });
+  h.available = { create: true, setup: false, remove: true };
+  const first = h.shell.createWorktree('feat/demo');
+  await flush();
+  assert.strictEqual((await h.shell.createWorktree('feat/other')).error, 'already creating one');
+  await h.shell.poll();
+  await flush();
+  await h.shell.select(key('feat-demo'));
+  await flush();
+  assert.ok(!h.spawns.some(s => s.key === key('feat-demo')), 'not started while its creation is pending');
+  assert.strictEqual(h.shell.plusMenu().create.enabled, false);
+  release();
+  await first;
+  await flush();
+  assert.ok(h.shell.tabByKey(key('feat-demo')).started);
+});
+
+// --- PR #80 Dexter --------------------------------------------------------------
+
+test('Dexter F1: closed and reopened while its setup runs, the tab still waits for setup', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  let release;
+  h.setupHold = new Promise(r => { release = r; });
+  const done = h.shell.createWorktree('feat/demo');
+  for (let i = 0; i < 4; i++) await flush();
+  await h.shell.closeTab(key('feat-demo'));
+  await h.shell.reopen();
+  for (let i = 0; i < 4; i++) await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-demo'));
+  assert.ok(!h.spawns.some(s => s.key === key('feat-demo')), 'no session while npm ci still runs');
+  release();
+  await done;
+  await flush();
+  assert.ok(h.shell.tabByKey(key('feat-demo')).started, 'and it starts once setup ends');
+});
+
+test('Dexter F2: a host that later takes a dead tab’s port never vouches for that tab', async () => {
+  const h = await startedA();                       // feat-a on 7701
+  delete h.running[7701];                           // A /exits, NOT merged
+  await h.shell.poll();
+  await flush();
+  // B starts and takes the freed 7701.
+  await h.shell.select(key('feat-b'));
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-b')).port, 7701, 'the sequence needs B on A’s old port');
+  h.markers[key('feat-a')] = 'feat/a';              // /merged lands for A
+  await h.shell.poll();                             // 7701 answers -- for B
+  await flush();
+  delete h.running[7701];                           // B exits
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(removes(h), [], 'A ended before its merge: never removed automatically');
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'finishing');
+});
+
+test('Dexter F2: a tab started again after its session ended is watched again', async () => {
+  const h = await startedA();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  h.shell.tabByKey(key('feat-a')).started = false;  // what a restart path resets...
+  await h.shell.select(key('feat-a'));              // ...and starts again
+  await flush();
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  await flush();
+  delete h.running[h.shell.tabByKey(key('feat-a')).port];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(removes(h).length, 1);
+});
+
+test('Dexter F3: a setup that fails before git lists the worktree keeps its error for the tab', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  h.createResult = (branch) => ({ ok: true, path: wt('feat-late'), branch, warning: null });   // not listed yet
+  h.setupResult = { ok: false, error: "copy: '.env' failed: missing in dev", log: null };
+  await h.shell.createWorktree('feat/late');
+  h.addWorktree('feat-late', 'feat/late');
+  await h.shell.poll();
+  await flush();
+  const e = h.shell.model().find(x => x.key === key('feat-late'));
+  assert.ok(e, 'listed');
+  assert.strictEqual(e.phaseText, "Setup failed: copy: '.env' failed: missing in dev");
+});
+
+test('Dexter F4: a tab whose folder is being removed cannot be closed (or reopened into it)', async () => {
+  const h = await startedA();
+  let release;
+  h.removeResult = () => new Promise(r => { release = r; });
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'removing');
+  assert.strictEqual(h.shell.model().find(e => e.key === key('feat-a')).closable, false);
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, []);
+  release({ ok: true, already: false });
+  await flush();
+});
+
+test('Miguel G1: a new tab git lists late does not steal the selection from one picked meanwhile', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  h.available = { create: true, setup: false, remove: true };
+  await h.shell.open();
+  await flush();
+  // The script answers, but git doesn't list the worktree until a later poll.
+  h.createResult = (branch) => ({ ok: true, path: wt('feat-late'), branch, warning: null });
+  await h.shell.createWorktree('feat/late');
+  await h.shell.select(key('feat-b'));
+  h.addWorktree('feat-late', 'feat/late');
+  await h.shell.poll();
+  await flush();
+  assert.ok(labels(h).includes('feat/late'));
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'), 'the person chose feat-b; the late tab does not take it');
+});
+
+test('Miguel G3: menuText doubles & so a branch name is never read as a menu mnemonic', () => {
+  assert.strictEqual(menuText('feat/r&d'), 'feat/r&&d');
+  assert.strictEqual(menuText('feat/a&&b'), 'feat/a&&&&b');
+  assert.strictEqual(menuText('feat/plain'), 'feat/plain');
+  assert.strictEqual(menuText(null), '');
+});
+
+test('plusMenu: New branch is offered only with the scripts installed and nothing being created', async () => {
+  const h = harness();
+  await h.shell.open();
+  assert.deepStrictEqual(h.shell.plusMenu().create, { enabled: true, why: null });
+  h.available = { create: false, setup: false, remove: false };
+  assert.deepStrictEqual(h.shell.plusMenu().create, { enabled: false, why: 'worktree scripts not installed' });
+  const single = harness({ mode: 'single' });
+  await single.shell.open();
+  assert.strictEqual(single.shell.plusMenu().create.enabled, false);
+});
+
+test('openCreate / cancelCreate drive the strip form; a failure can be dismissed, a run cannot', async () => {
+  const h = harness();
+  await h.shell.open();
+  assert.strictEqual(h.shell.openCreate(), true);
+  assert.deepStrictEqual(h.shell.snapshot().create, { phase: 'input' });
+  assert.strictEqual(h.shell.cancelCreate(), true);
+  assert.strictEqual(h.shell.snapshot().create, null);
+  await h.shell.createWorktree('');
+  assert.strictEqual(h.shell.snapshot().create.phase, 'failed');
+  assert.strictEqual(h.shell.cancelCreate(), true);
+  assert.strictEqual(h.shell.cancelCreate(), false, 'nothing open');
+});
+
+// --- PR 3: reopen a tab closed by hand -------------------------------------------
+
+test('a hand-closed tab is offered for reopening, and comes back selected', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  await flush();
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, [{ key: key('feat-a'), label: 'feat/a' }]);
+  await h.shell.poll();
+  assert.ok(!labels(h).includes('feat/a'), 'still closed: a poll does not bring it back');
+  const r = await h.shell.reopen();
+  await flush();
+  assert.strictEqual(r.ok, true);
+  assert.ok(labels(h).includes('feat/a'));
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, []);
+});
+
+test('reopen lists the most recent first, and drops a worktree git no longer lists', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  await h.shell.closeTab(key('feat-b'));
+  assert.deepStrictEqual(h.shell.plusMenu().reopen.map(x => x.label), ['feat/b', 'feat/a']);
+  h.listText = porcelain([['dev', 'develop'], ['feat-a', 'feat/a']]);
+  await h.shell.poll();
+  assert.deepStrictEqual(h.shell.plusMenu().reopen.map(x => x.label), ['feat/a']);
+  assert.strictEqual((await h.shell.reopen(key('feat-b'))).ok, false);
+  assert.strictEqual((await h.shell.reopen(key('feat-a'))).ok, true);
+});
+
 // --- menus, override, Ctrl+Tab -----------------------------------------------
 
 test('the override is offered only for a blocked tab, and reaches only that view', async () => {
@@ -836,12 +1309,12 @@ test('next/previous cycle through every tab and wrap, starting what they land on
 
 test('createShell refuses deps missing a host function, by name, instead of failing inside a start', () => {
   const base = {
-    mode: 'tabs', container: ROOT, git: { list: async () => '' },
+    mode: 'tabs', container: ROOT, git: { list: async () => '', marker: noMarker }, ops: NO_OPS,
     views: { create: () => ({}), destroy: () => {}, send: () => {}, owns: () => false },
     ui: { confirmClose: async () => true, changed: () => {}, focusWindow: () => {}, isFocused: () => true },
   };
   const hosts = {
-    choosePort: async () => null, isListening: async () => false, spawn: () => {}, wait: async () => false,
+    choosePort: async () => null, probe: async () => 'unknown', spawn: () => {}, wait: async () => false,
     tokenFor: () => null, tokenFile: () => null, newToken: () => 't', control: async () => ({ ok: true }),
     identity: () => null, readToken: () => null,
   };
@@ -966,6 +1439,41 @@ test('shortcutFor: garbage in is null, never a throw', () => {
   }
 });
 
+test('shortcutFor: Ctrl+Shift+T (either case) reopens the last closed tab, like a browser; nothing near it does', () => {
+  assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true })), 'reopen-tab');
+  assert.strictEqual(shortcutFor(kd('t', { control: true, shift: true })), 'reopen-tab');
+  assert.strictEqual(shortcutFor(kd('t', { control: true })), null, 'Ctrl+T is the terminal’s');
+  assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true, alt: true })), null);
+  assert.strictEqual(shortcutFor(kd('T', { shift: true })), null);
+  assert.strictEqual(shortcutFor({ ...kd('T', { control: true, shift: true }), type: 'keyUp' }), null);
+});
+
+// --- PR 3: the branch form keeps the keyboard ------------------------------------
+
+test('focusStep: while the branch form is open, the keyboard stays with the strip', () => {
+  const v = { id: 'v' };
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: v, stripBusy: true }),
+    { focus: false, lastFocused: null });
+  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: v, stripBusy: true }),
+    { focus: false, lastFocused: null }, 'so the view is focused again once the form closes');
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: v, stripBusy: false }),
+    { focus: true, lastFocused: v });
+});
+
+test('handleProbeCommand: create, reopen and cancelCreate reach the driver; create needs a branch', async () => {
+  const seen = [];
+  const api = {
+    create: async (b) => { seen.push(['create', b]); return { ok: true }; },
+    reopen: async () => { seen.push(['reopen']); return { ok: true }; },
+    cancelCreate: async () => { seen.push(['cancel']); return { ok: true }; },
+  };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'create', branch: 'feat/demo' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'reopen' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'cancelCreate' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'create' }), api), { ok: false, error: 'create needs a branch' });
+  assert.deepStrictEqual(seen, [['create', 'feat/demo'], ['reopen'], ['cancel']]);
+});
+
 // --- properties ----------------------------------------------------------------
 
 test('PROPERTY: an input with no control/meta and a key other than F12 is never intercepted', () => {
@@ -988,7 +1496,8 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
       const sleep = (ms) => new Promise(r => setTimeout(r, ms));
       const shell = createShell({
         mode: 'tabs', container: ROOT, log: () => {},
-        git: { list: async () => porcelain([['dev', 'develop'], ...names.map(x => [x, `feat/${x}`])]) },
+        git: { list: async () => porcelain([['dev', 'develop'], ...names.map(x => [x, `feat/${x}`])]), marker: noMarker },
+        ops: NO_OPS,
         hosts: {
           // Every tab "hashes" to 7700; the walk is resolvePort's.
           choosePort: async (tab) => {
@@ -1000,7 +1509,7 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
             }
             return null;
           },
-          isListening: async (p) => occupied.has(p),
+          probe: async (p) => (occupied.has(p) ? 'listening' : 'refused'),
           spawn: ({ tab, port }) => { granted.push(port); setTimeout(() => occupied.set(port, tab.cwd), delays[1]); },
           wait: async (port) => { await sleep(delays[2] + 3); return occupied.has(port); },
           tokenFor: () => 't', tokenFile: () => 't', newToken: () => 't',
@@ -1018,22 +1527,28 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
     }), { numRuns: 25 });
 });
 
-test('PROPERTY: listening is never false, and never present for a tab that is starting or unstarted', async () => {
+test('PROPERTY: listening is false only for a started, not-starting tab whose port refused', async () => {
   await fc.assert(fc.asyncProperty(
     fc.array(fc.record({
       started: fc.boolean(), starting: fc.boolean(), port: fc.option(fc.integer({ min: 1, max: 65535 }), { nil: null }),
-      answers: fc.boolean(),
+      answer: fc.constantFrom('listening', 'refused', 'unknown', undefined, 'throw'),
     }), { maxLength: 8 }),
     async (specs) => {
       const tabs = specs.map((s, i) => ({ key: `k${i}`, ...s }));
-      const answers = new Map(tabs.map(t => [t.port, t.answers]));
-      const out = await captureListening(tabs, async (p) => answers.get(p));
+      const answers = new Map(tabs.map(t => [t.port, t.answer]));
+      const out = await captureListening(tabs, async (p) => {
+        const a = answers.get(p);
+        if (a === 'throw') throw new Error('boom');
+        return a;
+      });
       for (const [k, v] of Object.entries(out)) {
         const t = tabs.find(x => x.key === k);
-        if (v !== true || !t.started || t.starting || t.port === null) return false;
+        if (!t.started || t.starting || t.port === null) return false;
+        if (v === false && answers.get(t.port) !== 'refused') return false;
+        if (v === true && answers.get(t.port) !== 'listening') return false;
       }
       return true;
-    }), { numRuns: 100 });
+    }), { numRuns: 200 });
 });
 
 test('PROPERTY: a poll with no dev keeps every tab, whatever git lists', async () => {
