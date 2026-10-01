@@ -21,7 +21,7 @@
 const layoutApi = typeof module !== 'undefined' && module.exports
   ? require('./dock-layout')
   : root.dockLayout;
-const { ZONES, fitSizes, shapeOf } = layoutApi;
+const { ZONES, MIN, fitSizes, shapeOf } = layoutApi;
 
 // Portraits in a wide (top/bottom) zone: the card is a row, so the face is
 // bounded by the zone's height minus its tab bar and the card's name line.
@@ -41,7 +41,11 @@ function zonePlan(layout, tabs, viewport, { faceSize } = {}) {
   let face = null;
   for (const z of ZONES) {
     const ids = layout.zones[z];
-    const panel = layout.active[z];
+    const selected = layout.active[z];
+    // Squeezed below its minimum by a window too narrow for it (the terminal
+    // wins, Dexter F7): drawn as its rail, the selected tab still marked.
+    const squeezed = selected !== null && sizes[z] < (shapeOf(z) === 'tall' ? MIN.side : MIN.wide);
+    const panel = squeezed ? null : selected;
     zones[z] = {
       empty: ids.length === 0,
       collapsed: ids.length > 0 && panel === null,
@@ -50,7 +54,7 @@ function zonePlan(layout, tabs, viewport, { faceSize } = {}) {
       panel,
       tabs: ids.filter(id => byId.has(id)).map((id) => {
         const t = byId.get(id);
-        return { id, label: t.label, title: t.title, on: id === panel };
+        return { id, label: t.label, title: t.title, on: id === selected };
       }),
     };
     if (panel !== null) shown.push(panel);

@@ -127,3 +127,15 @@ test('P6: another window\'s placement drawn with this window\'s selection (store
     }
   }), RUNS);
 });
+
+test('P7 (Dexter F7, terminal wins): in ANY window with room for the rails, the terminal keeps its minimum', () => {
+  const viewport = fc.record({
+    width: fc.integer({ min: TERM_MIN.width + 2 * 28, max: 4000 }),
+    height: fc.integer({ min: TERM_MIN.height + 2 * 30, max: 2500 }),
+  });
+  fc.assert(fc.property(rawArb, opsArb, viewport, (raw, ops, vp) => {
+    const s = fitSizes(run(normalizeLayout(raw, IDS), ops), vp);
+    assert.ok(s.left + s.right + TERM_MIN.width <= vp.width, `width ${JSON.stringify(s)} in ${vp.width}`);
+    assert.ok(s.top + s.bottom + TERM_MIN.height <= vp.height, `height ${JSON.stringify(s)} in ${vp.height}`);
+  }), RUNS);
+});

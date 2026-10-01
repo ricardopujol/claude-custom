@@ -310,16 +310,47 @@ test('top and bottom shrink together the same way, against the height', () => {
   assert.ok(s.top >= MIN.wide && s.bottom >= MIN.wide);
 });
 
-test('a window too small for the minimums still gives every open zone its minimum', () => {
+// PR #82 Dexter F7, decided by Ricardo 2026-10-01: when both can't have their
+// minimum, the TERMINAL wins. Open zones that can't get theirs are drawn as
+// their rail (or not at all when even the rails don't fit); the selection is
+// untouched, so widening the window brings them back.
+test('too narrow for both: the terminal keeps 320 and the open zones drop to their rails', () => {
   const l = open({ left: ['vault'], right: IDS.filter(id => id !== 'vault') }, { left: 300, right: 300 });
-  const s = fitSizes(l, { width: 400, height: 300 });
-  assert.strictEqual(s.left, MIN.side);
-  assert.strictEqual(s.right, MIN.side);
+  const s = fitSizes(l, { width: 500, height: 800 });     // 180 px for zones: under 2 x 120
+  assert.strictEqual(s.left, RAIL.side);
+  assert.strictEqual(s.right, RAIL.side);
+  assert.ok(s.left + s.right + TERM_MIN.width <= 500);
+});
+
+test('too narrow even for the rails: the zones take nothing, the terminal everything', () => {
+  const l = open({ left: ['vault'], right: IDS.filter(id => id !== 'vault') }, { left: 300, right: 300 });
+  const s = fitSizes(l, { width: 360, height: 800 });     // 40 px: under 2 x 28
+  assert.deepStrictEqual([s.left, s.right], [0, 0]);
+});
+
+test('one open zone: it keeps its minimum while that fits, then its rail', () => {
+  const l = open({ right: IDS }, { right: 300 });
+  assert.strictEqual(fitSizes(l, { width: 440, height: 800 }).right, MIN.side);   // exactly 120 left
+  assert.strictEqual(fitSizes(l, { width: 439, height: 800 }).right, RAIL.side);
+});
+
+test('top and bottom follow the same rule against the height', () => {
+  const l = open({ top: ['vault'], bottom: ['fog'], right: IDS.filter(id => id !== 'vault' && id !== 'fog') }, { top: 200, bottom: 200 });
+  const s = fitSizes(l, { width: 1200, height: 300 });    // 140 px for zones: under 2 x 80
+  assert.deepStrictEqual([s.top, s.bottom], [RAIL.wide, RAIL.wide]);
+});
+
+test('Dexter F7\'s own case: ~300 px of room (640 px window, diagnostics open) all goes to the terminal', () => {
+  const s = fitSizes(open({ right: IDS }, { right: 180 }), { width: 300, height: 800 });
+  assert.strictEqual(s.right, 0);
 });
 
 test('a junk viewport is treated as no room, never as NaN sizes', () => {
   const s = fitSizes(open({ right: IDS }, { right: 260 }), { width: undefined, height: null });
-  assert.strictEqual(s.right, MIN.side);
+  // No room at all: by the terminal-wins rule (Dexter F7) the zone gets 0 -- a
+  // number, never NaN.
+  assert.strictEqual(s.right, 0);
+  for (const v of Object.values(s)) assert.ok(Number.isFinite(v));
 });
 
 test('left and right are tall; top and bottom are wide', () => {

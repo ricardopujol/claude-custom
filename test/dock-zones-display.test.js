@@ -190,3 +190,14 @@ test('after the user\'s own click or key, focus returns to the terminal -- unles
   assert.strictEqual(renderEffects(S('vault'), S('vault', 'fog'), { userAction: true }).focus, null);
   assert.strictEqual(renderEffects(S('agents'), S('fog'), { userAction: false }).focus, null);
 });
+
+test('Dexter F7: a zone squeezed below its minimum is drawn as its rail, panel hidden, selection kept', () => {
+  const l = defaultLayout(IDS);                           // Agents showing on the right
+  const p = zonePlan(l, TABS, { width: 400, height: 800 }, { faceSize });   // 80 px for the zone: < 120
+  assert.strictEqual(p.zones.right.collapsed, true);
+  assert.strictEqual(p.zones.right.panel, null);
+  assert.strictEqual(p.zones.right.size, RAIL.side);
+  assert.deepStrictEqual(p.shown, []);
+  assert.strictEqual(p.zones.right.tabs.find(t => t.id === 'agents').on, true, 'still the selected tab');
+  assert.strictEqual(l.active.right, 'agents', 'the layout itself is untouched');
+});

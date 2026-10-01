@@ -227,6 +227,15 @@ function fitSizes(layout, viewport) {
     // in proportion to how far above the minimum each one asked. Scaling the
     // whole size and THEN flooring at the minimum overshot: 120 + 180 in a
     // 560 px window came out 120 + 144, eating the terminal's room (found by P4).
+    // Too narrow for both the terminal's minimum and the zones': the TERMINAL
+    // wins (PR #82 Dexter F7, Ricardo 2026-10-01). Open zones drop to their
+    // rail, or to nothing when even the rails don't fit. The selection is
+    // untouched, so a wider window brings them straight back.
+    if (avail < min * openZones.length) {
+      const each = avail >= rail * openZones.length ? rail : 0;
+      for (const z of openZones) out[z] = each;
+      return;
+    }
     const spare = Math.max(0, avail - min * openZones.length);
     const above = total - min * openZones.length;
     for (const z of openZones) {
