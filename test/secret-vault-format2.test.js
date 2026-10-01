@@ -536,3 +536,32 @@ test('CONSUMER TOLERANCE: secret-service.list() does not choke on an unreadable 
   // field, never a `false` one, being what "nothing changed here" has always
   // looked like on this object (see list()'s own comment).
 });
+
+// ---------------------------------------------------------------------------
+// Sealing x multi-path projects (develop e73a663, landed after this branch)
+// ---------------------------------------------------------------------------
+
+test('a SEALED entry is visible from a list of paths and unseals there; scope itself stays plain', () => {
+  // `visibleFrom` reads `entry.project`, which item 4 deliberately does NOT
+  // seal -- so a window that passes [dev, container] still finds an entry
+  // scoped to the container root, and only THEN unwraps its label and note.
+  // Written on the rebase onto develop, where the two features first met.
+  const ROOT = 'C:/work/proj', DEV = 'C:/work/proj/dev', OTHER = 'C:/work/other';
+  const file = tmp();
+  const v0 = open(file);
+  v0.setKey(KEY);
+  const e = v0.add({ label: 'root-scoped', secret: 's-root', note: 'old layout', project: ROOT });
+
+  const onDisk = readVault(file).entries.find(x => x.id === e.id);
+  assert.strictEqual(onDisk.sealed, true);
+  assert.notStrictEqual(onDisk.label, 'root-scoped', 'the label must be sealed on disk');
+  // Stored normalised (lower-cased drive), but readable -- not a wrapped blob.
+  assert.strictEqual(onDisk.project, ROOT.toLowerCase(), 'the scope must stay plain, or visibility cannot read it');
+
+  const v = open(file);
+  assert.strictEqual(v.unlock(KEY).ok, true);
+  const rows = v.list({ project: [DEV, ROOT] });
+  assert.deepStrictEqual(rows.map(r => [r.label, r.note, r.unreadable]), [['root-scoped', 'old layout', undefined]]);
+  assert.strictEqual(v.get(e.id, { project: [DEV, ROOT] }), 's-root');
+  assert.deepStrictEqual(v.list({ project: [OTHER, DEV] }), []);
+});
