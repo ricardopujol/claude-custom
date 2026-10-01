@@ -325,3 +325,18 @@ test('a junk viewport is treated as no room, never as NaN sizes', () => {
 test('left and right are tall; top and bottom are wide', () => {
   assert.deepStrictEqual(ZONES.map(shapeOf), ['tall', 'tall', 'wide', 'wide']);
 });
+
+test('found by P4: a small zone at its minimum beside a bigger one still leaves the terminal its room', () => {
+  // 120 + 180 in a 560 px window used to come out 120 + 144 (264 > 240).
+  const l = open({ left: ['agents'], right: IDS.filter(id => id !== 'agents') }, { left: 120, right: 180 });
+  const s = fitSizes(l, { width: 560, height: 800 });
+  assert.ok(s.left + s.right <= 560 - TERM_MIN.width, JSON.stringify(s));
+  assert.strictEqual(s.left, MIN.side);
+});
+
+test('found by P1: a vanishingly small stored size becomes the minimum, not 0', () => {
+  const l = normalizeLayout({ zones: { right: IDS }, size: { left: 5e-324, top: 1 } }, IDS);
+  assert.strictEqual(l.size.left, MIN.side);
+  assert.strictEqual(l.size.top, MIN.wide);
+  assert.deepStrictEqual(normalizeLayout(l, IDS), l);
+});

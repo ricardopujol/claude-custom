@@ -68,7 +68,11 @@ function normalizeLayout(raw, moduleIds) {
 
   const rawSize = isObject(raw.size) ? raw.size : {};
   const size = {};
-  for (const z of ZONES) size[z] = isSize(rawSize[z]) ? Math.round(rawSize[z]) : DEFAULT_SIZE[z];
+  // Clamped to the minimum: a stored 5e-324 is "positive" but rounds to 0, and
+  // a second normalize would then swap it for the default (found by P1).
+  for (const z of ZONES) {
+    size[z] = isSize(rawSize[z]) ? Math.max(minFor(z), Math.round(rawSize[z])) : DEFAULT_SIZE[z];
+  }
 
   let restore = null;
   if (isObject(raw.restore)) {
@@ -211,8 +215,19 @@ function fitSizes(layout, viewport) {
     const openZones = Object.keys(want);
     const total = openZones.reduce((s, z) => s + want[z], 0);
     const avail = room - termMin - used;
-    const factor = total > avail ? Math.max(0, avail) / total : 1;
-    for (const z of openZones) out[z] = Math.max(min, Math.floor(want[z] * factor));
+    if (total <= avail) {
+      for (const z of openZones) out[z] = want[z];
+      return;
+    }
+    // Every open zone gets its minimum first, then the room left over is shared
+    // in proportion to how far above the minimum each one asked. Scaling the
+    // whole size and THEN flooring at the minimum overshot: 120 + 180 in a
+    // 560 px window came out 120 + 144, eating the terminal's room (found by P4).
+    const spare = Math.max(0, avail - min * openZones.length);
+    const above = total - min * openZones.length;
+    for (const z of openZones) {
+      out[z] = min + (above > 0 ? Math.floor((want[z] - min) * spare / above) : 0);
+    }
   };
   fitAxis('left', 'right', dim(vp.width), TERM_MIN.width, MIN.side, RAIL.side);
   fitAxis('top', 'bottom', dim(vp.height), TERM_MIN.height, MIN.wide, RAIL.wide);
