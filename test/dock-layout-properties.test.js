@@ -17,7 +17,7 @@ const {
 } = require('../app/dock-layout');
 
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'models', 'projects', 'style'];
-const RUNS = { numRuns: 300 };
+const RUNS = { numRuns: Number(process.env.LAYOUT_RUNS) || 300 };
 
 const junk = fc.constantFrom('ghost', 'fog2', 7, null, undefined, '', {});
 const idOrJunk = fc.oneof(fc.constantFrom(...IDS), junk);

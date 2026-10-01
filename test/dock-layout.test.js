@@ -340,3 +340,11 @@ test('found by P1: a vanishingly small stored size becomes the minimum, not 0', 
   assert.strictEqual(l.size.top, MIN.wide);
   assert.deepStrictEqual(normalizeLayout(l, IDS), l);
 });
+
+test('found by P4: an absurd stored size is capped, never NaN in the window', () => {
+  const l = normalizeLayout({ zones: { right: IDS }, size: { right: 1e306 } }, IDS);
+  assert.strictEqual(l.size.right, 10000);
+  const s = fitSizes(l, { width: 742, height: 320 });
+  assert.strictEqual(s.right, 742 - TERM_MIN.width);
+  assert.strictEqual(setSize(l, 'left', 1e306).size.left, 10000);
+});

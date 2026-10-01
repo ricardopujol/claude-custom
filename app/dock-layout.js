@@ -24,6 +24,10 @@
 
 const ZONES = ['left', 'right', 'top', 'bottom'];
 const DEFAULT_SIZE = { left: 180, right: 180, top: 160, bottom: 160 };
+// No screen is wider than this; a bigger stored size (1e306 from a damaged file)
+// overflowed the fitting arithmetic into NaN (found by P4).
+const MAX_SIZE = 10000;
+const clampSize = (z, px) => Math.min(MAX_SIZE, Math.max(minFor(z), Math.round(px)));
 
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const isSize = v => typeof v === 'number' && Number.isFinite(v) && v > 0;
@@ -71,7 +75,7 @@ function normalizeLayout(raw, moduleIds) {
   // Clamped to the minimum: a stored 5e-324 is "positive" but rounds to 0, and
   // a second normalize would then swap it for the default (found by P1).
   for (const z of ZONES) {
-    size[z] = isSize(rawSize[z]) ? Math.max(minFor(z), Math.round(rawSize[z])) : DEFAULT_SIZE[z];
+    size[z] = isSize(rawSize[z]) ? clampSize(z, rawSize[z]) : DEFAULT_SIZE[z];
   }
 
   let restore = null;
@@ -153,7 +157,7 @@ function moveModule(layout, id, target) {
 function setSize(layout, zone, px) {
   if (!ZONES.includes(zone) || typeof px !== 'number' || !Number.isFinite(px)) return layout;
   const l = copy(layout);
-  l.size[zone] = Math.max(minFor(zone), Math.round(px));
+  l.size[zone] = clampSize(zone, px);
   return l;
 }
 
@@ -226,7 +230,7 @@ function fitSizes(layout, viewport) {
     const spare = Math.max(0, avail - min * openZones.length);
     const above = total - min * openZones.length;
     for (const z of openZones) {
-      out[z] = min + (above > 0 ? Math.floor((want[z] - min) * spare / above) : 0);
+      out[z] = min + (above > 0 ? Math.floor((want[z] - min) / above * spare) : 0);
     }
   };
   fitAxis('left', 'right', dim(vp.width), TERM_MIN.width, MIN.side, RAIL.side);
