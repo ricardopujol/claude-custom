@@ -82,7 +82,109 @@ function normalizeLayout(raw, moduleIds) {
   return { version: 1, zones, active, hidden, size, restore };
 }
 
-const API = { ZONES, DEFAULT_SIZE, defaultLayout, normalizeLayout };
+const MIN = { side: 120, wide: 80 };
+const isSide = z => z === 'left' || z === 'right';
+const minFor = z => (isSide(z) ? MIN.side : MIN.wide);
+const zoneOf = (layout, id) => ZONES.find(z => layout.zones[z].includes(id)) || null;
+
+// A working copy deep enough that the edits below never reach the caller's layout.
+function copy(layout) {
+  const zones = {};
+  for (const z of ZONES) zones[z] = [...layout.zones[z]];
+  return { ...layout, zones, active: { ...layout.active }, hidden: [...layout.hidden], size: { ...layout.size } };
+}
+
+/**
+ * S2: the first launch after the upgrade. Today's window kept its tab and its
+ * width in per-window localStorage (`sideTab`, `rosterWidth`); the first global
+ * layout starts from them, so nobody's window changes under them.
+ */
+function fromLegacy(legacy, moduleIds) {
+  const l = defaultLayout(moduleIds);
+  const rec = isObject(legacy) ? legacy : {};
+  if (rec.sideTab === '') l.active.right = null;
+  else if (typeof rec.sideTab === 'string' && moduleIds.includes(rec.sideTab)) l.active.right = rec.sideTab;
+  // Strict: `Number('')` and `Number(null)` are 0, a confident wrong width.
+  const w = typeof rec.rosterWidth === 'string' && rec.rosterWidth.trim() !== '' ? Number(rec.rosterWidth) : NaN;
+  if (isSize(w)) l.size.right = Math.round(w);
+  return normalizeLayout(l, moduleIds);
+}
+
+/** A tab click: show that module in its zone, or collapse the zone if it is already showing. */
+function selectModule(layout, id) {
+  const z = zoneOf(layout, id);
+  if (!z) return layout;
+  const l = copy(layout);
+  l.active[z] = l.active[z] === id ? null : id;
+  l.restore = null;
+  return l;
+}
+
+/** Move a module to a zone (it becomes that zone's showing module) or to 'hide'. */
+function moveModule(layout, id, target) {
+  if (target !== 'hide' && !ZONES.includes(target)) return layout;
+  const from = zoneOf(layout, id);
+  const wasHidden = layout.hidden.includes(id);
+  if (!from && !wasHidden) return layout;                     // unknown module
+  if (from === target || (wasHidden && target === 'hide')) return layout;
+
+  const l = copy(layout);
+  if (from) {
+    l.zones[from] = l.zones[from].filter(m => m !== id);
+    if (l.active[from] === id) l.active[from] = l.zones[from].length ? l.zones[from][0] : null;
+  } else {
+    l.hidden = l.hidden.filter(m => m !== id);
+  }
+  if (target === 'hide') {
+    l.hidden.push(id);
+  } else {
+    l.zones[target].push(id);
+    l.active[target] = id;
+    l.restore = null;                                         // a zone was opened by hand
+  }
+  return l;
+}
+
+/** The size the user dragged a zone to (stored, not fitted: see fitSizes). */
+function setSize(layout, zone, px) {
+  if (!ZONES.includes(zone) || typeof px !== 'number' || !Number.isFinite(px)) return layout;
+  const l = copy(layout);
+  l.size[zone] = Math.max(minFor(zone), Math.round(px));
+  return l;
+}
+
+/**
+ * Ctrl+B / the header hint. Any zone open: collapse them all, remembering what
+ * each showed. None open: bring them back as remembered. A remembered module
+ * that has since left its zone falls back to that zone's first module, and the
+ * result is never "everything still collapsed" -- that would be a key that does
+ * nothing, which reads as broken.
+ */
+function toggleAll(layout) {
+  const l = copy(layout);
+  if (ZONES.some(z => l.active[z] !== null)) {
+    l.restore = { ...l.active };
+    for (const z of ZONES) l.active[z] = null;
+    return l;
+  }
+  const memory = layout.restore;
+  for (const z of ZONES) {
+    if (!l.zones[z].length) continue;
+    if (!memory) { l.active[z] = l.zones[z][0]; continue; }
+    const want = memory[z];
+    if (want === null) continue;                              // it was collapsed
+    l.active[z] = l.zones[z].includes(want) ? want : l.zones[z][0];
+  }
+  if (!ZONES.some(z => l.active[z] !== null)) {
+    for (const z of ZONES) if (l.zones[z].length) l.active[z] = l.zones[z][0];
+  }
+  l.restore = null;
+  return l;
+}
+
+const API = {
+  ZONES, MIN, DEFAULT_SIZE, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule, setSize, toggleAll,
+};
 
 // One namespace on the page (`window.dockLayout`), not ten loose globals.
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

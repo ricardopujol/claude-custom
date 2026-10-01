@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
-  defaultLayout, normalizeLayout,
+  ZONES, MIN, defaultLayout, normalizeLayout, fromLegacy, selectModule, moveModule, setSize, toggleAll,
 } = require('../app/dock-layout');
 
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'models', 'projects', 'style'];
@@ -99,4 +99,165 @@ test('normalizing never changes its input', () => {
   const copy = JSON.parse(JSON.stringify(raw));
   normalizeLayout(raw, IDS);
   assert.deepStrictEqual(raw, copy);
+});
+
+// --- fromLegacy: the first launch keeps the window as it was (S2) -----------
+
+test('a window that showed the vault at 240 px opens the same way', () => {
+  const l = fromLegacy({ sideTab: 'vault', rosterWidth: '240' }, IDS);
+  assert.strictEqual(l.active.right, 'vault');
+  assert.strictEqual(l.size.right, 240);
+  assert.deepStrictEqual(l.zones.right, IDS);
+});
+
+test('a collapsed sidebar stays collapsed', () => {
+  assert.strictEqual(fromLegacy({ sideTab: '' }, IDS).active.right, null);
+});
+
+test('no record, an unknown tab or a junk width give today\'s defaults', () => {
+  for (const legacy of [{}, { sideTab: null, rosterWidth: null }, { sideTab: 'ghost', rosterWidth: 'wide' },
+    { rosterWidth: '0' }, { rosterWidth: '' }, null]) {
+    const l = fromLegacy(legacy, IDS);
+    assert.strictEqual(l.active.right, 'agents', JSON.stringify(legacy));
+    assert.strictEqual(l.size.right, 180, JSON.stringify(legacy));
+  }
+});
+
+// --- selectModule ------------------------------------------------------------
+
+test('clicking a tab shows that module in its zone', () => {
+  const l = selectModule(defaultLayout(IDS), 'models');
+  assert.strictEqual(l.active.right, 'models');
+});
+
+test('clicking the showing tab collapses its zone; clicking it again opens it', () => {
+  const collapsed = selectModule(defaultLayout(IDS), 'agents');
+  assert.strictEqual(collapsed.active.right, null);
+  assert.strictEqual(selectModule(collapsed, 'agents').active.right, 'agents');
+});
+
+test('selecting a hidden or unknown module changes nothing', () => {
+  const base = moveModule(defaultLayout(IDS), 'style', 'hide');
+  assert.deepStrictEqual(selectModule(base, 'style'), base);
+  assert.deepStrictEqual(selectModule(base, 'ghost'), base);
+});
+
+test('selecting only touches the zone that holds the module', () => {
+  const base = moveModule(defaultLayout(IDS), 'vault', 'left');
+  const l = selectModule(base, 'fog');
+  assert.strictEqual(l.active.left, 'vault');
+  assert.strictEqual(l.active.right, 'fog');
+});
+
+// --- moveModule -------------------------------------------------------------
+
+test('a module moved to another zone is shown there and gone from where it was', () => {
+  for (const target of ZONES.filter(z => z !== 'right')) {
+    const l = moveModule(defaultLayout(IDS), 'vault', target);
+    assert.deepStrictEqual(l.zones[target], ['vault'], target);
+    assert.strictEqual(l.active[target], 'vault', target);
+    assert.ok(!l.zones.right.includes('vault'), target);
+  }
+});
+
+test('it joins the end of a zone that already has modules', () => {
+  const base = moveModule(defaultLayout(IDS), 'vault', 'left');
+  const l = moveModule(base, 'fog', 'left');
+  assert.deepStrictEqual(l.zones.left, ['vault', 'fog']);
+  assert.strictEqual(l.active.left, 'fog');
+});
+
+test('moving the showing module out leaves its zone on its first remaining one', () => {
+  const l = moveModule(defaultLayout(IDS), 'agents', 'bottom');
+  assert.strictEqual(l.active.right, 'vault');
+});
+
+test('moving a module that was not showing keeps its zone\'s choice', () => {
+  const l = moveModule(selectModule(defaultLayout(IDS), 'models'), 'vault', 'top');
+  assert.strictEqual(l.active.right, 'models');
+});
+
+test('a collapsed zone stays collapsed when a module leaves it', () => {
+  const collapsed = selectModule(defaultLayout(IDS), 'agents');
+  assert.strictEqual(moveModule(collapsed, 'vault', 'top').active.right, null);
+});
+
+test('moving the last module out empties the zone', () => {
+  const one = normalizeLayout({ zones: { left: ['vault'], right: IDS.filter(id => id !== 'vault') } }, IDS);
+  const l = moveModule(one, 'vault', 'top');
+  assert.deepStrictEqual(l.zones.left, []);
+  assert.strictEqual(l.active.left, null);
+});
+
+test('hide takes a module out of every zone; moving it to a zone brings it back', () => {
+  const hidden = moveModule(defaultLayout(IDS), 'style', 'hide');
+  assert.deepStrictEqual(hidden.hidden, ['style']);
+  assert.ok(!hidden.zones.right.includes('style'));
+  const back = moveModule(hidden, 'style', 'top');
+  assert.deepStrictEqual(back.hidden, []);
+  assert.deepStrictEqual(back.zones.top, ['style']);
+});
+
+test('moving to the zone it is in, to nowhere, or an unknown module changes nothing', () => {
+  const base = defaultLayout(IDS);
+  assert.deepStrictEqual(moveModule(base, 'vault', 'right'), base);
+  assert.deepStrictEqual(moveModule(base, 'vault', 'middle'), base);
+  assert.deepStrictEqual(moveModule(base, 'ghost', 'left'), base);
+  const hidden = moveModule(base, 'style', 'hide');
+  assert.deepStrictEqual(moveModule(hidden, 'style', 'hide'), hidden);
+});
+
+// --- setSize -----------------------------------------------------------------
+
+test('a dragged size is stored rounded, never below the zone\'s minimum', () => {
+  const base = defaultLayout(IDS);
+  assert.strictEqual(setSize(base, 'right', 300.6).size.right, 301);
+  assert.strictEqual(setSize(base, 'left', 40).size.left, MIN.side);
+  assert.strictEqual(setSize(base, 'top', 10).size.top, MIN.wide);
+});
+
+test('a junk size or zone changes nothing', () => {
+  const base = defaultLayout(IDS);
+  for (const px of [NaN, null, '300', Infinity]) assert.deepStrictEqual(setSize(base, 'right', px), base);
+  assert.deepStrictEqual(setSize(base, 'middle', 300), base);
+});
+
+// --- toggleAll: Ctrl+B ------------------------------------------------------
+
+test('Ctrl+B with a zone open collapses every zone, and again brings each back as it was', () => {
+  const base = selectModule(moveModule(defaultLayout(IDS), 'vault', 'left'), 'models');
+  const closed = toggleAll(base);
+  for (const z of ZONES) assert.strictEqual(closed.active[z], null, z);
+  const open = toggleAll(closed);
+  assert.deepStrictEqual(open.active, base.active);
+  assert.strictEqual(open.restore, null);
+});
+
+test('Ctrl+B with every zone collapsed and nothing remembered opens each zone on its first module', () => {
+  const l = toggleAll(selectModule(defaultLayout(IDS), 'agents'));
+  assert.strictEqual(l.active.right, 'agents');
+});
+
+test('a remembered module that has since moved is not restored into the wrong zone', () => {
+  // Remembered `models` on the right; `models` now sits in the top zone.
+  const stale = normalizeLayout({
+    zones: { right: IDS.filter(id => id !== 'models'), top: ['models'] },
+    active: { right: null, top: null },
+    restore: { right: 'models', top: null },
+  }, IDS);
+  const open = toggleAll(stale);
+  assert.strictEqual(open.active.right, 'agents');   // its first module, not a module it doesn't hold
+  assert.strictEqual(open.active.top, null);         // remembered collapsed
+});
+
+test('Ctrl+B never leaves every zone collapsed when it means to open', () => {
+  const allNull = normalizeLayout({ zones: { right: IDS }, active: { right: null },
+    restore: { left: null, right: null, top: null, bottom: null } }, IDS);
+  assert.strictEqual(toggleAll(allNull).active.right, 'agents');
+});
+
+test('opening a zone by hand forgets the Ctrl+B memory', () => {
+  const closed = toggleAll(defaultLayout(IDS));
+  assert.strictEqual(selectModule(closed, 'vault').restore, null);
+  assert.strictEqual(moveModule(closed, 'vault', 'top').restore, null);
 });
