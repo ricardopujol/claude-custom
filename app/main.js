@@ -278,9 +278,16 @@ let cueOn = false;
 let focused = false;
 
 function createWindow() {
+  // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
+  // an open window, so a later toggle applies to the next one.
+  const chrome = readChromeSettings(uiStore);
   win = new BrowserWindow({
     width: 1200,
     height: 800,
+    // Frameless: no OS title bar; the strip drags the window and draws its own
+    // minimise and close (app/tab-strip.js windowChrome). The title still
+    // feeds alt-tab and the taskbar.
+    frame: !chrome.framelessWindow,
     // Room for the terminal's minimum and two side zones (app/dock-layout.js S7).
     minWidth: 640,
     minHeight: 480,
@@ -294,7 +301,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload-strip.js'),
     },
   });
-  win.loadFile(path.join(__dirname, 'tab-strip.html'));
+  win.loadFile(path.join(__dirname, 'tab-strip.html'), { query: chrome.framelessWindow ? { frameless: '1' } : {} });
   registerShortcuts(win.webContents);
 
   // FOCUS IS TRACKED, NOT ASKED FOR. Naomi, PR #33, measured in a real window:
@@ -673,6 +680,16 @@ function registerIpc() {
   ipcMain.on('strip:cancelCreate', (e) => {
     if (!fromStrip(e)) return;
     tabShell.cancelCreate();
+  });
+  // Layout pass L2 (#28): a frameless window's own buttons. Close is the same
+  // close as the OS frame's: the window goes, the hosts stay detached.
+  ipcMain.on('strip:winMinimize', (e) => {
+    if (!fromStrip(e)) return;
+    win.minimize();
+  });
+  ipcMain.on('strip:winClose', (e) => {
+    if (!fromStrip(e)) return;
+    win.close();
   });
   // The ▾ menu. Answers when it closes, so the strip can show it was busy
   // (the list takes two powershell.exe, ~1-2 s); one at a time.

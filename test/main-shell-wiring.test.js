@@ -294,6 +294,21 @@ test('PR 3: the + channels exist and are the strip page’s alone', () => {
   }
 });
 
+test('L2 #28: the window-button channels exist and are the strip page’s alone', () => {
+  for (const name of ['strip:winMinimize', 'strip:winClose']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, name);
+    assert.match(callText(MAIN, c.at), /fromStrip\(e\)/, name);
+  }
+});
+
+test('L2 #28: createWindow reads the frameless setting for THIS window and tells the strip', () => {
+  const body = MAIN.slice(MAIN.indexOf('function createWindow()'), MAIN.indexOf('registerShortcuts(win.webContents)'));
+  assert.match(body, /readChromeSettings\(uiStore\)/);
+  assert.match(body, /frame: !\w+\.framelessWindow/);
+  assert.match(body, /loadFile\([^)]*tab-strip\.html'\),\s*\{\s*query:/);
+});
+
 test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so nothing rejects unhandled in main', () => {
   // A call that is returned or awaited hands its rejection to its caller.
   const calls = [...MAIN.matchAll(/tabShell\.(createWorktree|reopen)\(/g)]

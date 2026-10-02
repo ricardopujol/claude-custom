@@ -195,12 +195,35 @@ function paintPlus(doc, payload, bridge) {
   if (cancel) cancel.onclick = () => bridge.cancelCreate();
 }
 
-const api = { paneFor, alertFor, paint, GLYPHS };
+/**
+ * Layout pass L2 (#28): main loads the strip with `?frameless=1` when this
+ * window was created without an OS frame. Then the strip is the title bar: the
+ * body class turns on its drag regions, and it draws its own minimise and
+ * close. Exactly '1' or nothing: a framed window must never lose its buttons'
+ * absence to a stray value. Runs once; the buttons live outside #tabs, so
+ * repaints never touch them.
+ */
+function windowChrome(doc, search, bridge) {
+  let frameless = false;
+  try { frameless = new URLSearchParams(typeof search === 'string' ? search : '').get('frameless') === '1'; } catch { /* framed */ }
+  if (!frameless) return false;
+  doc.body.classList.add('frameless');
+  const min = doc.getElementById('win-min');
+  const close = doc.getElementById('win-close');
+  if (min) { min.hidden = false; min.onclick = () => bridge.winMinimize(); }
+  if (close) { close.hidden = false; close.onclick = () => bridge.winClose(); }
+  return true;
+}
+
+const api = { paneFor, alertFor, paint, windowChrome, GLYPHS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
 } else {
   root.tabStrip = api;
+  if (root.strip && typeof root.strip.winMinimize === 'function') {
+    windowChrome(root.document, root.location && root.location.search, root.strip);
+  }
   if (root.strip && typeof root.strip.onModel === 'function') {
     root.strip.onModel((payload) => paint(root.document, payload, root.strip));
   }
