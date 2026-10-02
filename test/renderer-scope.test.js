@@ -82,6 +82,10 @@ const ALLOWED_GLOBALS = new Set([
   'portraitMedia',
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
+  // app/style-display.js, Window section (layout pass L2, #27/#28)
+  'windowSectionView', 'reduceChromeSettings',
+  // app/status-fields-display.js (BACKLOG #27)
+  'statusFieldsText',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
   // app/top-bar-display.js (FF12)

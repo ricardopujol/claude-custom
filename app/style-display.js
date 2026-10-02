@@ -27,6 +27,7 @@ const STYLE_SECTIONS = [
   { id: 'background', title: 'Background image' },
   { id: 'inactive', title: 'Inactive windows' },
   { id: 'avatars', title: 'Agent pictures' },
+  { id: 'window', title: 'Window' },
 ];
 
 const HEX_RE = /^#[0-9a-f]{6}$/i;
@@ -151,11 +152,33 @@ function avatarsSectionView(state) {
   };
 }
 
+/**
+ * Layout pass L2's two install-wide window settings (app/window-chrome-bridge.js
+ * owns them). Strict like the images toggle: only a real boolean is known,
+ * anything else is null, "reading…", never a guessed OFF.
+ */
+function windowSectionView(state) {
+  const bool = (v) => (typeof v === 'boolean' ? v : null);
+  const statusInHeader = bool(state && state.statusInHeader);
+  const framelessWindow = bool(state && state.framelessWindow);
+  return {
+    statusInHeader,
+    framelessWindow,
+    statusDescription: statusInHeader === null ? 'reading…'
+      : statusInHeader ? "Cost, lines and time show in each tab's header, and the terminal gets that row back."
+        : 'The status line shows under the terminal\'s input box, as the CLI draws it.',
+    framelessDescription: framelessWindow === null ? 'reading…'
+      : framelessWindow ? 'The next window opens with no title bar: the tabs are the top row.'
+        : 'Windows keep their title bar. A change applies to the next window you open.',
+  };
+}
+
 const SECTION_VIEWS = {
   colours: coloursSectionView,
   background: backgroundSectionView,
   inactive: inactiveSectionView,
   avatars: avatarsSectionView,
+  window: windowSectionView,
 };
 
 /**
@@ -183,6 +206,7 @@ function emptyStyleState() {
     background: { source: null, setAt: null, error: null, darkness: null },
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
+    window: { statusInHeader: null, framelessWindow: null },
   };
 }
 
@@ -228,6 +252,7 @@ function reduceStyle(prev, msg) {
     },
     inactive: state.inactive,
     avatars: state.avatars || emptyStyleState().avatars,
+    window: state.window || emptyStyleState().window,
   };
 }
 
@@ -265,9 +290,18 @@ function reduceImagesEnabled(prev, enabled) {
   return { ...state, avatars: { ...(state.avatars || emptyStyleState().avatars), imagesEnabled: enabled } };
 }
 
+/** Records main's window-chrome settings; only real booleans land, per key. */
+function reduceChromeSettings(prev, settings) {
+  const state = prev || emptyStyleState();
+  if (!settings || typeof settings !== 'object') return state;
+  const cur = state.window || emptyStyleState().window;
+  const pick = (k) => (typeof settings[k] === 'boolean' ? settings[k] : cur[k]);
+  return { ...state, window: { statusInHeader: pick('statusInHeader'), framelessWindow: pick('framelessWindow') } };
+}
+
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
-  avatarsSectionView, reduceAvatars, reduceImagesEnabled,
+  avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
