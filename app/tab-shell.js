@@ -971,6 +971,9 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'mark needs a branch' };
         if (cmd.id !== null && typeof cmd.id !== 'string') return { ok: false, error: 'mark needs an id (or null)' };
         return await api.mark(cmd.branch, cmd.id);
+      case 'markMenu':
+        if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
+        return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
       case 'view':
         // Layout pass L1: one of the selected view's NAMED probe actions

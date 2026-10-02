@@ -463,3 +463,9 @@ test('a mark is never saved over a file that could not be read', () => {
   assert.match(prune, /if \(live === null \|\| cur\.state !== 'ok'\) return;/);
   assert.match(prune, /'--format=%\(refname\)', 'refs\/heads'/);
 });
+
+test('the Mark rows are checkboxes: a radio group gets a default tick from Electron (Dexter #87 F2)', () => {
+  const body = MAIN.slice(MAIN.indexOf('function markSubmenu('), MAIN.indexOf('let win = null;'));
+  assert.match(body, /type: 'checkbox', checked: r.checked/);
+  assert.doesNotMatch(body, /'radio'/);
+});

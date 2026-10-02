@@ -308,7 +308,9 @@ function markSubmenu(branch) {
     label: m.enabled ? 'Mark' : `Mark (${m.why})`,
     enabled: m.enabled,
     submenu: [
-      ...m.rows.map(r => ({ label: r.label, type: 'radio', checked: r.checked, click: () => chooseMark(branch, r.id) })),
+      // Checkboxes, not a radio group: Electron ticks a radio group's first item
+      // when none is, so an unmarked tab would show "Review this code" ticked (Dexter #87 F2).
+      ...m.rows.map(r => ({ label: r.label, type: 'checkbox', checked: r.checked, click: () => chooseMark(branch, r.id) })),
       { type: 'separator' },
       { label: 'Clear mark', enabled: m.canClear, click: () => chooseMark(branch, null) },
     ],
@@ -1149,6 +1151,15 @@ function startProbeDriver(port) {
     async mark(branch, id) {
       const saved = chooseMark(branch, id);
       return saved ? { ok: true, state: marks.state } : { ok: false, state: marks.state, error: 'not saved' };
+    },
+    // Dexter #87 F2: the submenu as ELECTRON built it, so its own defaults show.
+    async markMenu(branch) {
+      const built = Menu.buildFromTemplate([markSubmenu(branch)]).items[0];
+      return {
+        ok: true, label: built.label, enabled: built.enabled,
+        items: built.submenu.items.filter(i => i.type !== 'separator')
+          .map(i => ({ label: i.label, type: i.type, checked: i.checked, enabled: i.enabled })),
+      };
     },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
     async select(label) {

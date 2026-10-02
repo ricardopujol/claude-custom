@@ -6,7 +6,7 @@
  *   node verify/probe-tab-marks.js            (exit 0 = every check held)
  *   TAB_MARKS_PROBE_SHOTS=<dir>                also keep screenshots there
  *
- * MEASURED 2026-10-02 (Electron 33, Windows 11): all 15 checks pass; the strip draws a colour ⏳
+ * MEASURED 2026-10-02 (Electron 33, Windows 11): all 18 checks pass; the strip draws a colour ⏳
  * 16px wide before "develop" (screenshot 1-marked.strip.png).
  *
  * The unit tests pin the pieces; no unit test can see the strip page draw an emoji, or the window
@@ -19,6 +19,8 @@
  *   4  a mark written by another window (the file, directly) shows within a poll
  *   5  an unreadable file draws no marks, and setting a mark never writes over it
  *   6  Clear removes the mark from the file and the strip
+ *   7  the Mark menu, as Electron built it: checkbox rows (a radio group gets a default tick out of
+ *      JS's sight: no delegate to ask, MEASURED), nothing ticked when unmarked, only its own when marked
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE
  * is deleted; registry, portraits, uploads and user data are temp folders; the repo is a temp git
@@ -204,8 +206,23 @@ async function main() {
   check('5: ...setting a mark fails, and says the file is unreadable', refused && refused.ok === false && refused.state === 'unreadable', JSON.stringify(refused));
   check('5: ...and never writes over it', fs.readFileSync(MARKS_FILE, 'utf8') === '{ not json');
 
-  // 6 -----------------------------------------------------------------------------
+  // 7 (Dexter #87 F2) ---------------------------------------------------------------
+  // Electron ticks the first item of a RADIO group with none ticked, in its menu-will-show
+  // hook, out of JS's sight (no delegate to ask). So the rows are checkboxes, which have no
+  // group and no default: asserted here on the menu Electron actually built.
   writeMarks({ develop: 'urgent' });
+  const none = await command(app, { cmd: 'markMenu', branch: 'feat/unmarked' });
+  const ticked = (r) => (r && r.items ? r.items.filter(i => i.checked).map(i => i.label) : null);
+  const types = (r) => (r && r.items ? [...new Set(r.items.map(i => i.type))] : null);
+  check('7: the Mark rows are checkboxes (no radio group, so no default tick)',
+    none && none.ok && JSON.stringify(types(none)) === JSON.stringify(['checkbox', 'normal']), JSON.stringify(types(none)));
+  check('7: ...an unmarked branch has nothing ticked', none && none.ok && ticked(none).length === 0, JSON.stringify(ticked(none)));
+  const one = await command(app, { cmd: 'markMenu', branch: 'develop' });
+  check('7: ...a marked one has exactly its own mark ticked',
+    one && one.ok && JSON.stringify(ticked(one)) === JSON.stringify([`${MARK.urgent.emoji}  ${MARK.urgent.meaning}`]),
+    JSON.stringify(ticked(one)));
+
+  // 6 -----------------------------------------------------------------------------
   await markIs(app, MARK.urgent.emoji);
   const cleared = await command(app, { cmd: 'mark', branch: 'develop', id: null });
   check('6: Clear succeeds', cleared && cleared.ok === true, JSON.stringify(cleared));

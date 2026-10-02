@@ -1545,6 +1545,12 @@ test('handleProbeCommand: mark reaches the driver with a branch and an id (null 
   assert.deepStrictEqual(seen, [['develop', 'star'], ['develop', null]]);
 });
 
+test('handleProbeCommand: markMenu builds the real menu for a branch (Dexter #87 F2)', async () => {
+  const api = { markMenu: async (b) => ({ ok: true, branch: b }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'markMenu', branch: 'develop' }), api), { ok: true, branch: 'develop' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'markMenu' }), api), { ok: false, error: 'markMenu needs a branch' });
+});
+
 // --- properties ----------------------------------------------------------------
 
 test('PROPERTY: an input with no control/meta and a key other than F12 is never intercepted', () => {
