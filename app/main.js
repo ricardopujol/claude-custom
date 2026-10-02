@@ -28,7 +28,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
-const { readChromeSettings, registerChromeHandlers, watchChromeSettings, CHROME_KEY } = require('./window-chrome-bridge');
+const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -256,11 +256,14 @@ const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.is
 // saved. The tab view covers the strip, and every view hides its own header
 // and zones when told.
 let focusMode = false;
+// Layout pass L2 (#28): this window's frame, fixed at creation. A frameless
+// window keeps its strip in focus mode: it's the only title bar (Dexter L2 #3).
+let windowFrameless = false;
 
 function layoutView(view) {
   if (!win || win.isDestroyed()) return;
   const [width, height] = win.getContentSize();
-  const top = focusMode ? 0 : STRIP_HEIGHT;
+  const top = viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
   view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
 }
 
@@ -281,6 +284,7 @@ function createWindow() {
   // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
   // an open window, so a later toggle applies to the next one.
   const chrome = readChromeSettings(uiStore);
+  windowFrameless = chrome.framelessWindow === true;
   win = new BrowserWindow({
     width: 1200,
     height: 800,

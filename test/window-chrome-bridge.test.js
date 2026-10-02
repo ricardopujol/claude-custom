@@ -41,6 +41,15 @@ function setup({ store = fakeStore() } = {}) {
   return { ipcMain, store, sent, call, sync };
 }
 
+test('Dexter L2 #3: focus mode covers the strip only in a framed window', () => {
+  const { viewTop } = require('../app/window-chrome-bridge');
+  assert.strictEqual(viewTop({ focusMode: false, frameless: false, stripHeight: 34 }), 34);
+  assert.strictEqual(viewTop({ focusMode: true, frameless: false, stripHeight: 34 }), 0);
+  // Frameless: the strip is the window's only title bar (drag, minimise, close).
+  assert.strictEqual(viewTop({ focusMode: true, frameless: true, stripHeight: 34 }), 34);
+  assert.strictEqual(viewTop({ focusMode: false, frameless: true, stripHeight: 34 }), 34);
+});
+
 test('both settings default to OFF when nothing has been saved', () => {
   assert.deepStrictEqual(readChromeSettings(fakeStore()), OFF);
 });

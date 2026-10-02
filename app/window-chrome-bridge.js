@@ -136,7 +136,17 @@ function watchChromeSettings({
   return () => { stopped = true; unwatchFile(file, listener); };
 }
 
+/**
+ * Where a tab view starts. Focus mode lays the view over the strip -- but in a
+ * frameless window the strip is the only title bar: covering it left nothing
+ * to drag, minimise or close the window with, since focus mode also hides the
+ * page's own header (Dexter L2 #3). So frameless keeps the strip.
+ */
+function viewTop({ focusMode, frameless, stripHeight }) {
+  return focusMode === true && frameless !== true ? 0 : stripHeight;
+}
+
 module.exports = {
-  readChromeSettings, registerChromeHandlers, watchChromeSettings,
+  readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop,
   CHROME_KEY, GET_CHANNEL, SET_STATUS_CHANNEL, SET_FRAMELESS_CHANNEL, PUSH_CHANNEL,
 };
