@@ -469,3 +469,7 @@ test('the Mark rows are checkboxes: a radio group gets a default tick from Elect
   assert.match(body, /type: 'checkbox', checked: r.checked/);
   assert.doesNotMatch(body, /'radio'/);
 });
+
+test('a Mark row does what its model row says: the ticked one clears (Dexter #87 r2)', () => {
+  assert.match(MAIN, /click: \(\) => chooseMark\(branch, r\.choose\) \}\)\),/);
+});

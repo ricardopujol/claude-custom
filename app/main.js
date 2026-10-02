@@ -310,7 +310,7 @@ function markSubmenu(branch) {
     submenu: [
       // Checkboxes, not a radio group: Electron ticks a radio group's first item
       // when none is, so an unmarked tab would show "Review this code" ticked (Dexter #87 F2).
-      ...m.rows.map(r => ({ label: r.label, type: 'checkbox', checked: r.checked, click: () => chooseMark(branch, r.id) })),
+      ...m.rows.map(r => ({ label: r.label, type: 'checkbox', checked: r.checked, click: () => chooseMark(branch, r.choose) })),
       { type: 'separator' },
       { label: 'Clear mark', enabled: m.canClear, click: () => chooseMark(branch, null) },
     ],

@@ -137,7 +137,12 @@ function markMenuModel(store, branch, state) {
   return {
     enabled: why === null,
     why,
-    rows: MARKS.map(x => ({ id: x.id, label: `${x.emoji}  ${x.meaning}`, checked: !!current && current.id === x.id })),
+    // `choose`: what a click sets. The rows are checkboxes, and a ticked checkbox
+    // unticks when clicked, so the current mark's row clears it (Dexter #87 r2).
+    rows: MARKS.map((x) => {
+      const checked = !!current && current.id === x.id;
+      return { id: x.id, label: `${x.emoji}  ${x.meaning}`, checked, choose: checked ? null : x.id };
+    }),
     canClear: why === null && current !== null,
   };
 }

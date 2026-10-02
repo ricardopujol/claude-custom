@@ -154,3 +154,9 @@ test('prune keeps a mark whose branch git lists in another letter case', () => {
   const s = storeOf({ 'feat/tab-marks': 'bug', 'feat/gone': 'star' });
   assert.deepStrictEqual(Object.keys(m.pruneMarks(s, ['feat/Tab-Marks', 'develop']).marks), ['feat/tab-marks']);
 });
+
+test('clicking the ticked row clears the mark; any other row sets its own (Dexter #87 r2)', () => {
+  const menu = m.markMenuModel(storeOf({ 'feat/a': 'waiting' }), 'feat/a', 'ok');
+  assert.strictEqual(menu.rows.find(r => r.id === 'waiting').choose, null);
+  for (const r of menu.rows.filter(x => x.id !== 'waiting')) assert.strictEqual(r.choose, r.id);
+});
