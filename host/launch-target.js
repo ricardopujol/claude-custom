@@ -24,6 +24,28 @@ function resolveLaunchTarget(arg, { cwd = process.cwd(), stat = fs.statSync } = 
 }
 
 /**
+ * The launcher's arguments: `[folder]`, `[folder] --stop` (Windowless sessions
+ * PR 3), `-h` / `--help`. -> { cmd: 'help' } | { cmd: 'open', arg }
+ * | { cmd: 'stop', folder }. A `--stop` folder is only resolved, never checked:
+ * the folder being cleaned up may already be gone. An unknown option or a
+ * second folder throws, rather than opening a folder named "--stpo" or quietly
+ * ignoring one of the two.
+ */
+function parseCli(argv, { cwd = process.cwd() } = {}) {
+  if (argv.includes('-h') || argv.includes('--help')) return { cmd: 'help' };
+  let stop = false;
+  const folders = [];
+  for (const a of argv) {
+    if (a === '--stop') stop = true;
+    else if (a.startsWith('-')) throw new Error(`unknown option: ${a}`);
+    else folders.push(a);
+  }
+  if (folders.length > 1) throw new Error(`one folder at a time (got ${folders.length})`);
+  if (stop) return { cmd: 'stop', folder: path.resolve(cwd, folders[0] || '.') };
+  return { cmd: 'open', arg: folders[0] };
+}
+
+/**
  * The environment a freshly launched window should get.
  *
  * Two variables must NOT be inherited, and both look harmless.
@@ -93,4 +115,4 @@ function attachOnlyDecision(decision, env) {
   return { ...decision, attachOnly: true };
 }
 
-module.exports = { resolveLaunchTarget, launchEnv, attachEnv, attachOnlyDecision };
+module.exports = { resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision };

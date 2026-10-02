@@ -48,11 +48,9 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
-const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
+const { listBackgroundHosts } = require('../host/background-hosts');
 const { stopHost } = require('../host/stop-holder');
-const { isAlive: procAlive, startTimes } = require('../host/proc-start');
-const { windowCount, windowCounts } = require('../host/window-count');
-const { killPidTree } = require('../host/kill-tree');
+const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed } = require('./background-actions');
@@ -559,15 +557,9 @@ function focusWindow() {
 // by its OS start time. Open is for this build's own; Stop is PR 1's rules
 // (host/stop-holder.js stopHost): never a session with a window open.
 const INSTALL_DIR = path.join(__dirname, '..');
-const harnessOf = install => path.join(install, '.harness');
 
 function listBackground() {
-  return listBackgroundHosts({ ownInstall: INSTALL_DIR }, {
-    installs: () => installsBeside(INSTALL_DIR),
-    identities: identitiesIn,
-    startTimes,
-    windowCounts,
-  });
+  return listBackgroundHosts({ ownInstall: INSTALL_DIR }, listDeps(INSTALL_DIR));
 }
 
 async function backgroundModel() {
@@ -606,17 +598,7 @@ const backgroundActions = createBackgroundActions({
     if (PROBE_PORT || !win || win.isDestroyed()) return;
     await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: text });
   },
-  stopHost: row => stopHost({ row }, {
-    isAlive: procAlive,
-    startTimes,
-    readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
-    readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
-    sendControl: c => sendControl(c),
-    windowCount,
-    killPidTree,
-    sleep: ms => new Promise(res => setTimeout(res, ms)),
-    now: Date.now,
-  }),
+  stopHost: row => stopHost({ row }, hostStopDeps()),
   log: msg => console.log(msg),
 });
 
