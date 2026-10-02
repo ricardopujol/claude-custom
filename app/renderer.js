@@ -3320,6 +3320,20 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'window' && v) {
+    // Ids written out in full: test/renderer-scope.test.js finds them by text.
+    const state = (on) => `${on === true ? ' checked' : ''}${on === null ? ' disabled' : ''}`;
+    return (
+      `<section class="style-section" data-section="window">${header}` +
+      `<label class="style-row"><input type="checkbox" id="style-status-in-header"${state(v.statusInHeader)}>` +
+      ` Status line in the header</label>` +
+      `<div class="style-note">${escapeHtml(v.statusDescription)}</div>` +
+      `<label class="style-row"><input type="checkbox" id="style-frameless"${state(v.framelessWindow)}>` +
+      ` Hide the title bar (next window)</label>` +
+      `<div class="style-note">${escapeHtml(v.framelessDescription)}</div>` +
+      `</section>`
+    );
+  }
   // A future section with no view function yet still gets its title drawn,
   // rather than vanishing -- "say something rather than nothing", the same
   // rule the fog and projects panels follow for a failed read.
@@ -3470,6 +3484,62 @@ function bindAvatarSection() {
   if (images && window.harness && window.harness.avatar) {
     images.addEventListener('change', () => setAgentImages(images.checked));
   }
+
+  // Layout pass L2: send the DESIRED state; main answers what it stored, and a
+  // failed save (null) re-reads main's truth instead of trusting the click.
+  const chrome = window.harness && window.harness.chrome;
+  const statusBox = document.getElementById('style-status-in-header');
+  if (statusBox && chrome) {
+    statusBox.addEventListener('change', () => {
+      chrome.setStatusInHeader(statusBox.checked).then(settledChrome).catch(refreshChromeSettings);
+    });
+  }
+  const framelessBox = document.getElementById('style-frameless');
+  if (framelessBox && chrome) {
+    framelessBox.addEventListener('change', () => {
+      chrome.setFrameless(framelessBox.checked).then(settledChrome).catch(refreshChromeSettings);
+    });
+  }
+}
+
+// Layout pass L2 (#27, #28): main's install-wide window settings, followed
+// across windows. Until main answers, statusInHeader is unknown and the header
+// fields stay hidden: the CLI's own row is still showing them.
+let chromeSettings = { statusInHeader: null, framelessWindow: null };
+function applyChromeSettings(settings) {
+  if (!settings || typeof settings !== 'object') return;
+  styleState = reduceChromeSettings(styleState, settings);
+  chromeSettings = styleState.window;
+  renderStatusFields(lastStatusFields);
+  renderStylePanel();
+}
+function settledChrome(saved) {
+  if (saved && typeof saved === 'object') applyChromeSettings(saved);
+  else refreshChromeSettings();
+}
+// Null means main couldn't read the file just then (Dexter L2 #1): stay
+// unknown and ask again, never assume OFF -- the relay reads that file on its
+// own and may already be keeping the CLI row quiet.
+function refreshChromeSettings() {
+  if (!(window.harness && window.harness.chrome)) return;
+  window.harness.chrome.get().then((s) => {
+    if (s && typeof s === 'object') applyChromeSettings(s);
+    else setTimeout(refreshChromeSettings, 1000);
+  }).catch(() => setTimeout(refreshChromeSettings, 1000));
+}
+
+// BACKLOG #27: cost / lines / time / ctx>200k off the host's `statusFields`
+// (or null: unknown). Shown only while "status line in the header" is on, so
+// the header and the CLI row never both say it; formats are
+// app/status-fields-display.js's (warpaint's).
+const statusFieldsEl = document.getElementById('status-fields');
+let lastStatusFields = null;
+function renderStatusFields(fields) {
+  lastStatusFields = fields && typeof fields === 'object' ? fields : null;
+  if (!statusFieldsEl) return;
+  const view = statusFieldsView(lastStatusFields, chromeSettings.statusInHeader);
+  statusFieldsEl.textContent = view.text;
+  statusFieldsEl.hidden = !view.shown;
 }
 
 // The install-wide "show agent images" toggle (BACKLOG C #18). Sends the
@@ -3522,6 +3592,10 @@ if (imagesToggleBtn) {
 if (window.harness && window.harness.avatar) {
   window.harness.avatar.onImagesEnabled(applyAgentImages);
   refreshAgentImages();
+}
+if (window.harness && window.harness.chrome) {
+  window.harness.chrome.onChange(applyChromeSettings);
+  refreshChromeSettings();
 }
 
 // The hover pencil on a roster face: pick a file, send it as the same
@@ -3655,6 +3729,7 @@ function handleControl(msg) {
     pendingEffort = null;
     renderTopBar();
     renderContextFill(msg.context);   // absent on an older host -> unknown
+    renderStatusFields(msg.statusFields);
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
@@ -3777,6 +3852,11 @@ function handleControl(msg) {
     // The statusLine's context window, or null when the CLI has not counted
     // yet (a fresh session) -- drawn as unknown, never as a confident 0%.
     renderContextFill(msg.context);
+    return;
+  }
+  if (msg.type === 'statusFields') {
+    // BACKLOG #27: the CLI status row's cost / lines / time, or null.
+    renderStatusFields(msg.fields);
     return;
   }
   if (msg.type === 'attention') {

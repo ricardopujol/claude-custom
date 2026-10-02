@@ -28,6 +28,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
+const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -255,11 +256,14 @@ const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.is
 // saved. The tab view covers the strip, and every view hides its own header
 // and zones when told.
 let focusMode = false;
+// Layout pass L2 (#28): this window's frame, fixed at creation. A frameless
+// window keeps its strip in focus mode: it's the only title bar (Dexter L2 #3).
+let windowFrameless = false;
 
 function layoutView(view) {
   if (!win || win.isDestroyed()) return;
   const [width, height] = win.getContentSize();
-  const top = focusMode ? 0 : STRIP_HEIGHT;
+  const top = viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
   view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
 }
 
@@ -277,9 +281,17 @@ let cueOn = false;
 let focused = false;
 
 function createWindow() {
+  // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
+  // an open window, so a later toggle applies to the next one.
+  const chrome = readChromeSettings(uiStore);
+  windowFrameless = chrome.framelessWindow === true;
   win = new BrowserWindow({
     width: 1200,
     height: 800,
+    // Frameless: no OS title bar; the strip drags the window and draws its own
+    // minimise and close (app/tab-strip.js windowChrome). The title still
+    // feeds alt-tab and the taskbar.
+    frame: !chrome.framelessWindow,
     // Room for the terminal's minimum and two side zones (app/dock-layout.js S7).
     minWidth: 640,
     minHeight: 480,
@@ -293,7 +305,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload-strip.js'),
     },
   });
-  win.loadFile(path.join(__dirname, 'tab-strip.html'));
+  win.loadFile(path.join(__dirname, 'tab-strip.html'), { query: chrome.framelessWindow ? { frameless: '1' } : {} });
   registerShortcuts(win.webContents);
 
   // FOCUS IS TRACKED, NOT ASKED FOR. Naomi, PR #33, measured in a real window:
@@ -673,6 +685,16 @@ function registerIpc() {
     if (!fromStrip(e)) return;
     tabShell.cancelCreate();
   });
+  // Layout pass L2 (#28): a frameless window's own buttons. Close is the same
+  // close as the OS frame's: the window goes, the hosts stay detached.
+  ipcMain.on('strip:winMinimize', (e) => {
+    if (!fromStrip(e)) return;
+    win.minimize();
+  });
+  ipcMain.on('strip:winClose', (e) => {
+    if (!fromStrip(e)) return;
+    win.close();
+  });
   // The ▾ menu. Answers when it closes, so the strip can show it was busy
   // (the list takes two powershell.exe, ~1-2 s); one at a time.
   let backgroundBusy = false;
@@ -841,6 +863,16 @@ function registerIpc() {
   watchImagesEnabled({
     store: uiStore, win, sync: avatarSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
+  });
+
+  // Layout pass L2: "status line in the header" (#27; host/status-relay.js
+  // reads the same file on every status fire) and "hide the title bar" (#28;
+  // read by createWindow for the next window). See window-chrome-bridge.js.
+  const chromeSync = {};
+  registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
+  watchChromeSettings({
+    store: uiStore, sync: chromeSync, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${CHROME_KEY}.json`),
   });
 
   // The global dock layout (layout pass L1): install-wide like the toggle above,
@@ -1015,14 +1047,24 @@ function startProbeDriver(port) {
       if (sel) {
         try {
           viewDom = JSON.parse(await sel.webContents.executeJavaScript(
-            "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined' })"));
+            "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined', "
+            // Layout pass L2 (#27): the header's copy of the CLI status row.
+            + "statusFields: (() => { const el = document.getElementById('status-fields'); if (!el) return null; const r = el.getBoundingClientRect(); return { hidden: el.hidden, text: el.textContent, rect: { left: Math.round(r.left), width: Math.round(r.width), right: Math.round(r.right) }, viewport: window.innerWidth, display: getComputedStyle(el).display, scrollWidth: el.scrollWidth, focusRight: Math.round(((document.getElementById('focus-btn') || el).getBoundingClientRect()).right) }; })() })"));
         } catch (err) { viewDom = { error: err.message }; }
       }
       // No menu bar: no application menu AND none on the window.
       const noMenuBar = Menu.getApplicationMenu() === null && !win.isMenuBarVisible();
+      // Layout pass L2 (#28): a frameless window's content fills the whole
+      // window, and its strip is the title bar (verify/probe-window-chrome.js).
+      let windowChromeDom = null;
+      try {
+        windowChromeDom = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify({ frameless: document.body.classList.contains('frameless'), min: !document.getElementById('win-min').hidden, close: !document.getElementById('win-close').hidden, drag: getComputedStyle(document.getElementById('strip')).webkitAppRegion || getComputedStyle(document.getElementById('strip')).getPropertyValue('-webkit-app-region') })"));
+      } catch (err) { windowChromeDom = { error: err.message }; }
+      const windowFrame = { bounds: win.getBounds(), content: win.getContentBounds(), dom: windowChromeDom };
       const snap = tabShell.snapshot();
       return {
-        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar,
+        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen,
       };
     },

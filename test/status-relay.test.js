@@ -260,3 +260,76 @@ test('the user command stays in the relay\'s process group (Dexter #51 F7)', () 
   // the relay's group no longer reached it: worse than before the timeout.
   assert.doesNotMatch(RELAY_SRC, /detached:/);
 });
+
+// --- #27: --quiet-when ------------------------------------------------------
+// The person moved the status line into the tab header (PLAN_LAYOUT_L2.md):
+// the relay still forwards every document, but prints nothing, so the CLI
+// drops its status row (MEASURED, verify/probe-footer-rows.js).
+const writeChrome = (dir, value) => {
+  const file = path.join(dir, 'chrome-global.json');
+  fs.writeFileSync(file, JSON.stringify(value));
+  return file;
+};
+const ECHO = `"${process.execPath}" -e "process.stdout.write('USER-ROW')"`;
+
+test('#27: statusInHeader true -> the user command does not run and nothing is printed', async () => {
+  const file = writeChrome(tmpDir('relay-quiet'), { statusInHeader: true });
+  const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
+  assert.strictEqual(res.out, '');
+  assert.strictEqual(res.code, 0);
+});
+
+test('#27: statusInHeader false, missing, or not exactly true -> the user row prints as before', async () => {
+  const dir = tmpDir('relay-loud');
+  for (const value of [{ statusInHeader: false }, {}, { statusInHeader: 'true' }, { statusInHeader: 1 }, null, [true]]) {
+    const file = writeChrome(dir, value);
+    const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
+    assert.strictEqual(res.out, 'USER-ROW', JSON.stringify(value));
+  }
+});
+
+test('#27: a missing or corrupt toggle file -> the user row prints (fail toward showing)', async () => {
+  const dir = tmpDir('relay-bad');
+  const corrupt = path.join(dir, 'chrome-global.json');
+  fs.writeFileSync(corrupt, '{not json');
+  for (const file of [path.join(dir, 'nope.json'), corrupt]) {
+    const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
+    assert.strictEqual(res.out, 'USER-ROW', file);
+  }
+});
+
+test('#27: quiet still forwards the document to the host', async () => {
+  const name = pipeName();
+  const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
+  await bridge.listening;
+  const got = new Promise(r => { bridge.once('event', r); setTimeout(() => r(null), 3000).unref(); });
+  const file = writeChrome(tmpDir('relay-quiet-fwd'), { statusInHeader: true });
+  await runRelay(['--pipe', name, '--then', b64(ECHO), '--quiet-when', file], DOC);
+  const ev = await got;
+  await bridge.close();
+  assert.ok(ev && ev.event === 'Status', 'the header needs the document even when the row is quiet');
+});
+
+test('#27: statusRelay.quietWhen adds a quoted --quiet-when with forward slashes', () => {
+  const user = { type: 'command', command: 'node C:/u/sl.js' };
+  const base = relayOpts(user);
+  const s = buildHarnessSettings({ ...base,
+    statusRelay: { ...base.statusRelay, quietWhen: 'C:\\cc\\.harness\\state\\chrome-global.json' } }).statusLine;
+  assert.match(s.command, /--quiet-when "C:\/cc\/\.harness\/state\/chrome-global\.json"/);
+  // It parses back to the same path through the relay's own reader.
+  const { parseArgs } = require('../host/status-relay');
+  const argv = s.command.match(/"[^"]*"|\S+/g).map(a => a.replace(/^"|"$/g, ''));
+  assert.strictEqual(parseArgs(argv).quietWhen, 'C:/cc/.harness/state/chrome-global.json');
+});
+
+test('#27: no quietWhen -> no --quiet-when (the relay prints as before)', () => {
+  const s = buildHarnessSettings(relayOpts({ type: 'command', command: 'node C:/u/sl.js' })).statusLine;
+  assert.ok(!/--quiet-when/.test(s.command), s.command);
+});
+
+test('#27: parseArgs reads --quiet-when, and defaults it to null', () => {
+  const { parseArgs } = require('../host/status-relay');
+  assert.deepStrictEqual(parseArgs(['--pipe', 'p', '--then', 'x', '--quiet-when', 'C:/f.json']),
+    { pipe: 'p', then: 'x', quietWhen: 'C:/f.json' });
+  assert.deepStrictEqual(parseArgs(['--pipe', 'p']), { pipe: 'p', then: null, quietWhen: null });
+});

@@ -10,7 +10,7 @@ const {
 
 test('the registry lists colours, background and inactive windows, in that order', () => {
   // The container-that-grows design: a new section is one entry here.
-  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'background', 'inactive', 'avatars']);
+  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'background', 'inactive', 'avatars', 'window']);
   for (const s of STYLE_SECTIONS) assert.ok(s.title, s.id);
 });
 
@@ -239,7 +239,7 @@ test('F2: an untagged refusal falls back to the background section, never vanish
 test('F2: an unknown ask tag is not used as a state key', () => {
   const s = reduceStyle(reduceStyle(undefined, hello), { type: 'style', error: 'x', ask: '__proto__' });
   assert.strictEqual(s.background.error, 'x');
-  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive']);
+  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive', 'window']);
 });
 
 test('F3: a refusal keeps the STORED darkness, so the preview can be put back', () => {
@@ -259,4 +259,47 @@ test('the colours section is marked unknown before hello, and known after', () =
   assert.strictEqual(section({}, 'colours').view.known, false);
   const s = reduceStyle(undefined, hello);
   assert.strictEqual(styleDisplay(s).find((x) => x.id === 'colours').view.known, true);
+});
+
+// --- layout pass L2: the Window section (#27 status in header, #28 frameless) --
+
+const { reduceChromeSettings, windowSectionView } = require('../app/style-display');
+
+test('the window section says "reading…" until main has answered, never a guessed OFF', () => {
+  const v = section({}, 'window').view;
+  assert.strictEqual(v.statusInHeader, null);
+  assert.strictEqual(v.framelessWindow, null);
+  assert.strictEqual(v.statusDescription, 'reading…');
+  assert.strictEqual(v.framelessDescription, 'reading…');
+});
+
+test('reduceChromeSettings records only real booleans, per key', () => {
+  let s = reduceChromeSettings(undefined, { statusInHeader: true, framelessWindow: false });
+  assert.deepStrictEqual(s.window, { statusInHeader: true, framelessWindow: false });
+  s = reduceChromeSettings(s, { statusInHeader: 'false', framelessWindow: 1 });
+  assert.deepStrictEqual(s.window, { statusInHeader: true, framelessWindow: false }, 'junk changes nothing');
+  assert.strictEqual(reduceChromeSettings(s, null), s);
+});
+
+test('the window view describes each setting, and says the title bar waits for the next window', () => {
+  const on = windowSectionView({ statusInHeader: true, framelessWindow: true });
+  assert.match(on.statusDescription, /header/i);
+  assert.match(on.framelessDescription, /next window/i);
+  const off = windowSectionView({ statusInHeader: false, framelessWindow: false });
+  assert.match(off.statusDescription, /terminal/i);
+  assert.notStrictEqual(on.statusDescription, off.statusDescription);
+  assert.notStrictEqual(on.framelessDescription, off.framelessDescription);
+});
+
+test('Miguel L2 Y3 / Dexter L2 #4: the status text says the own statusLine stops, and when a switch lands', () => {
+  for (const on of [true, false]) {
+    const d = windowSectionView({ statusInHeader: on, framelessWindow: false }).statusDescription;
+    assert.match(d, /your own status line/i, `${on}: say the user's statusLine command doesn't run while it's on`);
+    assert.match(d, /next status update/i, `${on}: say a switch shows at the CLI's next status update`);
+  }
+});
+
+test('reduceStyle keeps the window settings, which the host never reports', () => {
+  const prev = reduceChromeSettings(reduceStyle(undefined, hello), { statusInHeader: true, framelessWindow: false });
+  assert.deepStrictEqual(reduceStyle(prev, hello).window, { statusInHeader: true, framelessWindow: false });
 });

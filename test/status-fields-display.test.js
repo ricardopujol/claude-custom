@@ -1,0 +1,75 @@
+'use strict';
+/**
+ * BACKLOG #27: app/status-fields-display.js -- the tab header's copy of the
+ * CLI status row, in warpaint's formats (warpaint\src\statusline.js), so moving
+ * the row changes where it is, not what it says.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fc = require('fast-check');
+const { statusFieldsText } = require('../app/status-fields-display');
+
+const fields = (o) => ({ costUsd: null, durationMs: null, linesAdded: null, linesRemoved: null, over200k: null, ...o });
+
+test('null or not an object -> nothing (unknown draws nothing, never "$0")', () => {
+  assert.deepStrictEqual(statusFieldsText(null), []);
+  assert.deepStrictEqual(statusFieldsText(undefined), []);
+  assert.deepStrictEqual(statusFieldsText('x'), []);
+  assert.deepStrictEqual(statusFieldsText(fields({})), []);
+});
+
+test('warpaint parity: cost, lines, duration, ctx>200k in that order', () => {
+  assert.deepStrictEqual(
+    statusFieldsText(fields({ costUsd: 1.234, durationMs: 3_900_000, linesAdded: 10, linesRemoved: 2, over200k: true })),
+    ['$1.23', '+10/-2', '1h05', 'ctx>200k']);
+});
+
+test('warpaint parity: tiny cost, under a minute, zero lines', () => {
+  assert.deepStrictEqual(
+    statusFieldsText(fields({ costUsd: 0.004, durationMs: 59_000, linesAdded: 0, linesRemoved: 0, over200k: false })),
+    ['<$0.01']);
+});
+
+test('warpaint parity: cost 0 hidden, one side of the lines, minutes', () => {
+  assert.deepStrictEqual(statusFieldsText(fields({ costUsd: 0, durationMs: 600_000, linesRemoved: 5 })), ['-5', '10m']);
+  assert.deepStrictEqual(statusFieldsText(fields({ linesAdded: 7 })), ['+7']);
+});
+
+test('property: no segment is ever a zero ("$0", "$0.00", "0m", "+0", "-0")', () => {
+  const v = fc.oneof(fc.constant(null), fc.constant(0), fc.double({ min: 0, max: 1e7, noNaN: true }), fc.nat());
+  fc.assert(fc.property(v, v, v, v, fc.oneof(fc.constant(null), fc.boolean()), (c, d, a, r, o) => {
+    const out = statusFieldsText({ costUsd: c, durationMs: d, linesAdded: a, linesRemoved: r, over200k: o });
+    for (const s of out) assert.ok(!/^\$0(\.00)?$|^0m$|(^|\/)[+-]0$/.test(s), s);
+  }));
+});
+
+test('property: junk never throws and never yields an empty or non-string segment', () => {
+  const junk = fc.anything();
+  fc.assert(fc.property(junk, junk, junk, junk, junk, (c, d, a, r, o) => {
+    const out = statusFieldsText({ costUsd: c, durationMs: d, linesAdded: a, linesRemoved: r, over200k: o });
+    assert.ok(Array.isArray(out));
+    for (const s of out) assert.ok(typeof s === 'string' && s.length > 0);
+  }));
+});
+
+// --- Miguel L2 G1: the show/hide rule, as behaviour (not a source regex) -------
+
+const { statusFieldsView } = require('../app/status-fields-display');
+const SOME = { costUsd: 1.5, durationMs: null, linesAdded: null, linesRemoved: null, over200k: null };
+
+test('shown only when the setting is exactly true AND there is something to say', () => {
+  assert.deepStrictEqual(statusFieldsView(SOME, true), { text: '$1.50', shown: true });
+  assert.deepStrictEqual(statusFieldsView(SOME, false), { text: '$1.50', shown: false });
+  assert.deepStrictEqual(statusFieldsView(SOME, null), { text: '$1.50', shown: false }, 'unknown setting: the CLI row may still be showing');
+  assert.deepStrictEqual(statusFieldsView(null, true), { text: '', shown: false }, 'unknown fields draw nothing');
+  assert.deepStrictEqual(statusFieldsView({ ...SOME, costUsd: 0 }, true), { text: '', shown: false });
+});
+
+test('property: shown implies the setting is true and the text is non-empty', () => {
+  const v = fc.oneof(fc.constant(null), fc.constant(0), fc.double({ min: 0, max: 1e7, noNaN: true }));
+  fc.assert(fc.property(v, v, fc.anything(), (c, d, setting) => {
+    const out = statusFieldsView({ costUsd: c, durationMs: d, linesAdded: null, linesRemoved: null, over200k: null }, setting);
+    if (out.shown) assert.ok(setting === true && out.text.length > 0);
+    else assert.ok(setting !== true || out.text === '');
+  }));
+});

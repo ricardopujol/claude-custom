@@ -72,12 +72,14 @@ const RELAY_MARK = 'status-relay.js';
  * A user statusLine that is already this relay is not chained, or the relay
  * would run itself.
  */
-function buildStatusLine({ nodePath, scriptPath, userStatusLine }, pipeName) {
+function buildStatusLine({ nodePath, scriptPath, userStatusLine, quietWhen }, pipeName) {
   const user = userStatusLine && typeof userStatusLine === 'object' ? userStatusLine : null;
   const userCommand = user && user.type === 'command' && typeof user.command === 'string'
     && user.command && !user.command.includes(RELAY_MARK) ? user.command : null;
   let command = `${quote(slashes(nodePath))} ${quote(slashes(scriptPath))} --pipe ${quote(bareName(pipeName))}`;
   if (userCommand) command += ` --then ${Buffer.from(userCommand, 'utf8').toString('base64')}`;
+  // BACKLOG #27: the file whose statusInHeader quiets the row (status-relay.js).
+  if (quietWhen) command += ` --quiet-when ${quote(slashes(quietWhen))}`;
   return { padding: 0, ...(user || {}), type: 'command', command };
 }
 

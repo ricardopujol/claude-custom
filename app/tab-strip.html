@@ -42,6 +42,17 @@
     #bg:hover { color: var(--text); background: var(--border); }
     #bg:disabled { cursor: progress; color: var(--accent); }
     #strip-alert.info { color: var(--dim); }
+    /* Layout pass L2 (#28): a frameless window. The strip is the title bar, so
+       it drags the window (and a double-click maximises: Windows does that on a
+       drag region); everything you click in it opts out. */
+    body.frameless #strip { -webkit-app-region: drag; }
+    body.frameless .tab, body.frameless #strip button, body.frameless #strip form,
+    body.frameless #strip-alert { -webkit-app-region: no-drag; }
+    .win-btn { flex: 0 0 auto; width: 44px; border: 0; background: transparent; color: var(--dim);
+      cursor: pointer; font-size: 13px; }
+    .win-btn[hidden] { display: none; }
+    .win-btn:hover { color: var(--text); background: var(--border); }
+    #win-close:hover { color: #fff; background: #c42b1c; }
     .badge { font-size: 10px; padding: 0 4px; border-radius: 3px; }
     .badge.merged { color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); }
     .badge.warn { color: var(--bad); font-size: 11px; }
@@ -76,7 +87,10 @@
       title="New branch, or reopen a tab you closed (Ctrl+Shift+T)">+</button><form id="create" hidden><input
       id="create-branch" placeholder="feat/…" spellcheck="false" autocomplete="off"
       aria-label="New branch name" /><button type="button" id="create-cancel" title="Cancel (Esc)">✕</button></form><div
-      id="strip-alert" hidden></div><button type="button" id="bg" title="Running sessions">▾</button></div>
+      id="strip-alert" hidden></div><button type="button" id="bg" title="Running sessions">▾</button><button
+      type="button" id="win-min" class="win-btn" title="Minimise" aria-label="Minimise" hidden>&#x2013;</button><button
+      type="button" id="win-close" class="win-btn" title="Close window (sessions keep running)" aria-label="Close window"
+      hidden>&#x2715;</button></div>
   <div id="pane" hidden>
     <div id="pane-text"></div>
     <button type="button" id="pane-retry" hidden>Retry</button>

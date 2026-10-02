@@ -6,6 +6,12 @@
  * output through as the status line.
  *
  *   node status-relay.js --pipe <bare pipe name> [--then <base64 command>]
+ *                        [--quiet-when <chrome-global.json>]
+ *
+ * --quiet-when (BACKLOG #27): when that file says `statusInHeader: true`, the
+ * user's command doesn't run and nothing is printed, so the CLI drops its
+ * status row (MEASURED, verify/probe-footer-rows.js) and the tab header draws
+ * the fields instead. The document is still forwarded either way.
  *
  * Why it exists: the document carries model.id and effort.level and re-fires
  * ~1s after /model and /effort with no turn (verify/probe-top-bar-truth.js),
@@ -17,6 +23,7 @@
  * stall or blank the user's status line, and a user command that fails must
  * not stop the host hearing the truth. The two run concurrently.
  */
+const fs = require('fs');
 const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 
@@ -42,12 +49,28 @@ function killTree(child) {
 }
 
 function parseArgs(argv) {
-  const out = { pipe: null, then: null };
+  const out = { pipe: null, then: null, quietWhen: null };
   for (let i = 0; i < argv.length - 1; i++) {
     if (argv[i] === '--pipe') out.pipe = argv[i + 1];
     else if (argv[i] === '--then') out.then = argv[i + 1];
+    else if (argv[i] === '--quiet-when') out.quietWhen = argv[i + 1];
   }
   return out;
+}
+
+// BACKLOG #27: the person moved the status line into the tab header. Read on
+// EVERY fire, so the toggle needs no session restart. Only an exact `true`
+// quiets the row: a missing, unreadable or corrupt file prints the row as
+// before, because failing toward a duplicate row beats failing toward a
+// missing one.
+function quiet(file) {
+  if (!file) return false;
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return !!value && value.statusInHeader === true;
+  } catch {
+    return false;
+  }
 }
 
 // The bare name, rebuilt into a pipe path here -- the same division of labour
@@ -95,8 +118,11 @@ function runUser(encoded, input, { timeoutMs = USER_TIMEOUT_MS } = {}) {
 }
 
 async function relay(argv, input) {
-  const { pipe, then } = parseArgs(argv);
-  const [, code] = await Promise.all([forward(pipe, input), runUser(then, input)]);
+  const { pipe, then, quietWhen } = parseArgs(argv);
+  const [, code] = await Promise.all([
+    forward(pipe, input),
+    quiet(quietWhen) ? Promise.resolve(0) : runUser(then, input),
+  ]);
   return code;
 }
 
@@ -111,4 +137,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, relay, forward, runUser, USER_TIMEOUT_MS };
+module.exports = { parseArgs, relay, forward, runUser, quiet, USER_TIMEOUT_MS };

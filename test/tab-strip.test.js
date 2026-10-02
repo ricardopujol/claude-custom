@@ -132,12 +132,64 @@ test('paint: the pane shows while the tab has no page; Retry re-selects the fail
   assert.strictEqual(doc.byId['pane-retry'].onclick, null);
 });
 
-test('the strip bridge exposes its eight members -- and nothing else', () => {
+// --- layout pass L2 (#28): the frameless window's own buttons ----------------
+
+const { windowChrome } = require('../app/tab-strip');
+function chromeDoc() {
+  const body = { classes: new Set(), classList: null };
+  body.classList = { add: (c) => body.classes.add(c), contains: (c) => body.classes.has(c) };
+  const byId = { 'win-min': node('button'), 'win-close': node('button') };
+  byId['win-min'].hidden = true;
+  byId['win-close'].hidden = true;
+  return { body, byId, getElementById: (id) => byId[id] };
+}
+
+test('windowChrome: ?frameless=1 marks the body and shows minimise and close, wired to the bridge', () => {
+  const doc = chromeDoc();
+  const calls = [];
+  windowChrome(doc, '?frameless=1', { winMinimize: () => calls.push('min'), winClose: () => calls.push('close') });
+  assert.strictEqual(doc.body.classList.contains('frameless'), true);
+  assert.strictEqual(doc.byId['win-min'].hidden, false);
+  assert.strictEqual(doc.byId['win-close'].hidden, false);
+  doc.byId['win-min'].onclick();
+  doc.byId['win-close'].onclick();
+  assert.deepStrictEqual(calls, ['min', 'close']);
+});
+
+test('windowChrome: a framed window (no flag, or any other value) keeps both buttons hidden', () => {
+  for (const search of ['', '?', '?frameless=0', '?frameless=true', '?other=1', null, undefined]) {
+    const doc = chromeDoc();
+    windowChrome(doc, search, { winMinimize() {}, winClose() {} });
+    assert.strictEqual(doc.body.classList.contains('frameless'), false, String(search));
+    assert.strictEqual(doc.byId['win-min'].hidden, true, String(search));
+    assert.strictEqual(doc.byId['win-close'].hidden, true, String(search));
+  }
+});
+
+test('tab-strip.html: the window buttons sit after ▾, start hidden, and frameless sets the drag regions', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  const strip = html.slice(html.indexOf('<div id="strip">'), html.indexOf('<div id="pane"'));
+  assert.ok(strip.indexOf('id="bg"') < strip.indexOf('id="win-min"'));
+  assert.ok(strip.indexOf('id="win-min"') < strip.indexOf('id="win-close"'));
+  assert.match(strip, /id="win-min"[^>]*\bhidden\b/);
+  assert.match(strip, /id="win-close"[^>]*\bhidden\b/);
+  // Miguel L2 G4: glyph-only buttons are named for a screen reader.
+  assert.match(strip, /id="win-min"[^>]*aria-label="Minimise"/);
+  assert.match(strip, /id="win-close"[^>]*aria-label="Close window"/);
+  assert.match(html, /body\.frameless #strip\s*\{[^}]*-webkit-app-region:\s*drag/);
+  assert.match(html, /body\.frameless[^{]*\.tab[^{]*\{[^}]*-webkit-app-region:\s*no-drag/);
+  assert.match(html, /body\.frameless[^{]*#strip button[^{]*\{[^}]*-webkit-app-region:\s*no-drag/);
+});
+
+test('the strip bridge exposes its ten members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
-  assert.deepStrictEqual(members, ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel']);
+  assert.deepStrictEqual(members,
+    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'winMinimize', 'winClose']);
+  assert.match(src, /'strip:winMinimize'/);
+  assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
   assert.match(src, /'strip:close'/);
   assert.match(src, /'strip:contextMenu'/);

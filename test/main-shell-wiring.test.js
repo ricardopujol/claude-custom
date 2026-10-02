@@ -93,6 +93,9 @@ test('the bridges that took `win` are handed the tab-view predicate', () => {
   assert.match(MAIN, /registerFavouriteHandlers\(\{[^}]*isSender: isTabView[^}]*\}\)/);
   assert.match(MAIN, /registerAvatarHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
   assert.match(MAIN, /watchImagesEnabled\(\{[\s\S]*?send: pushToViews/);
+  // Layout pass L2: the window-chrome settings, the same shape.
+  assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
+  assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToViews[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
 });
 
 test('the window-wide broadcasts reach EVERY tab view', () => {
@@ -223,8 +226,9 @@ test('the notification click goes to the tab that raised it', () => {
 test('each tab view is shown only when selected and laid out below the strip', () => {
   assert.match(MAIN, /const STRIP_HEIGHT = 34/);
   assert.match(MAIN, /tab\.view\.setVisible\(tab\.key === snapshot\.selectedKey\)/);
-  // Below the strip -- unless focus mode lifts it over the strip (layout pass L1, #1).
-  assert.match(MAIN, /const top = focusMode \? 0 : STRIP_HEIGHT;/);
+  // Below the strip -- unless focus mode lifts it over the strip (layout pass L1, #1),
+  // which a frameless window doesn't (Dexter L2 #3; the rule is viewTop's, unit-tested).
+  assert.match(MAIN, /const top = viewTop\(\{ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT \}\);/);
   assert.match(MAIN, /for \(const ev of \['resize'/);
 });
 
@@ -289,6 +293,26 @@ test('PR 3: the + channels exist and are the strip page’s alone', () => {
     assert.ok(c, name);
     assert.match(callText(MAIN, c.at), /fromStrip\(e\)/, name);
   }
+});
+
+test('L2 #28: the window-button channels exist and are the strip page’s alone', () => {
+  for (const name of ['strip:winMinimize', 'strip:winClose']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, name);
+    assert.match(callText(MAIN, c.at), /fromStrip\(e\)/, name);
+  }
+});
+
+test('Dexter L2 #3: the view\'s top comes from viewTop, with this window\'s frameless flag', () => {
+  assert.match(MAIN, /const top = viewTop\(\{ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT \}\);/);
+  assert.match(MAIN, /windowFrameless = chrome\.framelessWindow === true;/);
+});
+
+test('L2 #28: createWindow reads the frameless setting for THIS window and tells the strip', () => {
+  const body = MAIN.slice(MAIN.indexOf('function createWindow()'), MAIN.indexOf('registerShortcuts(win.webContents)'));
+  assert.match(body, /readChromeSettings\(uiStore\)/);
+  assert.match(body, /frame: !\w+\.framelessWindow/);
+  assert.match(body, /loadFile\([^)]*tab-strip\.html'\),\s*\{\s*query:/);
 });
 
 test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so nothing rejects unhandled in main', () => {
@@ -384,7 +408,7 @@ test('L1: the preload exposes the layout bridge with one listener at a time', ()
 test('L1 #1: focus mode lifts the tab view over the strip, and every view is told', () => {
   assert.match(MAIN, /\nlet focusMode = false;/);
   const lv = MAIN.slice(MAIN.indexOf('function layoutView('), MAIN.indexOf('\n}', MAIN.indexOf('function layoutView(')));
-  assert.match(lv, /const top = focusMode \? 0 : STRIP_HEIGHT;/);
+  assert.match(lv, /const top = viewTop\(\{ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT \}\);/);
   assert.match(lv, /y: top,/);
   const set = MAIN.slice(MAIN.indexOf('function setFocusMode('), MAIN.indexOf('\n}', MAIN.indexOf('function setFocusMode(')));
   assert.match(set, /forEachView\(layoutView\)/);
