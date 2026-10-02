@@ -8,7 +8,9 @@
  * rows. host/tab-marks-store.js reads and writes the file; app/main.js wires it.
  *
  * The file stores each mark's ID, never its emoji, so changing an emoji here
- * doesn't orphan the marks already saved.
+ * doesn't orphan the marks already saved. An id this build doesn't know (from
+ * a newer one) is KEPT and carried back to the file, just not drawn: dropping
+ * it would wipe the person's data on the next save (Dexter #87 F3).
  *
  * Branch names are somebody else's strings, `__proto__` included, so the map
  * is null-prototype and every lookup is an own-property check.
@@ -54,7 +56,8 @@ function parseMarks(text) {
   if (!isPlainObject(data) || data.version !== VERSION || !isPlainObject(data.marks)) return { ok: false };
   const store = emptyMarks();
   for (const b of Object.keys(data.marks)) {
-    if (isBranch(b) && byId.has(data.marks[b])) store.marks[b] = data.marks[b];
+    const id = data.marks[b];
+    if (isBranch(b) && typeof id === 'string' && id !== '') store.marks[b] = id;
   }
   return { ok: true, store };
 }
@@ -88,13 +91,16 @@ function setMark(store, branch, id) {
 
 /**
  * The store without marks on branches that no longer exist. `liveBranches`
- * that isn't a list means "not known", and an unknown never deletes.
+ * that isn't a list means "not known", and an unknown never deletes. Compared
+ * without case: NTFS refs are case-insensitive, so a branch checked out as
+ * feat/tab-marks may be listed as feat/Tab-Marks and is still live (Dexter #87 F4).
  */
 function pruneMarks(store, liveBranches) {
   if (!Array.isArray(liveBranches)) return copyOf(store);
-  const live = new Set(liveBranches);
+  const fold = b => String(b).toLowerCase();
+  const live = new Set(liveBranches.map(fold));
   const out = emptyMarks();
-  for (const b of Object.keys(store.marks)) if (live.has(b)) out.marks[b] = store.marks[b];
+  for (const b of Object.keys(store.marks)) if (live.has(fold(b))) out.marks[b] = store.marks[b];
   return out;
 }
 
@@ -124,7 +130,9 @@ function liveBranchesFrom(text) {
 function markMenuModel(store, branch, state) {
   const current = markFor(store, branch);
   let why = null;
-  if (state !== 'ok' && state !== 'missing') why = 'marks file unreadable';
+  // Dexter #87 F5: a linked folder isn't an unreadable file; say which.
+  if (state === 'unavailable') why = ".claude-custom is a link, or couldn't be checked";
+  else if (state !== 'ok' && state !== 'missing') why = 'marks file unreadable';
   else if (!isBranch(branch)) why = 'no branch';
   return {
     enabled: why === null,

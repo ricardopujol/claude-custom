@@ -24,10 +24,10 @@ test('a file that is not a version-1 marks object is refused, not read as empty'
   }
 });
 
-test('parse keeps known marks and drops unknown ids and empty branches', () => {
+test('parse keeps every string id, known or not, and drops empty branches and non-string ids', () => {
   const r = m.parseMarks(JSON.stringify({ version: 1, marks: { 'feat/a': 'waiting', 'feat/b': 'nope', '': 'bug', 'feat/c': 7 } }));
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(Object.keys(r.store.marks), ['feat/a']);
+  assert.deepStrictEqual(Object.keys(r.store.marks), ['feat/a', 'feat/b']);
 });
 
 test('a branch called __proto__ is just a branch', () => {
@@ -80,11 +80,14 @@ test('markMenuModel: ten radio rows, the current one checked', () => {
 });
 
 test('markMenuModel: disabled, with why, when the file or the branch is unknown', () => {
-  for (const state of ['unreadable', 'unavailable']) {
-    const menu = m.markMenuModel(m.emptyMarks(), 'feat/a', state);
-    assert.strictEqual(menu.enabled, false);
-    assert.match(menu.why, /unreadable/);
-  }
+  const unreadable = m.markMenuModel(m.emptyMarks(), 'feat/a', 'unreadable');
+  assert.strictEqual(unreadable.enabled, false);
+  assert.match(unreadable.why, /unreadable/);
+  // Dexter #87 F5: a linked .claude-custom is not an unreadable file; say which.
+  const linked = m.markMenuModel(m.emptyMarks(), 'feat/a', 'unavailable');
+  assert.strictEqual(linked.enabled, false);
+  assert.match(linked.why, /link/);
+  assert.doesNotMatch(linked.why, /unreadable/);
   const noBranch = m.markMenuModel(m.emptyMarks(), null, 'ok');
   assert.strictEqual(noBranch.enabled, false);
   assert.match(noBranch.why, /branch/);
@@ -120,4 +123,34 @@ test('liveBranchesFrom reads full refnames, and an empty answer is unknown, not 
 test('markCount counts the marks in a store', () => {
   assert.strictEqual(m.markCount(m.emptyMarks()), 0);
   assert.strictEqual(m.markCount(storeOf({ a: 'bug', b: 'star' })), 2);
+});
+
+// --- Dexter #87 F3: an id from a newer build is kept, not wiped ----------------
+
+test('an unknown id is kept through parse, set and serialize, and simply not drawn', () => {
+  const s = m.parseMarks(JSON.stringify({ version: 1, marks: { 'feat/a': 'blocked', 'feat/b': 'review' } })).store;
+  assert.strictEqual(m.markFor(s, 'feat/a'), null, 'not drawn: this build has no emoji for it');
+  const after = m.setMark(s, 'feat/c', 'ship');
+  const back = JSON.parse(m.serializeMarks(after)).marks;
+  assert.deepStrictEqual(back, { 'feat/a': 'blocked', 'feat/b': 'review', 'feat/c': 'ship' });
+  assert.strictEqual(m.markFor(m.setMark(s, 'feat/a', 'bug'), 'feat/a').id, 'bug', 'a new pick replaces it');
+  const menu = m.markMenuModel(s, 'feat/a', 'ok');
+  assert.deepStrictEqual(menu.rows.filter(r => r.checked), [], 'nothing this build knows is checked');
+});
+
+test('property: unknown ids survive a round trip and a set on another branch', () => {
+  const unknownId = fc.string({ minLength: 1, maxLength: 12 }).filter(s => !IDS.includes(s));
+  fc.assert(fc.property(fc.dictionary(branchArb, unknownId), branchArb, (d, b) => {
+    const s = m.parseMarks(JSON.stringify({ version: 1, marks: d })).store;
+    const after = m.setMark(s, b, 'star');
+    const back = m.parseMarks(m.serializeMarks(after)).store.marks;
+    for (const [k, v] of Object.entries(d)) if (k !== b) assert.strictEqual(back[k], v, k);
+  }));
+});
+
+// --- Dexter #87 F4: NTFS refs are case-insensitive ------------------------------
+
+test('prune keeps a mark whose branch git lists in another letter case', () => {
+  const s = storeOf({ 'feat/tab-marks': 'bug', 'feat/gone': 'star' });
+  assert.deepStrictEqual(Object.keys(m.pruneMarks(s, ['feat/Tab-Marks', 'develop']).marks), ['feat/tab-marks']);
 });
