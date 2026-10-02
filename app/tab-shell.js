@@ -178,6 +178,8 @@ function createShell(deps) {
   const {
     mode = 'tabs', container = null, cwd = null, launchedFrom = null,
     git, hosts, ops, views, ui, log = () => {},
+    // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
+    marks = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -232,13 +234,22 @@ function createShell(deps) {
   const setupHolds = (tab) => (typeof tab.branch === 'string' && pendingBranches.has(tab.branch))
     || (setups.has(tab.key) && setups.get(tab.key).running === true);
 
+  // A mark is decoration: a reader that fails draws none and never takes the strip down.
+  function readMark(branch) {
+    if (!marks || typeof marks.markFor !== 'function' || typeof branch !== 'string') return null;
+    try { return marks.markFor(branch) || null; } catch (err) {
+      log('[shell] marks.markFor threw:', err && err.message);
+      return null;
+    }
+  }
+
   function model() {
     return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
       const t = tabs.get(e.key);
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
-        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e),
+        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(t && t.branch),
       };
     });
   }
@@ -818,6 +829,8 @@ function createShell(deps) {
     createWorktree, openCreate, cancelCreate, plusMenu, reopen,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy,
+    // #40: something the model reads changed outside the shell (a tab's mark).
+    refresh: publish,
     // Exposed for tests and the probe driver.
     _tabs: tabs, _state: () => state,
   };

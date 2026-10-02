@@ -39,7 +39,7 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 
 /** A shell whose every effect is a recording fake. */
-function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false } = {}) {
+function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
@@ -145,6 +145,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
       isFocused: () => focused,
     },
   };
+  if (marks !== undefined) deps.marks = marks;
   h.shell = createShell(deps);
   return h;
 }
@@ -1632,4 +1633,38 @@ test('shortcutFor: Ctrl+Shift+F (either case) is focus mode; plain Ctrl+F and Al
   assert.strictEqual(shortcutFor(kd('f', { control: true })), null);
   assert.strictEqual(shortcutFor(kd('f', { control: true, shift: true, alt: true })), null);
   assert.strictEqual(shortcutFor({ ...kd('f', { control: true, shift: true }), type: 'keyUp' }), null);
+});
+
+// --- #40 tab marks ---------------------------------------------------------------
+
+test('each strip entry carries its branch\'s mark, null when it has none', async () => {
+  const M = { id: 'waiting', emoji: 'W', meaning: 'Waiting on a merge' };
+  const h = harness({ marks: { markFor: b => (b === 'feat/a' ? M : null) } });
+  await h.shell.open();
+  const byLabel = Object.fromEntries(h.shell.snapshot().model.map(e => [e.label, e.mark]));
+  assert.deepStrictEqual(byLabel, { develop: null, 'feat/a': M, 'feat/b': null });
+});
+
+test('no marks reader: every mark is null', async () => {
+  const h = harness();
+  await h.shell.open();
+  assert.ok(h.shell.model().every(e => e.mark === null));
+});
+
+test('a marks reader that throws draws no mark and never breaks the strip', async () => {
+  const h = harness({ marks: { markFor: () => { throw new Error('boom'); } } });
+  await h.shell.open();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(h.shell.model().every(e => e.mark === null));
+});
+
+test('refresh publishes a new snapshot (a mark was set)', async () => {
+  let M = null;
+  const h = harness({ marks: { markFor: b => (b === 'develop' ? M : null) } });
+  await h.shell.open();
+  const before = h.changes.length;
+  M = { id: 'star', emoji: 'S', meaning: 'Favourite / keep an eye on' };
+  h.shell.refresh();
+  assert.strictEqual(h.changes.length, before + 1);
+  assert.deepStrictEqual(h.changes.at(-1).model.find(e => e.label === 'develop').mark, M);
 });
