@@ -90,58 +90,106 @@ function integrationOf(refs) {
   return ['develop', 'main', 'master'].find(n => local.has(n)) || null;
 }
 
-// A count git can't give is null, never 0: "unknown" drawn as "no commits" is the absence-as-zero
-// bug (host/branch-health.js, same rule).
-async function countOrNull(run, args, cwd) {
-  let out;
-  try {
-    out = await run(args, cwd);
-  } catch {
-    return null;
+
+// ---------- the commit graph: one git call instead of a spawn per branch ----------
+//
+// Asking git per branch (`rev-list --count p1..p2` per merge, two calls per lane) cost ~6s cold on
+// this repo: ~110 spawns at ~55ms each on Windows, paid by every tab's host. One `git log --all`
+// of hash/parents/time/subject holds all of it, and the counts below are linear walks over it.
+
+const GRAPH_FORMAT = '--format=%H%x1f%P%x1f%ct%x1f%s';
+
+/** `git log --all GRAPH_FORMAT` -> Map(hash -> { parents, time, subject }) */
+function parseGraph(text) {
+  const g = new Map();
+  if (typeof text !== 'string') return g;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line) continue;
+    const [hash, parents = '', time = '', subject = ''] = line.split(US);
+    if (!hash) continue;
+    g.set(hash, { parents: parents.trim().split(/\s+/).filter(Boolean), time: Number(time) || 0, subject });
   }
-  const s = typeof out === 'string' ? out.trim() : '';
-  return /^\d+$/.test(s) ? Number(s) : null;
+  return g;
+}
+
+// Every commit reachable from `from` that isn't in `seen` (added to it). Iterative: a long history
+// must not blow the stack.
+function claim(g, from, seen) {
+  const got = [];
+  const stack = [from];
+  while (stack.length) {
+    const h = stack.pop();
+    if (seen.has(h) || !g.has(h)) continue;
+    seen.add(h);
+    got.push(h);
+    for (const p of g.get(h).parents) stack.push(p);
+  }
+  return got;
+}
+
+function firstParentChain(g, tip) {
+  const chain = [];
+  for (let h = tip; h && g.has(h); h = g.get(h).parents[0]) chain.push(h);
+  return chain.reverse();
+}
+
+/**
+ * Map(merge hash -> commits it brought in) for every merge on `tip`'s first-parent line; the
+ * same number as `git rev-list --count p1..p2`. Walking the line oldest first, `seen` is exactly
+ * everything reachable from the current first parent, so what a merge's other parents reach
+ * beyond it is what the merge brought in.
+ */
+function mergeCounts(g, tip) {
+  const out = new Map();
+  const seen = new Set();
+  for (const h of firstParentChain(g, tip)) {
+    const { parents } = g.get(h);
+    if (parents.length > 1) {
+      let n = 0;
+      for (const p of parents.slice(1)) n += claim(g, p, seen).length;
+      out.set(h, n);
+    }
+    // the first parent was claimed one step earlier; this commit is the only new one on the line
+    seen.add(h);
+  }
+  return out;
+}
+
+/**
+ * { ahead, first } for a lane's tip against the integration tip: how many commits it has that the
+ * integration branch doesn't (`rev-list --count I..L`), and the subject of the OLDEST non-merge
+ * one -- what the branch set out to do; its newest is often "merge develop in". A tip the graph
+ * doesn't hold is unknown: { ahead: null }.
+ */
+function laneFacts(g, integrationTip, laneTip, base = null) {
+  if (!g.has(laneTip)) return { ahead: null, first: null };
+  const inIntegration = base || new Set(claim(g, integrationTip, new Set()));
+  const own = claim(g, laneTip, new Set(inIntegration));
+  let first = null;
+  for (const h of own) {
+    const c = g.get(h);
+    if (c.parents.length > 1) continue;
+    if (!first || c.time < g.get(first).time) first = h;
+  }
+  return { ahead: own.length, first: first ? g.get(first).subject.trim() || null : null };
+}
+
+function firstParentMerges(g, tip) {
+  return firstParentChain(g, tip).filter(h => g.get(h).parents.length > 1).length;
 }
 
 const errorText = err => (err && err.message) || String(err);
-
-/**
- * How far an unmerged ref is ahead of the integration branch, and its first commit's subject.
- * Two git spawns per branch (~50ms each on Windows) on every read added up to 1.5s warm on this
- * repo, so the answer is cached under BOTH tips: it can only change when one of them moves.
- * Nothing is cached when a tip is unknown or the count failed.
- */
-async function laneFacts(run, cwd, cache, integration, integrationTip, r) {
-  const key = r.tip && integrationTip ? `lane:${r.ref}:${r.tip}:${integrationTip}` : null;
-  if (key && cache.has(key)) return cache.get(key);
-  const ahead = await countOrNull(run, ['rev-list', '--count', `${integration}..${r.ref}`], cwd);
-  let first = null;
-  if (ahead) {
-    // the FIRST commit says what the branch set out to do; its last is often "merge develop in"
-    try {
-      const subjects = await run(['log', '--reverse', '--no-merges', '--format=%s', `${integration}..${r.ref}`], cwd);
-      first = (typeof subjects === 'string' && subjects.split(/\r?\n/)[0].trim()) || null;
-    } catch {
-      first = null;
-    }
-  }
-  const facts = { ahead, first };
-  if (key && ahead !== null) cache.set(key, facts);
-  return facts;
-}
 const NOT_LANES = new Set(['develop', 'main', 'master']);
 
 /**
  * { ok: true, integration, merges, unmerged, worktrees, mainMerges } | { ok: false, error }
- *
- * opts.run    (args, cwd) => Promise<stdout>
- * opts.counts a Map the caller keeps across reads: merge hash -> commit count (a merge never
- *             changes, so it's asked once per host lifetime) and laneFacts' keys. Failures are
- *             never cached.
+ * Four git calls whatever the number of branches. opts.run: (args, cwd) => Promise<stdout>.
  */
-async function readHistory(cwd, { run = defaultRun, counts = new Map() } = {}) {
+async function readHistory(cwd, { run = defaultRun } = {}) {
   let refs;
   let worktrees;
+  let merges;
+  let g;
   try {
     refs = parseRefs(await run(['for-each-ref', REF_FORMAT, 'refs/heads', 'refs/remotes'], cwd));
     worktrees = parseWorktrees(await run(['worktree', 'list', '--porcelain'], cwd));
@@ -150,25 +198,21 @@ async function readHistory(cwd, { run = defaultRun, counts = new Map() } = {}) {
   }
   const integration = integrationOf(refs);
   if (!integration) return { ok: false, error: 'no develop, main or master branch' };
-
-  let merges;
   try {
     merges = parseMerges(await run(['log', '--merges', '--first-parent', '--reverse', '--date=short',
       MERGE_FORMAT, integration], cwd));
+    g = parseGraph(await run(['log', '--all', GRAPH_FORMAT], cwd));
   } catch (err) {
     return { ok: false, error: errorText(err) };
   }
-  for (const m of merges) {
-    if (counts.has(m.hash)) {
-      m.commits = counts.get(m.hash);
-      continue;
-    }
-    m.commits = await countOrNull(run, ['rev-list', '--count', `${m.parents[0]}..${m.parents[1]}`], cwd);
-    if (m.commits !== null) counts.set(m.hash, m.commits);
-  }
 
+  const tipOf = name => (refs.find(r => !r.remote && r.name === name) || {}).tip || null;
+  const integrationTip = tipOf(integration);
+  const counts = mergeCounts(g, integrationTip);
+  for (const m of merges) m.commits = counts.has(m.hash) ? counts.get(m.hash) : null;
+
+  const base = new Set(claim(g, integrationTip, new Set()));
   const merged = new Set(merges.map(m => m.branch));
-  const integrationTip = (refs.find(r => !r.remote && r.name === integration) || {}).tip || null;
   const listed = new Set();
   const unmerged = [];
   // for-each-ref sorts by refname, so refs/heads/* come before refs/remotes/*: a local branch wins
@@ -178,18 +222,17 @@ async function readHistory(cwd, { run = defaultRun, counts = new Map() } = {}) {
     // left behind by Agent isolation worktrees (DESIGN_GIT_TREE.md decision 8)
     if (r.name.startsWith('worktree-agent-')) continue;
     listed.add(r.name);
-    const { ahead, first } = await laneFacts(run, cwd, counts, integration, integrationTip, r);
+    const { ahead, first } = r.tip ? laneFacts(g, integrationTip, r.tip, base) : { ahead: null, first: null };
     const wt = worktrees.find(w => w.branch === r.name);
     unmerged.push({ name: r.name, remote: r.remote, date: r.date, ahead, first, worktree: wt ? wt.path : null });
   }
 
-  const hasMain = refs.some(r => !r.remote && r.name === 'main');
-  const mainMerges = hasMain && integration !== 'main'
-    ? await countOrNull(run, ['rev-list', '--count', '--merges', '--first-parent', 'main'], cwd)
-    : null;
+  const mainTip = integration !== 'main' ? tipOf('main') : null;
+  const mainMerges = mainTip && g.has(mainTip) ? firstParentMerges(g, mainTip) : null;
   return { ok: true, integration, merges, unmerged, worktrees, mainMerges };
 }
 
 module.exports = {
-  parseMerges, parseRefs, parseWorktrees, integrationOf, readHistory, defaultRun, MERGE_FORMAT, REF_FORMAT,
+  parseMerges, parseRefs, parseWorktrees, parseGraph, integrationOf, mergeCounts, laneFacts, readHistory,
+  defaultRun, MERGE_FORMAT, REF_FORMAT, GRAPH_FORMAT,
 };
