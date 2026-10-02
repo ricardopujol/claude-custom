@@ -113,4 +113,27 @@ function readContext(doc) {
   return Number.isFinite(used) ? { used, size } : null;
 }
 
-module.exports = { readSessionHook, cliModeToKey, readStatus, readContext, CLI_MODE_KEYS };
+/**
+ * BACKLOG #27: what the CLI's status row showed that the tab header doesn't
+ * yet -- cost, lines, duration, ctx>200k -- read off the statusLine document
+ * (fields MEASURED by verify/probe-footer-rows.js, claude 2.1.287; a fresh
+ * session carries counted zeros). Each field is null when absent or
+ * malformed, never a coerced 0. No model id -> null, the trust rule of
+ * readStatus.
+ */
+function readStatusFields(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  const id = doc.model && typeof doc.model === 'object' ? doc.model.id : null;
+  if (typeof id !== 'string' || !id) return null;
+  const cost = doc.cost && typeof doc.cost === 'object' ? doc.cost : {};
+  const count = v => (nonNegative(v) ? v : null);
+  return {
+    costUsd: count(cost.total_cost_usd),
+    durationMs: count(cost.total_duration_ms),
+    linesAdded: count(cost.total_lines_added),
+    linesRemoved: count(cost.total_lines_removed),
+    over200k: typeof doc.exceeds_200k_tokens === 'boolean' ? doc.exceeds_200k_tokens : null,
+  };
+}
+
+module.exports = { readSessionHook, cliModeToKey, readStatus, readContext, readStatusFields, CLI_MODE_KEYS };
