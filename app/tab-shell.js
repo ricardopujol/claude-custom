@@ -736,6 +736,21 @@ function createShell(deps) {
     return true;
   }
 
+  /**
+   * *Jump to its tab*, for the Git panel (documentation/PLAN_GIT_TREE.md): select the tab whose
+   * worktree is `folder`, however its path is spelled. Always answers something to say.
+   */
+  async function selectFolder(sender, folder) {
+    if (!isTabView(sender)) return { kind: 'explain', text: "That tab's window can't be found." };
+    if (typeof folder !== 'string' || !folder) return { kind: 'explain', text: 'That branch has no worktree folder.' };
+    const key = keyOf(folder);
+    if (!model().some(e => e.key === key)) {
+      return { kind: 'explain', text: `${path.basename(folder)} has no tab open in this window.` };
+    }
+    await userSelect(key);
+    return { kind: 'select-tab' };
+  }
+
   /** *Go to that session*, for the blocked pane. Always answers something to say. */
   async function goTo(sender, holder) {
     if (!isTabView(sender)) return { kind: 'explain', text: "That session's window can't be found." };
@@ -799,7 +814,7 @@ function createShell(deps) {
   function destroy() { destroyed = true; }
 
   return {
-    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, menuState, override,
+    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy,

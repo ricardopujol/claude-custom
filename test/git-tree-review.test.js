@@ -67,6 +67,11 @@ test('Dexter F10: no token record anywhere is a total of null, not 0', () => {
   assert.strictEqual(t.hub.spend, null);
 });
 
+test('a lone unknown branch with no spend inside the project is not ours: the total stays null', () => {
+  // the property "totalSpend is EXACTLY every token that is ours" shrank to this (seed -1386998037)
+  assert.strictEqual(build(history(), { 'feat/a': total(0) }).totalSpend, null);
+});
+
 test('Dexter F13: spend on main, master, HEAD and worktree-agent-* goes to the hub, so the total is every token that is ours', () => {
   const t = build(history({ merges: [merge('feat/x', 1, '2026-09-20')] }),
     { develop: total(10), HEAD: total(1), main: total(2), master: total(3), 'worktree-agent-ab12': total(4), 'feat/x': total(5) });

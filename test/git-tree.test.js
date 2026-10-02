@@ -24,7 +24,7 @@ const byName = (tree, n) => tree.branches.find(b => b.name === n);
 test('a merged PR: state, PR number, why from its title, merge day, commits', () => {
   const t = build(history(), { 'feat/a': total(100) });
   assert.deepStrictEqual(byName(t, 'feat/a'), { name: 'feat/a', state: 'merged', place: 'dev', pr: 3, remote: false,
-    why: 'The first thing', when: '2026-09-20', commits: 4, spend: 100, runs: 0, people: [] });
+    why: 'The first thing', when: '2026-09-20', commits: 4, spend: 100, runs: 0, people: [], folder: null });
 });
 
 test('no token record is spend null, never 0', () => {
@@ -88,6 +88,8 @@ test('place: open worktree; had its own worktree (a cwd in <root>\\<branch-dashe
   });
   const t = build(h, { 'feat/a': total(1, { cwds: ['c:\\P\\feat-a\\sub'] }), 'feat/b': total(1) });
   assert.deepStrictEqual(['feat/a', 'feat/b', 'feat/c'].map(n => byName(t, n).place), ['had-worktree', 'dev', 'worktree']);
+  // the open worktree's folder rides along, for the panel's *Jump to its tab*; only an open one
+  assert.deepStrictEqual(['feat/a', 'feat/b', 'feat/c'].map(n => byName(t, n).folder), [null, null, 'C:/p/feat-c']);
 });
 
 test('people: runs folded per person, by spend; named teammates fold into the person', () => {
