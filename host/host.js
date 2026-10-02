@@ -40,6 +40,10 @@ const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
 const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
+const { readHistory } = require('./git-history');
+const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
+const { readOpenPrs } = require('./open-prs');
+const { createGitTreeService, ledgerFileFor } = require('./git-tree-service');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { createCatalogueCache } = require('./catalogue-cache');
@@ -378,6 +382,14 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
+// The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
+// lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
+// through a linked folder (ledgerFileFor).
+const gitTree = createGitTreeService({
+  cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: defaultProjectsDir(),
+  ledgerFile: () => ledgerFileFor(STATE_ROOT),
+  readHistory, loadLedger, updateLedger, saveLedger, readOpenPrs, currentBranch, now: Date.now,
+});
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
 // The loadout is install-wide and another host may change it: tell OUR windows.
@@ -2298,6 +2310,14 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'fog', files: [], explored: 0, total: 0,
             status: { failed: true, error: err && err.message } }));
         } catch { /* the client went away */ }
+      });
+      return;
+    }
+    if (msg.type === 'git-tree') {
+      // The Git panel (documentation/PLAN_GIT_TREE.md). gitTree.get() never rejects: a failure
+      // arrives as { ok: false, error }, so the panel can say so instead of waiting forever.
+      gitTree.get().then(tree => {
+        try { ws.send(JSON.stringify({ type: 'git-tree', ...tree })); } catch { /* the client went away */ }
       });
       return;
     }

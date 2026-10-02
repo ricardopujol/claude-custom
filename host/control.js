@@ -87,6 +87,9 @@ const CONTROL_TYPES = new Set([
   // Layout pass L1: a tab's own layout (*Just this tab*), kept by this host.
   // Off this list the layout JSON would be TYPED into the session.
   'layout-override',
+  // Layout pass L3: the Git panel asks for the tree (documentation/PLAN_GIT_TREE.md). Off this list,
+  // its every 30s re-ask would be TYPED into the session as JSON.
+  'git-tree',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
