@@ -37,7 +37,7 @@ test('first read: a session and its subagent, with the subagent identified from 
   const t = totals(ledger);
   assert.strictEqual(t['feat/x'].spend, 17);
   assert.strictEqual(t.develop.spend, 5);
-  assert.deepStrictEqual(t['feat/x'].runs, [{ agentType: 'logic-reviewer', spend: 7 }]);
+  assert.deepStrictEqual(t['feat/x'].runs, [{ agentType: 'logic-reviewer', spend: 7, loose: 0 }]);
 });
 
 test("a subagent's meta that can't be read yet is asked for again next time", async () => {
@@ -52,7 +52,7 @@ test("a subagent's meta that can't be read yet is asked for again next time", as
   fs.rmdirSync(path.join(sub, 'agent-1.meta.json'));
   fs.writeFileSync(path.join(sub, 'agent-1.meta.json'), JSON.stringify({ agentType: 'code-reviewer' }));
   const second = await updateLedger(first.ledger, opts(dir));
-  assert.deepStrictEqual(totals(second.ledger)['feat/x'].runs, [{ agentType: 'code-reviewer', spend: 7 }]);
+  assert.deepStrictEqual(totals(second.ledger)['feat/x'].runs, [{ agentType: 'code-reviewer', spend: 7, loose: 0 }]);
 });
 
 test('an appended file is read from where it stopped: only the new bytes', async () => {
@@ -161,9 +161,9 @@ test("save merges with what another host saved: per file, the further read wins"
 
 test('a missing ledger loads empty; a corrupt one loads empty and says so', async () => {
   const d = tmpDir('branch-ledger-');
-  assert.deepStrictEqual(await loadLedger(path.join(d, 'none.json')), { ledger: emptyLedger(), corrupt: false });
+  assert.deepStrictEqual(await loadLedger(path.join(d, 'none.json')), { ledger: emptyLedger(), state: 'missing', corrupt: false });
   fs.writeFileSync(path.join(d, 'bad.json'), '{"version":1,"files":');
-  assert.deepStrictEqual(await loadLedger(path.join(d, 'bad.json')), { ledger: emptyLedger(), corrupt: true });
+  assert.deepStrictEqual(await loadLedger(path.join(d, 'bad.json')), { ledger: emptyLedger(), state: 'invalid', corrupt: true });
   fs.writeFileSync(path.join(d, 'shape.json'), '{"version":1,"files":[]}');
   assert.strictEqual((await loadLedger(path.join(d, 'shape.json'))).corrupt, true);
 });

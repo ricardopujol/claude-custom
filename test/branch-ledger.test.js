@@ -63,14 +63,14 @@ test('the project root itself counts, as well as anything inside it', () => {
   assert.strictEqual(r.branches.develop.spend, 4);
 });
 
-test('first and last day, and the cwds a branch ran in; runBranch is the last counted branch', () => {
+test('first and last day, and the cwds a branch ran in', () => {
   const r = emptyRecord();
   addLines(r, lines(
     a('1', 'feat/a', 1, 'C:\\p\\feat-a', '2026-09-21T01:00:00Z'),
     a('2', 'feat/a', 1, 'c:\\P\\feat-a\\', '2026-09-20T01:00:00Z'),
     a('3', 'feat/b', 1, 'C:\\p\\dev', '2026-09-22T01:00:00Z')), ROOT);
   assert.deepStrictEqual(r.branches['feat/a'], { spend: 4, loose: 0, first: '2026-09-20', last: '2026-09-21', cwds: ['C:\\p\\feat-a'] });
-  assert.strictEqual(r.runBranch, 'feat/b');
+  assert.strictEqual(r.branches['feat/b'].spend, 2);
 });
 
 test('the text after the last newline is not counted (the caller keeps it for next time)', () => {
@@ -119,18 +119,24 @@ test('loose spend is totalled apart from spend', () => {
   assert.strictEqual(t.loose, 11);
 });
 
-test('a subagent file is one run of its agentType on its runBranch, worth all its spend', () => {
+test('a subagent file is one run of its agentType, on its biggest branch, worth that branch\'s spend', () => {
   const l = { version: 1, files: {
-    s: recOf(1, { 'feat/a': br(3), develop: br(4) }, { subagent: true, agentType: 'logic-reviewer', runBranch: 'feat/a' }),
-    t: recOf(1, { develop: br(1) }, { subagent: true, agentType: null, runBranch: 'develop' }),
+    s: recOf(1, { 'feat/a': br(3), develop: br(4) }, { subagent: true, agentType: 'logic-reviewer' }),
+    t: recOf(1, { develop: br(1) }, { subagent: true, agentType: null }),
   } };
   const t = totals(l);
-  assert.deepStrictEqual(t['feat/a'].runs, [{ agentType: 'logic-reviewer', spend: 7 }]);
-  assert.deepStrictEqual(t.develop.runs, [{ agentType: 'unknown', spend: 1 }]);
+  assert.deepStrictEqual(t['feat/a'].runs, []);
+  assert.deepStrictEqual(t.develop.runs, [{ agentType: 'logic-reviewer', spend: 4, loose: 0 }, { agentType: 'unknown', spend: 1, loose: 0 }]);
+});
+
+test('a tie between two branches goes to the first by name, so every host agrees', () => {
+  const t = totals({ version: 1, files: { s: recOf(1, { 'feat/b': br(4), 'feat/a': br(4) }, { subagent: true, agentType: 'x' }) } });
+  assert.strictEqual(t['feat/a'].runs.length, 1);
+  assert.strictEqual(t['feat/b'].runs.length, 0);
 });
 
 test('a session file (not a subagent) adds no run', () => {
-  const t = totals({ version: 1, files: { s: recOf(1, { develop: br(3) }, { runBranch: 'develop' }) } });
+  const t = totals({ version: 1, files: { s: recOf(1, { develop: br(3) }) } });
   assert.deepStrictEqual(t.develop.runs, []);
 });
 
