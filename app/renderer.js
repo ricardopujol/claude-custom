@@ -345,7 +345,13 @@ function requestGitTree() {
 setInterval(() => {
   if (shownModules.has('git') && document.visibilityState === 'visible') requestGitTree();
 }, GIT_TREE_EVERY_MS);
+// Back from hidden: ask now, not up to 30s later with an old tree on screen (PR #85 Dexter F9).
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && shownModules.has('git')) requestGitTree();
+});
+let lastGitTree = null;
 function renderGitTree(tree) {
+  lastGitTree = tree;
   window.gitRingsDisplay.render(document.getElementById('git-body'), tree, {
     onJump: folder => window.harness.selectFolder(folder),
   });
@@ -1045,16 +1051,45 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           labels: [...body.querySelectorAll('.git-label')].map(t => t.textContent),
           svg: svg ? rectOf(svg) : null, panel: rectOf(body),
           narrow: document.getElementById('git-dial').classList.contains('narrow'),
+          // PR #85 review: listeners wired once however many redraws; pin and focus survive a redraw
+          wired: (document.getElementById('git-dial').gitState || {}).wired || 0,
+          renders: (document.getElementById('git-dial').gitState || {}).renders || 0,
+          pinned: ((document.getElementById('git-dial').gitState || {}).pinned) || null,
+          cardShown: !!document.querySelector('.git-card') && !document.querySelector('.git-card').hidden,
+          cardText: (document.querySelector('.git-card') || {}).textContent || '',
+          focused: document.activeElement && document.activeElement.getAttribute
+            ? (document.activeElement.getAttribute('data-name') || (document.activeElement.classList && document.activeElement.classList.contains('git-card-jump') ? 'jump' : null)) : null,
+          boldInPanel: body.querySelectorAll('b:not(.git-foot b)').length,
           hubTextShown: !!body.querySelector('.git-hub-name') && getComputedStyle(body.querySelector('.git-hub-name')).display !== 'none',
         });
       }
       case 'gitRefresh': requestGitTree(); break;
+      // the same answer again (must draw nothing), or one that changed (must keep the pin and focus)
+      case 'gitRerender': {
+        if (!lastGitTree) return JSON.stringify({ ok: false, error: 'no tree yet' });
+        const t = a.changed ? { ...lastGitTree, totalSpend: (lastGitTree.totalSpend || 0) + 1 } : lastGitTree;
+        renderGitTree(t);
+        break;
+      }
+      case 'gitKey': {
+        // a key on the focused element, as a keyboard would send it
+        const target = document.activeElement || document.body;
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: a.key, bubbles: true, cancelable: true }));
+        break;
+      }
+      case 'gitFocus': {
+        const g = [...document.querySelectorAll('.git-spoke')].find(x => x.dataset.name === a.name);
+        if (!g) return JSON.stringify({ ok: false, error: `no spoke ${a.name}` });
+        g.focus();
+        break;
+      }
       case 'gitHover': case 'gitPin': {
         const g = [...document.querySelectorAll('.git-spoke')].find(x => x.dataset.name === a.name);
         if (!g) return JSON.stringify({ ok: false, error: `no spoke ${a.name}` });
         const r = g.getBoundingClientRect();
         const at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true };
-        g.dispatchEvent(new MouseEvent(req.action === 'gitHover' ? 'mouseenter' : 'click', at));
+        // mouseover, not mouseenter: the dial finds its spoke by delegation, and mouseenter doesn't bubble
+        g.dispatchEvent(new MouseEvent(req.action === 'gitHover' ? 'mouseover' : 'click', at));
         const card = document.querySelector('.git-card');
         return JSON.stringify({ ok: true, hidden: card.hidden, text: card.textContent, card: rectOf(card),
           panel: rectOf(document.getElementById('git-body')), jump: !!card.querySelector('.git-card-jump') });

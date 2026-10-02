@@ -896,7 +896,7 @@ const PROBE_TOKEN_MIN = 16;
 // never hand the page a string of code to run.
 const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'dragDrop', 'secretRedraw',
   // layout pass L3: verify/probe-git-tree.js
-  'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump']);
+  'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

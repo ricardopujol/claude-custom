@@ -24,7 +24,8 @@ const byName = (tree, n) => tree.branches.find(b => b.name === n);
 test('a merged PR: state, PR number, why from its title, merge day, commits', () => {
   const t = build(history(), { 'feat/a': total(100) });
   assert.deepStrictEqual(byName(t, 'feat/a'), { name: 'feat/a', state: 'merged', place: 'dev', pr: 3, remote: false,
-    why: 'The first thing', when: '2026-09-20', commits: 4, spend: 100, runs: 0, people: [], folder: null });
+    why: 'The first thing', when: '2026-09-20', commits: 4, spend: 100, runs: 0, people: [], folder: null,
+    first: '2026-09-20', last: '2026-09-21' });
 });
 
 test('no token record is spend null, never 0', () => {

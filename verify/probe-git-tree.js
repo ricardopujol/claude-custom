@@ -40,6 +40,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-git-'));
 const container = path.join(tmp, 'proj');
 const dev = path.join(container, 'dev');
 const featB = path.join(container, 'feat-b');
+// A legal git branch name that is also markup (PR #85 Miguel Y4): it must be drawn as text, never as HTML.
+const HOSTILE = 'feat/<b>x</b>&"q';
 const userData = path.join(tmp, 'user-data');
 const shots = process.env.GIT_PROBE_SHOTS || path.join(tmp, 'shots');
 fs.mkdirSync(shots, { recursive: true });
@@ -171,6 +173,16 @@ function makeRepo() {
   git(dev, 'checkout', '-q', 'spike/c');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'spike: measure a thing');
   git(dev, 'checkout', '-q', 'develop');
+  // Windows can't hold `<`, `>` or `"` in a loose ref's FILE name, but a packed ref (what a clone or a
+  // fetch writes) carries any name check-ref-format allows. So: commit on a plain branch, then
+  // re-point that commit from packed-refs under the hostile name.
+  git(dev, 'checkout', '-q', '-b', 'tmp-hostile');
+  git(dev, 'commit', '-q', '--allow-empty', '-m', 'try: a <b>hostile</b> name');
+  const sha = git(dev, 'rev-parse', 'HEAD').trim();
+  git(dev, 'checkout', '-q', 'develop');
+  git(dev, 'branch', '-q', '-D', 'tmp-hostile');
+  git(dev, 'pack-refs', '--all');
+  fs.appendFileSync(path.join(dev, '.git', 'packed-refs'), `${sha} refs/heads/${HOSTILE}\n`);
   git(dev, 'worktree', 'add', '-q', featB, '-b', 'feat/b');
   git(featB, 'commit', '-q', '--allow-empty', '-m', 'feat(b): the open lane');
 }
@@ -189,7 +201,7 @@ async function main() {
   await view(app, 'select', { id: 'git' });
   const st = await waitFor(async () => {
     const s = await view(app, 'gitState');
-    return s && s.ok && s.spokes.length === 3 ? s : null;
+    return s && s.ok && s.spokes.length === 4 ? s : null;
   }, 20000);
   check('1: the host answered and the panel drew one spoke per branch', !!st,
     st ? '' : JSON.stringify(await view(app, 'gitState')).slice(0, 400));
@@ -206,10 +218,16 @@ async function main() {
     spoke('feat/b').ring && spoke('feat/b').square && !spoke('feat/a').ring && !spoke('spike/c').square,
     JSON.stringify(st.spokes));
   check('2: no transcripts for this repo: every spoke is dashed (unknown, not 0)', st.spokes.every(s => s.dashed));
-  check('2: the hub is develop; the footer counts 3 branches with no token record yet',
-    st.hub === 'develop' && /3 branches · no token record yet/.test(st.foot) && /1 merged · 0 open · 2 unmerged · 0 deleted/.test(st.foot),
+  // this throwaway repo has no remote, so gh can't answer: "PR status unknown", never "0 open" (Dexter F3)
+  check('2: the hub is develop; the footer counts 4 branches, no token record yet, PR status unknown',
+    st.hub === 'develop' && /4 branches · no token record yet/.test(st.foot)
+      && /1 merged · 3 not merged, PR status unknown · 0 deleted/.test(st.foot),
     `${st.hub} / ${st.foot}`);
-  check('2: the open worktree is labelled', st.labels.some(l => l.includes('b')), JSON.stringify(st.labels));
+  // exactly the live lanes, which may have an open PR since gh can't say (Miguel S3: was "any label holding b")
+  check('2: the labels are exactly the live lanes', JSON.stringify([...st.labels].sort()) === JSON.stringify(['<b>x</b>&"q', 'b', 'spike/c']),
+    JSON.stringify(st.labels));
+  check('2 (Miguel Y4): a branch named like markup is drawn as text: its spoke carries the exact name, and no <b> was made',
+    st.spokes.some(x => x.name === HOSTILE) && st.boldInPanel === 0, `bold elements: ${st.boldInPanel}`);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-dial.png') });
 
   // 3 -----------------------------------------------------------------------------
@@ -231,7 +249,7 @@ async function main() {
   await view(app, 'move', { id: 'git', target: 'bottom' });
   const wide = await waitFor(async () => {
     const s = await view(app, 'gitState');
-    return s && s.ok && s.spokes.length === 3 && s.svg && s.svg.width > 300 ? s : null;
+    return s && s.ok && s.spokes.length === 4 && s.svg && s.svg.width > 300 ? s : null;
   }, 8000);
   const vs = await view(app, 'state');
   check('3b: moved to the bottom zone, the dial is redrawn there', !!wide, wide ? '' : JSON.stringify({ git: await view(app, 'gitState'), bottom: vs.zones && vs.zones.bottom, shown: vs.shown }).slice(0, 700));
@@ -245,7 +263,39 @@ async function main() {
     await command(app, { cmd: 'screenshot', file: path.join(shots, '3b-bottom.png') });
   }
   await view(app, 'move', { id: 'git', target: 'right' });
-  await waitFor(async () => { const s = await view(app, 'gitState'); return s && s.spokes.length === 3 && s.narrow ? s : null; }, 8000);
+  await waitFor(async () => { const s = await view(app, 'gitState'); return s && s.spokes.length === 4 && s.narrow ? s : null; }, 8000);
+
+  // 5 -----------------------------------------------------------------------------
+  // PR #85 Dexter F1 / Miguel B1, Y1, Y2: the panel is redrawn every 30s; what the person is doing survives.
+  await view(app, 'gitPin', { name: 'feat/a' });
+  const p0 = await view(app, 'gitState');
+  await view(app, 'gitRerender', { changed: false });
+  const p1 = await view(app, 'gitState');
+  check('5: the same answer again draws nothing: the pinned card stays', p1.renders === p0.renders && p1.cardShown && p1.pinned === 'feat/a',
+    `renders ${p0.renders} -> ${p1.renders}, pinned ${p1.pinned}`);
+  await view(app, 'gitRerender', { changed: true });
+  await view(app, 'gitRerender', { changed: true });
+  const p2 = await view(app, 'gitState');
+  check('5: a changed answer redraws, and the pinned card is put back', p2.renders === p0.renders + 2 && p2.cardShown
+    && p2.pinned === 'feat/a' && /feat\/a/.test(p2.cardText), `renders ${p2.renders}, pinned ${p2.pinned}, card ${p2.cardShown}`);
+  check('5: however many redraws, the dial\'s listeners were attached once', p2.wired === 1, `wired ${p2.wired}`);
+  await view(app, 'gitFocus', { name: 'feat/a' });
+  await view(app, 'gitKey', { key: 'Escape' });
+  const p3 = await view(app, 'gitState');
+  check('5: Escape unpins and leaves the focus on the spoke', p3.pinned === null && !p3.cardShown && p3.focused === 'feat/a',
+    `pinned ${p3.pinned}, focused ${p3.focused}`);
+  await view(app, 'gitFocus', { name: 'feat/b' });
+  await view(app, 'gitKey', { key: 'Enter' });
+  const p4 = await view(app, 'gitState');
+  check('5: Enter on a spoke pins it and puts the focus on Jump, one key away', p4.pinned === 'feat/b' && p4.focused === 'jump',
+    `pinned ${p4.pinned}, focused ${p4.focused}`);
+  await view(app, 'gitRerender', { changed: true });
+  const p5 = await view(app, 'gitState');
+  check('5: a redraw keeps the focus on Jump', p5.pinned === 'feat/b' && p5.focused === 'jump', `pinned ${p5.pinned}, focused ${p5.focused}`);
+  await view(app, 'gitKey', { key: 'Escape' });
+  const p6 = await view(app, 'gitState');
+  check('5: Escape from the Jump button unpins and goes back to its spoke', p6.pinned === null && p6.focused === 'feat/b',
+    `pinned ${p6.pinned}, focused ${p6.focused}`);
 
   // 4 -----------------------------------------------------------------------------
   const p = await view(app, 'gitPin', { name: 'feat/b' });

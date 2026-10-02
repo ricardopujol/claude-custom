@@ -135,11 +135,15 @@
     .git-spoke.open { color: var(--ok); }
     .git-spoke.unmerged { color: var(--dim); opacity: .55; }
     .git-spoke.deleted { color: var(--bad); opacity: .8; }
+    /* open PRs unknown (gh failed): a live lane may have one, so it isn't drawn as "no PR" */
+    .git-spoke.unmerged.pr-unknown { color: var(--text); opacity: .7; }
     .git-spoke.current, .git-hub.current { color: var(--accent); opacity: 1; }
     .git-stem { fill: none; stroke: currentColor; stroke-linecap: round; }
     .git-stem.dashed { stroke-dasharray: 3 3; }
     .git-tip { fill: currentColor; stroke: currentColor; stroke-width: 1.2; }
     .git-tip.empty { fill: var(--panel); }
+    /* no token record: the tip says "unknown" like its dashed stem */
+    .git-tip.unknown { fill: var(--panel); stroke-dasharray: 2 2; }
     .git-ring { fill: none; stroke: currentColor; stroke-width: 1; }
     .git-here { fill: currentColor; opacity: .3; }
     .git-hit { fill: transparent; stroke: transparent; stroke-width: 8; }
@@ -147,6 +151,7 @@
     .git-spoke:focus-visible .git-tip { stroke: var(--accent); stroke-width: 2; }
     .git-hub { color: var(--text); cursor: pointer; outline: none; }
     .git-hub circle { fill: var(--panel); stroke: currentColor; stroke-width: 2; }
+    .git-hub:focus-visible circle { stroke: var(--accent); stroke-width: 3; }
     .git-hub-sum { color: var(--dim); font-size: 9.5px !important; }
     .git-label { font-size: 10px; }
     .git-label.open { color: var(--ok); }
