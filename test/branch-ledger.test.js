@@ -69,3 +69,53 @@ test('the text after the last newline is not counted (the caller keeps it for ne
   addLines(r, a('1', 'feat/a', 10), ROOT);
   assert.deepStrictEqual(r.branches, {});
 });
+
+// ---------- merge and totals (Task 4) ----------
+const { mergeLedgers, totals } = require('../host/branch-ledger');
+
+const recOf = (offset, branches, extra = {}) => ({ ...emptyRecord(), offset, branches, ...extra });
+const br = (spend, first = '2026-09-20', last = first, cwds = ['C:\\p\\dev']) => ({ spend, first, last, cwds });
+
+test('merge keeps, per file, the record read furthest; a file only one side knows is kept', () => {
+  const x = { version: 1, files: { f1: recOf(10, { a: br(1) }), f2: recOf(5, { a: br(2) }) } };
+  const y = { version: 1, files: { f1: recOf(20, { a: br(3) }), f3: recOf(1, { b: br(4) }) } };
+  const m = mergeLedgers(x, y);
+  assert.deepStrictEqual(Object.keys(m.files).sort(), ['f1', 'f2', 'f3']);
+  assert.strictEqual(m.files.f1.offset, 20);
+  assert.strictEqual(mergeLedgers(y, x).files.f1.offset, 20);
+});
+
+test('merge with a missing or empty side is the other side', () => {
+  const x = { version: 1, files: { f1: recOf(10, { a: br(1) }) } };
+  assert.deepStrictEqual(mergeLedgers(null, x), x);
+  assert.deepStrictEqual(mergeLedgers(x, undefined), x);
+});
+
+test('totals sum a branch over every file, widen its days and union its cwds', () => {
+  const l = { version: 1, files: {
+    f1: recOf(1, { 'feat/a': br(5, '2026-09-20', '2026-09-21', ['C:\\p\\dev']) }),
+    f2: recOf(1, { 'feat/a': br(7, '2026-09-19', '2026-09-20', ['C:\\p\\feat-a', 'C:\\p\\dev']) }),
+  } };
+  assert.deepStrictEqual(totals(l)['feat/a'],
+    { spend: 12, first: '2026-09-19', last: '2026-09-21', cwds: ['C:\\p\\dev', 'C:\\p\\feat-a'], runs: [] });
+});
+
+test('a subagent file is one run of its agentType on its runBranch, worth all its spend', () => {
+  const l = { version: 1, files: {
+    s: recOf(1, { 'feat/a': br(3), develop: br(4) }, { subagent: true, agentType: 'logic-reviewer', runBranch: 'feat/a' }),
+    t: recOf(1, { develop: br(1) }, { subagent: true, agentType: null, runBranch: 'develop' }),
+  } };
+  const t = totals(l);
+  assert.deepStrictEqual(t['feat/a'].runs, [{ agentType: 'logic-reviewer', spend: 7 }]);
+  assert.deepStrictEqual(t.develop.runs, [{ agentType: 'unknown', spend: 1 }]);
+});
+
+test('a session file (not a subagent) adds no run', () => {
+  const t = totals({ version: 1, files: { s: recOf(1, { develop: br(3) }, { runBranch: 'develop' }) } });
+  assert.deepStrictEqual(t.develop.runs, []);
+});
+
+test('totals of nothing is nothing', () => {
+  assert.deepStrictEqual(totals(null), {});
+  assert.deepStrictEqual(totals({ version: 1, files: {} }), {});
+});

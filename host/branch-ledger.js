@@ -67,4 +67,45 @@ function addLines(rec, text, projectRoot) {
   return rec;
 }
 
-module.exports = { addLines, emptyRecord, spendOf };
+/**
+ * Every tab's host keeps the same project ledger, so two can save it at once. Per file, the record
+ * read FURTHEST wins: both hosts read the same bytes, so the longer read contains the shorter one.
+ * A file only one side knows is kept -- including one whose transcript is gone (G3).
+ */
+function mergeLedgers(a, b) {
+  const files = { ...((a && a.files) || {}) };
+  for (const [p, rec] of Object.entries((b && b.files) || {})) {
+    const cur = files[p];
+    if (!cur || num(rec.offset) >= num(cur.offset)) files[p] = rec;
+  }
+  return { version: 1, files };
+}
+
+const emptyTotal = () => ({ spend: 0, first: null, last: null, cwds: [], runs: [] });
+
+/**
+ * { [branch]: { spend, first, last, cwds, runs: [{ agentType, spend }] } } over every file the ledger
+ * has ever seen. A subagent's transcript is ONE run, on the branch its last line was on, worth all
+ * of its spend. `HEAD` (a detached checkout) stays a key; the model decides where it belongs.
+ */
+function totals(ledger) {
+  const out = {};
+  for (const rec of Object.values((ledger && ledger.files) || {})) {
+    let runSpend = 0;
+    for (const [name, b] of Object.entries(rec.branches || {})) {
+      const t = out[name] || (out[name] = emptyTotal());
+      t.spend += num(b.spend);
+      runSpend += num(b.spend);
+      if (b.first && (!t.first || b.first < t.first)) t.first = b.first;
+      if (b.last && (!t.last || b.last > t.last)) t.last = b.last;
+      for (const c of b.cwds || []) if (!t.cwds.some(x => samePath(x, c))) t.cwds.push(c);
+    }
+    if (rec.subagent && rec.runBranch) {
+      const t = out[rec.runBranch] || (out[rec.runBranch] = emptyTotal());
+      t.runs.push({ agentType: rec.agentType || 'unknown', spend: runSpend });
+    }
+  }
+  return out;
+}
+
+module.exports = { addLines, emptyRecord, spendOf, mergeLedgers, totals };

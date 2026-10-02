@@ -64,3 +64,39 @@ test('reading in any number of chunks, cut at any line boundaries, gives the sam
     assert.deepStrictEqual(r, whole);
   }));
 });
+
+// ---------- merge (Task 4) ----------
+const { mergeLedgers, totals } = require('../host/branch-ledger');
+
+// Two hosts reading the same files: each has read some PREFIX of each file. Model a file as its
+// message list; a host's record is addLines over the first k messages.
+const fileArb = fc.tuple(transcriptArb, fc.nat(), fc.nat());
+function ledgerOf(files, pick) {
+  const out = { version: 1, files: {} };
+  files.forEach(([ms, i, j], n) => {
+    const ls = render(ms);
+    const k = pick(i, j) % (ls.length + 1);
+    const r = addLines(emptyRecord(), ls.slice(0, k).join('\n') + (k ? '\n' : ''), ROOT);
+    r.offset = k;
+    out.files[`f${n}`] = r;
+  });
+  return out;
+}
+
+test('merging two hosts never lowers any branch below what either one had', () => {
+  fc.assert(fc.property(fc.array(fileArb, { maxLength: 4 }), files => {
+    const x = ledgerOf(files, (i) => i), y = ledgerOf(files, (i, j) => j);
+    const tm = totals(mergeLedgers(x, y)), tx = totals(x), ty = totals(y);
+    for (const b of new Set([...Object.keys(tx), ...Object.keys(ty)])) {
+      const want = Math.max(tx[b] ? tx[b].spend : 0, ty[b] ? ty[b].spend : 0);
+      assert.ok(tm[b] && tm[b].spend >= want, `${b}: ${tm[b] && tm[b].spend} < ${want}`);
+    }
+  }));
+});
+
+test('merge is idempotent', () => {
+  fc.assert(fc.property(fc.array(fileArb, { maxLength: 4 }), files => {
+    const x = ledgerOf(files, i => i);
+    assert.deepStrictEqual(mergeLedgers(x, x), x);
+  }));
+});
