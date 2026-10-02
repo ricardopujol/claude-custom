@@ -106,6 +106,13 @@ test('the modules that decide whether a session is stopped are mutated (Miguel, 
   }
 });
 
+test('the tab marks\' parser, prune and store are mutated (Miguel, PR #87 Y1)', () => {
+  // Same blind spot as above: a new module is invisible to the scan until it's in `mutate`.
+  for (const rel of ['app/tab-marks.js', 'host/tab-marks-store.js']) {
+    assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
+  }
+});
+
 test('the deliberate exclusions are still deliberate', () => {
   // If one of these is dropped or renamed, the exemption becomes a silent hole
   // rather than a decision. Asserted so the list cannot rot.
