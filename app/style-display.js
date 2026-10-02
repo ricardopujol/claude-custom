@@ -164,9 +164,14 @@ function windowSectionView(state) {
   return {
     statusInHeader,
     framelessWindow,
+    // Miguel L2 Y3: the header mirrors cost, lines, time and ctx>200k, not
+    // whatever else a person's own statusLine command printed -- say it stops.
+    // Dexter L2 #4: the CLI redraws its row only on its next status update.
     statusDescription: statusInHeader === null ? 'reading…'
-      : statusInHeader ? "Cost, lines and time show in each tab's header, and the terminal gets that row back."
-        : 'The status line shows under the terminal\'s input box, as the CLI draws it.',
+      : statusInHeader ? "Cost, lines and time show in each tab's header, and the terminal gets that row back. "
+        + "Your own status line command doesn't run while this is on. A switch shows at the CLI's next status update."
+        : "The status line shows under the terminal's input box, drawn by your own status line command. "
+          + "A switch shows at the CLI's next status update.",
     framelessDescription: framelessWindow === null ? 'reading…'
       : framelessWindow ? 'The next window opens with no title bar: the tabs are the top row.'
         : 'Windows keep their title bar. A change applies to the next window you open.',

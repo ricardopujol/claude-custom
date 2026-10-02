@@ -291,6 +291,14 @@ test('the window view describes each setting, and says the title bar waits for t
   assert.notStrictEqual(on.framelessDescription, off.framelessDescription);
 });
 
+test('Miguel L2 Y3 / Dexter L2 #4: the status text says the own statusLine stops, and when a switch lands', () => {
+  for (const on of [true, false]) {
+    const d = windowSectionView({ statusInHeader: on, framelessWindow: false }).statusDescription;
+    assert.match(d, /your own status line/i, `${on}: say the user's statusLine command doesn't run while it's on`);
+    assert.match(d, /next status update/i, `${on}: say a switch shows at the CLI's next status update`);
+  }
+});
+
 test('reduceStyle keeps the window settings, which the host never reports', () => {
   const prev = reduceChromeSettings(reduceStyle(undefined, hello), { statusInHeader: true, framelessWindow: false });
   assert.deepStrictEqual(reduceStyle(prev, hello).window, { statusInHeader: true, framelessWindow: false });
