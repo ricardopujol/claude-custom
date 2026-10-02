@@ -65,7 +65,7 @@ test('the gate check reads each handler alone: an ungated handler right before a
 
 test('the scan finds the channels this file registers', () => {
   const names = channels.map(c => c.name);
-  for (const n of ['strip:select', 'strip:close', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo',
+  for (const n of ['strip:select', 'strip:close', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo', 'tab:selectFolder',
     'tab:raise', 'attention', 'secrets:list', 'secrets:melt', 'look:setDim']) {
     assert.ok(names.includes(n), `${n} must be registered`);
   }

@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('harness', {
   tabStatus: (status) => ipcRenderer.send('tab:status', status),
   closeTab: () => ipcRenderer.send('tab:close'),
   goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
+  //   selectFolder a worktree folder -> { kind, text? }: the Git panel's *Jump to its tab*
+  selectFolder: (folder) => ipcRenderer.invoke('tab:selectFolder', folder),
   raise: () => ipcRenderer.send('tab:raise'),
   // A link clicked in the terminal (fix/terminal-links). Main opens it in the
   // default browser if, and only if, it is plain http(s), and answers whether
