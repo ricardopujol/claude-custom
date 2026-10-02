@@ -125,18 +125,22 @@ function command(app, cmd, timeoutMs = 30000) {
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
 
 const seenPids = new Set();
-function hostsUnder(dir) {
+// Every host of this run: any whose folder is inside the probe's temp folder. Not just dev and
+// feat-b by name -- the jump STARTS the feat-b tab's host, and a host outlives its window by design
+// (windowless sessions), so one that registers late was left running by an earlier version.
+function hostsOfThisRun() {
   const out = [];
   let files = [];
   try { files = fs.readdirSync(path.join(HARNESS_DIR, 'hosts')).filter(f => f.endsWith('.json')); } catch { return out; }
+  const inside = path.resolve(tmp).toLowerCase() + path.sep;
   for (const f of files) {
     const id = readIdentity({ dir: HARNESS_DIR, port: Number(f.replace(/\.json$/, '')) });
-    if (id && path.resolve(id.cwd).toLowerCase() === path.resolve(dir).toLowerCase()) out.push(id);
+    if (id && path.resolve(id.cwd).toLowerCase().startsWith(inside)) out.push(id);
   }
   return out;
 }
 function killEverything() {
-  for (const id of [...hostsUnder(dev), ...hostsUnder(featB)]) seenPids.add(id.pid);
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
   for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
 }
 hygiene.addCleanup(killEverything);
@@ -254,6 +258,13 @@ async function main() {
     return s && s.selectedKey && s.selectedKey !== before ? s.selectedKey : null;
   }, 8000);
   check('4: the jump selects the feat-b tab', !!after && /feat-b$/i.test(after), `${before} -> ${after}`);
+  // Selecting it started its host: wait for it, so the cleanup knows its pid.
+  await waitFor(async () => {
+    const s = await command(app, { cmd: 'state' });
+    const h = s && s.hosts && s.hosts.find(x => x.key === s.selectedKey);
+    if (h && Number.isInteger(h.pid)) { seenPids.add(h.pid); return true; }
+    return null;
+  }, 15000);
 
   await command(app, { cmd: 'quit' });
 }
