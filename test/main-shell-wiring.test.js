@@ -447,8 +447,8 @@ test('Stop all gets a project root only when the window is in a project', () => 
 
 // --- #40 tab marks ---------------------------------------------------------------
 
-test('the tab menu offers Mark first, for that tab\'s branch', () => {
-  assert.match(MAIN, /Menu\.buildFromTemplate\(\[\s*markSubmenu\(tab \? tab\.branch : null\),/);
+test('the tab menu offers Mark first, for the branch the tab is on NOW (Dexter #87 F1)', () => {
+  assert.match(MAIN, /Menu\.buildFromTemplate\(\[\s*markSubmenu\(tabShell\.branchOf\(key\)\),/);
 });
 
 test('the shell reads marks from the loaded store; the window prunes once, in tabs mode', () => {

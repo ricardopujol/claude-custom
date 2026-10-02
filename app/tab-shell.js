@@ -243,13 +243,22 @@ function createShell(deps) {
     }
   }
 
+  /**
+   * The branch a tab is on NOW: the reducer's, which follows `git switch`. The
+   * record's `branch` is the one it opened on and never moves (Dexter #87 F1).
+   */
+  function branchOf(key) {
+    const t = state.tabs.find(x => keyOf(x.path) === key);
+    return t && typeof t.branch === 'string' && t.branch !== '' ? t.branch : null;
+  }
+
   function model() {
     return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
       const t = tabs.get(e.key);
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
-        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(t && t.branch),
+        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(branchOf(e.key)),
       };
     });
   }
@@ -828,7 +837,7 @@ function createShell(deps) {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen,
     next: () => step(1), previous: () => step(-1),
-    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy,
+    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,
     // #40: something the model reads changed outside the shell (a tab's mark).
     refresh: publish,
     // Exposed for tests and the probe driver.

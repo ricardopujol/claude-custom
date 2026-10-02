@@ -1669,6 +1669,22 @@ test('a marks reader that throws draws no mark and never breaks the strip', asyn
   assert.ok(h.shell.model().every(e => e.mark === null));
 });
 
+test('a tab whose worktree switched branch shows, and offers, the NEW branch\'s mark (Dexter #87 F1)', async () => {
+  const M = { id: 'urgent', emoji: 'U', meaning: 'Urgent / do next' };
+  const h = harness({ marks: { markFor: b => (b === 'feat/a' ? M : null) } });
+  await h.shell.open();
+  assert.deepStrictEqual(h.shell.model().find(e => e.key === key('feat-a')).mark, M);
+  assert.strictEqual(h.shell.branchOf(key('feat-a')), 'feat/a');
+  // `git switch feat/c` in that worktree.
+  h.listText = porcelain([['dev', 'develop'], ['feat-a', 'feat/c'], ['feat-b', 'feat/b']]);
+  await h.shell.poll();
+  const e = h.shell.model().find(x => x.key === key('feat-a'));
+  assert.strictEqual(e.label, 'feat/c');
+  assert.strictEqual(e.mark, null, 'feat/c has no mark; feat/a\'s must not follow the folder');
+  assert.strictEqual(h.shell.branchOf(key('feat-a')), 'feat/c', 'the Mark menu writes to the branch on the label');
+  assert.strictEqual(h.shell.branchOf('nope'), null);
+});
+
 test('refresh publishes a new snapshot (a mark was set)', async () => {
   let M = null;
   const h = harness({ marks: { markFor: b => (b === 'develop' ? M : null) } });

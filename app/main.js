@@ -723,9 +723,8 @@ function registerIpc() {
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     const st = tabShell.menuState(key);
-    const tab = tabShell.tabByKey(key);
     Menu.buildFromTemplate([
-      markSubmenu(tab ? tab.branch : null),
+      markSubmenu(tabShell.branchOf(key)),
       { type: 'separator' },
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
