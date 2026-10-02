@@ -35,6 +35,18 @@ test('the header has a status-fields span after the top bar, hidden until there 
   assert.ok(header.indexOf('id="top-bar"') < header.indexOf('id="status-fields"'));
 });
 
+test('Miguel L2 Y1: the fields give way first in a crowded header (shrink, clip with an ellipsis)', () => {
+  const rule = (HTML.match(/#status-fields\s*\{[^}]*\}/) || [''])[0];
+  assert.match(rule, /min-width:\s*0/);
+  assert.match(rule, /overflow:\s*hidden/);
+  assert.match(rule, /text-overflow:\s*ellipsis/);
+  assert.match(rule, /flex-shrink:\s*[1-9]/);
+  // ...but only after the keyboard hints: alone, it shrank to 0px in a 1200px window (measured).
+  const hint = (HTML.match(/header \.hint\s*\{[^}]*\}/) || [''])[0];
+  assert.match(hint, /flex:\s*0\s+1000\s+auto/);
+  assert.match(hint, /min-width:\s*0/);
+});
+
 test('renderer.html loads the module before renderer.js', () => {
   const a = HTML.indexOf('<script src="./status-fields-display.js"></script>');
   const b = HTML.indexOf('<script src="./renderer.js"></script>');

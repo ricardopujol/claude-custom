@@ -246,7 +246,14 @@ async function main() {
     !!shown && shown.text === '$1.23  │  +10/-2  │  1h05', JSON.stringify(shown));
   // Shown in the DOM is not shown on screen: it must have width and sit inside the window.
   check('2: ...on screen: it has width and sits inside the window', !!shown && shown.display !== 'none'
-    && shown.rect && shown.rect.width > 40 && shown.rect.right <= shown.viewport, JSON.stringify(shown));
+    && shown.rect && shown.rect.width > 0 && shown.rect.right <= shown.viewport, JSON.stringify(shown));
+  // Miguel L2 Y1. Absolute, not before/after: the same document also fills the model chip, which
+  // widens the header on its own. MEASURED 2026-10-02 at 1200px, where the header is over-full
+  // before L2 (usage + quota text): fields alone shrinkable -> 0px of 110px; hints first ->
+  // hints clip to 0, fields 24px (ellipsis), focus button 1162 of 1200. A wider window shows them whole.
+  check('2 (Miguel Y1): in a crowded header the controls stay on screen; the fields clip, never push',
+    !!shown && shown.focusRight <= shown.viewport && shown.rect.width <= shown.scrollWidth,
+    `fields ${shown && shown.rect && shown.rect.width}px of ${shown && shown.scrollWidth}px, focus button right ${shown && shown.focusRight} of ${shown && shown.viewport}`);
   await sleep(500);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-frameless-status.png') });
 

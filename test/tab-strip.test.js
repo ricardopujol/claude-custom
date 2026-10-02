@@ -173,6 +173,9 @@ test('tab-strip.html: the window buttons sit after ▾, start hidden, and framel
   assert.ok(strip.indexOf('id="win-min"') < strip.indexOf('id="win-close"'));
   assert.match(strip, /id="win-min"[^>]*\bhidden\b/);
   assert.match(strip, /id="win-close"[^>]*\bhidden\b/);
+  // Miguel L2 G4: glyph-only buttons are named for a screen reader.
+  assert.match(strip, /id="win-min"[^>]*aria-label="Minimise"/);
+  assert.match(strip, /id="win-close"[^>]*aria-label="Close window"/);
   assert.match(html, /body\.frameless #strip\s*\{[^}]*-webkit-app-region:\s*drag/);
   assert.match(html, /body\.frameless[^{]*\.tab[^{]*\{[^}]*-webkit-app-region:\s*no-drag/);
   assert.match(html, /body\.frameless[^{]*#strip button[^{]*\{[^}]*-webkit-app-region:\s*no-drag/);
