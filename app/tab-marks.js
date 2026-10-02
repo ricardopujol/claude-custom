@@ -98,6 +98,25 @@ function pruneMarks(store, liveBranches) {
   return out;
 }
 
+function markCount(store) {
+  return store && store.marks ? Object.keys(store.marks).length : 0;
+}
+
+/**
+ * The branch names in `git for-each-ref --format=%(refname) refs/heads`, or
+ * null. Full refnames, never `refname:short`, which turns a branch that shares
+ * a tag's name into `heads/<name>`. An empty answer is null: a repo always has
+ * a branch, so "none" means the answer is wrong, and pruning on it would wipe
+ * every mark.
+ */
+function liveBranchesFrom(text) {
+  if (typeof text !== 'string') return null;
+  const PREFIX = 'refs/heads/';
+  const out = text.split(/\r?\n/).filter(l => l.startsWith(PREFIX) && l.length > PREFIX.length)
+    .map(l => l.slice(PREFIX.length));
+  return out.length ? out : null;
+}
+
 /**
  * What the tab's **Mark ▸** submenu offers. `state` is the file's load state
  * (host/tab-marks-store.js): only 'ok' and 'missing' may be written over.
@@ -115,4 +134,7 @@ function markMenuModel(store, branch, state) {
   };
 }
 
-module.exports = { MARKS, emptyMarks, parseMarks, serializeMarks, markFor, setMark, pruneMarks, markMenuModel };
+module.exports = {
+  MARKS, emptyMarks, parseMarks, serializeMarks, markFor, setMark, pruneMarks, markCount, liveBranchesFrom,
+  markMenuModel,
+};

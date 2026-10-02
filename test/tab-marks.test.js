@@ -107,3 +107,17 @@ test('property: setMark then markFor gives that mark', () => {
     assert.strictEqual(m.markFor(m.setMark(s, b, id), b).id, id);
   }));
 });
+
+test('liveBranchesFrom reads full refnames, and an empty answer is unknown, not "no branches"', () => {
+  assert.deepStrictEqual(m.liveBranchesFrom('refs/heads/develop\r\nrefs/heads/feat/a\nrefs/heads/heads/odd\n'),
+    ['develop', 'feat/a', 'heads/odd']);
+  assert.strictEqual(m.liveBranchesFrom(''), null);
+  assert.strictEqual(m.liveBranchesFrom('\n'), null);
+  assert.strictEqual(m.liveBranchesFrom(null), null);
+  assert.deepStrictEqual(m.liveBranchesFrom('refs/tags/v1\nrefs/heads/main\n'), ['main']);
+});
+
+test('markCount counts the marks in a store', () => {
+  assert.strictEqual(m.markCount(m.emptyMarks()), 0);
+  assert.strictEqual(m.markCount(storeOf({ a: 'bug', b: 'star' })), 2);
+});

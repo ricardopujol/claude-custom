@@ -40,6 +40,8 @@ const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
 const { readIdentity, readTokenFile } = require('../host/host-identity');
 const { readLook } = require('../host/style');
+const tabMarks = require('./tab-marks');
+const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
@@ -242,6 +244,67 @@ function listWorktrees() {
       env: { ...process.env, LC_ALL: 'C' }, timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
     }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
   });
+}
+
+// --- tab marks (#40, DESIGN_TAB_MARKS.md) -------------------------------------------
+// The file is re-read before every menu, every save and every poll, so a mark
+// set in another window of this project shows here by the next poll.
+let marks = { state: 'missing', store: tabMarks.emptyMarks() };
+
+function reloadMarks() {
+  marks = loadMarks(marksFileFor(STATE_ROOT));
+  return marks;
+}
+
+/** Set (or, with null, clear) a branch's mark. Never writes over a file it couldn't read. */
+function chooseMark(branch, id) {
+  const cur = reloadMarks();
+  if (cur.store === null) return;
+  try {
+    const next = tabMarks.setMark(cur.store, branch, id);
+    saveMarks(STATE_ROOT, next);
+    marks = { state: 'ok', store: next };
+  } catch (err) {
+    console.error('[marks] could not save:', err && err.message);
+  }
+  if (tabShell) tabShell.refresh();
+}
+
+// Marks on branches that no longer exist go (/merged --sweep deleted them).
+// A git that fails, or answers nothing, prunes nothing.
+function pruneGoneMarks() {
+  execFile('git', ['-C', HOST_PROJECT.dev, 'for-each-ref', '--format=%(refname)', 'refs/heads'], {
+    timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+  }, (err, stdout) => {
+    if (err) return;
+    const live = tabMarks.liveBranchesFrom(String(stdout));
+    const cur = reloadMarks();
+    if (live === null || cur.state !== 'ok') return;
+    const next = tabMarks.pruneMarks(cur.store, live);
+    if (tabMarks.markCount(next) === tabMarks.markCount(cur.store)) return;
+    try {
+      saveMarks(STATE_ROOT, next);
+      marks = { state: 'ok', store: next };
+    } catch (err2) {
+      console.error('[marks] could not prune:', err2 && err2.message);
+    }
+    if (tabShell) tabShell.refresh();
+  });
+}
+
+/** The tab's **Mark ▸** submenu, built from the file as it is now. */
+function markSubmenu(branch) {
+  const cur = reloadMarks();
+  const m = tabMarks.markMenuModel(cur.store, branch, cur.state);
+  return {
+    label: m.enabled ? 'Mark' : `Mark (${m.why})`,
+    enabled: m.enabled,
+    submenu: [
+      ...m.rows.map(r => ({ label: r.label, type: 'radio', checked: r.checked, click: () => chooseMark(branch, r.id) })),
+      { type: 'separator' },
+      { label: 'Clear mark', enabled: m.canClear, click: () => chooseMark(branch, null) },
+    ],
+  };
 }
 
 let win = null;
@@ -652,7 +715,10 @@ function registerIpc() {
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     const st = tabShell.menuState(key);
+    const tab = tabShell.tabByKey(key);
     Menu.buildFromTemplate([
+      markSubmenu(tab ? tab.branch : null),
+      { type: 'separator' },
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
@@ -1173,6 +1239,7 @@ app.whenReady().then(async () => {
     launchedFrom: LAUNCH_CWD,
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
+    marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
     // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.
     ops: createOps({ dir: scriptsDir(process.env) }),
@@ -1215,6 +1282,8 @@ app.whenReady().then(async () => {
   createWindow();
   registerIpc();
 
+  reloadMarks();
+  if (MODE === 'tabs') pruneGoneMarks();
   const first = await tabShell.open();
   if (attachOnlyRefusal) {
     console.error('[main] Open refused:', attachOnlyRefusal.reason);
@@ -1230,7 +1299,7 @@ app.whenReady().then(async () => {
     console.error('[main] could not start:', first.error);
     if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) { app.exit(1); return; }
   }
-  if (MODE === 'tabs') setInterval(() => { tabShell.poll(); }, POLL_MS);
+  if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
 
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) runScreenshotPath();

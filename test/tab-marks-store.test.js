@@ -2,16 +2,12 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const s = require('../host/tab-marks-store');
 const { setMark, emptyMarks, markFor } = require('../app/tab-marks');
+const { tmpDir } = require('./tmp-dir');
 
-function tempRoot(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tab-marks-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
+const tempRoot = () => tmpDir('tab-marks-');
 const stateDir = root => path.join(root, '.claude-custom');
 
 test('the file sits in .claude-custom, and finding it creates nothing', (t) => {
