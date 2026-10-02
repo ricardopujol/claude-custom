@@ -333,6 +333,24 @@ function requestFog() {
   try { ws.send(JSON.stringify({ type: 'fog' })); } catch {}
 }
 
+// --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
+// Asked for when the panel opens, on reconnect, and every 30s while it's showing:
+// branches and spend move while you work. The host shares one read between
+// overlapping asks, so a re-ask during a slow first read costs nothing.
+const GIT_TREE_EVERY_MS = 30 * 1000;
+function requestGitTree() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'git-tree' })); } catch {}
+}
+setInterval(() => {
+  if (shownModules.has('git') && document.visibilityState === 'visible') requestGitTree();
+}, GIT_TREE_EVERY_MS);
+function renderGitTree(tree) {
+  window.gitRingsDisplay.render(document.getElementById('git-body'), tree, {
+    onJump: folder => window.harness.selectFolder(folder),
+  });
+}
+
 // --- the project picker ------------------------------------------------------
 // Asked for on demand for the same reason the fog is: the host reads every
 // transcript under ~/.claude/projects to answer, and the host's event loop is
@@ -627,6 +645,7 @@ function zonesViewport() {
 
 function onModuleShown(id) {
   if (id === 'fog') requestFog();
+  if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
@@ -3737,6 +3756,10 @@ function handleControl(msg) {
     renderFog(msg);
     return;
   }
+  if (msg.type === 'git-tree') {
+    renderGitTree(msg);
+    return;
+  }
   if (msg.type === 'bugvault') {
     renderBugVault(msg);
     // A refused add (missing category/summary) is SHOWN, never swallowed --
@@ -3900,6 +3923,7 @@ function connect() {
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
     if (shownModules.has('fog')) requestFog();
+    if (shownModules.has('git')) requestGitTree();
     if (shownModules.has('projects')) requestProjects();
     // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
     // `ws.send` throws (InvalidStateError) while the socket is still
