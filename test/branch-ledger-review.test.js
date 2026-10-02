@@ -41,6 +41,20 @@ test('Dexter F1: a shrunk transcript stays shrunk after save -- the stale longer
   assert.strictEqual(totals((await loadLedger(file)).ledger)['feat/x'].spend, 1);
 });
 
+test('Dexter R2 Low: a clock that steps BACK between a shrink and the save still keeps the shrink', async () => {
+  const { dir, proj } = projects();
+  const file = path.join(tmpDir('ledger-review-'), 'branch-ledger.json');
+  const f = path.join(proj, 's1.jsonl');
+  let t = 5000;
+  const opts = { projectsDir: dir, projectRoot: ROOT, now: () => t };
+  fs.writeFileSync(f, line('a', 'feat/x', 10) + line('b', 'feat/x', 10));
+  let ledger = await saveLedger(file, (await updateLedger(emptyLedger(), opts)).ledger);
+  fs.writeFileSync(f, line('c', 'feat/x', 1));
+  t = 1000; // the wall clock stepped backward
+  ledger = await saveLedger(file, (await updateLedger(ledger, opts)).ledger);
+  assert.strictEqual(totals(ledger)['feat/x'].spend, 1);
+});
+
 test('Dexter F1: across hosts, the more recent read of a file wins, whatever its offset', () => {
   const rec = (offset, at, spend) => ({ ...emptyRecord(), offset, at, branches: { b: { spend, loose: 0, first: null, last: null, cwds: [] } } });
   const stale = { version: 1, files: { f: rec(200, 1000, 20) } };

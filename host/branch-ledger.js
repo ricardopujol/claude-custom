@@ -276,7 +276,9 @@ async function updateLedger(ledger, { projectsDir, projectRoot, now = Date.now, 
       }
       try {
         const r = await readNew(entry.file, prev, projectRoot, open);
-        r.rec.at = now();
+        // only ever goes up: a wall clock stepping back must not let an older record win the
+        // merge again (PR #84 Dexter round 2)
+        r.rec.at = Math.max(now(), num(prev.at) + 1);
         putOwn(out.files, entry.file, r.rec);
         read += r.bytes;
       } catch {
