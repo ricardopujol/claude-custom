@@ -178,6 +178,8 @@ function createShell(deps) {
   const {
     mode = 'tabs', container = null, cwd = null, launchedFrom = null,
     git, hosts, ops, views, ui, log = () => {},
+    // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
+    marks = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -232,13 +234,31 @@ function createShell(deps) {
   const setupHolds = (tab) => (typeof tab.branch === 'string' && pendingBranches.has(tab.branch))
     || (setups.has(tab.key) && setups.get(tab.key).running === true);
 
+  // A mark is decoration: a reader that fails draws none and never takes the strip down.
+  function readMark(branch) {
+    if (!marks || typeof marks.markFor !== 'function' || typeof branch !== 'string') return null;
+    try { return marks.markFor(branch) || null; } catch (err) {
+      log('[shell] marks.markFor threw:', err && err.message);
+      return null;
+    }
+  }
+
+  /**
+   * The branch a tab is on NOW: the reducer's, which follows `git switch`. The
+   * record's `branch` is the one it opened on and never moves (Dexter #87 F1).
+   */
+  function branchOf(key) {
+    const t = state.tabs.find(x => keyOf(x.path) === key);
+    return t && typeof t.branch === 'string' && t.branch !== '' ? t.branch : null;
+  }
+
   function model() {
     return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
       const t = tabs.get(e.key);
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
-        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e),
+        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(branchOf(e.key)),
       };
     });
   }
@@ -817,7 +837,9 @@ function createShell(deps) {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen,
     next: () => step(1), previous: () => step(-1),
-    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy,
+    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,
+    // #40: something the model reads changed outside the shell (a tab's mark).
+    refresh: publish,
     // Exposed for tests and the probe driver.
     _tabs: tabs, _state: () => state,
   };
@@ -944,6 +966,14 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string') return { ok: false, error: 'create needs a branch' };
         return await api.create(cmd.branch);
       case 'reopen': return await api.reopen();
+      // #40: what the Mark ▸ menu's click does, without a mouse.
+      case 'mark':
+        if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'mark needs a branch' };
+        if (cmd.id !== null && typeof cmd.id !== 'string') return { ok: false, error: 'mark needs an id (or null)' };
+        return await api.mark(cmd.branch, cmd.id);
+      case 'markMenu':
+        if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
+        return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
       case 'view':
         // Layout pass L1: one of the selected view's NAMED probe actions

@@ -39,7 +39,7 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 
 /** A shell whose every effect is a recording fake. */
-function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false } = {}) {
+function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
@@ -145,6 +145,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
       isFocused: () => focused,
     },
   };
+  if (marks !== undefined) deps.marks = marks;
   h.shell = createShell(deps);
   return h;
 }
@@ -1533,6 +1534,23 @@ test('handleProbeCommand: create, reopen and cancelCreate reach the driver; crea
   assert.deepStrictEqual(seen, [['create', 'feat/demo'], ['reopen'], ['cancel']]);
 });
 
+test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
+  const seen = [];
+  const api = { mark: async (b, id) => { seen.push([b, id]); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', branch: 'develop', id: 'star' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', branch: 'develop', id: null }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', id: 'star' }), api), { ok: false, error: 'mark needs a branch' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', branch: 'develop' }), api),
+    { ok: false, error: 'mark needs an id (or null)' });
+  assert.deepStrictEqual(seen, [['develop', 'star'], ['develop', null]]);
+});
+
+test('handleProbeCommand: markMenu builds the real menu for a branch (Dexter #87 F2)', async () => {
+  const api = { markMenu: async (b) => ({ ok: true, branch: b }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'markMenu', branch: 'develop' }), api), { ok: true, branch: 'develop' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'markMenu' }), api), { ok: false, error: 'markMenu needs a branch' });
+});
+
 // --- properties ----------------------------------------------------------------
 
 test('PROPERTY: an input with no control/meta and a key other than F12 is never intercepted', () => {
@@ -1632,4 +1650,54 @@ test('shortcutFor: Ctrl+Shift+F (either case) is focus mode; plain Ctrl+F and Al
   assert.strictEqual(shortcutFor(kd('f', { control: true })), null);
   assert.strictEqual(shortcutFor(kd('f', { control: true, shift: true, alt: true })), null);
   assert.strictEqual(shortcutFor({ ...kd('f', { control: true, shift: true }), type: 'keyUp' }), null);
+});
+
+// --- #40 tab marks ---------------------------------------------------------------
+
+test('each strip entry carries its branch\'s mark, null when it has none', async () => {
+  const M = { id: 'waiting', emoji: 'W', meaning: 'Waiting on a merge' };
+  const h = harness({ marks: { markFor: b => (b === 'feat/a' ? M : null) } });
+  await h.shell.open();
+  const byLabel = Object.fromEntries(h.shell.snapshot().model.map(e => [e.label, e.mark]));
+  assert.deepStrictEqual(byLabel, { develop: null, 'feat/a': M, 'feat/b': null });
+});
+
+test('no marks reader: every mark is null', async () => {
+  const h = harness();
+  await h.shell.open();
+  assert.ok(h.shell.model().every(e => e.mark === null));
+});
+
+test('a marks reader that throws draws no mark and never breaks the strip', async () => {
+  const h = harness({ marks: { markFor: () => { throw new Error('boom'); } } });
+  await h.shell.open();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(h.shell.model().every(e => e.mark === null));
+});
+
+test('a tab whose worktree switched branch shows, and offers, the NEW branch\'s mark (Dexter #87 F1)', async () => {
+  const M = { id: 'urgent', emoji: 'U', meaning: 'Urgent / do next' };
+  const h = harness({ marks: { markFor: b => (b === 'feat/a' ? M : null) } });
+  await h.shell.open();
+  assert.deepStrictEqual(h.shell.model().find(e => e.key === key('feat-a')).mark, M);
+  assert.strictEqual(h.shell.branchOf(key('feat-a')), 'feat/a');
+  // `git switch feat/c` in that worktree.
+  h.listText = porcelain([['dev', 'develop'], ['feat-a', 'feat/c'], ['feat-b', 'feat/b']]);
+  await h.shell.poll();
+  const e = h.shell.model().find(x => x.key === key('feat-a'));
+  assert.strictEqual(e.label, 'feat/c');
+  assert.strictEqual(e.mark, null, 'feat/c has no mark; feat/a\'s must not follow the folder');
+  assert.strictEqual(h.shell.branchOf(key('feat-a')), 'feat/c', 'the Mark menu writes to the branch on the label');
+  assert.strictEqual(h.shell.branchOf('nope'), null);
+});
+
+test('refresh publishes a new snapshot (a mark was set)', async () => {
+  let M = null;
+  const h = harness({ marks: { markFor: b => (b === 'develop' ? M : null) } });
+  await h.shell.open();
+  const before = h.changes.length;
+  M = { id: 'star', emoji: 'S', meaning: 'Favourite / keep an eye on' };
+  h.shell.refresh();
+  assert.strictEqual(h.changes.length, before + 1);
+  assert.deepStrictEqual(h.changes.at(-1).model.find(e => e.label === 'develop').mark, M);
 });

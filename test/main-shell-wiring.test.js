@@ -165,7 +165,8 @@ test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
 
 test('the poller runs every 3 s', () => {
   assert.match(MAIN, /const POLL_MS = 3000/);
-  assert.match(MAIN, /setInterval\(\(\) => \{ tabShell\.poll\(\); \}, POLL_MS\)/);
+  // #40: each poll re-reads the tab marks first, so another window's mark shows by the next one.
+  assert.match(MAIN, /setInterval\(\(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}, POLL_MS\)/);
 });
 
 test('the probe driver does nothing without its env var, and only listens locally', () => {
@@ -442,4 +443,33 @@ test('L1 S7: the window keeps room for the terminal and two side zones', () => {
 // no project to stop all of; its launch folder would cover every project.
 test('Stop all gets a project root only when the window is in a project', () => {
   assert.match(MAIN, /projectRoot: PROJECT \? PROJECT_ROOT : null/);
+});
+
+// --- #40 tab marks ---------------------------------------------------------------
+
+test('the tab menu offers Mark first, for the branch the tab is on NOW (Dexter #87 F1)', () => {
+  assert.match(MAIN, /Menu\.buildFromTemplate\(\[\s*markSubmenu\(tabShell\.branchOf\(key\)\),/);
+});
+
+test('the shell reads marks from the loaded store; the window prunes once, in tabs mode', () => {
+  assert.match(MAIN, /marks: \{ markFor: \(branch\) => tabMarks\.markFor\(marks\.store, branch\) \}/);
+  assert.match(MAIN, /reloadMarks\(\);\s*if \(MODE === 'tabs'\) pruneGoneMarks\(\);/);
+});
+
+test('a mark is never saved over a file that could not be read', () => {
+  const body = MAIN.slice(MAIN.indexOf('function chooseMark('), MAIN.indexOf('function pruneGoneMarks('));
+  assert.match(body, /const cur = reloadMarks\(\);\s*if \(cur\.store === null\) return false;/);
+  const prune = MAIN.slice(MAIN.indexOf('function pruneGoneMarks('), MAIN.indexOf('function markSubmenu('));
+  assert.match(prune, /if \(live === null \|\| cur\.state !== 'ok'\) return;/);
+  assert.match(prune, /'--format=%\(refname\)', 'refs\/heads'/);
+});
+
+test('the Mark rows are checkboxes: a radio group gets a default tick from Electron (Dexter #87 F2)', () => {
+  const body = MAIN.slice(MAIN.indexOf('function markSubmenu('), MAIN.indexOf('let win = null;'));
+  assert.match(body, /type: 'checkbox', checked: r.checked/);
+  assert.doesNotMatch(body, /'radio'/);
+});
+
+test('a Mark row does what its model row says: the ticked one clears (Dexter #87 r2)', () => {
+  assert.match(MAIN, /click: \(\) => chooseMark\(branch, r\.choose\) \}\)\),/);
 });
