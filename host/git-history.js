@@ -99,15 +99,31 @@ function integrationOf(refs) {
 
 const GRAPH_FORMAT = '--format=%H%x1f%P%x1f%ct%x1f%s';
 
+function addGraphLine(g, line) {
+  if (!line) return;
+  const [hash, parents = '', time = '', subject = ''] = line.split(US);
+  if (!hash) return;
+  g.set(hash, { parents: parents.trim().split(/\s+/).filter(Boolean), time: Number(time) || 0, subject });
+}
+
 /** `git log --all GRAPH_FORMAT` -> Map(hash -> { parents, time, subject }) */
 function parseGraph(text) {
   const g = new Map();
   if (typeof text !== 'string') return g;
-  for (const line of text.split(/\r?\n/)) {
-    if (!line) continue;
-    const [hash, parents = '', time = '', subject = ''] = line.split(US);
-    if (!hash) continue;
-    g.set(hash, { parents: parents.trim().split(/\s+/).filter(Boolean), time: Number(time) || 0, subject });
+  for (const line of text.split(/\r?\n/)) addGraphLine(g, line);
+  return g;
+}
+
+// The same, yielding to the event loop every few thousand commits: on a big repo one synchronous
+// parse could hold the host past the hook helper's 80ms connect timeout (PR #84 Miguel I3).
+const GRAPH_BATCH = 5000;
+async function parseGraphYielding(text) {
+  const g = new Map();
+  if (typeof text !== 'string') return g;
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    addGraphLine(g, lines[i]);
+    if (i % GRAPH_BATCH === GRAPH_BATCH - 1) await new Promise(resolve => setImmediate(resolve));
   }
   return g;
 }
@@ -162,15 +178,33 @@ function mergeCounts(g, tip) {
  * doesn't hold is unknown: { ahead: null }.
  */
 function laneFacts(g, integrationTip, laneTip, base = null) {
-  if (!g.has(laneTip)) return { ahead: null, first: null };
+  if (!g.has(laneTip) || !g.has(integrationTip)) return { ahead: null, first: null };
   const inIntegration = base || new Set(claim(g, integrationTip, new Set()));
-  const own = claim(g, laneTip, new Set(inIntegration));
-  let first = null;
-  for (const h of own) {
-    const c = g.get(h);
-    if (c.parents.length > 1) continue;
-    if (!first || c.time < g.get(first).time) first = h;
+  // walked against the base without copying it: one copy per lane was O(lanes x commits) (Miguel I3)
+  const own = [];
+  const seen = new Set();
+  const stack = [laneTip];
+  while (stack.length) {
+    const h = stack.pop();
+    if (seen.has(h) || inIntegration.has(h) || !g.has(h)) continue;
+    seen.add(h);
+    own.push(h);
+    for (const p of g.get(h).parents) stack.push(p);
   }
+  // The FIRST commit is where the lane starts: a non-merge commit none of whose parents is the
+  // lane's own. Picking by commit time alone broke on a rebase, where every commit shares one
+  // time, and on clock skew (PR #84 Dexter F3). With several starts (it merged another lane in),
+  // the older wins; a tie goes to the one found deepest from the tip.
+  let first = null;
+  let firstDepth = -1;
+  own.forEach((h, depth) => {
+    const c = g.get(h);
+    if (c.parents.length > 1 || c.parents.some(p => seen.has(p))) return;
+    if (first === null || c.time < g.get(first).time || (c.time === g.get(first).time && depth > firstDepth)) {
+      first = h;
+      firstDepth = depth;
+    }
+  });
   return { ahead: own.length, first: first ? g.get(first).subject.trim() || null : null };
 }
 
@@ -182,7 +216,7 @@ const errorText = err => (err && err.message) || String(err);
 const NOT_LANES = new Set(['develop', 'main', 'master']);
 
 /**
- * { ok: true, integration, merges, unmerged, worktrees, mainMerges } | { ok: false, error }
+ * { ok: true, integration, merges, lanes, worktrees, mainMerges } | { ok: false, error }
  * Four git calls whatever the number of branches. opts.run: (args, cwd) => Promise<stdout>.
  */
 async function readHistory(cwd, { run = defaultRun } = {}) {
@@ -201,7 +235,7 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
   try {
     merges = parseMerges(await run(['log', '--merges', '--first-parent', '--reverse', '--date=short',
       MERGE_FORMAT, integration], cwd));
-    g = parseGraph(await run(['log', '--all', GRAPH_FORMAT], cwd));
+    g = await parseGraphYielding(await run(['log', '--all', GRAPH_FORMAT], cwd));
   } catch (err) {
     return { ok: false, error: errorText(err) };
   }
@@ -211,25 +245,27 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
   const counts = mergeCounts(g, integrationTip);
   for (const m of merges) m.commits = counts.has(m.hash) ? counts.get(m.hash) : null;
 
-  const base = new Set(claim(g, integrationTip, new Set()));
-  const merged = new Set(merges.map(m => m.branch));
+  // A tip the graph doesn't hold (amended between two git calls) makes every count unknown --
+  // an empty base would make each lane "ahead" by the whole history (PR #84 Dexter F11).
+  const base = g.has(integrationTip) ? new Set(claim(g, integrationTip, new Set())) : null;
   const listed = new Set();
-  const unmerged = [];
-  // for-each-ref sorts by refname, so refs/heads/* come before refs/remotes/*: a local branch wins
-  // over its remote twin, and the twin is skipped.
+  const lanes = [];
+  // EVERY ref is a lane, merged ones too: a merged name can be reused, and the model joins a lane
+  // with its merges by name (PR #84 Dexter F2). for-each-ref sorts by refname, so refs/heads/*
+  // come before refs/remotes/*: a local branch wins over its remote twin, which is skipped.
   for (const r of refs) {
-    if (NOT_LANES.has(r.name) || merged.has(r.name) || listed.has(r.name)) continue;
+    if (NOT_LANES.has(r.name) || listed.has(r.name)) continue;
     // left behind by Agent isolation worktrees (DESIGN_GIT_TREE.md decision 8)
     if (r.name.startsWith('worktree-agent-')) continue;
     listed.add(r.name);
-    const { ahead, first } = r.tip ? laneFacts(g, integrationTip, r.tip, base) : { ahead: null, first: null };
+    const { ahead, first } = r.tip && base ? laneFacts(g, integrationTip, r.tip, base) : { ahead: null, first: null };
     const wt = worktrees.find(w => w.branch === r.name);
-    unmerged.push({ name: r.name, remote: r.remote, date: r.date, ahead, first, worktree: wt ? wt.path : null });
+    lanes.push({ name: r.name, remote: r.remote, date: r.date, ahead, first, worktree: wt ? wt.path : null });
   }
 
   const mainTip = integration !== 'main' ? tipOf('main') : null;
   const mainMerges = mainTip && g.has(mainTip) ? firstParentMerges(g, mainTip) : null;
-  return { ok: true, integration, merges, unmerged, worktrees, mainMerges };
+  return { ok: true, integration, merges, lanes, worktrees, mainMerges };
 }
 
 module.exports = {

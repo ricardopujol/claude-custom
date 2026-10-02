@@ -9,7 +9,7 @@ const assert = require('node:assert');
 
 const { createGitTreeService } = require('../host/git-tree-service');
 
-const HISTORY = { ok: true, integration: 'develop', mainMerges: 0, worktrees: [], unmerged: [],
+const HISTORY = { ok: true, integration: 'develop', mainMerges: 0, worktrees: [], lanes: [],
   merges: [{ branch: 'feat/a', pr: 1, date: '2026-09-20', title: 'feat: a', commits: 2 }] };
 const LINE_TOTALS = { files: { f: { offset: 1, subagent: false, runBranch: 'feat/a',
   branches: { 'feat/a': { spend: 10, loose: 0, first: '2026-09-20', last: '2026-09-20', cwds: ['C:\\p\\dev'] } } } } };

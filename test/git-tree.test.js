@@ -14,7 +14,7 @@ const total = (spend, extra = {}) => ({ spend, loose: 0, first: '2026-09-20', la
 const history = (over = {}) => ({
   ok: true, integration: 'develop', mainMerges: 0,
   merges: [{ branch: 'feat/a', pr: 3, date: '2026-09-20', title: 'feat(a): the first thing', commits: 4 }],
-  unmerged: [],
+  lanes: [],
   worktrees: [{ path: 'C:/p/dev', branch: 'develop' }],
   ...over,
 });
@@ -32,7 +32,7 @@ test('no token record is spend null, never 0', () => {
 });
 
 test('an unmerged branch with an open PR is open, with the PR title as why', () => {
-  const h = history({ unmerged: [{ name: 'feat/b', remote: false, date: '2026-09-30', ahead: 2, first: 'wip: x', worktree: null }] });
+  const h = history({ lanes: [{ name: 'feat/b', remote: false, date: '2026-09-30', ahead: 2, first: 'wip: x', worktree: null }] });
   const b = byName(build(h, {}, new Map([['feat/b', { pr: 9, title: 'feat(b): open thing' }]])), 'feat/b');
   assert.strictEqual(b.state, 'open');
   assert.strictEqual(b.pr, 9);
@@ -40,7 +40,7 @@ test('an unmerged branch with an open PR is open, with the PR title as why', () 
 });
 
 test('ahead of develop with no PR is unmerged, why from its first commit; 0 ahead is merged (contained)', () => {
-  const h = history({ unmerged: [
+  const h = history({ lanes: [
     { name: 'spike/c', remote: false, date: '2026-09-15', ahead: 2, first: 'spike: measure a thing', worktree: null },
     { name: 'rebase/d', remote: false, date: '2026-09-16', ahead: 0, first: null, worktree: null },
   ] });
@@ -52,7 +52,7 @@ test('ahead of develop with no PR is unmerged, why from its first commit; 0 ahea
 });
 
 test('open PRs unknown (gh failed) leaves an ahead branch unmerged, not open', () => {
-  const h = history({ unmerged: [{ name: 'feat/b', remote: false, date: '2026-09-30', ahead: 2, first: 'x', worktree: null }] });
+  const h = history({ lanes: [{ name: 'feat/b', remote: false, date: '2026-09-30', ahead: 2, first: 'x', worktree: null }] });
   assert.strictEqual(byName(build(h, {}, null), 'feat/b').state, 'unmerged');
 });
 
@@ -71,10 +71,10 @@ test('loose spend counts for a branch git knows, never for the integration branc
   assert.strictEqual(t.hub.spend, 10);
 });
 
-test('the integration branch, main, HEAD and worktree-agent-* are never spokes; HEAD folds into the hub', () => {
+test('the integration branch, main, HEAD and worktree-agent-* are never spokes; their spend is the hub\'s', () => {
   const t = build(history(), { develop: total(10), HEAD: total(5), main: total(1), 'worktree-agent-abc': total(3) });
   assert.deepStrictEqual(t.branches.map(b => b.name), ['feat/a']);
-  assert.strictEqual(t.hub.spend, 15);
+  assert.strictEqual(t.hub.spend, 19);
 });
 
 test('place: open worktree; had its own worktree (a cwd in <root>\\<branch-dashes>); else built in dev', () => {
@@ -83,7 +83,7 @@ test('place: open worktree; had its own worktree (a cwd in <root>\\<branch-dashe
       { branch: 'feat/a', pr: 1, date: '2026-09-20', title: 'a', commits: 1 },
       { branch: 'feat/b', pr: 2, date: '2026-09-21', title: 'b', commits: 1 },
     ],
-    unmerged: [{ name: 'feat/c', remote: false, date: '2026-09-30', ahead: 1, first: 'c', worktree: 'C:/p/feat-c' }],
+    lanes: [{ name: 'feat/c', remote: false, date: '2026-09-30', ahead: 1, first: 'c', worktree: 'C:/p/feat-c' }],
     worktrees: [{ path: 'C:/p/dev', branch: 'develop' }, { path: 'C:/p/feat-c', branch: 'feat/c' }],
   });
   const t = build(h, { 'feat/a': total(1, { cwds: ['c:\\P\\feat-a\\sub'] }), 'feat/b': total(1) });

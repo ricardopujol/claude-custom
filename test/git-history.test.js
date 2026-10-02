@@ -101,7 +101,9 @@ test('history: merges with commit counts; unmerged with ahead, first commit and 
   assert.strictEqual(h.integration, 'develop');
   assert.strictEqual(h.mainMerges, 0);
   assert.deepStrictEqual(h.merges.map(m => [m.branch, m.commits]), [['feat/a', 1]]);
-  assert.deepStrictEqual(h.unmerged.map(u => [u.name, u.remote, u.ahead, u.first, u.worktree]), [
+  // every ref is a lane, merged ones too (0 ahead): the model joins them with their merges (Dexter F2)
+  assert.deepStrictEqual(h.lanes.map(u => [u.name, u.remote, u.ahead, u.first, u.worktree]), [
+    ['feat/a', false, 0, null, null],
     ['feat/open', false, 2, 'feat(x): first', 'C:/p/feat-open'],
     ['spike/z', false, 0, null, null],
     ['feat/remote-only', true, 1, 'only on the remote', null],
@@ -110,7 +112,7 @@ test('history: merges with commit counts; unmerged with ahead, first commit and 
 
 test('the integration branch, main, worktree-agent-* and a remote twin of a local branch are not listed', async () => {
   const h = await readHistory('C:/p/dev', { run: fakeRun(base) });
-  const names = h.unmerged.map(u => u.name);
+  const names = h.lanes.map(u => u.name);
   for (const n of ['develop', 'main', 'worktree-agent-x']) assert.ok(!names.includes(n), n);
   assert.strictEqual(names.filter(n => n === 'feat/open').length, 1);
 });
@@ -128,7 +130,7 @@ test('a tip the graph does not hold is null, never 0; so is a merge off the firs
     [`log --merges --first-parent --reverse --date=short ${MERGE_FORMAT} develop`]:
       'q9\x1f2026-09-20\x1fMerge pull request #4 from o/feat/q\x1fa x1\x1f\x1e' };
   const h = await readHistory('C:/p/dev', { run: fakeRun(t) });
-  assert.deepStrictEqual(h.unmerged.map(u => [u.name, u.ahead]), [['feat/ghost', null]]);
+  assert.deepStrictEqual(h.lanes.map(u => [u.name, u.ahead]), [['feat/ghost', null]]);
   assert.strictEqual(h.merges[0].commits, null);
   assert.strictEqual(h.mainMerges, null);
 });
@@ -189,4 +191,47 @@ test('laneFacts: ahead of the integration tip, and the oldest non-merge commit i
   assert.deepStrictEqual(laneFactsOf(g, 'm2', 'l3'), { ahead: 3, first: 'lane one' });
   assert.deepStrictEqual(laneFactsOf(g, 'm2', 'y1'), { ahead: 0, first: null });
   assert.deepStrictEqual(laneFactsOf(g, 'm2', 'missing'), { ahead: null, first: null });
+});
+
+// ---------- PR #84 review (Dexter, Miguel) ----------
+
+test('Dexter F3: a rebased lane whose commits share one commit time still gives its FIRST commit', () => {
+  const g = parseGraph(rowsToGraph([
+    ['c', 'b', 1000, 'third'], ['b', 'a', 1000, 'second'], ['a', 'd1', 1000, 'first'], ['d1', '', 1, 'root'],
+  ]));
+  assert.deepStrictEqual(laneFactsOf(g, 'd1', 'c'), { ahead: 3, first: 'first' });
+});
+
+test('Dexter F3: clock skew (a child older than its parent) still gives the first commit', () => {
+  const g = parseGraph(rowsToGraph([
+    ['c', 'b', 5, 'third'], ['b', 'a', 3, 'second'], ['a', 'd1', 9, 'first'], ['d1', '', 1, 'root'],
+  ]));
+  assert.strictEqual(laneFactsOf(g, 'd1', 'c').first, 'first');
+});
+
+test('a lane that merged another lane in: the older of its two starts', () => {
+  const g = parseGraph(rowsToGraph([
+    ['m', 'b2 o1', 9, 'Merge other'], ['o1', 'd1', 2, 'other start'], ['b2', 'b1', 8, 'b two'], ['b1', 'd1', 5, 'b start'], ['d1', '', 1, 'root'],
+  ]));
+  assert.deepStrictEqual(laneFactsOf(g, 'd1', 'm'), { ahead: 4, first: 'other start' });
+});
+
+test('Dexter F11: an integration tip the graph does not hold makes every count unknown, not the whole history', async () => {
+  const t = { ...base, [`for-each-ref ${REF_FORMAT} refs/heads refs/remotes`]:
+    'refs/heads/develop\x1f2026-10-01\x1fAMENDED\nrefs/heads/feat/open\x1f2026-10-01\x1fo2\n' };
+  const h = await readHistory('C:/p/dev', { run: fakeRun(t) });
+  assert.deepStrictEqual(h.lanes.map(u => [u.name, u.ahead, u.first]), [['feat/open', null, null]]);
+  assert.strictEqual(h.merges[0].commits, null);
+});
+
+test('Dexter F2: a merged name whose ref moved on again is listed as a lane, with what it adds now', async () => {
+  const t = { ...base,
+    [`for-each-ref ${REF_FORMAT} refs/heads refs/remotes`]: 'refs/heads/develop\x1f2026-10-01\x1fd2\nrefs/heads/feat/a\x1f2026-10-02\x1fa2\n',
+    [`log --all ${GRAPH_FORMAT}`]: rowsToGraph([
+      ['a2', 'd2', 8, 'feat(a): round two'], ['d2', 'm1', 5, 'd two'],
+      ['m1', 'a x1', 3, 'Merge pull request #3 from o/feat/a'], ['x1', 'a', 2, 'x one'], ['a', '', 1, 'root'],
+    ]) };
+  const h = await readHistory('C:/p/dev', { run: fakeRun(t) });
+  assert.deepStrictEqual(h.merges.map(m => m.branch), ['feat/a']);
+  assert.deepStrictEqual(h.lanes.map(u => [u.name, u.ahead, u.first]), [['feat/a', 1, 'feat(a): round two']]);
 });
