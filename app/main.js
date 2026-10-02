@@ -248,7 +248,9 @@ function listWorktrees() {
 
 // --- tab marks (#40, DESIGN_TAB_MARKS.md) -------------------------------------------
 // The file is re-read before every menu, every save and every poll, so a mark
-// set in another window of this project shows here by the next poll.
+// set in another window of this project shows here by the next poll. Two
+// windows saving in the same instant can lose one of the two marks (read,
+// set, write, with no lock): accepted for a purely visual mark (Miguel #87 G1).
 let marks = { state: 'missing', store: tabMarks.emptyMarks() };
 
 function reloadMarks() {
