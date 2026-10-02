@@ -708,6 +708,10 @@ function registerIpc() {
   ipcMain.handle('tab:goTo', (e, holder) => (isTabView(e.sender)
     ? tabShell.goTo(e.sender, holder)
     : { kind: 'explain', text: "That session's window can't be found." }));
+  // The Git panel's *Jump to its tab*: select the tab whose worktree is that folder.
+  ipcMain.handle('tab:selectFolder', (e, folder) => (isTabView(e.sender)
+    ? tabShell.selectFolder(e.sender, folder)
+    : { kind: 'explain', text: "That tab's window can't be found." }));
   // A link clicked in a tab's terminal (fix/terminal-links): straight to the
   // default browser, no prompt -- only what openInBrowser accepts.
   ipcMain.handle('tab:openExternal', (e, url) => {

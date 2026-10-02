@@ -88,7 +88,10 @@ test('totalSpend is EXACTLY every token that is ours: all inside spend, plus loo
   fc.assert(fc.property(scenarioArb, s => {
     const t = buildTree({ ...s, projectRoot: ROOT });
     const known = gitNames(s);
-    const entries = Object.entries(s.totals);
+    // "ours": the hub's names, lanes git knows, and an unknown name only with spend inside the
+    // project. (Found by this property, seed -1386998037: a lone unknown branch with 0 spend is
+    // NOT ours, so the total is null -- the oracle had said 0.)
+    const entries = Object.entries(s.totals).filter(([n, v]) => !isLane(n) || known.has(n) || v.spend > 0);
     if (!entries.length) { assert.strictEqual(t.totalSpend, null); return; }
     const want = entries.reduce((x, [n, v]) => x + v.spend + (known.has(n) ? v.loose : 0), 0);
     assert.strictEqual(t.totalSpend, want);

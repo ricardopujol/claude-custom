@@ -333,6 +333,30 @@ function requestFog() {
   try { ws.send(JSON.stringify({ type: 'fog' })); } catch {}
 }
 
+// --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
+// Asked for when the panel opens, on reconnect, and every 30s while it's showing:
+// branches and spend move while you work. The host shares one read between
+// overlapping asks, so a re-ask during a slow first read costs nothing.
+const GIT_TREE_EVERY_MS = 30 * 1000;
+function requestGitTree() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'git-tree' })); } catch {}
+}
+setInterval(() => {
+  if (shownModules.has('git') && document.visibilityState === 'visible') requestGitTree();
+}, GIT_TREE_EVERY_MS);
+// Back from hidden: ask now, not up to 30s later with an old tree on screen (PR #85 Dexter F9).
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && shownModules.has('git')) requestGitTree();
+});
+let lastGitTree = null;
+function renderGitTree(tree) {
+  lastGitTree = tree;
+  window.gitRingsDisplay.render(document.getElementById('git-body'), tree, {
+    onJump: folder => window.harness.selectFolder(folder),
+  });
+}
+
 // --- the project picker ------------------------------------------------------
 // Asked for on demand for the same reason the fog is: the host reads every
 // transcript under ~/.claude/projects to answer, and the host's event loop is
@@ -627,6 +651,7 @@ function zonesViewport() {
 
 function onModuleShown(id) {
   if (id === 'fog') requestFog();
+  if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
@@ -1013,6 +1038,68 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (a.which === 'move') openMoveMenu(String(a.id), 300, 200); else openLayoutMenu();
         return JSON.stringify({ ok: true, items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })) });
       case 'closeMenu': closeLayoutMenu(); break;
+      // Layout pass L3 (verify/probe-git-tree.js): read the Git panel, hover a spoke, pin and jump.
+      case 'gitState': {
+        const body = document.getElementById('git-body');
+        const svg = body.querySelector('.git-svg');
+        return JSON.stringify({
+          ok: true, status: document.getElementById('git-status').textContent,
+          spokes: [...body.querySelectorAll('.git-spoke')].map(g => ({ name: g.dataset.name, cls: g.getAttribute('class'),
+            ring: !!g.querySelector('.git-ring'), square: !!g.querySelector('rect.git-tip'), dashed: !!g.querySelector('.git-stem.dashed') })),
+          hub: (body.querySelector('.git-hub-name') || {}).textContent || null,
+          foot: (body.querySelector('.git-foot') || {}).textContent || null,
+          labels: [...body.querySelectorAll('.git-label')].map(t => t.textContent),
+          svg: svg ? rectOf(svg) : null, panel: rectOf(body),
+          narrow: document.getElementById('git-dial').classList.contains('narrow'),
+          // PR #85 review: listeners wired once however many redraws; pin and focus survive a redraw
+          wired: (document.getElementById('git-dial').gitState || {}).wired || 0,
+          renders: (document.getElementById('git-dial').gitState || {}).renders || 0,
+          pinned: ((document.getElementById('git-dial').gitState || {}).pinned) || null,
+          cardShown: !!document.querySelector('.git-card') && !document.querySelector('.git-card').hidden,
+          cardText: (document.querySelector('.git-card') || {}).textContent || '',
+          focused: document.activeElement && document.activeElement.getAttribute
+            ? (document.activeElement.getAttribute('data-name') || (document.activeElement.classList && document.activeElement.classList.contains('git-card-jump') ? 'jump' : null)) : null,
+          boldInPanel: body.querySelectorAll('b:not(.git-foot b)').length,
+          hubTextShown: !!body.querySelector('.git-hub-name') && getComputedStyle(body.querySelector('.git-hub-name')).display !== 'none',
+        });
+      }
+      case 'gitRefresh': requestGitTree(); break;
+      // the same answer again (must draw nothing), or one that changed (must keep the pin and focus)
+      case 'gitRerender': {
+        if (!lastGitTree) return JSON.stringify({ ok: false, error: 'no tree yet' });
+        const t = a.changed ? { ...lastGitTree, totalSpend: (lastGitTree.totalSpend || 0) + 1 } : lastGitTree;
+        renderGitTree(t);
+        break;
+      }
+      case 'gitKey': {
+        // a key on the focused element, as a keyboard would send it
+        const target = document.activeElement || document.body;
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: a.key, bubbles: true, cancelable: true }));
+        break;
+      }
+      case 'gitFocus': {
+        const g = [...document.querySelectorAll('.git-spoke')].find(x => x.dataset.name === a.name);
+        if (!g) return JSON.stringify({ ok: false, error: `no spoke ${a.name}` });
+        g.focus();
+        break;
+      }
+      case 'gitHover': case 'gitPin': {
+        const g = [...document.querySelectorAll('.git-spoke')].find(x => x.dataset.name === a.name);
+        if (!g) return JSON.stringify({ ok: false, error: `no spoke ${a.name}` });
+        const r = g.getBoundingClientRect();
+        const at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true };
+        // mouseover, not mouseenter: the dial finds its spoke by delegation, and mouseenter doesn't bubble
+        g.dispatchEvent(new MouseEvent(req.action === 'gitHover' ? 'mouseover' : 'click', at));
+        const card = document.querySelector('.git-card');
+        return JSON.stringify({ ok: true, hidden: card.hidden, text: card.textContent, card: rectOf(card),
+          panel: rectOf(document.getElementById('git-body')), jump: !!card.querySelector('.git-card-jump') });
+      }
+      case 'gitJump': {
+        const btn = document.querySelector('.git-card-jump');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no jump button' });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
       // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
       // dragged button is gone and no dragend will ever come; the drag must
       // already be over when the drop returns.
@@ -3737,6 +3824,10 @@ function handleControl(msg) {
     renderFog(msg);
     return;
   }
+  if (msg.type === 'git-tree') {
+    renderGitTree(msg);
+    return;
+  }
   if (msg.type === 'bugvault') {
     renderBugVault(msg);
     // A refused add (missing category/summary) is SHOWN, never swallowed --
@@ -3900,6 +3991,7 @@ function connect() {
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
     if (shownModules.has('fog')) requestFog();
+    if (shownModules.has('git')) requestGitTree();
     if (shownModules.has('projects')) requestProjects();
     // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
     // `ws.send` throws (InvalidStateError) while the socket is still

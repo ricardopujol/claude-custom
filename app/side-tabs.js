@@ -27,6 +27,8 @@ const TABS = [
   // generic once a project also tracks, say, GitHub issues.
   { id: 'bugvault', label: 'Bug vault', title: 'Recurring defect classes, grouped by category and by how they were found' },
   { id: 'fog', label: 'Map', title: 'What this project has actually been read' },
+  // Layout pass L3 (documentation/PLAN_GIT_TREE.md): every branch on one dial.
+  { id: 'git', label: 'Git', title: 'Every branch this project has grown' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
   { id: 'projects', label: 'Projects', title: 'Switch to another project, each in its own window' },
   { id: 'style', label: 'Style', title: 'How the harness looks' },

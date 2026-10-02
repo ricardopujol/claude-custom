@@ -807,6 +807,32 @@ test('a raise and an attention click select the sender\'s tab and bring the wind
   assert.strictEqual(h.focusCalls, 2);
 });
 
+// --- Jump to its tab (the Git panel, documentation/PLAN_GIT_TREE.md Task 10) ---
+
+test('selectFolder: the tab whose worktree is that folder is selected, however the path is spelled', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const spelled = path.join(ROOT, 'feat-a').replace(/\\/g, '/').toUpperCase() + '/';
+  assert.deepStrictEqual(await h.shell.selectFolder(devView, spelled), { kind: 'select-tab' });
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
+});
+
+test('selectFolder: no tab for that folder, a bad path, or a sender that is no tab view is explained, nothing moves', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const before = h.shell.snapshot().selectedKey;
+  for (const [sender, p] of [[devView, path.join(ROOT, 'feat-zzz')], [devView, ''], [devView, 42], [{}, path.join(ROOT, 'feat-a')]]) {
+    const r = await h.shell.selectFolder(sender, p);
+    assert.strictEqual(r.kind, 'explain', String(p));
+    assert.strictEqual(typeof r.text, 'string');
+  }
+  assert.strictEqual(h.shell.snapshot().selectedKey, before);
+});
+
 // --- Go to that session ------------------------------------------------------
 
 test('goTo: a tab in THIS window is selected', async () => {

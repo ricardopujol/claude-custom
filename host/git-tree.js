@@ -121,8 +121,13 @@ function buildTree({ history, totals = {}, openPrs = null, projectRoot, current 
   };
   const entry = (name, fields) => {
     const t = getOwn(totals, name) || null;
+    const wt = worktrees.find(w => w.branch === name);
     return { name, ...fields, place: placeOf(name, t, worktrees, projectRoot), spend: spendOf(name),
-      runs: t ? t.runs.length : 0, people: peopleOf(t ? t.runs : [], known.has(name)) };
+      runs: t ? t.runs.length : 0, people: peopleOf(t ? t.runs : [], known.has(name)),
+      // an open worktree's folder, for the panel's *Jump to its tab*
+      folder: wt ? wt.path : null,
+      // the first and last day work was recorded on it, from the ledger (PR #85 Dexter F6)
+      first: t ? t.first : null, last: t ? t.last : null };
   };
 
   const branches = [];
@@ -165,7 +170,8 @@ function buildTree({ history, totals = {}, openPrs = null, projectRoot, current 
     // only spend from inside the project makes an unknown branch ours (G2)
     if (!(t.spend > 0)) continue;
     branches.push({ name, state: 'deleted', place: placeOf(name, t, worktrees, projectRoot), pr: null, remote: false,
-      why: null, when: t.last || null, commits: null, spend: t.spend, runs: t.runs.length, people: peopleOf(t.runs, false) });
+      why: null, when: t.last || null, commits: null, spend: t.spend, runs: t.runs.length, people: peopleOf(t.runs, false),
+      folder: null, first: t.first, last: t.last });
   }
   branches.sort((a, b) => byWhen(a, b)
     || (a.pr == null ? Infinity : a.pr) - (b.pr == null ? Infinity : b.pr) || a.name.localeCompare(b.name));
