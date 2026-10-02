@@ -3517,9 +3517,15 @@ function settledChrome(saved) {
   if (saved && typeof saved === 'object') applyChromeSettings(saved);
   else refreshChromeSettings();
 }
+// Null means main couldn't read the file just then (Dexter L2 #1): stay
+// unknown and ask again, never assume OFF -- the relay reads that file on its
+// own and may already be keeping the CLI row quiet.
 function refreshChromeSettings() {
   if (!(window.harness && window.harness.chrome)) return;
-  window.harness.chrome.get().then(applyChromeSettings).catch(() => { /* stays unknown: fields hidden */ });
+  window.harness.chrome.get().then((s) => {
+    if (s && typeof s === 'object') applyChromeSettings(s);
+    else setTimeout(refreshChromeSettings, 1000);
+  }).catch(() => setTimeout(refreshChromeSettings, 1000));
 }
 
 // BACKLOG #27: cost / lines / time / ctx>200k off the host's `statusFields`
@@ -3589,7 +3595,7 @@ if (window.harness && window.harness.avatar) {
 }
 if (window.harness && window.harness.chrome) {
   window.harness.chrome.onChange(applyChromeSettings);
-  window.harness.chrome.get().then(applyChromeSettings).catch(() => { /* stays unknown: fields hidden */ });
+  refreshChromeSettings();
 }
 
 // The hover pencil on a roster face: pick a file, send it as the same

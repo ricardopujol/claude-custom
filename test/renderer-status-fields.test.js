@@ -55,10 +55,17 @@ test('a live statusFields message and the hello both render the fields', () => {
 
 test('main\'s chrome settings are read once and followed, and re-render the fields', () => {
   assert.match(JS, /window\.harness\.chrome\.onChange\(applyChromeSettings\)/);
-  assert.match(JS, /window\.harness\.chrome\.get\(\)\.then\(applyChromeSettings\)/);
+  assert.match(JS, /^\s*refreshChromeSettings\(\);/m, 'the first read goes through the retrying reader');
   const apply = fnBody('applyChromeSettings');
   assert.match(apply, /reduceChromeSettings\(/);
   assert.match(apply, /renderStatusFields\(/);
+});
+
+test('Dexter L2 #1: an unknown answer (null, or a failed read) is asked again, never taken as OFF', () => {
+  const body = fnBody('refreshChromeSettings');
+  assert.match(body, /chrome\.get\(\)/);
+  assert.match(body, /setTimeout\(refreshChromeSettings/, 'a null answer schedules another read');
+  assert.doesNotMatch(body, /statusInHeader:\s*false/);
 });
 
 test('the Window section draws both toggles and sends the DESIRED state', () => {

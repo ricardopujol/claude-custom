@@ -37,11 +37,31 @@ function settingsOf(rec) {
   return { statusInHeader: rec.statusInHeader === true, framelessWindow: rec.framelessWindow === true };
 }
 
+// For createWindow: a frame must be decided now, and the framed window is the
+// safe answer when the file can't say.
 function readChromeSettings(store) {
+  const known = readChromeState(store);
+  return known || { ...OFF };
+}
+
+/**
+ * The settings, or null when the file can't be read right now (busy under an
+ * antivirus scan, or corrupt). Null is UNKNOWN, never OFF (Dexter L2 #1): the
+ * relay reads the same file on its own, so a main that guessed OFF could hide
+ * the header fields while the relay quiets the CLI row, and the fields would
+ * show nowhere. Missing is a real answer: nothing was ever set.
+ */
+function readChromeState(store) {
   try {
+    if (typeof store.readState === 'function') {
+      const st = store.readState(CHROME_KEY);
+      if (st.status === 'ok') return settingsOf(st.value);
+      if (st.status === 'missing') return { ...OFF };
+      return null;
+    }
     return settingsOf(store.read(CHROME_KEY, {}));
   } catch {
-    return { ...OFF };
+    return null;
   }
 }
 
@@ -53,11 +73,16 @@ const same = (a, b) => !!a && !!b && a.statusInHeader === b.statusInHeader && a.
 function registerChromeHandlers({ ipcMain, store, sync = {}, isSender, send }) {
   const fromWindow = (e) => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
 
-  ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readChromeSettings(store) : { ...OFF }));
+  // Null when the file can't be read: the page keeps "unknown" and asks again.
+  ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readChromeState(store) : { ...OFF }));
 
   const setter = (key) => (e, value) => {
     if (!fromWindow(e)) return null;
     if (typeof value !== 'boolean') return null;
+    // Dexter L2 #2: an unreadable or corrupt file would merge into `{}` and
+    // silently reset the OTHER setting. Refuse; the page re-reads and the
+    // person can click again.
+    if (readChromeState(store) === null) return null;
     let next;
     try {
       next = settingsOf(store.update(CHROME_KEY, {}, (prev) => ({
@@ -81,25 +106,34 @@ function registerChromeHandlers({ ipcMain, store, sync = {}, isSender, send }) {
  * Follows a change made by ANOTHER project window (another Electron main
  * sharing this store file), as avatar-bridge's watchImagesEnabled does: polls
  * the file and pushes when the settings differ from the last ones this window
- * was told. An unreadable or corrupt read is skipped, never pushed as OFF.
- * Returns stop().
+ * was told. An unreadable or corrupt read is never pushed as OFF, and it is
+ * RETRIED (Dexter L2 #1): watchFile fires once per change, so a change whose
+ * one poll found the file busy would otherwise never be seen. The decision
+ * uses the value that read returned, never a second read. Returns stop().
  */
 function watchChromeSettings({
   store, file, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile, sync = {}, send,
+  setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t && typeof t.unref === 'function') t.unref(); },
 }) {
-  sync.last = readChromeSettings(store);
+  sync.last = readChromeState(store);
+  let retrying = false;
+  let stopped = false;
   const listener = () => {
-    if (typeof store.readState === 'function') {
-      const st = store.readState(CHROME_KEY);
-      if (st.status !== 'ok' && st.status !== 'missing') return;
+    if (stopped) return;
+    const now = readChromeState(store);
+    if (now === null) {
+      if (!retrying) {
+        retrying = true;
+        setTimer(() => { retrying = false; listener(); }, intervalMs);
+      }
+      return;
     }
-    const now = readChromeSettings(store);
     if (same(now, sync.last)) return;
     sync.last = now;
     try { send(PUSH_CHANNEL, now); } catch { /* window is going away */ }
   };
   watchFile(file, { interval: intervalMs, persistent: false }, listener);
-  return () => unwatchFile(file, listener);
+  return () => { stopped = true; unwatchFile(file, listener); };
 }
 
 module.exports = {

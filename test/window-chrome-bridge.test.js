@@ -90,10 +90,73 @@ test('setters refuse anything that is not a boolean (the string "false" is truth
   assert.deepStrictEqual(sent, []);
 });
 
+// A store whose readState can be made to fail, the way the real one reports a
+// busy (antivirus) or corrupt file.
+function flakyStore(seed = {}) {
+  const store = fakeStore(seed);
+  store.fail = null;                       // 'unreadable' | 'corrupt' | null
+  store.readState = (name) => (store.fail ? { status: store.fail, value: null }
+    : name in store.data ? { status: 'ok', value: store.data[name] } : { status: 'missing', value: null });
+  return store;
+}
+
+test('Dexter L2 #1: get answers null (unknown) for an unreadable file, never a confident OFF', async () => {
+  const store = flakyStore({ [CHROME_KEY]: { statusInHeader: true } });
+  const { call } = setup({ store });
+  store.fail = 'unreadable';
+  assert.strictEqual(await call(GET_CHANNEL), null);
+  store.fail = 'corrupt';
+  assert.strictEqual(await call(GET_CHANNEL), null);
+  store.fail = null;
+  assert.deepStrictEqual(await call(GET_CHANNEL), { statusInHeader: true, framelessWindow: false });
+});
+
+test('Dexter L2 #1: one unreadable poll is retried, so another window\'s change still lands', () => {
+  const store = flakyStore();
+  let listener = null;
+  const timers = [];
+  const sent = [];
+  watchChromeSettings({ store, file: 'x', sync: {}, send: (ch, v) => sent.push([ch, v]),
+    watchFile: (f, o, fn) => { listener = fn; }, unwatchFile: () => {}, setTimer: (fn) => timers.push(fn) });
+  store.data[CHROME_KEY] = { statusInHeader: true };   // window B's write...
+  store.fail = 'unreadable';                           // ...lands while A's read is busy
+  listener();                                          // the ONE poll watchFile gives for it
+  assert.deepStrictEqual(sent, []);
+  assert.strictEqual(timers.length, 1, 'an unreadable read schedules a retry');
+  listener();
+  assert.strictEqual(timers.length, 1, 'retries never stack');
+  store.fail = null;
+  timers.shift()();
+  assert.deepStrictEqual(sent, [[PUSH_CHANNEL, { statusInHeader: true, framelessWindow: false }]]);
+});
+
+test('Dexter L2 #1: the watcher decides on the value it just read, not on a second read', () => {
+  const store = flakyStore({ [CHROME_KEY]: { statusInHeader: false } });
+  store.read = () => { throw new Error('a second read would fall back to OFF'); };
+  let listener = null;
+  const sent = [];
+  watchChromeSettings({ store, file: 'x', sync: { }, send: (ch, v) => sent.push([ch, v]),
+    watchFile: (f, o, fn) => { listener = fn; }, unwatchFile: () => {}, setTimer: () => {} });
+  store.data[CHROME_KEY] = { statusInHeader: true };
+  listener();
+  assert.deepStrictEqual(sent, [[PUSH_CHANNEL, { statusInHeader: true, framelessWindow: false }]]);
+});
+
+test('Dexter L2 #2: a setter refuses while the file is unreadable or corrupt, and leaves it alone', () => {
+  for (const fail of ['unreadable', 'corrupt']) {
+    const store = flakyStore({ [CHROME_KEY]: { statusInHeader: true, framelessWindow: true } });
+    const { call, sent } = setup({ store });
+    store.fail = fail;
+    assert.strictEqual(call(SET_STATUS_CHANNEL, false), null, fail);
+    assert.deepStrictEqual(store.data[CHROME_KEY], { statusInHeader: true, framelessWindow: true }, fail);
+    assert.deepStrictEqual(sent, [], fail);
+  }
+});
+
 test('the watcher pushes a change made by another window, once, and skips unreadable reads', () => {
   const store = fakeStore();
   let readStatus = 'ok';
-  store.readState = () => ({ status: readStatus });
+  store.readState = (name) => ({ status: readStatus, value: readStatus === 'ok' ? store.data[name] : null });
   let listener = null;
   const sent = [];
   const sync = {};
