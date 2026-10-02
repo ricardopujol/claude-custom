@@ -30,7 +30,14 @@ function serves(row, folder) {
 async function stopFolder({ folder }, deps) {
   let list;
   try { list = await deps.list(); } catch { list = null; }
-  const verified = Boolean(list && list.verified === true);
+  // Only a doubt that could be about THIS folder makes it unsure: one stale
+  // identity elsewhere, whose pid Windows reused for a process with an
+  // unreadable start time, must not block every removal on the machine (found
+  // by the real-host probe). A doubt with no folder could be about any.
+  const doubtsHere = list && Array.isArray(list.doubts)
+    ? list.doubts.filter(d => !d || typeof d.cwd !== 'string' || serves({ cwd: d.cwd }, folder))
+    : null;
+  const verified = Boolean(list && (list.verified === true || (doubtsHere !== null && doubtsHere.length === 0)));
   const rows = list && Array.isArray(list.rows) ? list.rows : [];
   const results = [];
   for (const row of rows.filter(r => serves(r, folder))) {

@@ -565,7 +565,7 @@ function listBackground() {
 async function backgroundModel() {
   const tabsByPort = new Map();
   for (const t of tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key);
-  return menuModel(await listBackground(), { now: Date.now(), tabsByPort });
+  return menuModel(await listBackground(), { now: Date.now(), tabsByPort, projectRoot: PROJECT_ROOT });
 }
 
 // The effects, with everything they touch handed in (app/background-actions.js).
@@ -594,6 +594,18 @@ const backgroundActions = createBackgroundActions({
     });
     return ok.response === 0;
   },
+  confirmStopAll: async (rows) => {
+    if (PROBE_PORT || !win || win.isDestroyed()) return true;
+    const ok = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: [`Stop ${rows.length} session${rows.length === 1 ? '' : 's'}`, 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `Stop every session in ${PROJECT_ROOT} that has no window open?`,
+      detail: `${rows.map(r => r.cwd).join('\n')}\n\nTheir claudes end with them. A session with a window open is never stopped.`,
+    });
+    return ok.response === 0;
+  },
   inform: async (text) => {
     if (PROBE_PORT || !win || win.isDestroyed()) return;
     await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: text });
@@ -606,6 +618,7 @@ async function showBackgroundMenu() {
   const template = menuTemplate(await backgroundModel(), {
     open: o => backgroundActions.open(o),
     stop: row => { backgroundActions.stop(row).catch(() => {}); },
+    stopAll: rows => { backgroundActions.stopAll(rows).catch(() => {}); },
   });
   await popupUntilClosed(Menu.buildFromTemplate(template), win);
 }
@@ -1072,6 +1085,13 @@ function startProbeDriver(port) {
       if (!it) return { ok: false, error: `no running session on port ${port}` };
       if (!it.open) return { ok: false, error: 'that session has no Open' };
       return { ok: true, ...(backgroundActions.open(it.open) || { failed: true }) };
+    },
+    async backgroundStopAll() {
+      const m = await backgroundModel();
+      if (!m.stopAll) return { ok: false, error: 'no project root' };
+      const r = await backgroundActions.stopAll(m.stopAll.rows);
+      return { ok: true, ports: m.stopAll.rows.map(x => x.port),
+        results: (r.results || []).map(x => ({ port: x.row.port, outcome: x.outcome })) };
     },
   };
   const server = net.createServer((sock) => {

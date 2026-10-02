@@ -3,7 +3,7 @@
  * What the strip's ▾ menu shows for host/background-hosts.js's list
  * (Windowless sessions PR 2). Pure: main builds the native menu from it.
  *
- *   menuModel({ rows, verified }, { now, tabsByPort }) -> { items, footer }
+ *   menuModel({ rows, verified }, { now, tabsByPort, projectRoot }) -> { items, footer, stopAll }
  *   items: { label, open, stop, row }
  *     open  { kind: 'select-tab', key }   the host is a tab in this window
  *           { kind: 'window', port, cwd } a window of its own, on its exact port
@@ -11,11 +11,14 @@
  *                                         Open only for this build's own sessions)
  *     stop  offered unless the host has a window (host/stop-holder.js stopHost
  *           refuses one anyway; a count it couldn't take is left to it to ask)
+ *   stopAll { rows, enabled } with a `projectRoot`, else null: the rows offered
+ *           Stop that serve that project (PR 3, *Stop all in this project*)
  *
  * Main-process only (required, never a page <script>).
  */
 
 const path = require('path');
+const { serves } = require('../host/stop-folder');
 
 const UNVERIFIED = "Couldn't check every session; some may be missing.";
 
@@ -42,7 +45,16 @@ function folderText(cwd) {
   return parts.slice(1).slice(-2).join('\\');
 }
 
-function menuModel(list, { now, tabsByPort = new Map() } = {}) {
+// *Stop all in this project* (Windowless sessions PR 3): every session the menu
+// offers Stop on whose folder is this window's project root or inside it. Read
+// from the row's cwd, never the disk: a merged worktree's folder may be gone.
+function stopAllOf(items, projectRoot) {
+  if (typeof projectRoot !== 'string' || !projectRoot) return null;
+  const rows = items.filter(it => it.stop && serves(it.row, projectRoot)).map(it => it.row);
+  return { rows, enabled: rows.length > 0 };
+}
+
+function menuModel(list, { now, tabsByPort = new Map(), projectRoot = null } = {}) {
   const rows = list && Array.isArray(list.rows) ? list.rows : [];
   const verified = Boolean(list && list.verified === true);
   const items = rows.map((row) => {
@@ -63,7 +75,7 @@ function menuModel(list, { now, tabsByPort = new Map() } = {}) {
   if (!verified) footer = UNVERIFIED;
   // Scoped as the list is (Miguel Y4): this build and the builds beside it.
   else if (items.length === 0) footer = 'No sessions running in this build or the ones beside it.';
-  return { items, footer };
+  return { items, footer, stopAll: stopAllOf(items, projectRoot) };
 }
 
 module.exports = { menuModel, ageText, windowsText, folderText };

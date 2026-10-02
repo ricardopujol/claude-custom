@@ -4,7 +4,7 @@
  * (Windowless sessions PR 2; the 2026-09-25 #19 design). A host is detached on
  * purpose, so it outlives its window; this is how a person finds one again.
  *
- *   listBackgroundHosts({ ownInstall }, deps) -> { rows, verified }
+ *   listBackgroundHosts({ ownInstall }, deps) -> { rows, verified, doubts }
  *   rows: { install, build, own, port, pid, cwd, startedAt, processStartedAt, exact, windows }
  *
  * Read from each build's identity files (`<install>/.harness/hosts/<port>.json`,
@@ -71,27 +71,32 @@ function claimOf(install, port, parsed) {
 }
 
 async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
-  let verified = true;
+  // What it couldn't check, by folder (null: an install it couldn't list, which
+  // could be serving anything). `verified` is "no doubts"; a caller asking about
+  // one folder (host/stop-folder.js, PR 3) weighs only the doubts that touch it.
+  const doubts = [];
   const claims = [];
   for (const install of deps.installs()) {
     let entries;
-    try { entries = deps.identities(install); } catch { verified = false; continue; }
+    try { entries = deps.identities(install); } catch { doubts.push({ install, cwd: null }); continue; }
     for (const { port, parsed } of entries) {
       const c = claimOf(install, port, parsed);
       if (c) claims.push(c);
     }
   }
-  if (claims.length === 0) return { rows: [], verified };
+  if (claims.length === 0) return { rows: [], verified: doubts.length === 0, doubts };
 
   const starts = await deps.startTimes([...new Set(claims.map(c => c.pid))]);
-  if (starts === null) return { rows: [], verified: false };
+  if (starts === null) {
+    return { rows: [], verified: false, doubts: [...doubts, ...claims.map(c => ({ install: c.install, cwd: c.cwd }))] };
+  }
 
   const byPid = new Map();
   for (const c of claims) {
     if (!starts.has(c.pid)) continue;                  // not running
     const os = starts.get(c.pid);
     const osMs = filetimeToMs(os);
-    if (osMs === null) { verified = false; continue; } // running, start unreadable
+    if (osMs === null) { doubts.push({ install: c.install, cwd: c.cwd }); continue; } // running, start unreadable
     const exact = c.exactStart !== undefined;
     if (exact ? os !== c.exactStart : osMs > c.startedAt) continue;   // a reused pid
     const own = samePath(c.install, ownInstall);
@@ -102,7 +107,7 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
     byPid.set(c.pid, { ...keep, own: seen.own && own });
   }
   const proven = [...byPid.values()];
-  if (proven.length === 0) return { rows: [], verified };
+  if (proven.length === 0) return { rows: [], verified: doubts.length === 0, doubts };
 
   const counts = await deps.windowCounts(proven.map(c => ({ pid: c.pid, port: c.port })));
   const windowsOf = (pid) => {
@@ -124,7 +129,7 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
   }));
   // This build's own first (they can be opened), then newest first.
   rows.sort((a, b) => (b.own - a.own) || (b.startedAt - a.startedAt));
-  return { rows, verified };
+  return { rows, verified: doubts.length === 0, doubts };
 }
 
 const hostsDir = install => path.join(install, '.harness', 'hosts');

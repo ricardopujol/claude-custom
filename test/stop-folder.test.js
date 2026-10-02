@@ -77,6 +77,44 @@ test('stopFolder: nothing serving the folder is success -- unless the list could
   assert.strictEqual(stopExitCode(unsure), 3, 'a session may be missing from the list: never claim the folder is free');
 });
 
+// Found by the real-host probe: one stale identity whose pid Windows reused for
+// a process with an unreadable start time made EVERY --stop exit 3. A doubt
+// only matters to the folder it could be serving.
+test('stopFolder: a doubt about a session in ANOTHER folder does not make this folder unsure', async () => {
+  const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
+    list: async () => ({ rows: [], verified: false, doubts: [{ install: 'C:\\cc\\dev', cwd: 'C:\\Temp\\old-probe' }] }),
+    stopHost: async () => assert.fail('nothing to stop'),
+  });
+  assert.strictEqual(rep.verified, true);
+  assert.strictEqual(stopExitCode(rep), 0);
+});
+
+test('stopFolder: a doubt about this folder, or one inside it, keeps it unsure', async () => {
+  for (const cwd of ['C:\\proj\\feat-a', 'c:\\PROJ\\feat-a\\sub']) {
+    const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
+      list: async () => ({ rows: [], verified: false, doubts: [{ install: 'C:\\cc\\dev', cwd }] }),
+      stopHost: async () => assert.fail('nothing to stop'),
+    });
+    assert.strictEqual(stopExitCode(rep), 3, cwd);
+  }
+});
+
+test('stopFolder: a doubt with no folder (an install it could not list) could be serving any folder', async () => {
+  const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
+    list: async () => ({ rows: [], verified: false, doubts: [{ install: 'C:\\cc\\dev', cwd: null }] }),
+    stopHost: async () => assert.fail('nothing to stop'),
+  });
+  assert.strictEqual(stopExitCode(rep), 3);
+});
+
+test('stopFolder: unverified with no doubts listed stays unverified (nothing to scope by)', async () => {
+  const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
+    list: async () => ({ rows: [], verified: false }),
+    stopHost: async () => assert.fail('nothing to stop'),
+  });
+  assert.strictEqual(stopExitCode(rep), 3);
+});
+
 test('stopFolder: a list that throws is unverified, never "nothing running"', async () => {
   const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
     list: async () => { throw new Error('no powershell'); },

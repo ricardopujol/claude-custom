@@ -82,7 +82,8 @@ test('a start time equal to the identity write still proves the host', async () 
 test('the OS could not be asked: nothing is displayed, and it says so', async () => {
   const { w, deps } = world({ procs: null });
   void w;
-  assert.deepStrictEqual(await list(deps), { rows: [], verified: false });
+  assert.deepStrictEqual(await list(deps), { rows: [], verified: false,
+    doubts: [{ install: OWN, cwd: 'C:\\proj' }, { install: OTHER, cwd: 'C:\\other' }] });
 });
 
 test('a live pid whose start time is unreadable is dropped, and the list is not verified', async () => {
@@ -91,6 +92,13 @@ test('a live pid whose start time is unreadable is dropped, and the list is not 
   const r = await list(deps);
   assert.deepStrictEqual(r.rows.map(x => x.pid), [101]);
   assert.strictEqual(r.verified, false);
+  // PR 3: what it is unsure of, so a caller asking about ONE folder can tell.
+  assert.deepStrictEqual(r.doubts, [{ install: OTHER, cwd: 'C:\\other' }]);
+});
+
+test('a verified list has no doubts', async () => {
+  const { deps } = world();
+  assert.deepStrictEqual((await list(deps)).doubts, []);
 });
 
 test('an unusable identity is skipped without being trusted', async () => {
@@ -130,6 +138,7 @@ test('one bad install does not hide the others', async () => {
   const r = await list(deps);
   assert.deepStrictEqual(r.rows.map(x => x.pid), [101]);
   assert.strictEqual(r.verified, false);
+  assert.deepStrictEqual(r.doubts, [{ install: OTHER, cwd: null }], 'an unlistable install could serve any folder');
 });
 
 test('window counts are asked once for every proven host, never for the unproven', async () => {
@@ -142,7 +151,7 @@ test('window counts are asked once for every proven host, never for the unproven
 
 test('no proven host: the window count is never asked', async () => {
   const { deps, calls } = world({ procs: new Map() });
-  assert.deepStrictEqual(await list(deps), { rows: [], verified: true });
+  assert.deepStrictEqual(await list(deps), { rows: [], verified: true, doubts: [] });
   assert.strictEqual(calls.windowCounts.length, 0);
 });
 

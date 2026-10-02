@@ -20,6 +20,11 @@
  *             H1's claude ends with it; the next list no longer shows H1
  *   open      H2's window closes; Open launches a window that ATTACHES to H2
  *             (H2 counts 1 window again, and no second host is started)
+ *   --stop    (PR 3) `claude-custom <folder> --stop` from plain Node: H3 on the
+ *             folder and H4 inside it end with their claudes, exit 0; on H2's
+ *             folder (a window attached) it keeps H2 and exits 3
+ *   stop all  (PR 3) *Stop all in this project* stops H5 inside W's folder, and
+ *             neither W's own tab nor H2 in another folder
  *
  * SAFE: every `claude` is cmd.exe (CLAUDE_CUSTOM_BIN); nothing bills. The list
  * reads every build's real hosts too, but only the probe's own ports are ever
@@ -50,7 +55,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-bg-'));
 const loose1 = path.join(tmp, 'loose-one');
 const loose2 = path.join(tmp, 'loose-two');
 const flat = path.join(tmp, 'window-folder');
-for (const d of [loose1, loose2, flat]) fs.mkdirSync(d, { recursive: true });
+const loose3 = path.join(tmp, 'loose-three');
+for (const d of [loose1, loose2, flat, loose3, path.join(loose3, 'sub'), path.join(flat, 'inner')]) fs.mkdirSync(d, { recursive: true });
 
 let failures = 0;
 const check = (label, ok, detail = '') => {
@@ -265,6 +271,48 @@ async function main() {
   }, 60000, 1500);
   check('that window ATTACHED to H2 (1 window again)', Boolean(attached), attached ? attached.label : '');
   check('and started no second host', probeHostPids().length === hostsBefore && !exited(h2), `${hostsBefore} -> ${probeHostPids().length}`);
+
+  // --- PR 3: `claude-custom <folder> --stop`, with no window, from plain Node ---
+  const h3 = startHost('H3', loose3, await freePort());
+  const h4 = startHost('H4', path.join(loose3, 'sub'), await freePort());
+  const m3 = await hostUp(h3);
+  const m4 = await hostUp(h4);
+  check('H3 (the folder) and H4 (a folder inside it) started', Boolean(m3 && m4));
+  if (!m3 || !m4) return;
+  const cli = runStop(loose3);
+  check('--stop on a folder whose sessions have no window exits 0', cli.status === 0, `exit ${cli.status}: ${cli.stdout.trim()}`);
+  check('it printed one "stopped" line per session', (cli.stdout.match(/^stopped: /gm) || []).length === 2, cli.stdout.trim());
+  check('H3 and H4 exited', Boolean(await waitFor(() => exited(h3) && exited(h4), 15000, 100)));
+  check("and their claudes ended", Boolean(await waitFor(() => !alive(Number(m3[1])) && !alive(Number(m4[1])), 15000, 200)));
+  check('no Electron was started for it (plain Node, no window)', !/electron/i.test(cli.stderr), cli.stderr.trim());
+
+  const kept = runStop(loose2);
+  check('--stop on H2 (a window attached) exits 3 and keeps it', kept.status === 3 && /^kept: .*window open/m.test(kept.stdout), `exit ${kept.status}: ${kept.stdout.trim()}`);
+  check('H2 is still running', !exited(h2) && alive(h2.child.pid));
+
+  // --- PR 3: *Stop all in this project* (W's project root is its folder) ---
+  const h5 = startHost('H5', path.join(flat, 'inner'), await freePort());
+  const m5 = await hostUp(h5);
+  check('H5 (inside W\'s project, no window) started', Boolean(m5));
+  if (!m5) return;
+  const all = await waitFor(async () => {
+    const r = await command(w, { cmd: 'background' });
+    return r && itemOn(r, h5.port) ? r : null;
+  }, 30000, 1000);
+  check('the ▾ list shows H5', Boolean(all));
+  const sa = await command(w, { cmd: 'background-stop-all' }, 90000);
+  check("Stop all names only H5: not W's own tab, not H2 in another folder",
+    sa.ok && sa.ports.length === 1 && sa.ports[0] === h5.port, JSON.stringify(sa));
+  check('and stopped it', sa.ok && sa.results.length === 1 && sa.results[0].outcome === 'stopped', JSON.stringify(sa.results));
+  check('H5 exited, H2 and W are untouched', Boolean(await waitFor(() => exited(h5), 15000, 100)) && !exited(h2) && !w.exited);
+}
+
+// `claude-custom <folder> --stop` exactly as a script runs it: no tab's env.
+function runStop(folder) {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_CUSTOM_') || k === 'ELECTRON_RUN_AS_NODE') delete env[k];
+  return require('child_process').spawnSync(process.execPath, [path.join(ROOT, 'bin', 'claude-custom.js'), folder, '--stop'],
+    { encoding: 'utf8', env, timeout: 90000 });
 }
 
 main()

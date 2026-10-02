@@ -5,16 +5,18 @@
  * -- a tab select, a window spawn, the dialogs, stopHost -- and draws the menu.
  *
  *   menuTemplate(model, { open, stop }) -> an Electron Menu template
- *   createBackgroundActions(deps) -> { open(open), stop(row) }
+ *   createBackgroundActions(deps) -> { open(open), stop(row), stopAll(rows) }
  *   popupUntilClosed(menu, win) -> resolves when the menu OR the window closes
  *
  * Main-process only (required, never a page <script>).
  */
 
+const { ENDED } = require('../host/stop-folder');
+
 // Windows menus read `&` as a mnemonic marker; a folder name is not one.
 const menuText = s => String(s).replace(/&/g, '&&');
 
-function menuTemplate(model, { open, stop }) {
+function menuTemplate(model, { open, stop, stopAll }) {
   const items = model && Array.isArray(model.items) ? model.items : [];
   const template = items.map(it => ({
     label: menuText(it.label),
@@ -24,6 +26,11 @@ function menuTemplate(model, { open, stop }) {
       { label: 'Stop…', enabled: it.stop, click: () => stop(it.row) },
     ],
   }));
+  if (model && model.stopAll && items.length) {
+    const all = model.stopAll;
+    template.push({ type: 'separator' });
+    template.push({ label: 'Stop all in this project…', enabled: all.enabled, click: () => stopAll(all.rows) });
+  }
   if (model && model.footer) {
     if (template.length) template.push({ type: 'separator' });
     template.push({ label: menuText(model.footer), enabled: false });
@@ -33,7 +40,8 @@ function menuTemplate(model, { open, stop }) {
 
 /**
  * deps: select(key), focusWindow(), spawnWindow({ cwd, port }) -> { pid },
- *       confirmStop(row) -> bool, inform(text), stopHost(row) -> result, log(msg)
+ *       confirmStop(row) -> bool, confirmStopAll(rows) -> bool, inform(text),
+ *       stopHost(row) -> result, log(msg)
  */
 function createBackgroundActions(deps) {
   // A tab here is selected; anything else gets a window of its own on that
@@ -68,7 +76,30 @@ function createBackgroundActions(deps) {
     return r;
   }
 
-  return { open, stop };
+  // *Stop all in this project* (PR 3): one confirmation, then each session by
+  // the same stopHost, one at a time (each waits for its claude to end), and one
+  // summary naming whatever was kept and why.
+  async function stopAll(rows) {
+    if (!(await deps.confirmStopAll(rows))) return { outcome: 'cancelled' };
+    const results = [];
+    for (const row of rows) {
+      let r;
+      try {
+        r = await deps.stopHost(row);
+      } catch (err) {
+        deps.log(`[main] Stop all (background) failed: ${err && err.message}`);
+        r = { outcome: 'failed', text: "Couldn't stop that session." };
+      }
+      deps.log(`[main] Stop all (background): ${r.outcome} (pid ${row.pid}, port ${row.port}, build ${row.build})`);
+      results.push({ row, outcome: r.outcome, text: r.text });
+    }
+    const ended = results.filter(x => ENDED.has(x.outcome)).length;
+    const kept = results.filter(x => !ENDED.has(x.outcome)).map(x => `${x.row.cwd}: ${x.text}`);
+    await deps.inform([`Stopped ${ended} of ${rows.length} session${rows.length === 1 ? '' : 's'}.`, ...kept].join('\n'));
+    return { outcome: 'done', results };
+  }
+
+  return { open, stop, stopAll };
 }
 
 // The popup's callback may never run if the window is destroyed with the menu
