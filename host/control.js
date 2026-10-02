@@ -89,7 +89,7 @@ const CONTROL_TYPES = new Set([
   'layout-override',
   // Layout pass L3: the Git panel asks for the tree (documentation/PLAN_GIT_TREE.md). Off this list,
   // its every 30s re-ask would be TYPED into the session as JSON.
-  'gitTree',
+  'git-tree',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed

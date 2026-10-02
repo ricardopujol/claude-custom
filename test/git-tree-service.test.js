@@ -22,7 +22,7 @@ function deps(over = {}) {
     advance: ms => { t += ms; },
     cwd: 'C:\\p\\dev', projectRoot: 'C:\\p', projectsDir: 'X', ledgerFile: () => 'L',
     readHistory: async () => { calls.history++; return HISTORY; },
-    loadLedger: async () => { calls.load++; return { ledger: { version: 1, files: {} }, corrupt: false }; },
+    loadLedger: async () => { calls.load++; return { ledger: { version: 1, files: {} }, state: 'missing', corrupt: false }; },
     updateLedger: async () => { calls.update++; return { ledger: { version: 1, ...LINE_TOTALS }, read: 5, errors: 0 }; },
     saveLedger: async (file, l) => { calls.save++; return l; },
     readOpenPrs: async () => { calls.prs++; return new Map(); },
@@ -79,12 +79,64 @@ test('git failing is an ok:false tree with the reason, not a throw', async () =>
   assert.deepStrictEqual(await createGitTreeService(d).get(), { ok: false, error: 'not a git repository' });
 });
 
-test('the ledger failing still draws the tree, from what was saved before (spend unknown, not 0)', async () => {
-  const d = deps({ updateLedger: async () => { throw new Error('EBUSY'); } });
+test('the transcripts failing to read still draws the tree, from what was saved before', async () => {
+  // Miguel S: this test used to load an EMPTY ledger, so it couldn't tell "saved before" from nothing
+  const d = deps({
+    loadLedger: async () => ({ ledger: { version: 1, ...LINE_TOTALS }, state: 'ok', corrupt: false }),
+    updateLedger: async () => { throw new Error('EBUSY'); },
+  });
   const tree = await createGitTreeService(d).get();
   assert.strictEqual(tree.ok, true);
-  assert.strictEqual(tree.branches[0].spend, null);
+  assert.strictEqual(tree.branches[0].spend, 10);
   assert.strictEqual(tree.ledgerOk, false);
+});
+
+test('with nothing saved and the transcripts failing, spend is unknown (null), not 0', async () => {
+  const d = deps({ updateLedger: async () => { throw new Error('EBUSY'); } });
+  const tree = await createGitTreeService(d).get();
+  assert.strictEqual(tree.branches[0].spend, null);
+  assert.strictEqual(tree.totalSpend, null);
+});
+
+test('a saved ledger that cannot be read right now is not replaced: spend unknown, and it is read again next time', async () => {
+  let state = 'unreadable';
+  let loads = 0;
+  const d = deps({ loadLedger: async () => { loads++; return { ledger: { version: 1, ...LINE_TOTALS }, state, corrupt: state !== 'ok' }; } });
+  const s = createGitTreeService(d);
+  const first = await s.get();
+  assert.deepStrictEqual([first.ledgerOk, first.branches[0].spend, d.calls.save], [false, null, 0]);
+  state = 'ok';
+  const second = await s.get();
+  assert.strictEqual(second.ledgerOk, true);
+  assert.strictEqual(loads, 2);
+});
+
+test('Miguel B3: no safe place for the ledger (a linked .claude-custom): counted in memory, never written', async () => {
+  const d = deps({ ledgerFile: () => null });
+  const tree = await createGitTreeService(d).get();
+  assert.strictEqual(tree.branches[0].spend, 10);
+  assert.deepStrictEqual([d.calls.load, d.calls.save], [0, 0]);
+});
+
+// ---------- where the ledger lives (Miguel B3) ----------
+const fs = require('fs');
+const path = require('path');
+const { ledgerFileFor } = require('../host/git-tree-service');
+const { tmpDir } = require('./tmp-dir');
+
+test("the ledger lives in the project's .claude-custom, which gets its '*' .gitignore", () => {
+  const root = tmpDir('ledger-home-');
+  const file = ledgerFileFor(root);
+  assert.strictEqual(file, path.join(root, '.claude-custom', 'branch-ledger.json'));
+  assert.strictEqual(fs.readFileSync(path.join(root, '.claude-custom', '.gitignore'), 'utf8').includes('*'), true);
+});
+
+test('Miguel B3: a .claude-custom that is a junction to somewhere else gets no ledger, and nothing is written there', () => {
+  const root = tmpDir('ledger-home-');
+  const elsewhere = tmpDir('ledger-elsewhere-');
+  fs.symlinkSync(elsewhere, path.join(root, '.claude-custom'), 'junction');
+  assert.strictEqual(ledgerFileFor(root), null);
+  assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
 });
 
 test('anything else that throws is an ok:false tree, and the next request tries again', async () => {

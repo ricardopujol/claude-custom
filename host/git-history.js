@@ -213,7 +213,7 @@ function firstParentMerges(g, tip) {
 }
 
 const errorText = err => (err && err.message) || String(err);
-const NOT_LANES = new Set(['develop', 'main', 'master']);
+const NOT_LANE_REFS = new Set(['develop', 'main', 'master']);
 
 /**
  * { ok: true, integration, merges, lanes, worktrees, mainMerges } | { ok: false, error }
@@ -254,7 +254,7 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
   // with its merges by name (PR #84 Dexter F2). for-each-ref sorts by refname, so refs/heads/*
   // come before refs/remotes/*: a local branch wins over its remote twin, which is skipped.
   for (const r of refs) {
-    if (NOT_LANES.has(r.name) || listed.has(r.name)) continue;
+    if (NOT_LANE_REFS.has(r.name) || listed.has(r.name)) continue;
     // left behind by Agent isolation worktrees (DESIGN_GIT_TREE.md decision 8)
     if (r.name.startsWith('worktree-agent-')) continue;
     listed.add(r.name);
