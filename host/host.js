@@ -57,7 +57,7 @@ const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
 const { parsePermissionMode, MODES } = require('./mode');
-const { readSessionHook, readStatus, readContext } = require('./hook-session');
+const { readSessionHook, readStatus, readContext, readStatusFields } = require('./hook-session');
 const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
@@ -1097,6 +1097,7 @@ if (helperExists) {
       // Every document, even one without a model: a document that cannot say
       // must CLEAR the fill (unknown), never leave the last one standing.
       setContext(readContext(ev.payload));
+      setStatusFields(readStatusFields(ev.payload));
       const status = readStatus(ev.payload);
       if (status.model !== undefined) setLiveModel(status.model);
       if (status.effort !== undefined) setEffort(status.effort);
@@ -1526,6 +1527,17 @@ function setContext(ctx) {
   broadcastControl({ type: 'context', context: lastContext, at: Date.now() });
 }
 
+// BACKLOG #27: cost / lines / duration / ctx>200k for the tab header, or null
+// (unknown -- see hook-session.js readStatusFields). Broadcast only on a
+// change; duration moves on most fires, so that's one small frame per status
+// fire, the cadence of the CLI's own row.
+let lastStatusFields = null;
+function setStatusFields(fields) {
+  if (JSON.stringify(fields) === JSON.stringify(lastStatusFields)) return;
+  lastStatusFields = fields;
+  broadcastControl({ type: 'statusFields', fields: lastStatusFields, at: Date.now() });
+}
+
 function setLiveModel(model) {
   if (model === lastLiveModel) return;
   lastLiveModel = model;
@@ -1942,6 +1954,7 @@ wss.on('connection', (ws) => {
     effort: lastEffort,
     liveModel: lastLiveModel,
     context: lastContext,
+    statusFields: lastStatusFields,
     cooldowns: cooldowns.list(),
     // The tool belt: what is equipped on which agent type, plus the catalogue
     // the renderer draws from. Read off disk here, so a reattach is never stale.
