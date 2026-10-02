@@ -67,7 +67,8 @@ function claimOf(install, port, parsed) {
   // Present but not a FILETIME is no proof of anything: dropped, not downgraded.
   const exactStart = parsed.processStartedAt;
   if (exactStart !== undefined && filetimeToMs(exactStart) === null) return null;
-  return { install, port, pid: parsed.pid, cwd: parsed.cwd, startedAt: parsed.startedAt, exactStart };
+  const claudePid = validPid(parsed.claudePid) ? parsed.claudePid : null;
+  return { install, port, pid: parsed.pid, cwd: parsed.cwd, startedAt: parsed.startedAt, exactStart, claudePid };
 }
 
 async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
@@ -76,19 +77,36 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
   // one folder (host/stop-folder.js, PR 3) weighs only the doubts that touch it.
   const doubts = [];
   const claims = [];
-  for (const install of deps.installs()) {
+  // A file it can't use (Dexter, PR #83 F3) is a doubt -- about its folder when
+  // it names one, else any -- but only while its pid could be a live host: a
+  // dead stale file must not doubt the machine forever.
+  const unusable = [];
+  let installs;
+  try { installs = deps.installs(); } catch { installs = [ownInstall]; doubts.push({ install: null, cwd: null }); }
+  for (const install of installs) {
     let entries;
     try { entries = deps.identities(install); } catch { doubts.push({ install, cwd: null }); continue; }
     for (const { port, parsed } of entries) {
       const c = claimOf(install, port, parsed);
-      if (c) claims.push(c);
+      if (c) { claims.push(c); continue; }
+      const named = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+      unusable.push({
+        install,
+        cwd: named && typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : null,
+        pid: named && validPid(parsed.pid) ? parsed.pid : null,
+      });
     }
   }
-  if (claims.length === 0) return { rows: [], verified: doubts.length === 0, doubts };
+  if (claims.length === 0 && unusable.length === 0) return { rows: [], verified: doubts.length === 0, doubts };
 
-  const starts = await deps.startTimes([...new Set(claims.map(c => c.pid))]);
+  const pids = new Set([...claims.map(c => c.pid), ...unusable.filter(u => u.pid !== null).map(u => u.pid)]);
+  const starts = await deps.startTimes([...pids]);
   if (starts === null) {
-    return { rows: [], verified: false, doubts: [...doubts, ...claims.map(c => ({ install: c.install, cwd: c.cwd }))] };
+    const all = [...claims, ...unusable].map(c => ({ install: c.install, cwd: c.cwd }));
+    return { rows: [], verified: false, doubts: [...doubts, ...all] };
+  }
+  for (const u of unusable) {
+    if (u.pid === null || starts.has(u.pid)) doubts.push({ install: u.install, cwd: u.cwd });
   }
 
   const byPid = new Map();
@@ -122,6 +140,7 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
     port: c.port,
     pid: c.pid,
     cwd: c.cwd,
+    claudePid: c.claudePid,
     startedAt: c.startedAt,
     processStartedAt: c.processStartedAt,
     exact: c.exact,
@@ -143,8 +162,9 @@ const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return fal
  */
 function installsBeside(ownInstall) {
   const parent = path.dirname(ownInstall);
-  let names = [];
-  try { names = fs.readdirSync(parent); } catch { return [ownInstall]; }
+  // A parent it can't read throws (Dexter, PR #83 F3): the list falls back to
+  // this build AND says it couldn't check the rest, rather than look complete.
+  const names = fs.readdirSync(parent);
   const found = names
     .map(n => path.join(parent, n))
     .filter(dir => !samePath(dir, ownInstall) && isDir(hostsDir(dir)) && isFile(path.join(dir, 'host', 'host.js')));

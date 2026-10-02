@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('events');
-const { menuTemplate, createBackgroundActions, popupUntilClosed } = require('../app/background-actions');
+const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('../app/background-actions');
 
 const ROW = { install: 'C:\\cc\\feat-a', build: 'feat-a', own: true, port: 7701, pid: 101, cwd: 'C:\\x', exact: true, windows: 0 };
 const item = (over = {}) => ({ label: 'a  ·  feat-a  ·  3 h  ·  no window', open: { kind: 'window', port: 7701, cwd: 'C:\\x' }, stop: true, row: ROW, ...over });
@@ -129,6 +129,16 @@ test('popupUntilClosed: an already-destroyed window resolves at once, without a 
 });
 
 // Windowless sessions PR 3: *Stop all in this project*.
+test('stopAllDetail: names the folders, at most ten, then how many more (Miguel G4)', () => {
+  const rows = Array.from({ length: 13 }, (_, i) => ({ ...ROW, cwd: `C:\\p\\f${i}` }));
+  const d = stopAllDetail(rows);
+  assert.match(d, /C:\\p\\f0\nC:\\p\\f1/);
+  assert.match(d, /C:\\p\\f9\n… and 3 more/);
+  assert.doesNotMatch(d, /f10/);
+  assert.match(d, /window open is never stopped/);
+  assert.doesNotMatch(stopAllDetail(rows.slice(0, 2)), /more/);
+});
+
 test('menuTemplate: Stop all sits after the sessions, enabled as the model says, and hands over its rows', () => {
   const seen = [];
   const t = menuTemplate({ items: [item()], footer: null, stopAll: { rows: [ROW], enabled: true } },

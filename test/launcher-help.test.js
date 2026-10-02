@@ -38,7 +38,17 @@ test('--stop on a folder nothing serves says so, without a window, and exits 0 (
   const folder = path.join(require('os').tmpdir(), `cc-stop-none-${process.pid}-${Date.now()}`);
   const r = spawnSync(process.execPath, [BIN, folder, '--stop'], { encoding: 'utf8', timeout: 60000 });
   const lines = r.stdout.trim().split(/\r?\n/);
-  assert.strictEqual(lines[0], `no claude-custom session is serving ${folder}`);
-  if (r.status === 3) assert.match(lines[1], /couldn't check every session/i);
-  else assert.strictEqual(r.status, 0);
+  assert.strictEqual(lines.length, 1);
+  // An incomplete list never claims nothing serves it (Miguel, PR #83 Y1).
+  if (r.status === 3) assert.match(lines[0], /^No claude-custom session was found serving .*not every session could be checked/);
+  else {
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(lines[0], `no claude-custom session is serving ${folder}`);
+  }
+});
+
+test('--stop "" is a usage error, never the folder you stand in (Dexter, PR #83 F8)', () => {
+  const r = spawnSync(process.execPath, [BIN, '', '--stop'], { encoding: 'utf8', timeout: 20000 });
+  assert.strictEqual(r.status, 1);
+  assert.match(r.stderr, /empty folder name/);
 });

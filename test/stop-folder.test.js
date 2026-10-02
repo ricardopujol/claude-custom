@@ -3,7 +3,10 @@
 // serving a folder is stopped by PR 1's rules before the folder is removed.
 const test = require('node:test');
 const assert = require('node:assert');
-const { serves, stopFolder, stopExitCode, stopReportLines } = require('../host/stop-folder');
+const fs = require('fs');
+const path = require('path');
+const { serves, inFolder, stopFolder, stopRows, stopExitCode, stopReportLines } = require('../host/stop-folder');
+const { tmpDir } = require('./tmp-dir');
 
 const row = (over = {}) => ({ install: 'C:\\cc\\dev', build: 'dev', own: true, port: 7701, pid: 101,
   cwd: 'C:\\proj\\feat-a', startedAt: 1, processStartedAt: '1', exact: true, windows: 0, ...over });
@@ -18,6 +21,65 @@ test('serves: never a sibling that shares a prefix, nor the folder above', () =>
   assert.strictEqual(serves(row({ cwd: 'C:\\proj\\feat-ab' }), 'C:\\proj\\feat-a'), false);
   assert.strictEqual(serves(row({ cwd: 'C:\\proj' }), 'C:\\proj\\feat-a'), false);
   assert.strictEqual(serves(row({ cwd: null }), 'C:\\proj\\feat-a'), false);
+});
+
+// Dexter, PR #83 F2 (High): a host running FROM a build inside the folder holds
+// it too, whatever folder it serves; removing the folder orphans that host.
+test('serves: a session whose build lives inside the folder, whatever folder it works in', () => {
+  const r = row({ install: 'C:\\VibeCode\\claude-custom\\feat-x', cwd: 'C:\\VibeCode\\sfx-manager\\dev' });
+  assert.strictEqual(serves(r, 'C:\\VibeCode\\claude-custom\\feat-x'), true);
+  assert.strictEqual(serves(r, 'C:\\VibeCode\\claude-custom\\feat-xy'), false);
+  assert.strictEqual(inFolder(r.cwd, 'C:\\VibeCode\\claude-custom'), false, 'inFolder is the cwd alone');
+});
+
+// Dexter, PR #83 F4: the same folder reached through a junction (or a short
+// name) is still that folder.
+test('serves: a folder reached through a junction is the same folder, both ways round', () => {
+  const base = tmpDir('stop-folder-junction-');
+  const real = path.join(base, 'real-lane');
+  fs.mkdirSync(path.join(real, 'src'), { recursive: true });
+  const link = path.join(base, 'linked');
+  fs.symlinkSync(real, link, 'junction');
+  assert.strictEqual(serves(row({ install: 'C:\\elsewhere', cwd: path.join(link, 'src') }), real), true);
+  assert.strictEqual(serves(row({ install: 'C:\\elsewhere', cwd: path.join(real, 'src') }), link), true);
+  assert.strictEqual(inFolder(path.join(link, 'src'), real), true);
+});
+
+test('stopRows: one at a time; a throw is a failure for that row, with one full stop at the end (Miguel G1)', async () => {
+  const res = await stopRows([row({ pid: 1 }), row({ pid: 2 })], async (r) => {
+    if (r.pid === 1) throw new Error('it hung up.');
+    return { outcome: 'stopped', text: 'Stopped that session.', how: 'stop-if-idle' };
+  });
+  assert.deepStrictEqual(res.map(x => x.outcome), ['failed', 'stopped']);
+  assert.strictEqual(res[0].text, "Couldn't stop that session: it hung up.");
+  assert.strictEqual(res[1].how, 'stop-if-idle');
+});
+
+// Dexter, PR #83 F5: a session that starts for the folder while others are
+// being stopped (each up to 15 s) must not be missed.
+test('stopFolder: lists again after stopping, and stops a session that started meanwhile', async () => {
+  const a = row({ pid: 1 });
+  const b = row({ pid: 2, processStartedAt: '2' });
+  let lists = 0;
+  const asked = [];
+  const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
+    list: async () => { lists += 1; return { rows: lists === 1 ? [a] : [a, b], verified: true }; },
+    stopHost: async (r) => { asked.push(r.pid); return { outcome: 'stopped', text: 'ok' }; },
+  });
+  assert.deepStrictEqual(asked, [1, 2]);
+  assert.strictEqual(stopExitCode(rep), 0);
+});
+
+test('stopFolder: sessions that keep arriving end in exit 3, never an endless loop', async () => {
+  let n = 0;
+  const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
+    list: async () => { n += 1; return { rows: [row({ pid: 100 + n, processStartedAt: String(n) })], verified: true }; },
+    stopHost: async () => ({ outcome: 'stopped', text: 'ok' }),
+  });
+  assert.ok(n <= 5, `listed ${n} times`);
+  assert.strictEqual(rep.late > 0, true);
+  assert.strictEqual(stopExitCode(rep), 3);
+  assert.match(stopReportLines(rep).join('\n'), /kept starting/);
 });
 
 test('stopFolder: stops only the sessions serving the folder, one at a time, in list order', async () => {
@@ -135,10 +197,19 @@ test('stopReportLines: one line per session with folder, build, pid and what hap
   assert.match(lines[1], /^kept: .*build feat-x, pid 2.*window open/);
 });
 
-test('stopReportLines: says so when nothing is serving the folder, and when the list was incomplete', () => {
-  assert.deepStrictEqual(stopReportLines({ folder: 'C:\\f', verified: true, kept: 0, results: [] }),
+test('stopReportLines: says so when nothing is serving the folder', () => {
+  assert.deepStrictEqual(stopReportLines({ folder: 'C:\\f', verified: true, kept: 0, late: 0, results: [] }),
     ['no claude-custom session is serving C:\\f']);
-  const lines = stopReportLines({ folder: 'C:\\f', verified: false, kept: 0, results: [] });
-  assert.strictEqual(lines.length, 2);
-  assert.match(lines[1], /couldn't check every session/i);
+});
+
+// Miguel, PR #83 Y1: "nothing is serving it" is a claim; an incomplete list
+// can't make it.
+test('stopReportLines: an incomplete list never claims nothing is serving the folder', () => {
+  const lines = stopReportLines({ folder: 'C:\\f', verified: false, kept: 0, late: 0, results: [] });
+  assert.strictEqual(lines.length, 1);
+  assert.doesNotMatch(lines[0], /^no claude-custom session is serving/);
+  assert.match(lines[0], /not every session could be checked/i);
+  const withRows = stopReportLines({ folder: 'C:\\f', verified: false, kept: 0, late: 0,
+    results: [{ row: row(), outcome: 'stopped', text: 'Stopped that session.' }] });
+  assert.match(withRows[withRows.length - 1], /not every session could be checked/i);
 });

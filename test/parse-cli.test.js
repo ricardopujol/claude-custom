@@ -33,6 +33,13 @@ test('an unknown option is an error, never a folder called "--something"', () =>
   assert.throws(() => parseCli(['x', '-s'], { cwd: CWD }), /unknown option: -s/);
 });
 
+// Dexter, PR #83 F8: `claude-custom "" --stop` (an unset variable in a script)
+// must not quietly mean "the folder you are standing in".
+test('an empty folder name is an error', () => {
+  assert.throws(() => parseCli(['', '--stop'], { cwd: CWD }), /empty folder name/);
+  assert.throws(() => parseCli(['  '], { cwd: CWD }), /empty folder name/);
+});
+
 test('two folders is an error, not "the first one wins"', () => {
   assert.throws(() => parseCli(['a', 'b'], { cwd: CWD }), /one folder/);
   assert.throws(() => parseCli(['a', '--stop', 'b'], { cwd: CWD }), /one folder/);

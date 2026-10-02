@@ -37,6 +37,7 @@ function parseCli(argv, { cwd = process.cwd() } = {}) {
   const folders = [];
   for (const a of argv) {
     if (a === '--stop') stop = true;
+    else if (!a.trim()) throw new Error('an empty folder name (name a folder, or leave it out for this one)');
     else if (a.startsWith('-')) throw new Error(`unknown option: ${a}`);
     else folders.push(a);
   }

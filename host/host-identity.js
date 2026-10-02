@@ -67,12 +67,16 @@ function defaultIsAlive(pid) {
 // once it knows it: the exact proof host/background-hosts.js needs before
 // anything stops this pid. `startedAt` is wall clock, and a clock that steps
 // back makes it prove an unrelated process (Dexter, PR 2 F1).
-function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt } = {}) {
+// `claudePid` is the host's claude, once it has one (Dexter, PR #83 F1): a stop
+// waits for it too, since the host can exit while claude is still closing in
+// the folder -- and a host with no session lock has nowhere else to say it.
+function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid } = {}) {
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
   const doc = { port, cwd, pid, startedAt: Date.now() };
   if (typeof processStartedAt === 'string' && processStartedAt) doc.processStartedAt = processStartedAt;
+  if (Number.isInteger(claudePid) && claudePid > 0) doc.claudePid = claudePid;
   try {
     fs.writeFileSync(tmp, JSON.stringify(doc),
       { encoding: 'utf8', mode: 0o600 });

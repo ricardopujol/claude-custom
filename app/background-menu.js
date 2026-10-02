@@ -18,7 +18,7 @@
  */
 
 const path = require('path');
-const { serves } = require('../host/stop-folder');
+const { inFolder } = require('../host/stop-folder');
 
 const UNVERIFIED = "Couldn't check every session; some may be missing.";
 
@@ -50,7 +50,9 @@ function folderText(cwd) {
 // from the row's cwd, never the disk: a merged worktree's folder may be gone.
 function stopAllOf(items, projectRoot) {
   if (typeof projectRoot !== 'string' || !projectRoot) return null;
-  const rows = items.filter(it => it.stop && serves(it.row, projectRoot)).map(it => it.row);
+  // Its folder, not its build: a claude-custom window's root holds every build,
+  // and a build's sessions work in other projects.
+  const rows = items.filter(it => it.stop && inFolder(it.row.cwd, projectRoot)).map(it => it.row);
   return { rows, enabled: rows.length > 0 };
 }
 

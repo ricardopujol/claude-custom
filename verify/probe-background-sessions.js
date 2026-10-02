@@ -23,7 +23,7 @@
  *   --stop    (PR 3) `claude-custom <folder> --stop` from plain Node: H3 on the
  *             folder and H4 inside it end with their claudes, exit 0; on H2's
  *             folder (a window attached) it keeps H2 and exits 3
- *   stop all  (PR 3) *Stop all in this project* stops H5 inside W's folder, and
+ *   stop all  (PR 3) *Stop all in this project* stops H5 inside W's project (proj), and
  *             neither W's own tab nor H2 in another folder
  *
  * SAFE: every `claude` is cmd.exe (CLAUDE_CUSTOM_BIN); nothing bills. The list
@@ -54,9 +54,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-bg-'));
 const loose1 = path.join(tmp, 'loose-one');
 const loose2 = path.join(tmp, 'loose-two');
-const flat = path.join(tmp, 'window-folder');
+// W's folder is a container project's dev\ (a real repo), so the window has a
+// project root for *Stop all* (Dexter, PR #83 F6: a folder in no project has none).
+const proj = path.join(tmp, 'proj');
+const flat = path.join(proj, 'dev');
+const notes = path.join(proj, 'notes');                  // inside the project, not a repo
 const loose3 = path.join(tmp, 'loose-three');
-for (const d of [loose1, loose2, flat, loose3, path.join(loose3, 'sub'), path.join(flat, 'inner')]) fs.mkdirSync(d, { recursive: true });
+for (const d of [loose1, loose2, flat, loose3, path.join(loose3, 'sub'), notes]) fs.mkdirSync(d, { recursive: true });
+fs.writeFileSync(path.join(flat, 'readme.txt'), 'probe');
+for (const args of [['init', '-q'], ['add', '-A'], ['-c', 'user.email=p@p', '-c', 'user.name=p', 'commit', '-q', '-m', 'init']]) {
+  execFileSync('git', ['-C', flat, ...args], { stdio: 'ignore' });
+}
 
 let failures = 0;
 const check = (label, ok, detail = '') => {
@@ -213,7 +221,10 @@ async function main() {
   // list
   const list = await waitFor(async () => {
     const r = await command(w, { cmd: 'background' });
-    return r && r.ok && itemOn(r, h1.port) && itemOn(r, h2.port) && (!wHost || itemOn(r, wHost.port)) ? r : null;
+    // W's own row only reads "open here" once its tab has its port: the host
+    // binds a moment before the tab records it (a race this probe hit once).
+    return r && r.ok && itemOn(r, h1.port) && itemOn(r, h2.port)
+      && (!wHost || /open here$/.test((itemOn(r, wHost.port) || {}).label || '')) ? r : null;
   }, 30000, 1000);
   check('the ▾ list answered', Boolean(list));
   if (!list) return;
@@ -279,6 +290,11 @@ async function main() {
   const m4 = await hostUp(h4);
   check('H3 (the folder) and H4 (a folder inside it) started', Boolean(m3 && m4));
   if (!m3 || !m4) return;
+  // Dexter, PR #83 F1: the identity names the claude, so a stop waits for it.
+  const named = await waitFor(() => {
+    try { return JSON.parse(fs.readFileSync(path.join(ROOT, '.harness', 'hosts', `${h3.port}.json`), 'utf8')).claudePid === Number(m3[1]); } catch { return false; }
+  }, 15000, 200);
+  check("H3's identity names its claude (pid it spawned)", Boolean(named));
   const cli = runStop(loose3);
   check('--stop on a folder whose sessions have no window exits 0', cli.status === 0, `exit ${cli.status}: ${cli.stdout.trim()}`);
   check('it printed one "stopped" line per session', (cli.stdout.match(/^stopped: /gm) || []).length === 2, cli.stdout.trim());
@@ -290,8 +306,8 @@ async function main() {
   check('--stop on H2 (a window attached) exits 3 and keeps it', kept.status === 3 && /^kept: .*window open/m.test(kept.stdout), `exit ${kept.status}: ${kept.stdout.trim()}`);
   check('H2 is still running', !exited(h2) && alive(h2.child.pid));
 
-  // --- PR 3: *Stop all in this project* (W's project root is its folder) ---
-  const h5 = startHost('H5', path.join(flat, 'inner'), await freePort());
+  // --- PR 3: *Stop all in this project* (W's project root is proj; H5 works in proj/notes) ---
+  const h5 = startHost('H5', notes, await freePort());
   const m5 = await hostUp(h5);
   check('H5 (inside W\'s project, no window) started', Boolean(m5));
   if (!m5) return;

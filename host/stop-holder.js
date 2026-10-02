@@ -186,7 +186,10 @@ async function stopHolder({ lockPath, shown } = {}, deps = {}) {
 async function stopHost({ row } = {}, deps = {}) {
   if (!row || !validPid(row.pid)) return result('unproven');
   return stopProven({
-    pid: row.pid, processStartedAt: row.processStartedAt, port: row.port, install: row.install, claudePid: null,
+    // Its claude, when the identity named one (Dexter, PR #83 F1): "stopped"
+    // waits for both, as PR 1's lock path always did.
+    pid: row.pid, processStartedAt: row.processStartedAt, port: row.port, install: row.install,
+    claudePid: validPid(row.claudePid) ? row.claudePid : null,
   }, deps, { mayKill: row.exact === true });
 }
 

@@ -413,3 +413,9 @@ test('L1 S7: the window keeps room for the terminal and two side zones', () => {
   assert.match(opts, /minWidth: 640,/);
   assert.match(opts, /minHeight: 480,/);
 });
+
+// Dexter, PR #83 F6: a window on a folder in no project (C:\Users\ricar) has
+// no project to stop all of; its launch folder would cover every project.
+test('Stop all gets a project root only when the window is in a project', () => {
+  assert.match(MAIN, /projectRoot: PROJECT \? PROJECT_ROOT : null/);
+});

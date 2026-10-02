@@ -105,6 +105,13 @@ test('stopAll: every stoppable session inside this window\'s project, and only t
   assert.strictEqual(m.stopAll.enabled, true);
 });
 
+test('stopAll: goes by the session\'s folder, never its build (a claude-custom root holds every build)', () => {
+  const root = 'C:\\Users\\ricar\\VibeCode\\claude-custom';
+  const elsewhere = row({ pid: 7, install: `${root}\\dev`, cwd: 'C:\\Users\\ricar\\VibeCode\\sfx-manager\\dev' });
+  const m = menuModel({ rows: [elsewhere], verified: true }, { now: NOW, projectRoot: root });
+  assert.deepStrictEqual(m.stopAll.rows, []);
+});
+
 test('stopAll: disabled with nothing to stop, and absent when the window has no project root', () => {
   const m = menuModel({ rows: [row({ windows: 2 })], verified: true }, { now: NOW, projectRoot: 'C:\\Users\\ricar\\VibeCode\\agent-creator' });
   assert.deepStrictEqual(m.stopAll, { rows: [], enabled: false });

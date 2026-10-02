@@ -11,7 +11,7 @@
  * Main-process only (required, never a page <script>).
  */
 
-const { ENDED } = require('../host/stop-folder');
+const { ENDED, stopRows } = require('../host/stop-folder');
 
 // Windows menus read `&` as a mnemonic marker; a folder name is not one.
 const menuText = s => String(s).replace(/&/g, '&&');
@@ -36,6 +36,14 @@ function menuTemplate(model, { open, stop, stopAll }) {
     template.push({ label: menuText(model.footer), enabled: false });
   }
   return template;
+}
+
+// The *Stop all* confirmation's detail: the folders, at most ten (Miguel G4).
+const STOP_ALL_SHOWN = 10;
+function stopAllDetail(rows) {
+  const shown = rows.slice(0, STOP_ALL_SHOWN).map(r => r.cwd);
+  if (rows.length > STOP_ALL_SHOWN) shown.push(`… and ${rows.length - STOP_ALL_SHOWN} more`);
+  return `${shown.join('\n')}\n\nTheir claudes end with them. A session with a window open is never stopped.`;
 }
 
 /**
@@ -81,17 +89,10 @@ function createBackgroundActions(deps) {
   // summary naming whatever was kept and why.
   async function stopAll(rows) {
     if (!(await deps.confirmStopAll(rows))) return { outcome: 'cancelled' };
-    const results = [];
-    for (const row of rows) {
-      let r;
-      try {
-        r = await deps.stopHost(row);
-      } catch (err) {
-        deps.log(`[main] Stop all (background) failed: ${err && err.message}`);
-        r = { outcome: 'failed', text: "Couldn't stop that session." };
-      }
-      deps.log(`[main] Stop all (background): ${r.outcome} (pid ${row.pid}, port ${row.port}, build ${row.build})`);
-      results.push({ row, outcome: r.outcome, text: r.text });
+    // The CLI's loop (host/stop-folder.js), so the two can't drift (Miguel Y2).
+    const results = await stopRows(rows, deps.stopHost);
+    for (const x of results) {
+      deps.log(`[main] Stop all (background): ${x.outcome} (pid ${x.row.pid}, port ${x.row.port}, build ${x.row.build}, how ${x.how || 'none'})`);
     }
     const ended = results.filter(x => ENDED.has(x.outcome)).length;
     const kept = results.filter(x => !ENDED.has(x.outcome)).map(x => `${x.row.cwd}: ${x.text}`);
@@ -114,4 +115,4 @@ function popupUntilClosed(menu, win) {
   });
 }
 
-module.exports = { menuTemplate, createBackgroundActions, popupUntilClosed };
+module.exports = { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail };

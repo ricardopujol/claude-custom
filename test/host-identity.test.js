@@ -221,3 +221,16 @@ test('the identity carries the host\'s OS start time when given one, and only a 
     assert.strictEqual('processStartedAt' in r, false, String(bad));
   }
 });
+
+// Dexter, PR #83 F1 (High): a stop must wait for the host's claude too, and a
+// host with no session lock (a non-repo folder) had nowhere else to say which.
+test('the identity carries the claude pid once the host has one, and only a real pid', () => {
+  const dir = tmp();
+  writeIdentity({ dir, port: 7702, cwd: 'C:/proj', pid: 4242, processStartedAt: '1', claudePid: 4300 });
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'hosts', '7702.json'), 'utf8')).claudePid, 4300);
+  for (const bad of [undefined, null, 0, -1, 1.5, '4300']) {
+    writeIdentity({ dir, port: 7703, cwd: 'C:/proj', pid: 4242, claudePid: bad });
+    const r = JSON.parse(fs.readFileSync(path.join(dir, 'hosts', '7703.json'), 'utf8'));
+    assert.strictEqual('claudePid' in r, false, String(bad));
+  }
+});

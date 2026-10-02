@@ -46,15 +46,17 @@ claude-custom [folder] --stop
   once and reopening a window finds the hosts it left running. Set
   CLAUDE_CUSTOM_PORT to override it for one launch (that launch is single-tab).
 
-  --stop  Opens no window. Stops every claude-custom session serving the folder
-          (or a folder inside it), from this build and the builds beside it, so
-          the folder can be removed. A session with a window open is never
+  --stop  Opens no window. Stops every claude-custom session using the folder
+          -- working in it or in a folder inside it, or run from a build that
+          lives there -- from this build and the builds beside it, so the
+          folder can be removed. A session with a window open is never
           stopped, and nothing is stopped that can't be proven to be that
-          session. One line per session.
+          session. Prints one line per session, then a note when not every
+          session could be checked.
           exit 0  nothing is left serving the folder
-          exit 3  something may still be: a session was kept, or not every
-                  session could be checked
-          exit 1  a usage error`);
+          exit 3  something may still be: a session was kept, one started
+                  meanwhile, or not every session could be checked
+          exit 1  a usage error: an unknown option, two folders, an empty name`);
   process.exit(0);
 }
 
@@ -65,6 +67,15 @@ if (cli.cmd === 'stop') {
   const { stopHost } = require('../host/stop-holder');
   const { listDeps, hostStopDeps } = require('../host/stop-deps');
   const { stopFolder, stopExitCode, stopReportLines } = require('../host/stop-folder');
+  // A console on Windows is written asynchronously: exiting at once can cut the
+  // report short. Let it drain, but never hang a script on a stray handle.
+  const finish = (code) => {
+    process.exitCode = code;
+    setTimeout(() => process.exit(code), 1000).unref();
+  };
+  // "Something may still be serving it" until the stop says otherwise: a run
+  // that ends any other way is never read as clear (Dexter, PR #83 F8).
+  process.exitCode = 3;
   stopFolder({ folder: cli.folder }, {
     list: () => listBackgroundHosts({ ownInstall: INSTALL_DIR }, listDeps(INSTALL_DIR)),
     stopHost: row => stopHost({ row }, hostStopDeps()),
@@ -75,12 +86,6 @@ if (cli.cmd === 'stop') {
     console.error(`claude-custom --stop failed: ${err && err.message}`);
     finish(3);
   });
-  // A console on Windows is written asynchronously: exiting at once can cut the
-  // report short. Let it drain, but never hang a script on a stray handle.
-  function finish(code) {
-    process.exitCode = code;
-    setTimeout(() => process.exit(code), 1000).unref();
-  }
   return;
 }
 

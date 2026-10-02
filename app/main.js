@@ -53,7 +53,7 @@ const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
-const { menuTemplate, createBackgroundActions, popupUntilClosed } = require('./background-actions');
+const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -565,7 +565,8 @@ function listBackground() {
 async function backgroundModel() {
   const tabsByPort = new Map();
   for (const t of tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key);
-  return menuModel(await listBackground(), { now: Date.now(), tabsByPort, projectRoot: PROJECT_ROOT });
+  // A folder in no project has no project to stop all of (Dexter, PR #83 F6).
+  return menuModel(await listBackground(), { now: Date.now(), tabsByPort, projectRoot: PROJECT ? PROJECT_ROOT : null });
 }
 
 // The effects, with everything they touch handed in (app/background-actions.js).
@@ -602,7 +603,7 @@ const backgroundActions = createBackgroundActions({
       defaultId: 1,
       cancelId: 1,
       message: `Stop every session in ${PROJECT_ROOT} that has no window open?`,
-      detail: `${rows.map(r => r.cwd).join('\n')}\n\nTheir claudes end with them. A session with a window open is never stopped.`,
+      detail: stopAllDetail(rows),
     });
     return ok.response === 0;
   },
