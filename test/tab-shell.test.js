@@ -1534,6 +1534,17 @@ test('handleProbeCommand: create, reopen and cancelCreate reach the driver; crea
   assert.deepStrictEqual(seen, [['create', 'feat/demo'], ['reopen'], ['cancel']]);
 });
 
+test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
+  const seen = [];
+  const api = { mark: async (b, id) => { seen.push([b, id]); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', branch: 'develop', id: 'star' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', branch: 'develop', id: null }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', id: 'star' }), api), { ok: false, error: 'mark needs a branch' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', branch: 'develop' }), api),
+    { ok: false, error: 'mark needs an id (or null)' });
+  assert.deepStrictEqual(seen, [['develop', 'star'], ['develop', null]]);
+});
+
 // --- properties ----------------------------------------------------------------
 
 test('PROPERTY: an input with no control/meta and a key other than F12 is never intercepted', () => {

@@ -458,7 +458,7 @@ test('the shell reads marks from the loaded store; the window prunes once, in ta
 
 test('a mark is never saved over a file that could not be read', () => {
   const body = MAIN.slice(MAIN.indexOf('function chooseMark('), MAIN.indexOf('function pruneGoneMarks('));
-  assert.match(body, /const cur = reloadMarks\(\);\s*if \(cur\.store === null\) return;/);
+  assert.match(body, /const cur = reloadMarks\(\);\s*if \(cur\.store === null\) return false;/);
   const prune = MAIN.slice(MAIN.indexOf('function pruneGoneMarks('), MAIN.indexOf('function markSubmenu('));
   assert.match(prune, /if \(live === null \|\| cur\.state !== 'ok'\) return;/);
   assert.match(prune, /'--format=%\(refname\)', 'refs\/heads'/);

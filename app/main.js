@@ -256,18 +256,24 @@ function reloadMarks() {
   return marks;
 }
 
-/** Set (or, with null, clear) a branch's mark. Never writes over a file it couldn't read. */
+/**
+ * Set (or, with null, clear) a branch's mark; true when it was saved. Never
+ * writes over a file it couldn't read.
+ */
 function chooseMark(branch, id) {
   const cur = reloadMarks();
-  if (cur.store === null) return;
+  if (cur.store === null) return false;
+  let saved = false;
   try {
     const next = tabMarks.setMark(cur.store, branch, id);
     saveMarks(STATE_ROOT, next);
     marks = { state: 'ok', store: next };
+    saved = true;
   } catch (err) {
     console.error('[marks] could not save:', err && err.message);
   }
   if (tabShell) tabShell.refresh();
+  return saved;
 }
 
 // Marks on branches that no longer exist go (/merged --sweep deleted them).
@@ -1100,7 +1106,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
@@ -1138,6 +1144,11 @@ function startProbeDriver(port) {
     // Started, not awaited: the probe watches the setup's progress through `state`.
     async create(branch) { tabShell.createWorktree(branch).catch(logShellError('create')); return { ok: true }; },
     async reopen() { return tabShell.reopen(); },
+    // #40: the same call the Mark ▸ menu's click makes.
+    async mark(branch, id) {
+      const saved = chooseMark(branch, id);
+      return saved ? { ok: true, state: marks.state } : { ok: false, state: marks.state, error: 'not saved' };
+    },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
     async select(label) {
       const key = labelKey(label);
