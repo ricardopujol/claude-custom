@@ -52,8 +52,8 @@ test('lists a proven host from every install, own first, with build and windows'
   const r = await list(deps);
   assert.strictEqual(r.verified, true);
   assert.deepStrictEqual(r.rows, [
-    { install: OWN, build: 'feat-a', own: true, port: 7701, pid: 101, cwd: 'C:\\proj', startedAt: 5000, processStartedAt: ft(4800), exact: false, windows: 0 },
-    { install: OTHER, build: 'dev', own: false, port: 7702, pid: 202, cwd: 'C:\\other', startedAt: 9000, processStartedAt: ft(8700), exact: false, windows: 2 },
+    { install: OWN, build: 'feat-a', own: true, port: 7701, pid: 101, cwd: 'C:\\proj', claudePid: null, startedAt: 5000, processStartedAt: ft(4800), exact: false, windows: 0 },
+    { install: OTHER, build: 'dev', own: false, port: 7702, pid: 202, cwd: 'C:\\other', claudePid: null, startedAt: 9000, processStartedAt: ft(8700), exact: false, windows: 2 },
   ]);
 });
 
@@ -82,7 +82,8 @@ test('a start time equal to the identity write still proves the host', async () 
 test('the OS could not be asked: nothing is displayed, and it says so', async () => {
   const { w, deps } = world({ procs: null });
   void w;
-  assert.deepStrictEqual(await list(deps), { rows: [], verified: false });
+  assert.deepStrictEqual(await list(deps), { rows: [], verified: false,
+    doubts: [{ install: OWN, cwd: 'C:\\proj' }, { install: OTHER, cwd: 'C:\\other' }] });
 });
 
 test('a live pid whose start time is unreadable is dropped, and the list is not verified', async () => {
@@ -91,6 +92,22 @@ test('a live pid whose start time is unreadable is dropped, and the list is not 
   const r = await list(deps);
   assert.deepStrictEqual(r.rows.map(x => x.pid), [101]);
   assert.strictEqual(r.verified, false);
+  // PR 3: what it is unsure of, so a caller asking about ONE folder can tell.
+  assert.deepStrictEqual(r.doubts, [{ install: OTHER, cwd: 'C:\\other' }]);
+});
+
+test('a row carries its claude pid from the identity, and null for anything but a real pid (PR #83 F1)', async () => {
+  const { w, deps } = world();
+  w.files[OWN][7701].claudePid = 4300;
+  w.files[OTHER][7702].claudePid = '4300';
+  const r = await list(deps);
+  assert.strictEqual(r.rows.find(x => x.pid === 101).claudePid, 4300);
+  assert.strictEqual(r.rows.find(x => x.pid === 202).claudePid, null);
+});
+
+test('a verified list has no doubts', async () => {
+  const { deps } = world();
+  assert.deepStrictEqual((await list(deps)).doubts, []);
 });
 
 test('an unusable identity is skipped without being trusted', async () => {
@@ -130,6 +147,7 @@ test('one bad install does not hide the others', async () => {
   const r = await list(deps);
   assert.deepStrictEqual(r.rows.map(x => x.pid), [101]);
   assert.strictEqual(r.verified, false);
+  assert.deepStrictEqual(r.doubts, [{ install: OTHER, cwd: null }], 'an unlistable install could serve any folder');
 });
 
 test('window counts are asked once for every proven host, never for the unproven', async () => {
@@ -142,7 +160,7 @@ test('window counts are asked once for every proven host, never for the unproven
 
 test('no proven host: the window count is never asked', async () => {
   const { deps, calls } = world({ procs: new Map() });
-  assert.deepStrictEqual(await list(deps), { rows: [], verified: true });
+  assert.deepStrictEqual(await list(deps), { rows: [], verified: true, doubts: [] });
   assert.strictEqual(calls.windowCounts.length, 0);
 });
 
@@ -223,9 +241,48 @@ test('installsBeside: this build and every sibling claude-custom build with a ho
   assert.deepStrictEqual(installsBeside(own).sort(), [dev, own].sort());
 });
 
-test('installsBeside: this build is listed even when its parent cannot be read', () => {
+// Dexter, PR #83 F3: falling back to this build alone hid every sibling's host
+// with the list still "verified". Now it throws, and the list says so.
+test('installsBeside: a parent it cannot read throws, rather than quietly listing this build alone', () => {
   const own = path.join(os.tmpdir(), 'bg-hosts-missing-' + process.pid, 'x');
-  assert.deepStrictEqual(installsBeside(own), [own]);
+  assert.throws(() => installsBeside(own));
+});
+
+test('a list whose builds could not all be found still lists this build, and doubts every folder', async () => {
+  const { deps } = world();
+  deps.installs = () => { throw new Error('EACCES'); };
+  const r = await list(deps);
+  assert.deepStrictEqual(r.rows.map(x => x.pid), [101]);
+  assert.strictEqual(r.verified, false);
+  assert.deepStrictEqual(r.doubts, [{ install: null, cwd: null }]);
+});
+
+test('an identity it cannot READ (locked, denied) is a doubt about any folder, naming the file (PR #83 F3, R2-2)', async () => {
+  const { deps } = world();
+  const real = deps.identities;
+  deps.identities = install => (install === OTHER ? [{ port: 7709, parsed: null, unreadable: true }] : real(install));
+  const r = await list(deps);
+  assert.deepStrictEqual(r.doubts, [{ install: OTHER, cwd: null, file: path.join(OTHER, '.harness', 'hosts', '7709.json') }]);
+});
+
+// Dexter, PR #83 R2-2: identities are written atomically (tmp + rename), so a
+// file that won't parse, or names no pid, is never a host mid-write -- it's
+// junk, and junk that never goes away must not block every --stop forever.
+test('junk is no doubt: a file that will not parse, or names no pid', async () => {
+  const { w, deps } = world();
+  w.files[OTHER] = { 7709: null, 7710: { port: 7710, cwd: 'C:\\odd' } };
+  const r = await list(deps);
+  assert.deepStrictEqual(r.doubts, []);
+  assert.strictEqual(r.verified, true);
+});
+
+test('an identity it cannot use is a doubt about its folder, while its pid runs (PR #83 F3)', async () => {
+  const { w, deps } = world();
+  w.files[OTHER] = { 7709: { port: 7709, cwd: 'C:\\odd', pid: 909, startedAt: 'yesterday' } };
+  w.procs.set(909, ft(1));
+  assert.deepStrictEqual((await list(deps)).doubts, [{ install: OTHER, cwd: 'C:\\odd', file: path.join(OTHER, '.harness', 'hosts', '7709.json') }]);
+  w.procs.delete(909);                                   // a dead stale file is no doubt
+  assert.deepStrictEqual((await list(deps)).doubts, []);
 });
 
 test('identitiesIn: every <port>.json, parsed or null; never a token; port from the name', () => {
@@ -242,6 +299,13 @@ test('identitiesIn: every <port>.json, parsed or null; never a token; port from 
     { port: 7701, parsed: { port: 7701, cwd: 'C:/p', pid: 1, startedAt: 2 } },
     { port: 7702, parsed: null },
   ]);
+});
+
+test('identitiesIn: a file it cannot read at all is marked unreadable, unlike junk that reads (R2-2)', () => {
+  const { build } = tree();
+  const dir = build('dev');
+  fs.mkdirSync(path.join(dir, '.harness', 'hosts', '7704.json'));    // EISDIR: a read error, not a parse error
+  assert.deepStrictEqual(identitiesIn(dir), [{ port: 7704, parsed: null, unreadable: true }]);
 });
 
 test('identitiesIn: an install that never ran a host has none -- not an error', () => {

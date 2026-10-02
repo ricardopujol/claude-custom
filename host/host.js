@@ -1404,6 +1404,9 @@ function startSession() {
   console.log('[host] pty pid       :', term.pid);
   // Whoever this lock blocks can see which `claude` is holding the worktree.
   if (lockState.state === 'held') updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
+  // And the identity names it, so a stop (▾, `--stop`) waits for this claude
+  // too, lock or no lock (Dexter, PR #83 F1).
+  republishIdentity();
   wireTerm(term);
 }
 
@@ -2444,7 +2447,7 @@ wss.on('listening', () => {
   writeTokenFiles();
   try {
     console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD,
-      processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined }));
+      processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
     // it just cannot be recognised later, so the next window steps to another
@@ -2453,6 +2456,18 @@ wss.on('listening', () => {
     console.error('[host] could not publish identity:', err.message);
   }
 });
+
+// Once claude starts (or restarts): the identity again, now naming it. Only by
+// the host that bound the port, and only once the start time is known -- the
+// exact proof stays; until then the bind or boot write adds it (Dexter, PR #83 F1).
+function republishIdentity() {
+  if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
+  try {
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+  } catch (err) {
+    console.error('[host] could not add its claude to its identity:', err.message);
+  }
+}
 
 /**
  * A bind that fails must not take the winner's files with it.
@@ -2525,7 +2540,7 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

@@ -64,6 +64,27 @@ test('an idle proven host is stopped by its own stop-if-idle', async () => {
   assert.deepStrictEqual(w.calls.kill, []);
 });
 
+// Dexter, PR #83 F1 (High): the host can exit while its claude is still
+// closing in the folder; "stopped" must mean both are gone.
+test('a row naming its claude waits for that claude too, not just the host', async () => {
+  const { w, deps } = world();
+  w.procs.set(37600, '1');                              // the claude, still closing
+  let polls = 0;
+  const realSleep = deps.sleep;
+  deps.sleep = async () => { polls += 1; if (polls === 3) w.procs.delete(37600); return realSleep(); };
+  const r = await run(deps, { ...ROW, claudePid: 37600 });
+  assert.strictEqual(r.outcome, 'stopped');
+  assert.ok(polls >= 3, `waited for the claude (${polls} polls)`);
+});
+
+test('a claude that outlives the wait is not "stopped"', async () => {
+  const { w, deps } = world();
+  w.procs.set(37600, '1');                              // never ends
+  const r = await run(deps, { ...ROW, claudePid: 37600 });
+  assert.strictEqual(r.outcome, 'failed');
+  assert.match(r.text, /37600/);
+});
+
 test('a host with a window is not stopped', async () => {
   const { w, deps } = world({ windows: 1 });
   const r = await run(deps);

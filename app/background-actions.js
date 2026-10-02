@@ -5,16 +5,18 @@
  * -- a tab select, a window spawn, the dialogs, stopHost -- and draws the menu.
  *
  *   menuTemplate(model, { open, stop }) -> an Electron Menu template
- *   createBackgroundActions(deps) -> { open(open), stop(row) }
+ *   createBackgroundActions(deps) -> { open(open), stop(row), stopAll(rows) }
  *   popupUntilClosed(menu, win) -> resolves when the menu OR the window closes
  *
  * Main-process only (required, never a page <script>).
  */
 
+const { ENDED, stopRows } = require('../host/stop-folder');
+
 // Windows menus read `&` as a mnemonic marker; a folder name is not one.
 const menuText = s => String(s).replace(/&/g, '&&');
 
-function menuTemplate(model, { open, stop }) {
+function menuTemplate(model, { open, stop, stopAll }) {
   const items = model && Array.isArray(model.items) ? model.items : [];
   const template = items.map(it => ({
     label: menuText(it.label),
@@ -24,6 +26,11 @@ function menuTemplate(model, { open, stop }) {
       { label: 'Stop…', enabled: it.stop, click: () => stop(it.row) },
     ],
   }));
+  if (model && model.stopAll && items.length) {
+    const all = model.stopAll;
+    template.push({ type: 'separator' });
+    template.push({ label: 'Stop all in this project…', enabled: all.enabled, click: () => stopAll(all.rows) });
+  }
   if (model && model.footer) {
     if (template.length) template.push({ type: 'separator' });
     template.push({ label: menuText(model.footer), enabled: false });
@@ -31,9 +38,18 @@ function menuTemplate(model, { open, stop }) {
   return template;
 }
 
+// The *Stop all* confirmation's detail: the folders, at most ten (Miguel G4).
+const STOP_ALL_SHOWN = 10;
+function stopAllDetail(rows) {
+  const shown = rows.slice(0, STOP_ALL_SHOWN).map(r => r.cwd);
+  if (rows.length > STOP_ALL_SHOWN) shown.push(`… and ${rows.length - STOP_ALL_SHOWN} more`);
+  return `${shown.join('\n')}\n\nTheir claudes end with them. A session with a window open is never stopped.`;
+}
+
 /**
  * deps: select(key), focusWindow(), spawnWindow({ cwd, port }) -> { pid },
- *       confirmStop(row) -> bool, inform(text), stopHost(row) -> result, log(msg)
+ *       confirmStop(row) -> bool, confirmStopAll(rows) -> bool, inform(text),
+ *       stopHost(row) -> result, log(msg)
  */
 function createBackgroundActions(deps) {
   // A tab here is selected; anything else gets a window of its own on that
@@ -68,7 +84,23 @@ function createBackgroundActions(deps) {
     return r;
   }
 
-  return { open, stop };
+  // *Stop all in this project* (PR 3): one confirmation, then each session by
+  // the same stopHost, one at a time (each waits for its claude to end), and one
+  // summary naming whatever was kept and why.
+  async function stopAll(rows) {
+    if (!(await deps.confirmStopAll(rows))) return { outcome: 'cancelled' };
+    // The CLI's loop (host/stop-folder.js), so the two can't drift (Miguel Y2).
+    const results = await stopRows(rows, deps.stopHost);
+    for (const x of results) {
+      deps.log(`[main] Stop all (background): ${x.outcome} (pid ${x.row.pid}, port ${x.row.port}, build ${x.row.build}, how ${x.how || 'none'})`);
+    }
+    const ended = results.filter(x => ENDED.has(x.outcome)).length;
+    const kept = results.filter(x => !ENDED.has(x.outcome)).map(x => `${x.row.cwd}: ${x.text}`);
+    await deps.inform([`Stopped ${ended} of ${rows.length} session${rows.length === 1 ? '' : 's'}.`, ...kept].join('\n'));
+    return { outcome: 'done', results };
+  }
+
+  return { open, stop, stopAll };
 }
 
 // The popup's callback may never run if the window is destroyed with the menu
@@ -83,4 +115,4 @@ function popupUntilClosed(menu, win) {
   });
 }
 
-module.exports = { menuTemplate, createBackgroundActions, popupUntilClosed };
+module.exports = { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail };

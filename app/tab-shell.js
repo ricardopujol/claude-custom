@@ -944,6 +944,7 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'background-open':
         if (!(Number.isInteger(cmd.port) && cmd.port > 0 && cmd.port < 65536)) return { ok: false, error: 'background-open needs a port' };
         return await api.backgroundOpen(cmd.port);
+      case 'background-stop-all': return await api.backgroundStopAll();
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
     }
   } catch (err) {

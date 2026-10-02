@@ -48,14 +48,12 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
-const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
+const { listBackgroundHosts } = require('../host/background-hosts');
 const { stopHost } = require('../host/stop-holder');
-const { isAlive: procAlive, startTimes } = require('../host/proc-start');
-const { windowCount, windowCounts } = require('../host/window-count');
-const { killPidTree } = require('../host/kill-tree');
+const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
-const { menuTemplate, createBackgroundActions, popupUntilClosed } = require('./background-actions');
+const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -559,21 +557,16 @@ function focusWindow() {
 // by its OS start time. Open is for this build's own; Stop is PR 1's rules
 // (host/stop-holder.js stopHost): never a session with a window open.
 const INSTALL_DIR = path.join(__dirname, '..');
-const harnessOf = install => path.join(install, '.harness');
 
 function listBackground() {
-  return listBackgroundHosts({ ownInstall: INSTALL_DIR }, {
-    installs: () => installsBeside(INSTALL_DIR),
-    identities: identitiesIn,
-    startTimes,
-    windowCounts,
-  });
+  return listBackgroundHosts({ ownInstall: INSTALL_DIR }, listDeps(INSTALL_DIR));
 }
 
 async function backgroundModel() {
   const tabsByPort = new Map();
   for (const t of tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key);
-  return menuModel(await listBackground(), { now: Date.now(), tabsByPort });
+  // A folder in no project has no project to stop all of (Dexter, PR #83 F6).
+  return menuModel(await listBackground(), { now: Date.now(), tabsByPort, projectRoot: PROJECT ? PROJECT_ROOT : null });
 }
 
 // The effects, with everything they touch handed in (app/background-actions.js).
@@ -602,21 +595,23 @@ const backgroundActions = createBackgroundActions({
     });
     return ok.response === 0;
   },
+  confirmStopAll: async (rows) => {
+    if (PROBE_PORT || !win || win.isDestroyed()) return true;
+    const ok = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: [`Stop ${rows.length} session${rows.length === 1 ? '' : 's'}`, 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `Stop every session in ${PROJECT_ROOT} that has no window open?`,
+      detail: stopAllDetail(rows),
+    });
+    return ok.response === 0;
+  },
   inform: async (text) => {
     if (PROBE_PORT || !win || win.isDestroyed()) return;
     await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: text });
   },
-  stopHost: row => stopHost({ row }, {
-    isAlive: procAlive,
-    startTimes,
-    readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
-    readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
-    sendControl: c => sendControl(c),
-    windowCount,
-    killPidTree,
-    sleep: ms => new Promise(res => setTimeout(res, ms)),
-    now: Date.now,
-  }),
+  stopHost: row => stopHost({ row }, hostStopDeps()),
   log: msg => console.log(msg),
 });
 
@@ -624,6 +619,7 @@ async function showBackgroundMenu() {
   const template = menuTemplate(await backgroundModel(), {
     open: o => backgroundActions.open(o),
     stop: row => { backgroundActions.stop(row).catch(() => {}); },
+    stopAll: rows => { backgroundActions.stopAll(rows).catch(() => {}); },
   });
   await popupUntilClosed(Menu.buildFromTemplate(template), win);
 }
@@ -1090,6 +1086,13 @@ function startProbeDriver(port) {
       if (!it) return { ok: false, error: `no running session on port ${port}` };
       if (!it.open) return { ok: false, error: 'that session has no Open' };
       return { ok: true, ...(backgroundActions.open(it.open) || { failed: true }) };
+    },
+    async backgroundStopAll() {
+      const m = await backgroundModel();
+      if (!m.stopAll) return { ok: false, error: 'no project root' };
+      const r = await backgroundActions.stopAll(m.stopAll.rows);
+      return { ok: true, ports: m.stopAll.rows.map(x => x.port),
+        results: (r.results || []).map(x => ({ port: x.row.port, outcome: x.outcome })) };
     },
   };
   const server = net.createServer((sock) => {

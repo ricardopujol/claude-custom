@@ -89,3 +89,31 @@ test('each item keeps its row, for the stop', () => {
   const r = row();
   assert.strictEqual(model([r]).items[0].row, r);
 });
+
+// Windowless sessions PR 3: *Stop all in this project*.
+test('stopAll: every stoppable session inside this window\'s project, and only those', () => {
+  const root = 'C:\\Users\\ricar\\VibeCode\\claude-custom';
+  const rows = [
+    row({ pid: 1, cwd: `${root}\\dev` }),
+    row({ pid: 2, cwd: `${root}\\feat-a\\sub` }),
+    row({ pid: 3, cwd: `${root}-other\\dev` }),                 // shares a prefix, another project
+    row({ pid: 4, cwd: `${root}\\feat-b`, windows: 1 }),        // a window open: never
+    row({ pid: 5, cwd: `${root}\\feat-c`, port: 7705 }),        // a tab here: never
+  ];
+  const m = menuModel({ rows, verified: true }, { now: NOW, tabsByPort: new Map([[7705, 'feat-c']]), projectRoot: root });
+  assert.deepStrictEqual(m.stopAll.rows.map(r => r.pid), [1, 2]);
+  assert.strictEqual(m.stopAll.enabled, true);
+});
+
+test('stopAll: goes by the session\'s folder, never its build (a claude-custom root holds every build)', () => {
+  const root = 'C:\\Users\\ricar\\VibeCode\\claude-custom';
+  const elsewhere = row({ pid: 7, install: `${root}\\dev`, cwd: 'C:\\Users\\ricar\\VibeCode\\sfx-manager\\dev' });
+  const m = menuModel({ rows: [elsewhere], verified: true }, { now: NOW, projectRoot: root });
+  assert.deepStrictEqual(m.stopAll.rows, []);
+});
+
+test('stopAll: disabled with nothing to stop, and absent when the window has no project root', () => {
+  const m = menuModel({ rows: [row({ windows: 2 })], verified: true }, { now: NOW, projectRoot: 'C:\\Users\\ricar\\VibeCode\\agent-creator' });
+  assert.deepStrictEqual(m.stopAll, { rows: [], enabled: false });
+  assert.strictEqual(model([row()]).stopAll, null);
+});

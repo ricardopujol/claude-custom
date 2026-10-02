@@ -95,5 +95,17 @@ test('the identity carries the OS start time, from whichever of bind and boot fi
   assert.ok(boot !== -1);
   const after = HOST.slice(boot, boot + 900);
   assert.match(after, /if \(boundPort === PORT && typeof processStartedAt === 'string'\)/);
-  assert.match(after, /writeIdentity\(\{ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt \}\)/);
+  assert.match(after, /writeIdentity\(\{ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt, claudePid: term \? term\.pid : undefined \}\)/);
+});
+
+// Dexter, PR #83 F1: a stop waits for the host's claude, so the identity names
+// it -- and EVERY write must, or whichever runs last (bind, boot, claude start)
+// drops it again.
+test('every identity write names the claude once there is one', () => {
+  const calls = [...HOST.matchAll(/writeIdentity\(\{[^}]*\}\)/g)].map(m => m[0]);
+  assert.ok(calls.length >= 3, `bind, boot and claude start (${calls.length})`);
+  for (const c of calls) assert.match(c, /claudePid: term \? term\.pid : undefined/, c);
+  const start = HOST.indexOf("console.log('[host] pty pid       :', term.pid);");
+  assert.ok(start !== -1);
+  assert.match(HOST.slice(start, start + 600), /republishIdentity\(\)/);
 });

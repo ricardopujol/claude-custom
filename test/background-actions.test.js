@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('events');
-const { menuTemplate, createBackgroundActions, popupUntilClosed } = require('../app/background-actions');
+const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('../app/background-actions');
 
 const ROW = { install: 'C:\\cc\\feat-a', build: 'feat-a', own: true, port: 7701, pid: 101, cwd: 'C:\\x', exact: true, windows: 0 };
 const item = (over = {}) => ({ label: 'a  ·  feat-a  ·  3 h  ·  no window', open: { kind: 'window', port: 7701, cwd: 'C:\\x' }, stop: true, row: ROW, ...over });
@@ -126,4 +126,70 @@ test('popupUntilClosed: an already-destroyed window resolves at once, without a 
   win.isDestroyed = () => true;
   await popupUntilClosed({ popup: () => { popped = true; } }, win);
   assert.strictEqual(popped, false);
+});
+
+// Windowless sessions PR 3: *Stop all in this project*.
+test('stopAllDetail: names the folders, at most ten, then how many more (Miguel G4)', () => {
+  const rows = Array.from({ length: 13 }, (_, i) => ({ ...ROW, cwd: `C:\\p\\f${i}` }));
+  const d = stopAllDetail(rows);
+  assert.match(d, /C:\\p\\f0\nC:\\p\\f1/);
+  assert.match(d, /C:\\p\\f9\n… and 3 more/);
+  assert.doesNotMatch(d, /f10/);
+  assert.match(d, /window open is never stopped/);
+  assert.doesNotMatch(stopAllDetail(rows.slice(0, 2)), /more/);
+});
+
+test('menuTemplate: Stop all sits after the sessions, enabled as the model says, and hands over its rows', () => {
+  const seen = [];
+  const t = menuTemplate({ items: [item()], footer: null, stopAll: { rows: [ROW], enabled: true } },
+    { open() {}, stop() {}, stopAll: rows => seen.push(rows) });
+  assert.deepStrictEqual(t.slice(1).map(x => x.type || x.label), ['separator', 'Stop all in this project…']);
+  t[2].click();
+  assert.deepStrictEqual(seen, [[ROW]]);
+  const off = menuTemplate({ items: [item()], footer: null, stopAll: { rows: [], enabled: false } }, { open() {}, stop() {}, stopAll() {} });
+  assert.strictEqual(off[2].enabled, false);
+  assert.strictEqual(menuTemplate({ items: [item()], footer: null, stopAll: null }, { open() {}, stop() {} }).length, 1);
+});
+
+test('stopAll: one confirmation for all; a cancel stops nothing', async () => {
+  let asked = 0;
+  const { a } = actions({ confirmStopAll: async () => false, stopHost: async () => { asked += 1; return {}; } });
+  assert.deepStrictEqual(await a.stopAll([ROW, { ...ROW, pid: 102 }]), { outcome: 'cancelled' });
+  assert.strictEqual(asked, 0);
+});
+
+test('stopAll: stops them one at a time, and says once what was kept', async () => {
+  const order = [];
+  let inFlight = 0;
+  const { a, calls } = actions({
+    confirmStopAll: async rows => { calls.push(['confirmAll', rows.length]); return true; },
+    stopHost: async (r) => {
+      inFlight += 1; assert.strictEqual(inFlight, 1, 'one at a time');
+      order.push(r.pid); await new Promise(res => setImmediate(res)); inFlight -= 1;
+      return r.pid === 102 ? { outcome: 'has-window', text: 'It has a window.' } : { outcome: 'stopped', text: 'Stopped.' };
+    },
+  });
+  const r = await a.stopAll([ROW, { ...ROW, pid: 102, cwd: 'C:\\y' }]);
+  assert.deepStrictEqual(order, [101, 102]);
+  assert.deepStrictEqual(r.results.map(x => x.outcome), ['stopped', 'has-window']);
+  const told = calls.filter(c => c[0] === 'inform');
+  assert.strictEqual(told.length, 1);
+  assert.match(told[0][1], /Stopped 1 of 2/);
+  assert.match(told[0][1], /C:\\y.*It has a window\./);
+});
+
+test('stopAll: a stop that throws counts as kept, and the rest still run', async () => {
+  const { a, calls } = actions({
+    confirmStopAll: async () => true,
+    stopHost: async (r) => { if (r.pid === 101) throw new Error('x'); return { outcome: 'stopped', text: 'Stopped.' }; },
+  });
+  const r = await a.stopAll([ROW, { ...ROW, pid: 102 }]);
+  assert.deepStrictEqual(r.results.map(x => x.outcome), ['failed', 'stopped']);
+  assert.match(calls.filter(c => c[0] === 'inform')[0][1], /Stopped 1 of 2/);
+});
+
+test('stopAll: all stopped is said too, once', async () => {
+  const { a, calls } = actions({ confirmStopAll: async () => true });
+  await a.stopAll([ROW]);
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'inform'), [['inform', 'Stopped 1 of 1 session.']]);
 });

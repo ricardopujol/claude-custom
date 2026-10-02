@@ -1383,6 +1383,13 @@ test('handleProbeCommand: Open from the ▾ list, by port (a real port only)', a
   assert.deepStrictEqual(seen, [7718]);
 });
 
+test('handleProbeCommand: Stop all in this project, from the ▾ list (Windowless PR 3)', async () => {
+  let asked = 0;
+  const api = { backgroundStopAll: async () => { asked += 1; return { ok: true, ports: [7718] }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'background-stop-all' }), api), { ok: true, ports: [7718] });
+  assert.strictEqual(asked, 1);
+});
+
 test('handleProbeCommand: key is dispatched with its name, and needs one', async () => {
   const seen = [];
   const api = { key: async (k, m) => { seen.push([k, m]); return { ok: true }; } };

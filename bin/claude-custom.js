@@ -2,6 +2,7 @@
 'use strict';
 /**
  * claude-custom <folder>
+ * claude-custom <folder> --stop
  *
  * Opens the harness on any project. The folder is passed through as given:
  * app/main.js folds it with projectOf (host/project-layout.js), so a folder
@@ -15,14 +16,23 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
-const { resolveLaunchTarget, launchEnv } = require('../host/launch-target');
+const { resolveLaunchTarget, parseCli, launchEnv } = require('../host/launch-target');
 const { portForCwd } = require('../host/port-for-project');
 
 const INSTALL_DIR = path.join(__dirname, '..');
 
 const argv = process.argv.slice(2);
-if (argv.includes('-h') || argv.includes('--help')) {
+let cli;
+try {
+  cli = parseCli(argv, { cwd: process.cwd() });
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
+if (cli.cmd === 'help') {
   console.log(`claude-custom [folder]
+claude-custom [folder] --stop
 
   Opens the claude-custom harness on a project folder.
   With no folder, opens the one you are standing in.
@@ -34,13 +44,54 @@ if (argv.includes('-h') || argv.includes('--help')) {
 
   The port is derived from each worktree's path, so two projects can be open at
   once and reopening a window finds the hosts it left running. Set
-  CLAUDE_CUSTOM_PORT to override it for one launch (that launch is single-tab).`);
+  CLAUDE_CUSTOM_PORT to override it for one launch (that launch is single-tab).
+
+  --stop  Opens no window. Stops every claude-custom session using the folder
+          -- working in it or in a folder inside it, or run from a build that
+          lives there -- from this build and the builds beside it, so the
+          folder can be removed. A session with a window open is never
+          stopped, and nothing is stopped that can't be proven to be that
+          session. Prints one line per session, then a note when not every
+          session could be checked.
+          exit 0  nothing is left serving the folder
+          exit 3  something may still be: a session was kept, one started
+                  meanwhile, or not every session could be checked
+          exit 1  a usage error: an unknown option, two folders, an empty name`);
   process.exit(0);
+}
+
+if (cli.cmd === 'stop') {
+  // Plain Node, no window: the worktree scripts call this before removing a
+  // folder (Windowless sessions PR 3). Same deps as the ▾ menu's Stop.
+  const { listBackgroundHosts } = require('../host/background-hosts');
+  const { stopHost } = require('../host/stop-holder');
+  const { listDeps, hostStopDeps } = require('../host/stop-deps');
+  const { stopFolder, stopExitCode, stopReportLines } = require('../host/stop-folder');
+  // A console on Windows is written asynchronously: exiting at once can cut the
+  // report short. Let it drain, but never hang a script on a stray handle.
+  const finish = (code) => {
+    process.exitCode = code;
+    setTimeout(() => process.exit(code), 1000).unref();
+  };
+  // "Something may still be serving it" until the stop says otherwise: a run
+  // that ends any other way is never read as clear (Dexter, PR #83 F8).
+  process.exitCode = 3;
+  stopFolder({ folder: cli.folder }, {
+    list: () => listBackgroundHosts({ ownInstall: INSTALL_DIR }, listDeps(INSTALL_DIR)),
+    stopHost: row => stopHost({ row }, hostStopDeps()),
+  }).then((rep) => {
+    for (const line of stopReportLines(rep)) console.log(line);
+    finish(stopExitCode(rep));
+  }, (err) => {
+    console.error(`claude-custom --stop failed: ${err && err.message}`);
+    finish(3);
+  });
+  return;
 }
 
 let target;
 try {
-  target = resolveLaunchTarget(argv[0], { cwd: process.cwd() });
+  target = resolveLaunchTarget(cli.arg, { cwd: process.cwd() });
 } catch (err) {
   console.error(err.message);
   process.exit(1);

@@ -4,7 +4,7 @@
  * (Windowless sessions PR 2; the 2026-09-25 #19 design). A host is detached on
  * purpose, so it outlives its window; this is how a person finds one again.
  *
- *   listBackgroundHosts({ ownInstall }, deps) -> { rows, verified }
+ *   listBackgroundHosts({ ownInstall }, deps) -> { rows, verified, doubts }
  *   rows: { install, build, own, port, pid, cwd, startedAt, processStartedAt, exact, windows }
  *
  * Read from each build's identity files (`<install>/.harness/hosts/<port>.json`,
@@ -67,31 +67,59 @@ function claimOf(install, port, parsed) {
   // Present but not a FILETIME is no proof of anything: dropped, not downgraded.
   const exactStart = parsed.processStartedAt;
   if (exactStart !== undefined && filetimeToMs(exactStart) === null) return null;
-  return { install, port, pid: parsed.pid, cwd: parsed.cwd, startedAt: parsed.startedAt, exactStart };
+  const claudePid = validPid(parsed.claudePid) ? parsed.claudePid : null;
+  return { install, port, pid: parsed.pid, cwd: parsed.cwd, startedAt: parsed.startedAt, exactStart, claudePid };
 }
 
 async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
-  let verified = true;
+  // What it couldn't check, by folder (null: an install it couldn't list, which
+  // could be serving anything). `verified` is "no doubts"; a caller asking about
+  // one folder (host/stop-folder.js, PR 3) weighs only the doubts that touch it.
+  const doubts = [];
   const claims = [];
-  for (const install of deps.installs()) {
+  // A file it can't use (Dexter, PR #83 F3) is a doubt, naming the file so
+  // someone can clear it (R2-2) -- but only when it could be a live host's:
+  //   - one it can't READ (locked, denied): about any folder;
+  //   - one that reads but isn't a claim: about its folder, while its pid runs.
+  // A file that won't parse, or names no pid, is junk: identities are written
+  // atomically (tmp + rename), so it's never a host mid-write, and junk that
+  // never goes away must not block every --stop forever (R2-2).
+  const unusable = [];
+  let installs;
+  try { installs = deps.installs(); } catch { installs = [ownInstall]; doubts.push({ install: null, cwd: null }); }
+  for (const install of installs) {
     let entries;
-    try { entries = deps.identities(install); } catch { verified = false; continue; }
-    for (const { port, parsed } of entries) {
+    try { entries = deps.identities(install); } catch { doubts.push({ install, cwd: null }); continue; }
+    for (const { port, parsed, unreadable } of entries) {
+      const file = path.join(hostsDir(install), `${port}.json`);
+      if (unreadable === true) { doubts.push({ install, cwd: null, file }); continue; }
       const c = claimOf(install, port, parsed);
-      if (c) claims.push(c);
+      if (c) { claims.push(c); continue; }
+      const named = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+      if (!named || !validPid(parsed.pid)) continue;                       // junk
+      unusable.push({ install, file, pid: parsed.pid,
+        cwd: typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : null });
     }
   }
-  if (claims.length === 0) return { rows: [], verified };
+  if (claims.length === 0 && unusable.length === 0) return { rows: [], verified: doubts.length === 0, doubts };
 
-  const starts = await deps.startTimes([...new Set(claims.map(c => c.pid))]);
-  if (starts === null) return { rows: [], verified: false };
+  const pids = new Set([...claims.map(c => c.pid), ...unusable.map(u => u.pid)]);
+  const starts = await deps.startTimes([...pids]);
+  if (starts === null) {
+    const all = [...claims.map(c => ({ install: c.install, cwd: c.cwd })),
+      ...unusable.map(u => ({ install: u.install, cwd: u.cwd, file: u.file }))];
+    return { rows: [], verified: false, doubts: [...doubts, ...all] };
+  }
+  for (const u of unusable) {
+    if (starts.has(u.pid)) doubts.push({ install: u.install, cwd: u.cwd, file: u.file });
+  }
 
   const byPid = new Map();
   for (const c of claims) {
     if (!starts.has(c.pid)) continue;                  // not running
     const os = starts.get(c.pid);
     const osMs = filetimeToMs(os);
-    if (osMs === null) { verified = false; continue; } // running, start unreadable
+    if (osMs === null) { doubts.push({ install: c.install, cwd: c.cwd }); continue; } // running, start unreadable
     const exact = c.exactStart !== undefined;
     if (exact ? os !== c.exactStart : osMs > c.startedAt) continue;   // a reused pid
     const own = samePath(c.install, ownInstall);
@@ -102,7 +130,7 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
     byPid.set(c.pid, { ...keep, own: seen.own && own });
   }
   const proven = [...byPid.values()];
-  if (proven.length === 0) return { rows: [], verified };
+  if (proven.length === 0) return { rows: [], verified: doubts.length === 0, doubts };
 
   const counts = await deps.windowCounts(proven.map(c => ({ pid: c.pid, port: c.port })));
   const windowsOf = (pid) => {
@@ -117,6 +145,7 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
     port: c.port,
     pid: c.pid,
     cwd: c.cwd,
+    claudePid: c.claudePid,
     startedAt: c.startedAt,
     processStartedAt: c.processStartedAt,
     exact: c.exact,
@@ -124,7 +153,7 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
   }));
   // This build's own first (they can be opened), then newest first.
   rows.sort((a, b) => (b.own - a.own) || (b.startedAt - a.startedAt));
-  return { rows, verified };
+  return { rows, verified: doubts.length === 0, doubts };
 }
 
 const hostsDir = install => path.join(install, '.harness', 'hosts');
@@ -138,8 +167,9 @@ const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return fal
  */
 function installsBeside(ownInstall) {
   const parent = path.dirname(ownInstall);
-  let names = [];
-  try { names = fs.readdirSync(parent); } catch { return [ownInstall]; }
+  // A parent it can't read throws (Dexter, PR #83 F3): the list falls back to
+  // this build AND says it couldn't check the rest, rather than look complete.
+  const names = fs.readdirSync(parent);
   const found = names
     .map(n => path.join(parent, n))
     .filter(dir => !samePath(dir, ownInstall) && isDir(hostsDir(dir)) && isFile(path.join(dir, 'host', 'host.js')));
@@ -162,9 +192,13 @@ function identitiesIn(install) {
   return names
     .filter(n => /^\d+\.json$/.test(n))
     .map((n) => {
+      const port = Number(n.slice(0, -'.json'.length));
+      let text;
+      // Can't READ it (locked, denied): it may be a live host's (R2-2).
+      try { text = fs.readFileSync(path.join(dir, n), 'utf8'); } catch { return { port, parsed: null, unreadable: true }; }
       let parsed = null;
-      try { parsed = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch { parsed = null; }
-      return { port: Number(n.slice(0, -'.json'.length)), parsed };
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      return { port, parsed };
     });
 }
 
