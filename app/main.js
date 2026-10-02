@@ -1043,14 +1043,24 @@ function startProbeDriver(port) {
       if (sel) {
         try {
           viewDom = JSON.parse(await sel.webContents.executeJavaScript(
-            "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined' })"));
+            "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined', "
+            // Layout pass L2 (#27): the header's copy of the CLI status row.
+            + "statusFields: (() => { const el = document.getElementById('status-fields'); if (!el) return null; const r = el.getBoundingClientRect(); return { hidden: el.hidden, text: el.textContent, rect: { left: Math.round(r.left), width: Math.round(r.width), right: Math.round(r.right) }, viewport: window.innerWidth, display: getComputedStyle(el).display }; })() })"));
         } catch (err) { viewDom = { error: err.message }; }
       }
       // No menu bar: no application menu AND none on the window.
       const noMenuBar = Menu.getApplicationMenu() === null && !win.isMenuBarVisible();
+      // Layout pass L2 (#28): a frameless window's content fills the whole
+      // window, and its strip is the title bar (verify/probe-window-chrome.js).
+      let windowChromeDom = null;
+      try {
+        windowChromeDom = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify({ frameless: document.body.classList.contains('frameless'), min: !document.getElementById('win-min').hidden, close: !document.getElementById('win-close').hidden, drag: getComputedStyle(document.getElementById('strip')).webkitAppRegion || getComputedStyle(document.getElementById('strip')).getPropertyValue('-webkit-app-region') })"));
+      } catch (err) { windowChromeDom = { error: err.message }; }
+      const windowFrame = { bounds: win.getBounds(), content: win.getContentBounds(), dom: windowChromeDom };
       const snap = tabShell.snapshot();
       return {
-        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar,
+        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen,
       };
     },
