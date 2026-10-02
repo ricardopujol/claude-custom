@@ -392,3 +392,25 @@ test('tab-strip.html has the + and a static branch form outside #tabs', () => {
   assert.match(html, /id="create"[^>]*\bhidden\b/);
   assert.match(html, /id="plus"[^>]*\bhidden\b/);
 });
+
+// --- #40 tab marks ---------------------------------------------------------------
+
+test('paint: a mark sits just before the label, its meaning on hover', () => {
+  const doc = fakeDoc();
+  const mark = { id: 'waiting', emoji: 'W', meaning: 'Waiting on a merge' };
+  paint(doc, { model: [entry({ working: true, mark }), entry({ key: 'b', mark: null }), entry({ key: 'c' })] }, bridgeSpy());
+  const [marked, cleared, absent] = doc.byId.tabs.children;
+  const m = child(marked, 'mark');
+  assert.strictEqual(m.tag, 'span');
+  assert.strictEqual(m.textContent, 'W');
+  assert.strictEqual(m.title, 'Waiting on a merge');
+  assert.strictEqual(marked.children.indexOf(m), marked.children.indexOf(child(marked, 'label')) - 1);
+  assert.strictEqual(child(cleared, 'mark'), undefined);
+  assert.strictEqual(child(absent, 'mark'), undefined);
+});
+
+test('paint: a mark without an emoji draws nothing', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ mark: { id: 'x', emoji: '', meaning: 'm' } }), entry({ key: 'b', mark: 'W' })] }, bridgeSpy());
+  for (const t of doc.byId.tabs.children) assert.strictEqual(child(t, 'mark'), undefined);
+});

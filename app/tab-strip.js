@@ -95,6 +95,11 @@ function paintTab(doc, entry, bridge) {
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
   if (entry.working) tab.appendChild(el(doc, 'span', 'dot working')).title = 'Working';
   if (entry.needsInput) tab.appendChild(el(doc, 'span', 'dot needs')).title = 'Needs your input';
+  // #40: the person's own mark on the tab; its meaning on hover.
+  const mark = entry.mark;
+  if (mark && typeof mark === 'object' && nonEmpty(mark.emoji)) {
+    tab.appendChild(el(doc, 'span', 'mark', mark.emoji)).title = nonEmpty(mark.meaning) ? mark.meaning : '';
+  }
   tab.appendChild(el(doc, 'span', 'label', entry.label));
   if (entry.lockGlyph && GLYPHS[entry.lockGlyph]) {
     const g = tab.appendChild(el(doc, 'span', `glyph ${entry.lockGlyph}`, GLYPHS[entry.lockGlyph]));
