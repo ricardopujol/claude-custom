@@ -394,4 +394,6 @@ module.exports = {
   planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
   readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, LOOK_DIR_NAME,
   seedLookIfNew, rerollLook,
+  // the branch ledger (host/git-tree-service.js) lives in the same folder, behind the same ignore
+  ensureLookDir,
 };
