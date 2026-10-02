@@ -334,6 +334,9 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
     userStatusLine: findUserStatusLine({ home: os.homedir(), cwd: CWD }),
+    // BACKLOG #27: "status line in the header" quiets the CLI's row. Written by
+    // app/window-chrome-bridge.js into the same install-wide state dir.
+    quietWhen: path.join(HARNESS_DIR, 'state', 'chrome-global.json'),
   },
   // The tool belt (BACKLOG #17): rewrites an Agent spawn from state/loadout.json.
   // Same node-from-PATH reasoning as the relay above; the hook re-reads the file

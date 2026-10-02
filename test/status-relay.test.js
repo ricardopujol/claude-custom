@@ -310,6 +310,23 @@ test('#27: quiet still forwards the document to the host', async () => {
   assert.ok(ev && ev.event === 'Status', 'the header needs the document even when the row is quiet');
 });
 
+test('#27: statusRelay.quietWhen adds a quoted --quiet-when with forward slashes', () => {
+  const user = { type: 'command', command: 'node C:/u/sl.js' };
+  const base = relayOpts(user);
+  const s = buildHarnessSettings({ ...base,
+    statusRelay: { ...base.statusRelay, quietWhen: 'C:\\cc\\.harness\\state\\chrome-global.json' } }).statusLine;
+  assert.match(s.command, /--quiet-when "C:\/cc\/\.harness\/state\/chrome-global\.json"/);
+  // It parses back to the same path through the relay's own reader.
+  const { parseArgs } = require('../host/status-relay');
+  const argv = s.command.match(/"[^"]*"|\S+/g).map(a => a.replace(/^"|"$/g, ''));
+  assert.strictEqual(parseArgs(argv).quietWhen, 'C:/cc/.harness/state/chrome-global.json');
+});
+
+test('#27: no quietWhen -> no --quiet-when (the relay prints as before)', () => {
+  const s = buildHarnessSettings(relayOpts({ type: 'command', command: 'node C:/u/sl.js' })).statusLine;
+  assert.ok(!/--quiet-when/.test(s.command), s.command);
+});
+
 test('#27: parseArgs reads --quiet-when, and defaults it to null', () => {
   const { parseArgs } = require('../host/status-relay');
   assert.deepStrictEqual(parseArgs(['--pipe', 'p', '--then', 'x', '--quiet-when', 'C:/f.json']),
