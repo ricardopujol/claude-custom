@@ -456,4 +456,7 @@ async function readUsage({
 module.exports = {
   readUsage, projectDirName, defaultProjectsDir, EMPTY,
   READ_CHUNK, PARSE_BATCH, FINGERPRINT_BYTES,
+  // shared with host/branch-ledger.js, which resumes transcripts the same way: one copy of the
+  // prefix check, not two that can drift (host/transcripts.js, same reason)
+  readFingerprint, prefixIntact,
 };

@@ -33,17 +33,18 @@ function render(ms) {
   return out;
 }
 
+// inside the project -> spend; outside (cwd C:\p-other) -> loose
 function reference(ms) {
   const by = {};
   for (const m of ms) {
-    if (m.cwd.startsWith('C:\\p-other')) continue;
-    by[m.branch] = (by[m.branch] || 0) + m.input;
+    const t = by[m.branch] || (by[m.branch] = [0, 0]);
+    t[m.cwd.startsWith('C:\\p-other') ? 1 : 0] += m.input;
   }
   return by;
 }
-const spends = rec => Object.fromEntries(Object.entries(rec.branches).map(([k, v]) => [k, v.spend]));
+const spends = rec => Object.fromEntries(Object.entries(rec.branches).map(([k, v]) => [k, [v.spend, v.loose]]));
 
-test('one read gives each message once, per branch, inside the project only', () => {
+test('one read gives each message once, per branch, as spend inside the project and loose outside', () => {
   fc.assert(fc.property(transcriptArb, ms => {
     const r = addLines(emptyRecord(), render(ms).join('\n') + '\n', ROOT);
     assert.deepStrictEqual(spends(r), reference(ms));

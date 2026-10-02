@@ -38,10 +38,19 @@ test('lastId carries across calls: a repeat split over two reads still counts on
   assert.strictEqual(r.lastId, 'm1');
 });
 
-test('outside the project, no gitBranch, no usage or not JSON: nothing', () => {
+test("a line whose cwd is outside the project is LOOSE: kept apart, never in the branch's spend", () => {
+  // An old-layout worktree beside the repo (claude-custom-ptf, 113,090 tokens) or a session that
+  // cd'd out writes such lines; so would another project whose folder shares the prefix. The model
+  // decides which loose spend is ours (only branch names this repo's git knows).
+  const r = emptyRecord();
+  addLines(r, lines(a('x', 'feat/a', 10, 'C:\\p-ptf'), a('y', 'feat/a', 2, 'C:\\p\\dev')), ROOT);
+  assert.strictEqual(r.branches['feat/a'].spend, 3);
+  assert.strictEqual(r.branches['feat/a'].loose, 11);
+});
+
+test('no gitBranch, no usage or not JSON: nothing', () => {
   const r = emptyRecord();
   addLines(r, lines(
-    a('x', 'feat/a', 10, 'C:\\p-other\\dev'),
     JSON.stringify({ type: 'assistant', cwd: 'C:\\p\\dev', message: { id: 'y', usage: { input_tokens: 1 } } }),
     JSON.stringify({ type: 'user', gitBranch: 'feat/a', cwd: 'C:\\p\\dev', message: { content: 'has "usage" in it' } }),
     '{oops "usage"'), ROOT);
@@ -60,7 +69,7 @@ test('first and last day, and the cwds a branch ran in; runBranch is the last co
     a('1', 'feat/a', 1, 'C:\\p\\feat-a', '2026-09-21T01:00:00Z'),
     a('2', 'feat/a', 1, 'c:\\P\\feat-a\\', '2026-09-20T01:00:00Z'),
     a('3', 'feat/b', 1, 'C:\\p\\dev', '2026-09-22T01:00:00Z')), ROOT);
-  assert.deepStrictEqual(r.branches['feat/a'], { spend: 4, first: '2026-09-20', last: '2026-09-21', cwds: ['C:\\p\\feat-a'] });
+  assert.deepStrictEqual(r.branches['feat/a'], { spend: 4, loose: 0, first: '2026-09-20', last: '2026-09-21', cwds: ['C:\\p\\feat-a'] });
   assert.strictEqual(r.runBranch, 'feat/b');
 });
 
@@ -74,7 +83,7 @@ test('the text after the last newline is not counted (the caller keeps it for ne
 const { mergeLedgers, totals } = require('../host/branch-ledger');
 
 const recOf = (offset, branches, extra = {}) => ({ ...emptyRecord(), offset, branches, ...extra });
-const br = (spend, first = '2026-09-20', last = first, cwds = ['C:\\p\\dev']) => ({ spend, first, last, cwds });
+const br = (spend, first = '2026-09-20', last = first, cwds = ['C:\\p\\dev'], loose = 0) => ({ spend, loose, first, last, cwds });
 
 test('merge keeps, per file, the record read furthest; a file only one side knows is kept', () => {
   const x = { version: 1, files: { f1: recOf(10, { a: br(1) }), f2: recOf(5, { a: br(2) }) } };
@@ -97,7 +106,17 @@ test('totals sum a branch over every file, widen its days and union its cwds', (
     f2: recOf(1, { 'feat/a': br(7, '2026-09-19', '2026-09-20', ['C:\\p\\feat-a', 'C:\\p\\dev']) }),
   } };
   assert.deepStrictEqual(totals(l)['feat/a'],
-    { spend: 12, first: '2026-09-19', last: '2026-09-21', cwds: ['C:\\p\\dev', 'C:\\p\\feat-a'], runs: [] });
+    { spend: 12, loose: 0, first: '2026-09-19', last: '2026-09-21', cwds: ['C:\\p\\dev', 'C:\\p\\feat-a'], runs: [] });
+});
+
+test('loose spend is totalled apart from spend', () => {
+  const l = { version: 1, files: {
+    f1: recOf(1, { 'feat/a': br(5, '2026-09-20', '2026-09-20', ['C:\\p\\dev'], 2) }),
+    f2: recOf(1, { 'feat/a': br(0, '2026-09-20', '2026-09-20', ['C:\\p-ptf'], 9) }),
+  } };
+  const t = totals(l)['feat/a'];
+  assert.strictEqual(t.spend, 5);
+  assert.strictEqual(t.loose, 11);
 });
 
 test('a subagent file is one run of its agentType on its runBranch, worth all its spend', () => {
