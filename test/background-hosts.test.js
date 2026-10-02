@@ -257,18 +257,30 @@ test('a list whose builds could not all be found still lists this build, and dou
   assert.deepStrictEqual(r.doubts, [{ install: null, cwd: null }]);
 });
 
-test('an identity it cannot read is a doubt (any folder), never a silent skip (PR #83 F3)', async () => {
-  const { w, deps } = world();
-  w.files[OTHER] = { 7709: null };                       // half-written, unreadable
+test('an identity it cannot READ (locked, denied) is a doubt about any folder, naming the file (PR #83 F3, R2-2)', async () => {
+  const { deps } = world();
+  const real = deps.identities;
+  deps.identities = install => (install === OTHER ? [{ port: 7709, parsed: null, unreadable: true }] : real(install));
   const r = await list(deps);
-  assert.deepStrictEqual(r.doubts, [{ install: OTHER, cwd: null }]);
+  assert.deepStrictEqual(r.doubts, [{ install: OTHER, cwd: null, file: path.join(OTHER, '.harness', 'hosts', '7709.json') }]);
+});
+
+// Dexter, PR #83 R2-2: identities are written atomically (tmp + rename), so a
+// file that won't parse, or names no pid, is never a host mid-write -- it's
+// junk, and junk that never goes away must not block every --stop forever.
+test('junk is no doubt: a file that will not parse, or names no pid', async () => {
+  const { w, deps } = world();
+  w.files[OTHER] = { 7709: null, 7710: { port: 7710, cwd: 'C:\\odd' } };
+  const r = await list(deps);
+  assert.deepStrictEqual(r.doubts, []);
+  assert.strictEqual(r.verified, true);
 });
 
 test('an identity it cannot use is a doubt about its folder, while its pid runs (PR #83 F3)', async () => {
   const { w, deps } = world();
   w.files[OTHER] = { 7709: { port: 7709, cwd: 'C:\\odd', pid: 909, startedAt: 'yesterday' } };
   w.procs.set(909, ft(1));
-  assert.deepStrictEqual((await list(deps)).doubts, [{ install: OTHER, cwd: 'C:\\odd' }]);
+  assert.deepStrictEqual((await list(deps)).doubts, [{ install: OTHER, cwd: 'C:\\odd', file: path.join(OTHER, '.harness', 'hosts', '7709.json') }]);
   w.procs.delete(909);                                   // a dead stale file is no doubt
   assert.deepStrictEqual((await list(deps)).doubts, []);
 });
@@ -287,6 +299,13 @@ test('identitiesIn: every <port>.json, parsed or null; never a token; port from 
     { port: 7701, parsed: { port: 7701, cwd: 'C:/p', pid: 1, startedAt: 2 } },
     { port: 7702, parsed: null },
   ]);
+});
+
+test('identitiesIn: a file it cannot read at all is marked unreadable, unlike junk that reads (R2-2)', () => {
+  const { build } = tree();
+  const dir = build('dev');
+  fs.mkdirSync(path.join(dir, '.harness', 'hosts', '7704.json'));    // EISDIR: a read error, not a parse error
+  assert.deepStrictEqual(identitiesIn(dir), [{ port: 7704, parsed: null, unreadable: true }]);
 });
 
 test('identitiesIn: an install that never ran a host has none -- not an error', () => {

@@ -47,7 +47,9 @@ function folderText(cwd) {
 
 // *Stop all in this project* (Windowless sessions PR 3): every session the menu
 // offers Stop on whose folder is this window's project root or inside it. Read
-// from the row's cwd, never the disk: a merged worktree's folder may be gone.
+// from the row's cwd, not from projectOf (a merged worktree's folder may be
+// gone); inFolder resolves junctions with one realpath per row, which a folder
+// on an offline network drive can slow (Dexter, PR #83 R2-4).
 function stopAllOf(items, projectRoot) {
   if (typeof projectRoot !== 'string' || !projectRoot) return null;
   // Its folder, not its build: a claude-custom window's root holds every build,

@@ -77,36 +77,41 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
   // one folder (host/stop-folder.js, PR 3) weighs only the doubts that touch it.
   const doubts = [];
   const claims = [];
-  // A file it can't use (Dexter, PR #83 F3) is a doubt -- about its folder when
-  // it names one, else any -- but only while its pid could be a live host: a
-  // dead stale file must not doubt the machine forever.
+  // A file it can't use (Dexter, PR #83 F3) is a doubt, naming the file so
+  // someone can clear it (R2-2) -- but only when it could be a live host's:
+  //   - one it can't READ (locked, denied): about any folder;
+  //   - one that reads but isn't a claim: about its folder, while its pid runs.
+  // A file that won't parse, or names no pid, is junk: identities are written
+  // atomically (tmp + rename), so it's never a host mid-write, and junk that
+  // never goes away must not block every --stop forever (R2-2).
   const unusable = [];
   let installs;
   try { installs = deps.installs(); } catch { installs = [ownInstall]; doubts.push({ install: null, cwd: null }); }
   for (const install of installs) {
     let entries;
     try { entries = deps.identities(install); } catch { doubts.push({ install, cwd: null }); continue; }
-    for (const { port, parsed } of entries) {
+    for (const { port, parsed, unreadable } of entries) {
+      const file = path.join(hostsDir(install), `${port}.json`);
+      if (unreadable === true) { doubts.push({ install, cwd: null, file }); continue; }
       const c = claimOf(install, port, parsed);
       if (c) { claims.push(c); continue; }
       const named = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
-      unusable.push({
-        install,
-        cwd: named && typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : null,
-        pid: named && validPid(parsed.pid) ? parsed.pid : null,
-      });
+      if (!named || !validPid(parsed.pid)) continue;                       // junk
+      unusable.push({ install, file, pid: parsed.pid,
+        cwd: typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : null });
     }
   }
   if (claims.length === 0 && unusable.length === 0) return { rows: [], verified: doubts.length === 0, doubts };
 
-  const pids = new Set([...claims.map(c => c.pid), ...unusable.filter(u => u.pid !== null).map(u => u.pid)]);
+  const pids = new Set([...claims.map(c => c.pid), ...unusable.map(u => u.pid)]);
   const starts = await deps.startTimes([...pids]);
   if (starts === null) {
-    const all = [...claims, ...unusable].map(c => ({ install: c.install, cwd: c.cwd }));
+    const all = [...claims.map(c => ({ install: c.install, cwd: c.cwd })),
+      ...unusable.map(u => ({ install: u.install, cwd: u.cwd, file: u.file }))];
     return { rows: [], verified: false, doubts: [...doubts, ...all] };
   }
   for (const u of unusable) {
-    if (u.pid === null || starts.has(u.pid)) doubts.push({ install: u.install, cwd: u.cwd });
+    if (starts.has(u.pid)) doubts.push({ install: u.install, cwd: u.cwd, file: u.file });
   }
 
   const byPid = new Map();
@@ -187,9 +192,13 @@ function identitiesIn(install) {
   return names
     .filter(n => /^\d+\.json$/.test(n))
     .map((n) => {
+      const port = Number(n.slice(0, -'.json'.length));
+      let text;
+      // Can't READ it (locked, denied): it may be a live host's (R2-2).
+      try { text = fs.readFileSync(path.join(dir, n), 'utf8'); } catch { return { port, parsed: null, unreadable: true }; }
       let parsed = null;
-      try { parsed = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch { parsed = null; }
-      return { port: Number(n.slice(0, -'.json'.length)), parsed };
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      return { port, parsed };
     });
 }
 

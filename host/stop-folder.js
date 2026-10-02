@@ -58,13 +58,14 @@ async function stopRows(rows, stopHost) {
   return results;
 }
 
-// A list that could be about this folder and couldn't check everything. A
-// doubt with no folder (an install it couldn't read) could be about any.
-function verifiedFor(list, folder) {
-  if (!list) return false;
-  if (list.verified === true) return true;
-  if (!Array.isArray(list.doubts)) return false;
-  return list.doubts.every(d => d && typeof d.cwd === 'string' && typeof d.install === 'string' && !serves(d, folder));
+// The doubts that could be about this folder (null: "could be anything", when
+// the list didn't say). A doubt with no folder (a file or an install it
+// couldn't read) could be about any.
+function doubtsAbout(list, folder) {
+  if (!list) return null;
+  if (list.verified === true) return [];
+  if (!Array.isArray(list.doubts)) return null;
+  return list.doubts.filter(d => !(d && typeof d.cwd === 'string' && typeof d.install === 'string' && !serves(d, folder)));
 }
 
 const keyOf = r => `${r.pid}:${r.processStartedAt}`;
@@ -84,7 +85,10 @@ async function stopFolder({ folder }, deps) {
     results.push(...await stopRows(fresh, deps.stopHost));
   }
   const kept = results.filter(r => !ENDED.has(r.outcome)).length;
-  return { folder, results, verified: verifiedFor(list, folder), kept, late };
+  const doubts = doubtsAbout(list, folder);
+  // The files to look at, so "couldn't check" can be cleared (Dexter R2-2).
+  const unsureFiles = (doubts || []).map(d => d && d.file).filter(f => typeof f === 'string');
+  return { folder, results, verified: doubts !== null && doubts.length === 0, kept, late, unsureFiles };
 }
 
 const stopExitCode = rep => (rep.kept > 0 || rep.late > 0 || !rep.verified ? 3 : 0);
@@ -92,7 +96,8 @@ const stopExitCode = rep => (rep.kept > 0 || rep.late > 0 || !rep.verified ? 3 :
 function stopReportLines(rep) {
   const lines = rep.results.map(({ row, outcome, text }) =>
     `${ENDED.has(outcome) ? outcome : 'kept'}: ${row.cwd} (build ${row.build}, pid ${row.pid}) -- ${text}`);
-  const unsure = 'Not every session could be checked (an identity or a start time could not be read), so the folder may still be in use.';
+  const files = Array.isArray(rep.unsureFiles) && rep.unsureFiles.length ? ` Couldn't use: ${rep.unsureFiles.join(', ')}.` : '';
+  const unsure = `Not every session could be checked (an identity or a start time could not be read), so the folder may still be in use.${files}`;
   if (lines.length === 0) {
     lines.push(rep.verified ? `no claude-custom session is serving ${rep.folder}`
       : `No claude-custom session was found serving ${rep.folder}, but ${unsure.charAt(0).toLowerCase()}${unsure.slice(1)}`);

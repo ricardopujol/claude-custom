@@ -197,6 +197,18 @@ test('stopReportLines: one line per session with folder, build, pid and what hap
   assert.match(lines[1], /^kept: .*build feat-x, pid 2.*window open/);
 });
 
+// Dexter, PR #83 R2-2: "not every session could be checked" must say which
+// file, or nobody can clear it.
+test('stopFolder + stopReportLines: name the identity files that kept the folder unsure', async () => {
+  const file = 'C:\\cc\\dev\\.harness\\hosts\\7709.json';
+  const rep = await stopFolder({ folder: 'C:\\proj\\feat-a' }, {
+    list: async () => ({ rows: [], verified: false, doubts: [{ install: 'C:\\cc\\dev', cwd: null, file }] }),
+    stopHost: async () => assert.fail('nothing to stop'),
+  });
+  assert.strictEqual(stopExitCode(rep), 3);
+  assert.ok(stopReportLines(rep).join('\n').includes(file));
+});
+
 test('stopReportLines: says so when nothing is serving the folder', () => {
   assert.deepStrictEqual(stopReportLines({ folder: 'C:\\f', verified: true, kept: 0, late: 0, results: [] }),
     ['no claude-custom session is serving C:\\f']);
