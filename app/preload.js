@@ -152,6 +152,22 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(enabled === true); } catch (err) { console.error('[preload] avatar-images listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('avatar-images')),
   },
+  // Window chrome (layout pass L2): "status line in the header" (#27) and
+  // "hide the title bar" (#28), install-wide -- see app/window-chrome-bridge.js.
+  // Setters take the DESIRED boolean; main pushes the settings back through
+  // `onChange` (replace-don't-accumulate).
+  chrome: {
+    get: () => ipcRenderer.invoke('chrome:getSettings'),
+    setStatusInHeader: (on) => ipcRenderer.invoke('chrome:setStatusInHeader', on),
+    setFrameless: (on) => ipcRenderer.invoke('chrome:setFrameless', on),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('chrome-settings'), ipcRenderer.on('chrome-settings',
+      (_e, settings) => {
+        try {
+          fn({ statusInHeader: !!settings && settings.statusInHeader === true,
+            framelessWindow: !!settings && settings.framelessWindow === true });
+        } catch (err) { console.error('[preload] chrome-settings listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('chrome-settings')),
+  },
   // Focus mode (layout pass L1, #1): only the terminal shows. Main owns it (the
   // tab view has to cover the strip); the page hides its header and zones when
   // told through onChange, which replaces its one listener.

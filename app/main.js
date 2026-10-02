@@ -28,6 +28,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
+const { readChromeSettings, registerChromeHandlers, watchChromeSettings, CHROME_KEY } = require('./window-chrome-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -841,6 +842,16 @@ function registerIpc() {
   watchImagesEnabled({
     store: uiStore, win, sync: avatarSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
+  });
+
+  // Layout pass L2: "status line in the header" (#27; host/status-relay.js
+  // reads the same file on every status fire) and "hide the title bar" (#28;
+  // read by createWindow for the next window). See window-chrome-bridge.js.
+  const chromeSync = {};
+  registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
+  watchChromeSettings({
+    store: uiStore, sync: chromeSync, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${CHROME_KEY}.json`),
   });
 
   // The global dock layout (layout pass L1): install-wide like the toggle above,

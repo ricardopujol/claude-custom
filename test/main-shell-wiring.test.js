@@ -93,6 +93,9 @@ test('the bridges that took `win` are handed the tab-view predicate', () => {
   assert.match(MAIN, /registerFavouriteHandlers\(\{[^}]*isSender: isTabView[^}]*\}\)/);
   assert.match(MAIN, /registerAvatarHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
   assert.match(MAIN, /watchImagesEnabled\(\{[\s\S]*?send: pushToViews/);
+  // Layout pass L2: the window-chrome settings, the same shape.
+  assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
+  assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToViews[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
 });
 
 test('the window-wide broadcasts reach EVERY tab view', () => {
