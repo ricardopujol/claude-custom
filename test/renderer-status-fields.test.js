@@ -41,11 +41,11 @@ test('renderer.html loads the module before renderer.js', () => {
   assert.ok(a !== -1 && b !== -1 && a < b);
 });
 
-test('renderStatusFields formats through statusFieldsText and hides unless the setting is on', () => {
+test('renderStatusFields draws statusFieldsView (the rule is behaviour-tested there, Miguel L2 G1)', () => {
   const body = fnBody('renderStatusFields');
-  assert.match(body, /statusFieldsText\(/);
-  assert.match(body, /statusInHeader/);
-  assert.match(body, /\.hidden\s*=/);
+  assert.match(body, /statusFieldsView\(lastStatusFields, chromeSettings\.statusInHeader\)/);
+  assert.match(body, /\.textContent = view\.text/);
+  assert.match(body, /\.hidden = !view\.shown/);
 });
 
 test('a live statusFields message and the hello both render the fields', () => {

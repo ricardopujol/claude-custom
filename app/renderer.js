@@ -3537,9 +3537,9 @@ let lastStatusFields = null;
 function renderStatusFields(fields) {
   lastStatusFields = fields && typeof fields === 'object' ? fields : null;
   if (!statusFieldsEl) return;
-  const parts = statusFieldsText(lastStatusFields);
-  statusFieldsEl.textContent = parts.join('  │  ');
-  statusFieldsEl.hidden = !(chromeSettings.statusInHeader === true && parts.length > 0);
+  const view = statusFieldsView(lastStatusFields, chromeSettings.statusInHeader);
+  statusFieldsEl.textContent = view.text;
+  statusFieldsEl.hidden = !view.shown;
 }
 
 // The install-wide "show agent images" toggle (BACKLOG C #18). Sends the

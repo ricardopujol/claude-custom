@@ -47,12 +47,23 @@ function statusFieldsText(fields) {
   ].filter(Boolean);
 }
 
+/**
+ * What the header's #status-fields shows. Shown only while "status line in
+ * the header" is exactly true (unknown or off: the CLI's own row is, or may
+ * be, saying it already) AND there's something to say.
+ */
+function statusFieldsView(fields, statusInHeader) {
+  const parts = statusFieldsText(fields);
+  return { text: parts.join('  │  '), shown: statusInHeader === true && parts.length > 0 };
+}
+
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { statusFieldsText };
+  module.exports = { statusFieldsText, statusFieldsView };
 } else {
   root.statusFieldsText = statusFieldsText;
+  root.statusFieldsView = statusFieldsView;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

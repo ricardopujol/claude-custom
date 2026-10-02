@@ -51,3 +51,25 @@ test('property: junk never throws and never yields an empty or non-string segmen
     for (const s of out) assert.ok(typeof s === 'string' && s.length > 0);
   }));
 });
+
+// --- Miguel L2 G1: the show/hide rule, as behaviour (not a source regex) -------
+
+const { statusFieldsView } = require('../app/status-fields-display');
+const SOME = { costUsd: 1.5, durationMs: null, linesAdded: null, linesRemoved: null, over200k: null };
+
+test('shown only when the setting is exactly true AND there is something to say', () => {
+  assert.deepStrictEqual(statusFieldsView(SOME, true), { text: '$1.50', shown: true });
+  assert.deepStrictEqual(statusFieldsView(SOME, false), { text: '$1.50', shown: false });
+  assert.deepStrictEqual(statusFieldsView(SOME, null), { text: '$1.50', shown: false }, 'unknown setting: the CLI row may still be showing');
+  assert.deepStrictEqual(statusFieldsView(null, true), { text: '', shown: false }, 'unknown fields draw nothing');
+  assert.deepStrictEqual(statusFieldsView({ ...SOME, costUsd: 0 }, true), { text: '', shown: false });
+});
+
+test('property: shown implies the setting is true and the text is non-empty', () => {
+  const v = fc.oneof(fc.constant(null), fc.constant(0), fc.double({ min: 0, max: 1e7, noNaN: true }));
+  fc.assert(fc.property(v, v, fc.anything(), (c, d, setting) => {
+    const out = statusFieldsView({ costUsd: c, durationMs: d, linesAdded: null, linesRemoved: null, over200k: null }, setting);
+    if (out.shown) assert.ok(setting === true && out.text.length > 0);
+    else assert.ok(setting !== true || out.text === '');
+  }));
+});

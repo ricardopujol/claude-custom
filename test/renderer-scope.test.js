@@ -85,7 +85,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/style-display.js, Window section (layout pass L2, #27/#28)
   'windowSectionView', 'reduceChromeSettings',
   // app/status-fields-display.js (BACKLOG #27)
-  'statusFieldsText',
+  'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
   // app/top-bar-display.js (FF12)
