@@ -116,6 +116,10 @@ function paintTab(doc, entry, bridge) {
   return tab;
 }
 
+// The one piece of state here: whether the ▾ menu is open, so a repaint while
+// it is can't free the button early.
+let backgroundBusy = false;
+
 /** Paint `payload` into the page. Everything is rebuilt: the strip is small. */
 function paint(doc, payload, bridge) {
   const tabs = doc.getElementById('tabs');
@@ -129,6 +133,21 @@ function paint(doc, payload, bridge) {
   text.textContent = info ? info.text : '';
   retry.hidden = !(info && info.retry);
   retry.onclick = info && info.retry ? () => bridge.select(info.retry) : null;
+  // ▾: the running-sessions menu (Windowless sessions PR 2). Busy until main's
+  // menu closes -- listing takes ~1-2 s -- and freed even when it fails.
+  const bg = doc.getElementById('bg');
+  if (bg) {
+    bg.disabled = backgroundBusy;
+    bg.onclick = () => {
+      if (backgroundBusy) return;
+      backgroundBusy = true;
+      bg.disabled = true;
+      const done = () => { backgroundBusy = false; bg.disabled = false; };
+      let asked;
+      try { asked = Promise.resolve(bridge.background()); } catch (err) { asked = Promise.reject(err); }
+      asked.then(done, done);
+    };
+  }
   // In the STRIP, because the pane below is covered by the selected tab's
   // view. Dexter, PR #75 F3.
   const alertEl = doc.getElementById('strip-alert');

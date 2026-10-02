@@ -1357,6 +1357,32 @@ test('handleProbeCommand dispatches known commands and refuses the rest by name,
   assert.deepStrictEqual(boom, { ok: false, error: 'kaput' });
 });
 
+test('handleProbeCommand: the ▾ list, and a stop by port (a real port only)', async () => {
+  const seen = [];
+  const api = {
+    background: async () => ({ ok: true, items: [] }),
+    backgroundStop: async (p) => { seen.push(p); return { ok: true, outcome: 'stopped' }; },
+  };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'background' }), api), { ok: true, items: [] });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'background-stop', port: 7718 }), api), { ok: true, outcome: 'stopped' });
+  for (const port of [undefined, 0, 65536, 1.5, '7718']) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'background-stop', port }), api),
+      { ok: false, error: 'background-stop needs a port' }, String(port));
+  }
+  assert.deepStrictEqual(seen, [7718]);
+});
+
+test('handleProbeCommand: Open from the ▾ list, by port (a real port only)', async () => {
+  const seen = [];
+  const api = { backgroundOpen: async (p) => { seen.push(p); return { ok: true, pid: 5 }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'background-open', port: 7718 }), api), { ok: true, pid: 5 });
+  for (const port of [undefined, 0, 65536, 1.5, '7718']) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'background-open', port }), api),
+      { ok: false, error: 'background-open needs a port' }, String(port));
+  }
+  assert.deepStrictEqual(seen, [7718]);
+});
+
 test('handleProbeCommand: key is dispatched with its name, and needs one', async () => {
   const seen = [];
   const api = { key: async (k, m) => { seen.push([k, m]); return { ok: true }; } };

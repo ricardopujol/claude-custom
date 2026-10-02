@@ -10,6 +10,7 @@
  * third way out: end the holder, so this window can take the lock.
  *
  *   stopHolder({ lockPath, shown }, deps) -> { outcome, text, how, reason }
+ *   stopHost({ row }, deps)                -> the same, for a ▾ list row (no lock)
  *
  *   'stopped'     the holder ended, its claude too
  *   'gone'        it had already ended (dead pid, or the pid reused)
@@ -62,6 +63,9 @@ const TEXT = {
   unsure: "Couldn't tell whether that session has a window open, so it wasn't stopped.",
   changed: 'The lock changed hands, so nothing was stopped.',
   unproven: "Couldn't confirm which process holds the lock, so nothing was stopped.",
+  // A ▾ row from an older build: its pid can't be proven exactly, and it didn't
+  // answer its own controls, so it is not ended by pid (Dexter, PR 2 F1).
+  'unproven-unasked': "That session didn't answer, and an older build's session is only stopped when it does, so it wasn't stopped.",
   failed: "Couldn't stop that session",
 };
 
@@ -130,7 +134,7 @@ async function ended(lock, deps, how, reason) {
 // No answer from the holder itself: the OS counts its windows, and only a 0
 // lets it be stopped -- through its own `stop` when it can take one, else by
 // its re-proven pid. `asked` says a stop-if-idle may already be under way.
-async function stopUnasked(lock, deps, { token, reason, asked }) {
+async function stopUnasked(lock, deps, { token, reason, asked, mayKill = true }) {
   const windows = await deps.windowCount(lock.pid, lock.port);
   if (windows === null || windows === undefined) return result('unsure', { reason });
   if (!(Number.isInteger(windows) && windows >= 0)) return result('unsure', { reason });
@@ -152,6 +156,7 @@ async function stopUnasked(lock, deps, { token, reason, asked }) {
   const again = await proveStart(lock.pid, lock.processStartedAt, deps);
   if (again === 'gone') return asked ? ended(lock, deps, 'stop-if-idle', reason) : result('gone', { reason });
   if (again !== 'same') return result('unproven', { reason });
+  if (!mayKill) return result('unproven', { reason, variant: 'unproven-unasked' });
   deps.killPidTree(lock.pid);
   return ended(lock, deps, 'kill', reason);
 }
@@ -161,6 +166,33 @@ async function stopHolder({ lockPath, shown } = {}, deps = {}) {
   if (seen.gone) return result('gone');
   const lock = seen.parsed;
   if (!lock || !validPid(lock.pid) || !sameHolder(lock, shown)) return result('changed');
+  return stopProven(lock, deps);
+}
+
+/**
+ * *Stop* from the strip's ▾ list (Windowless sessions PR 2): a row of
+ * host/background-hosts.js, which may hold no lock at all (a host serving a
+ * non-repo folder). Proven the same way, against the OS start time the list
+ * read for it, and stopped by the same rules. Its claude pid isn't known
+ * without a lock; a stop or a tree kill ends it with its host.
+ */
+//
+// KILLED BY PID ONLY ON AN EXACT PROOF (Dexter, PR 2 F1): `row.exact` says the
+// identity file carried the host's OS start time and it matched. A row proven
+// by the wall clock alone (an older build) may name an unrelated process once
+// the clock has stepped back, so it ends only through its own token-checked
+// controls -- which that process can't answer. Anything but `exact: true` is
+// read as wall-proven.
+async function stopHost({ row } = {}, deps = {}) {
+  if (!row || !validPid(row.pid)) return result('unproven');
+  return stopProven({
+    pid: row.pid, processStartedAt: row.processStartedAt, port: row.port, install: row.install, claudePid: null,
+  }, deps, { mayKill: row.exact === true });
+}
+
+// `lock` is the holder: { pid, processStartedAt, port, install, claudePid }.
+// `mayKill`: false keeps every path but the pid kill.
+async function stopProven(lock, deps, { mayKill = true } = {}) {
   // Never this host or the window that started it (Miguel S1): a lock naming
   // either is not a holder to end, whatever else it says.
   const self = Number.isInteger(deps.selfPid) ? deps.selfPid : process.pid;
@@ -173,7 +205,7 @@ async function stopHolder({ lockPath, shown } = {}, deps = {}) {
   if (proof !== 'same') return result('unproven');
 
   const r = reach(lock, deps);
-  if (!r.token) return stopUnasked(lock, deps, { reason: r.reason });
+  if (!r.token) return stopUnasked(lock, deps, { reason: r.reason, mayKill });
 
   const answer = await deps.sendControl({ port: lock.port, token: r.token, msg: { type: 'stop-if-idle' } });
   if (answer && answer.ok) {
@@ -186,10 +218,10 @@ async function stopHolder({ lockPath, shown } = {}, deps = {}) {
   }
   const error = (answer && answer.error) || 'no answer';
   if (error === OLDER_HOST('stop-if-idle')) {
-    return stopUnasked(lock, deps, { token: r.token, reason: 'its build has no stop-if-idle' });
+    return stopUnasked(lock, deps, { token: r.token, reason: 'its build has no stop-if-idle', mayKill });
   }
   // Timed out, refused, hung up: it may be busy, hung, or already stopping.
-  return stopUnasked(lock, deps, { reason: `stop-if-idle: ${error}`, asked: true });
+  return stopUnasked(lock, deps, { reason: `stop-if-idle: ${error}`, asked: true, mayKill });
 }
 
-module.exports = { stopHolder, WAIT_MS, POLL_MS, TEXT };
+module.exports = { stopHolder, stopHost, WAIT_MS, POLL_MS, TEXT };

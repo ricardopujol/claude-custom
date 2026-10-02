@@ -63,12 +63,18 @@ function defaultIsAlive(pid) {
  * Node honours only the read-only bit -- so the real protection is the ACL
  * .harness/ inherits, and this documents intent rather than carrying weight.
  */
-function writeIdentity({ dir, port, cwd, pid = process.pid } = {}) {
+// `processStartedAt` is the host's OS start time (host/proc-start.js FILETIME),
+// once it knows it: the exact proof host/background-hosts.js needs before
+// anything stops this pid. `startedAt` is wall clock, and a clock that steps
+// back makes it prove an unrelated process (Dexter, PR 2 F1).
+function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt } = {}) {
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
+  const doc = { port, cwd, pid, startedAt: Date.now() };
+  if (typeof processStartedAt === 'string' && processStartedAt) doc.processStartedAt = processStartedAt;
   try {
-    fs.writeFileSync(tmp, JSON.stringify({ port, cwd, pid, startedAt: Date.now() }),
+    fs.writeFileSync(tmp, JSON.stringify(doc),
       { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, file);
   } catch (err) {

@@ -206,3 +206,18 @@ test('readTokenFile: the trimmed per-port token, or null for missing, empty or a
     assert.strictEqual(readTokenFile({ dir, port }), null, String(port));
   }
 });
+
+// Dexter, PR 2 F1 (High): `startedAt` is a wall-clock reading, and a clock that
+// steps back makes "started no later than the write" true of an unrelated
+// process. The OS start time is exact, so the host records it when it knows it.
+test('the identity carries the host\'s OS start time when given one, and only a string', () => {
+  const dir = tmp();
+  writeIdentity({ dir, port: 7700, cwd: 'C:/proj', pid: 4242, processStartedAt: '133000000000000000' });
+  const raw = JSON.parse(fs.readFileSync(path.join(dir, 'hosts', '7700.json'), 'utf8'));
+  assert.strictEqual(raw.processStartedAt, '133000000000000000');
+  for (const bad of [undefined, null, 133, '']) {
+    writeIdentity({ dir, port: 7701, cwd: 'C:/proj', pid: 4242, processStartedAt: bad });
+    const r = JSON.parse(fs.readFileSync(path.join(dir, 'hosts', '7701.json'), 'utf8'));
+    assert.strictEqual('processStartedAt' in r, false, String(bad));
+  }
+});

@@ -82,3 +82,18 @@ test('the identity file is NOT removed by a host that never owned it', () => {
   assert.ok(/listening|owned|bound/i.test(handler),
     'the error handler must distinguish "we never bound" from a normal shutdown');
 });
+
+// Dexter, PR 2 F1 (High): the ▾ list may stop a pid only on an EXACT proof,
+// the OS start time in the identity file. The host learns it asynchronously at
+// boot, so it publishes it both ways round: in the listening handler when boot
+// got there first, and from boot once it knows -- but only as the port's owner.
+test('the identity carries the OS start time, from whichever of bind and boot finishes last', () => {
+  const idx = HOST.indexOf('writeIdentity({');
+  const call = HOST.slice(idx, idx + 200);
+  assert.match(call, /processStartedAt: lockOwner \? lockOwner\.processStartedAt : undefined/);
+  const boot = HOST.indexOf('lockOwner = { pid: process.pid, processStartedAt');
+  assert.ok(boot !== -1);
+  const after = HOST.slice(boot, boot + 900);
+  assert.match(after, /if \(boundPort === PORT && typeof processStartedAt === 'string'\)/);
+  assert.match(after, /writeIdentity\(\{ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt \}\)/);
+});

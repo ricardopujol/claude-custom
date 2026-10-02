@@ -65,7 +65,7 @@ test('the gate check reads each handler alone: an ungated handler right before a
 
 test('the scan finds the channels this file registers', () => {
   const names = channels.map(c => c.name);
-  for (const n of ['strip:select', 'strip:close', 'strip:contextMenu', 'tab:status', 'tab:close', 'tab:goTo',
+  for (const n of ['strip:select', 'strip:close', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo',
     'tab:raise', 'attention', 'secrets:list', 'secrets:melt', 'look:setDim']) {
     assert.ok(names.includes(n), `${n} must be registered`);
   }
@@ -117,6 +117,28 @@ test('a host is spawned through hostEnv, never an inline environment', () => {
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
   assert.match(body, /detached: true/);
+});
+
+test('Open from the ▾ menu spawns a window through attachEnv, detached, never an inline environment', () => {
+  const at = MAIN.indexOf('spawnWindow: ({ cwd, port }) => {');
+  assert.ok(at !== -1, 'the ▾ actions must get a spawnWindow');
+  const body = MAIN.slice(at, MAIN.indexOf('confirmStop:', at));
+  assert.match(body, /env: attachEnv\(process\.env, \{ cwd, port \}\)/);
+  assert.match(body, /spawn\(process\.execPath, \[INSTALL_DIR\]/);
+  assert.match(body, /detached: true/);
+  assert.doesNotMatch(body, /\.\.\.process\.env|ELECTRON_RUN_AS_NODE/);
+});
+
+test('an attach-only window (Open from ▾) never spawns: it refuses and says why (Dexter, PR 2 F2)', () => {
+  const at = MAIN.indexOf('async function chooseHostPort(');
+  const body = MAIN.slice(at, MAIN.indexOf('function spawnHost(', at));
+  assert.match(body, /attachOnlyDecision\(decideAttach\(\{/);
+  assert.match(body, /attachOnlyRefusal = decision/);
+  const start = MAIN.indexOf('const first = await tabShell.open();');
+  const after = MAIN.slice(start, start + 1500);
+  assert.match(after, /if \(attachOnlyRefusal\)/);
+  assert.match(after, /attachOnlyText\(attachOnlyRefusal\)/);
+  assert.match(after, /app\.exit\(1\)/);
 });
 
 test('explicitPort, occupantAt, isHostListening and waitForHost survive', () => {

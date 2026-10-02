@@ -48,6 +48,14 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
+const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
+const { stopHost } = require('../host/stop-holder');
+const { isAlive: procAlive, startTimes } = require('../host/proc-start');
+const { windowCount, windowCounts } = require('../host/window-count');
+const { killPidTree } = require('../host/kill-tree');
+const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
+const { menuModel } = require('./background-menu');
+const { menuTemplate, createBackgroundActions, popupUntilClosed } = require('./background-actions');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -159,15 +167,26 @@ async function occupantAt(port) {
   return readIdentity({ dir: HARNESS_DIR, port }) || {};
 }
 
+// Set when an attach-only window (Open from ▾) was refused: the window says
+// why and ends, instead of starting a session nobody asked for.
+let attachOnlyRefusal = null;
+function attachOnlyText(d) {
+  if (d.reason === 'ended') return "That session has ended, so there's nothing to open.";
+  if (d.reason === 'other-project') return 'That port now serves another folder, so nothing was opened.';
+  return "That session couldn't be identified, so nothing was opened.";
+}
+
 // Returns { port, action } or null when the user named a port we must not take.
 // Per TAB: each tab's folder hashes to its own port.
 async function chooseHostPort(tab) {
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
   if (EXPLICIT_PORT) {
-    const decision = decideAttach({
+    // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
+    const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
       occupant: await occupantAt(EXPLICIT_PORT),
-    });
+    }), process.env);
+    if (decision.attachOnly) attachOnlyRefusal = decision;
     if (decision.action === 'refuse') {
       console.error(`[main] refusing port ${EXPLICIT_PORT}: ${decision.reason}` +
         (decision.occupiedBy ? ` (serving ${decision.occupiedBy})` : ''));
@@ -535,6 +554,80 @@ function focusWindow() {
   win.focus();
 }
 
+// --- the ▾ menu: every running session (Windowless sessions PR 2) -----------------
+// Every host of every build beside this one (host/background-hosts.js), proven
+// by its OS start time. Open is for this build's own; Stop is PR 1's rules
+// (host/stop-holder.js stopHost): never a session with a window open.
+const INSTALL_DIR = path.join(__dirname, '..');
+const harnessOf = install => path.join(install, '.harness');
+
+function listBackground() {
+  return listBackgroundHosts({ ownInstall: INSTALL_DIR }, {
+    installs: () => installsBeside(INSTALL_DIR),
+    identities: identitiesIn,
+    startTimes,
+    windowCounts,
+  });
+}
+
+async function backgroundModel() {
+  const tabsByPort = new Map();
+  for (const t of tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key);
+  return menuModel(await listBackground(), { now: Date.now(), tabsByPort });
+}
+
+// The effects, with everything they touch handed in (app/background-actions.js).
+const backgroundActions = createBackgroundActions({
+  select: key => tabShell.select(key),
+  focusWindow,
+  // Attach-only: it attaches to that host or refuses (host/launch-target.js).
+  spawnWindow: ({ cwd, port }) => {
+    const child = spawn(process.execPath, [INSTALL_DIR], {
+      detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd, port }),
+    });
+    child.on('error', err => console.log('[main] Open (background) failed:', err.message));
+    child.unref();
+    return { pid: child.pid };
+  },
+  // The probe driver has nobody to click.
+  confirmStop: async (row) => {
+    if (PROBE_PORT || !win || win.isDestroyed()) return true;
+    const ok = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: ['Stop session', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `Stop the session in ${row.cwd}?`,
+      detail: `Build ${row.build}, pid ${row.pid}. Its claude ends with it. A session with a window open is never stopped.`,
+    });
+    return ok.response === 0;
+  },
+  inform: async (text) => {
+    if (PROBE_PORT || !win || win.isDestroyed()) return;
+    await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: text });
+  },
+  stopHost: row => stopHost({ row }, {
+    isAlive: procAlive,
+    startTimes,
+    readIdentity: ({ install, port }) => readIdentity({ dir: harnessOf(install), port }),
+    readToken: (install, port) => readTokenFile({ dir: harnessOf(install), port }),
+    sendControl: c => sendControl(c),
+    windowCount,
+    killPidTree,
+    sleep: ms => new Promise(res => setTimeout(res, ms)),
+    now: Date.now,
+  }),
+  log: msg => console.log(msg),
+});
+
+async function showBackgroundMenu() {
+  const template = menuTemplate(await backgroundModel(), {
+    open: o => backgroundActions.open(o),
+    stop: row => { backgroundActions.stop(row).catch(() => {}); },
+  });
+  await popupUntilClosed(Menu.buildFromTemplate(template), win);
+}
+
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
@@ -583,6 +676,16 @@ function registerIpc() {
   ipcMain.on('strip:cancelCreate', (e) => {
     if (!fromStrip(e)) return;
     tabShell.cancelCreate();
+  });
+  // The ▾ menu. Answers when it closes, so the strip can show it was busy
+  // (the list takes two powershell.exe, ~1-2 s); one at a time.
+  let backgroundBusy = false;
+  ipcMain.handle('strip:background', async (e) => {
+    if (!fromStrip(e) || backgroundBusy) return;
+    backgroundBusy = true;
+    try { await showBackgroundMenu(); } catch (err) {
+      console.log('[main] background menu failed:', err && err.message);
+    } finally { backgroundBusy = false; }
   });
 
   // A tab's page talking to main. Every one gated on "one of THIS window's tab
@@ -970,6 +1073,24 @@ function startProbeDriver(port) {
       setTimeout(() => app.exit(0), 200);
       return { ok: true };
     },
+    async background() {
+      const m = await backgroundModel();
+      const strip = await win.webContents.executeJavaScript(
+        "JSON.stringify((b => b && { text: b.textContent, title: b.title })(document.getElementById('bg')))");
+      return { ok: true, footer: m.footer, items: m.items.map(it => ({ label: it.label, open: it.open, stop: it.stop, port: it.row.port, exact: it.row.exact })), button: JSON.parse(strip) };
+    },
+    async backgroundStop(port) {
+      const it = (await backgroundModel()).items.find(x => x.row.port === port);
+      if (!it) return { ok: false, error: `no running session on port ${port}` };
+      const r = await backgroundActions.stop(it.row);
+      return { ok: true, outcome: r.outcome, how: r.how || null, text: r.text || null };
+    },
+    async backgroundOpen(port) {
+      const it = (await backgroundModel()).items.find(x => x.row.port === port);
+      if (!it) return { ok: false, error: `no running session on port ${port}` };
+      if (!it.open) return { ok: false, error: 'that session has no Open' };
+      return { ok: true, ...(backgroundActions.open(it.open) || { failed: true }) };
+    },
   };
   const server = net.createServer((sock) => {
     // Capped (Miguel, PR #75 M4): a peer that never sends a newline is cut off.
@@ -1046,6 +1167,14 @@ app.whenReady().then(async () => {
   registerIpc();
 
   const first = await tabShell.open();
+  if (attachOnlyRefusal) {
+    console.error('[main] Open refused:', attachOnlyRefusal.reason);
+    if (!PROBE_PORT && win && !win.isDestroyed()) {
+      await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: attachOnlyText(attachOnlyRefusal) });
+    }
+    app.exit(1);
+    return;
+  }
   if (MODE === 'single' && first && !first.started) {
     // The old behaviour, kept: a refused or unfindable port ends the launch.
     // A host that merely was slow leaves the window up, with its reason and Retry.

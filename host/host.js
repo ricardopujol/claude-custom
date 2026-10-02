@@ -2423,7 +2423,8 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD }));
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD,
+      processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
     // it just cannot be recognised later, so the next window steps to another
@@ -2500,6 +2501,14 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
   const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges()]);
   excludedPorts = excluded;
   lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null, install: path.join(__dirname, '..') };
+  // The identity again, now with the OS start time: the exact proof the ▾
+  // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
+  // that bound the port -- a loser must never write over the winner's file.
+  if (boundPort === PORT && typeof processStartedAt === 'string') {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt }); } catch (err) {
+      console.error('[host] could not re-publish identity with its start time:', err.message);
+    }
+  }
   const gate = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
   // Recorded FIRST (Miguel, PR #71 Y1): if anything below throws, the catch
   // must still know a blocked verdict was reached.

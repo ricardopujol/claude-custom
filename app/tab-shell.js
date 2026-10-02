@@ -936,6 +936,14 @@ async function handleProbeCommand(line, api, expectedToken) {
         }
         return await api.view(cmd.action, cmd.args && typeof cmd.args === 'object' ? cmd.args : {});
       case 'quit': return await api.quit();
+      // The strip's ▾ menu, without a native popup nobody can click.
+      case 'background': return await api.background();
+      case 'background-stop':
+        if (!(Number.isInteger(cmd.port) && cmd.port > 0 && cmd.port < 65536)) return { ok: false, error: 'background-stop needs a port' };
+        return await api.backgroundStop(cmd.port);
+      case 'background-open':
+        if (!(Number.isInteger(cmd.port) && cmd.port > 0 && cmd.port < 65536)) return { ok: false, error: 'background-open needs a port' };
+        return await api.backgroundOpen(cmd.port);
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
     }
   } catch (err) {
