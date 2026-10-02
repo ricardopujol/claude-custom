@@ -1032,6 +1032,39 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (a.which === 'move') openMoveMenu(String(a.id), 300, 200); else openLayoutMenu();
         return JSON.stringify({ ok: true, items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })) });
       case 'closeMenu': closeLayoutMenu(); break;
+      // Layout pass L3 (verify/probe-git-tree.js): read the Git panel, hover a spoke, pin and jump.
+      case 'gitState': {
+        const body = document.getElementById('git-body');
+        const svg = body.querySelector('.git-svg');
+        return JSON.stringify({
+          ok: true, status: document.getElementById('git-status').textContent,
+          spokes: [...body.querySelectorAll('.git-spoke')].map(g => ({ name: g.dataset.name, cls: g.getAttribute('class'),
+            ring: !!g.querySelector('.git-ring'), square: !!g.querySelector('rect.git-tip'), dashed: !!g.querySelector('.git-stem.dashed') })),
+          hub: (body.querySelector('.git-hub-name') || {}).textContent || null,
+          foot: (body.querySelector('.git-foot') || {}).textContent || null,
+          labels: [...body.querySelectorAll('.git-label')].map(t => t.textContent),
+          svg: svg ? rectOf(svg) : null, panel: rectOf(body),
+          narrow: document.getElementById('git-dial').classList.contains('narrow'),
+          hubTextShown: !!body.querySelector('.git-hub-name') && getComputedStyle(body.querySelector('.git-hub-name')).display !== 'none',
+        });
+      }
+      case 'gitRefresh': requestGitTree(); break;
+      case 'gitHover': case 'gitPin': {
+        const g = [...document.querySelectorAll('.git-spoke')].find(x => x.dataset.name === a.name);
+        if (!g) return JSON.stringify({ ok: false, error: `no spoke ${a.name}` });
+        const r = g.getBoundingClientRect();
+        const at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true };
+        g.dispatchEvent(new MouseEvent(req.action === 'gitHover' ? 'mouseenter' : 'click', at));
+        const card = document.querySelector('.git-card');
+        return JSON.stringify({ ok: true, hidden: card.hidden, text: card.textContent, card: rectOf(card),
+          panel: rectOf(document.getElementById('git-body')), jump: !!card.querySelector('.git-card-jump') });
+      }
+      case 'gitJump': {
+        const btn = document.querySelector('.git-card-jump');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no jump button' });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
       // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
       // dragged button is gone and no dragend will ever come; the drag must
       // already be over when the drop returns.

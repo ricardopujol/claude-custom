@@ -121,7 +121,10 @@
     #git-status { font-size: 11px; color: var(--dim); flex: 0 0 auto; }
     #git-status:empty { display: none; }
     #git-dial { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-    .git-svg { display: block; width: 100%; flex: 1; min-height: 0; }
+    /* fits BOTH ways (viewBox, meet): a short bottom zone shrinks it by height, not clips it */
+    .git-svg { display: block; width: 100%; height: 100%; flex: 1; min-height: 0; }
+    /* too small for its own text to read (app/git-rings-display.js fitText): the card and footer talk */
+    #git-dial.narrow .git-label, #git-dial.narrow .git-tick, #git-dial.narrow .git-hub text { display: none; }
     .git-svg text { font-family: ui-monospace, Consolas, monospace; font-size: 10px; fill: currentColor;
       paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
     .git-week { fill: none; stroke: var(--border); stroke-width: 3; stroke-linecap: round; }
@@ -148,7 +151,9 @@
     .git-label { font-size: 10px; }
     .git-label.open { color: var(--ok); }
     .git-label.current { color: var(--accent); }
-    .git-card { position: absolute; z-index: 5; width: 240px; padding: 8px 10px; display: grid; gap: 4px;
+    /* never wider than its zone: the default right zone is 180px (window probe, check 3) */
+    .git-card { position: absolute; z-index: 5; width: min(240px, calc(100% - 8px)); box-sizing: border-box;
+      padding: 8px 10px; display: grid; gap: 4px;
       background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px;
       color: var(--text); pointer-events: none; }
     .git-card[hidden] { display: none; }

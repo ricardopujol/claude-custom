@@ -60,7 +60,7 @@ function cardModel(b, { current = null, prsKnown = true } = {}) {
   }
   const sum = [
     isNum(b.spend) ? `${fmtTokens(b.spend)} tokens` : 'no token record',
-    b.commits ? `${b.commits} commits` : null,
+    b.commits ? `${b.commits} commit${b.commits === 1 ? '' : 's'}` : null,
     shortDay(b.when),
     PLACE[b.place] || null,
   ].filter(Boolean).join(' · ');
@@ -92,6 +92,19 @@ function footer(tree) {
 }
 
 // ---------- the DOM ----------
+
+// Below this the dial's own text (hub name, labels, ticks) would be under ~7px on screen: it is
+// hidden and the card and the footer carry the words. Measured by the window probe: the default
+// 180px right zone draws the dial at ~45%.
+const NARROW_SCALE = 0.75;
+
+function fitText(dial) {
+  const svg = dial.querySelector('.git-svg');
+  if (!svg) return;
+  const r = svg.getBoundingClientRect();
+  const scale = Math.min(r.width / rings.DIAL.width, r.height / rings.DIAL.height);
+  dial.classList.toggle('narrow', scale > 0 && scale < NARROW_SCALE);
+}
 
 function el(doc, tag, attrs, parent, ns) {
   const e = ns ? doc.createElementNS(ns, tag) : doc.createElement(tag);
@@ -243,6 +256,13 @@ function render(rootEl, tree, { onJump } = {}) {
   el(doc, 'b', {}, row).textContent = f.line1;
   if (f.main) el(doc, 'span', { class: 'git-foot-main' }, row).textContent = f.main;
   el(doc, 'div', { class: 'git-foot-states' }, foot).textContent = f.line2;
+
+  // Zones are dragged wider and narrower: re-check the text size whenever the dial changes size.
+  fitText(dial);
+  if (!dial.gitResize && typeof ResizeObserver !== 'undefined') {
+    dial.gitResize = new ResizeObserver(() => fitText(dial));
+    dial.gitResize.observe(dial);
+  }
 }
 
 const api = { render, cardModel, hubCard, footer, fmtTokens };

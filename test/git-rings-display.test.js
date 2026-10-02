@@ -22,6 +22,10 @@ test('the card: name, PR and state, what it was for, one summary line', () => {
   assert.strictEqual(c.jump, false);
 });
 
+test('one commit is "1 commit" (the window probe showed "1 commits")', () => {
+  assert.match(cardModel(b({ commits: 1 }), { prsKnown: true }).sum, / · 1 commit · /);
+});
+
 test('you are here is marked on the card', () => {
   assert.strictEqual(cardModel(b({ name: 'develop2' }), { current: 'develop2', prsKnown: true }).title, '▶ develop2');
 });
