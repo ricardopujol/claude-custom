@@ -36,7 +36,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
     said: doc.getElementById('files-said'),
   };
   const state = {
-    children: new Map(), expanded: new Set(), overlay: null, onlyTouched: false,
+    children: new Map(), omitted: new Map(), expanded: new Set(), overlay: null, onlyTouched: false,
     selected: null, error: null, focused: null, loadedRoot: false, menu: null, saidTimer: null,
   };
   // A page main opened with ?probe=1 (verify/probe-repo-browser.js) records a file drag instead of starting it:
@@ -66,6 +66,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
       // again when git answers.
       state.error = r.error || 'the file list could not be read';
       state.children.clear();
+      state.omitted.clear();
       state.loadedRoot = false;
       render();
       return false;
@@ -73,6 +74,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
     state.error = null;
     state.loadedRoot = state.loadedRoot || dir === '';
     state.children.set(dir, r.entries || []);
+    state.omitted.set(dir, typeof r.omitted === 'number' ? r.omitted : 0);
     if (r.missing) state.expanded.delete(dir);
     render();
     return true;
@@ -105,7 +107,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
   // ---- drawing ----
 
   function rowsNow() {
-    return display.rows({ children: state.children, expanded: state.expanded, overlay: state.overlay && state.overlay.ok === false ? null : state.overlay, onlyTouched: state.onlyTouched });
+    return display.rows({ children: state.children, expanded: state.expanded, overlay: state.overlay && state.overlay.ok === false ? null : state.overlay, onlyTouched: state.onlyTouched, omitted: state.omitted });
   }
 
   function paintNote() {

@@ -362,3 +362,25 @@ test('D10: an unchanged path is read as before (the second look agrees, case asi
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.text, 'const a = 1;\n');
 });
+
+// ---- PR #95 Miguel M6: a folder's reply is capped on the host, and says how many were left out ----
+
+test('M6: a folder with more entries than the cap answers the first ones and how many it left out', async () => {
+  const { MAX_LIST_ENTRIES } = require('../host/repo-service');
+  assert.ok(MAX_LIST_ENTRIES >= 1000 && MAX_LIST_ENTRIES <= 10000);
+  const entries = Array.from({ length: 7 }, (_, i) => ({ name: `f${i}.js`, path: `f${i}.js`, kind: 'file' }));
+  const index = { refresh: async () => ({ ok: true }), list: () => ({ ok: true, entries }), resolve: () => undefined };
+  const svc = make({ root: 'C:\r', readFog: noFog, index, listCap: 3 });
+  const r = await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 1 });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.entries.map(e => e.name), ['f0.js', 'f1.js', 'f2.js']);
+  assert.strictEqual(r.omitted, 4);
+});
+
+test('M6: a folder within the cap says nothing is omitted (0, a number), and an error reply carries no count', async () => {
+  const index = { refresh: async () => ({ ok: true }), list: () => ({ ok: true, entries: [{ name: 'a', path: 'a', kind: 'file' }] }), resolve: () => undefined };
+  const svc = make({ root: 'C:\r', readFog: noFog, index, listCap: 3 });
+  assert.strictEqual((await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 1 })).omitted, 0);
+  const bad = make({ root: 'C:\r', readFog: noFog, index: { refresh: async () => ({ ok: false }), list: () => ({ ok: false, error: 'x' }), resolve: () => undefined }, listCap: 3 });
+  assert.ok(!('omitted' in await bad.handle({ type: 'repo', action: 'list', dir: '', seq: 2 })));
+});

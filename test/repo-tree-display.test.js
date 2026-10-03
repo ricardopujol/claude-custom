@@ -138,3 +138,20 @@ test('D13: a nested repository row is a folder that says what it is, and its lis
   assert.match(r[0].title, /nested git repository/);
   assert.strictEqual(r[1].nested, undefined);
 });
+
+// ---- PR #95 Miguel M6 ----
+
+test('M6: a folder the host cut short ends with a "more" row that counts what was left out, at the folder\'s depth', () => {
+  const r = rows({
+    children: kids({ '': [dir('src', 'src')], src: [file('a.js', 'src/a.js')] }),
+    expanded: new Set(['src']), overlay: overlay(), omitted: new Map([['src', 41], ['', 0]]),
+  });
+  assert.deepStrictEqual(r.map(x => [x.kind, x.depth, x.count]), [['dir', 0, undefined], ['file', 1, undefined], ['more', 1, 41]]);
+});
+
+test('M6: the root can be cut short too, and zero or absent counts add no row', () => {
+  const r = rows({ children: kids({ '': [file('a.js', 'a.js')] }), expanded: new Set(), overlay: overlay(), omitted: new Map([['', 5]]) });
+  assert.deepStrictEqual(r.map(x => [x.kind, x.count]), [['file', undefined], ['more', 5]]);
+  assert.strictEqual(rows({ children: kids({ '': [file('a.js', 'a.js')] }), expanded: new Set(), overlay: overlay(), omitted: new Map([['', 0]]) }).length, 1);
+  assert.strictEqual(rows({ children: kids({ '': [file('a.js', 'a.js')] }), expanded: new Set(), overlay: overlay() }).length, 1);
+});

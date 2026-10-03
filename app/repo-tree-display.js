@@ -98,7 +98,7 @@ function touchedRows(ix) {
   return out;
 }
 
-function listedRows(children, expanded, ix) {
+function listedRows(children, expanded, ix, omitted) {
   const out = [];
   const walk = (dir, depth) => {
     const entries = children.get(dir);
@@ -113,16 +113,19 @@ function listedRows(children, expanded, ix) {
         out.push({ kind: 'file', path: e.path, name: e.name, depth, ...fileLook(ix.files.get(e.path)) });
       }
     }
+    // the host cut this folder's reply short (PR #95 Miguel M6): say how many are not here
+    const left = omitted.get(dir);
+    if (typeof left === 'number' && left > 0) out.push({ kind: 'more', path: '', name: '', depth, state: 'none', badge: '', title: '', count: left });
   };
   walk('', 0);
   return out;
 }
 
-function rows({ children, expanded, overlay, onlyTouched } = {}) {
+function rows({ children, expanded, overlay, onlyTouched, omitted } = {}) {
   const ix = indexOverlay(overlay);
   const all = onlyTouched === true
     ? touchedRows(ix)
-    : listedRows(children instanceof Map ? children : new Map(), expanded instanceof Set ? expanded : new Set(), ix);
+    : listedRows(children instanceof Map ? children : new Map(), expanded instanceof Set ? expanded : new Set(), ix, omitted instanceof Map ? omitted : new Map());
   if (all.length <= ROW_CAP) return all;
   const cut = all.slice(0, ROW_CAP);
   cut.push({ kind: 'more', path: '', name: '', depth: 0, state: 'none', badge: '', title: '', count: all.length - ROW_CAP });

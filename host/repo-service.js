@@ -33,12 +33,15 @@ const { readFog } = require('./fog');
 const { watchRepo } = require('./repo-watch');
 
 const MAX_DIR = 4096;
+// One folder's reply is capped here, not only at draw time (PR #95 Miguel M6): a 50k-file folder was serialised
+// whole over the socket on every `changed`. Folders sort first, so the cap drops files from the end.
+const MAX_LIST_ENTRIES = 3000;
 const validSeq = (s) => (Number.isSafeInteger(s) || (typeof s === 'string' && s.length <= 64) ? s : undefined);
 
 function createRepoService({
   root, projectsDir, readFog: readFogFn = readFog, index = createIndex(root),
   guard = guardPath, read = readRepoFile, stat = statRepoFile, diff = diffFor, modified = gitModified,
-  watch = watchRepo, announce = () => {},
+  watch = watchRepo, announce = () => {}, listCap = MAX_LIST_ENTRIES,
 } = {}) {
   let watcher = null;
   let loaded = null;
@@ -104,7 +107,9 @@ function createRepoService({
         if (typeof msg.dir !== 'string' || msg.dir.length > MAX_DIR) return { ok: false, error: 'not a folder' };
         ensureWatching();
         await ensureLoaded();
-        return { dir: msg.dir, ...index.list(msg.dir) };
+        const l = index.list(msg.dir);
+        if (!l.ok || !Array.isArray(l.entries)) return { dir: msg.dir, ...l };
+        return { dir: msg.dir, ...l, entries: l.entries.slice(0, listCap), omitted: Math.max(0, l.entries.length - listCap) };
       }
       case 'overlay': {
         ensureWatching();
@@ -167,4 +172,4 @@ function createRepoService({
   return { handle, close };
 }
 
-module.exports = { createRepoService };
+module.exports = { createRepoService, MAX_LIST_ENTRIES };
