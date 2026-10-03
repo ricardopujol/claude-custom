@@ -178,10 +178,10 @@ const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 // How many tabs closed by hand the `+` menu offers to reopen.
 const REOPEN_MAX = 10;
 
-// The Git drawer: how many folders one tabStates answer covers, and the wait between the typed
-// /merged and its Enter (the renderer's PTY_STEP_MS, for the same reason).
+// The Git drawer: how many folders one tabStates answer covers, and how long Run /merged waits for the
+// target page to say it typed (its spaced keys and read-back take under a second).
 const TAB_STATES_MAX = 200;
-const RUN_STEP_MS = 120;
+const TYPE_ANSWER_MS = 5000;
 
 const errorText = (err) => (err && err.message) || String(err);
 
@@ -217,6 +217,9 @@ function createShell(deps) {
   const setups = new Map();            // key -> { running, line, error, log }  (Contract E)
   const createdWarnings = new Map();   // key -> Contract A's optional warning
   let selectWhenListed = null;         // a tab to select as soon as a poll lists it
+  // Run /merged: the type-command requests waiting for their page's answer, by id
+  const typing = new Map();
+  let typingSeq = 0;
   let closedByHand = [];               // [{ key, path, branch }], most recent first
 
   const keyOf = normPath;
@@ -830,13 +833,40 @@ function createShell(deps) {
   }
 
   /**
-   * *Run /merged*, for the Git drawer (Enhancement #46): select the branch's tab and TYPE `/merged` and
-   * Enter into its session, through the host's own `input` control message -- the CLI's skill then
-   * runs the whole gate. Ricardo chose type-and-send. The drawer only enables it for an open PR whose
-   * tab is idle; this re-checks the tab (it may have started working since the drawer drew) and
-   * explains instead of typing into a busy session. The Enter is a frame of its own a step after the
-   * text: one chunk would be taken for a paste and its CR swallowed (renderer.js PTY_STEP_MS).
-   * Always answers { kind: 'sent', branch } or { kind: 'explain', text }.
+   * The target page's answer to a `type-command` (main.js `tab:typed`). Only the page that was asked,
+   * for a request still waiting, counts.
+   */
+  function typed(sender, reply) {
+    const tab = tabForSender(sender);
+    if (!tab || !reply || typeof reply !== 'object') return false;
+    const w = typing.get(reply.id);
+    if (!w || w.key !== tab.key) return false;
+    typing.delete(reply.id);
+    w.resolve({
+      ok: reply.ok === true,
+      reason: typeof reply.reason === 'string' && reply.reason ? reply.reason : null,
+      box: typeof reply.box === 'string' ? reply.box : '',
+    });
+    return true;
+  }
+
+  /** Asks `tab`'s own page to type `command` into its box; its answer, or null if none came in time. */
+  function askToType(tab, command) {
+    const id = ++typingSeq;
+    const reply = new Promise(resolve => typing.set(id, { key: tab.key, resolve }));
+    views.send(tab, 'type-command', { id, command });
+    return Promise.race([reply, sleep(TYPE_ANSWER_MS).then(() => null)]).then((r) => { typing.delete(id); return r; });
+  }
+
+  /**
+   * *Run /merged*, for the Git drawer (Enhancement #46): select the branch's tab and have ITS OWN PAGE
+   * type `/merged` and Enter into its session -- the CLI's skill then runs the whole gate. Ricardo chose
+   * type-and-send. The drawer only enables it for an open PR whose tab is at rest; this re-checks the tab
+   * (it may have started a turn since the drawer drew) with the drawer's own rule, and explains instead
+   * of typing into a busy session. The page types the top bar's way (PR #93 Dexter F3 / Miguel I2): it
+   * judges its own screen (nothing into a dialog or a multi-line draft), clears a single-line draft
+   * first, enters vim INSERT if needed, and presses Enter only once the box reads back exactly `/merged`.
+   * Always answers { kind: 'sent', branch, cleared } or { kind: 'explain', text }.
    */
   async function runMerged(sender, folder) {
     if (!isTabView(sender)) return { kind: 'explain', text: "That tab's window can't be found." };
@@ -852,17 +882,10 @@ function createShell(deps) {
     if (why) return { kind: 'explain', text: `${name}'s session ${why}.` };
     const branch = branchOf(key);
     await userSelect(key);
-    const send = (data) => hosts.control({ port: tab.port, token: tab.token, msg: { type: 'input', data } });
-    const typed = await send('/merged');
-    if (!typed || !typed.ok) {
-      return { kind: 'explain', text: `Couldn't type into ${name}'s session: ${(typed && typed.error) || 'no answer'}.` };
-    }
-    await sleep(RUN_STEP_MS);
-    const entered = await send('\r');
-    if (!entered || !entered.ok) {
-      return { kind: 'explain', text: `I typed /merged but couldn't press Enter in ${name}'s session (${(entered && entered.error) || 'no answer'}): it's waiting in the input box.` };
-    }
-    return { kind: 'sent', branch };
+    const r = await askToType(tab, '/merged');
+    if (!r) return { kind: 'explain', text: `Couldn't confirm /merged reached ${name}'s session: its page didn't answer.` };
+    if (!r.ok) return { kind: 'explain', text: `Didn't send /merged to ${name}'s session: ${r.reason || 'its page refused'}.` };
+    return { kind: 'sent', branch, cleared: r.box !== '' };
   }
 
   /** *Go to that session*, for the blocked pane. Always answers something to say. */
@@ -928,7 +951,7 @@ function createShell(deps) {
   function destroy() { destroyed = true; }
 
   return {
-    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, runMerged, menuState, override,
+    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, runMerged, typed, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,

@@ -647,3 +647,47 @@ test('a fable model id is its own family, not "other"', () => {
   assert.strictEqual(modelFamily('claude-fable-5-1'), 'fable');
   assert.strictEqual(modelFamily('Claude-Fable-5'), 'fable');
 });
+
+// --- typing a command for another tab (PR #93 Dexter F3 / Miguel I2) ------------------------------------
+// The Git drawer's Run /merged types /merged into ANOTHER tab's session. It now goes through that tab's own
+// page and the same plan as requestSwitch: Ctrl-E, Ctrl-U (a draft is cleared, never submitted with the
+// command), `i` first in vim NORMAL, nothing at all into a dialog, and the box read back before the CR.
+const { planTyping, typingKeys, boxText } = require('../app/top-bar-display');
+
+test('Dexter F3: a draft in the box is cleared before the command, never submitted with it', () => {
+  const p = planTyping({ command: '/merged', screen: 'ready', connected: true });
+  assert.deepStrictEqual(p, { ok: true, enterInsert: false, keys: ['\x05', '\x15', '/merged'] });
+  // the read-back before the CR refuses `also bump the version/merged`
+  const glued = ['h', RULE, '❯ also bump the version/merged', RULE, ...FOOT];
+  assert.strictEqual(commandTyped(glued, '/merged'), false);
+  assert.strictEqual(commandTyped(['h', RULE, '❯ /merged', RULE, ...FOOT], '/merged'), true);
+});
+
+test('Miguel I2: vim NORMAL gets `i` first; a dialog, a multi-line draft or no box gets nothing typed', () => {
+  assert.deepStrictEqual(planTyping({ command: '/merged', screen: 'vim-normal', connected: true }).keys, ['i', '\x05', '\x15', '/merged']);
+  for (const [screen, re] of [['dialog', /dialog is open/], ['multiline', /several lines/], ['unknown', /isn't on screen/], [undefined, /isn't on screen/]]) {
+    const p = planTyping({ command: '/merged', screen, connected: true });
+    assert.strictEqual(p.ok, false, String(screen));
+    assert.match(p.reason, re);
+  }
+  assert.match(planTyping({ command: '/merged', screen: 'ready', connected: false }).reason, /not connected/);
+});
+
+test('only a single-line slash command is ever typed: a CR or a control key in it is refused', () => {
+  for (const bad of ['/merged\r', '/merged\nrm', 'merged', '', null, '/merged\x1b', 42]) {
+    assert.strictEqual(planTyping({ command: bad, screen: 'ready', connected: true }).ok, false, JSON.stringify(bad));
+  }
+  assert.strictEqual(planTyping({ command: '/model claude-opus-5-5[1m]', screen: 'ready', connected: true }).ok, true);
+});
+
+test('typingKeys is the one key list: the top bar and Run /merged type the same way', () => {
+  assert.deepStrictEqual(typingKeys('/effort high', false), ['\x05', '\x15', '/effort high']);
+  assert.deepStrictEqual(typingKeys('/effort high', true), ['i', '\x05', '\x15', '/effort high']);
+});
+
+test('boxText: what the live box holds after the prompt glyph (a draft, or the placeholder), or null', () => {
+  assert.strictEqual(boxText(['h', RULE, '❯ also bump the version', RULE, ...FOOT]), 'also bump the version');
+  assert.strictEqual(boxText(['h', RULE, '❯', RULE, ...FOOT]), '');
+  assert.strictEqual(boxText(['nothing here']), null);
+  assert.strictEqual(boxText(null), null);
+});

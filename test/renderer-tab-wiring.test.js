@@ -131,6 +131,9 @@ test('the preload exposes exactly the tab bridge on the tab:* channels, replace-
   assert.match(p, /tabStates: \(folders\) => ipcRenderer\.invoke\('tab:states', folders\)/);
   assert.match(p, /runMerged: \(folder\) => ipcRenderer\.invoke\('tab:runMerged', folder\)/);
   assert.match(p, /raise: \(\) => ipcRenderer\.send\('tab:raise'\)/);
+  // PR #93 Dexter F3: main asks THIS page to type a command into its own box, and hears back
+  assert.match(p, /onTypeCommand: \(fn\) => \(ipcRenderer\.removeAllListeners\('type-command'\)/);
+  assert.match(p, /typed: \(reply\) => ipcRenderer\.send\('tab:typed', reply\)/);
   assert.match(p, /onTabSelected: \(fn\) => \(ipcRenderer\.removeAllListeners\('tab-selected'\)/);
   assert.match(p, /onLockOverride: \(fn\) => \(ipcRenderer\.removeAllListeners\('lock-override'\)/);
 });
@@ -176,4 +179,21 @@ test('renderer.html loads link-click.js before renderer.js', () => {
 
 test('the bridge asks main to open a link, and hears whether it did', () => {
   assert.match(strip(PRELOAD), /openExternal: \(url\) => ipcRenderer\.invoke\('tab:openExternal', url\)/);
+});
+
+// --- PR #93 Dexter F3 / Miguel I2: Run /merged types through the target page, the top bar's way ------------
+
+test('a command main asks this page to type goes through typeCommand, and its answer goes back to main', () => {
+  assert.match(JS, /window\.harness\.onTypeCommand\(/);
+  const body = fnBody('typeCommand');
+  assert.match(body, /planTyping\(\{/, 'the screen is judged first: a dialog, a multi-line draft or no box gets nothing typed');
+  assert.match(body, /typePlanned\(/);
+});
+
+test('typePlanned clears the line, types, and reads the box back before the CR: one copy for the top bar and Run /merged', () => {
+  const body = fnBody('typePlanned');
+  assert.match(body, /commandTyped\(screenLines\(\), command/);
+  assert.match(body, /input\('\\r'\)/);
+  assert.match(fnBody('requestSwitch'), /typePlanned\(/, 'the top bar types the same way');
+  assert.doesNotMatch(fnBody('requestSwitch'), /input\('\\x15'\)/, 'no second copy of the key sequence');
 });

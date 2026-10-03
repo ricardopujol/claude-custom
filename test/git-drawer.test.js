@@ -12,7 +12,7 @@ const { drawerModel, labelAt } = require('../app/git-rings-display');
 
 const b = extra => ({ name: 'feat/a', state: 'merged', place: 'dev', pr: 82, why: 'Dock zones, panels that fill',
   when: '2026-10-01', commits: 12, spend: 1234567, runs: 3, people: [], folder: null, ...extra });
-const TAB_IDLE = { open: true, started: true, known: true, working: false, needsInput: false };
+const TAB_IDLE = { open: true, started: true, known: true, working: false, needsInput: false, turn: 'idle', lock: 'held' };
 const openB = (extra) => b({ state: 'open', pr: 91, prUrl: 'https://github.com/o/r/pull/91', place: 'worktree', folder: 'C:/p/feat-a',
   people: [], reviews: [], ...extra });
 const tree0 = { integration: 'develop', current: 'develop', prsKnown: true, repoUrl: 'https://github.com/o/r' };

@@ -137,7 +137,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     views: {
       create: (tab) => { const v = { tab: tab.key, id: h.viewsMade.length }; h.viewsMade.push(v); return v; },
       destroy: (tab) => h.viewsGone.push(tab.key),
-      send: (tab, channel, payload) => h.sent.push([tab.key, channel, payload]),
+      send: (tab, channel, payload) => { h.sent.push([tab.key, channel, payload]); if (h.onSend) h.onSend(tab, channel, payload); },
       owns: (tab, sender) => tab.view === sender,
     },
     ui: {
@@ -986,23 +986,77 @@ test('tabStates: spelled however, answered with the folder as it was asked; a st
   assert.strictEqual(h.shell.tabStates(devView, Array(500).fill(wt('feat-a'))).length, 200, 'a bounded answer');
 });
 
-test('runMerged: selects the tab, then types /merged and, a step later, Enter -- two frames, never one chunk', async () => {
+// The target page answers a type-command the way app/renderer.js typeCommand does: synchronously here.
+const answerTyping = (h, reply) => {
+  h.typedAt = [];
+  h.onSend = (tab, ch, p) => {
+    if (ch !== 'type-command') return;
+    h.typedAt.push(h.shell.snapshot().selectedKey);
+    if (reply) h.shell.typed(tab.view, { id: p.id, ...reply });
+  };
+};
+
+test('PR #93 Dexter F3: runMerged switches to the tab and has ITS page type /merged -- never blind host input frames', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
   const devView = h.shell.tabByKey(key('dev')).view;
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
-  const r = await h.shell.runMerged(devView, wt('feat-a'));
-  assert.deepStrictEqual(r, { kind: 'sent', branch: 'feat/a' });
-  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'), "switched to that branch's tab");
-  assert.deepStrictEqual(h.controls.map(c => [c.port, c.token, c.msg]), [
-    [7701, 'tok-7701', { type: 'input', data: '/merged' }],
-    [7701, 'tok-7701', { type: 'input', data: '\r' }],
-  ]);
-  assert.deepStrictEqual(h.slept, [120], 'the Enter comes a step after the text, or a line typed in one chunk is taken for a paste');
+  answerTyping(h, { ok: true, box: '' });
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.deepStrictEqual(r, { kind: 'sent', branch: 'feat/a', cleared: false });
+  assert.deepStrictEqual(h.typedAt, [key('feat-a')], "the tab is selected before its page types, so the person watches it happen");
+  const asks = h.sent.filter(([, ch]) => ch === 'type-command');
+  assert.strictEqual(asks.length, 1);
+  assert.strictEqual(asks[0][0], key('feat-a'), "that branch's own page types it");
+  assert.strictEqual(asks[0][2].command, '/merged');
+  assert.deepStrictEqual(h.controls, [], 'nothing goes to the host as raw input: the page clears the line and reads it back');
 });
 
-test('runMerged: a session that is working, needs you, has not reported or has not started is told, nothing is sent, nothing moves', async () => {
+test('Dexter F3: a box that held text was cleared first, and the answer says so (Ctrl+Y brings a draft back)', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, { ok: true, box: 'also bump the version' });
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.deepStrictEqual(r, { kind: 'sent', branch: 'feat/a', cleared: true });
+});
+
+test('runMerged: the page refusing (a dialog, a multi-line draft, the line changed before Enter) is explained with its reason', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, { ok: false, reason: 'a dialog is open in the terminal; answer it or press Esc first' });
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /didn't send \/merged/i);
+  assert.match(r.text, /dialog is open/);
+});
+
+test('runMerged: a page that never answers is explained, and its late answer, or one from another page, changes nothing', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, null);
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /couldn't confirm/i);
+  const id = h.sent.filter(([, ch]) => ch === 'type-command')[0][2].id;
+  assert.strictEqual(h.shell.typed(h.shell.tabByKey(key('feat-a')).view, { id, ok: true }), false, 'too late: already answered');
+  // a reply for a live request, from the wrong page, is ignored
+  h.onSend = (tab, ch, p) => { if (ch === 'type-command') assert.strictEqual(h.shell.typed(devView, { id: p.id, ok: true }), false); };
+  const r2 = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(r2.kind, 'explain');
+  for (const junk of [null, 'x', { id: 'nope' }]) assert.strictEqual(h.shell.typed(devView, junk), false);
+});
+
+test('runMerged: a session that is working, needs you, has not reported or has not started is told, nothing is typed, nothing moves', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
@@ -1010,50 +1064,33 @@ test('runMerged: a session that is working, needs you, has not reported or has n
   const aView = h.shell.tabByKey(key('feat-a')).view;
   const before = h.shell.snapshot().selectedKey;
   const cases = [
-    [null, /hasn't reported/, wt('feat-a')],
-    [{ working: true }, /working/, wt('feat-a')],
-    [{ needsInput: true }, /waiting for you/, wt('feat-a')],
-    [idleStatus, /hasn't started/, wt('feat-b')],       // feat-b has a tab but no session yet
-    [idleStatus, /no tab open/, wt('feat-zzz')],
+    [null, /hasn't reported/, wt('feat-a'), 'feat/a'],
+    [{ ...idleStatus, working: true }, /working/, wt('feat-a'), 'feat/a'],
+    [{ ...idleStatus, needsInput: true }, /waiting for you/, wt('feat-a'), 'feat/a'],
+    [idleStatus, /hasn't started/, wt('feat-b'), 'feat/b'],       // feat-b has a tab but no session yet
+    [idleStatus, /no tab open/, wt('feat-zzz'), 'feat/zzz'],
   ];
-  for (const [status, re, folder] of cases) {
+  for (const [status, re, folder, branch] of cases) {
     if (status) h.shell.report(aView, status);
-    const r = await h.shell.runMerged(devView, folder);
+    const r = await h.shell.runMerged(devView, folder, branch);
     assert.strictEqual(r.kind, 'explain');
     assert.match(r.text, re);
   }
   assert.deepStrictEqual(h.controls, []);
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
   assert.strictEqual(h.shell.snapshot().selectedKey, before);
 });
 
-test('runMerged: a stranger sender, a bad folder or a host that will not take it are explained; Enter is never sent after a failed text', async () => {
+test('runMerged: a stranger sender or a bad folder is explained and nothing is typed', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
   const devView = h.shell.tabByKey(key('dev')).view;
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
   for (const [sender, p] of [[{}, wt('feat-a')], [devView, ''], [devView, 42]]) {
-    assert.strictEqual((await h.shell.runMerged(sender, p)).kind, 'explain', String(p));
+    assert.strictEqual((await h.shell.runMerged(sender, p, 'feat/a')).kind, 'explain', String(p));
   }
-  assert.deepStrictEqual(h.controls, []);
-  h.controlReply = () => ({ ok: false, error: 'connection refused' });
-  const r = await h.shell.runMerged(devView, wt('feat-a'));
-  assert.strictEqual(r.kind, 'explain');
-  assert.match(r.text, /connection refused/);
-  assert.strictEqual(h.controls.length, 1, 'no Enter after text that never went in');
-});
-
-test("runMerged: text typed but Enter refused says so, because a half-typed command is left in that session's box", async () => {
-  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
-  await h.shell.open();
-  await flush();
-  const devView = h.shell.tabByKey(key('dev')).view;
-  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
-  h.controlReply = (c) => (c.msg.data === '\r' ? { ok: false, error: 'timed out after 3000ms' } : { ok: true, reply: null });
-  const r = await h.shell.runMerged(devView, wt('feat-a'));
-  assert.strictEqual(r.kind, 'explain');
-  assert.match(r.text, /typed \/merged/);
-  assert.match(r.text, /timed out/);
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
 });
 
 // --- Go to that session ------------------------------------------------------

@@ -68,7 +68,7 @@ test('the scan finds the channels this file registers', () => {
   for (const n of ['strip:select', 'strip:close', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo', 'tab:selectFolder',
     'tab:raise', 'attention', 'secrets:list', 'secrets:melt', 'look:setDim',
     // the Git drawer (Enhancement #46)
-    'tab:states', 'tab:runMerged']) {
+    'tab:states', 'tab:runMerged', 'tab:typed']) {
     assert.ok(names.includes(n), `${n} must be registered`);
   }
 });

@@ -439,7 +439,11 @@ async function act(dial, id) {
     } else if (id === 'run-merged') {
       if (!b || !b.folder || !st.onRunMerged) return;
       const r = await st.onRunMerged(b.folder);
-      if (r && r.kind === 'sent') say(dial, key, `Sent /merged to ${r.branch || b.name}'s session.`);
+      // A box that wasn't empty was cleared first (a draft, or the CLI's placeholder: the text can't tell)
+      if (r && r.kind === 'sent') {
+        say(dial, key, `Sent /merged to ${r.branch || b.name}'s session.`
+          + (r.cleared ? " Its input box wasn't empty: if that was a draft, Ctrl+Y in that tab brings it back." : ''));
+      }
       else say(dial, key, (r && r.text) || "Couldn't run /merged.");
     }
   } catch (err) {

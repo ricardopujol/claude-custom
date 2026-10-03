@@ -827,9 +827,14 @@ function registerIpc() {
   // The Git drawer (Enhancement #46): what the tabs of its worktrees are doing, and *Run /merged*, which
   // switches to that branch's tab and types `/merged` + Enter into its session.
   ipcMain.handle('tab:states', (e, folders) => (isTabView(e.sender) ? tabShell.tabStates(e.sender, folders) : []));
-  ipcMain.handle('tab:runMerged', (e, folder) => (isTabView(e.sender)
-    ? tabShell.runMerged(e.sender, folder)
+  ipcMain.handle('tab:runMerged', (e, folder, branch) => (isTabView(e.sender)
+    ? tabShell.runMerged(e.sender, folder, branch)
     : { kind: 'explain', text: "That tab's window can't be found." }));
+  // The target page's answer to a `type-command` (PR #93 Dexter F3): it typed into its own box, or why not.
+  ipcMain.on('tab:typed', (e, reply) => {
+    if (!isTabView(e.sender)) return;
+    tabShell.typed(e.sender, reply);
+  });
   // A link clicked in a tab's terminal (fix/terminal-links): straight to the
   // default browser, no prompt -- only what openInBrowser accepts.
   ipcMain.handle('tab:openExternal', (e, url) => {

@@ -137,7 +137,7 @@ test('it never throws: bad arguments and a throwing WebSocket become errors', as
     [{ port: 0, token: 't', msg: { type: 'raise' } }, /invalid port/],
     [{ port: 70000, token: 't', msg: { type: 'raise' } }, /invalid port/],
     [{ port: 4000, token: '', msg: { type: 'raise' } }, /invalid token/],
-    [{ port: 4000, token: 't', msg: { type: 'resize' } }, /unsupported control type: resize/],
+    [{ port: 4000, token: 't', msg: { type: 'input' } }, /unsupported control type: input/],
     [{ port: 4000, token: 't', msg: null }, /unsupported control type/],
     [{ port: 4000, token: 't', msg: { type: 'toString' } }, /unsupported control type: toString/],
   ];
@@ -203,10 +203,9 @@ test('the frame goes out only AFTER the hello, never on open', async () => {
   }
 });
 
-test('exactly stop, raise, stop-if-idle and input are known, and each names how it is answered', () => {
+test('exactly stop, raise and stop-if-idle are known, and each names how it is answered', () => {
   assert.deepStrictEqual(EXPECTED, {
     raise: { reply: 'raised' }, stop: { reply: null }, 'stop-if-idle': { reply: 'stop-if-idle' },
-    input: { reply: null, closeAfterSend: true },
   });
 });
 
@@ -226,52 +225,4 @@ test('stop-if-idle: resolves with the holder\'s verdict, sent only to a host tha
     assert.match(r.error, /older claude-custom/);
     assert.deepStrictEqual(frames, []);
   });
-});
-
-// ---------- input (Enhancement #46: the Git drawer's Run /merged types into another tab's session) ----------
-
-test('input: delivers exactly one frame, and is ok once it has been sent -- the host never replies to input', async () => {
-  await withServer(() => { /* a real host writes it to the pty and says nothing */ }, async ({ port, frames, wss }) => {
-    const r = await sendControl({ port, token: TOKEN, msg: { type: 'input', data: '/merged' }, timeoutMs: 1000 });
-    assert.deepStrictEqual(r, { ok: true, reply: null });
-    assert.deepStrictEqual(frames, ['{"type":"input","data":"/merged"}']);
-    assert.ok(await until(() => wss.clients.size === 0), 'the socket was left open');
-  });
-});
-
-test('input: Enter is a frame of its own, carried as a string (a CR)', async () => {
-  await withServer(() => {}, async ({ port, frames }) => {
-    const r = await sendControl({ port, token: TOKEN, msg: { type: 'input', data: '\r' }, timeoutMs: 1000 });
-    assert.strictEqual(r.ok, true);
-    assert.deepStrictEqual(frames.map(f => JSON.parse(f).data), ['\r']);
-  });
-});
-
-test('input: a host of older code (no input in its hello) gets nothing, and the answer says so', async () => {
-  await withServer(() => {}, async ({ port, frames }) => {
-    const r = await sendControl({ port, token: TOKEN, msg: { type: 'input', data: 'x' }, timeoutMs: 500 });
-    assert.strictEqual(r.ok, false);
-    assert.match(r.error, /older claude-custom/);
-    assert.deepStrictEqual(frames, []);
-  }, { hello: { type: 'hello', controls: ['raise'] } });
-});
-
-test('input: data that is not a string is refused before anything connects', async () => {
-  for (const data of [undefined, null, 5, {}, ['x']]) {
-    const r = await sendControl({ port: 9, token: TOKEN, msg: { type: 'input', data }, timeoutMs: 200 });
-    assert.deepStrictEqual(r, { ok: false, error: 'invalid input data' });
-  }
-});
-
-test('input: a wrong token is still refused at the handshake', async () => {
-  await withServer(() => {}, async ({ port, frames }) => {
-    const r = await sendControl({ port, token: 'nope', msg: { type: 'input', data: 'x' }, timeoutMs: SHORT });
-    assert.deepStrictEqual(r, { ok: false, error: 'handshake refused (HTTP 403)' });
-    assert.deepStrictEqual(frames, []);
-  });
-});
-
-test('input is a known type with no reply to wait for', () => {
-  assert.ok(Object.hasOwn(EXPECTED, 'input'));
-  assert.strictEqual(EXPECTED.input.reply, null);
 });

@@ -3163,33 +3163,64 @@ function requestSwitch(kind, raw) {
     schedulePendingTimeout(kind, request);
   }
   renderTopBar();
-  const input = data => send(JSON.stringify({ type: 'input', data }));
-  // Ctrl-E first: Ctrl-U deletes only back to the CURSOR (measured, Dexter r2
-  // N1). With the cursor at Home it deleted nothing, and the command was
-  // typed in front of the draft -- `/model sonnetrefactor the parser`.
-  // vim NORMAL: `i` first, or every key after it is a motion (Dexter r2 N2).
-  const lead = plan.enterInsert ? 1 : 0;
-  if (lead) input('i');
-  setTimeout(() => input('\x05'), PTY_STEP_MS * lead);
-  setTimeout(() => input('\x15'), PTY_STEP_MS * (lead + 1));
-  setTimeout(() => input(plan.command), PTY_STEP_MS * (lead + 2));
-  // Read the box back before Enter (Miguel r2): the screen was judged before
-  // four spaced writes, and a dialog opening meanwhile, or anything glued to
-  // the command, would take the CR. Not exactly the command: clear it instead.
-  setTimeout(() => {
-    if (commandTyped(screenLines(), plan.command, { vim: vimSeen })) { input('\r'); return; }
-    input('\x05');
-    setTimeout(() => input('\x15'), PTY_STEP_MS);
-    // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
-    if (plan.enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
+  typePlanned(plan.enterInsert, plan.command, (r) => {
+    if (r.ok) return;
     // Only THIS request: a newer one for the same value may already have run
     // (Dexter #51 F5).
     const pending = kind === 'model' ? pendingModel : pendingEffort;
     if (request && pending === request) setPending(kind, null);
-    setTopBarNotice(kind, switchNotice({ kind, result: 'refused',
-      notice: `didn't send ${plan.command}: the input line changed before Enter` }));
+    setTopBarNotice(kind, switchNotice({ kind, result: 'refused', notice: `didn't send ${plan.command}: ${r.reason}` }));
     renderTopBar();
-  }, PTY_STEP_MS * (lead + 5));
+  });
+}
+
+/**
+ * Types `command` into this tab's live box and presses Enter only if the box then reads back exactly
+ * `❯ <command>`. ONE copy, for the top bar's switches and the Git drawer's Run /merged (PR #93 Dexter F3 /
+ * Miguel I2). `done({ ok })` or `done({ ok: false, reason })`. The keys are app/top-bar-display.js's
+ * typingKeys: Ctrl-E first (Ctrl-U deletes only back to the CURSOR, Dexter r2 N1), Ctrl-U (a draft is
+ * cleared, never submitted with the command; the CLI's Ctrl+Y gets it back), `i` first in vim NORMAL
+ * (Dexter r2 N2). Spaced PTY_STEP_MS apart, or a line is taken for a paste and its CR swallowed.
+ */
+function typePlanned(enterInsert, command, done) {
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  const keys = typingKeys(command, enterInsert);
+  keys.forEach((k, i) => setTimeout(() => input(k), PTY_STEP_MS * i));
+  // Read the box back before Enter (Miguel r2): the screen was judged before
+  // the spaced writes, and a dialog opening meanwhile, or anything glued to
+  // the command, would take the CR. Not exactly the command: clear it instead.
+  setTimeout(() => {
+    if (commandTyped(screenLines(), command, { vim: vimSeen })) { input('\r'); done({ ok: true }); return; }
+    input('\x05');
+    setTimeout(() => input('\x15'), PTY_STEP_MS);
+    // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
+    if (enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
+    done({ ok: false, reason: 'the input line changed before Enter' });
+  }, PTY_STEP_MS * (keys.length + 2));
+}
+
+/**
+ * Main asks this page to type a command into its own session: the Git drawer's Run /merged, PR #93
+ * Dexter F3. The screen is judged here, where it is, the top bar's way. `done({ ok, box })`, `box` being
+ * what the box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
+ */
+function typeCommand(command, done) {
+  const lines = screenLines();
+  if (vimInsertShown(lines)) vimSeen = true;
+  const plan = planTyping({
+    command,
+    screen: inputState(lines, { vim: vimSeen }),
+    connected: !!ws && ws.readyState === WebSocket.OPEN,
+  });
+  if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
+  const box = boxText(lines);
+  typePlanned(plan.enterInsert, command, r => done(r.ok ? { ok: true, box: box || '' } : r));
+}
+if (window.harness && window.harness.onTypeCommand) {
+  window.harness.onTypeCommand((ask) => {
+    const id = ask && ask.id;
+    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }));
+  });
 }
 
 // BACKLOG E #5, #3. The Claude choices, redrawn with a star per choice and
