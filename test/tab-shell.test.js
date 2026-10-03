@@ -560,6 +560,32 @@ test('F2: Retry while the first host is STILL not listening waits for it instead
   assert.strictEqual(tab.token, first.token);
 });
 
+test('Y1: a host that lands late, with ANOTHER tab asking for its port meanwhile, is still never spawned twice for its own tab', async () => {
+  // The slow-host path the serialisation property no longer generates (its
+  // wait always succeeds): wait gives up, the host lands later. The shell's
+  // `pending` is per tab, so tab B asking for the same still-empty port is
+  // handed it too (the bind arbitrates between the two hosts, PR #75 F2). What
+  // the guard owes tab A is that ITS retry waits for the host it already
+  // spawned instead of spawning another onto the port.
+  const h = harness();
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  const before = h.spawns.length;
+  await h.shell.select(key('feat-a'));                // wait gives up: pending
+  const first = h.spawns[h.spawns.length - 1];
+  await h.shell.select(key('feat-b'));                // the same empty port, offered to B
+  assert.strictEqual(h.spawns[h.spawns.length - 1].port, first.port, 'B hashes to the same port');
+  h.failWait = false;                                 // A's host comes up during A's retry wait
+  await h.shell.select(key('feat-a'));
+  const ours = h.spawns.slice(before).filter(x => x.key === key('feat-a'));
+  assert.strictEqual(ours.length, 1, 'tab A was given a second spawn for the port its first host is still coming up on');
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, first.token);
+});
+
 test('F2: a host that never comes up is forgotten after one more wait, so the next Retry can spawn', async () => {
   const h = harness();
   h.spawnRegisters = false;
@@ -1954,6 +1980,10 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
       const occupied = new Map();          // port -> cwd
       const granted = [];
       const landing = new Map();           // port -> the spawn that will occupy it
+      // NOT generated here: a wait that gives up while the host lands later. Then
+      // two tabs CAN be handed one port (pending is per tab; the host bind
+      // arbitrates, PR #75 F2), so "never both get it" is not the contract on that
+      // path. The Y1 test below covers it, and the guard it needs, on logical time.
       const names = Array.from({ length: n }, (_, i) => `t${i}`);
       // Logical time: "ms" is a number of event-loop turns, not milliseconds. The
       // property is about the ORDER the generated delays put events in, and that
