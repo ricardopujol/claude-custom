@@ -424,3 +424,14 @@ test('D2/I1: while favourites in the file did not load, editing is OFF and the w
   assert.strictEqual(W.openEditor(s, 'f1').editor, null);
   assert.strictEqual(W.deleteMsg(s, 'f1').message, null);
 });
+
+// --- Dexter D6: a retrying (momentarily unreadable) file never says "fix or delete" ---------------------------
+
+test('D6: an unavailable wand that is only RETRYING says so, with no fix-or-delete advice and no reset', () => {
+  const v = W.view(loaded({ status: 'unavailable', favourites: null, unavailable: 'the wand file could not be read (EBUSY)', retrying: true }));
+  assert.strictEqual(v.mode, 'unavailable');
+  assert.match(v.note, /EBUSY/);
+  assert.match(v.note, /retrying/i);
+  assert.doesNotMatch(v.note, /fix or delete|delete/i);
+  assert.strictEqual(v.canReset, false);
+});

@@ -43,9 +43,14 @@ const WAND_TYPES = Object.freeze(['wand-add', 'wand-update', 'wand-delete', 'wan
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
 
-function createWandControl({ store, readSkills, log = () => {} } = {}) {
+function createWandControl({ store, readSkills, log = () => {}, emit = null, retryMs = 250, maxRetries = 20 } = {}) {
   if (!store) throw new Error('createWandControl: store is required');
   if (typeof readSkills !== 'function') throw new Error('createWandControl: readSkills is required');
+
+  // The last view that came from a READABLE file. A read that fails for a moment (the antivirus scan of a file
+  // just renamed holds it, measured on this machine) must never put "unavailable" on a healthy panel, nor drop
+  // an editor the user is typing in: while it is busy the windows keep this (Dexter D6).
+  let lastGood = null;
 
   /** The file's state and what wand.load() makes of it. Never throws. */
   function snapshot() {
@@ -60,14 +65,18 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
     } catch (error) {
       state = { status: 'unreadable', value: null, error };
     }
-    return { state, loaded: wand.load(state) };
+    const loaded = wand.load(state);
+    if (!loaded.transient) lastGood = viewOf(loaded);
+    return { state, loaded };
   }
 
   const fileName = (() => { try { return typeof store.pathOf === 'function' ? store.pathOf(STORE_KEY) : null; } catch { return null; } })();
   const viewOf = (loaded) => ({
     status: loaded.status, favourites: loaded.favourites, unavailable: loaded.status === 'unavailable' ? loaded.reason : null,
-    dropped: loaded.dropped, file: fileName,
+    dropped: loaded.dropped, file: fileName, retrying: !!loaded.transient,
   });
+  /** What the windows should see for a snapshot: the last good view while the file is only busy. */
+  const shown = (loaded) => (loaded.transient && lastGood ? lastGood : viewOf(loaded));
 
   // --- skills ---------------------------------------------------------------------------------------
   let skills = null;
@@ -103,12 +112,29 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
   // The state the windows of THIS host were last told about (hello, an answer, a watcher frame): what lets
   // changed() tell "another host wrote" from "nothing happened" and from "I wrote it myself".
   const key = (view) => JSON.stringify([view.status, view.favourites, view.unavailable, view.dropped]);
-  let told = key(viewOf(snapshot().loaded));
+  let told = key(shown(snapshot().loaded));
+
+  // A busy read is looked at again shortly, bounded: no further fs event is coming to say "look again".
+  let retryTimer = null;
+  let retries = 0;
+  function scheduleRetry() {
+    if (typeof emit !== 'function' || retryTimer !== null || retries >= maxRetries) return;
+    retries++;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      let f = null;
+      try { f = changed(); } catch { /* the next event retries */ }
+      if (f) { try { emit(f); } catch { /* a bad emitter must not kill the host */ } }
+    }, retryMs);
+    if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref();
+  }
 
   // Deliberately does NOT update `told`: a fresh window attaching learns the state, but the windows already
   // open have not, and changed() must still announce it to them.
   function payload() {
-    return { ...viewOf(snapshot().loaded), ...skillsView() };
+    const { loaded } = snapshot();
+    if (loaded.transient) scheduleRetry();
+    return { ...shown(loaded), ...skillsView() };
   }
 
   const frame = (fields) => ({ type: 'wand', ok: true, reason: null, ...fields });
@@ -116,9 +142,11 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
   function changed() {
     let snap;
     try { snap = snapshot(); } catch { return null; }
-    // A rename in flight can make the file unreadable for a moment on Windows: no frame, so the panel
-    // never flashes "wand unavailable" for a write that is about to land.
-    if (snap.state.status === 'unreadable') return null;
+    // A rename in flight can make the file unreadable for a moment on Windows: no frame now (the panel never
+    // flashes "wand unavailable" for a write that is about to land), and a retry shortly, because the write's
+    // own event has already come and gone (Dexter D6).
+    if (snap.loaded.transient) { scheduleRetry(); return null; }
+    retries = 0;
     const view = viewOf(snap.loaded);
     const k = key(view);
     if (k === told) return null;
@@ -132,7 +160,7 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
     if (before !== null && toldSkills === before) return null;
     let snap;
     try { snap = snapshot(); } catch { return null; }
-    return frame({ quiet: true, ...viewOf(snap.loaded), ...skillsView() });
+    return frame({ quiet: true, ...shown(snap.loaded), ...skillsView() });
   }
 
   // --- edits ----------------------------------------------------------------------------------------
@@ -152,10 +180,12 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
 
     if (m.type === 'wand-skills') {
       scan();
-      return frame({ ...viewOf(snapshot().loaded), ...skillsView() });
+      // A skills answer says nothing about the favourites: quiet, so it can never be mistaken for the answer to
+      // an edit, and never carries a busy read's "unavailable" over a healthy panel.
+      return frame({ quiet: true, ...shown(snapshot().loaded), ...skillsView() });
     }
 
-    const truth = () => viewOf(snapshot().loaded);
+    const truth = () => shown(snapshot().loaded);
     const refusal = (reason, view) => {
       const v = view || truth();
       told = key(v);                                     // the answer below carries this
@@ -169,7 +199,7 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
     try {
       outcome = locked(() => {
         const { loaded } = snapshot();
-        if (loaded.status === 'unavailable') return { blocked: viewOf(loaded) };
+        if (loaded.status === 'unavailable') return { blocked: shown(loaded), transient: loaded.transient, why: loaded.reason };
         // Favourites the file holds that did not load are text the user typed: an edit would write the kept ones
         // back and erase the rest for good. Refused instead, until the file is fixed (Dexter D2 / Miguel I1).
         if (loaded.dropped > 0) {
@@ -186,6 +216,9 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
     }
 
     if (outcome.blocked) {
+      if (outcome.transient) {
+        return refusal(`The wand file could not be read just now (${outcome.why}), so nothing was changed. Try again.`, outcome.blocked);
+      }
       return refusal(`The wand is unavailable (${outcome.blocked.unavailable}), so nothing was changed.`, outcome.blocked);
     }
     if (outcome.refused !== undefined) return refusal(outcome.refused, outcome.view);

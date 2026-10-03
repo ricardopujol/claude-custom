@@ -48,7 +48,7 @@ const EDITOR_FIELDS = ['emoji', 'skill', 'args', 'query'];
 
 function emptyState() {
   return {
-    loaded: false, status: null, favourites: [], unavailable: null, dropped: 0, file: null,
+    loaded: false, status: null, favourites: [], unavailable: null, retrying: false, dropped: 0, file: null,
     skills: [], skillsLoaded: false, skillsError: null,
     edit: false, editor: null, error: null, notice: null, flash: null, asked: false,
   };
@@ -89,6 +89,7 @@ function applyWand(cur, w) {
   if (status === 'unavailable') {
     next.favourites = [];
     next.unavailable = isStr(w.unavailable) && w.unavailable !== '' ? w.unavailable : 'the wand file could not be read';
+    next.retrying = w.retrying === true;
     next.edit = false;
     next.editor = null;
     return next;
@@ -199,7 +200,9 @@ function view(state) {
   if (s.loaded) {
     if (s.status === 'unavailable') {
       mode = 'unavailable';
-      note = `Wand unavailable: ${s.unavailable}. Nothing was changed; fix or delete .harness/state/wand.json to get it back.`;
+      note = s.retrying
+        ? `Wand temporarily unreadable (${s.unavailable}); retrying. Nothing was changed.`
+        : `Wand unavailable: ${s.unavailable}. Nothing was changed; fix or delete .harness/state/wand.json to get it back.`;
     } else {
       mode = 'ok';
       if (s.favourites.length === 0) note = 'No favourites yet. Turn on edit and add one.';
@@ -214,6 +217,7 @@ function view(state) {
   return {
     mode, note,
     canEdit,
+    canReset: mode === 'unavailable' && !s.retrying,
     edit: canEdit && s.edit,
     file: s.file,
     warning: n > 0 ? `${n} favourite${n === 1 ? '' : 's'} in ${s.file || 'the file'} ${n === 1 ? "isn't" : "aren't"} valid and ${n === 1 ? "isn't" : "aren't"} shown, so editing is off until ${n === 1 ? 'it is' : 'they are'} fixed.` : null,

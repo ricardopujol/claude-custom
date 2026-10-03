@@ -249,3 +249,9 @@ test('D7: C1 controls, line separators and zero-width characters in args are ref
   assert.strictEqual(wand.cleanArgs('a\tb'), 'a b', 'a tab still collapses');
   assert.strictEqual(wand.add([], { emoji: '\u{1F319}', skill: 'x', args: 'a\u0085b' }).ok, false);
 });
+
+test('D6: an unreadable read is marked transient (retry), a corrupt one is not', () => {
+  assert.strictEqual(wand.load({ status: 'unreadable', error: { code: 'EBUSY' } }).transient, true);
+  assert.strictEqual(wand.load({ status: 'corrupt' }).transient, false);
+  assert.strictEqual(wand.load({ status: 'ok', value: [] }).transient, false);
+});

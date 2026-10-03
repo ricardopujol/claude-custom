@@ -426,7 +426,8 @@ watchLoadout({
 // (host/probe-seams.js), unset in real use.
 const CLAUDE_HOME = claudeHomeOf({ seam: seams.claudeHome, env: process.env, home: os.homedir() });
 // The control logs what is broken once per breakage (a debounced rescan finds the same file again).
-const wandControl = createWandControl({ store, log: (line) => console.log(line),
+// `emit`: a busy read of wand.json is looked at again shortly, and what it finds is broadcast (host/wand-control.js).
+const wandControl = createWandControl({ store, log: (line) => console.log(line), emit: (frame) => broadcastControl(frame),
   readSkills: () => discoverSkills({ claudeHome: CLAUDE_HOME, projectDir: CWD }) });
 // The wand watches the state file (another host's edit) and the skill directories (a skill added while the
 // harness runs). Both frames are QUIET, so neither touches a refusal on screen. The CLI's directories are

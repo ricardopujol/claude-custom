@@ -108,8 +108,10 @@ function readFavourite(raw) {
   return { emoji: raw.emoji, skill: raw.skill, args };
 }
 
-function unavailable(reason) {
-  return { status: 'unavailable', favourites: null, reason, dropped: 0 };
+// `transient`: only an UNREADABLE read (a handle held for a moment) is worth retrying; corrupt, wrong shape and
+// a newer version are what they are until somebody fixes the file.
+function unavailable(reason, transient = false) {
+  return { status: 'unavailable', favourites: null, reason, dropped: 0, transient };
 }
 
 /**
@@ -120,12 +122,12 @@ function unavailable(reason) {
  */
 function load(state) {
   if (!isObj(state)) return unavailable('the wand file could not be read');
-  if (state.status === 'missing') return { status: 'missing', favourites: defaultFavourites(), reason: null, dropped: 0 };
+  if (state.status === 'missing') return { status: 'missing', favourites: defaultFavourites(), reason: null, dropped: 0, transient: false };
   if (state.status === 'corrupt') return unavailable('the wand file is not valid JSON');
   if (state.status === 'unreadable') {
     const e = state.error;
     const why = e && (e.code || e.message) ? ` (${e.code || e.message})` : '';
-    return unavailable(`the wand file could not be read${why}`);
+    return unavailable(`the wand file could not be read${why}`, true);
   }
   if (state.status !== 'ok') return unavailable('the wand file could not be read');
 
@@ -155,7 +157,7 @@ function load(state) {
     f.id = freshId(claimed);
     claimed.add(f.id);
   }
-  return { status: 'ok', favourites: kept.map(f => ({ id: f.id, emoji: f.emoji, skill: f.skill, args: f.args })), reason: null, dropped };
+  return { status: 'ok', favourites: kept.map(f => ({ id: f.id, emoji: f.emoji, skill: f.skill, args: f.args })), reason: null, dropped, transient: false };
 }
 
 const serialize = (favourites) => ({ version: VERSION, favourites: favourites.map(f => ({ id: f.id, emoji: f.emoji, skill: f.skill, args: f.args })) });

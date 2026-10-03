@@ -64,3 +64,7 @@ test('the control answers exactly the types on the allow-list, and no other wand
   assert.ok([...CONTROL_TYPES].filter(t => String(t).startsWith('wand-')).every(t => WAND_TYPES.includes(t)),
     'no wand-* type is on the allow-list without being answered');
 });
+
+test('D6: the host gives the control a way to broadcast what a retried read finds', () => {
+  assert.match(HOST, /createWandControl\(\{ store, log: \(line\) => console\.log\(line\), emit: \(frame\) => broadcastControl\(frame\),/);
+});

@@ -384,3 +384,88 @@ test('the payload names the file, so the panel can show where it is (Miguel I2)'
   const noPath = createWandControl({ store: { read: () => undefined, write() {} }, readSkills: () => ({ skills: [] }) });
   assert.strictEqual(noPath.payload().file, null);
 });
+
+// --- Dexter D6: a momentary unreadable file is retried, never shown as "fix or delete" ----------------------
+
+const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+// A store whose reads follow a script: each readState() takes the next entry; the last repeats.
+function scripted(entries) {
+  let i = 0;
+  const reads = () => i;
+  return {
+    reads,
+    readState: () => { const e = entries[Math.min(i, entries.length - 1)]; i++; return typeof e === 'function' ? e() : e; },
+    write() {},
+    pathOf: () => 'C:/state/wand.json',
+  };
+}
+const okState = (favs) => ({ status: 'ok', value: { version: 1, favourites: favs } });
+const BUSY = { status: 'unreadable', value: null, error: Object.assign(new Error('busy'), { code: 'EBUSY' }) };
+const fv = (id, emoji, skill) => ({ id, emoji, skill, args: '' });
+
+test('D6 A: another host\'s edit read as EBUSY is RETRIED, and the new favourites arrive without a second fs event', async () => {
+  const store = scripted([okState([fv('f1', '\u{1F319}', 'bedtime')]), BUSY, okState([fv('f1', '\u{1F319}', 'bedtime'), fv('f2', '\u{1F680}', 'merged')])]);
+  const frames = [];
+  const control = createWandControl({ store, readSkills: () => SKILLS, emit: f => frames.push(f), retryMs: 15 });
+  assert.strictEqual(control.changed(), null, 'busy: nothing to say yet');
+  await sleepMs(150);
+  assert.strictEqual(frames.length, 1, 'the retry found the new file and said so');
+  assert.strictEqual(frames[0].quiet, true);
+  assert.deepStrictEqual(frames[0].favourites.map(f => f.id), ['f1', 'f2']);
+});
+
+test('D6: retries are bounded: a file that stays unreadable is not polled for ever, and says nothing', async () => {
+  const store = scripted([okState([fv('f1', '\u{1F319}', 'bedtime')]), BUSY]);
+  const frames = [];
+  const control = createWandControl({ store, readSkills: () => SKILLS, emit: f => frames.push(f), retryMs: 5, maxRetries: 4 });
+  control.changed();
+  await sleepMs(250);
+  assert.deepStrictEqual(frames, []);
+  assert.ok(store.reads() <= 1 + 1 + 4 + 1, 'reads: ' + store.reads());
+});
+
+test('D6 B: a window attaching during a busy read gets the LAST GOOD favourites, not "unavailable"', () => {
+  const store = scripted([okState([fv('f1', '\u{1F319}', 'bedtime')]), okState([fv('f1', '\u{1F319}', 'bedtime')]), BUSY]);
+  const control = createWandControl({ store, readSkills: () => SKILLS });
+  const healthy = control.payload();                       // a good read: remembered
+  assert.strictEqual(healthy.status, 'ok');
+  const during = control.payload();                        // busy
+  assert.strictEqual(during.status, 'ok');
+  assert.deepStrictEqual(during.favourites, healthy.favourites);
+  assert.strictEqual(during.unavailable, null);
+});
+
+test('D6 B: a skills-only frame during a busy read keeps the last good favourites too (no editor thrown away)', () => {
+  const store = scripted([okState([fv('f1', '\u{1F319}', 'bedtime')]), okState([fv('f1', '\u{1F319}', 'bedtime')]), BUSY]);
+  let list = SKILLS;
+  const control = createWandControl({ store, readSkills: () => list });
+  control.payload();
+  list = { skills: [...SKILLS.skills, { name: 'x', description: '', source: 'user' }], skipped: [] };
+  const f = control.skillsChanged();
+  assert.strictEqual(f.status, 'ok');
+  assert.strictEqual(f.favourites.length, 1);
+  assert.ok(f.skills.some(s => s.name === 'x'));
+});
+
+test('D6: with no good read yet, a busy file is "unavailable" but marked as RETRYING, and heals when it can be read', async () => {
+  const store = scripted([BUSY, BUSY, okState([fv('f1', '\u{1F319}', 'bedtime')])]);
+  const frames = [];
+  const control = createWandControl({ store, readSkills: () => SKILLS, emit: f => frames.push(f), retryMs: 15 });
+  const p = control.payload();
+  assert.strictEqual(p.status, 'unavailable');
+  assert.strictEqual(p.retrying, true);
+  await sleepMs(200);
+  assert.ok(frames.length >= 1, 'the healthy read is announced');
+  assert.strictEqual(frames[frames.length - 1].status, 'ok');
+  assert.strictEqual(frames[frames.length - 1].retrying, false);
+});
+
+test('D6: an edit during a busy read is refused with "try again", and the frame is the last good state', () => {
+  const store = scripted([okState([fv('f1', '\u{1F319}', 'bedtime')]), BUSY]);
+  const control = createWandControl({ store, readSkills: () => SKILLS });
+  const f = control.handle({ type: 'wand-delete', id: 'f1' });
+  assert.strictEqual(f.ok, false);
+  assert.match(f.reason, /try again/i);
+  assert.strictEqual(f.status, 'ok');
+  assert.strictEqual(f.favourites.length, 1);
+});
