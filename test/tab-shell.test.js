@@ -220,14 +220,14 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
   assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
-test('sanitizeStatus keeps six fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
+test('sanitizeStatus keeps seven fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
+    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
+    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt' }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt' });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true });
 });
 
 // --- open: criterion 1, X5, criterion 8 --------------------------------------

@@ -68,8 +68,18 @@ test('without an injected healthMarker, health is null rather than a throw', () 
 });
 
 test('no inputs at all is a quiet status', () => {
-  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
-  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
+  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
+  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
+});
+
+// Backlog #52: the host's word that a /bedtime night is on (host/bedtime-state.js), for the strip's night tab.
+test('night is true only for a real true: absence is never a night', () => {
+  assert.strictEqual(ts({ night: true }).night, true);
+  for (const bad of [undefined, null, false, 'true', 1, {}, []]) assert.strictEqual(ts({ night: bad }).night, false, String(bad));
+});
+
+test('a look never clears the night (it is the run\'s, not something waiting for you)', () => {
+  assert.strictEqual(afterSelected(ts({ pendingUrgent: true, night: true })).night, true);
 });
 
 // PR #93 Dexter F1/F2: the host's own word on the MAIN session, from the CLI's hooks (host/turn-state.js).
@@ -85,9 +95,9 @@ test('Dexter F2: a look clears "needs you" but never the turn: an open dialog is
 });
 
 test('sameStatus: field by field, and null handling', () => {
-  const base = { working: true, needsInput: false, finished: false, lock: 'held', health: '↓3', turn: 'turn' };
+  const base = { working: true, needsInput: false, finished: false, lock: 'held', health: '↓3', turn: 'turn', night: false };
   assert.strictEqual(sameStatus(base, { ...base }), true);
-  for (const [k, v] of [['working', false], ['needsInput', true], ['finished', true], ['lock', null], ['health', null], ['turn', 'idle']]) {
+  for (const [k, v] of [['working', false], ['needsInput', true], ['finished', true], ['lock', null], ['health', null], ['turn', 'idle'], ['night', true]]) {
     assert.strictEqual(sameStatus(base, { ...base, [k]: v }), false, k);
   }
   assert.strictEqual(sameStatus(null, null), true);

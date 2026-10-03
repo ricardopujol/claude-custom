@@ -70,7 +70,7 @@ function pulseFor(st) {
 
 /**
  * stripModel({ tabs }, runtime, selectedKey, { keyOf }) ->
- *   [{ key, label, isDev, selected, started, closable, working, needsInput, pulse,
+ *   [{ key, label, isDev, selected, started, closable, working, needsInput, night, pulse,
  *      lockGlyph, health, phase, error, note, setup, createdWarning }]
  * Dev first (order otherwise as given). Exactly one entry is selected: the one
  * matching `selectedKey`, else dev (else the first entry).
@@ -98,6 +98,8 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       closable: t.isDev !== true && !single && t.phase !== 'removing',
       working: !!st && st.working === true,
       needsInput: !!st && st.needsInput === true,
+      // Backlog #52: the session is in a /bedtime night (a real true only).
+      night: !!st && st.night === true,
       pulse: i === selIdx ? null : pulseFor(st),
       lockGlyph: st ? glyphFor(st.lock) : null,
       health: st && isString(st.health) && st.health !== '' ? st.health : null,
