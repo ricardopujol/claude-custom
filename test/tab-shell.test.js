@@ -1953,8 +1953,15 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
     async (n, delays) => {
       const occupied = new Map();          // port -> cwd
       const granted = [];
+      const landing = new Map();           // port -> the spawn that will occupy it
       const names = Array.from({ length: n }, (_, i) => `t${i}`);
-      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      // Logical time: "ms" is a number of event-loop turns, not milliseconds. The
+      // property is about the ORDER the generated delays put events in, and that
+      // order is the same here with none of a real timer's dependence on load
+      // (this took 3.5 s of wall clock for 25 runs, and no more than the machine
+      // would allow).
+      const turns = (n) => new Promise(r => { let left = n; const step = () => (left-- <= 0 ? r() : setImmediate(step)); step(); });
+      const sleep = turns;
       const shell = createShell({
         mode: 'tabs', container: ROOT, log: () => {},
         git: { list: async () => porcelain([['dev', 'develop'], ...names.map(x => [x, `feat/${x}`])]), marker: noMarker },
@@ -1971,8 +1978,12 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
             return null;
           },
           probe: async (p) => (occupied.has(p) ? 'listening' : 'refused'),
-          spawn: ({ tab, port }) => { granted.push(port); setTimeout(() => occupied.set(port, tab.cwd), delays[1]); },
-          wait: async (port) => { await sleep(delays[2] + 3); return occupied.has(port); },
+          spawn: ({ tab, port }) => { granted.push(port); landing.set(port, turns(delays[1]).then(() => occupied.set(port, tab.cwd))); },
+          // The host answers once it has come up: wait is not given up on before
+          // the spawn lands. (On real timers that held only by the slack of
+          // elapsed time -- a 4 ms spawn against a 3 ms wait passed on a quiet
+          // machine and granted the port twice on a loaded one.)
+          wait: async (port) => { await sleep(delays[2] + 3); await landing.get(port); return occupied.has(port); },
           tokenFor: () => 't', tokenFile: () => 't', newToken: () => 't',
           control: async () => ({ ok: true }), identity: () => null, readToken: () => null,
         },
