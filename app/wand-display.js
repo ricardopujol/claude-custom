@@ -250,17 +250,40 @@ function view(state) {
 
 // --- clicks -----------------------------------------------------------------------------------------------
 
+// The CLI's input row is the prompt ("\u276f ") plus the text, and the cursor wants a cell: what is left of the
+// tab's columns is what a command may take. Null when the width is not known (no refusal is invented).
+function boxCapacity(cols) {
+  return Number.isInteger(cols) && cols > 0 ? Math.max(0, cols - 4) : null;
+}
+
+const WIDE = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{1f300}-\u{1faff}]/u;
+/** Terminal columns a string takes: CJK and emoji are two cells wide. */
+function cellWidth(text) {
+  let n = 0;
+  for (const ch of String(text)) n += WIDE.test(ch) ? 2 : 1;
+  return n;
+}
+
 /**
  * What a click on a favourite does. `type` carries the command and nothing that submits it; `missing`
  * carries the note to show instead of typing; `edit` is a click in edit mode; null for an unknown id.
  */
-function clickPlan(state, id) {
+function clickPlan(state, id, opts) {
   const s = state || emptyState();
   const f = isStr(id) ? s.favourites.find(x => x.id === id) : undefined;
   if (!f) return null;
   if (s.edit) return { kind: 'edit', id: f.id };
   if (isMissing(s, f.skill)) return { kind: 'missing', id: f.id, note: `/${f.skill}: skill not found, so nothing was typed` };
-  return { kind: 'type', command: commandOf(f), id: f.id };
+  // A command wider than the tab's input box wraps onto a second row, which the read-back (rightly) refuses:
+  // it would be typed, wiped and reported as "the input line changed". Said up front, with the real cause
+  // (Dexter D3).
+  const command = commandOf(f);
+  const cap = boxCapacity(opts && opts.cols);
+  const width = cellWidth(command);
+  if (cap !== null && width > cap) {
+    return { kind: 'toolong', id: f.id, note: `${command.length > 60 ? `${command.slice(0, 57)}...` : command} is ${width} columns, wider than this tab's ${opts.cols}-column input box, so nothing was typed. Shorten the argument or widen the window.` };
+  }
+  return { kind: 'type', command, id: f.id };
 }
 
 /** typeCommand's answer for a click: a flash on that button, or why nothing was typed. */
@@ -419,7 +442,7 @@ function clickAction(ds) {
 const api = {
   emptyState, reduce, begin, clearError, failed, view, html, skillListHtml, clickAction, clickPlan, typed, clearFlash, setNotice,
   toggleEdit, openEditor, closeEditor, editorSet, editorSubmit, deleteMsg, moveMsg, skillsRequest, filterSkills,
-  SKILL_LIST_CAP, FLASH_TEXT,
+  boxCapacity, cellWidth, SKILL_LIST_CAP, FLASH_TEXT,
 };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the renderer, which has no module

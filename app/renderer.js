@@ -3456,7 +3456,14 @@ function requestSwitch(kind, raw) {
  * CURSOR, Dexter r2 N1), Ctrl-U (a draft is cleared, never submitted with the command; the CLI's Ctrl+Y gets
  * it back), `i` first in vim NORMAL (Dexter r2 N2). Spaced PTY_STEP_MS apart, or a line is taken for a paste.
  */
+// ONE typing sequence at a time in this tab, whoever asks (top bar, Git drawer, wand): two interleaved sequences
+// share one input box, and the top bar's Enter could submit what the other typed (Dexter D8).
+let typingBusy = false;
 function typeAndCheck(enterInsert, command, done) {
+  if (typingBusy) { done({ ok: false, reason: 'another command is still being typed' }); return; }
+  typingBusy = true;
+  const settle = done;
+  done = (r) => { typingBusy = false; settle(r); };
   const input = data => send(JSON.stringify({ type: 'input', data }));
   const keys = typingKeys(command, enterInsert);
   keys.forEach((k, i) => setTimeout(() => input(k), PTY_STEP_MS * i));
@@ -3570,10 +3577,10 @@ function wandType(plan) {
 
 function wandAct(action) {
   if (action.kind === 'press') {
-    const plan = wandDisplay.clickPlan(wandState, action.id);
+    const plan = wandDisplay.clickPlan(wandState, action.id, { cols: term.cols });
     if (!plan) return;
     if (plan.kind === 'type') { wandType(plan); return; }
-    wandState = plan.kind === 'missing' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
+    wandState = plan.kind === 'missing' || plan.kind === 'toolong' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
   } else if (action.kind === 'toggle-edit') {
     wandState = wandDisplay.toggleEdit(wandState);
   } else if (action.kind === 'add') {

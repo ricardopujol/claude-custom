@@ -513,3 +513,49 @@ test('D4: the pending list is bounded', () => {
   for (let i = 0; i < 100; i++) s = W.deleteMsg(s, 'f1').state;
   assert.ok(s.pending.length <= 20);
 });
+
+// --- Dexter D3: a command wider than the tab's input box is refused up front, with the real reason -------------
+
+test('D3: boxCapacity leaves room for the prompt and the cursor; a missing width is no limit', () => {
+  assert.strictEqual(W.boxCapacity(100), 96);
+  assert.strictEqual(W.boxCapacity(0), null);
+  assert.strictEqual(W.boxCapacity(undefined), null);
+  assert.strictEqual(W.boxCapacity(NaN), null);
+  assert.strictEqual(W.boxCapacity(3), 0, 'never negative');
+});
+
+test('D3: cellWidth counts CJK and emoji as two columns, plain text as one', () => {
+  assert.strictEqual(W.cellWidth('/abc'), 4);
+  assert.strictEqual(W.cellWidth('\u65e5\u672c'), 4);
+  assert.strictEqual(W.cellWidth('\u{1F680}'), 2);
+  assert.strictEqual(W.cellWidth(''), 0);
+});
+
+test('D3: a 150-character command in a 100-column tab is "too long", names the real cause, and types nothing', () => {
+  const s = loaded({ favourites: [{ id: 'long', emoji: '\u{1F680}', skill: 'merged', args: 'x'.repeat(150) }] });
+  const plan = W.clickPlan(s, 'long', { cols: 100 });
+  assert.strictEqual(plan.kind, 'toolong');
+  assert.match(plan.note, /158 columns/);
+  assert.match(plan.note, /100-column/);
+  assert.match(plan.note, /shorten the argument or widen/i);
+  assert.doesNotMatch(plan.note, /input line changed/);
+  assert.strictEqual(W.clickPlan(s, 'long', { cols: 400 }).kind, 'type');
+  assert.strictEqual(W.clickPlan(s, 'long').kind, 'type', 'no width known: no refusal invented');
+});
+
+test('D3: the boundary is exact: capacity fits, one more does not (and wide characters count double)', () => {
+  const cols = 60;
+  const cap = W.boxCapacity(cols);
+  const args = (n) => 'a'.repeat(n);
+  const mk = (a) => loaded({ favourites: [{ id: 'f', emoji: '\u{1F680}', skill: 'merged', args: a }] });
+  // the command is "/merged " (8 columns) + args
+  assert.strictEqual(W.clickPlan(mk(args(cap - 8)), 'f', { cols }).kind, 'type');
+  assert.strictEqual(W.clickPlan(mk(args(cap - 7)), 'f', { cols }).kind, 'toolong');
+  assert.strictEqual(W.clickPlan(mk('\u65e5'.repeat((cap - 8) / 2)), 'f', { cols }).kind, 'type');
+  assert.strictEqual(W.clickPlan(mk('\u65e5'.repeat((cap - 8) / 2 + 1)), 'f', { cols }).kind, 'toolong', 'two cells each');
+});
+
+test('D3: a too-long click in edit mode still opens the editor (the fix is to shorten it)', () => {
+  const s = W.toggleEdit(loaded({ favourites: [{ id: 'long', emoji: '\u{1F680}', skill: 'merged', args: 'x'.repeat(150) }] }));
+  assert.strictEqual(W.clickPlan(s, 'long', { cols: 100 }).kind, 'edit');
+});

@@ -101,3 +101,68 @@ test('the probe page answers every wand action the shell lets through', () => {
     assert.ok(RAW.includes(`case '${a}':`), `renderer.js must answer ${a}`);
   }
 });
+
+test('D3: a click is judged against the tab\'s own column count', () => {
+  assert.match(WAND, /wandDisplay\.clickPlan\(wandState, action\.id, \{ cols: term\.cols \}\)/);
+  assert.match(WAND, /plan\.kind === 'missing' \|\| plan\.kind === 'toolong'/);
+});
+
+// --- Dexter D8: one typing sequence at a time per tab, for every caller --------------------------------------
+
+const LF = RAW.replace(/\r\n/g, '\n');
+function typeAndCheckSource() {
+  const start = LF.indexOf('function typeAndCheck(');
+  return LF.slice(start, LF.indexOf('\n}\n', start) + 2);
+}
+
+function loadTypeAndCheck() {
+  const src = typeAndCheckSource();
+  const sent = [];
+  const timers = [];
+  const env = {
+    typingKeys: (command) => ['\x05', '\x15', command],
+    send: (s) => sent.push(JSON.parse(s).data),
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); },
+    commandTyped: () => true, screenLines: () => [], vimSeen: false, PTY_STEP_MS: 120,
+  };
+  const factory = new Function(...Object.keys(env), 'let typingBusy = false;\n' + src + '\nreturn typeAndCheck;');
+  return { typeAndCheck: factory(...Object.values(env)), sent, timers };
+}
+
+test('D8: while one command is being typed, any other caller (top bar, Git drawer, wand) is refused and sends no key', () => {
+  const { typeAndCheck, sent, timers } = loadTypeAndCheck();
+  const results = [];
+  typeAndCheck(false, '/effort high', (r) => results.push(['first', r]));
+  const keysAfterFirst = timers.length;
+  typeAndCheck(false, '/bedtime', (r) => results.push(['second', r]));
+  assert.strictEqual(timers.length, keysAfterFirst, 'the second schedules no keystroke');
+  assert.deepStrictEqual(sent, [], 'and sent none');
+  assert.strictEqual(results.length, 1);
+  assert.strictEqual(results[0][0], 'second');
+  assert.strictEqual(results[0][1].ok, false);
+  assert.match(results[0][1].reason, /still being typed/);
+});
+
+test('D8: the lock is released when the first command is confirmed, so the next can be typed', () => {
+  const { typeAndCheck, timers } = loadTypeAndCheck();
+  const results = [];
+  typeAndCheck(false, '/effort high', (r) => results.push(r));
+  for (const t of timers.splice(0)) t.fn();                       // run the spaced keys and the read-back
+  assert.strictEqual(results.length, 1);
+  assert.strictEqual(results[0].ok, true);
+  typeAndCheck(false, '/bedtime', (r) => results.push(r));
+  assert.ok(timers.length > 0, 'a second command is typed once the first is done');
+});
+
+test('D8: the lock is released when the read-back FAILS too, or one failure would block typing for good', () => {
+  const src = typeAndCheckSource();
+  const timers = [];
+  const env = { typingKeys: (c) => [c], send() {}, setTimeout: (fn) => { timers.push(fn); }, commandTyped: () => false, screenLines: () => [], vimSeen: false, PTY_STEP_MS: 1 };
+  const typeAndCheck = new Function(...Object.keys(env), 'let typingBusy = false;\n' + src + '\nreturn typeAndCheck;')(...Object.values(env));
+  const out = [];
+  typeAndCheck(false, '/a', (r) => out.push(r));
+  while (timers.length) timers.shift()();
+  assert.strictEqual(out[0].ok, false);
+  typeAndCheck(false, '/b', (r) => out.push(r));
+  assert.ok(timers.length > 0, 'typing works again after a failed one');
+});
