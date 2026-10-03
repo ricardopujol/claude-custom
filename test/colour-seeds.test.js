@@ -124,3 +124,27 @@ test('D4: a pixel with a channel that is not a number is skipped, never thrown o
   }
   assert.deepStrictEqual(dominantColours([0, 0, 0, 255, NaN, 0, 0, 255]), [{ hex: '#000000', share: 1 }]);
 });
+
+// Miguel M6 (PR #91): sRGB -> OKLab is written twice, here (the page) and in host/palette-gen.js
+// (the host). They stay separate copies; this holds them to the same numbers, so a constant edited
+// in one and not the other fails here instead of quietly skewing what "this background's hue" means.
+test('PROPERTY M6: colour-seeds and palette-gen convert every sRGB colour to the same OKLab', () => {
+  const { oklabOfByte } = require('../app/colour-seeds');
+  const { hexToOklch } = require('../host/palette-gen');
+  const byte = fc.integer({ min: 0, max: 255 });
+  const hex = (v) => v.toString(16).padStart(2, '0');
+  const check = (r, g, b) => {
+    const [L, a, bb] = oklabOfByte(r, g, b);
+    const o = hexToOklch(`#${hex(r)}${hex(g)}${hex(b)}`);
+    assert.ok(Math.abs(L - o.L) < 1e-12, `L ${L} vs ${o.L}`);
+    if (o.h === null) {
+      assert.ok(Math.hypot(a, bb) < 1e-4, 'palette-gen calls it grey, so its chroma is under the cut-off here too');
+    } else {
+      const rad = (o.h * Math.PI) / 180;
+      assert.ok(Math.abs(a - o.C * Math.cos(rad)) < 1e-12 && Math.abs(bb - o.C * Math.sin(rad)) < 1e-12,
+        `(${r},${g},${b}): a ${a} b ${bb} vs C ${o.C} h ${o.h}`);
+    }
+  };
+  for (const [r, g, b] of [[0, 0, 0], [255, 255, 255], [128, 128, 128], [255, 0, 0], [0, 255, 0], [0, 0, 255], [31, 79, 154]]) check(r, g, b);
+  fc.assert(fc.property(byte, byte, byte, check), { numRuns: 2000 });
+});

@@ -56,6 +56,11 @@ function oklab(r, g, b) {
   ];
 }
 
+// The same sRGB -> OKLab as host/palette-gen.js hexToOklch, kept as a SEPARATE copy on purpose: this
+// file runs in the page as a plain <script> and palette-gen in the host, and neither may load the
+// other. test/colour-seeds.test.js holds the two to the same numbers (Miguel M6, PR #91).
+const oklabOfByte = (r, g, b) => oklab(toLinear(r), toLinear(g), toLinear(b));
+
 const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
 
 function readable(rgba) {
@@ -144,7 +149,7 @@ function seedsOf(rgba, opts) {
   return dominantColours(rgba, opts).map((c) => c.hex);
 }
 
-const API = { dominantColours, seedsOf, MAX_COLOURS };
+const API = { dominantColours, seedsOf, oklabOfByte, MAX_COLOURS };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.colourSeeds = API;
