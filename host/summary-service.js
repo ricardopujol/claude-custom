@@ -33,6 +33,7 @@ const { DEFAULT_MODEL } = require('./summary-ollama');
 
 const RETRY_MS = 60_000;
 const SLOT_RETRY_MS = 5_000;
+const CHECK_REUSE_MS = 5_000;
 const TICK_MS = 5_000;
 const TAIL_SIZES = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024];
 const ENOUGH_CHARS = 4_000;
@@ -111,6 +112,8 @@ function createSummaryService({
   let seenSize = null;       // ...and its size, so a change can be read from where the last look ended
   let off = null;
   let lastCheckAt = null;
+  let lastCheckOk = null;
+  const tailIdx = new Map();  // per session: the index in TAIL_SIZES that was enough last time
   let busy = null;
   let lastSent = null;
   let lastSlotError = '';
@@ -154,7 +157,7 @@ function createSummaryService({
   function observe() {
     const sid = sidNow();
     if (sid !== current) {
-      if (current !== null) scheduler.forget(current);
+      if (current !== null) { scheduler.forget(current); tailIdx.delete(current); }
       current = sid;
       seen = null;
       seenSize = null;
@@ -175,9 +178,17 @@ function createSummaryService({
     if (typeof added !== 'string' || flattenTranscript(added).messages.length > 0) scheduler.activity(sid, now());
   }
 
+  // ONE answer is shared by the minute check in run() and the check in job(): a down Ollama is asked at most once a minute
+  // (Dexter F6, PR #105), and a healthy answer a moment old is not asked for again right behind itself.
   async function healthCheck() {
+    if (lastCheckAt !== null) {
+      const age = now() - lastCheckAt;
+      if (lastCheckOk === false && age < RETRY_MS) return false;
+      if (lastCheckOk === true && age < CHECK_REUSE_MS) return true;
+    }
     const c = await ollama.check();
     lastCheckAt = now();
+    lastCheckOk = c.ok === true;
     if (c.ok) {
       if (off && off.reason !== 'failed') setOff(null);
       return true;
@@ -190,13 +201,18 @@ function createSummaryService({
     const file = transcriptFile(sid);
     const st = stat(file);
     if (!st) throw new Error('transcript is gone');
+    // Start at the size that was enough for this session last time (Miguel I5): a tab whose tail is all tool output would
+    // otherwise re-read 256 KB, then 1 MB, then 4 MB on every job.
     let flat = null;
-    for (const bytes of TAIL_SIZES) {
+    let i = tailIdx.get(sid) || 0;
+    for (; i < TAIL_SIZES.length; i++) {
+      const bytes = TAIL_SIZES[i];
       const text = readTail(file, bytes);
       if (typeof text !== 'string') throw new Error('transcript unreadable');
       flat = flattenTranscript(text);
       if (flat.transcript.length >= ENOUGH_CHARS || st.size <= bytes) break;
     }
+    tailIdx.set(sid, Math.min(i, TAIL_SIZES.length - 1));
     return flat;
   }
 
@@ -268,4 +284,4 @@ function createSummaryService({
   return { tick, snapshot };
 }
 
-module.exports = { createSummaryService, readTailFile, readFromFile, statFile, RETRY_MS, SLOT_RETRY_MS, TICK_MS, TAIL_SIZES };
+module.exports = { createSummaryService, readTailFile, readFromFile, statFile, RETRY_MS, SLOT_RETRY_MS, CHECK_REUSE_MS, TICK_MS, TAIL_SIZES };

@@ -220,7 +220,7 @@ test('Ollama not running is SAID, the last summary is kept, and the retry waits 
   assert.deepStrictEqual(last(r), { type: 'summary', summary: null, off: { reason: 'ollama-down', model: 'llama3.2:3b' } });
   const checks = r.calls.check;
   r.grow(jl(userLine('u2', 'more')));
-  r.advance(RETRY_MS - 1); await r.svc.tick();
+  r.advance(RETRY_MS - QUIET_MS - 1); await r.svc.tick();
   assert.strictEqual(r.calls.check, checks, 'not asked again inside the minute');
   r.advance(1); await r.svc.tick();
   assert.ok(r.calls.check > checks);
@@ -523,4 +523,60 @@ test('readFromFile: a huge append is read from its last maxBytes, on a line boun
 test('readFromFile: a missing file or a directory is null', () => {
   assert.strictEqual(readFromFile(path.join(os.tmpdir(), 'no-such-dir-xyz', 'a.jsonl'), 0), null);
   assert.strictEqual(readFromFile(os.tmpdir(), 0), null);
+});
+
+// --- Dexter F6 / Miguel I5 (PR #105) --------------------------------------------------------------------------------
+
+test('with Ollama down and a tab that keeps having turns, it is asked once a minute, not twice (run and job share it)', async () => {
+  const r = rig({ check: { ok: false, reason: 'unreachable', model: 'llama3.2:3b' } });
+  await r.svc.tick();
+  let n = 0;
+  for (let sec = 5; sec <= 300; sec += 5) {
+    r.advance(5000);
+    if (sec % 10 === 0) r.grow(jl(asstLine('m' + (n++), 'turn ' + n)));
+    await r.svc.tick();
+  }
+  assert.ok(r.calls.check <= 6, 'one check a minute for five minutes (+ the first): ' + r.calls.check);
+  assert.ok(r.calls.check >= 5, 'but it is still retried every minute: ' + r.calls.check);
+  assert.strictEqual(r.svc.snapshot().off.reason, 'ollama-down');
+});
+
+test('a healthy check is reused for a moment, so the minute check and the job right behind it ask once', async () => {
+  const r = rig({ check: { ok: false, reason: 'unreachable', model: 'llama3.2:3b' } });
+  await r.settle();
+  r.cfg.check = { ok: true };
+  const before = r.calls.check;
+  r.advance(RETRY_MS); await r.svc.tick();
+  assert.strictEqual(r.calls.check - before, 1, 'the recovery check and the job it unblocked share one');
+  assert.strictEqual(r.calls.summarize.length, 1);
+});
+
+test('the tail size that was enough is remembered per session: later jobs do not re-read 256 KB then 1 MB again', async () => {
+  const r = rig();
+  r.file.size = 50 * 1024 * 1024;
+  const rich = Array.from({ length: 30 }, (_, i) => jl(asstLine('r' + i, 'x'.repeat(300)))).join('\n') + '\n' + r.file.text;
+  r.deps.readTail = (f, bytes) => { r.calls.readTail.push(bytes); return bytes >= TAIL_SIZES[1] ? rich + '\n' + (r.extra || '') : jl(toolLine('t' + bytes)); };
+  r.deps.readFrom = () => jl(userLine('u9', 'a new message'));
+  const svc = createSummaryService(r.deps);
+  await svc.tick(); r.advance(QUIET_MS); await svc.tick();
+  assert.deepStrictEqual(r.calls.readTail, [TAIL_SIZES[0], TAIL_SIZES[1]], 'the first job widens to 1 MB');
+  r.calls.readTail.length = 0;
+  r.extra = jl(userLine('u9', 'a new message'));
+  r.file.size += 100; r.file.mtimeMs += 1;
+  r.advance(1000); await svc.tick();
+  r.advance(120_000); await svc.tick();
+  assert.deepStrictEqual(r.calls.readTail, [TAIL_SIZES[1]], 'the next one starts at 1 MB');
+});
+
+test('a new session starts again from the smallest tail', async () => {
+  const r = rig();
+  r.file.size = 50 * 1024 * 1024;
+  const rich = Array.from({ length: 30 }, (_, i) => jl(asstLine('r' + i, 'x'.repeat(300)))).join('\n') + '\n' + r.file.text;
+  r.deps.readTail = (f, bytes) => { r.calls.readTail.push(bytes); return bytes >= TAIL_SIZES[1] ? rich : jl(toolLine('t')); };
+  const svc = createSummaryService(r.deps);
+  await svc.tick(); r.advance(QUIET_MS); await svc.tick();
+  r.calls.readTail.length = 0;
+  r.cfg.sid = 'sess-2'; r.file.mtimeMs += 1;
+  await svc.tick(); r.advance(QUIET_MS); await svc.tick();
+  assert.strictEqual(r.calls.readTail[0], TAIL_SIZES[0]);
 });
