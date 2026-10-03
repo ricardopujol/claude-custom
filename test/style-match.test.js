@@ -58,12 +58,26 @@ test('matchLook with no readable palette says so and leaves look.json byte-ident
   const cwd = tmpDir('cc-match-nopal-');
   setLook({ cwd, patch: { appColor: '#123456' } });
   const before = fs.readFileSync(lookFile(cwd), 'utf8');
-  // black CLI text: no dark app colour can carry it, so no palette passes
-  const r = matchLook({ cwd, seeds: ['#2a5a8a'], rng: mulberry32(1), terminalForeground: '#000000' });
+  // a generator that finds nothing for these colours, whatever the terminal
+  const r = matchLook({ cwd, seeds: ['#2a5a8a'], rng: mulberry32(1), generate: () => null });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, NO_PALETTE_REASON);
   assert.strictEqual(NO_PALETTE_REASON, 'No readable palette in this background; kept your colours');
   assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
+});
+
+test('D2: with a light terminal theme the refusal names the theme\'s text colour, not the background', () => {
+  for (const fg of ['#24292f', '#000000']) {
+    const cwd = tmpDir('cc-match-theme-');
+    setLook({ cwd, patch: { appColor: '#123456' } });
+    const before = fs.readFileSync(lookFile(cwd), 'utf8');
+    const r = matchLook({ cwd, seeds: ['#1f4f9a'], rng: mulberry32(1), terminalForeground: fg });
+    assert.strictEqual(r.ok, false, fg);
+    assert.notStrictEqual(r.reason, NO_PALETTE_REASON, fg);
+    assert.ok(r.reason.includes(`terminal text (${fg})`), r.reason);
+    assert.match(r.reason, /kept your colours/);
+    assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
+  }
 });
 
 test('matchLook refuses a corrupt look folder exactly as setLook does', () => {

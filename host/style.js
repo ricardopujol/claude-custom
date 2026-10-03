@@ -310,10 +310,24 @@ function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
  */
 const NO_PALETTE_REASON = 'No readable palette in this background; kept your colours';
 
-function matchLook({ cwd, seeds, rng, terminalForeground, fsImpl = fs } = {}) {
+// Why no palette came back, naming the real cause (Dexter D2, PR #91): when the
+// same colours DO give a palette against the default terminal text, it is this
+// theme's terminal text that no dark look can carry, and a different picture
+// would never fix it -- say so, as a re-roll does.
+function noMatchReason(seeds, terminalForeground, generate) {
+  const fg = terminalForeground || DEFAULT_TERMINAL_FG;
+  if (fg.toLowerCase() !== DEFAULT_TERMINAL_FG.toLowerCase()
+    && generate(seeds, () => 0.5, { terminalForeground: DEFAULT_TERMINAL_FG })) {
+    return `no palette from this background reads against this theme's terminal text (${fg}) -- ` +
+      'matched looks are dark, and this terminal text needs a light background; kept your colours';
+  }
+  return NO_PALETTE_REASON;
+}
+
+function matchLook({ cwd, seeds, rng, terminalForeground, fsImpl = fs, generate = generateLookFrom } = {}) {
   if (!seedParts(seeds)) return { ok: false, reason: noSeedsReason() };
-  const look = generateLookFrom(seeds, rng, { terminalForeground });
-  if (!look) return { ok: false, reason: NO_PALETTE_REASON };
+  const look = generate(seeds, rng, { terminalForeground });
+  if (!look) return { ok: false, reason: noMatchReason(seeds, terminalForeground, generate) };
   return setLook({ cwd, patch: look, fsImpl });
 }
 
