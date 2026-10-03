@@ -87,6 +87,75 @@ test('the hold is bounded: past HOLD_MAX characters the rest is dropped, never q
   assert.strictEqual(r.sent.join('').length, HOLD_MAX);
 });
 
+// --- PR #96 review: Dexter F4, Miguel Y1 + Y2 ------------------------------------------------------------
+
+test('a paste is ONE piece, held whole and released intact on Type (a 5 KB control frame, not 256 characters of it)', () => {
+  const r = rig();
+  r.c.setClaims(here('a1'));
+  const frame = JSON.stringify({ type: 'input', data: '\u001b[200~' + 'p'.repeat(5000) + '\u001b[201~' });
+  assert.strictEqual(r.c.input(frame), 'held');
+  assert.strictEqual(r.c.state().asking, true);
+  assert.deepStrictEqual(r.sent, []);
+  r.c.type();
+  assert.deepStrictEqual(r.sent, [frame]);
+});
+
+test('the FIRST piece is always held, however long: the question never opens over nothing', () => {
+  const r = rig();
+  r.c.setClaims(here('a1'));
+  const huge = 'y'.repeat(HOLD_MAX + 1);
+  assert.strictEqual(r.c.input(huge), 'held');
+  r.c.type();
+  assert.deepStrictEqual(r.sent, [huge]);
+});
+
+test('once the hold has overflowed, everything after it is dropped too: Type never sends a spliced input', () => {
+  const r = rig();
+  r.c.setClaims(here('a1'));
+  r.c.input('f');
+  assert.strictEqual(r.c.input('x'.repeat(HOLD_MAX)), 'dropped', 'does not fit');
+  assert.strictEqual(r.c.input('b'), 'dropped', 'would fit, but what came before it is gone');
+  r.c.type();
+  assert.deepStrictEqual(r.sent, ['f'], 'what was typed before the overflow, in order, and nothing after');
+  // answered: the latch is gone with the question
+  r.c.setClaims(here('a1', 'a2'));
+  assert.strictEqual(r.c.input('z'), 'held');
+});
+
+test('Ctrl+C with nothing held goes straight through and asks nothing: stopping your own session writes nothing', () => {
+  const r = rig();
+  r.c.setClaims(here('a1'));
+  assert.strictEqual(r.c.input('\x03'), 'sent');
+  assert.deepStrictEqual(r.sent, ['\x03']);
+  assert.strictEqual(r.c.state().asking, false);
+  // ...but it approves nothing: the next key still asks
+  assert.strictEqual(r.c.input('a'), 'held');
+  // and once the question is open it is typing like the rest (it is not an answer)
+  assert.strictEqual(r.c.input('\x03'), 'held');
+  r.c.type();
+  assert.deepStrictEqual(r.sent, ['\x03', 'a', '\x03']);
+});
+
+test('Enter while the question is open is Type: what was held is released, the Enter itself is not sent', () => {
+  const r = rig();
+  r.c.setClaims(here('a1'));
+  r.c.input('f');
+  r.c.input('i');
+  assert.strictEqual(r.c.input('\r'), 'dropped');
+  assert.deepStrictEqual(r.sent, ['f', 'i'], 'the person presses Enter again to submit: nothing is sent to the CLI unseen');
+  assert.strictEqual(r.c.state().asking, false);
+  assert.strictEqual(r.c.input('x'), 'sent', 'approved for this run, like the Type button');
+});
+
+test('Enter as the FIRST key of an unconfirmed run is held like any key', () => {
+  const r = rig();
+  r.c.setClaims(here('a1'));
+  assert.strictEqual(r.c.input('\r'), 'held');
+  assert.strictEqual(r.c.state().asking, true);
+  r.c.wait();
+  assert.deepStrictEqual(r.sent, []);
+});
+
 test('Escape while the question is open is Wait (and is itself not sent)', () => {
   const r = rig();
   r.c.setClaims(here('a1'));

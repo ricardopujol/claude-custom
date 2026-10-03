@@ -622,6 +622,7 @@
       background: var(--panel); color: var(--text); border: 1px solid var(--border);
     }
     #occupancy-jump:hover, #occupancy-confirm button:hover { border-color: var(--agent); }
+    #occupancy-confirm kbd { font: inherit; font-size: 0.85em; color: var(--dim); margin-left: 4px; }
     #occupancy-jump[hidden] { display: none; }
     /* the terminal-banner (other live sessions) sits just under it while both show */
     body.occupied #terminal-banner { top: 46px; }
@@ -1323,8 +1324,8 @@
         <!-- The first keystroke typed while an agent is writing here is held behind this (app/occupancy-confirm.js). -->
         <div id="occupancy-confirm" role="alertdialog" aria-labelledby="occupancy-confirm-text" hidden>
           <span id="occupancy-confirm-text">An agent is writing here. Type anyway?</span>
-          <button type="button" id="occupancy-type">Type</button>
-          <button type="button" id="occupancy-wait">Wait</button>
+          <button type="button" id="occupancy-type">Type <kbd>Enter</kbd></button>
+          <button type="button" id="occupancy-wait">Wait <kbd>Esc</kbd></button>
         </div>
         <!-- Another session holds this worktree's lock: no session starts here
              until Open anyway. Over the terminal, which is empty meanwhile. -->

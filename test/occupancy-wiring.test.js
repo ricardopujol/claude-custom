@@ -114,6 +114,9 @@ test('the banner and the confirm exist, hidden, over the terminal, each with its
   assert.match(HTML, /<div id="occupancy-confirm" role="alertdialog"[^>]*hidden>/);
   assert.match(HTML, /id="occupancy-type"/);
   assert.match(HTML, /id="occupancy-wait"/);
+  // focus stays in the terminal, so each answer says the key that gives it (app/occupancy-confirm.js: Enter, Esc)
+  assert.match(HTML, /<button type="button" id="occupancy-type">Type <kbd>Enter<\/kbd><\/button>/);
+  assert.match(HTML, /<button type="button" id="occupancy-wait">Wait <kbd>Esc<\/kbd><\/button>/);
   const termwrap = HTML.slice(HTML.indexOf('<div id="termwrap">'), HTML.indexOf('<aside class="zone" data-zone="right"'));
   assert.ok(termwrap.includes('id="occupancy-banner"') && termwrap.includes('id="occupancy-confirm"'), 'inside #termwrap');
 });
@@ -148,6 +151,11 @@ test('user input goes through the confirm; the program\'s own typing and the ter
   assert.match(RENDERER, /const input = data => send\(JSON\.stringify\(\{ type: 'input', data \}\)\);/);
   // userInput itself is the confirm's input, falling back to send when there is no confirm
   assert.match(RENDERER, /function userInput\(data\) \{[\s\S]*?occupancy\.confirm\.input\(data\)/);
+});
+
+test('a dropped file goes through the confirm too: its path is the person typing into the prompt (PR #96 Miguel S5)', () => {
+  assert.match(RENDERER, /userInput\(JSON\.stringify\(\{ type: 'drop', entries \}\)\);/);
+  assert.doesNotMatch(RENDERER, /ws\.send\(JSON\.stringify\(\{ type: 'drop'/);
 });
 
 test('the confirm releases through the same send the keystroke would have used', () => {

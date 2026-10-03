@@ -4807,7 +4807,9 @@ dropZone.addEventListener('drop', (e) => {
     .filter(x => x.path);
 
   if (!entries.length) return;
-  try { ws.send(JSON.stringify({ type: 'drop', entries })); } catch { /* not attached */ }
+  // Through the confirm, like typing and pasting: a dropped file types its path into the prompt, and that is
+  // the person's own act in a worktree an agent may be writing in (PR #96 Miguel S5).
+  userInput(JSON.stringify({ type: 'drop', entries }));
 });
 
 // What the drop did, said out loud. A gesture that silently widens what the
