@@ -61,6 +61,22 @@ function teammateFromMeta(payload, { readFileSync = fs.readFileSync } = {}) {
   }
 }
 
+// What a file tool's input carries that is the FILE'S TEXT rather than who touched which path.
+const TEXT_FIELDS = new Set(['content', 'old_string', 'new_string', 'new_source', 'edits']);
+
+/**
+ * A hook payload for the debug log, without the text a Write or an Edit carries: the occupancy matcher fires
+ * for every file an agent writes (a .env included), and the log is a file. A copy; the payload isn't changed.
+ */
+function withoutFileText(payload) {
+  if (!payload || typeof payload !== 'object') return {};
+  const input = payload.tool_input;
+  if (!input || typeof input !== 'object') return payload;
+  const kept = {};
+  for (const [k, v] of Object.entries(input)) if (!TEXT_FIELDS.has(k)) kept[k] = v;
+  return { ...payload, tool_input: kept };
+}
+
 function isOccupancyOnly(event) {
   return !!event && typeof event === 'object' && event.event === 'PreToolUse'
     && !!event.payload && typeof event.payload === 'object' && TOUCH_TOOLS.has(event.payload.tool_name);
@@ -192,4 +208,6 @@ function createOccupancyProducer({
   return { handle, tick };
 }
 
-module.exports = { createOccupancyProducer, isOccupancyOnly, teammateFromMeta, AGENTS_MAX, TOUCHES_MAX, IDLE_MS };
+module.exports = {
+  createOccupancyProducer, isOccupancyOnly, teammateFromMeta, withoutFileText, AGENTS_MAX, TOUCHES_MAX, IDLE_MS,
+};

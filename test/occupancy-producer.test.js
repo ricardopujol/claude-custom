@@ -364,6 +364,24 @@ test('teammateFromMeta: the .meta.json beside SubagentStop\'s agent_transcript_p
   assert.strictEqual(asked, path.join(dir, 'agent-mate.meta.json'));
 });
 
+// --- PR #96 review: Miguel Y6 -----------------------------------------------------------------------------
+
+test('withoutFileText: the debug log gets who touched which path, never the text a Write or an Edit carries', () => {
+  const { withoutFileText } = require('../host/occupancy-producer');
+  const write = { hook_event_name: 'PreToolUse', tool_name: 'Write', agent_id: 'ag1',
+    tool_input: { file_path: path.join(FEAT, '.env'), content: 'SECRET=hunter2' } };
+  assert.deepStrictEqual(withoutFileText(write), { hook_event_name: 'PreToolUse', tool_name: 'Write', agent_id: 'ag1',
+    tool_input: { file_path: path.join(FEAT, '.env') } });
+  assert.strictEqual(write.tool_input.content, 'SECRET=hunter2', 'the payload itself is not changed: the producer still reads it');
+  const editInput = { file_path: 'x', old_string: 'a', new_string: 'b', replace_all: true };
+  assert.deepStrictEqual(withoutFileText({ tool_name: 'Edit', tool_input: editInput }).tool_input, { file_path: 'x', replace_all: true });
+  assert.deepStrictEqual(withoutFileText({ tool_name: 'NotebookEdit', tool_input: { notebook_path: 'n', new_source: 's' } }).tool_input, { notebook_path: 'n' });
+  assert.deepStrictEqual(withoutFileText({ tool_name: 'Grep', tool_input: { pattern: 'p', path: FEAT } }).tool_input, { pattern: 'p', path: FEAT });
+  assert.ok(!JSON.stringify(withoutFileText(write)).includes('hunter2'));
+  for (const junk of [null, undefined, 5, 'x']) assert.deepStrictEqual(withoutFileText(junk), {});
+  assert.deepStrictEqual(withoutFileText({ tool_name: 'Read', tool_input: null }), { tool_name: 'Read', tool_input: null });
+});
+
 // --- PR #96 review: Dexter F2, F8 -------------------------------------------------------------------------
 
 test('a host that does not know its own start time writes NOTHING: a claim without the proof is never shown, and would only fight the transcript producer for the file (Dexter F2)', () => {

@@ -172,7 +172,7 @@ test('REAL powershell: this process is listed with a FILETIME, a pid nobody has 
   assert.strictEqual(m.has(bogus), false);
 });
 
-test('REAL powershell: a killed process is no longer listed (the plain case; a corpse kept by a held handle is left to the probe)', { skip: process.platform !== 'win32' }, async () => {
+test('REAL powershell: a killed process whose handle is still HELD (a corpse Windows keeps listed) is no longer listed', { skip: process.platform !== 'win32' }, async () => {
   const { spawn } = require('child_process');
   // The holder starts a child and keeps a .NET Process object (a handle) to it until told to stop.
   const holder = spawn('powershell', ['-NoProfile', '-Command',
@@ -190,9 +190,17 @@ test('REAL powershell: a killed process is no longer listed (the plain case; a c
     assert.ok(alive, 'the query ran (5 tries)');
     assert.strictEqual(alive.has(pid), true, 'alive: listed');
     process.kill(pid, 'SIGKILL');
-    await new Promise(r => setTimeout(r, 1500));
-    const dead = await asked([pid]);
-    assert.ok(dead, 'the query ran (5 tries)');
+    // Asked until it says so, not after a fixed sleep: under the suite's load the teardown has no fixed time
+    // (PR #96 Miguel Y5). The holder keeps its handle the whole while, so without the HasExited filter the
+    // corpse stays listed until the deadline.
+    const until = Date.now() + 15000;
+    let dead = null;
+    do {
+      dead = await asked([pid]);
+      if (dead && !dead.has(pid)) break;
+      await new Promise(r => setTimeout(r, 250));
+    } while (Date.now() < until);
+    assert.ok(dead, 'the query ran');
     assert.strictEqual(dead.has(pid), false, 'dead: not listed');
   } finally {
     try { holder.stdin.write('\n'); } catch { /* gone */ }
