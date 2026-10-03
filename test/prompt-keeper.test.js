@@ -22,10 +22,10 @@ test('a main-session prompt is kept with its time and a sequence number, and rep
   const now = clock();
   const k = createPromptKeeper({ now });
   assert.strictEqual(k.handle(submit('fix the drawer')), true);
-  assert.deepStrictEqual(k.snapshot(), { text: 'fix the drawer', at: 1000, seq: 1 });
+  assert.deepStrictEqual(k.snapshot(), { text: 'fix the drawer', at: 1000, seq: 1, truncated: false, omitted: 0 });
   now.set(5000);
   assert.strictEqual(k.handle(submit('and the hover card')), true);
-  assert.deepStrictEqual(k.snapshot(), { text: 'and the hover card', at: 5000, seq: 2 });
+  assert.deepStrictEqual(k.snapshot(), { text: 'and the hover card', at: 5000, seq: 2, truncated: false, omitted: 0 });
 });
 
 test('the same words typed twice are two prompts: the sequence moves, so the page re-anchors', () => {
@@ -121,4 +121,35 @@ test('handle answers false for every event it does not act on, and for junk', ()
     assert.strictEqual(k.handle(e), false, JSON.stringify(e));
   }
   assert.strictEqual(k.snapshot().text, 'x', 'none of them touched it');
+});
+
+// --- Miguel Y4: a cut prompt says so ---------------------------------------------------------------------------
+test('Y4: a prompt cut at the cap is marked truncated, with how much was left out; a whole one is not', () => {
+  const k = createPromptKeeper({ now: clock() });
+  k.handle(submit('short'));
+  assert.strictEqual(k.snapshot().truncated, false);
+  assert.strictEqual(k.snapshot().omitted, 0);
+  k.handle(submit('a'.repeat(PROMPT_MAX + 123)));
+  assert.strictEqual(k.snapshot().truncated, true);
+  assert.strictEqual(k.snapshot().omitted, 123);
+  k.handle(submit('a'.repeat(PROMPT_MAX)));
+  assert.strictEqual(k.snapshot().truncated, false, 'exactly the cap is whole');
+});
+
+test('Y4: a pair cut in half at the cap counts the dropped unit too', () => {
+  const k = createPromptKeeper({ now: clock() });
+  k.handle(submit('a'.repeat(PROMPT_MAX - 1) + '\u{1F319}' + 'tail'));
+  const s = k.snapshot();
+  assert.strictEqual(s.text, 'a'.repeat(PROMPT_MAX - 1));
+  assert.strictEqual(s.truncated, true);
+  assert.strictEqual(s.omitted, 2 + 4, 'the moon (two units) and the tail');
+});
+
+test('Y4 property: kept + omitted is always the typed length', () => {
+  fc.assert(fc.property(fc.string({ unit: 'binary', maxLength: PROMPT_MAX * 2 }), (s) => {
+    const k = createPromptKeeper({ now: clock() });
+    k.handle(submit(s));
+    const snap = k.snapshot();
+    return snap === null || (snap.text.length + snap.omitted === s.length && snap.truncated === (snap.omitted > 0));
+  }));
 });

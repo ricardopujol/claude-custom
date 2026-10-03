@@ -11,6 +11,9 @@
 
 const { execFile } = require('child_process');
 
+// How many PRs one query returns at most. A count that reaches it is a FLOOR, not the number (PR #99 Miguel G2).
+const PR_LIMIT = 200;
+
 function defaultRun(args, cwd) {
   return new Promise((resolve, reject) => {
     execFile('gh', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 4000 },
@@ -31,7 +34,7 @@ function parseCount(text) {
 function nightPrArgs(sinceMs) {
   if (typeof sinceMs !== 'number' || !Number.isFinite(sinceMs) || sinceMs <= 0) return null;
   const iso = new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
-  return ['pr', 'list', '--author', '@me', '--state', 'all', '--search', `created:>=${iso}`, '--json', 'number', '--limit', '200'];
+  return ['pr', 'list', '--author', '@me', '--state', 'all', '--search', `created:>=${iso}`, '--json', 'number', '--limit', String(PR_LIMIT)];
 }
 
 async function countNightPrs(cwd, sinceMs, { run = defaultRun } = {}) {
@@ -44,4 +47,4 @@ async function countNightPrs(cwd, sinceMs, { run = defaultRun } = {}) {
   }
 }
 
-module.exports = { countNightPrs, parseCount, nightPrArgs };
+module.exports = { countNightPrs, parseCount, nightPrArgs, PR_LIMIT };

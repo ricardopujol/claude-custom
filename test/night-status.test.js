@@ -160,3 +160,55 @@ test('a real zero is a zero: gh said no PRs yet, and the chip may say so', async
   assert.strictEqual(r.n.payload().prs, 0);
   assert.strictEqual(r.sent[r.sent.length - 1].prs, 0);
 });
+
+// --- Miguel G2: a failed gh call keeps the last known count, marked stale; the limit is a floor ----------------
+test('G2: a count that was known and then gh fails keeps its number, marked stale; the next good answer clears it', async () => {
+  const answers = [3, null, 4];
+  const r = rig({ prs: async () => answers.shift() });
+  r.sched();
+  await settle();
+  assert.strictEqual(r.n.payload().prs, 3);
+  assert.strictEqual(r.n.payload().prsStale, false);
+  r.send('Stop');
+  r.at(T0 + 31 * MIN);
+  r.send('UserPromptSubmit', { prompt: PROMPT });        // a wake: ask again, and gh fails
+  await settle();
+  assert.strictEqual(r.n.payload().prs, 3, 'the last answer is kept');
+  assert.strictEqual(r.n.payload().prsStale, true);
+  r.at(T0 + 35 * MIN);
+  r.sched(600);                                          // the woken turn schedules again
+  r.send('Stop');
+  r.at(T0 + 46 * MIN);
+  r.send('UserPromptSubmit', { prompt: PROMPT });
+  await settle();
+  assert.strictEqual(r.n.payload().prs, 4);
+  assert.strictEqual(r.n.payload().prsStale, false);
+});
+
+test('G2: gh failing before any answer stays unknown and is not "stale": there is no number to mark', async () => {
+  const r = rig({ prs: async () => null });
+  r.sched();
+  await settle();
+  assert.strictEqual(r.n.payload().prs, null);
+  assert.strictEqual(r.n.payload().prsStale, false);
+});
+
+test('G2: a count at gh\'s list limit is a floor, and says so; a new night starts with no stale number from the last', async () => {
+  const { PR_LIMIT } = require('../host/night-prs');
+  const r = rig({ prs: async () => PR_LIMIT });
+  r.sched();
+  await settle();
+  assert.strictEqual(r.n.payload().prsCapped, true);
+  const q = rig({ prs: async () => PR_LIMIT - 1 });
+  q.sched();
+  await settle();
+  assert.strictEqual(q.n.payload().prsCapped, false);
+  const n = rig({ prs: async () => 5 });
+  n.sched();
+  await settle();
+  n.send('PreToolUse', { tool_name: 'ScheduleWakeup', tool_input: { stop: true } });
+  n.at(T0 + MIN);
+  n.sched();
+  assert.strictEqual(n.n.payload().prs, null, 'the new night has no number yet');
+  assert.strictEqual(n.n.payload().prsStale, false);
+});

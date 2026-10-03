@@ -58,3 +58,9 @@ test('property: the count is never negative, never fractional, and null exactly 
     return Number.isInteger(n) && n >= 0 && n <= v.length;
   }));
 });
+
+test('G2: the limit gh is asked for is exported, and is the number the query uses', () => {
+  const { PR_LIMIT } = require('../host/night-prs');
+  assert.strictEqual(PR_LIMIT, 200);
+  assert.strictEqual(nightPrArgs(SINCE)[nightPrArgs(SINCE).length - 1], String(PR_LIMIT));
+});

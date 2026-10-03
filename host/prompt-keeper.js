@@ -2,7 +2,7 @@
 /**
  * The main session's latest prompt (backlog #49, documentation/DESIGN_TERMINAL_BAR.md "Sources").
  *
- *   createPromptKeeper({ now }) -> { handle(event) -> changed, snapshot() -> { text, at, seq } | null }
+ *   createPromptKeeper({ now }) -> { handle(event) -> changed, snapshot() -> { text, at, seq, truncated, omitted } | null }
  *
  * It is `UserPromptSubmit.prompt`, from the hook the harness already registers, and from nothing else:
  *   - a subagent's event (it carries `agent_id`) is not the person's prompt and never counts;
@@ -15,7 +15,9 @@
  * what the CLI shows as the latest turn, so it is kept like any other (verify/probe-bedtime-signal.js).
  *
  * The text is capped at PROMPT_MAX so a pasted file can't ride every `hello` to every window; the cap never
- * splits a surrogate pair. The person's own words are never logged here.
+ * splits a surrogate pair, and a cut prompt SAYS so (`truncated`, `omitted`: how many UTF-16 units were left out),
+ * because the bar offers "the whole prompt" and a silent cut would pass for completeness (PR #99 Miguel Y4). The
+ * person's own words are never logged here.
  */
 
 const PROMPT_MAX = 4000;
@@ -23,10 +25,10 @@ const PROMPT_MAX = 4000;
 const isMain = (p) => !(typeof p.agent_id === 'string' && p.agent_id !== '');
 
 function capped(text) {
-  if (text.length <= PROMPT_MAX) return text;
+  if (text.length <= PROMPT_MAX) return { text, omitted: 0 };
   let cut = text.slice(0, PROMPT_MAX);
   if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
-  return cut;
+  return { text: cut, omitted: text.length - cut.length };
 }
 
 function createPromptKeeper({ now = Date.now } = {}) {
@@ -46,7 +48,8 @@ function createPromptKeeper({ now = Date.now } = {}) {
       case 'UserPromptSubmit': {
         if (!isMain(p)) return false;
         if (typeof p.prompt !== 'string' || p.prompt.trim() === '') return clear();
-        current = { text: capped(p.prompt), at: now(), seq: ++seq };
+        const { text, omitted } = capped(p.prompt);
+        current = { text, at: now(), seq: ++seq, truncated: omitted > 0, omitted };
         return true;
       }
       case 'SessionStart':
