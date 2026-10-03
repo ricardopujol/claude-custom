@@ -99,14 +99,19 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
-const LAYOUT_BACKUP = `${LAYOUT_FILE}.git-probe-backup`;
-let movedAside = false;
+// Dockable panels D1: the page's layout is the split tree, under its own key (layout-tree.json), and
+// an L1 file is migrated into it on a first launch. Both go aside, so the window starts on the default.
+const LAYOUT_FILES = [LAYOUT_FILE, path.join(HARNESS_DIR, 'state', 'layout-tree.json')];
+const backupOf = f => `${f}.git-probe-backup`;
+const movedAside = new Set();
 function setAsideLayout() {
-  if (fs.existsSync(LAYOUT_FILE)) { fs.renameSync(LAYOUT_FILE, LAYOUT_BACKUP); movedAside = true; }
+  for (const f of LAYOUT_FILES) if (fs.existsSync(f)) { fs.renameSync(f, backupOf(f)); movedAside.add(f); }
 }
 function restoreLayout() {
-  try { fs.rmSync(LAYOUT_FILE, { force: true }); } catch { /* gone */ }
-  if (movedAside) { try { fs.renameSync(LAYOUT_BACKUP, LAYOUT_FILE); } catch (e) { console.log(`(could not restore ${LAYOUT_FILE}: ${e.message})`); } }
+  for (const f of LAYOUT_FILES) {
+    try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
+    if (movedAside.has(f)) { try { fs.renameSync(backupOf(f), f); } catch (e) { console.log(`(could not restore ${f}: ${e.message})`); } }
+  }
 }
 
 async function launchApp(cwd, extraArgs = []) {
@@ -241,7 +246,9 @@ async function main() {
   if (!ready) return;
 
   // 1 -----------------------------------------------------------------------------
-  const where = Object.keys(ready.zones).find(z => ready.zones[z].tabs.includes('git'));
+  // Dockable panels D1: the page reports the groups of a split tree; the default layout has one, `right`.
+  const home = (ready.groups || []).find(g => g.tabs.includes('git'));
+  const where = home ? home.id : null;
   check('1: the Git module is in the dock (new modules land on the right)', where === 'right', String(where));
   await view(app, 'select', { id: 'git' });
   const st = await waitFor(async () => {
@@ -304,7 +311,7 @@ async function main() {
     return t && t.svg && JSON.stringify(t.svg) === JSON.stringify(s.svg) ? t : null;
   }, 8000);
   const vs = await view(app, 'state');
-  check('3b: moved to the bottom zone, the dial is redrawn there', !!wide, wide ? '' : JSON.stringify({ git: await view(app, 'gitState'), bottom: vs.zones && vs.zones.bottom, shown: vs.shown }).slice(0, 700));
+  check('3b: moved to the bottom zone, the dial is redrawn there', !!wide, wide ? '' : JSON.stringify({ git: await view(app, 'gitState'), groups: vs.groups, shown: vs.shown }).slice(0, 700));
   if (wide) {
     check('3b: ...and its text follows its size (shown at 75% or more, hidden below)',
       wide.narrow === (scaleOf(wide) < 0.75) && wide.hubTextShown === !wide.narrow,
