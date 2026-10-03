@@ -40,9 +40,10 @@ const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
 const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
-const { readHistory } = require('./git-history');
+const { readHistory, readOrigin } = require('./git-history');
 const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
-const { readOpenPrs } = require('./open-prs');
+const { readOpenPrs, parseOpenPrs } = require('./open-prs');
+const { createReader: createReviewReader } = require('./review-reports');
 const { createGitTreeService, ledgerFileFor } = require('./git-tree-service');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
@@ -388,10 +389,20 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
+// Two probe seams (verify/probe-git-tree.js), unset in real use: a file of `gh pr list` JSON stands in for
+// gh (no network, no account), and the transcripts come from a folder of the probe's own, not ~/.claude.
+const OPEN_PRS_FIXTURE = process.env.CLAUDE_CUSTOM_OPEN_PRS_FIXTURE || null;
+const fixtureOpenPrs = async () => {
+  try { return parseOpenPrs(fs.readFileSync(OPEN_PRS_FIXTURE, 'utf8')); } catch { return null; }
+};
 const gitTree = createGitTreeService({
-  cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: defaultProjectsDir(),
+  cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: process.env.CLAUDE_CUSTOM_GIT_PROJECTS_DIR || defaultProjectsDir(),
   ledgerFile: () => ledgerFileFor(STATE_ROOT),
-  readHistory, loadLedger, updateLedger, saveLedger, readOpenPrs, currentBranch, now: Date.now,
+  readHistory, loadLedger, updateLedger, saveLedger, currentBranch, now: Date.now,
+  readOpenPrs: OPEN_PRS_FIXTURE ? fixtureOpenPrs : readOpenPrs,
+  // The drawer (Enhancement #46): origin's URL for *Open PR*, and ~/.claude/reviews/<project>/ verdicts.
+  readRemote: readOrigin,
+  readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT) }),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });

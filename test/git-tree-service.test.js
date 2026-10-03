@@ -147,3 +147,52 @@ test('anything else that throws is an ok:false tree, and the next request tries 
   fail = false;
   assert.strictEqual((await s.get()).ok, true);
 });
+
+// ---------- the drawer's data (Enhancement #46): the GitHub remote, each branch's PR page, review verdicts ----------
+
+test('#46: the answer carries the GitHub repo of origin, and a PR page for every branch that has a PR', async () => {
+  const d = deps({ readRemote: async () => 'git@github.com:o/r.git' });
+  const tree = await createGitTreeService(d).get();
+  assert.strictEqual(tree.repoUrl, 'https://github.com/o/r');
+  assert.strictEqual(tree.branches[0].prUrl, 'https://github.com/o/r/pull/1');
+});
+
+test('#46: no origin (or one that is not GitHub, or a git that fails) is repoUrl null and no PR page, never a made-up one', async () => {
+  for (const readRemote of [async () => null, async () => 'https://gitlab.com/o/r.git', async () => { throw new Error('no such remote'); }, undefined]) {
+    const tree = await createGitTreeService(deps({ readRemote })).get();
+    assert.strictEqual(tree.repoUrl, null);
+    assert.strictEqual(tree.branches[0].prUrl, null);
+  }
+});
+
+test('#46: a branch with no PR has no PR page even with a remote', async () => {
+  const history = { ...HISTORY, merges: [], lanes: [{ name: 'spike/c', remote: false, date: '2026-09-21', ahead: 1, first: 'spike: c', worktree: null }] };
+  const tree = await createGitTreeService(deps({ readHistory: async () => history, readRemote: async () => 'https://github.com/o/r' })).get();
+  assert.strictEqual(tree.branches[0].pr, null);
+  assert.strictEqual(tree.branches[0].prUrl, null);
+});
+
+test('#46: every branch carries its review verdicts; the reader is refreshed once per answer', async () => {
+  let refreshes = 0;
+  const readReviews = Object.assign(b => [{ reviewer: 'Dexter', round: 1, date: '2026-10-02', verdict: `V ${b}` }], { refresh: () => { refreshes++; } });
+  const s = createGitTreeService(deps({ readReviews }));
+  const tree = await s.get();
+  assert.deepStrictEqual(tree.branches[0].reviews, [{ reviewer: 'Dexter', round: 1, date: '2026-10-02', verdict: 'V feat/a' }]);
+  assert.strictEqual(refreshes, 1);
+  await s.get();
+  assert.strictEqual(refreshes, 2);
+});
+
+test('#46: a review reader that throws, or none at all, is "no reports": the tree still draws', async () => {
+  const boom = () => { throw new Error('EPERM'); };
+  for (const readReviews of [boom, undefined]) {
+    const tree = await createGitTreeService(deps({ readReviews })).get();
+    assert.strictEqual(tree.ok, true);
+    assert.deepStrictEqual(tree.branches[0].reviews, []);
+  }
+});
+
+test('#46: a failing history is still just { ok: false, error }: nothing of the drawer leaks into it', async () => {
+  const d = deps({ readHistory: async () => ({ ok: false, error: 'x' }), readRemote: async () => 'https://github.com/o/r' });
+  assert.deepStrictEqual(await createGitTreeService(d).get(), { ok: false, error: 'x' });
+});

@@ -214,6 +214,17 @@ function firstParentMerges(g, tip) {
   return firstParentChain(g, tip).filter(h => g.get(h).parents.length > 1).length;
 }
 
+/** `origin`'s URL, or null when there's no origin (or git can't say). The Git drawer's *Open PR* needs it. */
+async function readOrigin(cwd, { run = defaultRun } = {}) {
+  try {
+    const out = await run(['remote', 'get-url', 'origin'], cwd);
+    const url = typeof out === 'string' ? out.trim() : '';
+    return url || null;
+  } catch {
+    return null;
+  }
+}
+
 const errorText = err => (err && err.message) || String(err);
 const NOT_LANE_REFS = new Set(['develop', 'main', 'master']);
 
@@ -271,6 +282,6 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
 }
 
 module.exports = {
-  parseMerges, parseRefs, parseWorktrees, parseGraph, integrationOf, mergeCounts, laneFacts, readHistory,
+  parseMerges, parseRefs, parseWorktrees, parseGraph, integrationOf, mergeCounts, laneFacts, readHistory, readOrigin,
   defaultRun, MERGE_FORMAT, REF_FORMAT, GRAPH_FORMAT,
 };

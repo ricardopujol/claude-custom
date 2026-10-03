@@ -235,3 +235,19 @@ test('Dexter F2: a merged name whose ref moved on again is listed as a lane, wit
   assert.deepStrictEqual(h.merges.map(m => m.branch), ['feat/a']);
   assert.deepStrictEqual(h.lanes.map(u => [u.name, u.ahead, u.first]), [['feat/a', 1, 'feat(a): round two']]);
 });
+
+// ---------- origin's URL (Enhancement #46: Open PR) ----------
+const { readOrigin } = require('../host/git-history');
+
+test('#46 readOrigin: asks git for origin\'s URL, once, in the project folder', async () => {
+  const calls = [];
+  const url = await readOrigin('C:\p\dev', { run: async (args, cwd) => { calls.push([args, cwd]); return 'git@github.com:o/r.git\r\n'; } });
+  assert.strictEqual(url, 'git@github.com:o/r.git');
+  assert.deepStrictEqual(calls, [[['remote', 'get-url', 'origin'], 'C:\p\dev']]);
+});
+
+test('#46 readOrigin: no origin (git exits non-zero), an empty answer or a throw is null, never an error', async () => {
+  assert.strictEqual(await readOrigin('x', { run: async () => { throw new Error('error: No such remote'); } }), null);
+  assert.strictEqual(await readOrigin('x', { run: async () => '\n' }), null);
+  assert.strictEqual(await readOrigin('x', { run: async () => undefined }), null);
+});
