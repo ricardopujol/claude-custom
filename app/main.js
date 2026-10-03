@@ -51,8 +51,10 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const fileLink = require('./file-link');
-// What app/file-link.js may ask the disk (#37): two reads, nothing else.
-const fileFs = { stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
+// What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
+// readlink come first, so a symlink to a share is refused before stat follows it.
+const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
+  stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 const { listBackgroundHosts } = require('../host/background-hosts');
 const { stopHost } = require('../host/stop-holder');

@@ -135,19 +135,25 @@ test('PROPERTY: a backticked absolute path in any prose is found exactly, with i
     }));
 });
 
-test('PROPERTY: options lie in the text, end after their start, shrink, and are never UNC or drive-relative', () => {
+test('PROPERTY: options lie in the text (or add one space at a glued break), shrink, are unique, never UNC or drive-relative', () => {
   fc.assert(fc.property(fc.string({ maxLength: 200 }), fc.array(fc.nat(200), { maxLength: 4 }), (text, breaks) => {
     let lastStart = -1;
     for (const c of findCandidates(text, breaks)) {
       if (c.start < lastStart || c.options.length === 0 || c.options.length > 8) return false;
       lastStart = c.start;
-      let prevEnd = Infinity;
+      let prevLen = Infinity;
+      const seen = new Set();
       for (const o of c.options) {
-        if (!(o.end > c.start && o.end <= text.length && o.end < prevEnd)) return false;
-        if (o.path.length === 0 || o.path.length > MAX_PATH_LENGTH) return false;
-        if (!text.startsWith(o.path, c.start)) return false;
+        if (!(o.end > c.start && o.end <= text.length)) return false;
+        if (o.path.length === 0 || o.path.length > MAX_PATH_LENGTH || o.path.length > prevLen) return false;
+        if (seen.has(o.path)) return false;
+        seen.add(o.path);
+        // PR #92 Dexter F5: a full row may have ended at a space Ink dropped.
+        const spaced = breaks.some(b => b > c.start && text[b] !== ' '
+          && o.path === `${text.slice(c.start, b)} ${text.slice(b, c.start + o.path.length - 1)}`);
+        if (!text.startsWith(o.path, c.start) && !spaced) return false;
         if (/^[\\/]/.test(o.path) || /^[A-Za-z]:(?![\\/])/.test(o.path)) return false;
-        prevEnd = o.end;
+        prevLen = o.path.length;
       }
     }
     return true;
@@ -169,8 +175,10 @@ test('PR #92 Miguel S6: a path that starts right at a row break is found (the ro
   const text = 'C:\\a\\one.txtC:\\b\\two.txt';
   const c = findCandidates(text, [12]);
   assert.ok(c.some(x => x.start === 12 && x.options.some(o => o.path === 'C:\\b\\two.txt')));
-  const rel = findCandidates('C:\\a\\one.txtapp/two.md', [12]);
-  assert.ok(rel.some(x => x.start === 12 && x.options.some(o => o.path === 'app/two.md')));
+  // A relative path at a break is found when no absolute path runs through the
+  // break (inside one, it's that path's second half: Dexter F4).
+  const rel = findCandidates('see one.txtapp/two.md', [11]);
+  assert.ok(rel.some(x => x.start === 11 && x.options.some(o => o.path === 'app/two.md')));
   // without the break, a drive glued to a word is still not a start
   assert.ok(!findCandidates(text).some(x => x.start === 12));
 });

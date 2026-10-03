@@ -105,7 +105,7 @@ test('open re-decides at click time: a .txt that is a link to an .exe is reveale
   assert.deepStrictEqual(await open('C:\\run.ps1', CWD, fs, shell), { ok: true, action: 'reveal' });
   assert.deepStrictEqual(await open('C:\\dir', CWD, fs, shell), { ok: true, action: 'open' });
   assert.deepStrictEqual(calls, [['reveal', 'C:\\a.txt'], ['open', 'C:\\b.md'], ['reveal', 'C:\\run.ps1'],
-    ['open', 'C:\\dir']]);
+    ['open', 'C:\\dir\\']]);   // a folder opens with its trailing separator (Dexter F2)
 });
 
 test('open says why when it opens nothing, and never calls the shell then', async () => {

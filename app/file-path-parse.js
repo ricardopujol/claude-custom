@@ -42,39 +42,68 @@ function suffixAt(text, i) {
   return { len: m[0].length, line: Number(m[1]), col: m[2] === undefined ? null : Number(m[2]) };
 }
 
-// Endings `ends` (exclusive offsets) -> options, longest first, de-duplicated,
-// each also offered with trailing punctuation stripped. `runEnd` is where a
-// :line suffix may follow.
-function toOptions(text, start, ends, runEnd) {
-  const seen = new Set();
-  const out = [];
-  const add = (e) => {
-    const p = text.slice(start, e);
-    if (p.length < 4 && /^[A-Za-z]:[\\/]/.test(p)) return;       // a bare drive
-    if (e <= start || p.length > MAX_PATH_LENGTH || seen.has(e)) return;
-    seen.add(e);
-    out.push(e);
-  };
-  for (const raw of ends) {
-    const e = start + text.slice(start, raw).trimEnd().length;
-    add(e);
-    add(start + text.slice(start, e).replace(TRAILING, '').length);
-  }
-  out.sort((a, b) => b - a);
-  return out.slice(0, MAX_OPTIONS).map((e) => {
-    const sfx = e === runEnd ? suffixAt(text, e) : null;
-    return { end: sfx ? e + sfx.len : e, path: text.slice(start, e),
-      line: sfx ? sfx.line : null, col: sfx ? sfx.col : null };
-  });
+// Which endings to keep when there are more than MAX_OPTIONS (PR #92 Dexter
+// F1: keeping the LONGEST dropped a real `C:\proj\notes.md` followed by a long
+// sentence). A path ends where its last segment does, so: endings whose last
+// segment has an extension first, then the fewest spaces in the last segment,
+// then the longest. The kept ones are then offered longest first, because main
+// answers the first that exists and the longest real reading is the right one.
+const lastSegment = (p) => p.slice(Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/')) + 1);
+const HAS_EXT = /[^.]\.[A-Za-z0-9]{1,10}$/;
+function keepOrder(a, b) {
+  // The run's own end (where a backtick, quote, `:line` or the text stopped
+  // it) is the strongest boundary there is: always kept.
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  const sa = lastSegment(a.path), sb = lastSegment(b.path);
+  const ea = HAS_EXT.test(sa) ? 0 : 1, eb = HAS_EXT.test(sb) ? 0 : 1;
+  if (ea !== eb) return ea - eb;
+  const spaces = (s) => s.split(' ').length - 1;
+  if (spaces(sa) !== spaces(sb)) return spaces(sa) - spaces(sb);
+  return b.path.length - a.path.length;
 }
 
+// Endings `ends` (exclusive offsets) -> options, de-duplicated, each also
+// offered with trailing punctuation stripped. `runEnd` is where a :line suffix
+// may follow. `glued`: row breaks where two rows met with NOTHING between (a
+// full row); Ink may have dropped a space there, so each ending past one is
+// also offered with that space put back (PR #92 Dexter F5).
+function toOptions(text, start, ends, runEnd, glued = []) {
+  const seen = new Set();
+  const all = [];
+  const add = (e, p, pinned = false) => {
+    if (p.length < 4 && /^[A-Za-z]:[\\/]/.test(p)) return;       // a bare drive
+    if (e <= start || p.length > MAX_PATH_LENGTH || seen.has(p)) return;
+    seen.add(p);
+    all.push({ e, path: p, pinned });
+  };
+  const plain = [];
+  for (const raw of ends) {
+    const e = start + text.slice(start, raw).trimEnd().length;
+    plain.push(e, start + text.slice(start, e).replace(TRAILING, '').length);
+  }
+  // ends[0] is the run's end: it and its stripped form are pinned.
+  plain.forEach((e, i) => add(e, text.slice(start, e), i < 2));
+  for (const g of glued) {
+    for (const e of plain) if (e > g) add(e, `${text.slice(start, g)} ${text.slice(g, e)}`);
+  }
+  return all.sort(keepOrder).slice(0, MAX_OPTIONS)
+    .sort((a, b) => b.path.length - a.path.length)
+    .map(({ e, path }) => {
+      const sfx = e === runEnd ? suffixAt(text, e) : null;
+      return { end: sfx ? e + sfx.len : e, path, line: sfx ? sfx.line : null, col: sfx ? sfx.col : null };
+    });
+}
+
+// -> { options, runEnd }: runEnd is how far the path's characters reach.
 function absoluteAt(text, start, breaks) {
   let j = start + 3;
   while (j < text.length && j - start <= MAX_PATH_LENGTH && !STOP.test(text[j])) j++;
   const ends = [j];
   for (let k = start + 3; k < j; k++) if (text[k] === ' ') ends.push(k);
-  for (const b of breaks) if (b > start + 3 && b < j) ends.push(b);
-  return toOptions(text, start, ends, j);
+  const inside = breaks.filter(b => b > start + 3 && b < j);
+  ends.push(...inside);
+  const glued = inside.filter(b => text[b] !== ' ');
+  return { options: toOptions(text, start, ends, j, glued), runEnd: j };
 }
 
 function relativeAt(text, start, token, breaks) {
@@ -122,22 +151,33 @@ function findCandidates(text, breaks = [], { within } = {}) {
   const add = (start, options) => {
     if (options.length && !starts.has(start)) { starts.add(start); out.push({ start, options }); }
   };
-  for (const m of text.matchAll(ABS_START)) add(m.index, absoluteAt(text, m.index, bs));
+  // Where absolute paths' characters run: a relative path never starts inside
+  // one (PR #92 Dexter F4: the second row of a broken `...\dev\` +
+  // `app\file-link.js` resolved against the tab and opened ITS file).
+  const runs = [];
+  const absolute = (at) => {
+    if (inUrl(at)) return;                                   // Dexter F7
+    const { options, runEnd } = absoluteAt(text, at, bs);
+    runs.push([at, runEnd]);
+    add(at, options);
+  };
+  for (const m of text.matchAll(ABS_START)) absolute(m.index);
+  // Two rows that met with nothing between glue the second row's path onto
+  // the first row's last word, where no start would be seen (Miguel S6).
+  for (const b of bs) if (ABS_AT.test(text.slice(b, b + 4))) absolute(b);
+  const inAbsolute = (i) => runs.some(([s, e]) => i > s && i < e);
   for (const m of text.matchAll(REL_TOKEN)) {
     if (!inUrl(m.index)) add(m.index, relativeAt(text, m.index, m[0], bs));
   }
-  // Two rows that met with nothing between glue the second row's path onto
-  // the first row's last word, where no start would be seen (Miguel S6).
   for (const b of bs) {
-    if (inUrl(b)) continue;
-    const rest = text.slice(b, b + MAX_PATH_LENGTH + 32);
-    if (ABS_AT.test(rest)) add(b, absoluteAt(text, b, bs));
-    const m = REL_AT.exec(rest);
+    if (inUrl(b) || inAbsolute(b)) continue;
+    const m = REL_AT.exec(text.slice(b, b + MAX_PATH_LENGTH + 32));
     if (m) add(b, relativeAt(text, b, m[0], bs));
   }
   out.sort((a, b) => a.start - b.start);
   const span = Array.isArray(within) && within.length === 2 && within.every(Number.isInteger) ? within : null;
-  const touching = span ? out.filter(c => c.start < span[1] && c.options[0].end > span[0]) : out;
+  const reach = (c) => Math.max(...c.options.map(o => o.end));
+  const touching = span ? out.filter(c => c.start < span[1] && reach(c) > span[0]) : out;
   return touching.slice(0, MAX_CANDIDATES);
 }
 

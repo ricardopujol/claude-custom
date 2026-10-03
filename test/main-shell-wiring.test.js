@@ -489,6 +489,8 @@ test('#37: tab:checkPaths and tab:openPath are gated FIRST and resolve against t
 test('#37: shell.openPath and shell.showItemInFolder are reached only through app/file-link.js', () => {
   assert.deepStrictEqual([...MAIN.matchAll(/shell\.(openPath|showItemInFolder)\(/g)].map(m => m[0]), []);
   assert.match(MAIN, /const fileLink = require\('\.\/file-link'\);/);
+  // Dexter F3: without lstat and readlink, a symlink to a share is followed.
+  assert.match(MAIN, /const fileFs = \{[^}]*lstat: \(p\) => fs\.promises\.lstat\(p\)[^}]*readlink: \(p\) => fs\.promises\.readlink\(p\)/);
 });
 
 // --- #40 tab marks ---------------------------------------------------------------
