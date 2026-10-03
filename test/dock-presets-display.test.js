@@ -130,3 +130,159 @@ test('every refusal has its own words, and an unknown one still says something',
   assert.match(P.refusalText('full'), /32/);
   assert.match(P.refusalText('name'), /40/);
 });
+
+// =====================================================================================
+// The Presets section's state as a pure reducer `(state, event) -> state` (BACKLOG #53, D3): what the open Window
+// menu is doing, where focus goes after every change, what a refusal says, and what an open field does when
+// another window changes the list under it. PR #103 Dexter 3 and 4, Miguel I1, I2, I3, I5, S4.
+
+const MENU_L = (tag = 'a') => ({ version: 2, root: { type: 'term' }, floats: [], hidden: [tag], seat: {} });
+const list = (...names) => names.map(name => ({ name, layout: MENU_L(name) }));
+const IDLE = { mode: 'idle' };
+const step = (state, event) => P.reduceMenu(state, event);
+
+// --- opening, typing, backing out --------------------------------------------------------
+
+test('opening the save field: empty text, focus and select the field once', () => {
+  const s = step(IDLE, { type: 'open', mode: 'save' });
+  assert.deepStrictEqual(s, { mode: 'save', text: '', error: null, focus: { kind: 'field' }, select: true });
+});
+
+test('opening rename: the field holds the current name, selected; opening delete: focus lands on the confirm button', () => {
+  assert.deepStrictEqual(step(IDLE, { type: 'open', mode: 'rename', name: 'Review' }),
+    { mode: 'rename', name: 'Review', text: 'Review', error: null, focus: { kind: 'field' }, select: true });
+  assert.deepStrictEqual(step(IDLE, { type: 'open', mode: 'delete', name: 'Review' }),
+    { mode: 'delete', name: 'Review', error: null, focus: { kind: 'confirm' }, select: false });
+});
+
+test('typing keeps the text and does not touch focus or the error line', () => {
+  const s = step({ mode: 'save', text: '', error: 'x', focus: null, select: false }, { type: 'typed', text: 'Rev' });
+  assert.deepStrictEqual(s, { mode: 'save', text: 'Rev', error: 'x', focus: null, select: false });
+});
+
+test('the field is selected only when it opens: once focus is applied, a redraw does not select again', () => {
+  const opened = step(IDLE, { type: 'open', mode: 'save' });
+  assert.strictEqual(opened.select, true);
+  const settled = step(opened, { type: 'focused' });
+  assert.strictEqual(settled.select, false);
+  assert.strictEqual(settled.focus, null);
+  assert.strictEqual(settled.text, '');
+});
+
+test('cancel goes back to idle and sends focus to the control that opened the field or question', () => {
+  assert.deepStrictEqual(step({ mode: 'save', text: 'x' }, { type: 'cancel' }), { mode: 'idle', focus: { kind: 'save-open' }, select: false });
+  assert.deepStrictEqual(step({ mode: 'replace', name: 'A', text: 'a' }, { type: 'cancel' }), { mode: 'idle', focus: { kind: 'save-open' }, select: false });
+  assert.deepStrictEqual(step({ mode: 'rename', name: 'A', text: 'b' }, { type: 'cancel' }), { mode: 'idle', focus: { kind: 'act', name: 'A', act: 'rename' }, select: false });
+  assert.deepStrictEqual(step({ mode: 'delete', name: 'A' }, { type: 'cancel' }), { mode: 'idle', focus: { kind: 'act', name: 'A', act: 'delete' }, select: false });
+  assert.deepStrictEqual(step(IDLE, { type: 'cancel' }), IDLE, 'nothing open: nothing changes');
+});
+
+test('a name that is taken asks to replace it, naming it, with the text kept and focus on the confirm button', () => {
+  const s = step({ mode: 'save', text: 'review' }, { type: 'taken', name: 'Review', text: 'review' });
+  assert.deepStrictEqual(s, { mode: 'replace', name: 'Review', text: 'review', error: null, focus: { kind: 'confirm' }, select: false });
+});
+
+// --- answers from main ---------------------------------------------------------------------
+
+const answer = (state, req, result, before, after) => step(state, { type: 'answer', req, result, before, after });
+
+test('a save that worked: idle, focus on that preset\'s row (found by the name main stored)', () => {
+  const s = answer({ mode: 'save', text: 'plan' }, { op: 'save', name: 'plan' }, { ok: true }, list('A'), list('A', 'Plan'));
+  assert.deepStrictEqual(s, { mode: 'idle', focus: { kind: 'row', name: 'Plan' }, select: false });
+  const r = answer({ mode: 'replace', name: 'A', text: 'a' }, { op: 'save', name: 'A', replace: true }, { ok: true }, list('A'), list('a'));
+  assert.deepStrictEqual(r.focus, { kind: 'row', name: 'a' });
+});
+
+test('a rename that worked: focus on the renamed row', () => {
+  const s = answer({ mode: 'rename', name: 'A', text: 'Z' }, { op: 'rename', name: 'A', to: 'Z' }, { ok: true }, list('A', 'B'), list('Z', 'B'));
+  assert.deepStrictEqual(s, { mode: 'idle', focus: { kind: 'row', name: 'Z' }, select: false });
+});
+
+test('a delete that worked: focus on the next row, else the previous, else Save this layout', () => {
+  const del = (name, before, after) => answer({ mode: 'delete', name }, { op: 'delete', name }, { ok: true }, before, after).focus;
+  assert.deepStrictEqual(del('B', list('A', 'B', 'C'), list('A', 'C')), { kind: 'row', name: 'C' });
+  assert.deepStrictEqual(del('C', list('A', 'B', 'C'), list('A', 'B')), { kind: 'row', name: 'B' });
+  assert.deepStrictEqual(del('A', list('A'), []), { kind: 'save-open' });
+  assert.deepStrictEqual(del('b', list('A', 'B', 'C'), list('A', 'C')), { kind: 'row', name: 'C' }, 'ignoring case');
+});
+
+test('a refusal keeps the field or question open, says why, and sends focus back where the user was typing', () => {
+  const taken = answer({ mode: 'rename', name: 'A', text: 'B' }, { op: 'rename', name: 'A', to: 'B' }, { ok: false, reason: 'taken' }, list('A', 'B'), list('A', 'B'));
+  assert.deepStrictEqual(taken, { mode: 'rename', name: 'A', text: 'B', error: P.refusalText('taken'), focus: { kind: 'field' }, select: false });
+  const full = answer({ mode: 'replace', name: 'A', text: 'a' }, { op: 'save', name: 'A', replace: true }, { ok: false, reason: 'full' }, list('A'), list('A'));
+  assert.deepStrictEqual(full, { mode: 'replace', name: 'A', text: 'a', error: P.refusalText('full'), focus: { kind: 'confirm' }, select: false });
+  const bad = answer({ mode: 'save', text: ' ' }, { op: 'save', name: ' ' }, { ok: false, reason: 'name' }, [], []);
+  assert.deepStrictEqual(bad, { mode: 'save', text: ' ', error: P.refusalText('name'), focus: { kind: 'field' }, select: false });
+});
+
+test('PR #103 Dexter 4: a rename, delete or replace of a preset another window removed resets to the plain list and says "no longer exists"', () => {
+  for (const [mode, req] of [
+    ['rename', { op: 'rename', name: 'A', to: 'B' }], ['delete', { op: 'delete', name: 'A' }], ['replace', { op: 'save', name: 'A', replace: true }],
+  ]) {
+    const s = answer({ mode, name: 'A', text: 'x' }, req, { ok: false, reason: 'missing' }, list('B'), list('B'));
+    assert.deepStrictEqual(s, { mode: 'idle', error: '\'A\' no longer exists', focus: { kind: 'save-open' }, select: false }, mode);
+  }
+});
+
+test('an unreadable answer closes the field with no line of its own: the section says the file can\'t be read', () => {
+  const s = answer({ mode: 'save', text: 'x' }, { op: 'save', name: 'x' }, { ok: false, reason: 'unreadable' }, [], []);
+  assert.deepStrictEqual(s, { mode: 'idle', focus: null, select: false });
+});
+
+// --- another window changes the list under an open menu --------------------------------------
+
+test('PR #103 Dexter 4 / Miguel S4: a push that removes the preset an open rename, delete or replace is about resets and says so', () => {
+  for (const mode of ['rename', 'delete', 'replace']) {
+    const s = step({ mode, name: 'A', text: 'typed' }, { type: 'list', list: list('B') });
+    assert.deepStrictEqual(s, { mode: 'idle', error: '\'A\' no longer exists', focus: { kind: 'save-open' }, select: false }, mode);
+  }
+});
+
+test('a push that leaves the target there changes nothing: typing is not thrown away', () => {
+  for (const state of [
+    { mode: 'rename', name: 'a', text: 'typed' }, { mode: 'delete', name: 'A' }, { mode: 'replace', name: 'A', text: 'x' }, { mode: 'save', text: 'half' }, IDLE,
+  ]) assert.deepStrictEqual(step(state, { type: 'list', list: list('A', 'B') }), state);
+});
+
+test('closing the menu forgets the field', () => {
+  assert.deepStrictEqual(step({ mode: 'rename', name: 'A', text: 'x' }, { type: 'close' }), IDLE);
+});
+
+test('a notice (a preset this version can\'t apply) is said in idle and sends focus to that preset\'s row', () => {
+  const s = step(IDLE, { type: 'notice', error: 'x', focus: { kind: 'row', name: 'Old' } });
+  assert.deepStrictEqual(s, { mode: 'idle', error: 'x', focus: { kind: 'row', name: 'Old' }, select: false });
+});
+
+test('an event this reducer doesn\'t know changes nothing and never throws', () => {
+  for (const ev of [null, undefined, 7, {}, { type: 'nope' }, { type: 'answer' }]) assert.deepStrictEqual(step(IDLE, ev), IDLE);
+});
+
+// --- retry (PR #103 Dexter 3) ------------------------------------------------------------------
+
+test('an unreadable list is asked for again every time the Window menu opens; a usable or still-loading one is not', () => {
+  assert.strictEqual(P.needsRetry({ loaded: true, usable: false, list: [] }), true);
+  assert.strictEqual(P.needsRetry({ loaded: true, usable: true, list: [] }), false);
+  assert.strictEqual(P.needsRetry({ loaded: false, usable: false, list: [] }), false);
+  assert.strictEqual(P.needsRetry(null), false);
+});
+
+// --- names for assistive tech (Miguel I2) ------------------------------------------------------
+
+test('every preset control names the preset it acts on', () => {
+  for (const kind of ['apply', 'rename-open', 'delete-open', 'rename-field', 'rename-commit', 'rename-cancel', 'delete-confirm', 'delete-cancel', 'replace-confirm', 'replace-cancel']) {
+    assert.ok(P.labelFor(kind, 'Reviewing').includes('\'Reviewing\''), kind);
+  }
+  assert.strictEqual(P.labelFor('delete-open', 'Reviewing'), 'Delete preset \'Reviewing\'');
+  assert.strictEqual(P.labelFor('replace-confirm', 'Reviewing'), 'Replace \'Reviewing\'');
+  assert.strictEqual(P.labelFor('delete-cancel', 'Reviewing'), 'Cancel deleting \'Reviewing\'');
+  const all = ['apply', 'rename-open', 'delete-open', 'rename-field', 'rename-commit', 'rename-cancel', 'delete-confirm', 'delete-cancel', 'replace-confirm', 'replace-cancel'].map(k => P.labelFor(k, 'X'));
+  assert.strictEqual(new Set(all).size, all.length, 'no two controls share a name');
+});
+
+
+test('a save main refuses as taken becomes the replace question, naming the preset as it is stored', () => {
+  const s = answer({ mode: 'save', text: 'review' }, { op: 'save', name: 'review' }, { ok: false, reason: 'taken' }, list('Review'), list('Review'));
+  assert.deepStrictEqual(s, { mode: 'replace', name: 'Review', text: 'review', error: null, focus: { kind: 'confirm' }, select: false });
+  // a rename refused as taken stays a refusal on the rename field
+  assert.strictEqual(answer({ mode: 'rename', name: 'A', text: 'b' }, { op: 'rename', name: 'A', to: 'b' }, { ok: false, reason: 'taken' }, list('A', 'B'), list('A', 'B')).mode, 'rename');
+});

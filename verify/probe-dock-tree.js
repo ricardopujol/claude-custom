@@ -682,8 +682,10 @@ async function main() {
     const saved = await waitFor12(p => p.names.includes('Reviewing') && p.rows.length === 1);
     check('12: saving lists the name with a thumbnail and rename / delete buttons that have accessible names',
       !!saved && saved.rows[0].name === 'Reviewing' && saved.rows[0].boxes >= 3
-        && saved.rows[0].labels.includes('Rename Reviewing') && saved.rows[0].labels.includes('Delete Reviewing') && saved.rows[0].focusable,
+        && saved.rows[0].labels.includes('Rename preset \'Reviewing\'') && saved.rows[0].labels.includes('Delete preset \'Reviewing\'') && saved.rows[0].focusable,
       JSON.stringify(saved && saved.rows));
+    check('12: after a save, focus is on that preset\'s row (never dropped to the page)',
+      saved.active.preset === 'Reviewing' && saved.active.act === 'apply', JSON.stringify(saved.active));
     const f1 = fileList();
     check('12: ...the file holds that one preset: its name and exactly the placement that was on screen',
       Array.isArray(f1) && f1.length === 1 && f1[0].name === 'Reviewing' && JSON.stringify(f1[0].layout) === JSON.stringify(example), JSON.stringify(f1).slice(0, 300));
@@ -740,14 +742,20 @@ async function main() {
     await mclick(rowSel('Reviewing', 'rename'));
     const rf = await ask();
     check('12: rename opens a field holding the current name', rf.mode === 'rename' && rf.fields.some(f => f.action === 'rename' && f.value === 'Reviewing'), JSON.stringify(rf.fields));
+    check('12: ...focused with its text selected, because it just opened', rf.active.field === 'rename' && rf.active.selection[0] === 0 && rf.active.selection[1] === rf.active.selection[2] && rf.active.selection[2] > 0, JSON.stringify(rf.active));
     await type('input[data-preset-field="rename"]', 'other', 'Enter');
     const refused = await ask();
     check('12: renaming to a name another preset has is refused in the menu, and writes nothing',
       refused.mode === 'rename' && refused.notes.some(n => /already exists/.test(n)) && refused.pushes === pr1.pushes && fileNames() === 'Reviewing,Other',
       JSON.stringify([refused.mode, refused.notes, fileNames()]));
+    check('12: ...the refusal is said once, and focus is back in the field with the caret at its end, the typed name not selected',
+      refused.notes.filter(n => /already exists/.test(n)).length === 1 && refused.active.field === 'rename'
+        && refused.active.selection[0] === refused.active.selection[2] && refused.active.selection[1] === refused.active.selection[2],
+      JSON.stringify([refused.notes, refused.active]));
     const layoutOfFirst = JSON.stringify(fileList()[0].layout);
     await type('input[data-preset-field="rename"]', 'Writing', 'Enter');
-    await waitFor12(p => p.names.includes('Writing'));
+    const renamedTo = await waitFor12(p => p.names.includes('Writing'));
+    check('12: after a rename, focus is on the renamed row', renamedTo.active.preset === 'Writing' && renamedTo.active.act === 'apply', JSON.stringify(renamedTo.active));
     check('12: renaming changes the name in place, keeps the order and the layout, and writes the file once',
       fileNames() === 'Writing,Other' && JSON.stringify(fileList()[0].layout) === layoutOfFirst, fileNames());
     await wroteOnce(pr1.pushes, 'rename');
@@ -757,24 +765,48 @@ async function main() {
     await type('input[data-preset-field="rename"]', undefined, 'Escape');
     const e1 = await ask();
     check('12: Esc closes an open field and leaves the menu open, the preset unchanged', e1.mode === 'idle' && e1.menuOpen && e1.fields.length === 0 && fileNames() === 'Writing,Other', JSON.stringify([e1.mode, e1.menuOpen]));
+    check('12: ...and focus goes back to the control that opened the field (that preset\'s rename button)', e1.active.preset === 'Writing' && e1.active.act === 'rename', JSON.stringify(e1.active));
 
     // delete asks first
     await mclick(rowSel('Writing', 'delete'));
     const del1 = await ask();
     check('12: delete asks "Delete \'Writing\'?" first, and nothing is removed yet',
       del1.mode === 'delete' && del1.asking.some(t => t.includes('Delete \'Writing\'?')) && fileNames() === 'Writing,Other', JSON.stringify([del1.mode, del1.asking]));
+    check('12: ...the question is announced and the confirm button, focused, names the preset it deletes',
+      del1.active.act === 'delete-confirm' && del1.active.label === 'Delete \'Writing\' now', JSON.stringify(del1.active));
     await type('.lm-title', undefined, 'Escape');
     const e2 = await ask();
-    check('12: Esc backs out of the question: both presets stay, the menu stays open', e2.mode === 'idle' && e2.menuOpen && e2.names.length === 2, JSON.stringify([e2.mode, e2.names]));
+    check('12: Esc backs out of the question: both presets stay, the menu stays open, focus is back on that preset\'s delete button',
+      e2.mode === 'idle' && e2.menuOpen && e2.names.length === 2 && e2.active.preset === 'Writing' && e2.active.act === 'delete', JSON.stringify([e2.mode, e2.names, e2.active]));
     await type('.lm-title', undefined, 'Escape');
-    check('12: ...and Esc again closes the menu', !(await ask()).menuOpen);
+    const e3 = await ask();
+    check('12: ...and Esc again closes the menu, with focus on the Window button rather than the page', !e3.menuOpen && e3.active.id === 'layout-btn', JSON.stringify(e3.active));
     const pr2 = await ask();
     await openMenu();
     await mclick(rowSel('Writing', 'delete'));
     await mclick('[data-preset-act="delete-confirm"]');
-    await waitFor12(p => !p.names.includes('Writing'));
+    const afterDelete = await waitFor12(p => !p.names.includes('Writing'));
     check('12: confirming deletes it and only it', fileNames() === 'Other', fileNames());
+    check('12: ...and focus moves to the next row (here the only one left), not to the page', afterDelete.active.preset === 'Other' && afterDelete.active.act === 'apply', JSON.stringify(afterDelete.active));
     await wroteOnce(pr2.pushes, 'delete');
+    await view(app, 'closeMenu');
+
+    // another window removes the preset an open rename / delete is about: said, never swallowed
+    const keepList = fileList();
+    await openMenu();
+    await mclick(rowSel('Other', 'rename'));
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify([]));
+    const goneRename = await waitFor12(p => p.mode === 'idle' && p.notes.some(n => /'Other' no longer exists/.test(n)), 6000);
+    check('12: another window deleting the preset an open rename is about resets the menu to the plain list and says "no longer exists"',
+      !!goneRename && goneRename.fields.length === 0 && goneRename.names.length === 0, JSON.stringify(await ask()));
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify(keepList));
+    await waitFor12(p => p.names.includes('Other'), 6000);
+    await mclick(rowSel('Other', 'delete'));
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify([]));
+    const goneDelete = await waitFor12(p => p.mode === 'idle' && p.notes.some(n => /'Other' no longer exists/.test(n)), 6000);
+    check('12: ...and the same for an open delete question', !!goneDelete && goneDelete.asking.length === 0, JSON.stringify(await ask()));
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify(keepList));
+    await waitFor12(p => p.names.includes('Other'), 6000);
     await view(app, 'closeMenu');
 
     // a second tab sees the list, and a preset saved there shows here
@@ -789,6 +821,19 @@ async function main() {
     const back = await onTab('develop');
     const seenD = back && (await waitFor12(p => p.names.includes('FromA')));
     check('12: ...and a preset saved in that tab shows in the first (main pushes the list to every tab)', !!seenD, seenD ? '' : JSON.stringify(await ask()));
+
+    // PR #103 Dexter 2: a window that still believed the list was readable cannot save over a file that has become
+    // unreadable since: main refuses it, the bytes are untouched, and the section says it can't read the list
+    await openMenu();
+    const junkLater = '{ not a list either';
+    fs.writeFileSync(PRESETS_FILE, junkLater);
+    await sleep(1500);
+    await mclick('[data-preset-act="save-open"]');
+    await type('input[data-preset-field="save"]', 'Stale', 'Enter');
+    const refusedUnreadable = await waitFor12(p => !p.usable, 6000);
+    check('12: saving from a window whose list was readable, once the file isn\'t, is refused in main: the bytes are untouched and the section says it can\'t read the list',
+      !!refusedUnreadable && readBytes(PRESETS_FILE).toString() === junkLater && refusedUnreadable.notes.some(n => /couldn't be read/.test(n)), JSON.stringify(refusedUnreadable));
+    await view(app, 'closeMenu');
 
     // an unreadable file is "couldn't read": never overwritten, saving off, and it recovers when readable
     await quitApp(app);

@@ -1027,6 +1027,7 @@ function openMoveMenu(id, x, y) {
 function openLayoutMenu() {
   const anchor = document.getElementById('layout-btn').getBoundingClientRect();
   const keepField = presetUi;             // a redraw in place keeps the field being typed in
+  const keepFocus = captureMenuFocus();   // ...and whatever had focus
   closeLayoutMenu();
   presetUi = keepField;
   layoutMenuFor = 'menu';
@@ -1061,10 +1062,12 @@ function openLayoutMenu() {
     }));
   }
   showLayoutMenu(anchor.left, anchor.bottom + 4);
+  applyMenuFocus(keepFocus);
 }
 
 document.getElementById('layout-btn').addEventListener('click', () => {
-  if (layoutMenuFor === 'menu') closeLayoutMenu(); else openLayoutMenu();
+  if (layoutMenuFor === 'menu') closeLayoutMenu();
+  else { openLayoutMenu(); retryPresets(); }      // an unreadable preset list is asked for again each time
 });
 document.addEventListener('contextmenu', (e) => {
   const button = e.target.closest('.zone-tabs button[data-module]');
@@ -1076,13 +1079,22 @@ window.addEventListener('mousedown', (e) => {
   if (!layoutMenu.hidden && !layoutMenu.contains(e.target) && !e.target.closest('#layout-btn')) closeLayoutMenu();
 });
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && (backOutOfPresetField() || closeLayoutMenu())) { e.preventDefault(); e.stopPropagation(); }
+  if (e.key !== 'Escape') return;
+  const hadFocus = layoutMenu.contains(document.activeElement);
+  if (backOutOfPresetField() || closeLayoutMenu()) {
+    e.preventDefault(); e.stopPropagation();
+    if (layoutMenu.hidden && hadFocus) document.getElementById('layout-btn').focus();      // focus doesn't drop to the page behind
+  }
 }, true);
 
 // --- layout presets (BACKLOG #53, dockable panels D3) -------------------------------------
 // The Presets section of the Window menu: save the current placement under a name, apply it, rename, delete.
 // app/dock-presets.js holds every rule; this draws the rows. The name field and both confirmations are rows
 // inside the menu (no prompt() or confirm()), and the list is install-wide, in main's store (`layout-presets`).
+
+/// The Presets section's own state moves by dockPresets.reduceMenu (pure, tested): what is open, what the user
+// is told, and where focus goes next. This only draws it.
+function dispatchPreset(event) { presetUi = window.dockPresets.reduceMenu(presetUi, event); }
 
 // The one way the list changes: send main WHAT THE USER DID ({ op, name, ... }). Main applies it to a fresh locked
 // read of the file and answers with the list it stored, so this window never computes the list (and a stale copy
@@ -1092,7 +1104,7 @@ function sendPresetOp(req, onAnswer) {
   const presetBridge = window.harness && window.harness.layoutPresets;
   if (!presetBridge || !presetsState.usable || presetsState.busy) return;
   presetsState = { ...presetsState, busy: true };
-  if (layoutMenuFor === 'menu') openLayoutMenu();
+  refreshPresetMenu();
   const finish = (answer) => {
     const r = window.dockPresets.afterOp(answer);
     if (r.ok) presetsState = { loaded: true, usable: true, list: r.list, kept: r.kept, busy: false };
@@ -1104,34 +1116,78 @@ function sendPresetOp(req, onAnswer) {
   presetBridge.op(req).then(finish, () => finish(null));
 }
 
-// Redraw the open Window menu in place, unless a field is open (typing must not be thrown away by a push).
+// Redraw the open Window menu in place. A push never skips it: the field being typed in lives in presetUi.
 function refreshPresetMenu() {
-  if (layoutMenuFor === 'menu' && presetUi.mode === 'idle') openLayoutMenu();
+  if (layoutMenuFor === 'menu') openLayoutMenu();
 }
 
-// A refusal stays in the field's row; a success goes back to idle. The menu may have been closed meanwhile: it stays closed.
+// The answer decides the next state (a refusal stays on its field or question and says why; a success goes back to
+// idle and puts focus on the row it made). The menu may have been closed meanwhile: it stays closed.
 function runPresetOp(req) {
+  const before = presetsState.list;
   sendPresetOp(req, (r) => {
-    if (r.ok || r.reason === 'unreadable') presetUi = { mode: 'idle' };
-    // The name is taken: ask once, naming the preset that would go (its own spelling is kept).
-    else if (r.reason === 'taken' && req.op === 'save') {
-      const have = window.dockPresets.find(presetsState.list, req.name);
-      presetUi = { mode: 'replace', name: have ? have.name : req.name, text: req.name };
-    } else presetUi = { ...presetUi, error: window.dockPresets.refusalText(r.reason) };
-    if (layoutMenuFor === 'menu') openLayoutMenu();
+    dispatchPreset({ type: 'answer', req, result: r.ok ? { ok: true } : { ok: false, reason: r.reason }, before, after: presetsState.list });
+    refreshPresetMenu();
   });
 }
 
 function applyPreset(p, justThisTab) {
+  const hadFocus = layoutMenu.contains(document.activeElement);
   commitPlacement(p.layout, { justThisTab });
   closeLayoutMenu();
+  if (hadFocus) document.getElementById('layout-btn').focus();      // focus doesn't drop to the page behind
 }
 
 function backOutOfPresetField() {
   if (layoutMenu.hidden || presetUi.mode === 'idle') return false;
-  presetUi = { mode: 'idle' };
+  dispatchPreset({ type: 'cancel' });
   openLayoutMenu();
   return true;
+}
+
+// Focus survives a redraw: an explicit target (presetUi.focus, set by the reducer) wins; otherwise the control
+// that had focus gets it back by what it is, because the redraw replaced every element.
+function captureMenuFocus() {
+  const a = document.activeElement;
+  if (!a || a === document.body || !layoutMenu.contains(a)) return null;
+  if (a.dataset.presetField) return { kind: 'field', action: a.dataset.presetField, from: a.selectionStart, to: a.selectionEnd };
+  if (a.dataset.module) return { kind: 'module', id: a.dataset.module };
+  if (a.dataset.presetAct) { const row = a.closest('.lm-preset'); return { kind: 'act', act: a.dataset.presetAct, name: row ? row.dataset.preset : null }; }
+  return null;
+}
+
+function findMenuControl(t) {
+  const presetRows = () => [...layoutMenu.querySelectorAll('.lm-preset')];
+  switch (t.kind) {
+    case 'field': return layoutMenu.querySelector(t.action ? `[data-preset-field="${t.action}"]` : '[data-preset-field]');
+    case 'confirm': return layoutMenu.querySelector('[data-preset-act$="-confirm"]');
+    case 'save-open': return layoutMenu.querySelector('[data-preset-act="save-open"]');
+    case 'module': return [...layoutMenu.querySelectorAll('input[data-module]')].find(i => i.dataset.module === t.id) || null;
+    case 'row': case 'act': {
+      const act = t.kind === 'row' ? 'apply' : t.act;
+      if (t.name === null || t.name === undefined) return layoutMenu.querySelector(`[data-preset-act="${act}"]`);
+      const row = presetRows().find(r => r.dataset.preset === t.name);
+      return row ? row.querySelector(`[data-preset-act="${act}"]`) : null;
+    }
+    default: return null;
+  }
+}
+
+function applyMenuFocus(captured) {
+  const explicit = presetUi.focus;
+  const target = explicit || captured;
+  if (target) {
+    const el = findMenuControl(target) || (explicit ? findMenuControl({ kind: 'save-open' }) : null);
+    if (el && !el.disabled) {
+      el.focus();
+      if (el.tagName === 'INPUT' && el.type === 'text') {
+        if (explicit && presetUi.select) el.select();                    // selected only when the field opens, never on a redraw
+        else if (!explicit && Number.isInteger(target.from)) el.setSelectionRange(target.from, target.to);
+        else el.setSelectionRange(el.value.length, el.value.length);     // a refused name stays as typed, caret at its end
+      }
+    }
+  }
+  if (explicit) dispatchPreset({ type: 'focused' });
 }
 
 // The small picture of a layout beside its name: the boxes dockPresets.thumbBoxes fits into 44 x 28.
@@ -1146,53 +1202,63 @@ function presetThumb(layout) {
   return thumb;
 }
 
-// A text field row: Enter commits, the buttons beside it commit or back out. Esc is handled by the menu's own key handler.
-function presetFieldRow({ label, value, action, commitText, onCommit }) {
-  const field = node('input', { type: 'text', value, maxLength: window.dockPresets.NAME_MAX * 2, 'aria-label': label, placeholder: 'Preset name' });
-  field.dataset.presetField = action;
-  field.addEventListener('input', () => { presetUi.text = field.value; });
-  const commit = () => { presetUi.text = field.value; onCommit(field.value); };      // a refusal redraws with what was typed
-  field.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
-  const rows = [node('div', { className: 'lm-row' }, [
-    field,
-    node('button', { type: 'button', text: commitText, on: { click: commit } }),
-    node('button', { type: 'button', text: 'Cancel', on: { click: () => backOutOfPresetField() } }),
-  ])];
-  if (presetUi.error) rows.push(node('div', { className: 'lm-note err', role: 'alert', text: presetUi.error }));
-  queueMicrotask(() => { try { field.focus(); field.select(); } catch { /* the menu closed meanwhile */ } });
-  return rows;
+// What the user is told about the last refusal or change, as a line under the row it belongs to.
+function presetErrorLine() {
+  return presetUi.error ? [node('div', { className: 'lm-note err', role: 'alert', text: presetUi.error })] : [];
 }
 
-// An "are you sure" row: the question, then the confirming button and Cancel.
-function presetAskRow(question, confirmText, action, onConfirm) {
-  const yes = node('button', { type: 'button', text: confirmText, on: { click: onConfirm } });
-  yes.dataset.presetAct = action;
-  queueMicrotask(() => { try { yes.focus(); } catch { /* the menu closed meanwhile */ } });
+// A text field row: Enter commits (not while an IME is composing), the buttons beside it commit or back out. Esc is
+// handled by the menu's own key handler.
+function presetFieldRow({ label, value, action, commitText, commitLabel, cancelLabel, onCommit }) {
+  const field = node('input', { type: 'text', value, maxLength: window.dockPresets.NAME_MAX * 2, 'aria-label': label, placeholder: 'Preset name' });
+  field.dataset.presetField = action;
+  field.addEventListener('input', () => dispatchPreset({ type: 'typed', text: field.value }));
+  const commit = () => { dispatchPreset({ type: 'typed', text: field.value }); onCommit(field.value); };      // a refusal redraws with what was typed
+  field.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); commit(); }
+  });
   return [node('div', { className: 'lm-row' }, [
-    node('span', { className: 'lm-name', text: question }),
+    field,
+    node('button', { type: 'button', text: commitText, 'aria-label': commitLabel || commitText, on: { click: commit } }),
+    node('button', { type: 'button', text: 'Cancel', 'aria-label': cancelLabel || 'Cancel', on: { click: () => backOutOfPresetField() } }),
+  ])];
+}
+
+// An "are you sure" row: the question (announced), then the confirming button and Cancel.
+function presetAskRow({ question, confirmText, action, confirmLabel, cancelLabel, onConfirm }) {
+  const yes = node('button', { type: 'button', text: confirmText, 'aria-label': confirmLabel, on: { click: onConfirm } });
+  yes.dataset.presetAct = action;
+  return [node('div', { className: 'lm-row' }, [
+    node('span', { className: 'lm-name', role: 'alert', text: question }),
     yes,
-    node('button', { type: 'button', text: 'Cancel', on: { click: () => backOutOfPresetField() } }),
+    node('button', { type: 'button', text: 'Cancel', 'aria-label': cancelLabel, on: { click: () => backOutOfPresetField() } }),
   ])];
 }
 
 function presetRow(p, check) {
+  const label = kind => window.dockPresets.labelFor(kind, p.name);
   if (presetUi.mode === 'rename' && presetUi.name === p.name) {
-    return presetFieldRow({
-      label: `New name for ${p.name}`, value: presetUi.text !== undefined ? presetUi.text : p.name, action: 'rename', commitText: 'Rename',
+    return [...presetFieldRow({
+      label: label('rename-field'), value: presetUi.text !== undefined ? presetUi.text : p.name, action: 'rename', commitText: 'Rename',
+      commitLabel: label('rename-commit'), cancelLabel: label('rename-cancel'),
       onCommit: (text) => runPresetOp({ op: 'rename', name: p.name, to: text }),
-    });
+    }), ...presetErrorLine()];
   }
   if (presetUi.mode === 'delete' && presetUi.name === p.name) {
-    return presetAskRow(`Delete '${p.name}'?`, 'Delete', 'delete-confirm', () => runPresetOp({ op: 'delete', name: p.name }));
+    return [...presetAskRow({
+      question: `Delete '${p.name}'?`, confirmText: 'Delete', action: 'delete-confirm',
+      confirmLabel: label('delete-confirm'), cancelLabel: label('delete-cancel'),
+      onConfirm: () => runPresetOp({ op: 'delete', name: p.name }),
+    }), ...presetErrorLine()];
   }
-  const apply = node('button', { type: 'button', className: 'lm-apply', title: `Apply ${p.name}`, text: p.name,
+  const apply = node('button', { type: 'button', className: 'lm-apply', title: `Apply ${p.name}`, text: p.name, 'aria-label': label('apply'),
     on: { click: () => applyPreset(p, check.box.checked) } });
   apply.dataset.presetAct = 'apply';
-  const rename = node('button', { type: 'button', className: 'lm-mini', text: '✎', title: 'Rename', 'aria-label': `Rename ${p.name}`,
-    on: { click: () => { presetUi = { mode: 'rename', name: p.name, text: p.name }; openLayoutMenu(); } } });
+  const rename = node('button', { type: 'button', className: 'lm-mini', text: '✎', title: 'Rename', 'aria-label': label('rename-open'),
+    on: { click: () => { dispatchPreset({ type: 'open', mode: 'rename', name: p.name }); openLayoutMenu(); } } });
   rename.dataset.presetAct = 'rename';
-  const del = node('button', { type: 'button', className: 'lm-mini', text: '✕', title: 'Delete', 'aria-label': `Delete ${p.name}`,
-    on: { click: () => { presetUi = { mode: 'delete', name: p.name }; openLayoutMenu(); } } });
+  const del = node('button', { type: 'button', className: 'lm-mini', text: '✕', title: 'Delete', 'aria-label': label('delete-open'),
+    on: { click: () => { dispatchPreset({ type: 'open', mode: 'delete', name: p.name }); openLayoutMenu(); } } });
   del.dataset.presetAct = 'delete';
   const row = node('div', { className: 'lm-row lm-preset' }, [presetThumb(p.layout), apply, rename, del]);
   row.dataset.preset = p.name;
@@ -1219,16 +1285,21 @@ function appendPresetSection(check) {
   section.appendChild(list);
   if (presetsState.kept > 0) section.appendChild(node('div', { className: 'lm-note', text: window.dockPresets.keptText(presetsState.kept) }));
   if (presetUi.mode === 'save') {
-    for (const el of presetFieldRow({
-      label: 'Name for this layout', value: presetUi.text || '', action: 'save', commitText: 'Save',
+    for (const el of [...presetFieldRow({
+      label: 'Name for this layout', value: presetUi.text || '', action: 'save', commitText: 'Save', commitLabel: 'Save this layout', cancelLabel: 'Cancel saving',
       onCommit: (text) => runPresetOp({ op: 'save', name: text, layout: committedLayout() }),
-    })) section.appendChild(el);
+    }), ...presetErrorLine()]) section.appendChild(el);
   } else if (presetUi.mode === 'replace') {
-    for (const el of presetAskRow(`Replace '${presetUi.name}'?`, 'Replace', 'replace-confirm',
-      () => runPresetOp({ op: 'save', name: presetUi.name, layout: committedLayout(), replace: true }))) section.appendChild(el);
+    const label = kind => window.dockPresets.labelFor(kind, presetUi.name);
+    for (const el of [...presetAskRow({
+      question: `Replace '${presetUi.name}'?`, confirmText: 'Replace', action: 'replace-confirm',
+      confirmLabel: label('replace-confirm'), cancelLabel: label('replace-cancel'),
+      onConfirm: () => runPresetOp({ op: 'save', name: presetUi.name, layout: committedLayout(), replace: true }),
+    }), ...presetErrorLine()]) section.appendChild(el);
   } else {
+    if (presetUi.mode === 'idle') for (const el of presetErrorLine()) section.appendChild(el);     // rename and delete draw theirs on their own row
     const save = node('button', { type: 'button', text: 'Save this layout…', title: 'Keep this arrangement under a name',
-      on: { click: () => { presetUi = { mode: 'save', text: '' }; openLayoutMenu(); } } });
+      on: { click: () => { dispatchPreset({ type: 'open', mode: 'save' }); openLayoutMenu(); } } });
     save.dataset.presetAct = 'save-open';
     section.appendChild(save);
   }
@@ -1243,11 +1314,26 @@ async function loadPresets() {
   bridge.onChange((list) => {
     presetPushes += 1;
     presetsState = { loaded: true, usable: true, ...window.dockPresets.describe(list), busy: presetsState.busy === true };
+    dispatchPreset({ type: 'list', list: presetsState.list });
     refreshPresetMenu();
   });
   let answer = null;
   try { answer = await bridge.get(); } catch { /* unreadable: afterGet says so */ }
   presetsState = { loaded: true, ...window.dockPresets.afterGet(answer) };
+  refreshPresetMenu();
+}
+
+// An unreadable list isn't forever (an antivirus scan, another window's rename in flight): every time the Window
+// menu opens it is asked for again, and presets come back without another window having to write the file.
+async function retryPresets() {
+  const bridge = window.harness && window.harness.layoutPresets;
+  if (!bridge || !window.dockPresets.needsRetry(presetsState)) return;
+  let answer = null;
+  try { answer = await bridge.get(); } catch { /* still unreadable */ }
+  const next = window.dockPresets.afterGet(answer);
+  if (!next.usable || !window.dockPresets.needsRetry(presetsState)) return;      // still unreadable, or a push got there first
+  presetsState = { loaded: true, ...next, busy: false };
+  dispatchPreset({ type: 'list', list: presetsState.list });
   refreshPresetMenu();
 }
 
@@ -1619,6 +1705,18 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           saveOpen: !!layoutMenu.querySelector('[data-preset-act="save-open"]'),
           fields: [...layoutMenu.querySelectorAll('input[data-preset-field]')].map(i => ({ action: i.dataset.presetField, value: i.value })),
           asking: [...layoutMenu.querySelectorAll('.lm-row .lm-name')].map(s => s.textContent),
+          kept: presetsState.kept || 0, busy: presetsState.busy === true,
+          // where keyboard focus is, as the probe can read it: a preset's control, a field, the Window button or the page
+          active: (() => {
+            const a = document.activeElement;
+            if (!a || a === document.body) return { body: true };
+            const row = a.closest ? a.closest('.lm-preset') : null;
+            return {
+              tag: a.tagName, id: a.id || null, act: (a.dataset && a.dataset.presetAct) || null, field: (a.dataset && a.dataset.presetField) || null,
+              preset: row ? row.dataset.preset : null, label: a.getAttribute ? a.getAttribute('aria-label') : null,
+              selection: a.tagName === 'INPUT' && a.type === 'text' ? [a.selectionStart, a.selectionEnd, a.value.length] : null,
+            };
+          })(),
         });
       // ... and a click on, or typing into, an element of the open menu (a CSS selector), as a pointer and keys would.
       case 'menuClick': {

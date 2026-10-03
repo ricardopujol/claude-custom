@@ -245,10 +245,100 @@ function refusalText(reason) {
   return Object.prototype.hasOwnProperty.call(WORDS, reason) ? WORDS[reason] : 'That couldn\'t be done.';
 }
 
+// --- the Presets section's state: what the open Window menu is doing ----------------------------------
+//
+// { mode, name?, text?, error?, focus?, select? }. mode is 'idle', 'save' (the name field), 'replace' (asking to
+// replace `name`), 'rename' (`name`'s field) or 'delete' (asking about `name`). `error` is the line the user sees;
+// `focus` is where focus goes after the next redraw (one-shot: the page sends `focused` once it has moved it) and
+// `select` says the field's text is selected on that focus (only when the field opens, never on a redraw).
+// Focus targets: { kind: 'field' | 'confirm' | 'save-open' } | { kind: 'row', name } | { kind: 'act', name, act }.
+
+const sameName = (a, b) => typeof a === 'string' && typeof b === 'string' && keyOf(a.trim()) === keyOf(b.trim());
+const nameIn = (list, name) => (Array.isArray(list) ? list.find(p => isObject(p) && sameName(p.name, name)) : undefined);
+const gone = name => `'${name}' no longer exists`;
+const IDLE_AT = focus => ({ mode: 'idle', focus, select: false });
+const rowFocus = (list, name) => { const p = nameIn(list, name); return p ? { kind: 'row', name: p.name } : { kind: 'save-open' }; };
+
+// The row focus lands on once `name` is deleted: the one after it, else the one before, else Save this layout.
+function afterDelete(before, after, name) {
+  const at = Array.isArray(before) ? before.findIndex(p => isObject(p) && sameName(p.name, name)) : -1;
+  for (const near of at < 0 ? [] : [before[at + 1], before[at - 1]]) if (near && nameIn(after, near.name)) return { kind: 'row', name: nameIn(after, near.name).name };
+  return { kind: 'save-open' };
+}
+
+function reduceMenu(state, event) {
+  if (!isObject(event) || typeof event.type !== 'string') return state;
+  switch (event.type) {
+    case 'open':
+      if (event.mode === 'save') return { mode: 'save', text: '', error: null, focus: { kind: 'field' }, select: true };
+      if (event.mode === 'rename') return { mode: 'rename', name: event.name, text: event.name, error: null, focus: { kind: 'field' }, select: true };
+      if (event.mode === 'delete') return { mode: 'delete', name: event.name, error: null, focus: { kind: 'confirm' }, select: false };
+      return state;
+    case 'typed': return { ...state, text: event.text };
+    case 'focused': return { ...state, focus: null, select: false };
+    case 'close': return { mode: 'idle' };
+    case 'cancel':
+      if (state.mode === 'save' || state.mode === 'replace') return IDLE_AT({ kind: 'save-open' });
+      if (state.mode === 'rename' || state.mode === 'delete') return IDLE_AT({ kind: 'act', name: state.name, act: state.mode });
+      return state;
+    case 'taken': return { mode: 'replace', name: event.name, text: event.text, error: null, focus: { kind: 'confirm' }, select: false };
+    case 'notice': return { mode: 'idle', error: event.error, focus: event.focus || null, select: false };
+    case 'list':
+      // Another window removed or replaced the preset an open rename / delete / replace is about: back to the
+      // plain list, and say so (the question or field would otherwise vanish without a word).
+      if ((state.mode === 'rename' || state.mode === 'delete' || state.mode === 'replace') && !nameIn(event.list, state.name)) {
+        return { mode: 'idle', error: gone(state.name), focus: { kind: 'save-open' }, select: false };
+      }
+      return state;
+    case 'answer': return afterAnswer(state, event);
+    default: return state;
+  }
+}
+
+function afterAnswer(state, { req, result, before, after }) {
+  if (!isObject(req) || !isObject(result)) return state;
+  if (result.ok === true) {
+    if (req.op === 'delete') return IDLE_AT(afterDelete(before, after, req.name));
+    return IDLE_AT(rowFocus(after, req.op === 'rename' ? req.to : req.name));
+  }
+  if (result.reason === 'unreadable') return IDLE_AT(null);
+  if (result.reason === 'missing') return { mode: 'idle', error: gone(req.name), focus: { kind: 'save-open' }, select: false };
+  // A save under a name that exists asks to replace it, naming the preset that would go (its own spelling is kept).
+  if (result.reason === 'taken' && state.mode === 'save' && req.op === 'save') {
+    const have = nameIn(before, req.name);
+    return reduceMenu(state, { type: 'taken', name: have ? have.name : req.name, text: req.name });
+  }
+  const back = state.mode === 'save' || state.mode === 'rename' ? { kind: 'field' } : { kind: 'confirm' };
+  return { ...state, error: refusalText(result.reason), focus: back, select: false };
+}
+
+/** An unreadable list is asked for again every time the Window menu opens; a usable or still-loading one is not. */
+function needsRetry(presets) {
+  return isObject(presets) && presets.loaded === true && presets.usable === false;
+}
+
+// What assistive tech reads for each control: always the preset it acts on, never two the same.
+const LABELS = {
+  'apply': n => `Apply preset '${n}'`,
+  'rename-open': n => `Rename preset '${n}'`,
+  'delete-open': n => `Delete preset '${n}'`,
+  'rename-field': n => `New name for preset '${n}'`,
+  'rename-commit': n => `Rename '${n}' to the new name`,
+  'rename-cancel': n => `Cancel renaming '${n}'`,
+  'delete-confirm': n => `Delete '${n}' now`,
+  'delete-cancel': n => `Cancel deleting '${n}'`,
+  'replace-confirm': n => `Replace '${n}'`,
+  'replace-cancel': n => `Cancel replacing '${n}'`,
+};
+/** The accessible name of a preset control (`kind` is a key of LABELS). */
+function labelFor(kind, name) {
+  return Object.prototype.hasOwnProperty.call(LABELS, kind) ? LABELS[kind](String(name)) : String(name);
+}
+
 const API = {
   NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, MAX_LIST_BYTES, THUMB, checkName, nameKey: keyOf, cleanPresets, describe, find,
   savePreset, renamePreset, deletePreset, applyOp,
-  thumbBoxes, afterGet, afterOp, keptText, refusalText,
+  thumbBoxes, afterGet, afterOp, keptText, refusalText, reduceMenu, needsRetry, labelFor,
 };
 
 // One namespace on the page (`window.dockPresets`), not loose globals.

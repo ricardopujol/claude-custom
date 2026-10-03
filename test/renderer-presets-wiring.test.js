@@ -60,18 +60,26 @@ test('an unreadable list is shown as such and offers no way to save, rename or d
 });
 
 test('the name field and both confirmations are rows in the menu: no prompt() or confirm()', () => {
-  for (const name of ['appendPresetSection', 'presetRow', 'runPresetOp', 'applyPreset', 'loadPresets', 'sendPresetOp']) {
+  for (const name of ['appendPresetSection', 'presetRow', 'presetFieldRow', 'presetAskRow', 'runPresetOp', 'applyPreset', 'loadPresets', 'sendPresetOp', 'retryPresets']) {
     assert.doesNotMatch(fnBody(name), /\b(prompt|confirm|alert)\(/, name);
   }
-  assert.match(JS, /Delete '\$\{p\.name\}'\?/);
-  assert.match(JS, /Replace '\$\{presetUi\.name\}'\?/);
 });
 
-test('rename and delete are real buttons with an accessible name', () => {
-  const body = fnBody('presetRow');
-  assert.match(body, /'aria-label': `Rename \$\{p\.name\}`/);
-  assert.match(body, /'aria-label': `Delete \$\{p\.name\}`/);
-  assert.match(body, /node\('button', \{\s*type: 'button'/);
+test('every preset control is named by the tested labelFor, and the section\'s state moves only through the reducer', () => {
+  assert.match(fnBody('presetRow'), /window\.dockPresets\.labelFor\(/);
+  assert.match(fnBody('appendPresetSection'), /window\.dockPresets\.labelFor\(/);
+  assert.match(fnBody('dispatchPreset'), /window\.dockPresets\.reduceMenu\(presetUi, event\)/);
+  // presetUi is assigned in exactly three places: its declaration, the menu closing, and a redraw keeping it
+  assert.strictEqual([...JS.matchAll(/\bpresetUi = /g)].length, 4, 'declaration, closeLayoutMenu, openLayoutMenu x1, dispatchPreset');
+});
+
+test('Enter does not commit while an IME composition is active', () => {
+  assert.match(fnBody('presetFieldRow'), /e\.key === 'Enter' && !e\.isComposing/);
+});
+
+test('an unreadable list is asked for again when the Window button opens the menu', () => {
+  assert.match(JS, /\{ openLayoutMenu\(\); retryPresets\(\); \}/);
+  assert.match(fnBody('retryPresets'), /window\.dockPresets\.needsRetry\(presetsState\)/);
 });
 
 test('applying a preset takes the one placement path, so Just this tab and an identical layout work as they do for any change', () => {
@@ -79,7 +87,7 @@ test('applying a preset takes the one placement path, so Just this tab and an id
 });
 
 test('Esc backs out of an open field before it closes the menu', () => {
-  assert.match(JS, /e\.key === 'Escape' && \(backOutOfPresetField\(\) \|\| closeLayoutMenu\(\)\)/);
+  assert.match(JS, /backOutOfPresetField\(\) \|\| closeLayoutMenu\(\)/);
   const body = fnBody('backOutOfPresetField');
   assert.match(body, /presetUi\.mode === 'idle'/);
 });
