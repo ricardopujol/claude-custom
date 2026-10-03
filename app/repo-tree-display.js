@@ -54,9 +54,9 @@ function dirLook(d) {
   if (!d) return { state: 'none', badge: '', title: '' };
   const edits = isNum(d.edits) ? d.edits : 0;
   const edited = isNum(d.edited) ? d.edited : 0;
-  const read = isNum(d.read) ? d.read : 0;
-  if (edited > 0) return { state: 'edited', badge: `${DOT}${edits}`, title: `${plural(edits, 'edit', 'edits')} in ${plural(edited, 'file', 'files')}${read ? `, ${plural(read, 'more file', 'more files')} read` : ''}` };
-  if (read > 0) return { state: 'read', badge: '', title: `${plural(read, 'file', 'files')} read by Claude` };
+  const readN = isNum(d.read) ? d.read : 0;
+  if (edited > 0) return { state: 'edited', badge: `${DOT}${edits}`, title: `${plural(edits, 'edit', 'edits')} in ${plural(edited, 'file', 'files')}${readN ? `, ${plural(readN, 'more file', 'more files')} read` : ''}` };
+  if (readN > 0) return { state: 'read', badge: '', title: `${plural(readN, 'file', 'files')} read by Claude` };
   return { state: 'none', badge: '', title: '' };
 }
 
