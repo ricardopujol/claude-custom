@@ -75,6 +75,13 @@ const CONTRACT = {
         used: 'agent-occupancy.js, the worktree a subagent Read, Edit or Write is in (#44 + #47)',
         onlyWhen: p => ['Read', 'Edit', 'Write'].includes(p && p.tool_name),
       },
+      // The bedtime night (#52). MEASURED against a real interactive CLI by verify/probe-bedtime-signal.js
+      // --capture (2.1.288, haiku): a ScheduleWakeup call is { delaySeconds, reason, prompt, noop }, or { stop: true }
+      // alone, and carries no agent_id on the main session's call.
+      'tool_input.delaySeconds': {
+        used: 'bedtime-state.js, the clamped fallback for a running night\'s next wake when the result carries no believable scheduledFor',
+        onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
+      },
       ...COMMON_FIELDS,
     },
   },
@@ -83,6 +90,12 @@ const CONTRACT = {
     fields: {
       tool_name: { used: 'processes.js, to close the running entry this completes' },
       tool_response: { used: 'mood-machine.js isFailure(), which decides stressed vs happy' },
+      // MEASURED by verify/probe-bedtime-signal.js --capture: a ScheduleWakeup's result is { scheduledFor (epoch ms,
+      // the CLI's own answer, rounded to the minute), clampedDelaySeconds, wasClamped }; a stop call's has none.
+      'tool_response.scheduledFor': {
+        used: 'bedtime-state.js, the night\'s next wake, shown on the bedtime chip (#52)',
+        onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
+      },
       ...COMMON_FIELDS,
     },
     // Also read, but legitimately ABSENT on a main-session call, so it cannot
@@ -100,6 +113,16 @@ const CONTRACT = {
     //     "completed", agentId } at the end. Absent on older CLIs and on
     //     truncated captures, so the machine falls back to binding a new
     //     agent_id to the oldest unbound invocation of its type;
+    //   a NAMED TEAMMATE's spawn result (Agent with `name`, in an
+    //     interactive session; measured 2026-10-03 from a transcript's
+    //     toolUseResult, the hook's tool_response is assumed equal):
+    //     { status: "teammate_spawned", agent_id: "<name>@<team>", teammate_id,
+    //       agent_type, name, team_name, ... } -- snake_case `agent_id`, an
+    //     ADDRESS and not the id the teammate's own events carry (its runtime
+    //     id is "a<name>-<16 hex>", unmeasured at hook level). No
+    //     run_in_background in its input. A named Agent call under
+    //     `claude -p` instead returns async_launched (captured:
+    //     test/hooks-real-named-agent.fixture.jsonl);
     //   tool_response.interrupted -- that call was killed; never a failure,
     //     and the run continues. Never yet observed true (32,137 real Bash
     //     results, all false, 2026-09-27); cancellation is
@@ -151,10 +174,15 @@ const CONTRACT = {
     // "finished" back while one of them runs.
   },
   UserPromptSubmit: {
-    // The event itself is the message: host/turn-state.js opens the MAIN session's turn on it, which the
-    // Git drawer's Type /merged waits on (PR #93 Dexter F1). Nothing in the payload is read, and `prompt`
-    // (the person's own words) is never read or logged outside CLAUDE_CUSTOM_HOOK_DEBUG.
-    fields: { ...COMMON_FIELDS },
+    // The event itself opens the MAIN session's turn (host/turn-state.js, which the Git drawer's Type /merged
+    // waits on, PR #93 Dexter F1). `prompt` (the person's own words) is read by host/prompt-keeper.js for the
+    // terminal bar's "last prompt" (#49), and by host/bedtime-state.js to recognise a /loop wake (#52): the CLI
+    // replays the scheduled prompt verbatim (verify/probe-bedtime-signal.js). It is still never logged outside
+    // CLAUDE_CUSTOM_HOOK_DEBUG.
+    fields: {
+      prompt: { used: 'prompt-keeper.js, the terminal bar\'s last prompt (#49); bedtime-state.js, to recognise a wake (#52)' },
+      ...COMMON_FIELDS,
+    },
   },
   SessionEnd: {
     // The session is over; processes.js clears everything. No COMMON_FIELDS:

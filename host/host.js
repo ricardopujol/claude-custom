@@ -74,11 +74,16 @@ const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
+const { createPromptKeeper } = require('./prompt-keeper');
+const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
+const { createNightStatus } = require('./night-status');
+const { countNightPrs } = require('./night-prs');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
+const { createRepoService } = require('./repo-service');
 const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
 const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-identity');
@@ -344,6 +349,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   pipeName: PIPE_NAME,
   // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
   occupancy: true,
+  // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
+  bedtime: true,
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
@@ -416,6 +423,11 @@ const gitTree = createGitTreeService({
   // The drawer (Enhancement #46): origin's URL for *Open PR*, and ~/.claude/reviews/<project>/ verdicts.
   readRemote: readOrigin,
   readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),
+});
+// The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff for THIS host's worktree
+// (host/repo-service.js). The watch starts on the first ask; a change is announced to every window.
+const repoService = createRepoService({
+  root: CWD, projectsDir: seams.projectsDir || undefined, announce: (msg) => broadcastControl(msg),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
@@ -501,6 +513,8 @@ attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
 // the Git drawer's Type /merged types into this session, and the subagent roster can't see a turn with no
 // agent in it. null until SessionStart: a host without hooks never claims idle.
 const turnState = createTurnState();
+// Backlog #49: the main session's latest prompt, for the terminal bar. A reconnecting window gets it in `hello`.
+const promptKeeper = createPromptKeeper();
 
 // Provider is fixed at spawn: the pty environment cannot change under a running
 // process, so switching backend means a new session rather than a hot swap.
@@ -1143,6 +1157,14 @@ function seatPayload(seats) {
 // point the whole module has run.
 const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
 
+// Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
+// calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.
+const night = createNightStatus({
+  bedtime: createBedtime(),
+  countPrs: (since) => countNightPrs(CWD, since),
+  onChange: (payload) => broadcastControl({ type: 'bedtime', bedtime: payload }),
+});
+
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
 // worktree, and deletes it when the agent stops (or this host exits). Every window reads them.
 const occupancyWriter = createClaimWriter({ stateRoot: STATE_ROOT, log: (...a) => console.log(...a) });
@@ -1191,7 +1213,13 @@ if (helperExists) {
     // the probe that reads it only wants who touched which path.)
     if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
     occupancy.handle(ev);
+    // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
+    if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
+    night.handle(ev);
     if (isOccupancyOnly(ev)) return;
+    // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
+    // panel would show it as a process.
+    if (isBedtimeOnly(ev)) return;
     // The context was just replaced (/clear) or summarised (compaction): the
     // last fill is no longer true, whether or not the CLI re-fires the
     // statusLine right after. Unknown until a document says otherwise.
@@ -1697,6 +1725,7 @@ const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
   occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
+  night.tick();              // a night that went overdue: a verdict of time, pushed when the clock makes it
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
   // own a clock of its own -- and on both falling edges: a sweep that removed
   // the last row, and a party that shrank with nothing left running.
@@ -2032,6 +2061,9 @@ wss.on('connection', (ws, req) => {
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
     turn: turnState.snapshot(),
+    // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
+    prompt: promptKeeper.snapshot(),
+    bedtime: night.payload(),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
@@ -2432,6 +2464,14 @@ wss.on('connection', (ws, req) => {
       });
       return;
     }
+    if (msg.type === 'repo') {
+      // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a
+      // failure is { ok: false, why | error }, so the page can say so instead of waiting forever.
+      repoService.handle(msg).then(reply => {
+        try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
+      });
+      return;
+    }
     if (msg.type === 'git-tree') {
       // The Git panel (documentation/PLAN_GIT_TREE.md). gitTree.get() never rejects: a failure
       // arrives as { ok: false, error }, so the panel can say so instead of waiting forever.
@@ -2638,6 +2678,7 @@ wss.on('error', (err) => {
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
   if (term) { try { term.kill(); } catch {} }
+  try { repoService.close(); } catch {}
   releaseSessionLock(SESSION_LOCK, lockOwner);
   killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }

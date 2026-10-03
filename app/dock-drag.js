@@ -40,7 +40,7 @@ function rimZones(width, height) {
 }
 
 // A cell cut into a tab bar (groups only), four 28% bands and a middle. The middle joins a group;
-// on the terminal it is no zone at all in D1 (D2 makes it the float zone).
+// on the terminal it is the float zone (D2).
 function cellZones(box, tabBar) {
   const { rect } = box;
   const isGroup = box.kind === 'group';
@@ -59,11 +59,14 @@ function cellZones(box, tabBar) {
     zone(rect.x, top + bandH, bandW, midH, 'left'),
     zone(rect.x + rect.width - bandW, top + bandH, bandW, midH, 'right'),
   ];
-  if (isGroup) zones.push(zone(rect.x + bandW, top + bandH, rect.width - 2 * bandW, midH, 'center'));
+  const middle = zone(rect.x + bandW, top + bandH, rect.width - 2 * bandW, midH, 'center');
+  // A group's middle joins it as a tab; the terminal's middle floats the panel (the page fills in where).
+  zones.push(isGroup ? middle : { rect: middle.rect, target: { float: true } });
   return zones.filter(z => area(z.rect) > 0);
 }
 
-const isCell = b => !!b && typeof b === 'object' && (b.kind === 'term' || b.kind === 'group') && !!b.rect;
+const hasRect = b => !!b && typeof b === 'object' && !!b.rect;
+const isCell = b => hasRect(b) && (b.kind === 'term' || b.kind === 'group');
 
 /**
  * @param boxes    `fit`'s boxes
@@ -74,19 +77,31 @@ const isCell = b => !!b && typeof b === 'object' && (b.kind === 'term' || b.kind
  *          cell's zones too; `target` is the hot zone's, or null (over a rail, a gutter, nothing, or
  *          outside the window).
  */
-function zonesAt(boxes, viewport, point, { tabBar = TAB_BAR } = {}) {
+function zonesAt(boxes, viewport, point, { tabBar = TAB_BAR, exclude = null } = {}) {
   const vp = viewport && typeof viewport === 'object' ? viewport : {};
   const width = dim(vp.width);
   const height = dim(vp.height);
   const barPx = isNumber(tabBar) && tabBar >= 0 ? tabBar : TAB_BAR;
   const p = point && isNumber(point.x) && isNumber(point.y) ? point : null;
   const zones = rimZones(width, height);
+  let floatZone = null;
   if (p && contains({ x: 0, y: 0, width, height }, p)) {
-    const under = (Array.isArray(boxes) ? boxes : []).find(b => isCell(b) && contains(b.rect, p));
-    if (under) zones.push(...cellZones(under, barPx));
+    const list = Array.isArray(boxes) ? boxes : [];
+    // Floats are drawn after the tree, bottom to top, so the LAST one under the pointer is the visible one. Only
+    // "join as a tab" is on offer over it (the whole box); the float being dragged by a tab is no target.
+    const float = [...list].reverse().find(b => hasRect(b) && b.kind === 'float' && b.id !== exclude && contains(b.rect, p));
+    if (float) {
+      floatZone = { rect: { ...float.rect }, target: { cell: float.id, side: 'center' } };
+      zones.push(floatZone);
+    } else {
+      const under = list.find(b => isCell(b) && contains(b.rect, p));
+      if (under) zones.push(...cellZones(under, barPx));
+    }
   }
-  // The rim comes first in the list, so it wins over a cell's band.
-  const hot = p ? zones.find(z => contains(z.rect, p)) : null;
+  // The rim comes first in the list, so it wins over a cell's band. A float under the pointer wins over the
+  // rim too (PR #102 Dexter 7): you drop on what you see on top, and a float pushed flush against an edge
+  // would otherwise be un-joinable along its outermost 14 px.
+  const hot = !p ? null : (floatZone || zones.find(z => contains(z.rect, p)));
   return { zones: zones.map(z => ({ ...z, hot: z === hot })), target: hot ? hot.target : null };
 }
 

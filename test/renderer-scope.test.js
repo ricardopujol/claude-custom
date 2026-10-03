@@ -113,12 +113,16 @@ const ALLOWED_GLOBALS = new Set([
   'tabModel', 'tabStatus', 'goToSession',
   // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
   'occupancyDisplay', 'occupancyConfirm',
+  // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
+  'terminalBar',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
   // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)
   'terminalRows', 'filePathParse',
   // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.
   'gitRings', 'gitRingsDisplay',
+  // app/repo-*.js (#45 + #32, the Files tab and the code reader): one namespace object each, IIFE-wrapped.
+  'repoLanguage', 'repoMention', 'repoTreeDisplay', 'repoRequester', 'repoRefresh', 'repoFilesPanel', 'repoReader', 'repoBrowser',
   // app/git-swing.js + app/git-actions.js (Enhancement #46): one namespace object each, IIFE-wrapped.
   'gitSwing', 'gitActions',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from

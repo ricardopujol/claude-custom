@@ -56,6 +56,7 @@ const PRESETS_FILE = path.join(STATE_DIR, 'layout-presets.json');          // do
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
+const { isLiveHost } = require('./lib/live-host');
 const { TABS } = require(path.join(ROOT, 'app', 'side-tabs'));
 
 if (process.platform !== 'win32') {
@@ -288,14 +289,13 @@ async function quitApp(app) {
 
 // A live host on THIS checkout that is not one of ours: its window would see the layout files moved under it and
 // the probe's trees pushed into it, and the restore would overwrite what it saved (PR #100 Miguel I1, as probe-wand).
-function liveForeignHost() {
+async function liveForeignHost() {
   let files = [];
   try { files = fs.readdirSync(path.join(HARNESS_DIR, 'hosts')).filter(f => f.endsWith('.json')); } catch { return null; }
   for (const f of files) {
     const id = readIdentity({ dir: HARNESS_DIR, port: Number(f.replace(/\.json$/, '')) });
     if (!id || !Number.isInteger(id.pid)) continue;
-    let alive = false;
-    try { process.kill(id.pid, 0); alive = true; } catch (err) { alive = !!err && err.code === 'EPERM'; }
+    const alive = await isLiveHost(id);                      // pid AND start time: a recycled pid is not a host
     if (alive && !path.resolve(String(id.cwd || '')).toLowerCase().startsWith(path.resolve(tmp).toLowerCase() + path.sep)) return id;
   }
   return null;
@@ -304,7 +304,7 @@ function liveForeignHost() {
 let refused = false;
 
 async function main() {
-  const foreign = liveForeignHost();
+  const foreign = await liveForeignHost();
   if (foreign) {
     refused = true;
     console.log(`REFUSED: a live host (pid ${foreign.pid}, ${foreign.cwd}) is open on this checkout. The probe moves .harness/state/layout-*.json on purpose; close that window, or run the probe from another checkout.`);
@@ -621,6 +621,273 @@ async function main() {
   const outFocus = await waitFor(async () => { const v = await viewState(app); return !v.focus && v.header && rectKey(v) === rectKey(preFold) ? v : null; }, 4000);
   check('10: Ctrl+Shift+F again brings every box back as it was', !!outFocus);
   check('10: ...with terminal, fit and pty agreeing again', (await sizesAgree(app)).ok);
+
+  // 12 ----------------------------------------------------------------------------
+  // D2, floating panels: float by a drop on the terminal's middle and by the tab menu; move by the bar, resize by
+  // the grip; join a float as a tab; dock back by a tab; the terminal and the pty never notice; a float is kept
+  // inside a squeezed window and comes back; Ctrl+B and focus mode hide floats; raising is this window's alone.
+  {
+    await view(app, 'openMenu', { which: 'layout' });
+    await view(app, 'menuButton', { text: 'Reset layout' });
+    const f0 = (await settled(app)).s;
+    const termKey = v => JSON.stringify([Math.round(v.termwrap.left - v.dock.left), Math.round(v.termwrap.top - v.dock.top), Math.round(v.termwrap.width), Math.round(v.termwrap.height)]);
+    const term0 = termKey(f0);
+    const flOf = (v, id) => v.floats.find(f => f.tabs.includes(id));
+    const insideDock = (v, f) => f.rect.left >= v.dock.left - 1 && f.rect.top >= v.dock.top - 1 && f.rect.right <= v.dock.right + 1 && f.rect.bottom <= v.dock.bottom + 1;
+    const relMid = r => ({ x: r.left - f0.dock.left + r.width / 2, y: r.top - f0.dock.top + r.height / 2 });
+    const vaultTag = f0.vaultNode;
+    const nodeKept = [vaultTag];
+
+    // float by a drop on the terminal's middle
+    const dropped = await view(app, 'drag', { id: 'vault', to: relMid(f0.termwrap) });
+    let s = (await settled(app)).s;
+    nodeKept.push(s.vaultNode);
+    const fv = flOf(s, 'vault');
+    check('12: dropping Vault on the terminal\'s middle lights the float zone, and floats it: a float holds Vault alone',
+      dropped.ok && dropped.during.hot === 1 && s.floats.length === 1 && !!fv && fv.tabs.join() === 'vault' && fv.panels[0] === 'vault' && !groupWith(s, 'vault'),
+      JSON.stringify([dropped.during, s.floats.map(f => f.tabs)]));
+    check('12: ...the float is inside the dock and its element is in the floats\' layer',
+      !!fv && insideDock(s, fv), fv && JSON.stringify([fv.rect, fv.zIndex]));
+    check('12: ...stacking is structural: the layer sits between the terminal and the drag overlay, above the dividers (5) and below the overlay (40)',
+      s.stack.layerZ > 5 && s.stack.layerZ < s.stack.overlayZ && s.stack.order.indexOf('dock-floats') > s.stack.order.indexOf('termwrap') && s.stack.order.indexOf('dock-floats') < s.stack.order.indexOf('dock-overlay'),
+      JSON.stringify(s.stack));
+    check('12: ...and the terminal is its own stacking context, so its lock overlay and banners cannot sit between floats (PR #102 Miguel Y3)',
+      s.stack.termwrapIsolation === 'isolate' && s.stack.lockInTermwrap, JSON.stringify(s.stack));
+    check('12: ...the right group keeps the other tabs, and the terminal, fit and pty are exactly as before the float',
+      groupWith(s, 'git') && !groupWith(s, 'git').tabs.includes('vault') && termKey(s) === term0 && (await sizesAgree(app)).ok, `${term0} -> ${termKey(s)}`);
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '12-float.png') });
+
+    // float by the tab's right-click menu
+    const menu = await view(app, 'openMenu', { which: 'move', id: 'git' });
+    check('12: the tab menu offers Float and Hide', menu.ok && menu.items.some(i => i.text === 'Float') && menu.items.some(i => i.text === 'Hide'), JSON.stringify(menu.items));
+    await view(app, 'menuButton', { text: 'Float' });
+    s = (await settled(app)).s;
+    const fg = flOf(s, 'git');
+    const fv2 = flOf(s, 'vault');
+    check('12: Float in the menu floats Git, offset from the first float so they never stack exactly',
+      s.floats.length === 2 && !!fg && !!fv2 && (Math.abs(fg.rect.left - fv2.rect.left) > 4 || Math.abs(fg.rect.top - fv2.rect.top) > 4), JSON.stringify(s.floats.map(f => [f.tabs, f.rect.left, f.rect.top])));
+    check('12: ...and the new float is on top', !!fg && !!fv2 && fg.zIndex > fv2.zIndex, JSON.stringify([fg && fg.zIndex, fv2 && fv2.zIndex]));
+    check('12: ...floats are ranked inside their layer (0, 1, ...), so no number of them can reach the drag overlay\'s level',
+      s.floats.every(f => f.zIndex >= 0 && f.zIndex < s.floats.length), JSON.stringify(s.floats.map(f => f.zIndex)));
+    const menu2 = await view(app, 'openMenu', { which: 'move', id: 'git' });
+    check('12: a panel alone in its float is not offered Float again', menu2.ok && !menu2.items.some(i => i.text === 'Float'), JSON.stringify(menu2.items));
+    await view(app, 'closeMenu');
+    check('12: terminal === fit === pty after both floats, and the terminal has not moved', (await sizesAgree(app)).ok && termKey(s) === term0, termKey(s));
+
+    // move by the bar: one write for the whole drag
+    const vId = fv2.id;
+    const before12 = await viewState(app);
+    const rv = flOf(before12, 'vault').rect;
+    const moveRes = await view(app, 'floatDrag', { id: vId, what: 'bar', dx: 90, dy: 60, moves: 8 });
+    await sleep(1300);
+    s = (await settled(app)).s;
+    const mv = flOf(s, 'vault').rect;
+    check('12: eight pointer moves in one frame draw once, and nothing is drawn before the frame (PR #102 Miguel Y2)',
+      moveRes.ok && moveRes.sync.drawn === false && moveRes.during.draws === 1 && moveRes.during.drawn === true, JSON.stringify(moveRes));
+    check('12: ...a float\'s move never reaches the pty as a resize, and text selection is off while it goes and back on after (Miguel Y2, S4)',
+      moveRes.resizes === 0 && moveRes.during.selecting === true && moveRes.after.selecting === false, JSON.stringify(moveRes));
+    check('12: dragging a float by its bar moves it by exactly the drag', Math.abs(mv.left - rv.left - 90) <= 1 && Math.abs(mv.top - rv.top - 60) <= 1 && Math.abs(mv.width - rv.width) <= 1,
+      JSON.stringify([rv, mv]));
+    check('12: ...and the store is written once for the whole drag', s.pushes === before12.pushes + 1, `pushes ${before12.pushes} -> ${s.pushes}`);
+    check('12: ...the terminal and every group stay where they were', termKey(s) === term0 && tiles(s).length === 0, termKey(s));
+
+    // resize by the grip
+    const before13 = s;
+    await view(app, 'floatDrag', { id: vId, what: 'grip', dx: 70, dy: 40 });
+    await sleep(1300);
+    s = (await settled(app)).s;
+    const rs = flOf(s, 'vault').rect;
+    // The corner may not go past the window's edge, so the drag is asked for in full only where there is room for it.
+    const wantW = Math.min(mv.width + 70, s.dock.right - mv.left);
+    const wantH = Math.min(mv.height + 40, s.dock.bottom - mv.top);
+    check('12: dragging the corner grip resizes the float by the drag (stopping at the window\'s edge), its top left corner staying put',
+      Math.abs(rs.width - wantW) <= 1 && Math.abs(rs.height - wantH) <= 1 && rs.width > mv.width + 1 && rs.height > mv.height + 1 && Math.abs(rs.left - mv.left) <= 1 && Math.abs(rs.top - mv.top) <= 1, JSON.stringify([mv, rs, wantW, wantH]));
+    check('12: ...with one store write', s.pushes === before13.pushes + 1, `pushes ${before13.pushes} -> ${s.pushes}`);
+    {
+      const fl = flOf(s, 'vault');
+      check('12: ...the grip sits in the frame under the panel, so it covers no part of the panel (PR #102 Miguel S2)',
+        fl.panelRects.length > 0 && fl.grip.top >= Math.max(...fl.panelRects.map(p => p.bottom)) - 1 && fl.grip.bottom <= fl.rect.bottom + 1, JSON.stringify([fl.grip, fl.panelRects]));
+    }
+    check('12: ...and the panel inside the float fills it',flOf(s, 'vault').panelRects.every(p => p.right <= flOf(s, 'vault').rect.right + 1 && p.bottom <= flOf(s, 'vault').rect.bottom + 1));
+
+    // a press that moves nothing stores nothing (PR #102 Dexter 2)
+    {
+      const layoutNow = JSON.stringify((await viewState(app)).layout);
+      const pushesNow = (await viewState(app)).pushes;
+      for (const what of ['bar', 'grip']) {
+        const r = await view(app, 'floatDrag', { id: vId, what, how: 'jitter' });
+        await sleep(600);
+        const st = await viewState(app);
+        check(`12: a 1 px wobble on the ${what} and back stores nothing: the layout is byte-identical and the store untouched`,
+          r.ok && !r.during.drawn && !r.after.drag && JSON.stringify(st.layout) === layoutNow && st.pushes === pushesNow, JSON.stringify([r, st.pushes, pushesNow]));
+      }
+    }
+
+    // aborted float drags change nothing
+    {
+      const layoutNow = JSON.stringify((await viewState(app)).layout);
+      const pushesNow = (await viewState(app)).pushes;
+      for (const [label, args] of [
+        ['a bar drag, then a move with no button down', { what: 'bar', how: 'nobutton' }],
+        ['a bar drag, then the window loses focus', { what: 'bar', how: 'blur' }],
+        ['a grip drag, then a move with no button down', { what: 'grip', how: 'nobutton' }],
+        ['a grip drag, then the window loses focus', { what: 'grip', how: 'blur' }],
+      ]) {
+        const r = await view(app, 'floatDrag', { id: vId, dx: 50, dy: 30, ...args });
+        await sleep(800);
+        const st = await viewState(app);
+        check(`12: ${label}: the drag ends, and nothing is changed or saved`,
+          r.ok && r.during.drag && r.during.drawn && !r.after.drag && !r.after.drawn && JSON.stringify(st.layout) === layoutNow && st.pushes === pushesNow, JSON.stringify(r));
+      }
+    }
+
+    // raising a float is this window's: the selection changes, the layout and the store do not
+    const gId = fg.id;
+    const preRaise = await viewState(app);
+    await view(app, 'floatPress', { id: vId });
+    await sleep(1200);
+    const raised = await viewState(app);
+    check('12: pressing a float raises it: it draws above the other',
+      flOf(raised, 'vault').zIndex > flOf(raised, 'git').zIndex && raised.selection.floatOrder[raised.selection.floatOrder.length - 1] === vId, JSON.stringify([raised.selection.floatOrder, raised.floats.map(f => [f.id, f.zIndex])]));
+    check('12: ...and writes nothing: the layout is byte-identical and the store was not touched',
+      JSON.stringify(raised.layout) === JSON.stringify(preRaise.layout) && raised.pushes === preRaise.pushes, `pushes ${preRaise.pushes} -> ${raised.pushes}`);
+    await view(app, 'floatPress', { id: gId, bar: true });
+    const raised2 = await viewState(app);
+    check('12: pressing the other float\'s bar raises that one back', flOf(raised2, 'git').zIndex > flOf(raised2, 'vault').zIndex && raised2.pushes === preRaise.pushes);
+
+    // join a float as a tab: Git's tab onto Vault's float
+    const vNow = flOf(raised2, 'vault');
+    const joined = await view(app, 'drag', { id: 'git', to: relMid(vNow.rect) });
+    s = (await settled(app)).s;
+    nodeKept.push(s.vaultNode);
+    check('12: dragging Git\'s tab onto Vault\'s float joins it as a tab, and Git\'s emptied float is gone',
+      joined.ok && s.floats.length === 1 && s.floats[0].tabs.join() === 'vault,git', JSON.stringify(s.floats.map(f => f.tabs)));
+    check('12: ...and the dragged tab\'s own float was not a target while it was dragged (one hot zone, the other float)', joined.during.hot === 1, JSON.stringify(joined.during));
+
+    // dock back by a tab: Git's tab onto the terminal's left band
+    const toLeft = { x: 70, y: (f0.termwrap.height / 2) };
+    await view(app, 'drag', { id: 'git', to: toLeft });
+    s = (await settled(app)).s;
+    nodeKept.push(s.vaultNode);
+    const gg = groupWith(s, 'git');
+    check('12: dragging a float\'s tab onto the terminal\'s left band docks that panel there, and the float keeps Vault',
+      !!gg && gg.rect.right <= s.termwrap.left + 6 && s.floats.length === 1 && s.floats[0].tabs.join() === 'vault', JSON.stringify([gg && gg.rect, s.floats.map(f => f.tabs)]));
+    check('12: ...with terminal, fit and pty agreeing, and the boxes tiling', (await sizesAgree(app)).ok && tiles(s).length === 0, tiles(s).join('; '));
+    check('12: the vault\'s field is the same DOM node after floating, a float joined and a dock back',
+      nodeKept.every(t => t === vaultTag) && !!vaultTag, JSON.stringify(nodeKept));
+    await view(app, 'layout', { layout: example });
+    await settled(app);
+
+    // squeezed: a float is kept inside the window, and comes back when it widens
+    await view(app, 'dock', { id: 'vault', target: { float: { x: 640, y: 260 } } });
+    const wideF = (await settled(app)).s;
+    const wideRect = flOf(wideF, 'vault').rect;
+    const storedBefore = JSON.stringify(wideF.layout.floats);
+    await view(app, 'squeeze', { width: 480, height: 420 });
+    const sqF = (await settled(app)).s;
+    const sqRect = flOf(sqF, 'vault');
+    check('12: a float is drawn whole inside a squeezed dock', !!sqRect && insideDock(sqF, sqRect), sqRect && JSON.stringify([sqRect.rect, sqF.dock]));
+    check('12: ...the stored layout is not changed by the squeeze, and the terminal keeps its minimum',
+      JSON.stringify(sqF.layout.floats) === storedBefore && sqF.termwrap.width >= 319 && sqF.termwrap.height >= 159, `${sqF.termwrap.width}x${sqF.termwrap.height}`);
+    // PR #102 Dexter 2: a float drawn clamped is not rewritten by a drag that ends where it began (or by a click)
+    {
+      const pushesSq = sqF.pushes;
+      for (const what of ['bar', 'grip']) {
+        const r = await view(app, 'floatDrag', { id: flOf(sqF, 'vault').id, what, dx: 30, dy: 20, how: 'return' });
+        await sleep(600);
+        const st = await viewState(app);
+        check(`12: squeezed, a ${what} drag that returns to where it began leaves the stored float and the store untouched`,
+          r.ok && JSON.stringify(st.layout.floats) === storedBefore && st.pushes === pushesSq, JSON.stringify([r.after, st.pushes, pushesSq]));
+      }
+    }
+    await view(app, 'squeeze', {});
+    const wideAgainF = (await settled(app)).s;
+    const backRect = flOf(wideAgainF, 'vault').rect;
+    check('12: widened again, the float is back where it was put', Math.abs(backRect.left - wideRect.left) <= 1 && Math.abs(backRect.top - wideRect.top) <= 1 && Math.abs(backRect.width - wideRect.width) <= 1,
+      JSON.stringify([wideRect, backRect]));
+
+    // PR #102 Miguel Y1: a float that has collected tabs still has a handle that moves it
+    let restRect = wideRect;                                    // where the float rests after this step, for the fold checks below
+    {
+      const fid = flOf(wideAgainF, 'vault').id;
+      for (const m of ['agents', 'git', 'fog', 'models']) await view(app, 'dock', { id: m, target: { cell: fid, side: 'center' } });
+      const five = (await settled(app)).s;
+      const f5 = flOf(five, 'vault');
+      const r = await view(app, 'floatDrag', { id: fid, what: 'handle', dx: -40, dy: -25 });
+      await sleep(1300);
+      const moved5 = flOf((await settled(app)).s, 'vault').rect;
+      restRect = moved5;
+      check('12: a float with five tabs: pressing its left handle really hits the bar (a hit test, not a dispatch)', f5.tabs.length === 5 && r.ok && r.hit, JSON.stringify([f5.tabs, r.hit]));
+      check('12: ...and dragging that handle moves the float by the drag',
+        Math.abs(moved5.left - (f5.rect.left - 40)) <= 1 && Math.abs(moved5.top - (f5.rect.top - 25)) <= 1 && Math.abs(moved5.width - f5.rect.width) <= 1, JSON.stringify([f5.rect, moved5]));
+    }
+
+    // PR #102 Miguel Y4, S3: the Vault in a float. Half a secret survives a raise, a move and a resize with the keyboard
+    // still in its field; and every way the float leaves view puts a revealed secret back out of sight.
+    {
+      const fid = flOf((await settled(app)).s, 'vault').id;
+      await view(app, 'select', { id: 'vault' });
+      const up = (await settled(app)).s;
+      check('12: the Vault is the showing tab of its float', up.shown.includes('vault') && flOf(up, 'vault').on.includes('vault'), JSON.stringify(up.shown));
+      const fsec = await view(app, 'floatSecret', { id: fid });
+      check('12: half a secret typed in a floating Vault\'s field stays in it, with the keyboard, through a raise, a move, a resize and a body press',
+        fsec.ok && fsec.out.every(o => o.active === 'vault-secret' && o.value === 'dummy-half'), JSON.stringify(fsec.out));
+      restRect = flOf((await settled(app)).s, 'vault').rect;
+      const revealed = async () => (await view(app, 'secretField', { reveal: true })).inputType === 'text';
+      const hidden = async () => (await view(app, 'secretField', {})).inputType === 'password';
+
+      check('12: Reveal shows the floating Vault\'s new secret in the clear', await revealed());
+      await view(app, 'foldAll');
+      await settled(app);
+      check('12: ...Ctrl+B takes the float out of view and the revealed secret goes back to dots', await hidden());
+      await view(app, 'foldAll');
+      await view(app, 'select', { id: 'vault' });
+      await settled(app);
+
+      await revealed();
+      await view(app, 'hide', { id: 'vault' });
+      await settled(app);
+      check('12: ...hiding the floating Vault from the menu does the same', await hidden());
+      await view(app, 'show', { id: 'vault' });
+      await view(app, 'select', { id: 'vault' });
+      await settled(app);
+
+      await revealed();
+      await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+      await waitFor(async () => { const v = await viewState(app); return v.focus ? v : null; }, 4000);
+      check('12: ...and so does focus mode', await hidden());
+      await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+      await waitFor(async () => { const v = await viewState(app); return !v.focus ? v : null; }, 4000);
+
+      await view(app, 'select', { id: 'vault' });
+      await revealed();
+      await view(app, 'select', { id: 'git' });                 // another tab of its float comes to the front
+      await settled(app);
+      check('12: ...and so does bringing another tab of its float to the front', await hidden());
+      await view(app, 'select', { id: 'vault' });
+      await settled(app);
+      restRect = flOf((await settled(app)).s, 'vault').rect;
+    }
+
+    // Ctrl+B and focus mode hide floats; unfolding brings them back
+    await view(app, 'foldAll');
+    const foldedF = (await settled(app)).s;
+    check('12: Ctrl+B\'s fold hides every float, and the panel is not on screen', foldedF.floats.length === 0 && !foldedF.shown.includes('vault'), `${foldedF.floats.length} floats`);
+    await view(app, 'foldAll');
+    const unfoldedF = (await settled(app)).s;
+    check('12: ...unfolding brings it back where it was', unfoldedF.floats.length === 1 && Math.abs(flOf(unfoldedF, 'vault').rect.left - restRect.left) <= 1);
+    await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+    const focusF = await waitFor(async () => { const v = await viewState(app); return v.focus && v.floats.every(f => f.display === 'none') ? v : null; }, 4000);
+    check('12: focus mode hides the float (display none) and the terminal fills the area', !!focusF && Math.abs(focusF.termwrap.width - focusF.dock.width) <= 1, focusF ? '' : 'never hidden');
+    await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+    const outF = await waitFor(async () => { const v = await viewState(app); return !v.focus && v.floats.length === 1 && v.floats[0].display !== 'none' ? v : null; }, 4000);
+    check('12: ...and leaving focus mode shows it again', !!outF);
+    check('12: ...with terminal, fit and pty agreeing', (await sizesAgree(app)).ok);
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '12-float-after.png') });
+
+    await view(app, 'layout', { layout: example });
+    cur = (await settled(app)).s;
+  }
 
   // 11 ----------------------------------------------------------------------------
   const onTab = async (label) => {

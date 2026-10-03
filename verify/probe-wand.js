@@ -60,6 +60,7 @@ const LAYOUT_FILE = path.join(STATE_DIR, 'layout-global.json');
 const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
+const { isLiveHost } = require('./lib/live-host');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 
 const hygiene = createHygieneRegistry();
@@ -206,14 +207,13 @@ function makeWorld() {
 
 // A live host on THIS checkout that is not one of ours: its window would see the probe's corrupt-file test and
 // have its own edits overwritten by the restore (Miguel S2).
-function liveForeignHost() {
+async function liveForeignHost() {
   let files = [];
   try { files = fs.readdirSync(path.join(ROOT, '.harness', 'hosts')).filter(f => f.endsWith('.json')); } catch { return null; }
   for (const f of files) {
     const id = readIdentity({ dir: path.join(ROOT, '.harness'), port: Number(f.replace(/\.json$/, '')) });
     if (!id || !Number.isInteger(id.pid)) continue;
-    let alive = false;
-    try { process.kill(id.pid, 0); alive = true; } catch (err) { alive = !!err && err.code === 'EPERM'; }
+    const alive = await isLiveHost(id);                      // pid AND start time: a recycled pid is not a host
     if (alive && !path.resolve(String(id.cwd || '')).toLowerCase().startsWith(path.resolve(tmp).toLowerCase() + path.sep)) return id;
   }
   return null;
@@ -222,7 +222,7 @@ function liveForeignHost() {
 let refused = false;
 
 async function main() {
-  const foreign = liveForeignHost();
+  const foreign = await liveForeignHost();
   if (foreign) {
     refused = true;
     console.log(`REFUSED: a live host (pid ${foreign.pid}, ${foreign.cwd}) is open on this checkout. The probe rewrites .harness/state/wand.json on purpose; close that window, or run the probe from another checkout.`);

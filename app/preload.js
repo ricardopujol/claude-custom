@@ -49,6 +49,14 @@ contextBridge.exposeInMainWorld('harness', {
   // re-decides and does it on the click.
   checkPaths: (lists) => ipcRenderer.invoke('tab:checkPaths', lists),
   openPath: (p) => ipcRenderer.invoke('tab:openPath', p),
+  // The Files tab (#45): a path RELATIVE to this tab's worktree. Main re-runs the realpath guard against the
+  // tab's own folder, then shows it in Explorer / starts an OS drag of the file. Neither ever opens or runs it.
+  repoReveal: (rel) => ipcRenderer.invoke('tab:repoReveal', rel),
+  repoDrag: (rel) => ipcRenderer.invoke('tab:repoDrag', rel),
+  // drag-out, in the gesture (PR #95 Miguel M2): prepare when the pointer reaches a row, then a SYNCHRONOUS start
+  // inside `dragstart`; repoDrag above is the checked fallback for a row that was not prepared yet
+  repoDragPrepare: (rel) => ipcRenderer.invoke('tab:repoDragPrepare', rel),
+  repoDragStart: (rel) => ipcRenderer.sendSync('tab:repoDragStart', rel),
   onTabSelected: (fn) => (ipcRenderer.removeAllListeners('tab-selected'), ipcRenderer.on('tab-selected',
     () => {
       try { fn(); } catch (err) { console.error('[preload] tab-selected listener threw', err); }

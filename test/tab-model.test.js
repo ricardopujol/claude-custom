@@ -263,3 +263,14 @@ test('PROPERTY: afterClose never selects the closed key and always names an exis
     if (closed !== selected) assert.strictEqual(next, selected);
   }));
 });
+
+// Backlog #52: a tab whose session is in a /bedtime night turns night-blue and wears a moon (the strip paints it).
+test('night follows the status: only a real true, and a tab with no status has none', () => {
+  const k = keyOf(DEV.path);
+  const kA = keyOf(A.path);
+  const [dev, a] = strip([DEV, A], { [k]: { started: true, status: { night: true } }, [kA]: { started: true, status: { night: 'yes' } } });
+  assert.strictEqual(dev.night, true);
+  assert.strictEqual(a.night, false);
+  assert.strictEqual(strip([DEV], {})[0].night, false);
+  assert.strictEqual(strip([DEV], { [k]: { started: false, status: null } })[0].night, false);
+});

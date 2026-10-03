@@ -220,14 +220,14 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
   assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
-test('sanitizeStatus keeps six fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
+test('sanitizeStatus keeps seven fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
+    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
+    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt' }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt' });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true });
 });
 
 // --- open: criterion 1, X5, criterion 8 --------------------------------------
@@ -2210,6 +2210,11 @@ test('the probe may drive the dock tree\'s actions, by name only (dockable panel
   assert.ok(!VIEW_PROBE_ACTIONS.has('dragDrop'), 'the HTML5 strip drop is gone');
 });
 
+test('the probe may drive the floating panels\' actions, by name only (dockable panels D2)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['floatDrag', 'floatPress', 'secretField', 'floatSecret']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
 test('the probe may read and operate the wand, by name only (#51)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
@@ -2225,6 +2230,11 @@ test('the probe may focus a wand control and press keys on it, by name only (#51
 test('the probe may drive the occupancy page actions, by name only (#44 + #47)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+test('the probe may drive the terminal bar page actions, by name only (#49 + #52)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
 // --- worktree occupancy (#44 + #47) -----------------------------------------------

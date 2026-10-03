@@ -145,3 +145,22 @@ test('every contracted event in a REAL captured hook stream carries what the hos
     assert.ok(seen.has(event), `fixture exercises ${event}`);
   }
 });
+
+// Backlog #49 + #52: the prompt and the loop's ScheduleWakeup calls, measured by verify/probe-bedtime-signal.js.
+test('UserPromptSubmit now needs its prompt: the terminal bar and the night read it', () => {
+  assert.deepStrictEqual(checkPayload('UserPromptSubmit', { permission_mode: 'default' }).missing, ['prompt']);
+  assert.strictEqual(checkPayload('UserPromptSubmit', { permission_mode: 'default', prompt: 'hi' }).ok, true);
+  assert.ok(CONTRACT.UserPromptSubmit.fields.prompt.used);
+});
+
+test('a ScheduleWakeup call needs delaySeconds and its result scheduledFor, but a stop call needs neither, and no other tool is asked', () => {
+  const pre = (tool_input) => ({ tool_name: 'ScheduleWakeup', permission_mode: 'x', tool_input });
+  assert.deepStrictEqual(checkPayload('PreToolUse', pre({ prompt: 'p' })).missing, ['tool_input.delaySeconds']);
+  assert.strictEqual(checkPayload('PreToolUse', pre({ delaySeconds: 60, prompt: 'p' })).ok, true);
+  assert.strictEqual(checkPayload('PreToolUse', pre({ stop: true })).ok, true);
+  assert.strictEqual(checkPayload('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' }, permission_mode: 'x' }).ok, true);
+  const post = (tool_input, tool_response) => ({ tool_name: 'ScheduleWakeup', permission_mode: 'x', tool_input, tool_response });
+  assert.deepStrictEqual(checkPayload('PostToolUse', post({ delaySeconds: 60 }, {})).missing, ['tool_response.scheduledFor']);
+  assert.strictEqual(checkPayload('PostToolUse', post({ delaySeconds: 60 }, { scheduledFor: 1 })).ok, true);
+  assert.strictEqual(checkPayload('PostToolUse', post({ stop: true }, {})).ok, true);
+});

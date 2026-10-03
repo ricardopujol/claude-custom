@@ -21,7 +21,7 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, powerMonitor } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
@@ -64,11 +64,29 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const fileLink = require('./file-link');
+const { createRepoActions } = require('./repo-actions');
 // What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
   stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
+// The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
+// guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
+// The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
+// would cost an async lookup that must finish before the pointer moves on.
+let repoDragIcon = null;
+const repoActions = createRepoActions({
+  shell,
+  icon: () => {
+    if (!repoDragIcon) {
+      const size = 32;
+      const px = Buffer.alloc(size * size * 4);
+      for (let i = 0; i < px.length; i += 4) { px[i] = 0x4a; px[i + 1] = 0x8c; px[i + 2] = 0xd0; px[i + 3] = 0xcc; }   // BGRA
+      repoDragIcon = nativeImage.createFromBitmap(px, { width: size, height: size });
+    }
+    return repoDragIcon;
+  },
+});
 const { listBackgroundHosts } = require('../host/background-hosts');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
@@ -882,6 +900,29 @@ function registerIpc() {
     console.log(`[main] ${tab.key}: file link ${JSON.stringify(String(p).slice(0, 200))}`);
     return fileLink.open(p, tab.cwd, fileFs, shell);
   });
+  // The Files tab (#45): Show in Explorer and drag-out. Main resolves the path against THAT tab's own
+  // worktree and re-runs the realpath guard; the page only names a path relative to it.
+  ipcMain.handle('tab:repoReveal', (e, rel) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    return tab ? repoActions.reveal(tab.cwd, rel) : { ok: false, why: 'refused' };
+  });
+  // Drag-out is two steps (PR #95 Miguel M2): the page asks main to PREPARE a file when the pointer reaches its
+  // row (guard + is-a-file, cached), and at `dragstart` sends a SYNCHRONOUS start that calls startDrag in the same
+  // tick, with nothing awaited between the gesture and the OS drag. `sendSync`: the reply (and any refusal)
+  // comes back in the gesture too.
+  ipcMain.handle('tab:repoDragPrepare', (e, rel) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    return tab ? repoActions.prepare(tab.cwd, rel) : { ok: false, why: 'refused' };
+  });
+  ipcMain.on('tab:repoDragStart', (e, rel) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    e.returnValue = tab ? repoActions.dragNow(tab.cwd, rel, (o) => e.sender.startDrag(o)) : { ok: false, why: 'refused' };
+  });
+  // The async fallback for a file that was not prepared yet: it checks first, then starts.
+  ipcMain.handle('tab:repoDrag', (e, rel) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    return tab ? repoActions.drag(tab.cwd, rel, (o) => e.sender.startDrag(o)) : { ok: false, why: 'refused' };
+  });
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a
   // background process.
@@ -1197,11 +1238,12 @@ function startProbeDriver(port) {
           "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
-      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js).
+      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
+      // moon, background, animation -- verify/probe-terminal-bar.js).
       let stripOccupancy = null;
       try {
         stripOccupancy = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height, night: t.classList.contains('night'), moon: !!t.querySelector('.moon'), bg: getComputedStyle(t).backgroundColor, anim: getComputedStyle(t).animationName })))"));
       } catch (err) { stripOccupancy = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
