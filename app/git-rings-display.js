@@ -359,15 +359,27 @@ function fillDrawer(dial, key) {
       'aria-disabled': a.enabled ? 'false' : 'true' }, row);
     btn.textContent = a.label;
     if (!a.enabled) {
-      // Every disabled action says why, where it can be seen and heard: beside it, and as its description
-      btn.title = a.why;
+      // Every disabled action says why, where it can be seen and heard: beside it, and as its description.
+      // Not also as a title, which a screen reader announces a second time (PR #93 Miguel S2).
       const why = el(doc, 'span', { class: 'git-act-why', id: `git-act-why-${a.id}` }, row);
       why.textContent = a.why;
       btn.setAttribute('aria-describedby', why.id);
     }
   }
-  el(doc, 'div', { class: 'git-drawer-said', role: 'status' }, drawer).textContent = st.said && st.said.key === key ? st.said.text : '';
+  syncSaid(st, key);
   return true;
+}
+
+/**
+ * The answer to an action lives in ONE status node per panel (`.git-said`), made once and never rebuilt:
+ * a live region inserted already holding its text is often not announced, and the drawer is rebuilt on
+ * every redraw (PR #93 Miguel S2). It shows the answer for the open drawer's branch, and nothing else.
+ */
+function syncSaid(st, key) {
+  const node = st.saidEl;
+  if (!node) return;
+  const want = st.said && key !== null && st.said.key === key ? st.said.text : '';
+  if (node.textContent !== want) node.textContent = want;
 }
 
 function openDrawer(dial, key, { focus = null } = {}) {
@@ -393,6 +405,7 @@ function closeDrawer(dial, { refocus }) {
   st.pinned = null;
   const drawer = dial.querySelector('.git-drawer');
   if (drawer) { drawer.hidden = true; drawer.textContent = ''; }
+  syncSaid(st, null);
   fitText(dial);
   if (refocus && was) { const g = elementFor(dial, was); if (g) g.focus(); }
 }
@@ -408,9 +421,7 @@ function togglePin(dial, key) {
 function say(dial, key, text) {
   const st = stateOf(dial);
   st.said = { key, text: String(text || '') };
-  const drawer = dial.querySelector('.git-drawer');
-  const said = drawer && drawer.dataset.key === key ? drawer.querySelector('.git-drawer-said') : null;
-  if (said) said.textContent = st.said.text;
+  syncSaid(st, st.pinned);
 }
 
 const errText = err => (err && err.message) || String(err);
@@ -492,10 +503,12 @@ function apply(dial, st, t, wall) {
   const live = swing.liveSet(st.tree ? st.tree.branches : [], working, st.grown, active);
   st.sparksShown = sparks;
   st.liveShown = live;
-  const sec = t / 1000;
   const rad = angle * Math.PI / 180;
   for (const p of st.parts) {
-    const f = swing.breath(p.name, sec, { reduced });
+    // On the swing's own clock, so the breath eases to a stop with the dial under a pin or the pointer: a
+    // spoke never shifts under a click (PR #93 Miguel S1). PERIOD_S is a multiple of the breath's period,
+    // so the clock wrapping never jumps it.
+    const f = swing.breath(p.name, st.swing.clock, { reduced });
     const dx = (p.s.x1 - p.s.x0) * f;
     const dy = (p.s.y1 - p.s.y0) * f;
     const tx = p.s.x0 + dx;
@@ -673,6 +686,10 @@ function render(rootEl, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs = nu
   st.onOpenPr = onOpenPr || null;
   st.onCopy = onCopy || null;
   st.onRunMerged = onRunMerged || null;
+  // the panel's one status node, made once (syncSaid says why)
+  if (!st.saidEl || !st.saidEl.isConnected) {
+    st.saidEl = rootEl.querySelector('.git-said') || el(doc, 'div', { class: 'git-said', role: 'status', 'aria-live': 'polite' }, rootEl);
+  }
   const key = JSON.stringify([tree === undefined ? null : tree, tabs]);
   if (key === st.key) return;
   st.key = key;
@@ -696,8 +713,11 @@ function render(rootEl, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs = nu
   const focusedAct = active && dial.contains(active) && active.closest && active.closest('.git-act')
     ? active.closest('.git-act').getAttribute('data-act') : null;
   const focusedKey = !focusedAct && active && dial.contains(active) && spokeAt(dial, active) ? keyOfEl(spokeAt(dial, active)) : null;
+  // the hover card under the pointer: the 2 s tab-state poll redraws, and no mouseover follows to show it
+  // again (PR #93 Miguel I4). Its place is kept as it was set, so no layout is read here.
   const card0 = dial.querySelector('.git-card');
-  const cardAt = card0 && !card0.hidden ? card0.getBoundingClientRect() : null;
+  const cardWas = card0 && !card0.hidden && st.pinned === null && st.hover !== null
+    ? { key: st.hover, left: card0.style.left, top: card0.style.top } : null;
 
   dial.textContent = '';
   st.parts = [];
@@ -822,7 +842,14 @@ function render(rootEl, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs = nu
     if (g) openDrawer(dial, st.pinned);
     else st.pinned = null;
   }
-  void cardAt;
+  if (cardWas && st.pinned === null && st.hover === cardWas.key && (cardWas.key === HUB || st.byName.has(cardWas.key))) {
+    const card = dial.querySelector('.git-card');
+    if (card && fillCard(dial, card, cardWas.key)) {
+      card.hidden = false;
+      card.style.left = cardWas.left;
+      card.style.top = cardWas.top;
+    }
+  }
   if (focusedAct) {
     const btn = dial.querySelector(`.git-act[data-act="${focusedAct}"]`);
     if (btn) btn.focus();

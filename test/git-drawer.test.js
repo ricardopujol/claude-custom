@@ -82,3 +82,36 @@ test('labelAt: beside the tip on the side it points to, kept inside the dial, at
   assert.strictEqual(edgeL.anchor, 'start');
   assert.ok(edgeL.x >= 4);
 });
+
+// ---------- PR #93 review: Miguel I4, S1, S2 (the DOM is checked in a real window by verify/probe-git-tree.js) ----------
+const fs = require('fs');
+const path = require('path');
+const swingLib = require('../app/git-swing');
+const DISPLAY = fs.readFileSync(path.join(__dirname, '..', 'app', 'git-rings-display.js'), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+
+test('Miguel S1: the breath runs on the swing clock, so it holds when the dial holds, and never jumps at the wrap', () => {
+  assert.match(DISPLAY, /swing\.breath\(p\.name, st\.swing\.clock, \{ reduced \}\)/);
+  assert.strictEqual(swingLib.PERIOD_S % swingLib.BREATH_PERIOD_S, 0, 'the 90 s clock wraps on a whole number of breaths');
+  for (const n of ['feat/a', 'spike/c', '<b>x</b>&"q']) {
+    assert.ok(Math.abs(swingLib.breath(n, 0) - swingLib.breath(n, swingLib.PERIOD_S)) < 1e-9, n);
+  }
+});
+
+test('Miguel S2: a disabled action is described once (aria-describedby), never also by a title', () => {
+  assert.doesNotMatch(DISPLAY, /btn\.title\s*=/);
+  assert.match(DISPLAY, /btn\.setAttribute\('aria-describedby', why\.id\)/);
+});
+
+test("Miguel S2: the answer has ONE status node per panel, made once, never rebuilt with the drawer", () => {
+  assert.match(DISPLAY, /rootEl\.querySelector\('\.git-said'\) \|\| el\(doc, 'div', \{ class: 'git-said', role: 'status'/);
+  assert.strictEqual((DISPLAY.match(/role: 'status'/g) || []).length, 1, 'no second status node in the drawer');
+});
+
+test('Miguel I4: a redraw puts the hover card back where it was, reading no layout; the dead cardAt is gone', () => {
+  assert.doesNotMatch(DISPLAY, /cardAt/);
+  const at = DISPLAY.indexOf('const cardWas');
+  assert.ok(at !== -1);
+  assert.doesNotMatch(DISPLAY.slice(at, DISPLAY.indexOf('dial.textContent', at)), /getBoundingClientRect/);
+  assert.match(DISPLAY, /fillCard\(dial, card, cardWas\.key\)/);
+});

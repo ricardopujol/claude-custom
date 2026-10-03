@@ -126,7 +126,7 @@ function sparkAt(i, n, nowMs) {
 
 const api = {
   start, step, angleDeg, breath, breathPhase, rotatePoint, grown, liveSet, sparkNames, sparksOn, sparkAt,
-  SWING_DEG, PERIOD_S, EASE_S, RESUME_MS, BREATH, SPARK_MS,
+  SWING_DEG, PERIOD_S, EASE_S, RESUME_MS, BREATH, BREATH_PERIOD_S, SPARK_MS,
 };
 
 if (typeof module !== 'undefined' && module.exports) {
