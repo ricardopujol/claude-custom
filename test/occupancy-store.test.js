@@ -134,15 +134,37 @@ test('a failed write is retried at once next time (a failure must not start the 
   assert.strictEqual(r.writer.write(record()).wrote, true);
 });
 
-test('a .claude-custom that is a link elsewhere is never written through', () => {
+test('a .claude-custom that is a link elsewhere is never written through', (t) => {
   const state = tmpDir('occ-store-link-');
   const elsewhere = tmpDir('occ-store-elsewhere-');
-  try { fs.symlinkSync(elsewhere, path.join(state, '.claude-custom'), 'junction'); } catch { return; }   // can't link here: nothing to test
+  try { fs.symlinkSync(elsewhere, path.join(state, '.claude-custom'), 'junction'); } catch (err) { t.skip(`can't make a junction here: ${err.code}`); return; }
   const writer = S.createClaimWriter({ stateRoot: state, now: () => 1, log: () => {} });
   const out = writer.write(record());
   assert.strictEqual(out.ok, false);
   assert.match(out.error, /link/);
   assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
+});
+
+test('...nor is an `occupancy` folder that is itself a link (PR #96 Miguel S7)', (t) => {
+  const state = tmpDir('occ-store-link2-');
+  const elsewhere = tmpDir('occ-store-elsewhere2-');
+  fs.mkdirSync(path.join(state, '.claude-custom'));
+  try { fs.symlinkSync(elsewhere, S.occupancyDir(state), 'junction'); } catch (err) { t.skip(`can't make a junction here: ${err.code}`); return; }
+  const writer = S.createClaimWriter({ stateRoot: state, now: () => 1, log: () => {} });
+  const out = writer.write(record());
+  assert.strictEqual(out.ok, false);
+  assert.match(out.error, /link/);
+  assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
+});
+
+test('who the agent is and which branch launched it are part of the claim: learned late, they are written at once (PR #96 Miguel Y3)', () => {
+  // nameOf() is null on an agent's first touch, so the banner said "An agent" for up to 30 s
+  const r = rig();
+  assert.strictEqual(r.writer.write(record({ agent: null, fromBranch: null })).wrote, true);
+  assert.strictEqual(r.writer.write(record({ agent: 'electron-pro', fromBranch: null })).wrote, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r.dir, 'ag1.json'), 'utf8')).agent, 'electron-pro');
+  assert.strictEqual(r.writer.write(record({ agent: 'electron-pro', fromBranch: 'feat/x' })).wrote, true);
+  assert.strictEqual(r.writer.write(record({ agent: 'electron-pro', fromBranch: 'feat/x' })).wrote, false, 'and the same claim is throttled as before');
 });
 
 test('a record that is not a valid claim is refused before anything is written', () => {
@@ -278,4 +300,40 @@ test('after forget, the same claim is written again at once (the 30 s window was
   r.writer.forget('ag1');
   assert.strictEqual(r.writer.write(record()).wrote, true);
   assert.doesNotThrow(() => r.writer.forget('never-written'));
+});
+
+// --- temp files a killed writer left behind (PR #96 Miguel Y4) -------------------------------------------
+// A host killed between writeFileSync and rename leaves `<id>.json.tmp<pid>`. No reader opens it, no writer
+// knows it, and the folder is shared by every window: the sweep collects the ones nobody can still be writing.
+
+test('sweepDead also removes temp files older than TEMP_MAX_AGE_MS, and nothing else it does not know', async () => {
+  const r = rig();
+  r.writer.write(record());                                           // a live claim, judged live below
+  const old = path.join(r.dir, 'gone.json.tmp4242');
+  const young = path.join(r.dir, 'busy.json.tmp4343');
+  const other = path.join(r.dir, 'notes.txt');
+  for (const f of [old, young, other]) fs.writeFileSync(f, '{}');
+  const now = Date.now();
+  const past = new Date(now - S.TEMP_MAX_AGE_MS - 1000);
+  fs.utimesSync(old, past, past);
+  fs.utimesSync(other, past, past);
+  const out = await S.sweepDead(r.dir, { judge: async claims => claims.map(claim => ({ claim, verdict: 'live' })), now: () => now });
+  assert.deepStrictEqual(out.removed, []);
+  assert.strictEqual(out.temps, 1);
+  assert.deepStrictEqual(files(r.dir), ['ag1.json', 'busy.json.tmp4343', 'notes.txt']);
+});
+
+test('...also when the folder holds no claim at all, and a folder that is missing is no error', async () => {
+  const r = rig();
+  fs.mkdirSync(r.dir, { recursive: true });
+  const old = path.join(r.dir, 'gone.json.tmp1');
+  fs.writeFileSync(old, '{}');
+  const past = new Date(Date.now() - S.TEMP_MAX_AGE_MS - 1000);
+  fs.utimesSync(old, past, past);
+  let judged = 0;
+  const out = await S.sweepDead(r.dir, { judge: async (c) => { judged += 1; return c.map(claim => ({ claim, verdict: 'dead' })); } });
+  assert.strictEqual(out.temps, 1);
+  assert.strictEqual(judged, 0, 'nobody to judge');
+  assert.deepStrictEqual(files(r.dir), []);
+  assert.deepStrictEqual(await S.sweepDead(path.join(r.dir, 'missing'), { judge: async () => [] }), { removed: [], temps: 0 });
 });

@@ -12,9 +12,11 @@
  * WRITING (the launching host only):
  *   - temp file + rename, never the target opened with 'w' (a failed write leaves the old file whole);
  *   - `lastAt` is rewritten at most every REWRITE_MS (no write per tool call). A CHANGE -- a new worktree, a
- *     new `also` -- is written at once, and a failed write doesn't start the window;
+ *     new `also`, who the agent is, the branch that launched it, the host's proof -- is written at once,
+ *     and a failed write doesn't start the window;
  *   - `.claude-custom` that is a link or junction to somewhere else is never written through
- *     (host/style.js lookDirState: a cloned repo can ship one pointing anywhere);
+ *     (host/style.js lookDirState: a cloned repo can ship one pointing anywhere), and neither is an
+ *     `occupancy` folder that is itself a link;
  *   - deleted on SubagentStop (remove), and when the host exits (removeAll).
  *
  * READING (every window): readAll never throws and never decides liveness (host/occupancy-live.js does).
@@ -25,7 +27,9 @@
  *
  * SWEEPING: a dead claim is deleted by the next PRODUCER that starts in the project (sweepDead), never by a
  * reader. Only claims judged `dead` go; unknown, unproven and malformed files are left alone, and a file
- * that was rewritten while it was being judged isn't deleted on the old verdict.
+ * that was rewritten while it was being judged isn't deleted on the old verdict. The sweep also collects
+ * the temp files of writers that were killed mid-write (`<id>.json.tmp<pid>`), once they are older than
+ * TEMP_MAX_AGE_MS: a write takes milliseconds, so nobody is still writing one that old.
  */
 
 const fs = require('fs');
@@ -38,6 +42,8 @@ const DIR_NAME = 'occupancy';
 const REWRITE_MS = 30_000;
 const MAX_CLAIM_BYTES = 64 * 1024;
 const FILE_RE = /^([A-Za-z0-9_-]{1,64})\.json$/;
+const TEMP_RE = /^[A-Za-z0-9_-]{1,64}\.json\.tmp\d+$/;
+const TEMP_MAX_AGE_MS = 60_000;
 
 const occupancyDir = stateRoot => path.join(lookDir(stateRoot), DIR_NAME);
 const errText = err => (err && err.message) || String(err);
@@ -50,8 +56,9 @@ function createClaimWriter({ stateRoot, fsImpl = fs, now = Date.now, log = () =>
     try { parsed = record && typeof record === 'object' ? parseClaim(serializeClaim(record)) : null; } catch { parsed = null; }
     if (!parsed || !parsed.ok) return { ok: false, error: `not a claim: ${parsed ? parsed.reason : 'no record'}` };
     const name = claimFileName(record.agentId);
-    // What a CHANGE is: where the agent is, and the host's proof (its start time can arrive after the first claim).
-    const key = `${record.worktree}|${record.also.join('|')}|${record.hostStartedAt}`;
+    // What a CHANGE is: where the agent is, who it is and where it came from (the name is often not known on
+    // the first touch), and the host's proof (its start time can arrive after the first claim).
+    const key = JSON.stringify([record.worktree, record.also, record.hostStartedAt, record.agent, record.fromBranch]);
     const prev = written.get(record.agentId);
     if (prev && prev.key === key && now() - prev.at < REWRITE_MS) return { ok: true, wrote: false };
 
@@ -59,6 +66,9 @@ function createClaimWriter({ stateRoot, fsImpl = fs, now = Date.now, log = () =>
       return { ok: false, error: `${lookDir(stateRoot)} is a link to somewhere else; not writing through it` };
     }
     const dir = occupancyDir(stateRoot);
+    try {
+      if (fsImpl.lstatSync(dir).isSymbolicLink()) return { ok: false, error: `${dir} is a link to somewhere else; not writing through it` };
+    } catch { /* not there yet: created below */ }
     const file = path.join(dir, name);
     const temp = `${file}.tmp${process.pid}`;
     try {
@@ -139,14 +149,28 @@ function readAll(dir, { fsImpl = fs } = {}) {
 }
 
 /**
- * Deletes the claims `judge(claims)` calls dead. `judge` -> Promise<[{ claim, verdict }]>
- * (host/occupancy-live.js). Resolves `{ removed: [agentId] }`; never rejects.
+ * Deletes the claims `judge(claims)` calls dead, and the temp files killed writers left behind. `judge` ->
+ * Promise<[{ claim, verdict }]> (host/occupancy-live.js). Resolves `{ removed: [agentId], temps: n }`; never
+ * rejects.
  */
-async function sweepDead(dir, { judge, fsImpl = fs, log = () => {} } = {}) {
+async function sweepDead(dir, { judge, fsImpl = fs, log = () => {}, now = Date.now } = {}) {
   const removed = [];
+  let temps = 0;
   try {
+    let names = [];
+    try { names = fsImpl.readdirSync(dir); } catch { names = []; }
+    for (const name of names) {
+      if (!TEMP_RE.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fsImpl.lstatSync(full);
+        if (!st.isFile() || now() - st.mtimeMs < TEMP_MAX_AGE_MS) continue;
+        fsImpl.unlinkSync(full);
+        temps += 1;
+      } catch { /* gone, or in use: the next sweep */ }
+    }
     const read = readAll(dir, { fsImpl });
-    if (read.claims.length === 0) return { removed };
+    if (read.claims.length === 0) return { removed, temps };
     const verdicts = await judge(read.claims);
     for (const { claim, verdict } of verdicts) {
       if (verdict !== 'dead') continue;
@@ -162,9 +186,9 @@ async function sweepDead(dir, { judge, fsImpl = fs, log = () => {} } = {}) {
   } catch (err) {
     log('[occupancy] sweep failed:', errText(err));
   }
-  return { removed };
+  return { removed, temps };
 }
 
 module.exports = {
-  occupancyDir, createClaimWriter, readAll, sweepDead, REWRITE_MS, MAX_CLAIM_BYTES, DIR_NAME, safeAgentId,
+  occupancyDir, createClaimWriter, readAll, sweepDead, REWRITE_MS, MAX_CLAIM_BYTES, TEMP_MAX_AGE_MS, DIR_NAME, safeAgentId,
 };
