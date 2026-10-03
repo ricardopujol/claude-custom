@@ -26,7 +26,9 @@ const TABS = [
   // tab above, and 'bugs' would collide with nothing today but reads as too
   // generic once a project also tracks, say, GitHub issues.
   { id: 'bugvault', label: 'Bug vault', title: 'Recurring defect classes, grouped by category and by how they were found' },
-  { id: 'fog', label: 'Map', title: 'What this project has actually been read' },
+  // The Files tab (#45) took the Map's slot. The id stays `fog`: saved layouts and the dock tests name it, and a
+  // renamed id would drop it from every stored layout.
+  { id: 'fog', label: 'Files', title: 'Browse this worktree and read its files; what Claude touched is marked' },
   // Layout pass L3 (documentation/PLAN_GIT_TREE.md): every branch on one dial.
   { id: 'git', label: 'Git', title: 'Every branch this project has grown' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },

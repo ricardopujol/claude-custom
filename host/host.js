@@ -83,6 +83,7 @@ const { milestoneFor, nextMilestone, progressTo, describeSpend,
 const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
+const { createRepoService } = require('./repo-service');
 const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
 const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-identity');
@@ -422,6 +423,11 @@ const gitTree = createGitTreeService({
   // The drawer (Enhancement #46): origin's URL for *Open PR*, and ~/.claude/reviews/<project>/ verdicts.
   readRemote: readOrigin,
   readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),
+});
+// The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff for THIS host's worktree
+// (host/repo-service.js). The watch starts on the first ask; a change is announced to every window.
+const repoService = createRepoService({
+  root: CWD, projectsDir: seams.projectsDir || undefined, announce: (msg) => broadcastControl(msg),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
@@ -2458,6 +2464,14 @@ wss.on('connection', (ws, req) => {
       });
       return;
     }
+    if (msg.type === 'repo') {
+      // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a
+      // failure is { ok: false, why | error }, so the page can say so instead of waiting forever.
+      repoService.handle(msg).then(reply => {
+        try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
+      });
+      return;
+    }
     if (msg.type === 'git-tree') {
       // The Git panel (documentation/PLAN_GIT_TREE.md). gitTree.get() never rejects: a failure
       // arrives as { ok: false, error }, so the panel can say so instead of waiting forever.
@@ -2664,6 +2678,7 @@ wss.on('error', (err) => {
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
   if (term) { try { term.kill(); } catch {} }
+  try { repoService.close(); } catch {}
   releaseSessionLock(SESSION_LOCK, lockOwner);
   killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }
