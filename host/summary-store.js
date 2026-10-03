@@ -23,11 +23,17 @@
  */
 
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const { renameWithRetry } = require('./atomic-write');
 
 const ID_OK = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/;
+const SUMMARY_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}\.json$/;
+const TMP_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}\.json\.\d+\.[0-9a-f]+\.tmp$/;
+const MAX_AGE_MS = 30 * 86_400_000;       // these files hold a digest of private conversations: a sane privacy bound too
+const MAX_FILES = 500;
+const TMP_MAX_AGE_MS = 3_600_000;
 const TEXT_MAX = 2000;
 const FILE_MAX = 64 * 1024;
 
@@ -89,7 +95,38 @@ function createSummaryStore({ dir, rename = renameWithRetry } = {}) {
     return { ok: true, record: { ...record } };
   }
 
-  return { get, put };
+  /**
+   * One sweep (the host runs it once at start, Miguel I4, PR #105): summaries older than MAX_AGE_MS go, at most the newest
+   * MAX_FILES stay, and orphan temp files (a host killed between the write and the rename) older than an hour go. It touches
+   * only names that are summary or temp files of this store (never the GPU slot's dotfiles, never a directory), tolerates
+   * every file vanishing under it (hosts sweep at the same time), and never leaves `dir`. -> { removed: [name] }
+   */
+  async function sweep({ now = Date.now(), maxAgeMs = MAX_AGE_MS, maxFiles = MAX_FILES, tmpMaxAgeMs = TMP_MAX_AGE_MS } = {}) {
+    const removed = [];
+    let names;
+    try { names = await fsp.readdir(dir); } catch { return { removed }; }
+    const keep = [];
+    for (const name of names) {
+      const isSummary = SUMMARY_FILE.test(name);
+      if (!isSummary && !TMP_FILE.test(name)) continue;
+      let st;
+      try { st = await fsp.lstat(path.join(dir, name)); } catch { continue; }
+      if (!st.isFile()) continue;
+      const age = now - st.mtimeMs;
+      if (age > (isSummary ? maxAgeMs : tmpMaxAgeMs)) {
+        try { await fsp.unlink(path.join(dir, name)); removed.push(name); } catch { /* another host got it first */ }
+      } else if (isSummary) {
+        keep.push({ name, mtimeMs: st.mtimeMs });
+      }
+    }
+    keep.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? -1 : 1));
+    for (const { name } of keep.slice(maxFiles)) {
+      try { await fsp.unlink(path.join(dir, name)); removed.push(name); } catch { /* another host got it first */ }
+    }
+    return { removed };
+  }
+
+  return { get, put, sweep };
 }
 
-module.exports = { createSummaryStore, TEXT_MAX };
+module.exports = { createSummaryStore, TEXT_MAX, MAX_AGE_MS, MAX_FILES };

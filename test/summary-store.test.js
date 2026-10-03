@@ -155,3 +155,66 @@ test('property: whatever is put comes back identical after a restart, only flagg
     assert.deepStrictEqual(createSummaryStore({ dir }).get(SID), { ...rec, at, stale: true });
   }), { numRuns: 100 });
 });
+
+// --- Miguel I4 (PR #105): one sweep at host start keeps the folder from growing for ever ----------------------------
+
+const DAY = 86_400_000;
+const touch = (file, ageMs, now) => { const t = new Date(now - ageMs); fs.utimesSync(file, t, t); };
+const sumFile = (dir, id, ageMs, now) => { const f = path.join(dir, id + '.json'); fs.writeFileSync(f, '{}'); touch(f, ageMs, now); return f; };
+
+test('sweep: summaries older than 30 days go, newer ones stay', async () => {
+  const dir = tmp(); const now = Date.now();
+  sumFile(dir, 'old', 31 * DAY, now); sumFile(dir, 'edge', 29 * DAY, now); sumFile(dir, 'new', 1000, now);
+  const r = await createSummaryStore({ dir }).sweep({ now });
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['edge.json', 'new.json']);
+  assert.deepStrictEqual(r.removed, ['old.json']);
+});
+
+test('sweep: at most the newest 500 are kept', async () => {
+  const dir = tmp(); const now = Date.now();
+  for (let i = 0; i < 520; i++) sumFile(dir, 's' + String(i).padStart(3, '0'), (520 - i) * 60_000, now);   // s519 is the newest
+  await createSummaryStore({ dir }).sweep({ now });
+  const left = fs.readdirSync(dir).sort();
+  assert.strictEqual(left.length, 500);
+  assert.ok(left.includes('s519.json') && !left.includes('s000.json') && !left.includes('s019.json') && left.includes('s020.json'));
+});
+
+test('sweep: orphan temp files older than an hour go; a young one (a write in flight) stays', async () => {
+  const dir = tmp(); const now = Date.now();
+  const orphan = path.join(dir, SID + '.json.4242.deadbeef.tmp'); fs.writeFileSync(orphan, 'x'); touch(orphan, 2 * 3600_000, now);
+  const young = path.join(dir, SID + '.json.4243.cafebabe.tmp'); fs.writeFileSync(young, 'x'); touch(young, 5000, now);
+  await createSummaryStore({ dir }).sweep({ now });
+  assert.deepStrictEqual(fs.readdirSync(dir), [SID + '.json.4243.cafebabe.tmp']);
+});
+
+test('sweep: the GPU slot, its claim and anything that is not a summary are never touched', async () => {
+  const dir = tmp(); const now = Date.now();
+  for (const name of ['.job.lock', '.job.lock.takeover', 'notes.txt', 'a b.json', 'x.json.bak', '..json']) {
+    const f = path.join(dir, name); fs.writeFileSync(f, 'x'); touch(f, 400 * DAY, now);
+  }
+  fs.mkdirSync(path.join(dir, 'sub.json'));
+  const before = fs.readdirSync(dir).sort();
+  await createSummaryStore({ dir }).sweep({ now });
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), before);
+});
+
+test('sweep: a folder that is not there, or a file that vanishes mid-sweep, is not an error', async () => {
+  const s = createSummaryStore({ dir: path.join(tmp(), 'nope') });
+  assert.deepStrictEqual((await s.sweep({ now: Date.now() })).removed, []);
+  const dir = tmp(); const now = Date.now();
+  sumFile(dir, 'gone', 40 * DAY, now);
+  const racing = createSummaryStore({ dir });
+  const first = racing.sweep({ now });
+  const second = racing.sweep({ now });                     // two hosts sweeping at once
+  await Promise.all([first, second]);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('sweep: a summary being read by this store after it was swept is simply gone, not a crash', async () => {
+  const dir = tmp(); const now = Date.now();
+  const s = createSummaryStore({ dir });
+  s.put(SID, REC, now);
+  touch(path.join(dir, SID + '.json'), 40 * DAY, now);
+  await s.sweep({ now });
+  assert.strictEqual(createSummaryStore({ dir }).get(SID), null);
+});

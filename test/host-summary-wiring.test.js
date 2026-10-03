@@ -36,7 +36,9 @@ test('the service reads THIS session\'s transcript where the ledger finds it, an
 test('summaries and the GPU slot live in one folder under the harness state, or the probe\'s own', () => {
   assert.match(HOST, /const SUMMARY_DIR = seams\.summaryDir \|\| path\.join\(HARNESS_DIR, 'state', 'summaries'\);/);
   const b = summaryBlock();
-  assert.match(b, /createSummaryStore\(\{ dir: SUMMARY_DIR \}\)/);
+  assert.match(HOST, /const summaryStore = createSummaryStore\(\{ dir: SUMMARY_DIR \}\);/);
+  assert.match(b, /store: summaryStore,/);
+  assert.match(HOST, /summaryStore\.sweep\(\)\.catch\(\(\) => \{ \/\* best effort \*\/ \}\);/, 'one prune sweep at host start (Miguel I4)');
   assert.match(b, /createSlot\(\{ file: path\.join\(SUMMARY_DIR, '\.job\.lock'\) \}\)/);
 });
 

@@ -1120,11 +1120,12 @@ const sessionModels = createSessionModelRefresher({
 // it never types into the session and never edits a project's files; it writes only its own summaries and a GPU slot
 // that makes jobs one-at-a-time across every host. The probe seams (host/probe-seams.js) point it at a fake Ollama.
 const SUMMARY_DIR = seams.summaryDir || path.join(HARNESS_DIR, 'state', 'summaries');
+const summaryStore = createSummaryStore({ dir: SUMMARY_DIR });
 const summary = createSummaryService({
   sessionId: () => sessionId,
   transcriptFile: (id) => path.join(seams.projectsDir || defaultProjectsDir(), projectDirName(CWD), id + '.jsonl'),
   ollama: createOllamaClient({ baseUrl: seams.ollamaUrl || undefined }),
-  store: createSummaryStore({ dir: SUMMARY_DIR }),
+  store: summaryStore,
   scheduler: createScheduler(),
   slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
   onBattery: seams.summaryPower ? async () => seams.summaryPower === 'battery' : createPowerProbe().onBattery,
@@ -1133,6 +1134,7 @@ const summary = createSummaryService({
 });
 const summaryTimer = setInterval(() => { summary.tick().catch(() => { /* logged inside */ }); }, TICK_MS);
 summaryTimer.unref();
+summaryStore.sweep().catch(() => { /* best effort */ });     // one prune sweep at start: old summaries, orphan temp files
 
 // The OpenRouter catalogue and the council seats.
 //
