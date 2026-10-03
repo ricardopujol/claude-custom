@@ -240,6 +240,65 @@ function flashLinkTarget(text) {
   linkTargetTimer = setTimeout(() => showLinkTarget(null), 4000);
 }
 
+// #37: a local path the terminal shows becomes a link when main says it
+// exists. The rows a long path spans are joined first (app/terminal-rows.js:
+// Ink breaks rows itself, so isWrapped can't be trusted -- measured in
+// verify/probe-file-link-rows.js). Main decides open or reveal, and decides
+// again on the click (app/file-link.js).
+function bufferRow(y) {
+  const line = term.buffer.active.getLine(y);
+  if (!line) return null;
+  const cells = [];
+  for (let x = 0; x < term.cols; x++) {
+    const c = line.getCell(x);
+    cells.push(c ? { chars: c.getChars(), width: c.getWidth() } : { chars: '', width: 1 });
+  }
+  return { cells };
+}
+term.registerLinkProvider({
+  provideLinks(lineNumber, callback) {
+    try {
+      if (!window.harness || typeof window.harness.checkPaths !== 'function') { callback(undefined); return; }
+      const b = terminalRows.block(bufferRow, lineNumber - 1, term.cols);
+      // Only what touches the hovered row is asked about (PR #92 Miguel I2).
+      const cands = filePathParse.findCandidates(b.text, b.breaks, { within: terminalRows.rowSpan(b, lineNumber - 1) });
+      if (cands.length === 0) { callback(undefined); return; }
+      Promise.resolve(window.harness.checkPaths(cands.map(c => c.options.map(o => o.path)))).then((answers) => {
+        const links = filePathParse.pickLinks(cands, answers || [])
+          .map(l => toXtermLink(b, l))
+          .filter(l => l && l.range.start.y <= lineNumber && l.range.end.y >= lineNumber);
+        callback(links.length ? links : undefined);
+      }, () => callback(undefined));
+    } catch (err) {
+      console.error('[file-links] provideLinks threw', err);
+      callback(undefined);
+    }
+  },
+});
+// A picked link -> xterm's ILink (the range math is terminalRows.linkRange,
+// tested on its own: 1-based, end inclusive, over real cells only).
+function toXtermLink(b, { start, end, answer }) {
+  const range = terminalRows.linkRange(b, start, end);
+  if (!range || !answer || typeof answer.path !== 'string') return null;
+  return {
+    range,
+    text: b.text.slice(start, end),
+    activate: (event) => openFileLink(event, answer.path),
+    hover: () => showLinkTarget(linkClick.fileTargetText(answer)),
+    leave: () => showLinkTarget(null),
+  };
+}
+// The same click rule as a web link (one plain left click, once); `p` is the
+// absolute path main resolved, which main re-checks before doing anything.
+function openFileLink(event, p) {
+  const r = linkClick.shouldOpen(event, `file:${p}`, lastLinkOpened, Date.now());
+  lastLinkOpened = r.last;
+  if (!r.open || !window.harness || typeof window.harness.openPath !== 'function') return;
+  Promise.resolve(window.harness.openPath(p)).then((res) => {
+    if (!res || res.ok !== true) flashLinkTarget(linkClick.fileRefusedText(p, res && res.why));
+  }, () => flashLinkTarget(linkClick.fileRefusedText(p, null)));
+}
+
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 
