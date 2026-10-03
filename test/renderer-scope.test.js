@@ -80,10 +80,14 @@ const ALLOWED_GLOBALS = new Set([
   // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object
   // rather than six bare globals.
   'portraitMedia',
+  // app/bg-media-display.js (BACKLOG #34): one namespace object, IIFE-wrapped.
+  'bgMedia',
+  // app/colour-seeds.js (BACKLOG #34): one namespace object, IIFE-wrapped.
+  'colourSeeds',
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
   // app/style-display.js, Window section (layout pass L2, #27/#28)
-  'windowSectionView', 'reduceChromeSettings',
+  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError',
   // app/status-fields-display.js (BACKLOG #27)
   'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.

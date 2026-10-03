@@ -49,7 +49,7 @@ const { normalizeCatalogue } = require('./models');
 const { createCatalogueCache } = require('./catalogue-cache');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
-const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook } = require('./style');
+const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook, matchLook } = require('./style');
 const { hasClaudeHistory } = require('./recent');
 const { projectRoots } = require('./project-roots');
 const { applyLook } = require('./look');
@@ -492,7 +492,7 @@ try {
 function currentStyle() {
   const r = resolveStyle(STATE_ROOT, background.path);
   return {
-    background: r.background, source: r.source, setAt: r.setAt, look: r.look,
+    background: r.background, source: r.source, kind: r.kind, setAt: r.setAt, look: r.look,
     theme: applyLook(theme, r.look),
   };
 }
@@ -1934,7 +1934,7 @@ wss.on('connection', (ws) => {
     theme: styleResolved.theme,
     hooks: helperExists,
     background: styleResolved.background,
-    style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
+    style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
@@ -2358,13 +2358,15 @@ wss.on('connection', (ws) => {
           refuse('no file was given');
           return;
         }
-        const r = setBackground({ source: asked, cwd: STATE_ROOT });
-        if (!r.ok) {
-          console.log('[host] style refused :', r.reason);
-          refuse(r.reason);
-          return;
-        }
-        announce();
+        // Async (Miguel M1): the copy of a large video must not stall every viewer.
+        setBackground({ source: asked, cwd: STATE_ROOT }).then((r) => {
+          if (!r.ok) {
+            console.log('[host] style refused :', r.reason);
+            refuse(r.reason);
+            return;
+          }
+          announce();
+        }).catch((err) => refuse(`could not set the background: ${err && err.message}`));
         return;
       }
       if (msg.action === 'reset-background') {
@@ -2381,6 +2383,20 @@ wss.on('connection', (ws) => {
         // The Style tab's "Random colours": host/style.js generates and saves,
         // with the same refusals set-look has.
         const r = rerollLook({ cwd: STATE_ROOT, terminalForeground: theme.terminal && theme.terminal.foreground });
+        if (!r.ok) {
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'match-colours') {
+        // "Match colours to this background" (#34): `seeds` are the few dominant colours the
+        // renderer sampled from the picture or the video's current frame. Never the pixels.
+        // `setAt` is the background the renderer sampled: a match for one that has since been reset or
+        // replaced (by another window) is refused in host/style.js (Dexter D5).
+        const r = matchLook({ cwd: STATE_ROOT, seeds: msg.seeds, setAt: msg.setAt,
+          terminalForeground: theme.terminal && theme.terminal.foreground });
         if (!r.ok) {
           refuse(r.reason);
           return;

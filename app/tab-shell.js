@@ -951,7 +951,9 @@ const PROBE_TOKEN_MIN = 16;
 // never hand the page a string of code to run.
 const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'dragDrop', 'secretRedraw', 'reconnect', 'focusState',
   // layout pass L3: verify/probe-git-tree.js
-  'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus']);
+  'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
+  // backlog #34: verify/probe-video-background.js
+  'bgState', 'bgStyle', 'bgMatch']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));
@@ -1017,6 +1019,14 @@ async function handleProbeCommand(line, api, expectedToken) {
           return { ok: false, error: 'view needs a known action' };
         }
         return await api.view(cmd.action, cmd.args && typeof cmd.args === 'object' ? cmd.args : {});
+      // #34: the window minimised or restored as the OS would, and the OS's reduced-motion setting
+      // emulated -- the two inputs of the background video's play rule a probe can't reach by hand.
+      case 'window-state':
+        if (cmd.state !== 'minimize' && cmd.state !== 'restore') return { ok: false, error: 'window-state needs minimize or restore' };
+        return await api.windowState(cmd.state);
+      case 'reduced-motion':
+        if (typeof cmd.on !== 'boolean') return { ok: false, error: 'reduced-motion needs true or false' };
+        return await api.reducedMotion(cmd.on);
       case 'quit': return await api.quit();
       // The strip's ▾ menu, without a native popup nobody can click.
       case 'background': return await api.background();
@@ -1059,5 +1069,5 @@ function probeLineReader(maxBytes) {
 
 module.exports = {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
+  handleProbeCommand, VIEW_PROBE_ACTIONS, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
 };

@@ -24,7 +24,7 @@
 
 const STYLE_SECTIONS = [
   { id: 'colours', title: 'Colours' },
-  { id: 'background', title: 'Background image' },
+  { id: 'background', title: 'Background' },
   { id: 'inactive', title: 'Inactive windows' },
   { id: 'avatars', title: 'Agent pictures' },
   { id: 'window', title: 'Window' },
@@ -104,17 +104,26 @@ function describeSource(state) {
   if (!state || !state.source) return 'reading…';
   if (state.source === 'override') {
     const when = formatSetAt(state.setAt);
-    return when ? `your image, set ${when}` : 'your image';
+    const what = state.kind === 'video' ? 'your video' : 'your image';
+    return when ? `${what}, set ${when}` : what;
   }
   return 'generated for this project';
 }
 
 function backgroundSectionView(state) {
+  const isOverride = !!(state && state.source === 'override');
+  const note = (state && typeof state.videoError === 'string' && state.videoError) || null;
   return {
     description: describeSource(state),
     // Only meaningful once there IS an override -- resetting a generated
     // background to itself is not an action, so the button starts disabled.
-    isOverride: !!(state && state.source === 'override'),
+    isOverride,
+    isVideo: !!(state && state.kind === 'video'),
+    // Why the video isn't showing (codec, corruption); the file stays.
+    note,
+    // "Match colours to this background" needs the person's own picture, and a
+    // frame to take colours from -- a video that won't play has none.
+    canMatch: isOverride && note === null,
     darknessPercent: toPercent(state && state.darkness),
     error: errorOf(state),
   };
@@ -208,11 +217,17 @@ const ASKABLE = ['colours', 'background'];
 function emptyStyleState() {
   return {
     colours: null,
-    background: { source: null, setAt: null, error: null, darkness: null },
+    background: { source: null, kind: null, setAt: null, error: null, videoError: null, darkness: null },
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
     window: { statusInHeader: null, framelessWindow: null },
   };
+}
+
+// Is this announcement the file the panel already holds? Then nothing reloads.
+function sameBackground(prev, style) {
+  return !!prev && prev.source === 'override' && style.source === 'override'
+    && prev.kind === (style.kind === 'video' ? 'video' : 'image') && prev.setAt === (style.setAt || null);
 }
 
 /**
@@ -252,8 +267,11 @@ function reduceStyle(prev, msg) {
       error: keep('colours'),
     },
     background: {
-      source: style.source || 'generated', setAt: style.setAt || null,
+      source: style.source || 'generated', kind: style.kind === 'video' ? 'video' : 'image', setAt: style.setAt || null,
       darkness: look.darkness, error: keep('background'),
+      // The note is about ONE file: the same file re-announced (a darkness change) is not reloaded, so
+      // it stands; a different file, kind or a reset is tried afresh.
+      videoError: sameBackground(state.background, style) ? (state.background.videoError || null) : null,
     },
     inactive: state.inactive,
     avatars: state.avatars || emptyStyleState().avatars,
@@ -288,6 +306,18 @@ function reduceAvatars(prev, msg) {
   return state;
 }
 
+/**
+ * The renderer's own finding that the background video can't be played (the
+ * <video> `error` event): a quiet note in the Background section, no background,
+ * the file left in place. `null` clears it. Only a string lands.
+ */
+function reduceVideoError(prev, note) {
+  const state = prev || emptyStyleState();
+  const cur = state.background || emptyStyleState().background;
+  if (note !== null && typeof note !== 'string') return state;
+  return { ...state, background: { ...cur, videoError: note || null } };
+}
+
 /** Records the desired "show agent images" state; anything but a boolean is ignored. */
 function reduceImagesEnabled(prev, enabled) {
   const state = prev || emptyStyleState();
@@ -306,7 +336,7 @@ function reduceChromeSettings(prev, settings) {
 
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
-  avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings,
+  avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

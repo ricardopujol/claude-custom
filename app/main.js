@@ -21,7 +21,7 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell, powerMonitor } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
@@ -29,6 +29,7 @@ const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
+const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -965,6 +966,10 @@ function registerIpc() {
     file: path.join(__dirname, '..', '.harness', 'state', `${CHROME_KEY}.json`),
   });
 
+  // Backlog #34: the background video plays only while the window is on screen and on mains.
+  // Main reports the facts only it knows (minimised, hidden, on battery); the page decides.
+  registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender: isTabView, send: pushToViews });
+
   // The global dock layout (layout pass L1): install-wide like the toggle above,
   // and followed across project windows the same way -- see layout-bridge.js.
   // A tab's OWN layout is its host's business, not main's.
@@ -1216,6 +1221,28 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
       sel.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
       return { ok: true, before };
+    },
+    // #34: the window as the OS minimises and restores it (the real events fire), and the OS's
+    // reduced-motion preference emulated on the selected view through the debugger protocol.
+    async windowState(state) {
+      if (state === 'minimize') win.minimize(); else win.restore();
+      return { ok: true, minimized: win.isMinimized() };
+    },
+    async reducedMotion(on) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      const dbg = sel.webContents.debugger;
+      if (on) {
+        if (!dbg.isAttached()) dbg.attach('1.3');
+        await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+        return { ok: true, on };
+      }
+      // Off: clear the emulation and let go of the view (Miguel M8, PR #91) -- an attached debugger
+      // left behind holds the page in a state no real window is in, and blocks DevTools on it.
+      if (dbg.isAttached()) {
+        try { await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [] }); } finally { dbg.detach(); }
+      }
+      return { ok: true, on, attached: dbg.isAttached() };
     },
     async quit() {
       setTimeout(() => app.exit(0), 200);
