@@ -82,14 +82,19 @@ const freePort = () => new Promise((resolve, reject) => {
 // --- the install's own layout file: aside for the run, back afterwards ---------
 // Check 5 needs the layout the first launch saved (vault showing) to be read
 // by the second, and the probe must leave none behind.
-const LAYOUT_BACKUP = `${LAYOUT_FILE}.probe-backup`;
-let movedAside = false;
+// Dockable panels D1: the layout the page saves is the split tree, under its own key (layout-tree.json);
+// an L1 file is only migrated from. Both go aside, so the first launch starts on the default.
+const LAYOUT_FILES = [LAYOUT_FILE, path.join(HARNESS_DIR, 'state', 'layout-tree.json')];
+const backupOf = f => `${f}.probe-backup`;
+const movedAside = new Set();
 function setAsideLayout() {
-  if (fs.existsSync(LAYOUT_FILE)) { fs.renameSync(LAYOUT_FILE, LAYOUT_BACKUP); movedAside = true; }
+  for (const f of LAYOUT_FILES) if (fs.existsSync(f)) { fs.renameSync(f, backupOf(f)); movedAside.add(f); }
 }
 function restoreLayout() {
-  try { fs.rmSync(LAYOUT_FILE, { force: true }); } catch { /* gone */ }
-  if (movedAside) { try { fs.renameSync(LAYOUT_BACKUP, LAYOUT_FILE); } catch (e) { console.log(`(could not restore ${LAYOUT_FILE}: ${e.message})`); } }
+  for (const f of LAYOUT_FILES) {
+    try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
+    if (movedAside.has(f)) { try { fs.renameSync(backupOf(f), f); } catch (e) { console.log(`(could not restore ${f}: ${e.message})`); } }
+  }
 }
 
 // --- the app -------------------------------------------------------------------------

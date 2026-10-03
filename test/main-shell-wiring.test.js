@@ -411,7 +411,7 @@ test('Miguel #4: the tab:raise handler keeps its own comment', () => {
 // --- layout pass L1 ----------------------------------------------------------
 
 test('L1: the global layout is served to this window\'s tab views and pushed to all of them', () => {
-  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY \} = require\('\.\/layout-bridge'\);/);
+  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES \} = require\('\.\/layout-bridge'\);/);
   const at = MAIN.indexOf('registerLayoutHandlers({');
   assert.ok(at !== -1, 'registerLayoutHandlers is called');
   const call = callText(MAIN, at);
@@ -435,6 +435,29 @@ test('L1: the preload exposes the layout bridge with one listener at a time', ()
   assert.match(PRELOAD, /get: \(\) => ipcRenderer\.invoke\('layout:get'\)/);
   assert.match(PRELOAD, /set: \(layout\) => ipcRenderer\.invoke\('layout:set', layout\)/);
   assert.match(PRELOAD, /ipcRenderer\.removeAllListeners\('layout-global'\), ipcRenderer\.on\('layout-global'/);
+});
+
+test('D1: the tree layout is a second registration under TREE_NAMES, with its own sync and its own store file', () => {
+  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES \} = require\('\.\/layout-bridge'\);/);
+  const reg = callText(MAIN, MAIN.indexOf('registerLayoutHandlers({', MAIN.indexOf('registerLayoutHandlers({') + 1));
+  assert.match(reg, /names: TREE_NAMES/);
+  assert.match(reg, /sync: treeSync/);
+  assert.match(reg, /isSender: isTabView/);
+  assert.match(reg, /send: pushToViews/);
+  const watch = callText(MAIN, MAIN.indexOf('watchLayout({', MAIN.indexOf('watchLayout({') + 1));
+  assert.match(watch, /names: TREE_NAMES/);
+  assert.match(watch, /sync: treeSync/);
+  assert.match(watch, /`\$\{TREE_NAMES\.key\}\.json`/);
+  assert.strictEqual(MAIN.split('registerLayoutHandlers({').length - 1, 2, 'the L1 pair stays, for older windows and the one migration read');
+  assert.strictEqual(MAIN.split('watchLayout({').length - 1, 2);
+});
+
+test('D1: the preload exposes layoutTree with one listener at a time, on its own channels', () => {
+  const PRELOAD = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'));
+  assert.match(PRELOAD, /layoutTree: \{/);
+  assert.match(PRELOAD, /get: \(\) => ipcRenderer\.invoke\('layout-tree:get'\)/);
+  assert.match(PRELOAD, /set: \(layout\) => ipcRenderer\.invoke\('layout-tree:set', layout\)/);
+  assert.match(PRELOAD, /ipcRenderer\.removeAllListeners\('layout-tree'\), ipcRenderer\.on\('layout-tree'/);
 });
 
 test('L1 #1: focus mode lifts the tab view over the strip, and every view is told', () => {

@@ -57,9 +57,10 @@ test('the health and lock marks sit in the header beside the project title', () 
 test('the overlay sits over the terminal, not in the side panel', () => {
   const wrap = HTML.indexOf('<div id="termwrap">');
   const overlay = HTML.indexOf('id="lock-overlay"');
-  // Layout pass L1: the side panel is now the right dock zone, after the terminal.
-  const roster = HTML.indexOf('<aside class="zone" data-zone="right"');
-  assert.ok(wrap !== -1 && overlay > wrap && overlay < roster);
+  // Dockable panels D1: the side panels are groups the page adds beside the terminal inside #dock,
+  // after it; the static markup after the terminal is the dock's own drop overlay.
+  const dock = HTML.indexOf('id="dock-overlay"');
+  assert.ok(wrap !== -1 && dock !== -1 && overlay > wrap && overlay < dock);
 });
 
 test('hello paints all three from the handshake', () => {

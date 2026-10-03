@@ -794,48 +794,50 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 // An isolated panel. Nothing in it is ever written to the pty: the secret only
 // ever travels renderer -> main -> OS clipboard, and the host that owns the
 // terminal never sees it. Pasting is then the user's own deliberate act.
-/// --- dock zones (layout pass L1, BACKLOG #22) -------------------------------
-// Every side panel is a module in one of four zones (app/dock-layout.js has
-// every rule; app/dock-zones-display.js draws and decides a redraw's effects).
+/// --- the dock tree (BACKLOG #53, dockable panels D1; was L1's four zones, #22) ----
+// Every side panel is a module in a tabbed group of a split tree around the
+// terminal (app/dock-tree.js has every rule; app/dock-tree-display.js draws; and
+// app/dock-zones-display.js still decides a redraw's effects). L1's app/dock-layout.js
+// stays loaded for one reason: fromV1 and the pre-L1 migration read the old shapes with it.
 // Two kinds of state, kept apart on purpose:
-//   - PLACEMENT (which zone holds which module, hidden ones, sizes): the global
-//     layout in main (install-wide), or this tab's own, kept by its host.
-//   - SELECTION (which module each zone shows, zones collapsed on purpose,
-//     Ctrl+B's memory): this window's own, saved in localStorage and read at
-//     load, the way `sideTab` always was. Clicking Vault here must not switch
-//     every other project window to Vault (S3a; PR #82 Dexter F4).
+//   - PLACEMENT (the tree, hidden modules, sizes): the global layout in main
+//     (install-wide, store key `layout-tree`), or this tab's own, kept by its host.
+//   - SELECTION (which module each group shows, Ctrl+B's fold): this window's
+//     own, saved in localStorage (`dockSelection2`). Clicking Vault here must not
+//     switch every other project window to Vault (S3a; PR #82 Dexter F4).
 const MODULE_IDS = TABS.map(t => t.id);
 const DL = window.dockLayout;
-let globalLayout = DL.defaultLayout(MODULE_IDS);
+const DTm = window.dockTree;
+let globalLayout = DTm.defaultLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
 let pendingOverride = null;      // { layout } sent to the host, not yet echoed back
-let dragLayout = null;           // a grip being dragged: drawn, not yet saved
-let selection = null;            // DL.selectionOf(...) or null = not seeded yet
+let dragLayout = null;           // a divider being dragged: drawn, not yet saved
+let selection = DTm.cleanSelection(null);
+let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let shownModules = new Set();
+let layoutPushes = 0;            // layouts pushed to this window by main: the probe counts the store writes with it
 
+// This window's selection. A window that has none yet is seeded ONCE from L1's
+// (`dockSelection`: group ids are the zone names, so it maps straight across).
 function readSelection() {
   try {
-    const raw = JSON.parse(localStorage.getItem('dockSelection') || 'null');
-    return raw && typeof raw === 'object' ? raw : null;
-  } catch { return null; }
+    const raw = localStorage.getItem('dockSelection2');
+    if (raw !== null) return DTm.cleanSelection(JSON.parse(raw));
+    return DTm.selectionFromV1(JSON.parse(localStorage.getItem('dockSelection') || 'null'));
+  } catch { return DTm.cleanSelection(null); }
 }
 function saveSelection() {
-  try { localStorage.setItem('dockSelection', JSON.stringify(selection)); } catch {}
+  try { localStorage.setItem('dockSelection2', JSON.stringify(selection)); } catch {}
 }
 
-function placementLayout() { return dragLayout || ownLayout || globalLayout; }
+// What is SAVED for this window, without a divider drag's drawn-only layout on top.
+function committedLayout() { return ownLayout || globalLayout; }
+function placementLayout() { return dragLayout || committedLayout(); }
 
-// The layout this window draws: the placement, with THIS window's selection.
-function effectiveLayout() {
-  return DL.mergeSelection(placementLayout(), selection, MODULE_IDS);
-}
-
-// The room the zones share with the terminal: #body minus the diagnostics pane.
-function zonesViewport() {
-  const body = document.getElementById('body');
-  const diag = document.getElementById('diag');
-  const diagW = diag && diag.classList.contains('show') ? diag.offsetWidth : 0;
-  return { width: body.clientWidth - diagW, height: body.clientHeight };
+// The area the tree fills: #dock, which already gives the diagnostics pane its own room.
+function dockViewport() {
+  const dock = document.getElementById('dock');
+  return { width: dock.clientWidth, height: dock.clientHeight };
 }
 
 function onModuleShown(id) {
@@ -867,8 +869,9 @@ function onVaultLeft() {
 // a redraw never moves keyboard focus unless the vault opened or closed, or
 // the user acted (PR #82 Dexter F2, Miguel B1).
 function renderLayout({ userAction = false } = {}) {
-  const plan = window.dockZones.zonePlan(effectiveLayout(), TABS, zonesViewport(), { faceSize: window.faceSize });
-  window.dockZones.applyPlan(plan, document);
+  const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize });
+  lastPlan = plan;
+  window.dockTreeView.applyBoxes(plan, document);
   const now = new Set(plan.shown);
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
@@ -884,7 +887,7 @@ function renderLayout({ userAction = false } = {}) {
 
 // A selection change (tab click, Ctrl+B) stays in this window.
 function commitSelection(next) {
-  selection = DL.selectionOf(next);
+  selection = DTm.cleanSelection(next);
   saveSelection();
   renderLayout({ userAction: true });
 }
@@ -897,27 +900,37 @@ function sendOverride(layout) {
   try { ws.send(JSON.stringify({ type: 'layout-override', layout })); } catch { /* not attached: hello resends */ }
 }
 
-const placementOf = l => JSON.stringify({ zones: l.zones, hidden: l.hidden, size: l.size });
+const placementOf = l => JSON.stringify(l);
 
-// A placement change (move, hide, resize) goes to this tab's own layout when it
-// has one or `justThisTab` asks for one, else to the global layout. A change
-// that moves nothing is a selection change only: no store write, no push to
-// every window, no broadcast (PR #82 Miguel S3).
-function commitPlacement(next, { justThisTab = false } = {}) {
-  const l = DL.normalizeLayout(next, MODULE_IDS);
+// Save the global layout. Main answers null when it refused the layout (not an object, over the size cap) or the
+// write failed, and the call rejects when the bridge is gone: either way this window shows a layout that was not
+// saved, which is said once per failed save instead of swallowed (PR #100 Miguel S3).
+function saveGlobalLayout(l) {
+  const bridge = window.harness && window.harness.layoutTree;
+  if (!bridge) return;
+  const notSaved = () => flashAttention({ urgent: false, title: 'Couldn\'t save the layout' });
+  bridge.set(l).then((answer) => { if (!window.dockTreeView.layoutSaved(answer)) notSaved(); }, notSaved);
+}
+
+// A placement change (dock, hide, show, resize) goes to this tab's own layout
+// when it has one or `justThisTab` asks for one, else to the global layout. A
+// change that moves nothing writes nothing: no store write, no push to every
+// window, no broadcast (PR #82 Miguel S3). `select` is the module the change
+// is about (a dropped or ticked panel): it shows in its group in THIS window.
+function commitPlacement(next, { justThisTab = false, select = null } = {}) {
+  const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   if (placementOf(l) === placementOf(toOwn && ownLayout ? ownLayout : globalLayout) && (!justThisTab || ownLayout)) {
-    commitSelection(l);
+    renderLayout({ userAction: true });
     return;
   }
-  selection = DL.selectionOf(l);
-  saveSelection();
+  if (select !== null) { selection = DTm.selectTab(selection, l, select); saveSelection(); }
   if (toOwn) {
     ownLayout = l;
     sendOverride(l);
   } else {
     globalLayout = l;
-    if (window.harness && window.harness.layout) window.harness.layout.set(l).catch(() => {});
+    saveGlobalLayout(l);
   }
   renderLayout({ userAction: true });
 }
@@ -927,17 +940,21 @@ function dropOwnLayout({ makeGlobal = false } = {}) {
   if (!ownLayout) return;
   if (makeGlobal) {
     globalLayout = ownLayout;
-    if (window.harness && window.harness.layout) window.harness.layout.set(ownLayout).catch(() => {});
+    saveGlobalLayout(ownLayout);
   }
   ownLayout = null;
   sendOverride(null);
   renderLayout({ userAction: true });
 }
 
-function toggleAllZones() { commitSelection(DL.toggleAll(effectiveLayout())); }
+function toggleAllZones() { commitSelection(DTm.toggleFoldAll(selection)); }
+
+// A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
+function selectModule(id) { commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
 
 // --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
-// Three ways in, one rule (DL.moveModule) and one save path (commitPlacement).
+// Ways in (the Window menu's checks, a tab's right-click, dragging a tab), one
+// rule set (app/dock-tree.js dock / hide / show) and one save path (commitPlacement).
 // *Just this tab* sends the change to this tab's own layout; once a tab has
 // one, every change goes there until Reset to global.
 const layoutMenu = document.getElementById('layout-menu');
@@ -979,55 +996,50 @@ function showLayoutMenu(x, y) {
   layoutMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
 }
 
-// A module tab's right-click: Move to Left / Right / Top / Bottom / Hide.
+// A module tab's right-click: Hide. (Move and Float arrive in D2 / D4; a tab is moved by dragging it.)
 function openMoveMenu(id, x, y) {
   closeLayoutMenu();
   layoutMenuFor = id;
   const label = (TABS.find(t => t.id === id) || {}).label || id;
   const check = justThisTabCheck();
-  layoutMenu.appendChild(node('div', { className: 'lm-title', text: `Move ${label} to` }));
-  for (const t of window.dockZones.moveTargets(effectiveLayout(), id)) {
-    layoutMenu.appendChild(node('button', {
-      type: 'button', text: t.label, disabled: !t.enabled,
-      on: { click: () => {
-        commitPlacement(DL.moveModule(effectiveLayout(), id, t.target), { justThisTab: check.box.checked });
-        closeLayoutMenu();
-      } },
-    }));
-  }
+  layoutMenu.appendChild(node('div', { className: 'lm-title', text: label }));
+  layoutMenu.appendChild(node('button', {
+    type: 'button', text: 'Hide',
+    on: { click: () => {
+      commitPlacement(DTm.hide(placementLayout(), id), { justThisTab: check.box.checked });
+      closeLayoutMenu();
+    } },
+  }));
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
   showLayoutMenu(x, y);
 }
 
-// The ▦ layout menu: every module and where it sits, hidden ones included, so
-// there is never a layout with nothing left to click.
-const ROW_TARGETS = [['left', 'L', 'Left'], ['right', 'R', 'Right'], ['top', 'T', 'Top'], ['bottom', 'B', 'Bottom'], ['hide', '–', 'Hidden']];
+// The ▦ Window menu: a check per module, hidden ones included (unticking hides,
+// ticking brings it back to its seat), so there is never a layout with nothing
+// left to click.
 function openLayoutMenu() {
   const anchor = document.getElementById('layout-btn').getBoundingClientRect();
   closeLayoutMenu();
   layoutMenuFor = 'menu';
   const check = justThisTabCheck();
   layoutMenu.appendChild(node('div', { className: 'lm-title', text: ownLayout ? 'This tab\'s own layout' : 'Layout (every tab)' }));
-  for (const row of window.dockZones.layoutRows(effectiveLayout(), TABS)) {
-    const at = row.at === 'hidden' ? 'hide' : row.at;
-    layoutMenu.appendChild(node('div', { className: 'lm-row' }, [
-      node('span', { className: 'lm-name', text: row.label }),
-      ...ROW_TARGETS.map(([target, short, long]) => node('button', {
-        type: 'button', text: short, title: long, className: target === at ? 'on' : '',
-        on: { click: () => {
-          if (target === at) return;
-          commitPlacement(DL.moveModule(effectiveLayout(), row.id, target), { justThisTab: check.box.checked });
-          openLayoutMenu();                       // redrawn in place, still open
-        } },
-      })),
-    ]));
+  for (const row of window.dockTreeView.menuRows(placementLayout(), TABS)) {
+    const box = node('input', { type: 'checkbox', checked: row.shown });
+    box.dataset.module = row.id;
+    box.addEventListener('change', () => {
+      const l = placementLayout();
+      if (box.checked) commitPlacement(DTm.show(l, row.id), { justThisTab: check.box.checked, select: row.id });
+      else commitPlacement(DTm.hide(l, row.id), { justThisTab: check.box.checked });
+      openLayoutMenu();                           // redrawn in place, still open
+    });
+    layoutMenu.appendChild(node('label', {}, [box, node('span', { text: row.label })]));
   }
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
   layoutMenu.appendChild(node('button', {
-    type: 'button', text: 'Reset to default', title: 'Every panel back on the right, default sizes',
-    on: { click: () => { commitPlacement(DL.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
+    type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
+    on: { click: () => { commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
   if (ownLayout) {
     layoutMenu.appendChild(node('button', {
@@ -1058,55 +1070,82 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && closeLayoutMenu()) { e.preventDefault(); e.stopPropagation(); }
 }, true);
 
-// Drag a module's tab onto one of four edge strips that appear while dragging.
-const dropStrips = ['left', 'right', 'top', 'bottom'].map((target) => {
-  const s = node('div', { className: 'dock-drop', title: `Move here (${target})` });
-  s.dataset.target = target;
-  document.body.appendChild(s);
-  return s;
-});
-function placeDropStrips() {
-  const b = document.getElementById('body').getBoundingClientRect();
-  const T = 56;   // strip thickness
-  const at = { left: [b.left, b.top, T, b.height], right: [b.right - T, b.top, T, b.height],
-    top: [b.left, b.top, b.width, T], bottom: [b.left, b.bottom - T, b.width, T] };
-  for (const s of dropStrips) {
-    const [l, t, w, h] = at[s.dataset.target];
-    Object.assign(s.style, { left: `${l}px`, top: `${t}px`, width: `${w}px`, height: `${h}px` });
+// --- dragging a module's tab (dockable panels D1) ---------------------------------
+// Pointer events, not HTML5 drag-and-drop: the zones are drawn and hit-tested by
+// app/dock-drag.js, and HTML5 drag gives no control over either. A press that
+// never moves 5 px stays a click (it selects the tab). While dragging, every zone
+// of the cell under the pointer is lit in #dock-overlay and the one under it
+// fills; a drop on a zone docks, anywhere else changes nothing.
+let cancelTabDrag = () => {};      // the socket closing ends a drag too
+let tabDragDraws = 0;             // how many times the drag rebuilt the overlay: the probe checks an idle pointer costs none
+(function initTabDrag() {
+  const dock = document.getElementById('dock');
+  const overlay = document.getElementById('dock-overlay');
+  let press = null;                // { id, label, x, y, el, pointerId }: the button is down, not yet dragged
+  let drag = null;                 // { id, ghost, target, rect, viewport, sig }
+
+  function drawZones(zones) {
+    tabDragDraws += 1;
+    overlay.textContent = '';
+    for (const z of zones) {
+      const el = node('div', { className: z.hot ? 'dz hot' : 'dz' });
+      Object.assign(el.style, { left: `${z.rect.x}px`, top: `${z.rect.y}px`, width: `${z.rect.width}px`, height: `${z.rect.height}px` });
+      overlay.appendChild(el);
+    }
   }
-}
-let draggingModule = null;
-document.addEventListener('dragstart', (e) => {
-  const button = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
-  if (!button) return;
-  draggingModule = button.dataset.module;
-  e.dataTransfer.setData('text/x-dock-module', draggingModule);
-  e.dataTransfer.effectAllowed = 'move';
-  placeDropStrips();
-  document.body.classList.add('dock-dragging');
-});
-for (const s of dropStrips) {
-  s.addEventListener('dragover', (e) => { if (draggingModule) { e.preventDefault(); s.classList.add('over'); } });
-  s.addEventListener('dragleave', () => s.classList.remove('over'));
-  s.addEventListener('drop', (e) => {
-    e.preventDefault();
-    const id = draggingModule;
-    // Ended HERE, before the move redraws: the redraw removes the dragged tab
-    // button, and a removed source never fires the dragend that was meant to
-    // clean up -- the strips stayed up and the file drop zone stayed disarmed
-    // (PR #82 Dexter F1, Miguel I2).
-    endModuleDrag();
-    if (id) commitPlacement(DL.moveModule(effectiveLayout(), id, s.dataset.target));
+  function end() {
+    if (press) { try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ } }
+    press = null;
+    if (drag) drag.ghost.remove();
+    drag = null;
+    overlay.textContent = '';
+    document.body.classList.remove('dock-dragging');
+  }
+  cancelTabDrag = () => { if (press || drag) end(); };
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
+    if (!b) return;
+    press = { id: b.dataset.module, label: b.textContent, x: e.clientX, y: e.clientY, el: b, pointerId: e.pointerId };
+    // Capture keeps the moves and the release coming to this page when the pointer leaves the window; if the
+    // release is lost anyway (Alt-Tab, an OS dialog), the three guards below end the drag (PR #100 Miguel I2).
+    try { b.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
   });
-}
-function endModuleDrag() {
-  draggingModule = null;
-  document.body.classList.remove('dock-dragging');
-  for (const s of dropStrips) s.classList.remove('over');
-}
-// A drag cancelled or dropped anywhere else: its source still exists, so
-// dragend arrives. Captured on window so nothing on the way can swallow it.
-window.addEventListener('dragend', endModuleDrag, true);
+  window.addEventListener('pointermove', (e) => {
+    if (!press) return;
+    if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
+    if (!drag) {
+      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
+      // The dock's rectangle and size are read once, here: a move event must not force a layout every time.
+      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null };
+      document.body.appendChild(drag.ghost);
+      document.body.classList.add('dock-dragging');
+    }
+    drag.ghost.style.left = `${e.clientX + 12}px`;
+    drag.ghost.style.top = `${e.clientY + 10}px`;
+    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top });
+    drag.target = hit.target;
+    // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
+    const sig = JSON.stringify(hit.zones);
+    if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
+  });
+  window.addEventListener('pointerup', () => {
+    if (!press) return;
+    const d = drag;
+    // Ended BEFORE the drop redraws: the redraw removes the dragged tab's button,
+    // and a removed source never reports an end (L1 PR #82 Dexter F1, Miguel I2).
+    end();
+    if (!d) return;                                     // never moved: the click that follows selects the tab
+    if (d.target) commitPlacement(DTm.dock(placementLayout(), d.id, d.target), { select: d.id });
+  });
+  window.addEventListener('pointercancel', () => { cancelTabDrag(); });
+  window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
+  window.addEventListener('blur', () => { cancelTabDrag(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
+  }, true);
+})();
 
 // --- focus mode (layout pass L1, #1) -----------------------------------------
 // Only the terminal: main lifts this view over the tab strip and tells every
@@ -1134,99 +1173,256 @@ for (const id of ['focus-btn', 'focus-exit']) {
   document.getElementById(id).addEventListener('click', () => { if (focusBridge) focusBridge.toggle(); });
 }
 
+// A tab in a group, or a button on a rail. (The click a finished tab drag leaves
+// behind lands on the drop's common ancestor, not on a tab: nothing to swallow.)
 document.addEventListener('click', (e) => {
-  const button = e.target.closest('.zone-tabs button[data-module]');
+  const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
-  commitSelection(DL.selectModule(effectiveLayout(), button.dataset.module));
+  selectModule(button.dataset.module);
 });
 
 document.getElementById('side-hint').addEventListener('click', toggleAllZones);
 
-// S2: the first launch after the upgrade has no global layout yet; it starts
+// S2: the first launch after the upgrade has no stored layout at all; it starts
 // from this window's old per-window settings so nothing moves under anyone.
 function legacyLayout() {
   let legacy = {};
   try { legacy = { sideTab: localStorage.getItem('sideTab'), rosterWidth: localStorage.getItem('rosterWidth') }; } catch {}
-  return DL.fromLegacy(legacy, MODULE_IDS);
+  return DTm.fromV1(DL.fromLegacy(legacy, MODULE_IDS), MODULE_IDS);
 }
 
 async function loadLayout() {
-  globalLayout = legacyLayout();
+  globalLayout = DTm.defaultLayout(MODULE_IDS);
+  const seeded = localStorage.getItem('dockSelection2') !== null;
   selection = readSelection();
+  if (!seeded) saveSelection();            // seeded ONCE from L1's, so a later push never brings another window's choices (Dexter F4)
   renderLayout();                          // draw at once; the stored layout may take a moment
-  const bridge = window.harness && window.harness.layout;
+  const bridge = window.harness && window.harness.layoutTree;
   if (bridge) {
     bridge.onChange((l) => {
-      globalLayout = DL.normalizeLayout(l, MODULE_IDS);
+      layoutPushes += 1;
+      globalLayout = DTm.normalize(l, MODULE_IDS);
       if (!ownLayout) renderLayout();
     });
     let answer = null;
+    let v1Answer = null;
     try { answer = await bridge.get(); } catch { /* unreadable: keep */ }
-    // Only a MISSING file is a first launch to migrate and save. Unreadable or
-    // corrupt (antivirus holding it) keeps the old settings drawn and saves
-    // nothing, so the user's real layout is never overwritten (PR #82 Dexter F3,
-    // Miguel I1); their next real change saves as usual.
-    const what = window.dockZones.afterLayoutGet(answer);
-    if (what === 'migrate') bridge.set(globalLayout).catch(() => {});
-    else if (what === 'use') { globalLayout = DL.normalizeLayout(answer.layout, MODULE_IDS); renderLayout(); }
-  }
-  // This window's selection is seeded ONCE, from what it shows at load (S2), so
-  // a layout another window pushes later never brings that window's choices
-  // with it (PR #82 Dexter F4).
-  if (!selection) {
-    selection = DL.selectionOf(effectiveLayout());
-    saveSelection();
+    // The L1 key is read only when there is no tree yet, to migrate from it, and never written by this build.
+    if (answer && answer.status === 'missing' && window.harness.layout) {
+      try { v1Answer = await window.harness.layout.get(); } catch { /* unreadable: keep */ }
+    }
+    // Only a MISSING tree is a first launch to migrate and save. Unreadable or
+    // corrupt (antivirus holding it) draws the default and saves nothing, so the
+    // user's real layout is never overwritten (PR #82 Dexter F3, Miguel I1); their
+    // next real change saves as usual.
+    const what = window.dockTreeView.afterTreeGet(answer, v1Answer, { v1Bridge: !!window.harness.layout });
+    if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); renderLayout(); }
+    else if (what === 'migrate-v1') {
+      globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);
+      saveGlobalLayout(globalLayout);
+      renderLayout();
+    } else if (what === 'migrate-legacy') {
+      globalLayout = legacyLayout();
+      saveGlobalLayout(globalLayout);
+      renderLayout();
+    } else flashAttention({ urgent: false, title: 'Couldn\'t read the saved layout; showing the default' });
   }
 }
 
 // The host's word on this tab's own layout: in `hello` and on every change. A
 // change this window made that the host hasn't echoed yet wins, and is sent
-// again (PR #82 Dexter F8; dockZones.overrideOnHello is the tested rule).
+// again (PR #82 Dexter F8; dockZones.overrideOnHello is the tested rule). A host
+// started by an older window may hold an L1 layout: readAny migrates it.
 function applyLayoutOverride(incoming) {
   const r = window.dockZones.overrideOnHello(pendingOverride, incoming);
   if (r.settled) pendingOverride = null;
-  ownLayout = r.apply && typeof r.apply === 'object' ? DL.normalizeLayout(r.apply, MODULE_IDS) : null;
+  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readAny(r.apply, MODULE_IDS) : null;
   if (r.resend && pendingOverride) {
     try { ws.send(JSON.stringify({ type: 'layout-override', layout: pendingOverride.layout })); } catch { /* next hello */ }
   }
   renderLayout();
 }
 
-// verify/probe-dock-zones.js drives and measures the zones through named
+// verify/probe-dock-tree.js drives and measures the dock through named
 // actions, defined only on a page main opened with ?probe=1 (its probe driver
 // is running). Answers JSON text.
 if (new URLSearchParams(location.search).get('probe') === '1') {
   const rectOf = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+  // A pointer event as a mouse would make it, for the synthetic drags below: they run the same listeners a real one does.
+  const ptr = (type, x, y) => new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerId: 1, pointerType: 'mouse', isPrimary: true });
+  const overlayState = () => ({
+    zones: document.querySelectorAll('#dock-overlay .dz').length,
+    hot: document.querySelectorAll('#dock-overlay .dz.hot').length,
+    dragging: document.body.classList.contains('dock-dragging'),
+    ghost: !!document.querySelector('#dock-ghost'),         // made on the fly by the drag, so not a getElementById
+  });
   window.__dockProbe = (req) => {
     const a = (req && req.args) || {};
     switch (req && req.action) {
       case 'state': {
-        const zones = {};
-        for (const el of document.querySelectorAll('.zone')) {
-          zones[el.dataset.zone] = {
-            empty: el.hasAttribute('data-empty'), collapsed: el.hasAttribute('data-collapsed'), rect: rectOf(el),
-            tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
-            panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
-          };
-        }
+        // `focusTerm`: the keyboard goes to the terminal first, as a click on it would, so a real key reaches xterm's handler.
+        if (a.focusTerm === true) term.focus();
+        const groups = [...document.querySelectorAll('#dock > .dgroup')].map(el => ({
+          id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
+          tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
+          on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
+          panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
+          panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
+        }));
+        // The vault's field is tagged the first time it is asked for, so a later state shows whether it is the SAME node.
+        const vaultField = document.getElementById('vault-search');
+        if (vaultField && !vaultField.__probeTag) vaultField.__probeTag = Math.random().toString(36).slice(2);
+        const rails = [...document.querySelectorAll('#dock > .drail')].map(el => ({
+          dir: el.dataset.dir, rect: rectOf(el), modules: [...el.querySelectorAll('button')].map(b => b.dataset.module),
+        }));
+        const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
+          path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),
+        }));
         let proposed = null;
         try { proposed = fit.proposeDimensions() || null; } catch {}
         return JSON.stringify({
-          ok: true, layout: effectiveLayout(), own: ownLayout !== null, shown: [...shownModules], zones,
+          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, rails, gutters,
           term: { cols: term.cols, rows: term.rows }, fit: proposed, sent: lastSentResize,
-          termwrap: rectOf(document.getElementById('termwrap')),
+          termwrap: rectOf(document.getElementById('termwrap')), dock: rectOf(document.getElementById('dock')),
+          termParent: document.getElementById('termwrap').parentNode.id, pushes: layoutPushes,
           header: !!document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none',
-          innerHeight: window.innerHeight, focus: focusOn,
+          innerHeight: window.innerHeight, focus: focusOn, overlay: overlayState(), title: document.title,
+          vaultNode: vaultField ? vaultField.__probeTag : null,
+          // Plain <script> files that fail to export break only the real window, never a unit test.
+          exports: { fit: typeof (window.dockTree || {}).fit, applyBoxes: typeof (window.dockTreeView || {}).applyBoxes, zonesAt: typeof (window.dockDrag || {}).zonesAt },
         });
       }
-      case 'move': commitPlacement(DL.moveModule(effectiveLayout(), a.id, a.target), { justThisTab: a.justThisTab === true }); break;
-      case 'select': commitSelection(DL.selectModule(effectiveLayout(), a.id)); break;
-      case 'toggleAll': toggleAllZones(); break;
+      case 'boxes': return JSON.stringify({ ok: true, boxes: lastPlan ? lastPlan.boxes : [], splits: lastPlan ? lastPlan.splits : [] });
+      // A small window, without an OS window to resize: #dock is held at `width` x `height` (either may be left
+      // out, and none puts it back to filling its row). The tree is fitted to it exactly as to a real window.
+      case 'squeeze': {
+        const dock = document.getElementById('dock');
+        dock.style.flex = a.width ? 'none' : '';
+        dock.style.width = a.width ? `${a.width}px` : '';
+        dock.style.height = a.height ? `${a.height}px` : '';
+        dock.style.alignSelf = a.height ? 'flex-start' : '';
+        renderLayout();
+        break;
+      }
+      // The placement, read or replaced as a whole (`layout`: anything; it is normalized).
+      case 'layout':
+        if (a.layout !== undefined) commitPlacement(a.layout, { justThisTab: a.justThisTab === true });
+        return JSON.stringify({ ok: true, layout: placementLayout() });
+      case 'dock': commitPlacement(DTm.dock(placementLayout(), a.id, a.target), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      case 'hide': commitPlacement(DTm.hide(placementLayout(), a.id), { justThisTab: a.justThisTab === true }); break;
+      case 'show': commitPlacement(DTm.show(placementLayout(), a.id), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      // Kept for the other probes (git, vault reconnect), which move a module to an edge or hide it by name.
+      case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(placementLayout(), a.id) : DTm.dock(placementLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      case 'select': selectModule(a.id); break;
+      case 'foldAll': case 'toggleAll': toggleAllZones(); break;
       case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
+      // A tab dragged to `to` ({ x, y } relative to #dock) by synthetic pointer events: down on the tab, two moves,
+      // then what the overlay shows MID-drag, then the release (or Escape when `escape`).
+      case 'drag': {
+        const btn = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!btn) return JSON.stringify({ ok: false, error: 'no such tab' });
+        const from = btn.getBoundingClientRect();
+        const d = document.getElementById('dock').getBoundingClientRect();
+        const x0 = from.left + from.width / 2;
+        const y0 = from.top + from.height / 2;
+        const x1 = d.left + a.to.x;
+        const y1 = d.top + a.to.y;
+        btn.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + 8, y0 + 8));
+        window.dispatchEvent(ptr('pointermove', x1, y1));
+        const during = overlayState();
+        const draws0 = tabDragDraws;
+        for (let k = 0; k < 3; k++) window.dispatchEvent(ptr('pointermove', x1, y1));   // the pointer has not moved to another zone
+        during.idleRedraws = tabDragDraws - draws0;
+        if (a.escape) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        else window.dispatchEvent(ptr('pointerup', x1, y1));
+        window.dispatchEvent(ptr('pointerup', x1, y1));       // a no-op when the drag already ended: nothing stays pressed
+        return JSON.stringify({ ok: true, during, after: overlayState() });
+      }
+      // A press and release on a tab without moving: it must select, not drag.
+      case 'tabClick': {
+        const btn = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!btn) return JSON.stringify({ ok: false, error: 'no such tab' });
+        const r = btn.getBoundingClientRect();
+        btn.dispatchEvent(ptr('pointerdown', r.left + 3, r.top + 3));
+        window.dispatchEvent(ptr('pointerup', r.left + 3, r.top + 3));
+        btn.click();
+        return JSON.stringify({ ok: true, after: overlayState() });
+      }
+      // A divider dragged by `delta` px (synthetic pointer events on the bar), in two steps; `hold` leaves the bar pressed.
+      case 'gutter': {
+        const g = [...document.querySelectorAll('#dock > .dgutter')].find(el => el.dataset.path === String(a.path) && Number(el.dataset.i) === a.i);
+        if (!g) return JSON.stringify({ ok: false, error: 'no such divider' });
+        const r = g.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const dx = g.dataset.dir === 'row' ? a.delta : 0;
+        const dy = g.dataset.dir === 'col' ? a.delta : 0;
+        g.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + dx / 2, y0 + dy / 2));
+        window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
+        window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
+        return JSON.stringify({ ok: true });
+      }
+      // PR #100 Miguel I2: a drag whose release never comes (no pointerup is sent). `kind` is 'tab' (`id`) or
+      // 'gutter' (`path`, `i`, `delta`); `how` is 'nobutton' (a move arrives with no button down) or 'blur'.
+      case 'abortedDrag': {
+        const gut = a.kind === 'gutter';
+        const el = gut
+          ? [...document.querySelectorAll('#dock > .dgutter')].find(e2 => e2.dataset.path === String(a.path) && Number(e2.dataset.i) === a.i)
+          : document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        const r = el.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const step = gut ? (el.dataset.dir === 'row' ? [a.delta, 0] : [0, a.delta]) : [30, 30];
+        const snap = () => ({ ...overlayState(), divider: dividerDrag !== null, drawn: dragLayout !== null });
+        el.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + step[0] / 2, y0 + step[1] / 2));
+        window.dispatchEvent(ptr('pointermove', x0 + step[0], y0 + step[1]));
+        const during = snap();
+        if (a.how === 'blur') window.dispatchEvent(new Event('blur'));
+        else window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x0 + step[0], clientY: y0 + step[1], button: 0, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        return JSON.stringify({ ok: true, during, after: snap() });
+      }
+      // PR #100 Dexter F6: a divider is pressed and moved, ANOTHER window's layout arrives (`pushed`, the same
+      // path as the main-process push), then the divider is released.
+      case 'gutterRace': {
+        const g = [...document.querySelectorAll('#dock > .dgutter')].find(el => el.dataset.path === String(a.path) && Number(el.dataset.i) === a.i);
+        if (!g) return JSON.stringify({ ok: false, error: 'no such divider' });
+        const r = g.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const dx = g.dataset.dir === 'row' ? a.delta : 0;
+        const dy = g.dataset.dir === 'col' ? a.delta : 0;
+        g.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
+        globalLayout = DTm.normalize(a.pushed, MODULE_IDS);
+        window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
+        return JSON.stringify({ ok: true });
+      }
       // The menus, opened as a click would, so a screenshot can look at them.
       case 'openMenu':
         if (a.which === 'move') openMoveMenu(String(a.id), 300, 200); else openLayoutMenu();
-        return JSON.stringify({ ok: true, items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })) });
+        return JSON.stringify({ ok: true,
+          items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })),
+          rows: [...layoutMenu.querySelectorAll('label')].map((l) => {
+            const input = l.querySelector('input');
+            return { text: l.textContent, id: (input && input.dataset.module) || null, checked: !!(input && input.checked) };
+          }) });
+      // A panel's check in the open Window menu, clicked as a pointer would.
+      case 'menuTick': {
+        const box = layoutMenu.querySelector(`input[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!box) return JSON.stringify({ ok: false, error: 'no such row' });
+        box.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'menuButton': {
+        const b = [...layoutMenu.querySelectorAll('button')].find(x => x.textContent === a.text);
+        if (!b) return JSON.stringify({ ok: false, error: 'no such button' });
+        b.click();
+        return JSON.stringify({ ok: true });
+      }
       case 'closeMenu': closeLayoutMenu(); break;
       // Layout pass L3 (verify/probe-git-tree.js): read the Git panel, hover a spoke, pin and jump.
       case 'gitState': {
@@ -1443,21 +1639,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         fire(cell, 'drop');
         return JSON.stringify({ ok: true, fileDropOverlayShown: overlay });
       }
-      // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
-      // dragged button is gone and no dragend will ever come; the drag must
-      // already be over when the drop returns.
-      case 'dragDrop': {
-        const btn = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
-        const strip = dropStrips.find(s => s.dataset.target === a.target);
-        if (!btn || !strip) return JSON.stringify({ ok: false, error: 'no such tab or strip' });
-        const dt = new DataTransfer();
-        btn.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        const during = document.body.classList.contains('dock-dragging');
-        strip.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        strip.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        return JSON.stringify({ ok: true, during, sourceGone: !btn.isConnected, dragging: draggingModule,
-          stripsUp: document.body.classList.contains('dock-dragging') });
-      }
       // PR #82 Dexter F2 / Miguel B1: half a secret typed, then every kind of
       // passive redraw. Focus must still be in the secret field after each.
       case 'secretRedraw': return new Promise((resolve) => {
@@ -1598,10 +1779,9 @@ window.addEventListener('DOMContentLoaded', () => {
   const forced = new URLSearchParams(location.search).get('tab');
   loadLayout().then(() => {
     if (!forced || !isKnownTab(forced)) return;
-    const l = effectiveLayout();
-    if (DL.ZONES.some(z => l.active[z] === forced)) return;
-    const pinned = DL.selectModule(l, forced);
-    selection = { active: pinned.active, restore: pinned.restore };
+    const l = placementLayout();
+    if (!DTm.groupOf(l, forced)) return;      // a hidden module has no group to show in
+    selection = DTm.selectTab(selection, l, forced);
     renderLayout();
   });
 
@@ -3350,43 +3530,77 @@ function renderProcesses(running) {
   }).join('');
 }
 
-// --- zone sizes (layout pass L1) ---------------------------------------------
-// Every zone resizes from its inner edge (the old roster grip, for all four).
-// The SIZE POLICY lives in app/dock-layout.js (minimums, the terminal's room,
-// shrinking with the window) and the portrait size follows the Agents zone in
-// app/dock-zones-display.js; nothing here decides either.
+// --- dividers (dockable panels D1) -------------------------------------------
+// Every bar between two cells resizes them. The SIZE POLICY lives in
+// app/dock-tree.js (minimums, the terminal's room, shrinking with the window) and
+// what a drag asks for in app/dock-tree-display.js (dragSizes / sizesAfterDrag);
+// nothing here decides either.
 //
-// While a grip is dragged the layout is DRAWN (dragLayout) but not saved; the
-// one write happens on release. A store write per mousemove frame is what let
-// the old width ratchet run frame by frame (Miguel, A18).
-(function initZoneGrips() {
-  let dragging = null;     // { zone, grip, el }
-  document.getElementById('body').addEventListener('mousedown', (e) => {
-    const grip = e.target.closest('.zone-grip');
-    if (!grip) return;
-    const el = grip.closest('.zone');
-    dragging = { zone: el.dataset.zone, grip, el };
-    grip.classList.add('dragging');
+// While a divider is dragged the layout is DRAWN (dragLayout) but not saved; the
+// one write happens on release. A store write per move frame is what let the old
+// width ratchet run frame by frame (L1, Miguel A18).
+let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter, sizes }
+(function initDividers() {
+  const nodeAt = (layout, path) => path.reduce((n, k) => (n && n.kids ? n.kids[k] : null), layout.root);
+  const splitAt = (path) => (lastPlan ? lastPlan.splits.find(s => s.path.join('.') === path.join('.')) : null);
+
+  document.getElementById('dock').addEventListener('pointerdown', (e) => {
+    const g = e.target.closest && e.target.closest('.dgutter');
+    if (!g || e.button !== 0) return;
+    const path = g.dataset.path === '' ? [] : g.dataset.path.split('.').map(Number);
+    const base = placementLayout();
+    const split = splitAt(path);
+    const n = nodeAt(base, path);
+    if (!split || !n) return;
+    dividerDrag = { path, i: Number(g.dataset.i), dir: g.dataset.dir, start: g.dataset.dir === 'row' ? e.clientX : e.clientY, base, split, node: n, gutter: g, pointerId: e.pointerId };
+    g.classList.add('dragging');
+    // As the tab drag does (PR #100 Miguel I2): capture, and a drag that lost its release ends itself.
+    try { g.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
     e.preventDefault();
   });
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    // Measured from the zone's own anchored edge, not the window's: the
-    // diagnostics pane can sit between the right zone and the window edge.
-    const px = window.dockZones.dragSize(dragging.zone, { x: e.clientX, y: e.clientY },
-      dragging.el.getBoundingClientRect());
-    if (px === null) return;
-    dragLayout = DL.setSize(dragLayout || effectiveLayout(), dragging.zone, px);
+  // A drag the system took away, or whose release never came, is not a choice: drop it and draw what is saved.
+  function cancelDividerDrag() {
+    if (!dividerDrag) return;
+    const d = dividerDrag;
+    d.gutter.classList.remove('dragging');
+    try { d.gutter.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
+    dividerDrag = null;
+    dragLayout = null;
+    renderLayout();
+  }
+  window.addEventListener('pointermove', (e) => {
+    if (!dividerDrag) return;
+    if (e.buttons === 0) { cancelDividerDrag(); return; }
+    const d = dividerDrag;
+    const delta = (d.dir === 'row' ? e.clientX : e.clientY) - d.start;
+    const sizes = window.dockTreeView.sizesAfterDrag(d.node, d.split, d.i, delta);
+    d.sizes = sizes;
+    if (!sizes) {
+      // Nothing to ask for (back at the start, or against a minimum): draw what is saved, store nothing.
+      if (dragLayout) { dragLayout = null; renderLayout(); }
+      return;
+    }
+    dragLayout = DTm.setSplitSizes(d.base, d.path, sizes);
     renderLayout();
   });
-  window.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging.grip.classList.remove('dragging');
-    dragging = null;
-    const l = dragLayout;
+  window.addEventListener('pointerup', () => {
+    if (!dividerDrag) return;
+    const d = dividerDrag;
+    d.gutter.classList.remove('dragging');
+    try { d.gutter.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
+    dividerDrag = null;
+    const moved = dragLayout !== null;
     dragLayout = null;
-    if (l) commitPlacement(l);     // the one real choice, saved once
+    // Applied to the placement as it is NOW, not as it was at pointerdown: another window may have changed it
+    // meanwhile, and saving the old snapshot back would undo that (PR #100 Dexter F6). If the split isn't the
+    // one that was dragged any more, the drag is dropped.
+    const rebased = moved ? window.dockTreeView.rebaseDrag(committedLayout(), { path: d.path, i: d.i, node: d.node, sizes: d.sizes }) : null;
+    if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), d.path, rebased));     // the one real choice, saved once
+    else renderLayout();
   });
+  window.addEventListener('pointercancel', cancelDividerDrag);
+  window.addEventListener('lostpointercapture', cancelDividerDrag);   // after a normal release the drag is already over
+  window.addEventListener('blur', cancelDividerDrag);
 })();
 
 // The window changing size re-fits the zones, never saving: the stored sizes
@@ -3401,6 +3615,10 @@ window.addEventListener('resize', () => {
     renderLayout();
   });
 });
+// The area can change without the window resizing: the header wrapping onto a second line as its fields
+// fill in, the diagnostics pane opening. The boxes are absolute, so nothing else would re-fit them (the
+// probe found the bottom group 5 px past the area at launch). It goes through the same coalesced path.
+new ResizeObserver(() => window.dispatchEvent(new Event('resize'))).observe(document.getElementById('dock'));
 
 // --- attention --------------------------------------------------------------
 // A visible cue in the window as well as the OS toast, so the reason is still
@@ -4964,6 +5182,7 @@ function connect() {
 
   ws.onclose = () => {
     dot.classList.remove('on');
+    cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintOccupancyBanner(); reportTabStatus(); }
     // Detach is normal, not fatal — the host keeps the session alive, so just
@@ -4978,7 +5197,7 @@ function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
 }
 
-// The last size the host was sent: verify/probe-dock-zones.js compares it with
+// The last size the host was sent: verify/probe-dock-tree.js compares it with
 // xterm's own and with what fits the container after every layout change.
 let lastSentResize = null;
 function sendResize() {
@@ -5016,8 +5235,6 @@ term.onBinary((data) => send(data));
 const dropZone = document.getElementById('app') || document.body;
 
 dropZone.addEventListener('dragover', (e) => {
-  // A module tab being dragged to another zone is not a file (layout pass L1).
-  if (draggingModule) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'copy';
   dropZone.classList.add('dropping');
@@ -5029,7 +5246,6 @@ for (const leave of ['dragleave', 'dragend']) {
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropZone.classList.remove('dropping');
-  if (draggingModule) return;
 
   // Dropping ONTO an agent's face is a portrait upload, not a path-into-the-
   // prompt drop -- checked first and returned early, because `.face` sits
