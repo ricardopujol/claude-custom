@@ -14,6 +14,16 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+
+// A diagnostic is pinned by what a kill needs (logged once, under the [occupancy] prefix, about this topic,
+// ending in the reason), not by its prose: rewording the sentence between them breaks nothing.
+function loggedOnce(logs, topic, reason) {
+  assert.strictEqual(logs.length, 1, JSON.stringify(logs));
+  assert.ok(logs[0].startsWith('[occupancy] '), logs[0]);
+  assert.ok(logs[0].includes(topic), `${logs[0]} should be about ${topic}`);
+  assert.ok(logs[0].endsWith(reason), `${logs[0]} should end with its reason ${JSON.stringify(reason)}`);
+  if (reason === '') assert.ok(!/undefined|null|\[object|NaN/.test(logs[0]), `no reason must not print a placeholder: ${logs[0]}`);
+}
 const fs = require('fs');
 const path = require('path');
 const fc = require('fast-check');
@@ -709,8 +719,6 @@ test('PROPERTY: a plain subagent\'s touches are exactly the calls since its last
 
 // --- Mortimer, release PR #101 gate (backlog #58): the malformed-input, offset, cap, shown-claim and timer paths -----
 
-const until = async (cond) => { for (let i = 0; i < 400 && !cond(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(cond(), 'timed out waiting'); };
-const settleT = () => new Promise(resolve => setTimeout(resolve, 250)); // real fs work finishes on the thread pool, not the immediate queue
 const realFsp = fs.promises;
 const mk = (over = {}) => JSON.stringify({
   type: 'assistant', agentId: 'a1', timestamp: iso(T0),
@@ -814,7 +822,7 @@ for (const level of ['base', 'sub']) {
       assert.deepStrictEqual(out.removed, [], 'absence is not "finished"');
       assert.ok(r.claim('a1'));
       const target = level === 'base' ? path.join(r.projects, projectDirName(DEV)) : path.join(r.projects, projectDirName(DEV), 's1', 'subagents');
-      assert.deepStrictEqual(r.logs, [`[occupancy] ${target} can't be listed: ${text}`], String(text));
+      loggedOnce(r.logs, target, text);
     }
   });
 
@@ -898,7 +906,7 @@ test('a transcript that can\'t be read is said once, and the others are still cl
   await r.scanner.pass();
   await r.scanner.pass();
   assert.deepStrictEqual(r.claims().map(c => c.agentId), ['ok']);
-  assert.deepStrictEqual(r.logs, [`[occupancy] ${r.file('bad')} can't be read: EIO: read error`]);
+  loggedOnce(r.logs, r.file('bad'), 'EIO: read error');
 });
 
 // --- offsets: what is read, from where, and when it is not read at all -----------------------------------
@@ -1022,7 +1030,7 @@ test('the worktree list is refreshed only when it says it is stale, and a failin
   bad.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
   await bad.scanner.pass();
   await bad.scanner.pass();
-  assert.deepStrictEqual(bad.logs, ['[occupancy] could not refresh the worktree list; using the last one: git is gone']);
+  loggedOnce(bad.logs, 'worktree list', 'git is gone');
 });
 
 test('a pass that fails is logged and resolves to nothing, and the next pass runs', async () => {
@@ -1031,7 +1039,7 @@ test('a pass that fails is logged and resolves to nothing, and the next pass run
   r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
   const out = await r.scanner.pass();
   assert.deepStrictEqual(out, { claimed: [], removed: [] });
-  assert.deepStrictEqual(r.logs, ['[occupancy] transcript pass failed: git blew up']);
+  loggedOnce(r.logs, 'pass', 'git blew up');
   broken = false;
   assert.deepStrictEqual((await r.scanner.pass()).claimed, ['a1']);
 });
@@ -1042,7 +1050,7 @@ test('a claim the writer refuses is logged with its reason and not counted as cl
     r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
     const out = await r.scanner.pass();
     assert.deepStrictEqual(out.claimed, []);
-    assert.deepStrictEqual(r.logs, [`[occupancy] transcript claim not written: ${tail}`], JSON.stringify(answer));
+    loggedOnce(r.logs, 'claim', tail);
   }
 });
 
@@ -1173,7 +1181,7 @@ test('start runs a pass at once and arms one tick of passMs; the tick runs a pas
   const { r, timers } = timed();
   r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 }));
   r.scanner.start();
-  await until(() => r.claims().length > 0);
+  await r.scanner.pass();         // joins the pass start() began: pass() hands back the one in flight
   assert.deepStrictEqual(r.claims().map(c => c.agentId), ['a1'], 'the first pass ran with no tick');
   assert.strictEqual(timers.length, 1);
   assert.strictEqual(timers[0].ms, 5000);
@@ -1186,18 +1194,20 @@ test('start runs a pass at once and arms one tick of passMs; the tick runs a pas
 });
 
 test('close clears the armed tick once, releases the claims it owns once, and a closed scanner never starts or re-arms', async () => {
-  const { r, timers, cleared, removes } = timed();
+  let began = 0;      // run() asks ownStartedAt first, synchronously: a count of the passes begun
+  const { r, timers, cleared, removes } = timed({ ownStartedAt: async () => { began += 1; return START; } });
   r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
   r.scanner.start();
-  await until(() => r.claims().length > 0);
+  await r.scanner.pass();
   assert.strictEqual(timers.length, 1);
   r.scanner.close();
   r.scanner.close();
   assert.deepStrictEqual(cleared, [timers[0]], 'cleared exactly once');
   assert.deepStrictEqual(removes, ['a1'], 'released exactly once');
   assert.deepStrictEqual(r.claims(), []);
+  const beganBefore = began;
   r.scanner.start();
-  await settleT();
+  assert.strictEqual(began, beganBefore, 'a closed scanner begins no pass');
   assert.strictEqual(timers.length, 1, 'a closed scanner does not start');
   assert.deepStrictEqual(r.claims(), []);
   await timers[0].fn();       // a tick that was already running when it closed
@@ -1214,10 +1224,12 @@ test('the default tick is a real setTimeout of passMs, unref\'d so it never hold
   const realSet = global.setTimeout;
   const made = [];
   const cleared = [];
+  let inflight;
   try {
     const r = rig({ passMs: 4321, setTimer: undefined, clearTimer: (t) => cleared.push(t) });
     global.setTimeout = (fn, ms) => { const t = { fn, ms, unrefs: 0, unref() { this.unrefs += 1; } }; made.push(t); return t; };
     r.scanner.start();
+    inflight = r.scanner.pass();
     assert.strictEqual(made.length, 1);
     assert.strictEqual(made[0].ms, 4321);
     assert.strictEqual(made[0].unrefs, 1);
@@ -1226,20 +1238,22 @@ test('the default tick is a real setTimeout of passMs, unref\'d so it never hold
   } finally {
     global.setTimeout = realSet;
   }
-  await settleT();
+  await inflight;     // the pass start() began finishes before the test's temp dirs go
 });
 
 test('the default tick copes with a handle that has no unref, or no handle at all', async () => {
   const realSet = global.setTimeout;
+  const inflight = [];
   try {
     for (const handle of [{}, null, undefined]) {
       const r = rig({ setTimer: undefined, clearTimer: () => {} });
       global.setTimeout = () => handle;
       assert.doesNotThrow(() => r.scanner.start(), String(handle));
+      inflight.push(r.scanner.pass());
       r.scanner.close();
     }
   } finally {
     global.setTimeout = realSet;
   }
-  await settleT();
+  await Promise.all(inflight);
 });

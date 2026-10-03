@@ -6,6 +6,16 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+
+// A diagnostic is pinned by what a kill needs (logged once, under the [occupancy] prefix, about this topic,
+// ending in the reason), not by its prose: rewording the sentence between them breaks nothing.
+function loggedOnce(logs, topic, reason) {
+  assert.strictEqual(logs.length, 1, JSON.stringify(logs));
+  assert.ok(logs[0].startsWith('[occupancy] '), logs[0]);
+  assert.ok(logs[0].includes(topic), `${logs[0]} should be about ${topic}`);
+  assert.ok(logs[0].endsWith(reason), `${logs[0]} should end with its reason ${JSON.stringify(reason)}`);
+  if (reason === '') assert.ok(!/undefined|null|\[object|NaN/.test(logs[0]), `no reason must not print a placeholder: ${logs[0]}`);
+}
 const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
@@ -392,7 +402,7 @@ test('a throwing onChange is logged with its message, and the next refresh still
   const r = rig({ onChange: () => { n += 1; throw new Error('ui exploded'); } });
   r.writer.write(record());
   await r.service.refresh();
-  assert.deepStrictEqual(r.logs, ['[occupancy] onChange threw: ui exploded']);
+  loggedOnce(r.logs, 'onChange', 'ui exploded');
   r.running = new Map();
   await r.service.refresh();
   assert.strictEqual(n, 2, 'the second change is still announced');
@@ -402,7 +412,7 @@ test('an onChange that throws something with no message is logged without crashi
   const r = rig({ onChange: () => { throw null; } }); // eslint-disable-line no-throw-literal
   r.writer.write(record());
   await r.service.refresh();
-  assert.deepStrictEqual(r.logs, ['[occupancy] onChange threw: ']);
+  loggedOnce(r.logs, 'onChange', '');
   assert.strictEqual(r.service.current().length, 1);
 });
 
@@ -410,11 +420,11 @@ test('a pass that throws is logged and the refresh still resolves; a non-Error t
   const r = rig({ now: () => { throw new Error('clock gone'); } });
   r.writer.write(record());
   await r.service.refresh();
-  assert.deepStrictEqual(r.logs, ['[occupancy] refresh failed: clock gone']);
+  loggedOnce(r.logs, 'refresh', 'clock gone');
   const r2 = rig({ now: () => { throw null; } }); // eslint-disable-line no-throw-literal
   r2.writer.write(record());
   await r2.service.refresh();
-  assert.deepStrictEqual(r2.logs, ['[occupancy] refresh failed: ']);
+  loggedOnce(r2.logs, 'refresh', '');
 });
 
 test('a refresh asked for while one runs schedules exactly one more pass, however many were asked', async () => {
@@ -494,12 +504,12 @@ test('a watch that throws is logged with its reason (an Error or not), and the t
   const r = rig({ watch: () => { throw new Error('no watch'); } });
   r.service.start();
   await settle();
-  assert.deepStrictEqual(r.logs, ['[occupancy] cannot watch the claim folder; the timer still checks: no watch']);
+  loggedOnce(r.logs, 'watch', 'no watch');
   assert.strictEqual(r.pending().length, 1);
   const r2 = rig({ watch: () => { throw null; } }); // eslint-disable-line no-throw-literal
   r2.service.start();
   await settle();
-  assert.deepStrictEqual(r2.logs, ['[occupancy] cannot watch the claim folder; the timer still checks: ']);
+  loggedOnce(r2.logs, 'watch', '');
 });
 
 test('close clears the armed timer through clearTimer exactly once, and closes the watcher', async () => {
