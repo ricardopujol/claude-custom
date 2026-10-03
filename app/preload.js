@@ -247,4 +247,16 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(layout); } catch (err) { console.error('[preload] layout-tree listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('layout-tree')),
   },
+  // The layout presets (dockable panels D3): a list of { name, layout }, install-wide. `get` answers
+  // { status, layout } with the list in `layout`. The page never writes the list: `op` sends what the user did
+  // ({ op: 'save' | 'rename' | 'delete', name, to?, layout?, replace? }) and main answers { ok: true, list } or
+  // { ok: false, reason }, null for a sender that isn't a tab view.
+  layoutPresets: {
+    get: () => ipcRenderer.invoke('layout-presets:get'),
+    op: (req) => ipcRenderer.invoke('layout-presets:op', req),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('layout-presets'), ipcRenderer.on('layout-presets',
+      (_e, list) => {
+        try { fn(list); } catch (err) { console.error('[preload] layout-presets listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('layout-presets')),
+  },
 });
