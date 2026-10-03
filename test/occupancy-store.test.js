@@ -79,6 +79,13 @@ test('a CHANGE is never throttled: a new worktree, or a new `also`, is written a
   assert.strictEqual(r.writer.write(record({ worktree: FEAT2, also: [FEAT, DEV] })).wrote, true);
 });
 
+test("the host's start time arriving after the first claim is a change too: written at once, not in 30 s", () => {
+  const r = rig();
+  assert.strictEqual(r.writer.write(record({ hostStartedAt: null })).wrote, true);
+  assert.strictEqual(r.writer.write(record({ hostStartedAt: '1000' })).wrote, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r.dir, 'ag1.json'), 'utf8')).hostStartedAt, '1000');
+});
+
 test('two agents are throttled independently', () => {
   const r = rig();
   r.writer.write(record({ agentId: 'a' }));

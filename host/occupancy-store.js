@@ -50,7 +50,8 @@ function createClaimWriter({ stateRoot, fsImpl = fs, now = Date.now, log = () =>
     try { parsed = record && typeof record === 'object' ? parseClaim(serializeClaim(record)) : null; } catch { parsed = null; }
     if (!parsed || !parsed.ok) return { ok: false, error: `not a claim: ${parsed ? parsed.reason : 'no record'}` };
     const name = claimFileName(record.agentId);
-    const key = `${record.worktree}|${record.also.join('|')}`;
+    // What a CHANGE is: where the agent is, and the host's proof (its start time can arrive after the first claim).
+    const key = `${record.worktree}|${record.also.join('|')}|${record.hostStartedAt}`;
     const prev = written.get(record.agentId);
     if (prev && prev.key === key && now() - prev.at < REWRITE_MS) return { ok: true, wrote: false };
 
