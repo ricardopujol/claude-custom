@@ -2202,6 +2202,16 @@ test('the probe may drive the background view actions, by name only (#34)', () =
   for (const a of ['bgState', 'bgStyle', 'bgMatch']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
+test('the probe may read and operate the wand, by name only (#51)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+test('the probe may focus a wand control and press keys on it, by name only (#51 I3)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['wandFocus', 'wandKey']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
 // Here, not in test/occupancy-wiring.test.js: that file reads sources as text, so it stays out of Stryker's
 // command, and a test outside the command must not be the only one that loads a mutated module.
 test('the probe may drive the occupancy page actions, by name only (#44 + #47)', () => {

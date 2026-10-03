@@ -6,6 +6,7 @@
  *   CLAUDE_CUSTOM_OPEN_PRS_FIXTURE   a file of `gh pr list` JSON stands in for gh (no network, no account)
  *   CLAUDE_CUSTOM_GIT_PROJECTS_DIR   the transcripts come from here, not ~/.claude/projects
  *   CLAUDE_CUSTOM_REVIEWS_DIR        the review reports come from here, not ~/.claude/reviews
+ *   CLAUDE_CUSTOM_CLAUDE_HOME        the wand finds skills under here, not ~/.claude (verify/probe-wand.js)
  *
  * They're read by the production host and main, so a seam that leaks in (a shell that exported one) must be
  * visible: announce() logs one line naming every active seam, and a fixture that can't be read or isn't gh's
@@ -14,7 +15,7 @@
 
 const nodeFs = require('fs');
 
-const SEAMS = ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR'];
+const SEAMS = ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME'];
 
 const val = (env, k) => (env && typeof env[k] === 'string' && env[k] !== '' ? env[k] : null);
 
@@ -23,6 +24,7 @@ function readSeams(env) {
     openPrsFixture: val(env, SEAMS[0]),
     projectsDir: val(env, SEAMS[1]),
     reviewsDir: val(env, SEAMS[2]),
+    claudeHome: val(env, SEAMS[3]),
     active: SEAMS.filter(k => val(env, k) !== null),
   };
 }
@@ -30,7 +32,7 @@ function readSeams(env) {
 /** Logs one line when any seam is set; answers whether it did. */
 function announce(seams, log) {
   if (!seams || !seams.active.length) return false;
-  log(`[seams] probe seams active: ${seams.active.join(', ')} -- the Git panel reads the probe's data, not gh / ~/.claude`);
+  log(`[seams] probe seams active: ${seams.active.join(', ')} -- the panels read the probe's data, not gh / ~/.claude`);
   return true;
 }
 
