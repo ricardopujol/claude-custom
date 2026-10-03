@@ -153,9 +153,20 @@ test('the query skips a process that has exited but is still listed (HasExited)'
   assert.ok(at('Where-Object { -not $_.HasExited }') < at('ForEach-Object'), 'and before the start time is read');
 });
 
+// The real query has a timeout of its own, and under the full suite's load powershell.exe can miss it: null,
+// "the OS couldn't be asked". That is not an answer about the process, so the REAL tests ask again (measured:
+// one null in a full run, 2026-10-03) and only judge a Map.
+async function asked(pids) {
+  for (let i = 0; i < 5; i++) {
+    const m = await startTimes(pids);
+    if (m instanceof Map) return m;
+  }
+  return null;
+}
+
 test('REAL powershell: this process is listed with a FILETIME, a pid nobody has is absent, and the filter keeps both answers apart', { skip: process.platform !== 'win32' }, async () => {
   const bogus = 2147483000;
-  const m = await startTimes([process.pid, bogus]);
+  const m = await asked([process.pid, bogus]);
   assert.ok(m instanceof Map, 'the query ran');
   assert.match(m.get(process.pid), /^\d+$/);
   assert.strictEqual(m.has(bogus), false);
@@ -175,10 +186,14 @@ test('REAL powershell: a killed process is no longer listed (the plain case; a c
     while (!/^\d+/.test(out.trim()) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
     const pid = Number(out.trim().split(/\s+/)[0]);
     assert.ok(Number.isInteger(pid) && pid > 0, `the child started (${out})`);
-    assert.strictEqual((await startTimes([pid])).has(pid), true, 'alive: listed');
+    const alive = await asked([pid]);
+    assert.ok(alive, 'the query ran (5 tries)');
+    assert.strictEqual(alive.has(pid), true, 'alive: listed');
     process.kill(pid, 'SIGKILL');
     await new Promise(r => setTimeout(r, 1500));
-    assert.strictEqual((await startTimes([pid])).has(pid), false, 'dead: not listed');
+    const dead = await asked([pid]);
+    assert.ok(dead, 'the query ran (5 tries)');
+    assert.strictEqual(dead.has(pid), false, 'dead: not listed');
   } finally {
     try { holder.stdin.write('\n'); } catch { /* gone */ }
     try { holder.kill(); } catch { /* gone */ }
