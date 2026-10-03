@@ -84,19 +84,24 @@ function zonesAt(boxes, viewport, point, { tabBar = TAB_BAR, exclude = null } = 
   const barPx = isNumber(tabBar) && tabBar >= 0 ? tabBar : TAB_BAR;
   const p = point && isNumber(point.x) && isNumber(point.y) ? point : null;
   const zones = rimZones(width, height);
+  let floatZone = null;
   if (p && contains({ x: 0, y: 0, width, height }, p)) {
     const list = Array.isArray(boxes) ? boxes : [];
     // Floats are drawn after the tree, bottom to top, so the LAST one under the pointer is the visible one. Only
     // "join as a tab" is on offer over it (the whole box); the float being dragged by a tab is no target.
     const float = [...list].reverse().find(b => hasRect(b) && b.kind === 'float' && b.id !== exclude && contains(b.rect, p));
-    if (float) zones.push({ rect: { ...float.rect }, target: { cell: float.id, side: 'center' } });
-    else {
+    if (float) {
+      floatZone = { rect: { ...float.rect }, target: { cell: float.id, side: 'center' } };
+      zones.push(floatZone);
+    } else {
       const under = list.find(b => isCell(b) && contains(b.rect, p));
       if (under) zones.push(...cellZones(under, barPx));
     }
   }
-  // The rim comes first in the list, so it wins over a cell's band.
-  const hot = p ? zones.find(z => contains(z.rect, p)) : null;
+  // The rim comes first in the list, so it wins over a cell's band. A float under the pointer wins over the
+  // rim too (PR #102 Dexter 7): you drop on what you see on top, and a float pushed flush against an edge
+  // would otherwise be un-joinable along its outermost 14 px.
+  const hot = !p ? null : (floatZone || zones.find(z => contains(z.rect, p)));
   return { zones: zones.map(z => ({ ...z, hot: z === hot })), target: hot ? hot.target : null };
 }
 

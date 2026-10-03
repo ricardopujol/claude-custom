@@ -177,10 +177,21 @@ test('the topmost float wins where two overlap (the last drawn)', () => {
   assert.deepEqual(at(320, 200, FLOATS).target, { cell: 'f1', side: 'center' });
 });
 
-test('a float hides the cell under it, the window\'s rim still wins over it', () => {
+test('a float hides the cell under it, and wins over the window\'s rim: you drop on what you see on top (PR #102 Dexter 7)', () => {
   const edge = [...BOXES, { kind: 'float', id: 'f', tabs: ['git'], active: 'git', rect: R(0, 0, 200, 200) }];
   assert.deepEqual(at(100, 100, edge).target, { cell: 'f', side: 'center' }, 'over the terminal\'s top-left band, the float');
-  assert.deepEqual(at(100, 5, edge).target, { edge: 'top' }, 'the rim is first in the list');
+  assert.deepEqual(at(100, 5, edge).target, { cell: 'f', side: 'center' }, 'the float\'s top rows are the float, not the top rim');
+  assert.deepEqual(at(5, 100, edge).target, { cell: 'f', side: 'center' }, 'nor the left rim');
+  assert.deepEqual(at(300, 5, edge).target, { edge: 'top' }, 'beside the float the rim is still the rim');
+  const r = at(100, 5, edge);
+  assert.equal(hotOf(r).length, 1, 'only the float is lit under the pointer');
+  assert.deepEqual(hotOf(r)[0].target, { cell: 'f', side: 'center' });
+});
+
+test('a float flush against the right edge: a pointer 5 px inside it joins it, it does not dock to the rim (PR #102 Dexter 7)', () => {
+  const flush = [...BOXES, { kind: 'float', id: 'f', tabs: ['git'], active: 'git', rect: R(680, 100, 320, 260) }];
+  assert.deepEqual(at(995, 140, flush).target, { cell: 'f', side: 'center' });
+  assert.deepEqual(at(995, 450, flush).target, { edge: 'right' }, 'below the float the rim is the rim');
 });
 
 test('the float being dragged by a tab is not a target: what is under it decides', () => {
