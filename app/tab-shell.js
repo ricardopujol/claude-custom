@@ -117,12 +117,13 @@ const noWindowText = (h) => `That session is in another claude-custom (pid ${h.p
 
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
-/** What a renderer may say about itself, cut down to the four known fields. */
+/** What a renderer may say about itself, cut down to the five known fields. */
 function sanitizeStatus(s) {
   const o = s && typeof s === 'object' ? s : {};
   return {
     working: o.working === true,
     needsInput: o.needsInput === true,
+    finished: o.finished === true,
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
   };
@@ -675,9 +676,13 @@ function createShell(deps) {
     return { ok: true, path: made.path };
   }
 
-  /** The strip's branch form opens (`+` -> *New branch…*). */
+  /**
+   * The strip's branch form opens (`+` -> *New branch…*, Ctrl+T). The menu's
+   * greyed-out rule (plusMenu().create) is this one: a key can't open what the
+   * menu shows disabled.
+   */
   function openCreate() {
-    if (mode !== 'tabs' || (create && create.phase === 'running')) return false;
+    if (!plusMenu().create.enabled) return false;
     create = { phase: 'input' };
     publish();
     return true;
@@ -723,12 +728,26 @@ function createShell(deps) {
     return { create: { enabled: why === null, why }, reopen: mode === 'tabs' ? reopenable() : [] };
   }
 
+  /**
+   * The window came back to the front: the selected tab is looked at now, so
+   * whatever it was holding for you (a finished turn, an urgent need) is seen. A
+   * look is selected AND focused, whichever arrives last (PR #90 Dexter F1).
+   */
+  function looked() {
+    const tab = tabByKey(selectedKey);
+    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished)) return false;
+    tab.status = tabStatusLib.afterSelected(tab.status);
+    if (tab.view) views.send(tab, 'tab-selected');
+    publish();
+    return true;
+  }
+
   /** A renderer's own status. Kept as-is except: you're looking at it. */
   function report(sender, status) {
     const tab = tabForSender(sender);
     if (!tab) return false;
     let next = sanitizeStatus(status);
-    if (next.needsInput && tab.key === selectedKey && ui.isFocused()) {
+    if ((next.needsInput || next.finished) && tab.key === selectedKey && ui.isFocused()) {
       next = tabStatusLib.afterSelected(next);
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
@@ -835,7 +854,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, menuState, override,
-    createWorktree, openCreate, cancelCreate, plusMenu, reopen,
+    createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,
     // #40: something the model reads changed outside the shell (a tab's mark).
@@ -899,6 +918,9 @@ function shortcutFor(input) {
   if (!input || typeof input !== 'object' || input.type !== 'keyDown' || typeof input.key !== 'string') return null;
   const key = input.key.toLowerCase();
   if (key === 'f12') return 'devtools';
+  // #35: a new tab is a new worktree. Ctrl+Alt+T, not Ctrl+T: the CLI owns that
+  // one (it toggles its task list), and every key not named here reaches it.
+  if (key === 't' && input.control && input.alt && !input.shift) return 'new-branch';
   if (!input.control || input.alt) return null;
   if (key === 'tab') return input.shift ? 'prev-tab' : 'next-tab';
   if (key === 'i' && input.shift) return 'devtools';
@@ -908,6 +930,17 @@ function shortcutFor(input) {
   // tab view and the key never reaches the pty.
   if (key === 'f' && input.shift) return 'focus-mode';
   return null;
+}
+
+/**
+ * Will the shortcut `action` do anything right now? Main swallows a key only
+ * when it will: New branch… on a greyed-out `+` item (a single-folder window, no
+ * worktree scripts, a creation running) leaves its key to the terminal, so a key
+ * the app can't use isn't taken from the CLI for nothing (PR #90 Dexter F2).
+ */
+function shortcutWillAct(action, shell) {
+  if (action === 'new-branch') return shell.plusMenu().create.enabled === true;
+  return true;
 }
 
 // --- the probe driver's command handling ----------------------------------------
@@ -975,6 +1008,8 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
         return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
+      // #31: what the window's own `focus` event does, without an OS to hand over focus.
+      case 'windowFocus': return await api.windowFocus();
       case 'view':
         // Layout pass L1: one of the selected view's NAMED probe actions
         // (renderer.js window.__dockProbe), never a string of code.
@@ -1024,5 +1059,5 @@ function probeLineReader(maxBytes) {
 
 module.exports = {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, focusStep, menuText, NO_PORT_ERROR,
+  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
 };

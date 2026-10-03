@@ -29,7 +29,7 @@ const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
-const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -410,6 +410,7 @@ function createWindow() {
     sendFocus();
     win.flashFrame(false);
     setCue(false);            // looked at: the cue has done its job
+    tabShell.looked();        // ...and so has the selected tab's pulse (#31)
     focusSelected();
   });
   win.on('blur', () => { focused = false; sendFocus(); });
@@ -572,13 +573,26 @@ function applySelection(snapshot) {
   lastFocusedView = step.lastFocused;
 }
 
+// Ctrl+Alt+T. A form that is ALREADY open is not a transition, so neither
+// applySelection nor the strip page would hand it the keyboard: do it here, or
+// the branch name typed next goes into the terminal (PR #90 Dexter F3).
+function openBranchForm() {
+  const wasOpen = !!tabShell.snapshot().create;
+  if (!tabShell.openCreate()) return false;
+  if (wasOpen && win && !win.isDestroyed()) {
+    win.webContents.focus();
+    win.webContents.executeJavaScript("document.getElementById('create-branch').focus()").catch(() => {});
+  }
+  return true;
+}
+
 // Keyboard shortcuts, with no menu bar to carry them. Registered on the strip
 // AND on every tab view (focus is usually in a view). preventDefault ONLY for a
 // key shortcutFor names: everything else reaches xterm untouched.
 function registerShortcuts(wc) {
   wc.on('before-input-event', (event, input) => {
     const action = shortcutFor(input);
-    if (!action) return;
+    if (!action || !shortcutWillAct(action, tabShell)) return;
     event.preventDefault();
     // A held key is swallowed (it must not type Tab into the terminal) but acts
     // once: repeating would spin through tabs, starting a host on each.
@@ -586,6 +600,7 @@ function registerShortcuts(wc) {
     if (action === 'next-tab') tabShell.next();
     else if (action === 'prev-tab') tabShell.previous();
     else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
+    else if (action === 'new-branch') openBranchForm();
     else if (action === 'focus-mode') setFocusMode(!focusMode);
     else if (action === 'devtools') {
       const v = selectedView();
@@ -1109,7 +1124,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
@@ -1162,6 +1177,8 @@ function startProbeDriver(port) {
       };
     },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
+    // The window's own `focus` handler, run as the OS would.
+    async windowFocus() { win.emit('focus'); return { ok: true, osFocused: win.isFocused() }; },
     async select(label) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };

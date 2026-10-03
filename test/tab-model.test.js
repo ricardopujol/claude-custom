@@ -68,6 +68,31 @@ test('working / needsInput follow the status; a null status is false / null ever
   }
 });
 
+test('#31 pulse: needs outranks done, a tab with neither or no status has none', () => {
+  const k = keyOf(A.path);
+  const pulse = status => strip([DEV, A], { [k]: { started: true, status } })[1].pulse;
+  assert.strictEqual(pulse({ needsInput: true }), 'needs');
+  assert.strictEqual(pulse({ finished: true }), 'done');
+  assert.strictEqual(pulse({ needsInput: true, finished: true }), 'needs');
+  assert.strictEqual(pulse({ working: true }), null);
+  assert.strictEqual(pulse({ needsInput: 1, finished: 'yes' }), null, 'only a real true counts');
+  assert.strictEqual(pulse(null), null);
+  assert.strictEqual(strip([DEV, A])[1].pulse, null, 'no runtime at all');
+});
+
+test('#31 PROPERTY: the selected tab never pulses, whatever its status says', () => {
+  fc.assert(fc.property(fc.boolean(), fc.boolean(), (needsInput, finished) => {
+    const rt = { [keyOf(DEV.path)]: { status: { needsInput, finished } }, [keyOf(A.path)]: { status: { needsInput, finished } } };
+    for (const sel of [keyOf(DEV.path), keyOf(A.path)]) {
+      const e = m.stripModel({ tabs: [DEV, A] }, rt, sel, { keyOf });
+      for (const x of e) {
+        if (x.selected) assert.strictEqual(x.pulse, null);
+        else assert.strictEqual(x.pulse, needsInput ? 'needs' : finished ? 'done' : null);
+      }
+    }
+  }));
+});
+
 test('phase and error come from the reducer', () => {
   const e = strip([DEV, { ...A, phase: 'remove-failed', error: 'busy' }])[1];
   assert.strictEqual(e.phase, 'remove-failed');

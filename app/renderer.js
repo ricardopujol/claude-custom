@@ -148,14 +148,23 @@ document.getElementById('lock-go-to').addEventListener('click', async () => {
 
 // What this tab tells the shell about itself (PR 2): working, needs input, lock,
 // health. tab-status.js decides; this only sends it when it changed.
-let tabPendingUrgent = false;
+// What waits for a look (#31): an urgent need, a finished turn. tab-status.js decides the transitions.
+let tabPending = { urgent: false, finished: false };
+let wasWorking = false;
 let lastReportedTabStatus = null;
+function pend(event) {
+  if (window.tabStatus) tabPending = window.tabStatus.pendingAfter(tabPending, event);
+}
 function reportTabStatus() {
   if (!(window.harness && window.harness.tabStatus && window.tabStatus)) return;
   const anyWorking = typeof roster !== 'undefined' && [...roster.values()].some(r => r && r.state === 'working');
+  // A turn STARTING ends a finished one; a session still working when it finishes keeps it.
+  if (anyWorking && !wasWorking) pend('working');
+  wasWorking = anyWorking;
   const status = window.tabStatus.tabStatus({
     mainMood: anyWorking ? 'working' : null,
-    pendingUrgent: tabPendingUrgent,
+    pendingUrgent: tabPending.urgent,
+    pendingFinished: tabPending.finished,
     lock: tabLock,
     health: tabHealth,
   }, { healthMarker: worktreeStatus.healthMarker });
@@ -165,7 +174,7 @@ function reportTabStatus() {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { tabPendingUrgent = false; reportTabStatus(); });
+  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.
@@ -3865,8 +3874,10 @@ function handleControl(msg) {
     // case the feature was built for: watching the terminal while a long task
     // runs and wanting to be told when it ends.
     const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
-    // An urgent message is waiting for you until this tab is looked at.
-    if (msg.urgent === true) { tabPendingUrgent = true; reportTabStatus(); }
+    // An urgent message waits for you until this tab is looked at; so does a finished one, which
+    // also answers an urgent one still pending (#31). Anything else marks nothing.
+    if (msg.urgent === true) { pend('urgent'); reportTabStatus(); }
+    else if (msg.urgent === false) { pend('finished'); reportTabStatus(); }
 
     if (window.harness && window.harness.attention) {
       // Preferred path: main raises it, so it needs no page permission and can

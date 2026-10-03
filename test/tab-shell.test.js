@@ -15,7 +15,7 @@ const fc = require('fast-check');
 
 const {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor, focusStep, probeLineReader, menuText,
+  handleProbeCommand, noWindowText, shortcutFor, shortcutWillAct, focusStep, probeLineReader, menuText,
 } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
 const tabModel = require('../app/tab-model');
@@ -54,6 +54,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     available: { create: true, setup: true, remove: true },
     createResult: null, setupHold: null, setupResult: { ok: true, result: null }, onLine: null,
     removeResult: { ok: true, already: false },
+    focused,            // the window's OS focus; a test flips it
   };
   // A worktree appears in git's list (what new-worktree.ps1 does).
   h.addWorktree = (name, branch) => { h.listText += '\n' + porcelain([[name, branch]]); };
@@ -142,7 +143,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
       confirmClose: async () => h.confirm,
       changed: (snap) => h.changes.push(snap),
       focusWindow: () => { h.focusCalls++; },
-      isFocused: () => focused,
+      isFocused: () => h.focused,
     },
   };
   if (marks !== undefined) deps.marks = marks;
@@ -209,14 +210,14 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
   assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
-test('sanitizeStatus keeps four fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, lock: null, health: null });
+test('sanitizeStatus keeps five fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: 'yes', needsInput: 1, lock: '', health: '', extra: 1 }),
-    { working: false, needsInput: false, lock: null, health: null });
+    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', extra: 1 }),
+    { working: false, needsInput: false, finished: false, lock: null, health: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, lock: 'blocked', health: '↓3' }),
-    { working: true, needsInput: true, lock: 'blocked', health: '↓3' });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3' }),
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3' });
 });
 
 // --- open: criterion 1, X5, criterion 8 --------------------------------------
@@ -790,6 +791,70 @@ test('needsInput from the tab you are looking at (window focused) does not light
   await flush();
   h2.shell.report(h2.shell.tabByKey(key('dev')).view, { needsInput: true });
   assert.strictEqual(h2.shell.model().find(x => x.isDev).needsInput, true, 'window in the background: the strip shows it');
+});
+
+test('#31: a tab that finished pulses while unselected, and the pulse ends when it is selected', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const pulseOf = () => h.shell.model().find(x => x.label === 'feat/a').pulse;
+  assert.strictEqual(pulseOf(), null);
+  h.shell.report(aView, { finished: true });
+  assert.strictEqual(pulseOf(), 'done');
+  h.shell.report(aView, { finished: true, needsInput: true });
+  assert.strictEqual(pulseOf(), 'needs', 'the urgent look outranks the calm one');
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(pulseOf(), null);
+  const status = h.shell.tabByKey(key('feat-a')).status;
+  assert.strictEqual(status.finished, false, 'the shell also forgets it, so deselecting does not bring it back');
+  await h.shell.select(key('dev'));
+  assert.strictEqual(pulseOf(), null);
+});
+
+test('#31: finished from the tab you are looking at (window focused) never pulses', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  h.shell.report(h.shell.tabByKey(key('dev')).view, { finished: true });
+  assert.strictEqual(h.shell.model().find(x => x.isDev).pulse, null);
+  assert.strictEqual(h.shell.tabByKey(key('dev')).status.finished, false);
+  assert.ok(h.sent.some(([k, ch]) => k === key('dev') && ch === 'tab-selected'), 'the page is told, so it clears its own flag');
+  // Window in the background: still selected, so still no pulse (it is the tab on screen).
+  const h2 = harness({ running: { 7700: wt('dev') }, focused: false });
+  await h2.shell.open();
+  await flush();
+  h2.shell.report(h2.shell.tabByKey(key('dev')).view, { finished: true });
+  assert.strictEqual(h2.shell.model().find(x => x.isDev).pulse, null);
+});
+
+test('#31 (Dexter F1): a tab you watched finish does not pulse once you leave it -- a look is selected + focused, whichever comes last', async () => {
+  for (const flag of ['finished', 'needsInput']) {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, focused: false });
+    await h.shell.open();
+    await flush();
+    await h.shell.select(key('feat-a'));
+    h.shell.report(h.shell.tabByKey(key('feat-a')).view, { [flag]: true });
+    const sentBefore = h.sent.filter(([, ch]) => ch === 'tab-selected').length;
+    h.focused = true;             // the window comes back; Ricardo reads the tab
+    assert.strictEqual(h.shell.looked(), true, flag);
+    assert.ok(h.sent.filter(([, ch]) => ch === 'tab-selected').length > sentBefore, 'the page is told, so it clears its own flag');
+    await h.shell.select(key('dev'));
+    const a = h.shell.model().find(x => x.label === 'feat/a');
+    assert.strictEqual(a.pulse, null, flag);
+    assert.strictEqual(a.needsInput, false, flag);
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')).status[flag], false, flag);
+  }
+});
+
+test('#31: looked() touches only the selected tab, and says false when there was nothing to clear', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.looked(), false, 'no status yet');
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { finished: true });
+  assert.strictEqual(h.shell.looked(), false, 'dev is the selected one and has nothing pending');
+  assert.strictEqual(h.shell.model().find(x => x.label === 'feat/a').pulse, 'done', 'the unselected tab keeps its pulse');
 });
 
 test('a raise and an attention click select the sender\'s tab and bring the window forward', async () => {
@@ -1502,7 +1567,6 @@ test('shortcutFor: garbage in is null, never a throw', () => {
 test('shortcutFor: Ctrl+Shift+T (either case) reopens the last closed tab, like a browser; nothing near it does', () => {
   assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true })), 'reopen-tab');
   assert.strictEqual(shortcutFor(kd('t', { control: true, shift: true })), 'reopen-tab');
-  assert.strictEqual(shortcutFor(kd('t', { control: true })), null, 'Ctrl+T is the terminal’s');
   assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true, alt: true })), null);
   assert.strictEqual(shortcutFor(kd('T', { shift: true })), null);
   assert.strictEqual(shortcutFor({ ...kd('T', { control: true, shift: true }), type: 'keyUp' }), null);
@@ -1543,6 +1607,11 @@ test('handleProbeCommand: mark reaches the driver with a branch and an id (null 
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'mark', branch: 'develop' }), api),
     { ok: false, error: 'mark needs an id (or null)' });
   assert.deepStrictEqual(seen, [['develop', 'star'], ['develop', null]]);
+});
+
+test('handleProbeCommand: windowFocus is the window coming back to the front (#31 probe)', async () => {
+  const api = { windowFocus: async () => ({ ok: true, looked: true }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'windowFocus' }), api), { ok: true, looked: true });
 });
 
 test('handleProbeCommand: markMenu builds the real menu for a branch (Dexter #87 F2)', async () => {
@@ -1641,6 +1710,50 @@ test('PROPERTY: a poll with no dev keeps every tab, whatever git lists', async (
       const noStop = h.controls.length === 0;
       return noStop && JSON.stringify(labels(h)) === JSON.stringify(before);
     }), { numRuns: 20 });
+});
+
+test('shortcutFor: Ctrl+Alt+T opens New branch…; plain Ctrl+T stays the CLI task-list key (#35)', () => {
+  assert.strictEqual(shortcutFor(kd('t', { control: true, alt: true })), 'new-branch');
+  assert.strictEqual(shortcutFor(kd('T', { control: true, alt: true })), 'new-branch');
+  assert.strictEqual(shortcutFor(kd('t', { control: true })), null, 'Ctrl+T toggles the task list of the CLI');
+  assert.strictEqual(shortcutFor(kd('t', { control: true, shift: true, alt: true })), null);
+  assert.strictEqual(shortcutFor(kd('t', { alt: true })), null);
+  assert.strictEqual(shortcutFor(kd('t', {})), null, 'a plain t is typed');
+  assert.strictEqual(shortcutFor({ ...kd('t', { control: true, alt: true }), type: 'keyUp' }), null);
+});
+
+test('shortcutWillAct: New branch… claims its key only when the form will open (#35)', async () => {
+  const tabs = harness();
+  await tabs.shell.open();
+  assert.strictEqual(shortcutWillAct('new-branch', tabs.shell), true);
+  tabs.available = { create: false, setup: false, remove: false };
+  assert.strictEqual(shortcutWillAct('new-branch', tabs.shell), false, 'scripts missing: the key reaches the terminal');
+  tabs.available = { create: true, setup: true, remove: true };
+  const gate = new Promise(() => {});
+  tabs.createResult = () => gate;
+  tabs.shell.createWorktree('feat/x');
+  await flush();
+  assert.strictEqual(shortcutWillAct('new-branch', tabs.shell), false, 'a creation is running');
+  const single = harness({ mode: 'single' });
+  await single.shell.open();
+  assert.strictEqual(shortcutWillAct('new-branch', single.shell), false, 'single mode');
+  for (const a of ['next-tab', 'prev-tab', 'reopen-tab', 'focus-mode', 'devtools']) {
+    assert.strictEqual(shortcutWillAct(a, single.shell), true, `${a} is always the app's`);
+  }
+});
+
+test('openCreate follows the + menu\'s greyed-out rule: no scripts, no form (#35)', async () => {
+  const h = harness();
+  await h.shell.open();
+  h.available = { create: false, setup: false, remove: false };
+  assert.strictEqual(h.shell.openCreate(), false);
+  assert.strictEqual(h.shell.snapshot().create, null);
+  h.available = { create: true, setup: true, remove: true };
+  assert.strictEqual(h.shell.openCreate(), true);
+  const single = harness({ mode: 'single' });
+  await single.shell.open();
+  assert.strictEqual(single.shell.openCreate(), false);
+  assert.strictEqual(single.shell.snapshot().create, null);
 });
 
 test('shortcutFor: Ctrl+Shift+F (either case) is focus mode; plain Ctrl+F and Alt stay the terminal\'s', () => {

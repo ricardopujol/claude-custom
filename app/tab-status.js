@@ -2,9 +2,10 @@
 /**
  * What one tab's renderer tells the shell about itself (PR 2, worktree tabs).
  *
- *   tabStatus({ mainMood, pendingUrgent, lock, health }, { healthMarker })
- *       -> { working, needsInput, lock, health }
+ *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health }, { healthMarker })
+ *       -> { working, needsInput, finished, lock, health }
  *   afterSelected(status)   the shell's `tab-selected` event clears needsInput
+ *   pendingAfter(p, event)  the page's { urgent, finished } after an event (#31)
  *   sameStatus(a, b)        strict field-by-field equality, so the renderer
  *                           doesn't re-send an unchanged status
  *
@@ -34,25 +35,48 @@ function tabStatus(inputs, { healthMarker } = {}) {
   return {
     working: i.mainMood === 'working',
     needsInput: i.pendingUrgent === true,
+    // #31: the session finished (a non-urgent attention message) and nobody has looked yet.
+    finished: i.pendingFinished === true,
     lock: LOCK_STATES.includes(lockState) ? lockState : null,
     health,
   };
 }
 
-/** The same status with the urgent flag cleared (the tab was just selected). */
+/** The same status with the urgent and finished flags cleared (the tab was just selected). */
 function afterSelected(status) {
-  return { ...status, needsInput: false };
+  return { ...status, needsInput: false, finished: false };
+}
+
+/**
+ * What the page is holding for you, `{ urgent, finished }`, after an event:
+ *   urgent    a session that needs you (an urgent attention message)
+ *   finished  a finished turn: clears a pending urgent need (it was answered, e.g.
+ *             over Remote Control, so "finished" is the honest look)
+ *   working   a turn STARTED: "done, come look" is no longer true
+ *   looked    the tab was selected and focused
+ * Only a real `true` is pending; an unknown event changes nothing.
+ */
+function pendingAfter(pending, event) {
+  const cur = { urgent: !!pending && pending.urgent === true, finished: !!pending && pending.finished === true };
+  switch (event) {
+    case 'urgent': return { ...cur, urgent: true };
+    case 'finished': return { urgent: false, finished: true };
+    case 'working': return { ...cur, finished: false };
+    case 'looked': return { urgent: false, finished: false };
+    default: return cur;
+  }
 }
 
 function sameStatus(a, b) {
   if (a === null || a === undefined || b === null || b === undefined) return a === b;
   return a.working === b.working &&
     a.needsInput === b.needsInput &&
+    a.finished === b.finished &&
     a.lock === b.lock &&
     a.health === b.health;
 }
 
-const api = { tabStatus, afterSelected, sameStatus };
+const api = { tabStatus, afterSelected, sameStatus, pendingAfter };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

@@ -89,6 +89,8 @@ function paintTab(doc, entry, bridge) {
   if (entry.selected) cls.push('selected');
   if (!entry.started) cls.push('dim');
   if (entry.isDev) cls.push('dev');
+  // #31: the model decides who pulses (never the selected tab); this only names the look.
+  if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);
   const tab = el(doc, 'div', cls.join(' '));
   tab.dataset.key = entry.key;
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
