@@ -50,7 +50,7 @@ test('Dexter F1 / Miguel I2: a drop ends the drag BEFORE the move redraws away i
 
 test('Dexter F3 / Miguel I1: only a MISSING tree migrates and saves at load; unreadable keeps the default', () => {
   const body = fnBody('loadLayout');
-  assert.match(body, /const what = window\.dockTreeView\.afterTreeGet\(answer, v1Answer\);/);
+  assert.match(body, /const what = window\.dockTreeView\.afterTreeGet\(answer, v1Answer, \{ v1Bridge: !!window\.harness\.layout \}\);/);   // no L1 bridge is "nothing to migrate", not a failed read (PR #100 S5)
   // Every save at load sits in one of the two migrate branches, and nothing else saves.
   const sets = [...body.matchAll(/bridge\.set\(/g)];
   assert.strictEqual(sets.length, 2, 'the two migrations, no other save at load');

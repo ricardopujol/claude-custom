@@ -1205,7 +1205,7 @@ async function loadLayout() {
     // corrupt (antivirus holding it) draws the default and saves nothing, so the
     // user's real layout is never overwritten (PR #82 Dexter F3, Miguel I1); their
     // next real change saves as usual.
-    const what = window.dockTreeView.afterTreeGet(answer, v1Answer);
+    const what = window.dockTreeView.afterTreeGet(answer, v1Answer, { v1Bridge: !!window.harness.layout });
     if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); renderLayout(); }
     else if (what === 'migrate-v1') {
       globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);

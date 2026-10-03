@@ -250,3 +250,21 @@ test('F6: in a plain split the whole drawn row is the drag\'s answer', () => {
   const drag = { path: [1], i: 1, node: base.root.kids[1], sizes: [220, 175] };
   assert.deepStrictEqual(V.rebaseDrag(base, drag), [220, 175]);
 });
+
+// --- PR #100 Miguel S5: no L1 bridge is "nothing to migrate from", not a read failure --------------
+
+test('S5: no tree yet and no L1 bridge at all is the legacy path, not "couldn\'t read"', () => {
+  assert.strictEqual(V.afterTreeGet(MISSING, null, { v1Bridge: false }), 'migrate-legacy');
+  assert.strictEqual(V.afterTreeGet(MISSING, undefined, { v1Bridge: false }), 'migrate-legacy');
+});
+
+test('S5: with the L1 bridge present, a missing answer from it still keeps (it was asked and failed)', () => {
+  assert.strictEqual(V.afterTreeGet(MISSING, null, { v1Bridge: true }), 'keep');
+  assert.strictEqual(V.afterTreeGet(MISSING, null), 'keep', 'the bridge is assumed present unless said otherwise');
+});
+
+test('S5: a missing L1 bridge changes nothing when the tree is readable or damaged', () => {
+  assert.strictEqual(V.afterTreeGet(OK, null, { v1Bridge: false }), 'use');
+  for (const status of ['unreadable', 'corrupt']) assert.strictEqual(V.afterTreeGet({ status, layout: null }, null, { v1Bridge: false }), 'keep', status);
+  assert.strictEqual(V.afterTreeGet(null, null, { v1Bridge: false }), 'keep');
+});

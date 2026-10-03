@@ -161,11 +161,14 @@ function menuRows(layout, tabs) {
  *   'migrate-v1'     no tree yet, an L1 layout is stored
  *   'migrate-legacy' neither: read the pre-L1 per-window settings
  *   'keep'           anything unreadable on either side
+ * `v1Bridge` is false when this window has no L1 store to ask at all: that is "nothing to migrate
+ * from" (the legacy path), not a read that failed.
  */
-function afterTreeGet(treeAnswer, v1Answer) {
+function afterTreeGet(treeAnswer, v1Answer, { v1Bridge = true } = {}) {
   if (!isObject(treeAnswer)) return 'keep';
   if (treeAnswer.status === 'ok') return isObject(treeAnswer.layout) ? 'use' : 'keep';
   if (treeAnswer.status !== 'missing') return 'keep';
+  if (!v1Bridge) return 'migrate-legacy';
   if (!isObject(v1Answer)) return 'keep';
   if (v1Answer.status === 'ok') return isObject(v1Answer.layout) ? 'migrate-v1' : 'keep';
   return v1Answer.status === 'missing' ? 'migrate-legacy' : 'keep';
