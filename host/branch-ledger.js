@@ -17,9 +17,12 @@
  * worktree. So a subagent's record keeps `where`, the last worktree one of its calls proved
  * (host/agent-occupancy.js touchOf, the occupancy claim's own test), and its spend goes to that
  * worktree's branch. Until a call proves one, a line is credited by its own gitBranch, as before.
- * The folder that never counts as a place is the LAUNCHING one, and that is where the transcript is
- * FILED (<projects>\<encoded worktree>\), not the cwd on a line: measured on the same session, the
- * cwd follows a `cd` in Bash, and a call back into dev from elsewhere would move the agent to dev.
+ * A call into the LAUNCHING folder is a call home: it clears `where`, and the lines after it are
+ * credited by the line again (PR #96 Dexter F3: one Read in feat-x followed by forty edits at home
+ * credited all forty to feat/x). So a lane that updates its brief in dev costs develop that message.
+ * The launching folder is where the transcript is FILED (<projects>\<encoded worktree>\), not the
+ * cwd on a line: measured on the same session, the cwd follows a `cd` in Bash, and a call back into
+ * dev from elsewhere would read as a move to a worktree called dev.
  *
  * BRANCH NAMES ARE DATA, NOT KEYS OF OURS (PR #84 Miguel B2 / Dexter F12): a branch may be called
  * `__proto__`, `constructor` or `toString`. Maps keyed by a branch name are only ever read with
@@ -89,21 +92,31 @@ function localDay(ts) {
 
 const isStr = s => typeof s === 'string' && s !== '';
 
+// "The agent is back in the launching folder": not a place of its own, the absence of one.
+const HOME = Object.freeze({ home: true });
+
 /**
- * The worktree the calls on one transcript line prove, as `{ root, branch }`, or null. `cwd` is the
- * line's own (the launching session's folder, which never counts). A worktree with no branch (a
- * detached HEAD) proves nothing the ledger can use: its spend has no branch to go to.
+ * Where the calls on one transcript line put the agent: `{ root, branch }` (another worktree), HOME (the
+ * launching folder), or null (they prove nothing). The LAST call that proves something speaks. `home`
+ * is the launching folder. A call that names both it and another worktree is a call into the other
+ * one. A worktree with no branch (a detached HEAD) proves nothing the ledger can use: its spend has
+ * no branch to go to.
  */
-function placeOf(content, cwd, places) {
-  if (!Array.isArray(content) || !isStr(cwd)) return null;
+function placeOf(content, home, places) {
+  if (!Array.isArray(content) || !isStr(home)) return null;
   let found = null;
   const roots = places.map(p => p.root);
   for (const b of content) {
     if (!b || typeof b !== 'object' || b.type !== 'tool_use') continue;
-    const root = touchOf(b.name, b.input, roots, cwd);
-    if (root === null) continue;
-    const place = places.find(p => samePath(p.root, root));
-    if (place && isStr(place.branch)) found = { root: place.root, branch: place.branch };
+    const away = touchOf(b.name, b.input, roots, home);
+    if (away !== null) {
+      const place = places.find(p => samePath(p.root, away));
+      if (place && isStr(place.branch)) found = { root: place.root, branch: place.branch };
+      continue;
+    }
+    // No other worktree. The same test with no folder left out (and the launching folder among the roots,
+    // which it isn't when the session wasn't launched in a worktree): what it finds now can only be home.
+    if (touchOf(b.name, b.input, [...roots, home], null) !== null) found = HOME;
   }
   return found;
 }
@@ -143,7 +156,8 @@ function addLines(rec, text, projectRoot, places, home) {
     // file that is still being written.
     if (redirect) {
       const moved = placeOf(msg.content, isStr(home) ? home : o.cwd, places);
-      if (moved !== null) rec.where = moved;
+      if (moved === HOME) rec.where = null;
+      else if (moved !== null) rec.where = moved;
     }
     if (repeat) continue;
     rec.lastId = id;

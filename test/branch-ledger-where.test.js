@@ -72,13 +72,48 @@ test('THE REAL SHAPE: a message is several lines with one id, counted on its fir
   assert.deepStrictEqual(spendBy(r), { develop: 10, 'feat/a': 7 });
 });
 
-test('a call in the launching session\'s own folder never moves the agent back (a lane reads its brief in dev)', () => {
+// PR #96 Dexter F3: `where` is the LAST place a call proved, and the launching folder is a place. An agent that
+// read one file in feat-a and then did forty edits at home used to credit all forty to feat/a.
+test('a call into the launching folder moves the agent back HOME: from there its lines are credited by the line again', () => {
   const r = emptyRecord();
   addLines(r, lines(
-    sub('m1', 1, [read(path.join(FEAT, 'a.py'))]),
-    sub('m2', 2, [read(path.join(DEV, 'documentation', 'handoffs', 'CURRENT-feat-a.md'))]),
-    sub('m3', 4, [use('Grep', { pattern: 'x', path: DEV })])), ROOT, PLACES);
-  assert.deepStrictEqual(spendBy(r), { 'feat/a': 7 });
+    sub('m1', 100, [read(path.join(FEAT, 'host', 'a.js'))]),
+    sub('m2', 100, [use('Edit', { file_path: path.join(DEV, 'host', 'b.js'), old_string: 'a', new_string: 'b' })]),
+    sub('m3', 7, [text('still at home')])), ROOT, PLACES, DEV);
+  assert.deepStrictEqual(spendBy(r), { 'feat/a': 100, develop: 107 });
+  assert.strictEqual(r.where, null);
+});
+
+test('...and back again: a lane that updates its brief in dev costs develop that message, then returns to its worktree', () => {
+  const r = emptyRecord();
+  addLines(r, lines(
+    sub('m1', 1, [read(path.join(DEV, 'documentation', 'handoffs', 'CURRENT-feat-a.md'))]),
+    sub('m2', 2, [read(path.join(FEAT, 'a.py'))]),
+    sub('m3', 4, [use('Bash', { command: 'cd /c/p/dev && python update_brief.py' })]),
+    sub('m4', 8, [use('Grep', { pattern: 'x', path: FEAT })]),
+    sub('m5', 16)), ROOT, PLACES, DEV);
+  assert.deepStrictEqual(spendBy(r), { develop: 5, 'feat/a': 26 });
+});
+
+test('a session launched in a folder that is no worktree: a call back into it is a call home all the same', () => {
+  const elsewhere = 'C:\\elsewhere\\repo';
+  const r = emptyRecord();
+  addLines(r, lines(
+    sub('m1', 1, [read(path.join(FEAT, 'a.py'))], { cwd: elsewhere, gitBranch: 'other' }),
+    sub('m2', 2, [read(path.join(elsewhere, 'src', 'b.py'))], { cwd: elsewhere, gitBranch: 'other' })), ROOT, PLACES, elsewhere);
+  assert.strictEqual(r.branches['feat/a'].spend, 1);
+  assert.strictEqual(r.branches.other.loose, 2);
+  assert.strictEqual(r.where, null);
+});
+
+test('one call that names both the launching folder and another worktree is a call into the other worktree', () => {
+  // (also when the launching folder's path is the LONGER of the two)
+  const home = emptyRecord();
+  addLines(home, lines(sub('m1', 3, [use('Bash', { command: 'cp /c/p/feat-a/a.txt /c/p/dev/a.txt' })], { cwd: FEAT, gitBranch: 'feat/a' })), ROOT, PLACES, FEAT);
+  assert.deepStrictEqual(spendBy(home), { develop: 3 });
+  const r = emptyRecord();
+  addLines(r, lines(sub('m1', 3, [use('Bash', { command: 'cp /c/p/dev/a.txt /c/p/feat-a/a.txt' })])), ROOT, PLACES, DEV);
+  assert.deepStrictEqual(spendBy(r), { 'feat/a': 3 });
 });
 
 test('an agent that moves to a second worktree is credited there from then on', () => {
@@ -152,7 +187,7 @@ test('a line with no cwd proves nothing (there is no own folder to exclude); jun
 // THE LAUNCHING FOLDER IS WHERE THE TRANSCRIPT IS FILED, not the cwd on a line. Measured on the same live
 // session: the cwd follows a `cd` in Bash (60 lines of one teammate said `~\.claude\reviews\personal-agent`),
 // and with the line's cwd as "the folder that never counts", the agent's next call into dev moved it to dev.
-test('with the launching folder given, a call into it never moves the agent -- whatever cwd the line carries', () => {
+test('with the launching folder given, a call into it is a call HOME -- whatever cwd the line carries', () => {
   const away = 'C:\\Users\\x\\.claude\\reviews\\p';
   const r = emptyRecord();
   addLines(r, lines(
@@ -160,8 +195,13 @@ test('with the launching folder given, a call into it never moves the agent -- w
     sub('m2', 2, [use('Bash', { command: `cd ${away}` })]),
     sub('m3', 4, [read(path.join(DEV, 'Documentation', 'brief.md'))], { cwd: away }),
     sub('m4', 8, [use('Bash', { command: 'cd C:/p/dev && git status' })], { cwd: away })), ROOT, PLACES, DEV);
-  assert.deepStrictEqual(spendBy(r), { 'feat/a': 15 });
-  assert.strictEqual(r.where.branch, 'feat/a');
+  // m3 and m4 are home: credited by their own line (develop; loose, because that line's cwd is outside the
+  // project). With the LINE's cwd taken for the launching folder they would have been a move to the
+  // worktree `dev`: develop's spend, cwd dev, and `where` left pointing at it.
+  assert.strictEqual(r.branches['feat/a'].spend, 3);
+  assert.strictEqual(r.branches.develop.spend, 0);
+  assert.strictEqual(r.branches.develop.loose, 12);
+  assert.strictEqual(r.where, null);
 });
 
 test('...and a session launched IN a worktree: its agent\'s calls there move nothing, even from a line that says another cwd', () => {
@@ -180,10 +220,13 @@ test('with no launching folder known (a transcript filed under no listed worktre
   assert.deepStrictEqual(spendBy(r), { develop: 1, 'feat/a': 2 });
 });
 
-test('several calls on one line: the LAST one that proves a worktree is where the agent is', () => {
+test('several calls on one line: the LAST one that proves a place is where the agent is, home included', () => {
   const r = emptyRecord();
-  addLines(r, lines(sub('m1', 3, [read(path.join(FEAT, 'a.py')), read(path.join(FIX, 'b.py')), read(path.join(DEV, 'c.py'))])), ROOT, PLACES);
+  addLines(r, lines(sub('m1', 3, [read(path.join(DEV, 'c.py')), read(path.join(FEAT, 'a.py')), read(path.join(FIX, 'b.py'))])), ROOT, PLACES, DEV);
   assert.deepStrictEqual(spendBy(r), { 'fix/b': 3 });
+  const r2 = emptyRecord();
+  addLines(r2, lines(sub('m1', 3, [read(path.join(FEAT, 'a.py')), read(path.join(FIX, 'b.py')), read(path.join(DEV, 'c.py'))])), ROOT, PLACES, DEV);
+  assert.deepStrictEqual(spendBy(r2), { develop: 3 });
 });
 
 test('only a tool_use block is a call: a block of another type that carries a name and an input moves nothing', () => {
@@ -334,13 +377,19 @@ test('updateLedger: a caller that passes no worktrees at all reads everything as
 test('updateLedger: the launching folder is the worktree whose encoded name the transcript folder carries', async () => {
   const { dir, subs } = projects();           // filed under projectDirName(DEV)
   const away = 'C:\\Users\\x\\.claude\\reviews\\p';
-  fs.writeFileSync(path.join(subs, 'agent-ag1.jsonl'), lines(
+  const file = path.join(subs, 'agent-ag1.jsonl');
+  fs.writeFileSync(file, lines(
     sub('m1', 10, [read(path.join(FEAT, 'a.py'))]),
     sub('m2', 5, [read(path.join(DEV, 'brief.md'))], { cwd: away }),
     sub('m3', 2, [], { cwd: away })));
   const { ledger } = await updateLedger(emptyLedger(), { projectsDir: dir, projectRoot: ROOT, worktrees: PLACES });
-  assert.strictEqual(totals(ledger)['feat/a'].spend, 17, 'the call into dev, made from elsewhere, did not move it to develop');
-  assert.strictEqual(totals(ledger).develop, undefined);
+  const t = totals(ledger);
+  assert.strictEqual(t['feat/a'].spend, 10);
+  // the call into dev, made from elsewhere, is a call HOME (credited by its line), not a move to a worktree
+  // called dev: nothing is credited as spent IN dev, and the record has no place
+  assert.strictEqual(t.develop.spend, 0);
+  assert.strictEqual(t.develop.loose, 7);
+  assert.strictEqual(ledger.files[file].where, null);
 });
 
 test('updateLedger: on Windows a folder is the same folder in any case, and so is the name it encodes to (PR #96 Dexter F7)', { skip: process.platform !== 'win32' }, async () => {
@@ -353,7 +402,11 @@ test('updateLedger: on Windows a folder is the same folder in any case, and so i
     sub('m1', 10, [read(path.join(FEAT, 'a.py'))]),
     sub('m2', 5, [read(path.join(DEV, 'brief.md'))], { cwd: away })));
   const { ledger } = await updateLedger(emptyLedger(), { projectsDir: dir, projectRoot: ROOT, worktrees: PLACES });
-  assert.strictEqual(totals(ledger)['feat/a'].spend, 15, 'dev is still the launching folder: the call into it moved nothing');
+  // dev is the launching folder whatever its case: the call into it is a call home (by its line: loose on
+  // develop), not a move to a worktree `dev` (develop's own spend)
+  assert.strictEqual(totals(ledger)['feat/a'].spend, 10);
+  assert.strictEqual(totals(ledger).develop.spend, 0);
+  assert.strictEqual(totals(ledger).develop.loose, 5);
 });
 
 test('updateLedger: a transcript filed under a folder no listed worktree encodes to falls back to the line\'s cwd', async () => {
