@@ -332,3 +332,14 @@ test('P9 (PR #100 F1): dropping a lone panel on any target either returns the sa
     assert.ok(next === l || shapeOf(next.root) !== shapeOf(l.root), `${JSON.stringify(target)} rebuilt the same picture as a new layout`);
   }), RUNS);
 });
+
+test('P12 (PR #102 Dexter 1): the Window menu has one row per known module, whatever mix of docked, floating and hidden', () => {
+  const V = require('../app/dock-tree-display');
+  const TABS = IDS.map(id => ({ id, label: id, title: id }));
+  fc.assert(fc.property(rawArb, opsArb, (raw, ops) => {
+    const l = run(T.normalize(raw, IDS), ops);
+    const rows = V.menuRows(l, TABS);
+    assert.deepStrictEqual(rows.map(r => r.id), IDS);
+    for (const r of rows) assert.strictEqual(r.shown, !l.hidden.includes(r.id), `${r.id} shown ${r.shown}`);
+  }), RUNS);
+});

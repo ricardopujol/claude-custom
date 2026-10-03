@@ -194,6 +194,30 @@ test('menuRows still lists everything when every module is hidden: it is the way
   assert.ok(rows.every(r => r.shown === false));
 });
 
+// PR #102 Dexter 1 and 4: a floating panel is listed, shown, like any other; the menu is the way back to every module.
+test('menuRows lists a floating module, shown (PR #102 Dexter 1)', () => {
+  const l = T.dock(T.defaultLayout(IDS), 'vault', { float: true });
+  const rows = V.menuRows(l, TABS);
+  assert.deepStrictEqual(rows.map(r => r.id), IDS);
+  assert.deepStrictEqual(rows.find(r => r.id === 'vault'), { id: 'vault', label: 'Vault', shown: true });
+});
+
+test('menuRows with every module floating still lists every module, so Ctrl+B with only floats leaves a way back (PR #102 Dexter 1 and 4)', () => {
+  let l = T.defaultLayout(IDS);
+  for (const id of IDS) l = T.dock(l, id, { float: true });
+  const rows = V.menuRows(l, TABS);
+  assert.deepStrictEqual(rows.map(r => r.id), IDS);
+  assert.ok(rows.every(r => r.shown));
+});
+
+test('a floating module unticked is hidden (its seat keeps the float\'s rectangle), and ticked it floats again (PR #102 Dexter 1)', () => {
+  let l = T.dock(T.defaultLayout(IDS), 'vault', { float: { x: 90, y: 70 } });
+  l = T.hide(l, 'vault');
+  assert.strictEqual(V.menuRows(l, TABS).find(r => r.id === 'vault').shown, false);
+  const back = T.show(l, 'vault');
+  assert.deepStrictEqual([back.floats[0].x, back.floats[0].y], [90, 70]);
+});
+
 test('a registry module the layout knows nothing of is not listed', () => {
   const l = T.defaultLayout(IDS.filter(id => id !== 'style'));
   assert.ok(!V.menuRows(l, TABS).some(r => r.id === 'style'));

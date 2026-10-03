@@ -152,9 +152,11 @@ function layoutSaved(answer) { return isObject(answer); }
  * The Window menu's panel rows: every module of the layout in registry order,
  * hidden ones too. It lists hidden modules on purpose: it is the way back for
  * one, and the way out when every module is hidden and there is no tab left.
+ * A floating module is listed and shown like a docked one (PR #102 Dexter 1): the
+ * menu is how a float is hidden, and how it comes back (to its own rectangle).
  */
 function menuRows(layout, tabs) {
-  const placed = new Set([...treeApi.groups(layout).flatMap(g => g.tabs), ...layout.hidden]);
+  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden]);
   return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id) }));
 }
 
