@@ -111,3 +111,29 @@ test('a watcher that keeps failing logs in its own words, once a minute', () => 
   assert.strictEqual(logs.length, 2);
   assert.match(logs[1], /ENOENT: gone/);
 });
+
+// ---- PR #95 Dexter D6, Miguel M5 ----
+
+test('D6: the repo watch has a max wait, so a steady writer cannot starve the tree', () => {
+  const { WATCH_MAX_WAIT_MS } = require('../host/repo-watch');
+  assert.ok(WATCH_MAX_WAIT_MS >= 1000 && WATCH_MAX_WAIT_MS <= 5000, String(WATCH_MAX_WAIT_MS));
+  const s = { t: 0, handlers: [], timers: [], calls: 0 };
+  watchRepo('C:\w', () => { s.calls += 1; }, {
+    fsWatch: (d, o, h) => { s.handlers.push(h); return { on: () => {}, close: () => {} }; },
+    setTimer: (fn, ms) => { const h = { fn, ms, cleared: false, at: s.t }; s.timers.push(h); return h; },
+    clearTimer: (h) => { h.cleared = true; }, now: () => s.t, log: () => {},
+  });
+  for (let i = 0; i < 40; i++) {
+    s.handlers[0]('change', 'src/new.js');
+    s.t += 200;
+    for (const h of s.timers) if (!h.cleared && !h.fired && h.at + h.ms <= s.t) { h.fired = true; h.fn(); }
+  }
+  assert.ok(s.calls >= 2, `fired ${s.calls} times in 8s of steady events`);
+});
+
+test('M5: build output and caches are not worth a re-listing: dist, build, .venv, __pycache__, .next, at any depth', () => {
+  for (const n of ['dist/app.js', 'build/out.js', '.venv/lib/x.py', 'pkg/__pycache__/m.pyc', '.next/cache/a', 'a/b/dist/c.js']) {
+    assert.strictEqual(ignoredEvent(n), true, n);
+  }
+  for (const n of ['distance/a.js', 'src/build.js', 'rebuild/a.js', 'my.venv/x']) assert.strictEqual(ignoredEvent(n), false, n);
+});

@@ -19,8 +19,13 @@
 const fs = require('fs');
 const { watchGlobalDir } = require('./global-watch');
 
-const IGNORED = new Set(['.git', 'node_modules', '.harness', '.stryker-tmp']);
+// Folders that change constantly and never mean "a file Claude wrote": the repo's own, tools' caches and
+// build output (PR #95 Miguel M5). A build in dist/ or a pytest run costs a re-listing each time otherwise.
+const IGNORED = new Set(['.git', 'node_modules', '.harness', '.stryker-tmp', 'dist', 'build', '.venv', '__pycache__', '.next']);
 const DEBOUNCE_MS = 300;
+// A steady writer (a dev server's log, a test watcher) must not starve the tree and the Reload bar: fire
+// anyway once a burst has run this long (PR #95 Dexter D6).
+const WATCH_MAX_WAIT_MS = 2000;
 
 /** Is this event's file somewhere under a folder the listing doesn't care about? */
 function ignoredEvent(filename) {
@@ -52,10 +57,12 @@ function watchRepo(root, onChange, deps = {}) {
     }),
     mkdirSync: () => {},
     delayMs: DEBOUNCE_MS,
+    maxWaitMs: WATCH_MAX_WAIT_MS,
+    ...(deps.now ? { now: deps.now } : {}),
     ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
     ...(deps.clearTimer ? { clearTimer: deps.clearTimer } : {}),
     log,
   });
 }
 
-module.exports = { watchRepo, ignoredEvent, IGNORED, DEBOUNCE_MS, LOG_EVERY_MS };
+module.exports = { watchRepo, ignoredEvent, IGNORED, DEBOUNCE_MS, WATCH_MAX_WAIT_MS, LOG_EVERY_MS };
