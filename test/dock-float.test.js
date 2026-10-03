@@ -383,6 +383,22 @@ test('fit with floats never changes the layout or the selection', () => {
   T.fit(l, sel, { width: 300, height: 300 });
 });
 
+// --- storage ---------------------------------------------------------------------
+
+test('every real module floating, at the largest values, still fits the bridge\'s byte cap (PR #100 Miguel S3)', () => {
+  const { MAX_LAYOUT_BYTES } = require('../app/layout-bridge');
+  const { TABS } = require('../app/side-tabs');
+  const ids = TABS.map(t => t.id);
+  let l = T.defaultLayout(ids);
+  for (const id of ids) l = T.dock(l, id, { float: { x: 10000, y: 10000, w: 10000, h: 10000 } });
+  assert.equal(l.floats.length, ids.length, 'every module is a float of its own');
+  const floating = Buffer.byteLength(JSON.stringify(l), 'utf8');
+  for (const id of ids) l = T.hide(l, id);                          // and hidden again, every seat holding a rectangle
+  const hidden = Buffer.byteLength(JSON.stringify(l), 'utf8');
+  assert.ok(floating < MAX_LAYOUT_BYTES / 2, `floating: ${floating} bytes`);
+  assert.ok(hidden < MAX_LAYOUT_BYTES / 2, `hidden: ${hidden} bytes`);
+});
+
 // --- moveFloat, resizeFloat ------------------------------------------------------
 
 test('moveFloat sets the position, rounded and never negative, and keeps the size', () => {
@@ -415,7 +431,19 @@ test('resizeFloat sets the size, rounded, within [160 x 120, 10000], and keeps t
 test('resizeFloat with a viewport stops at the window edge, but never under the minimum', () => {
   const l = base();                                                   // at 10, 20
   assert.deepEqual(T.resizeFloat(l, 'f', { w: 900, h: 900 }, { width: 800, height: 600 }).floats[0], fl('f', ['git'], 10, 20, 790, 580));
-  assert.deepEqual(T.resizeFloat(l, 'f', { w: 900, h: 900 }, { width: 100, height: 100 }).floats[0], fl('f', ['git'], 10, 20, 160, 120));
+  assert.deepEqual(T.resizeFloat(l, 'f', { w: 900, h: 900 }, { width: 100, height: 100 }).floats[0], fl('f', ['git'], 0, 0, 160, 120), 'a float drawn in the corner of a tiny window is stored there');
+});
+
+test('resizeFloat in a window smaller than the float starts from where the float is DRAWN, so it does not jump (found by P11)', () => {
+  const l = T.dock(base(), 'agents', { float: { x: 48, y: 48 } });          // 320 x 260 at 48, 48: drawn shrunk to the corner in 200 x 150
+  const id = T.floatOf(l, 'agents').id;
+  const vp = { width: 200, height: 150 };
+  const drawn = lay => T.fit(lay, null, vp).boxes.find(b => b.kind === 'float' && b.id === id).rect;
+  assert.deepEqual(drawn(l), { x: 0, y: 0, width: 200, height: 150 });
+  const same = T.resizeFloat(l, id, { w: 200, h: 150 }, vp);
+  assert.deepEqual(drawn(same), { x: 0, y: 0, width: 200, height: 150 });
+  const less = T.resizeFloat(l, id, { w: 170, h: 130 }, vp);
+  assert.deepEqual(drawn(less), { x: 0, y: 0, width: 170, height: 130 });
 });
 
 test('resizeFloat: no change, unknown float and junk return the same layout', () => {

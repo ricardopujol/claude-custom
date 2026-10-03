@@ -360,9 +360,14 @@ function resizeFloat(layout, floatId, size, viewport) {
   if (!isObject(size) || !isSize(size.w) || !isSize(size.h)) return layout;
   const vp = viewportOf(viewport);
   return withFloat(layout, floatId, (f) => {
-    const w = vp ? Math.min(size.w, vp.width - f.x) : size.w;
-    const h = vp ? Math.min(size.h, vp.height - f.y) : size.h;
-    return { w: floatSize(w, FLOAT_MIN.width, FLOAT_DEFAULT.width), h: floatSize(h, FLOAT_MIN.height, FLOAT_DEFAULT.height) };
+    if (!vp) return { w: floatSize(size.w, FLOAT_MIN.width, FLOAT_DEFAULT.width), h: floatSize(size.h, FLOAT_MIN.height, FLOAT_DEFAULT.height) };
+    // The user resizes what they SEE: a float drawn shrunk into the corner of a small window starts from there, or the
+    // first resize would make it jump (found by P11). So the position stored is the drawn one, kept inside the new size.
+    const x0 = Math.max(0, Math.min(f.x, vp.width - Math.min(f.w, vp.width)));
+    const y0 = Math.max(0, Math.min(f.y, vp.height - Math.min(f.h, vp.height)));
+    const w = floatSize(Math.min(size.w, vp.width - x0), FLOAT_MIN.width, FLOAT_DEFAULT.width);
+    const h = floatSize(Math.min(size.h, vp.height - y0), FLOAT_MIN.height, FLOAT_DEFAULT.height);
+    return { x: floatPos(Math.max(0, Math.min(x0, vp.width - w))), y: floatPos(Math.max(0, Math.min(y0, vp.height - h))), w, h };
   });
 }
 
