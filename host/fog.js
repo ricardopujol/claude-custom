@@ -126,8 +126,10 @@ function extract(entry, root, touched) {
     const rel = relativeTo(root, filePath);
     if (!rel) continue;
 
-    const seen = touched.get(rel) || { path: rel, tier: TIERS.READ, lastTouched: 0, touches: 0 };
+    const seen = touched.get(rel) || { path: rel, tier: TIERS.READ, lastTouched: 0, touches: 0, edits: 0 };
     seen.touches += 1;
+    // `edits` is the repo browser's `●N` (#45): Claude's Edit / Write calls alone. `touches` counts reads too.
+    if (isEdit) seen.edits += 1;
     // EDITED wins permanently. Reading a file after editing it does not make
     // you know it less, so the tier must not follow whichever came last.
     if (isEdit) seen.tier = TIERS.EDITED;
@@ -186,6 +188,7 @@ function mergeInto(target, entries) {
       continue;
     }
     seen.touches += entry.touches;
+    seen.edits += entry.edits;
     if (entry.tier === TIERS.EDITED) seen.tier = TIERS.EDITED;
     seen.lastTouched = Math.max(seen.lastTouched, entry.lastTouched);
   }
@@ -244,7 +247,7 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   const trackedSet = new Set((Array.isArray(tracked) ? tracked : []).map(normalize));
   for (const rel of trackedSet) {
     if (touched.has(rel)) continue;
-    out.push({ path: rel, tier: TIERS.DARK, lastTouched: 0, touches: 0, brightness: 0 });
+    out.push({ path: rel, tier: TIERS.DARK, lastTouched: 0, touches: 0, edits: 0, brightness: 0 });
   }
 
   // Coverage measured against the PROJECT, not against everything touched.
