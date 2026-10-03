@@ -1543,6 +1543,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         // The bar's empty part is its right end; the handle is the 18 px at its left; the grip is small, so its middle.
         const x0 = a.what === 'grip' ? r.left + r.width / 2 : (a.what === 'handle' ? r.left + 8 : r.right - 6);
         const y0 = r.top + r.height / 2;
+        const hit = document.elementFromPoint(x0, y0) === target;   // a real hit test: is what is under the pointer the bar (or the grip)?
         const frame = () => new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
         const snap = () => ({ drag: floatDrag !== null, drawn: dragLayout !== null, selecting: document.body.classList.contains('dock-dragging') });
         const draws0 = floatDragDraws;
@@ -1561,7 +1562,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         else if (a.how === 'nobutton') window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x0 + dx, clientY: y0 + dy, button: 0, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
         else window.dispatchEvent(ptr('pointerup', back ? x0 : x0 + dx, back ? y0 : y0 + dy));
         await new Promise(res => setTimeout(res, 60));            // a queued fit, if the release asked for one, has run
-        return JSON.stringify({ ok: true, sync, during, after: snap(), resizes: resizeSends - sends0 });
+        return JSON.stringify({ ok: true, hit, sync, during, after: snap(), resizes: resizeSends - sends0 });
       })();
       // D2: a press and release on a float's body (or, with `bar`, on its bar's empty part): it is raised.
       case 'floatPress': {

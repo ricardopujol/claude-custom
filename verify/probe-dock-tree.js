@@ -794,13 +794,29 @@ async function main() {
     check('12: widened again, the float is back where it was put', Math.abs(backRect.left - wideRect.left) <= 1 && Math.abs(backRect.top - wideRect.top) <= 1 && Math.abs(backRect.width - wideRect.width) <= 1,
       JSON.stringify([wideRect, backRect]));
 
+    // PR #102 Miguel Y1: a float that has collected tabs still has a handle that moves it
+    let restRect = wideRect;                                    // where the float rests after this step, for the fold checks below
+    {
+      const fid = flOf(wideAgainF, 'vault').id;
+      for (const m of ['agents', 'git', 'fog', 'models']) await view(app, 'dock', { id: m, target: { cell: fid, side: 'center' } });
+      const five = (await settled(app)).s;
+      const f5 = flOf(five, 'vault');
+      const r = await view(app, 'floatDrag', { id: fid, what: 'handle', dx: -40, dy: -25 });
+      await sleep(1300);
+      const moved5 = flOf((await settled(app)).s, 'vault').rect;
+      restRect = moved5;
+      check('12: a float with five tabs: pressing its left handle really hits the bar (a hit test, not a dispatch)', f5.tabs.length === 5 && r.ok && r.hit, JSON.stringify([f5.tabs, r.hit]));
+      check('12: ...and dragging that handle moves the float by the drag',
+        Math.abs(moved5.left - (f5.rect.left - 40)) <= 1 && Math.abs(moved5.top - (f5.rect.top - 25)) <= 1 && Math.abs(moved5.width - f5.rect.width) <= 1, JSON.stringify([f5.rect, moved5]));
+    }
+
     // Ctrl+B and focus mode hide floats; unfolding brings them back
     await view(app, 'foldAll');
     const foldedF = (await settled(app)).s;
     check('12: Ctrl+B\'s fold hides every float, and the panel is not on screen', foldedF.floats.length === 0 && !foldedF.shown.includes('vault'), `${foldedF.floats.length} floats`);
     await view(app, 'foldAll');
     const unfoldedF = (await settled(app)).s;
-    check('12: ...unfolding brings it back where it was', unfoldedF.floats.length === 1 && Math.abs(flOf(unfoldedF, 'vault').rect.left - wideRect.left) <= 1);
+    check('12: ...unfolding brings it back where it was', unfoldedF.floats.length === 1 && Math.abs(flOf(unfoldedF, 'vault').rect.left - restRect.left) <= 1);
     await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
     const focusF = await waitFor(async () => { const v = await viewState(app); return v.focus && v.floats.every(f => f.display === 'none') ? v : null; }, 4000);
     check('12: focus mode hides the float (display none) and the terminal fills the area', !!focusF && Math.abs(focusF.termwrap.width - focusF.dock.width) <= 1, focusF ? '' : 'never hidden');

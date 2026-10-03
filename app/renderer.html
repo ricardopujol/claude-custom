@@ -706,6 +706,13 @@
       box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
     }
     .dfloat .zone-tabs { cursor: move; }
+    /* The move handle (PR #102 Y1): a fixed 18 px at the bar's left end, the bar's first flex item, so however many tabs
+       a float collects they shrink (ellipsis) instead of pushing it out. Pressing it presses the bar itself, which is
+       what moves a float; so does the bar's empty part, when there is one. */
+    .dfloat .zone-tabs::before {
+      content: ''; flex: 0 0 18px; cursor: move; opacity: .7;
+      background: radial-gradient(circle, var(--dim) 1px, transparent 1.6px) center / 6px 6px;
+    }
     .dfloat .zone-tabs button { flex: 0 1 auto; padding: 8px 10px; cursor: pointer; }
     .dfloat-grip {
       position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; z-index: 2;

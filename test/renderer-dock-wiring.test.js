@@ -201,6 +201,17 @@ test('PR #102 Miguel Y3: the floats\' layer sits between the terminal and the dr
   assert.match(/\n\s+#termwrap \{([^}]*)\}/.exec(html)[1], /isolation: isolate/, 'its lock overlay and banners can never interleave with a float');
 });
 
+test('PR #102 Miguel Y1: a float\'s bar reserves a fixed move handle at its left end that its tabs can never push out', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const handle = /\.dfloat \.zone-tabs::before \{([^}]*)\}/.exec(html);
+  assert.ok(handle, 'a pseudo-element of the bar: the first flex item, before every tab');
+  assert.match(handle[1], /content: ''/);
+  assert.match(handle[1], /flex: 0 0 18px/, 'fixed width: tabs shrink (with an ellipsis) instead');
+  assert.match(handle[1], /cursor: move/);
+  assert.match(handle[1], /gradient/, 'a visible grip texture');
+  assert.match(/\.dfloat \.zone-tabs button \{([^}]*)\}/.exec(html)[1], /flex: 0 1 auto/, 'tabs may shrink');
+});
+
 test('PR #100 Miguel S3: every save of the global layout goes through one helper that says so when the store refuses it', () => {
   // Only the helper talks to the store; the four places that save call it.
   assert.strictEqual([...JS.matchAll(/\bbridge\.set\(/g)].length, 1, 'only inside saveGlobalLayout');
