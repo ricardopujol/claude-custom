@@ -20,15 +20,21 @@ const MAX_PRESETS = 32;
 const MAX_PRESET_BYTES = 8192;          // one layout is well under 1 KB; this stops a bad sender bloating the store
 
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
-const keyOf = name => name.toLowerCase();
+// Two names are the same name when they look the same ignoring case: NFC first (a composed and a decomposed
+// e-acute are one name), then lower-case. Lower-casing, not full case folding: German sharp s and SS stay two names.
+const keyOf = name => name.normalize('NFC').toLowerCase().normalize('NFC');
+// Control characters (Cc), format characters (Cf: bidi overrides, zero-width, soft hyphen) and the line and
+// paragraph separators (Zl, Zp): none can be seen, and a bidi override can make a name read backwards.
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const NAME_SCAN_MAX = 1024;             // a bad sender can't make main normalize a megabyte
 
-/** The trimmed name, or null when it is not 1 to 40 characters without a control character. */
+/** The name as stored (NFC, trimmed), or null when it is not 1 to 40 characters (counted after NFC) free of invisible ones. */
 function checkName(raw) {
-  if (typeof raw !== 'string') return null;
-  const name = raw.trim();
+  if (typeof raw !== 'string' || raw.length > NAME_SCAN_MAX) return null;
+  const name = raw.normalize('NFC').trim();
   const length = [...name].length;
   if (length < 1 || length > NAME_MAX) return null;
-  if (/\p{Cc}/u.test(name)) return null;
+  if (UNSEEN.test(name)) return null;
   return name;
 }
 
@@ -63,7 +69,7 @@ function cleanPresets(raw) {
 function indexOf(list, name) {
   if (typeof name !== 'string') return -1;
   const want = keyOf(name.trim());
-  return list.findIndex(p => keyOf(p.name) === want);
+  return list.findIndex(p => keyOf(p.name) === want);   // stored names are already NFC and trimmed
 }
 
 /** The preset called `name` (ignoring case), or null. */
@@ -166,7 +172,7 @@ function afterGet(answer) {
 function presetsSaved(answer) { return Array.isArray(answer); }
 
 const WORDS = {
-  name: 'Use 1 to 40 characters, with no line breaks.',
+  name: 'Use 1 to 40 characters, with no line breaks or other invisible characters.',
   taken: 'A preset with that name already exists.',
   full: 'You\'ve reached the limit of 32 presets. Delete one first.',
   missing: 'That preset isn\'t there any more.',
@@ -179,7 +185,7 @@ function refusalText(reason) {
 }
 
 const API = {
-  NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, THUMB, checkName, cleanPresets, find, savePreset, renamePreset, deletePreset,
+  NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, THUMB, checkName, nameKey: keyOf, cleanPresets, find, savePreset, renamePreset, deletePreset,
   thumbBoxes, afterGet, presetsSaved, refusalText,
 };
 

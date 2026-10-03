@@ -39,6 +39,54 @@ test('trimming happens before the length check', () => {
   assert.strictEqual(P.checkName(` ${'x'.repeat(40)} `), 'x'.repeat(40));
 });
 
+// --- names are what the user sees (PR #103 Dexter 5, Miguel S1) -----------------
+
+const COMPOSED = 'Café';
+const DECOMPOSED = 'Café';
+
+test('a name is stored NFC: composed and decomposed spellings are the same name', () => {
+  assert.strictEqual(P.checkName(DECOMPOSED), COMPOSED);
+  assert.strictEqual(P.checkName(COMPOSED), COMPOSED);
+});
+
+test('length is counted after NFC: 40 decomposed e-acutes are 40 characters, 41 are not', () => {
+  assert.strictEqual(P.checkName('é'.repeat(40)), 'é'.repeat(40));
+  assert.strictEqual(P.checkName('é'.repeat(41)), null);
+  assert.strictEqual(P.checkName('é'.repeat(41)), null);
+  // the same visible name passes or fails the same way in either form
+  assert.strictEqual(P.checkName('é'.repeat(21)) !== null, P.checkName('é'.repeat(21)) !== null);
+});
+
+test('save under the other normalization form of an existing name is `taken`; replace keeps one preset', () => {
+  const list = [{ name: COMPOSED, layout: { version: 2 } }];
+  assert.deepStrictEqual(P.savePreset(list, DECOMPOSED, { version: 2 }), { ok: false, reason: 'taken' });
+  assert.deepStrictEqual(P.savePreset(list, DECOMPOSED.toUpperCase(), { version: 2 }), { ok: false, reason: 'taken' });
+  assert.strictEqual(P.savePreset(list, DECOMPOSED, { version: 2 }, { replace: true }).list.length, 1);
+  assert.strictEqual(P.find(list, DECOMPOSED).name, COMPOSED);
+});
+
+test('cleanPresets treats the two forms as one name too (the first wins)', () => {
+  const out = P.cleanPresets([{ name: COMPOSED, layout: { version: 2 } }, { name: DECOMPOSED, layout: { version: 2 } }]);
+  assert.deepStrictEqual(out.map(p => p.name), [COMPOSED]);
+});
+
+test('German sharp s and SS are two different names: case folding here is lower-casing, not full folding', () => {
+  const list = [{ name: 'Straße', layout: { version: 2 } }];
+  assert.strictEqual(P.savePreset(list, 'STRASSE', { version: 2 }).ok, true);
+});
+
+test('line and paragraph separators, bidi overrides and zero-width characters are refused', () => {
+  for (const bad of ['a b', 'a b', 'a‮b', 'a​b', 'a‍b', 'a⁦b', 'a­b', 'a﻿b']) {
+    assert.strictEqual(P.checkName(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('the words for a refused name say what is true: length, and no control or invisible characters', () => {
+  const words = P.refusalText('name');
+  assert.match(words, /1 to 40/);
+  assert.match(words, /invisible/);
+});
+
 // --- cleanPresets --------------------------------------------------------------
 
 test('anything that is not an array is an empty list', () => {

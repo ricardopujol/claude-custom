@@ -27,7 +27,7 @@ const entryArb = fc.oneof(
 );
 const rawArb = fc.oneof(fc.array(entryArb, { maxLength: 45 }), fc.anything());
 
-const keyOf = n => n.toLowerCase();
+const keyOf = P.nameKey;
 function uniqueAndBounded(list) {
   assert.ok(Array.isArray(list));
   assert.ok(list.length <= P.MAX_PRESETS, `length ${list.length}`);
@@ -68,6 +68,16 @@ test('P3: after ANY sequence of operations from ANY start, names are unique, the
       if (r.ok) { uniqueAndBounded(r.list); list = r.list; }
       else assert.ok(['name', 'taken', 'full', 'missing', 'layout'].includes(r.reason), String(r.reason));
     }
+  }), RUNS);
+});
+
+test('P5: a name saved in one normalization form is `taken` in the other, and one name is judged the same in both', () => {
+  fc.assert(fc.property(fc.string({ maxLength: 50 }), fc.constantFrom('NFC', 'NFD'), (name, form) => {
+    const first = P.savePreset([], name.normalize('NFC'), { version: 2 });
+    const other = name.normalize(form === 'NFC' ? 'NFD' : 'NFC');
+    assert.strictEqual(P.checkName(name.normalize('NFC')) === null, P.checkName(other) === null, 'accepted or refused alike');
+    if (!first.ok) return;
+    assert.deepStrictEqual(P.savePreset(first.list, other, { version: 2 }), { ok: false, reason: 'taken' });
   }), RUNS);
 });
 
