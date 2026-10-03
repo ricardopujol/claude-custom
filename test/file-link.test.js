@@ -31,7 +31,9 @@ test('actionFor: folders open; files open only if BOTH the given and the real ex
   assert.strictEqual(actionFor({ given: 'C:\\a', real: 'C:\\a', isDir: true }), 'open');
   assert.strictEqual(actionFor({ given: 'C:\\a.HTML', real: 'C:\\a.HTML', isDir: false }), 'open');
   for (const ext of ['.exe', '.bat', '.cmd', '.ps1', '.lnk', '.vbs', '.js', '.py', '.sh', '.msi',
-                     '.hta', '.reg', '.url', '.xlsm', '.docm', '', '.', '.txt.', '.txt ']) {
+                     '.hta', '.reg', '.url', '.xlsm', '.docm', '', '.', '.txt.', '.txt ',
+                     // Miguel I1: formats that carry macros or embedded objects
+                     '.doc', '.xls', '.ppt', '.odt', '.ods', '.odp', '.rtf']) {
     assert.strictEqual(actionFor({ given: `C:\\a${ext}`, real: `C:\\a${ext}`, isDir: false }), 'reveal', ext);
   }
   assert.strictEqual(actionFor({ given: 'C:\\a.txt', real: 'C:\\b.exe', isDir: false }), 'reveal', 'a link to an exe');

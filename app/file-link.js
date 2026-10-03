@@ -10,12 +10,20 @@
  *                               { option, path, action, isDir, name } | null
  *   open(p, cwd, fsApi, shellApi) -> { ok: true, action } | { ok: false, why }
  *
- * NEVER RUN ANYTHING. shell.openPath is ShellExecute: it runs .exe .bat .cmd
- * .ps1 .vbs .js .hta .msi .reg .scr .lnk .url, and .py or .sh too when Python
- * or Git Bash is installed. A list of what's dangerous always misses one, so
- * this is an ALLOWLIST: only OPENABLE extensions open, and only when the path
- * as written AND the file it really is (realpath) both have one. Everything
- * else, including no extension, is shown in Explorer. Folders open.
+ * NEVER HAND THE OS SOMETHING IT RUNS. shell.openPath is ShellExecute: it
+ * runs .exe .bat .cmd .ps1 .vbs .js .hta .msi .reg .scr .lnk .url, and .py or
+ * .sh too when Python or Git Bash is installed. A list of what's dangerous
+ * always misses one, so this is an ALLOWLIST: only OPENABLE extensions open,
+ * and only when the path as written AND the file it really is (realpath) both
+ * have one. Everything else, including no extension, is shown in Explorer.
+ * Folders open.
+ *
+ * What OPENABLE still lets run (PR #92, Miguel I1): .html/.htm/.svg run
+ * script, but inside the browser's sandbox, as any web page does; opening
+ * Claude's .html mocks is what #37 is for. Formats that carry macros or
+ * embedded objects for a desktop app are off the list: .doc .xls .ppt (and
+ * their m variants), .odt .ods .odp, .rtf. The macro-free .docx .xlsx .pptx
+ * stay.
  *
  * Never touched, not even stat-ed: UNC paths (\\server\share -- the existence
  * check alone would send Windows credentials to that server), device paths
@@ -32,7 +40,7 @@ const OPENABLE = new Set([
   '.xml', '.html', '.htm', '.pdf',
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tif', '.tiff',
   '.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac', '.mp4', '.mov', '.mkv', '.webm', '.avi',
-  '.docx', '.xlsx', '.pptx', '.doc', '.xls', '.ppt', '.odt', '.ods', '.odp', '.rtf',
+  '.docx', '.xlsx', '.pptx',
   '.rpp',                                           // Reaper projects
 ]);
 
