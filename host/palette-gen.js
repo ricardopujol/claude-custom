@@ -200,7 +200,120 @@ function noLookReason(terminalForeground) {
     'random looks are dark, and this terminal text needs a light background';
 }
 
+// --- a look seeded by a background's own colours (backlog #34) ---------------------
+//
+// "Match colours to this background": the renderer samples the picture (or the
+// video's current frame) and sends a handful of dominant colours -- never the
+// image. These tint the same generator: the app colour and text take the
+// background's hue, the accent takes a DIFFERENT dominant hue when there is
+// one, and every candidate still has to pass the same gates as a random look.
+
+function srgbToLinear(c) {
+  const x = c / 255;
+  return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+}
+
+/** #rrggbb to OKLCH { L, C, h } (h in degrees, 0 when there is no chroma), or null. */
+function hexToOklch(hex) {
+  if (typeof hex !== 'string' || !HEX_RE.test(hex)) return null;
+  const n = parseInt(hex.slice(1), 16);
+  const r = srgbToLinear((n >> 16) & 255);
+  const g = srgbToLinear((n >> 8) & 255);
+  const b = srgbToLinear(n & 255);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  const L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+  const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  const C = Math.hypot(a, bb);
+  const h = C < 1e-4 ? 0 : ((Math.atan2(bb, a) * 180) / Math.PI + 360) % 360;
+  return { L, C: C < 1e-4 ? 0 : C, h };
+}
+
+// Fewer than this much chroma is a grey: its hue is rounding noise, not a colour.
+const CHROMA_MIN = 0.03;
+const MAX_SEEDS = 8;
+// An accent seed must differ from the base hue by at least this, or the accent
+// would just be the background again.
+const ACCENT_HUE_GAP = 30;
+
+const hueGap = (a, b) => { const d = Math.abs(a - b) % 360; return Math.min(d, 360 - d); };
+
+/**
+ * What the seeds say, or null when none is a colour: `base` (the hue the app
+ * colour and text take -- the first CHROMATIC seed, or neutral when the whole
+ * picture is grey) and `accent` (the most vivid seed of another hue, or null).
+ * Anything that is not #rrggbb is skipped, and only the first MAX_SEEDS are read.
+ */
+function seedParts(seeds) {
+  if (!Array.isArray(seeds)) return null;
+  const all = seeds.slice(0, MAX_SEEDS).map(hexToOklch).filter(Boolean);
+  if (!all.length) return null;
+  const chromatic = all.filter((c) => c.C >= CHROMA_MIN);
+  const base = chromatic.length ? chromatic[0] : { L: all[0].L, C: 0, h: 0 };
+  let accent = null;
+  for (const c of chromatic) {
+    if (hueGap(c.h, base.h) >= ACCENT_HUE_GAP && (!accent || c.C > accent.C)) accent = c;
+  }
+  return { base, accent };
+}
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const wrap = (h) => ((h % 360) + 360) % 360;
+
+/**
+ * One seeded draw, unchecked, like drawLook. A grey base stays neutral (almost
+ * no chroma); a coloured one keeps its hue within a few degrees so a re-roll
+ * varies without leaving the picture's colour.
+ */
+function drawLookFrom(rng, parts) {
+  const { base, accent } = parts;
+  const chromatic = base.C >= CHROMA_MIN;
+  const hue = wrap(base.h + between(rng, -3, 3));
+  const accentHue = accent
+    ? wrap(accent.h + between(rng, -3, 3))
+    : wrap(base.h + between(rng, 150, 210));
+  const accentChroma = accent ? clamp(accent.C * between(rng, 0.9, 1.1), 0.09, 0.15) : between(rng, 0.09, 0.15);
+  return {
+    appColor: oklchToHex(between(rng, 0.17, 0.25), chromatic ? between(rng, 0.025, 0.05) : between(rng, 0, 0.008), hue),
+    textColor: oklchToHex(between(rng, 0.9, 0.96), chromatic ? between(rng, 0.005, 0.025) : between(rng, 0, 0.006), hue),
+    accentColor: oklchToHex(between(rng, 0.76, 0.84), accentChroma, accentHue),
+    secondaryColor: oklchToHex(between(rng, 0.73, 0.79), chromatic ? between(rng, 0.02, 0.06) : between(rng, 0, 0.01),
+      wrap(base.h + between(rng, -25, 25))),
+  };
+}
+
+/** The draw with every random choice at its midpoint: the safe fallback, still seeded. */
+function TAME_PARTS_DRAW(parts) {
+  return drawLookFrom(() => 0.5, parts);
+}
+
+/**
+ * A look for a background with these seeds that passes lookFailures for THIS
+ * terminal foreground -- or null, never a failing look and never an unseeded
+ * one: a draw, else the tame draw after MAX_ATTEMPTS misses, else a refusal.
+ * (generateLook falls back to SAFE_LOOK; that would be a fixed palette sold as
+ * a match, so this does not.) `candidate` replaces the draw, for tests.
+ */
+function generateLookFrom(seeds, rng = Math.random, { terminalForeground = DEFAULT_TERMINAL_FG, candidate = drawLookFrom } = {}) {
+  const parts = seedParts(seeds);
+  if (!parts) return null;
+  const passes = (look) => lookFailures(look, { terminalForeground }).length === 0;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const look = candidate(rng, parts);
+    if (passes(look)) return look;
+  }
+  const tame = TAME_PARTS_DRAW(parts);
+  return passes(tame) ? tame : null;
+}
+
+function noSeedsReason() {
+  return 'no usable colours were sampled from this background';
+}
+
 module.exports = {
   generateLook, drawLook, lookFailures, noLookReason, oklchToHex, SAFE_LOOK, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
   MIN_TEXT_CONTRAST, MIN_CONTROL_CONTRAST, MAX_BG_LUMINANCE,
+  generateLookFrom, drawLookFrom, seedParts, hexToOklch, TAME_PARTS_DRAW, noSeedsReason, MAX_SEEDS,
 };

@@ -203,3 +203,147 @@ test('Dexter F1: whatever generateLook returns passes for the foreground it was 
     if (look !== null) assert.deepStrictEqual(lookFailures(look, { terminalForeground: fg }), []);
   }), { numRuns: 200 });
 });
+
+// --- generateLookFrom: a look seeded by a background's own colours (#34) --------
+
+const {
+  generateLookFrom, drawLookFrom, seedParts, hexToOklch, TAME_PARTS_DRAW, noSeedsReason,
+} = require('../host/palette-gen');
+
+const hueGap = (a, b) => { const d = Math.abs(a - b) % 360; return Math.min(d, 360 - d); };
+
+test('hexToOklch inverts oklchToHex for in-gamut colours, and reads black, white and grey as no chroma', () => {
+  for (const hex of ['#ff0000', '#00ff00', '#3a6ea5', '#e0a060', '#16181f']) {
+    const { L, C, h } = hexToOklch(hex);
+    assert.strictEqual(oklchToHex(L, C, h), hex);
+  }
+  assert.ok(Math.abs(hexToOklch('#ffffff').L - 1) < 1e-3);
+  assert.ok(hexToOklch('#000000').L < 1e-3);
+  assert.ok(hexToOklch('#808080').C < 1e-3);
+  assert.strictEqual(hexToOklch('nope'), null);
+  assert.strictEqual(hexToOklch(null), null);
+});
+
+test('seedParts keeps only real colours, the first chromatic one is the base, and nothing usable is null', () => {
+  assert.strictEqual(seedParts([]), null);
+  assert.strictEqual(seedParts('#ff0000'), null);
+  assert.strictEqual(seedParts(null), null);
+  assert.strictEqual(seedParts(['nope', 3, null, '#12']), null);
+  const red = hexToOklch('#c04030');
+  const p = seedParts(['nope', '#c04030', '#3050c0']);
+  assert.ok(hueGap(p.base.h, red.h) < 1e-6, 'the base is the first VALID chromatic seed');
+  assert.ok(p.accent && hueGap(p.accent.h, hexToOklch('#3050c0').h) < 1e-6, 'the accent seed is another hue');
+});
+
+test('seedParts: a grey background picture has a neutral base and no accent seed', () => {
+  const p = seedParts(['#202020', '#808080', '#f0f0f0']);
+  assert.ok(p.base.C < 0.02);
+  assert.strictEqual(p.accent, null);
+});
+
+test('seedParts skips a grey first seed for the chromatic one behind it', () => {
+  const p = seedParts(['#101010', '#2060c0']);
+  assert.ok(hueGap(p.base.h, hexToOklch('#2060c0').h) < 1e-6);
+});
+
+test('seedParts takes at most 8 seeds', () => {
+  const many = Array.from({ length: 50 }, (_, i) => (i < 8 ? '#101010' : '#ff0000'));
+  assert.strictEqual(seedParts(many).accent, null, 'the red seeds past the 8th are never read');
+});
+
+test('generateLookFrom returns a look that passes every gate, tinted with the seed hue', () => {
+  const rng = mulberry32(11);
+  const seeds = ['#2a5a8a', '#d08040'];
+  const look = generateLookFrom(seeds, rng);
+  assert.deepStrictEqual(lookFailures(look), []);
+  const bg = hexToOklch(look.appColor);
+  assert.ok(hueGap(bg.h, hexToOklch('#2a5a8a').h) < 12, `the app colour follows the first seed's hue (${bg.h})`);
+  const accent = hexToOklch(look.accentColor);
+  assert.ok(hueGap(accent.h, hexToOklch('#d08040').h) < 12, `the accent follows the other seed's hue (${accent.h})`);
+});
+
+test('generateLookFrom is deterministic for a given rng and honours the injected rng', () => {
+  const a = generateLookFrom(['#2a5a8a', '#d08040'], mulberry32(5));
+  const b = generateLookFrom(['#2a5a8a', '#d08040'], mulberry32(5));
+  const c = generateLookFrom(['#2a5a8a', '#d08040'], mulberry32(6));
+  assert.deepStrictEqual(a, b);
+  assert.notDeepStrictEqual(a, c, 'a re-roll gives a different look');
+});
+
+test('generateLookFrom defaults to Math.random', () => {
+  const orig = Math.random;
+  let used = 0;
+  Math.random = () => { used++; return 0.5; };
+  try { generateLookFrom(['#2a5a8a']); } finally { Math.random = orig; }
+  assert.ok(used > 0);
+});
+
+test('generateLookFrom refuses honestly: nothing usable, or no look reads against this terminal', () => {
+  for (const s of [undefined, null, [], ['nope'], 'x', 5]) assert.strictEqual(generateLookFrom(s, mulberry32(1)), null, String(s));
+  assert.strictEqual(generateLookFrom(['#2a5a8a'], mulberry32(1), { terminalForeground: '#000000' }), null);
+  assert.match(noSeedsReason(), /seed|colour/i);
+});
+
+test('generateLookFrom retries a failing candidate, then uses the tame draw, then refuses', () => {
+  let calls = 0;
+  const bad = { ...SAFE_LOOK, textColor: '#202020' };
+  const look = generateLookFrom(['#2a5a8a'], mulberry32(2), { candidate: () => { calls++; return bad; } });
+  assert.strictEqual(calls, MAX_ATTEMPTS);
+  assert.deepStrictEqual(lookFailures(look), [], 'the fallback is a passing, seeded look');
+  assert.ok(hueGap(hexToOklch(look.appColor).h, hexToOklch('#2a5a8a').h) < 12, 'and it is still the background\'s hue');
+  // the first passing draw wins
+  let n = 0;
+  const first = generateLookFrom(['#2a5a8a'], mulberry32(2), { candidate: () => (++n === 3 ? SAFE_LOOK : bad) });
+  assert.strictEqual(n, 3);
+  assert.deepStrictEqual(first, { ...SAFE_LOOK });
+  // a tame draw that cannot pass either (black CLI text) is a refusal
+  assert.strictEqual(generateLookFrom(['#2a5a8a'], mulberry32(2),
+    { terminalForeground: '#000000', candidate: () => bad }), null);
+});
+
+test('the tame draw is exported and passes on its own for any hue', () => {
+  for (const h of [0, 60, 120, 180, 240, 300]) {
+    const parts = { base: { L: 0.5, C: 0.1, h }, accent: null };
+    assert.deepStrictEqual(lookFailures(TAME_PARTS_DRAW(parts)), [], `hue ${h}`);
+  }
+});
+
+test('PROPERTY: any seeds and any rng give a passing look or an honest refusal, never a failing look', () => {
+  const seeds = fc.array(fc.oneof(fc.stringMatching(/^#[0-9a-f]{6}$/), fc.string(), fc.constant(null)), { maxLength: 12 });
+  fc.assert(fc.property(seeds, fc.integer(), fc.stringMatching(/^#[0-9a-f]{6}$/), (s, seed, fg) => {
+    const look = generateLookFrom(s, mulberry32(seed), { terminalForeground: fg });
+    if (look === null) return;
+    assert.deepStrictEqual(lookFailures(look, { terminalForeground: fg }), []);
+    for (const k of ['appColor', 'textColor', 'accentColor', 'secondaryColor']) assert.match(look[k], HEX);
+  }), { numRuns: 400 });
+});
+
+test('PROPERTY: for the default terminal, valid chromatic seeds always yield a look (the draw is not secretly always refusing)', () => {
+  fc.assert(fc.property(fc.array(fc.stringMatching(/^#[0-9a-f]{6}$/), { minLength: 1, maxLength: 6 }), fc.integer(), (s, seed) => {
+    assert.notStrictEqual(generateLookFrom(s, mulberry32(seed)), null);
+  }), { numRuns: 300 });
+});
+
+test('PROPERTY: the app colour stays dark whatever the seeds are', () => {
+  fc.assert(fc.property(fc.array(fc.stringMatching(/^#[0-9a-f]{6}$/), { minLength: 1, maxLength: 6 }), fc.integer(), (s, seed) => {
+    const look = generateLookFrom(s, mulberry32(seed));
+    assert.ok(luminance(look.appColor) <= MAX_BG_LUMINANCE);
+  }), { numRuns: 200 });
+});
+
+test('drawLookFrom is a plain draw: it can be wrong, the gates are what make it safe', () => {
+  const d = drawLookFrom(mulberry32(1), seedParts(['#2a5a8a', '#d08040']));
+  for (const k of ['appColor', 'textColor', 'accentColor', 'secondaryColor']) assert.match(d[k], HEX);
+});
+
+test('the seeded draw nearly always passes first time, so a match is a draw and not the tame fallback', () => {
+  let first = 0;
+  const trials = 300;
+  for (let i = 0; i < trials; i++) {
+    const rng = mulberry32(i);
+    const hex = oklchToHex(0.3 + rng() * 0.5, 0.04 + rng() * 0.2, rng() * 360);
+    const parts = seedParts([hex, oklchToHex(0.6, 0.15, rng() * 360)]);
+    if (lookFailures(drawLookFrom(rng, parts)).length === 0) first++;
+  }
+  assert.ok(first / trials >= 0.95, `${first}/${trials} draws passed first time`);
+});
