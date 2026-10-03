@@ -96,6 +96,8 @@ test('the bridges that took `win` are handed the tab-view predicate', () => {
   // Layout pass L2: the window-chrome settings, the same shape.
   assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
   assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToViews[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
+  // #34: the background video's play inputs (minimised, hidden, on battery), pushed to every view.
+  assert.match(MAIN, /registerPlaybackHandlers\(\{[^}]*powerMonitor[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
 });
 
 test('the window-wide broadcasts reach EVERY tab view', () => {

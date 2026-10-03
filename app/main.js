@@ -21,7 +21,7 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell, powerMonitor } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
@@ -29,6 +29,7 @@ const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
+const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -964,6 +965,10 @@ function registerIpc() {
     store: uiStore, sync: chromeSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${CHROME_KEY}.json`),
   });
+
+  // Backlog #34: the background video plays only while the window is on screen and on mains.
+  // Main reports the facts only it knows (minimised, hidden, on battery); the page decides.
+  registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender: isTabView, send: pushToViews });
 
   // The global dock layout (layout pass L1): install-wide like the toggle above,
   // and followed across project windows the same way -- see layout-bridge.js.
