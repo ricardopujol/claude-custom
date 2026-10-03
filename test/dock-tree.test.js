@@ -105,6 +105,16 @@ test('a stored size that is null, a string, zero or huge is replaced or clamped,
   assert.equal(big.root.sizes[1], 10000);
 });
 
+// Found by P2 (test/dock-tree-properties.test.js): 5e-324 is "positive", but half of it is 0, and a 0 stored for
+// a kid that doesn't hold the terminal is a panel that can never be drawn (the next normalize swaps it for the default).
+test('a tiny stored size is raised to 1 and never underflows to 0 when its slot is shared', () => {
+  const l = T.normalize(v2(row([term, row([g('a', 'agents'), g('b', ...IDS.slice(1))], [1, 1])], [0, 5e-324])), IDS);
+  assert.deepEqual(l.root, row([term, g('a', 'agents'), g('b', ...IDS.slice(1))], [0, 1, 1]));
+  assert.deepEqual(T.normalize(l, IDS), l);
+  const small = T.normalize(v2(row([term, g('a', ...IDS)], [0, 0.25])), IDS);
+  assert.deepEqual(small.root.sizes, [0, 1]);
+});
+
 test('a column with a missing size gets the column default', () => {
   const l = T.normalize(v2(col([term, g('a', ...IDS)], [0])), IDS);
   assert.equal(l.root.sizes[1], T.DEFAULT_SIZE.col);

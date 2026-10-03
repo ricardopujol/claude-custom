@@ -41,6 +41,10 @@ const MAX_SIZE = 10000;
 const MAX_DEPTH = 12;                                 // junk input must not recurse without end
 const SIDES = ['left', 'right', 'top', 'bottom', 'center'];
 
+// A size is stored at least 1: 5e-324 is "positive" but half of it is 0, and a stored 0 for a kid that
+// doesn't hold the terminal is read as "no size" by the next normalize (found by P2).
+const stored = v => Math.min(MAX_SIZE, Math.max(1, v));
+
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const isSize = v => typeof v === 'number' && Number.isFinite(v) && v > 0;
 const TERM = () => ({ type: 'term' });
@@ -77,12 +81,12 @@ function clean(n, st, depth) {
   n.kids.forEach((k, i) => {
     const c = clean(k, st, depth + 1);
     if (!c) return;
-    const asked = isSize(rawSizes[i]) ? Math.min(MAX_SIZE, rawSizes[i]) : DEFAULT_SIZE[n.dir];
+    const asked = isSize(rawSizes[i]) ? stored(rawSizes[i]) : DEFAULT_SIZE[n.dir];
     if (c.type === 'split' && c.dir === n.dir) {
       // Flatten. A nested spine keeps its own pixel sizes; anything else shares this slot in proportion.
       const spine = hasTerm(c);
       const tot = c.sizes.reduce((a, b) => a + b, 0) || 1;
-      c.kids.forEach((kk, j) => { kids.push(kk); sizes.push(spine ? c.sizes[j] : asked * c.sizes[j] / tot); });
+      c.kids.forEach((kk, j) => { kids.push(kk); sizes.push(spine ? c.sizes[j] : stored(asked * c.sizes[j] / tot)); });
     } else {
       kids.push(c);
       sizes.push(hasTerm(c) ? 0 : asked);           // the spine flexes: the kid holding the terminal takes what is left
