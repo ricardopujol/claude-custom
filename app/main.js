@@ -40,7 +40,17 @@ const { projectLabel } = require('../host/project-path');
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
 const { readIdentity, readTokenFile } = require('../host/host-identity');
-const { readLook } = require('../host/style');
+const { readLook, lookDirState, ensureLookDir } = require('../host/style');
+// Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
+// launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
+const { createOccupancyService } = require('../host/occupancy-service');
+const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
+const { startTimes, createSelfStartTime } = require('../host/proc-start');
+// ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
+// host of this build runs (a plain terminal, an older build). host/occupancy-transcripts.js.
+const { createTranscriptScanner } = require('../host/occupancy-transcripts');
+const { createRootsProvider } = require('../host/worktree-roots');
+const { defaultProjectsDir } = require('../host/session-model');
 const { readOpenPrs, parseOpenPrs, openPrFor } = require('../host/open-prs');
 const { readSeams, fixtureReader } = require('../host/probe-seams');
 const tabMarks = require('./tab-marks');
@@ -327,6 +337,8 @@ function markSubmenu(branch) {
 
 let win = null;
 let tabShell = null;
+let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
+let transcriptOccupancy = null;    // ...and the fallback producer: claims read off the subagent transcripts
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
 
 const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
@@ -834,6 +846,9 @@ function registerIpc() {
     : { kind: 'explain', text: "That tab's window can't be found." }));
   // The Git drawer (Enhancement #46): what the tabs of its worktrees are doing, and *Type /merged*, which
   // switches to that branch's tab and types `/merged` + Enter into its session.
+  // Worktree occupancy: a page's first paint asks what is in its folder and what its session launched; after
+  // that main pushes `occupancy` on change.
+  ipcMain.handle('occupancy:get', (e) => (isTabView(e.sender) ? tabShell.occupancyFor(e.sender) : null));
   ipcMain.handle('tab:states', (e, folders) => (isTabView(e.sender) ? tabShell.tabStates(e.sender, folders) : []));
   ipcMain.handle('tab:typeMerged', (e, folder, branch) => (isTabView(e.sender)
     ? tabShell.typeMerged(e.sender, folder, branch)
@@ -1166,6 +1181,13 @@ function startProbeDriver(port) {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
           "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
+      // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
+      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js).
+      let stripOccupancy = null;
+      try {
+        stripOccupancy = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height })))"));
+      } catch (err) { stripOccupancy = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
       try {
@@ -1194,7 +1216,7 @@ function startProbeDriver(port) {
       const windowFrame = { bounds: win.getBounds(), content: win.getContentBounds(), dom: windowChromeDom };
       const snap = tabShell.snapshot();
       return {
-        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar, windowFrame,
+        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen,
       };
     },
@@ -1338,6 +1360,33 @@ app.whenReady().then(async () => {
   const openPrsReader = seams.openPrsFixture
     ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
     : readOpenPrs;
+  occupancyService = createOccupancyService({
+    dir: occupancyDir(STATE_ROOT),
+    // The watcher creates the folder if it is missing (a first claim must be seen). Through the look folder's
+    // own guard: a `.claude-custom` that is a link to somewhere else is never written through, and a fresh
+    // one gets its .gitignore before anything lands in it.
+    ensureDir: () => {
+      if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
+      ensureLookDir(STATE_ROOT, fs);
+      fs.mkdirSync(occupancyDir(STATE_ROOT), { recursive: true });
+    },
+    startTimes,
+    onChange: () => { if (tabShell) tabShell.refresh(); },
+    log: (...a) => console.log(...a),
+  });
+  transcriptOccupancy = createTranscriptScanner({
+    projectsDir: seams.projectsDir || defaultProjectsDir(),
+    roots: createRootsProvider({ cwd: STATE_ROOT, log: (...a) => console.log(...a) }),
+    // The SAME store the hosts write to. The proof a reader checks is this window's own process: its claims
+    // go dark with it, and close() removes the ones it still owns.
+    writer: createClaimWriter({ stateRoot: STATE_ROOT, log: (...a) => console.log(...a) }),
+    dir: occupancyDir(STATE_ROOT),
+    ownPid: process.pid,
+    ownStartedAt: createSelfStartTime(),
+    // one producer per agent: what the readers already show as live is left to whoever wrote it
+    liveClaims: () => occupancyService.current(),
+    log: (...a) => console.log(...a),
+  });
   tabShell = createShell({
     mode: MODE,
     container: PROJECT ? PROJECT.root : null,
@@ -1346,6 +1395,8 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
+    // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
+    occupancy: { claims: () => occupancyService.current() },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
     prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
@@ -1392,6 +1443,8 @@ app.whenReady().then(async () => {
 
   reloadMarks();
   if (MODE === 'tabs') pruneGoneMarks();
+  occupancyService.start();
+  transcriptOccupancy.start();
   const first = await tabShell.open();
   if (attachOnlyRefusal) {
     console.error('[main] Open refused:', attachOnlyRefusal.reason);
@@ -1418,3 +1471,5 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   app.quit();
 });
+
+app.on('will-quit', () => { if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });

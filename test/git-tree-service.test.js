@@ -42,6 +42,33 @@ test('answers the model for this repo: history + ledger totals + open PRs', asyn
   assert.strictEqual(tree.branches[0].spend, 10);
 });
 
+test('the ledger is given the worktrees git listed, so a subagent\'s spend can go to the worktree it worked in', async () => {
+  const path = require('path');
+  let got;
+  const d = deps({
+    readHistory: async () => ({ ...HISTORY, worktrees: [
+      { path: 'C:/p/dev', branch: 'develop' }, { path: 'C:/p/feat-a', branch: 'feat/a' }, { path: 'C:/p/detached', branch: null }] }),
+    updateLedger: async (l, opts) => { got = opts; return { ledger: l, read: 0, errors: 0 }; },
+  });
+  await createGitTreeService(d).get();
+  assert.deepStrictEqual(got.worktrees, [
+    { root: path.resolve('C:/p/dev'), branch: 'develop' }, { root: path.resolve('C:/p/feat-a'), branch: 'feat/a' },
+    { root: path.resolve('C:/p/detached'), branch: null }]);
+  assert.strictEqual(got.projectRoot, 'C:\\p');
+});
+
+test('a history that lists no worktree at all is "could not be had" (null), never "there are none" ([])', async () => {
+  for (const worktrees of [[], undefined, null, 'x', [{ branch: 'feat/a' }, null, { path: 5 }]]) {
+    let got;
+    const d = deps({
+      readHistory: async () => ({ ...HISTORY, worktrees }),
+      updateLedger: async (l, opts) => { got = opts; return { ledger: l, read: 0, errors: 0 }; },
+    });
+    await createGitTreeService(d).get();
+    assert.strictEqual(got.worktrees, null, JSON.stringify(worktrees));
+  }
+});
+
 test('requests while one is running share it: one read of git, one of the transcripts', async () => {
   const d = deps();
   const s = createGitTreeService(d);
