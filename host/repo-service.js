@@ -59,8 +59,16 @@ function createRepoService({
     });
   }
 
+  // The first listing is read once and shared. A FAILED one is not kept (PR #95 Dexter D5): a git timeout under
+  // load would otherwise be the answer for the life of the host, and only a file change could clear it, so the
+  // next ask runs git again.
   const ensureLoaded = () => {
-    if (!loaded) loaded = index.refresh();
+    if (!loaded) {
+      loaded = index.refresh().then((status) => {
+        if (!status || status.ok === false) loaded = null;
+        return status;
+      });
+    }
     return loaded;
   };
 

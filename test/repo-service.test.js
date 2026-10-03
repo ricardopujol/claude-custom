@@ -265,3 +265,29 @@ test('D4: with no change in between, overlapping asks still share one read', asy
   await Promise.all([1, 2, 3].map(seq => svc.handle({ type: 'repo', action: 'overlay', seq })));
   assert.strictEqual(reads, 1);
 });
+
+// ---- PR #95 Dexter D5: a failed first listing is not cached for the life of the host ----
+
+test('D5: a first ls-files that failed is asked again by the next list (no watch event needed)', async () => {
+  const { createIndex } = require('../host/repo-index');
+  let n = 0;
+  const NUL = String.fromCharCode(0);
+  const index = createIndex('C:\r', { execFile: (f, a, o, cb) => (n++ === 0 ? cb(new Error('boom'), '', 'fatal: timed out') : cb(null, `a.js${NUL}`, '')) });
+  const svc = make({ root: 'C:\r', readFog: noFog, index });
+  const first = await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 1 });
+  assert.strictEqual(first.ok, false);
+  const second = await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 2 });
+  assert.strictEqual(second.ok, true);
+  assert.deepStrictEqual(second.entries.map(e => e.name), ['a.js']);
+  assert.strictEqual(n, 2);
+});
+
+test('D5: a listing that worked is still asked once, not on every list', async () => {
+  const { createIndex } = require('../host/repo-index');
+  let n = 0;
+  const index = createIndex('C:\r', { execFile: (f, a, o, cb) => { n++; cb(null, '', ''); } });
+  const svc = make({ root: 'C:\r', readFog: noFog, index });
+  await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 1 });
+  await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 2 });
+  assert.strictEqual(n, 1);
+});
