@@ -447,7 +447,7 @@ async function act(dial, id) {
       say(dial, key, `Copied ${name}.`);
     } else if (id === 'run-merged') {
       if (!b || !b.folder || !st.onRunMerged) return;
-      const r = await st.onRunMerged(b.folder);
+      const r = await st.onRunMerged(b.folder, b.name);
       // A box that wasn't empty was cleared first (a draft, or the CLI's placeholder: the text can't tell)
       if (r && r.kind === 'sent') {
         say(dial, key, `Sent /merged to ${r.branch || b.name}'s session.`

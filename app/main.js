@@ -40,6 +40,8 @@ const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
 const { readIdentity, readTokenFile } = require('../host/host-identity');
 const { readLook } = require('../host/style');
+const { readOpenPrs, parseOpenPrs, openPrFor } = require('../host/open-prs');
+const { readSeams, fixtureReader } = require('../host/probe-seams');
 const tabMarks = require('./tab-marks');
 const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store');
 const { sanitizeDim } = require('../host/look');
@@ -1283,6 +1285,10 @@ app.whenReady().then(async () => {
   // opening a window anyway would show a terminal wired to nothing.
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
 
+  const seams = readSeams(process.env);
+  const openPrsReader = seams.openPrsFixture
+    ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
+    : readOpenPrs;
   tabShell = createShell({
     mode: MODE,
     container: PROJECT ? PROJECT.root : null,
@@ -1291,6 +1297,8 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
+    // Run /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
+    prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
     // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.
     ops: createOps({ dir: scriptsDir(process.env) }),

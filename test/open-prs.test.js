@@ -39,3 +39,14 @@ test('readOpenPrs runs gh with the agreed arguments and parses its output', asyn
 test('gh missing, failing or timing out is null', async () => {
   assert.strictEqual(await readOpenPrs('C:/p', { run: async () => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); } }), null);
 });
+
+// PR #93 Miguel I3: main's own re-check before Run /merged types anything.
+test('openPrFor: true for a branch with an open PR, false for one without, null when gh can not say', async () => {
+  const { openPrFor } = require('../host/open-prs');
+  const read = async () => new Map([['feat/b', { pr: 91, title: 't' }]]);
+  assert.strictEqual(await openPrFor('C:/p', 'feat/b', { read }), true);
+  assert.strictEqual(await openPrFor('C:/p', 'feat/c', { read }), false);
+  assert.strictEqual(await openPrFor('C:/p', 'feat/b', { read: async () => null }), null);
+  assert.strictEqual(await openPrFor('C:/p', 'feat/b', { read: async () => { throw new Error('boom'); } }), null);
+  assert.strictEqual(await openPrFor('C:/p', '', { read }), false);
+});

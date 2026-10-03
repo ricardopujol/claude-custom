@@ -377,8 +377,8 @@ function renderGitTree(tree) {
       const r = await window.harness.writeClipboard(name);
       if (!r || r.ok !== true) throw new Error((r && r.error) || 'the clipboard refused it');
     },
-    onRunMerged: async (folder) => {
-      const r = await window.harness.runMerged(folder);
+    onRunMerged: async (folder, branch) => {
+      const r = await window.harness.runMerged(folder, branch);
       requestGitTabs();     // the session is busy now: the drawer should say so
       return r;
     },

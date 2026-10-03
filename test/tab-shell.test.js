@@ -56,6 +56,8 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     removeResult: { ok: true, already: false },
     focused,            // the window's OS focus; a test flips it
     slept: [],          // the spaced waits runMerged asked for
+    openPr: true,       // Run /merged's gh re-check: true / false / null (unknown), or (branch) => that
+    prAsks: [],
   };
   // A worktree appears in git's list (what new-worktree.ps1 does).
   h.addWorktree = (name, branch) => { h.listText += '\n' + porcelain([[name, branch]]); };
@@ -148,6 +150,10 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     },
   };
   deps.sleep = async (ms) => { h.slept.push(ms); };
+  deps.prs = { openFor: async (folder, branch) => {
+    h.prAsks.push([normPath(folder), branch]);
+    return typeof h.openPr === 'function' ? h.openPr(branch) : h.openPr;
+  } };
   if (marks !== undefined) deps.marks = marks;
   h.shell = createShell(deps);
   return h;
@@ -1125,6 +1131,46 @@ test('PR #93 Dexter F5: a tab blocked by another session (no terminal) is told, 
     assert.match(r.text, re);
   }
   assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
+});
+
+test('PR #93 Dexter F6: the worktree switched branch since the drawer drew: refused, naming the branch it is on', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, { ok: true, box: '' });
+  h.listText = porcelain([['dev', 'develop'], ['feat-a', 'feat/y'], ['feat-b', 'feat/b']]);
+  await h.shell.poll();
+  await flush();
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /on feat\/y now, not feat\/a/);
+  assert.match((await h.shell.runMerged(devView, wt('feat-a'), undefined)).text, /which branch/);
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
+});
+
+test('PR #93 Miguel I3: main never runs /merged on an integration branch, and re-confirms the open PR with gh', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(devView, idleStatus);
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, { ok: true, box: '' });
+  const dev = await h.shell.runMerged(devView, wt('dev'), 'develop');
+  assert.strictEqual(dev.kind, 'explain');
+  assert.match(dev.text, /never on develop/);
+  for (const [answer, re] of [[false, /no open PR/], [null, /couldn't confirm/i]]) {
+    h.openPr = answer;
+    const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+    assert.strictEqual(r.kind, 'explain', String(answer));
+    assert.match(r.text, re);
+  }
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), [], 'nothing typed without a confirmed open PR');
+  h.openPr = true;
+  assert.strictEqual((await h.shell.runMerged(devView, wt('feat-a'), 'feat/a')).kind, 'sent');
+  assert.deepStrictEqual(h.prAsks.at(-1), [key('feat-a'), 'feat/a'], "gh is asked about THAT branch, in its worktree");
 });
 
 // --- Go to that session ------------------------------------------------------

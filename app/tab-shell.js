@@ -182,6 +182,8 @@ const REOPEN_MAX = 10;
 // target page to say it typed (its spaced keys and read-back take under a second).
 const TAB_STATES_MAX = 200;
 const TYPE_ANSWER_MS = 5000;
+// The branches /merged never runs on: it merges a lane INTO these
+const INTEGRATION = ['develop', 'main', 'master'];
 
 const errorText = (err) => (err && err.message) || String(err);
 
@@ -191,8 +193,11 @@ function createShell(deps) {
     git, hosts, ops, views, ui, log = () => {},
     // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
     marks = null,
-    // The spaced wait between typing and Enter (*Run /merged*); injected so a test doesn't wait.
+    // How long Run /merged waits for the target page's answer; injected so a test doesn't wait.
     sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+    // Run /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
+    // (gh can't say). Absent: never confirmed, so never typed.
+    prs = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -869,9 +874,12 @@ function createShell(deps) {
    * first, enters vim INSERT if needed, and presses Enter only once the box reads back exactly `/merged`.
    * Always answers { kind: 'sent', branch, cleared } or { kind: 'explain', text }.
    */
-  async function runMerged(sender, folder) {
+  async function runMerged(sender, folder, wanted) {
     if (!isTabView(sender)) return { kind: 'explain', text: "That tab's window can't be found." };
     if (typeof folder !== 'string' || !folder) return { kind: 'explain', text: 'That branch has no worktree folder.' };
+    if (typeof wanted !== 'string' || !wanted) return { kind: 'explain', text: 'Run /merged needs to know which branch it is for.' };
+    // PR #93 Miguel I3: never on an integration branch, whatever the renderer asked
+    if (INTEGRATION.includes(wanted)) return { kind: 'explain', text: `/merged merges a lane: never on ${wanted}.` };
     const key = keyOf(folder);
     const entry = model().find(e => e.key === key);
     const tab = tabByKey(key);
@@ -879,6 +887,9 @@ function createShell(deps) {
     if (!entry || !tab) return { kind: 'explain', text: `${name} has no tab open in this window.` };
     if (!tab.started || !Number.isInteger(tab.port) || !tab.token) return { kind: 'explain', text: `${name}'s tab hasn't started a session yet.` };
     if (!tab.status) return { kind: 'explain', text: `${name}'s session hasn't reported what it's doing yet.` };
+    // PR #93 Dexter F6: the drawer names a BRANCH; the worktree may have switched since it drew
+    const on = branchOf(key);
+    if (on !== wanted) return { kind: 'explain', text: `${name} is on ${on || 'no branch'} now, not ${wanted}: refresh the Git panel.` };
     const why = busyWhy(tab.status);
     if (why) return { kind: 'explain', text: `${name}'s session ${why}.` };
     // One at a time per tab (PR #93 Dexter F4 / Miguel I1): a double click or a held Enter passes every
@@ -886,7 +897,15 @@ function createShell(deps) {
     if (runningMerged.has(key)) return { kind: 'explain', text: `Already sending /merged to ${name}'s session.` };
     runningMerged.add(key);
     try {
-      const branch = branchOf(key);
+      // PR #93 Miguel I3: main confirms the open PR itself (gh, in that worktree), never on the renderer's word
+      let open = null;
+      try { open = prs && typeof prs.openFor === 'function' ? await prs.openFor(folder, wanted) : null; } catch { open = null; }
+      if (open === false) return { kind: 'explain', text: `${wanted} has no open PR: /merged has nothing to merge.` };
+      if (open !== true) return { kind: 'explain', text: `Couldn't confirm with gh that ${wanted} has an open PR, so nothing was typed.` };
+      // gh took a moment: the session may have started a turn meanwhile
+      const still = tab.status ? busyWhy(tab.status) : "hasn't reported what it's doing";
+      if (still) return { kind: 'explain', text: `${name}'s session ${still}.` };
+      const branch = wanted;
       await userSelect(key);
       const r = await askToType(tab, '/merged');
       if (!r) return { kind: 'explain', text: `Couldn't confirm /merged reached ${name}'s session: its page didn't answer.` };

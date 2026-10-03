@@ -129,7 +129,7 @@ test('the preload exposes exactly the tab bridge on the tab:* channels, replace-
   assert.match(p, /selectFolder: \(folder\) => ipcRenderer\.invoke\('tab:selectFolder', folder\)/);
   // the Git drawer's tab states and *Run /merged* (Enhancement #46)
   assert.match(p, /tabStates: \(folders\) => ipcRenderer\.invoke\('tab:states', folders\)/);
-  assert.match(p, /runMerged: \(folder\) => ipcRenderer\.invoke\('tab:runMerged', folder\)/);
+  assert.match(p, /runMerged: \(folder, branch\) => ipcRenderer\.invoke\('tab:runMerged', folder, branch\)/);
   assert.match(p, /raise: \(\) => ipcRenderer\.send\('tab:raise'\)/);
   // PR #93 Dexter F3: main asks THIS page to type a command into its own box, and hears back
   assert.match(p, /onTypeCommand: \(fn\) => \(ipcRenderer\.removeAllListeners\('type-command'\)/);
