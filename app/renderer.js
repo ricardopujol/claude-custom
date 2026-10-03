@@ -902,6 +902,16 @@ function sendOverride(layout) {
 
 const placementOf = l => JSON.stringify(l);
 
+// Save the global layout. Main answers null when it refused the layout (not an object, over the size cap) or the
+// write failed, and the call rejects when the bridge is gone: either way this window shows a layout that was not
+// saved, which is said once per failed save instead of swallowed (PR #100 Miguel S3).
+function saveGlobalLayout(l) {
+  const bridge = window.harness && window.harness.layoutTree;
+  if (!bridge) return;
+  const notSaved = () => flashAttention({ urgent: false, title: 'Couldn\'t save the layout' });
+  bridge.set(l).then((answer) => { if (!window.dockTreeView.layoutSaved(answer)) notSaved(); }, notSaved);
+}
+
 // A placement change (dock, hide, show, resize) goes to this tab's own layout
 // when it has one or `justThisTab` asks for one, else to the global layout. A
 // change that moves nothing writes nothing: no store write, no push to every
@@ -920,7 +930,7 @@ function commitPlacement(next, { justThisTab = false, select = null } = {}) {
     sendOverride(l);
   } else {
     globalLayout = l;
-    if (window.harness && window.harness.layoutTree) window.harness.layoutTree.set(l).catch(() => {});
+    saveGlobalLayout(l);
   }
   renderLayout({ userAction: true });
 }
@@ -930,7 +940,7 @@ function dropOwnLayout({ makeGlobal = false } = {}) {
   if (!ownLayout) return;
   if (makeGlobal) {
     globalLayout = ownLayout;
-    if (window.harness && window.harness.layoutTree) window.harness.layoutTree.set(ownLayout).catch(() => {});
+    saveGlobalLayout(ownLayout);
   }
   ownLayout = null;
   sendOverride(null);
@@ -1209,11 +1219,11 @@ async function loadLayout() {
     if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); renderLayout(); }
     else if (what === 'migrate-v1') {
       globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);
-      bridge.set(globalLayout).catch(() => {});
+      saveGlobalLayout(globalLayout);
       renderLayout();
     } else if (what === 'migrate-legacy') {
       globalLayout = legacyLayout();
-      bridge.set(globalLayout).catch(() => {});
+      saveGlobalLayout(globalLayout);
       renderLayout();
     } else flashAttention({ urgent: false, title: 'Couldn\'t read the saved layout; showing the default' });
   }

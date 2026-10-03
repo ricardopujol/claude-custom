@@ -142,6 +142,13 @@ function rebaseDrag(layout, drag) {
 }
 
 /**
+ * What `harness.layoutTree.set` answered: main echoes the layout back once it is written, and answers null
+ * when it refused it (not a plain object, over the size cap) or the write failed. Anything but an object
+ * means this window shows a layout that was not saved.
+ */
+function layoutSaved(answer) { return isObject(answer); }
+
+/**
  * The Window menu's panel rows: every module of the layout in registry order,
  * hidden ones too. It lists hidden modules on purpose: it is the way back for
  * one, and the way out when every module is hidden and there is no tab left.
@@ -325,7 +332,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

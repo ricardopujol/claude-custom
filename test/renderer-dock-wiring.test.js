@@ -52,7 +52,7 @@ test('Dexter F3 / Miguel I1: only a MISSING tree migrates and saves at load; unr
   const body = fnBody('loadLayout');
   assert.match(body, /const what = window\.dockTreeView\.afterTreeGet\(answer, v1Answer, \{ v1Bridge: !!window\.harness\.layout \}\);/);   // no L1 bridge is "nothing to migrate", not a failed read (PR #100 S5)
   // Every save at load sits in one of the two migrate branches, and nothing else saves.
-  const sets = [...body.matchAll(/bridge\.set\(/g)];
+  const sets = [...body.matchAll(/saveGlobalLayout\(/g)];       // the helper is the one save path (PR #100 S3)
   assert.strictEqual(sets.length, 2, 'the two migrations, no other save at load');
   for (const s of sets) {
     const before = body.slice(0, s.index);
@@ -151,4 +151,16 @@ test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its star
   assert.match(JS, /rect: dock\.getBoundingClientRect\(\), viewport: dockViewport\(\)/);
   assert.match(JS, /zonesAt\(lastPlan \? lastPlan\.boxes : \[\], drag\.viewport, \{ x: e\.clientX - drag\.rect\.left, y: e\.clientY - drag\.rect\.top \}\)/);
   assert.match(JS, /if \(sig !== drag\.sig\) \{ drag\.sig = sig; drawZones\(hit\.zones\); \}/);
+});
+
+test('PR #100 Miguel S3: every save of the global layout goes through one helper that says so when the store refuses it', () => {
+  // Only the helper talks to the store; the four places that save call it.
+  assert.strictEqual([...JS.matchAll(/\bbridge\.set\(/g)].length, 1, 'only inside saveGlobalLayout');
+  const at = JS.indexOf('function saveGlobalLayout(');
+  assert.ok(at !== -1);
+  const body = JS.slice(at, JS.indexOf('\n}', at));
+  assert.match(body, /window\.dockTreeView\.layoutSaved\(answer\)/, 'a null answer is a failed save');
+  assert.match(body, /Couldn\\'t save the layout/);
+  assert.match(body, /, notSaved\);/, 'and so is a rejection');
+  assert.strictEqual([...JS.matchAll(/saveGlobalLayout\(/g)].length, 5, 'definition + commitPlacement + dropOwnLayout + the two migrations');
 });

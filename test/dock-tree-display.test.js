@@ -268,3 +268,10 @@ test('S5: a missing L1 bridge changes nothing when the tree is readable or damag
   for (const status of ['unreadable', 'corrupt']) assert.strictEqual(V.afterTreeGet({ status, layout: null }, null, { v1Bridge: false }), 'keep', status);
   assert.strictEqual(V.afterTreeGet(null, null, { v1Bridge: false }), 'keep');
 });
+
+// --- PR #100 Miguel S3: a refused save is said, not swallowed ----------------------------------
+
+test('S3: layoutSaved is true only for the layout main echoes back; null (refused, oversized, write failed) is not saved', () => {
+  assert.strictEqual(V.layoutSaved({ version: 2, root: { type: 'term' } }), true);
+  for (const bad of [null, undefined, 0, 'x', [], true]) assert.strictEqual(V.layoutSaved(bad), false, JSON.stringify(bad));
+});
