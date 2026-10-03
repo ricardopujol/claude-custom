@@ -904,17 +904,29 @@ function shortcutFor(input) {
   if (!input || typeof input !== 'object' || input.type !== 'keyDown' || typeof input.key !== 'string') return null;
   const key = input.key.toLowerCase();
   if (key === 'f12') return 'devtools';
+  // #35: a new tab is a new worktree. Ctrl+Alt+T, not Ctrl+T: the CLI owns that
+  // one (it toggles its task list), and every key not named here reaches it.
+  if (key === 't' && input.control && input.alt && !input.shift) return 'new-branch';
   if (!input.control || input.alt) return null;
   if (key === 'tab') return input.shift ? 'prev-tab' : 'next-tab';
   if (key === 'i' && input.shift) return 'devtools';
   // PR 3: reopen the last tab closed by hand, as a browser does.
   if (key === 't' && input.shift) return 'reopen-tab';
-  // #35: a new tab is a new worktree, so Ctrl+T opens the branch form.
-  if (key === 't') return 'new-branch';
   // Layout pass L1 (#1): only the terminal shows. Main's, so it works from any
   // tab view and the key never reaches the pty.
   if (key === 'f' && input.shift) return 'focus-mode';
   return null;
+}
+
+/**
+ * Will the shortcut `action` do anything right now? Main swallows a key only
+ * when it will: New branch… on a greyed-out `+` item (a single-folder window, no
+ * worktree scripts, a creation running) leaves its key to the terminal, so a key
+ * the app can't use isn't taken from the CLI for nothing (PR #90 Dexter F2).
+ */
+function shortcutWillAct(action, shell) {
+  if (action === 'new-branch') return shell.plusMenu().create.enabled === true;
+  return true;
 }
 
 // --- the probe driver's command handling ----------------------------------------
@@ -1031,5 +1043,5 @@ function probeLineReader(maxBytes) {
 
 module.exports = {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, focusStep, menuText, NO_PORT_ERROR,
+  handleProbeCommand, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
 };

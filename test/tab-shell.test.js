@@ -15,7 +15,7 @@ const fc = require('fast-check');
 
 const {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, noWindowText, shortcutFor, focusStep, probeLineReader, menuText,
+  handleProbeCommand, noWindowText, shortcutFor, shortcutWillAct, focusStep, probeLineReader, menuText,
 } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
 const tabModel = require('../app/tab-model');
@@ -54,6 +54,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     available: { create: true, setup: true, remove: true },
     createResult: null, setupHold: null, setupResult: { ok: true, result: null }, onLine: null,
     removeResult: { ok: true, already: false },
+    focused,            // the window's OS focus; a test flips it
   };
   // A worktree appears in git's list (what new-worktree.ps1 does).
   h.addWorktree = (name, branch) => { h.listText += '\n' + porcelain([[name, branch]]); };
@@ -142,7 +143,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
       confirmClose: async () => h.confirm,
       changed: (snap) => h.changes.push(snap),
       focusWindow: () => { h.focusCalls++; },
-      isFocused: () => focused,
+      isFocused: () => h.focused,
     },
   };
   if (marks !== undefined) deps.marks = marks;
@@ -1677,13 +1678,34 @@ test('PROPERTY: a poll with no dev keeps every tab, whatever git lists', async (
     }), { numRuns: 20 });
 });
 
-test('shortcutFor: Ctrl+T (either case) opens New branch…, like a browser\'s new tab (#35)', () => {
-  assert.strictEqual(shortcutFor(kd('t', { control: true })), 'new-branch');
-  assert.strictEqual(shortcutFor(kd('T', { control: true })), 'new-branch');
-  assert.strictEqual(shortcutFor(kd('t', { control: true, alt: true })), null);
+test('shortcutFor: Ctrl+Alt+T opens New branch…; plain Ctrl+T stays the CLI task-list key (#35)', () => {
+  assert.strictEqual(shortcutFor(kd('t', { control: true, alt: true })), 'new-branch');
+  assert.strictEqual(shortcutFor(kd('T', { control: true, alt: true })), 'new-branch');
+  assert.strictEqual(shortcutFor(kd('t', { control: true })), null, 'Ctrl+T toggles the task list of the CLI');
+  assert.strictEqual(shortcutFor(kd('t', { control: true, shift: true, alt: true })), null);
+  assert.strictEqual(shortcutFor(kd('t', { alt: true })), null);
   assert.strictEqual(shortcutFor(kd('t', {})), null, 'a plain t is typed');
-  assert.strictEqual(shortcutFor(kd('t', { shift: true })), null);
-  assert.strictEqual(shortcutFor({ ...kd('t', { control: true }), type: 'keyUp' }), null);
+  assert.strictEqual(shortcutFor({ ...kd('t', { control: true, alt: true }), type: 'keyUp' }), null);
+});
+
+test('shortcutWillAct: New branch… claims its key only when the form will open (#35)', async () => {
+  const tabs = harness();
+  await tabs.shell.open();
+  assert.strictEqual(shortcutWillAct('new-branch', tabs.shell), true);
+  tabs.available = { create: false, setup: false, remove: false };
+  assert.strictEqual(shortcutWillAct('new-branch', tabs.shell), false, 'scripts missing: the key reaches the terminal');
+  tabs.available = { create: true, setup: true, remove: true };
+  const gate = new Promise(() => {});
+  tabs.createResult = () => gate;
+  tabs.shell.createWorktree('feat/x');
+  await flush();
+  assert.strictEqual(shortcutWillAct('new-branch', tabs.shell), false, 'a creation is running');
+  const single = harness({ mode: 'single' });
+  await single.shell.open();
+  assert.strictEqual(shortcutWillAct('new-branch', single.shell), false, 'single mode');
+  for (const a of ['next-tab', 'prev-tab', 'reopen-tab', 'focus-mode', 'devtools']) {
+    assert.strictEqual(shortcutWillAct(a, single.shell), true, `${a} is always the app's`);
+  }
 });
 
 test('openCreate follows the + menu\'s greyed-out rule: no scripts, no form (#35)', async () => {

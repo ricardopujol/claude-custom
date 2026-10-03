@@ -204,7 +204,7 @@ test('the shortcuts are registered on the strip AND on every tab view, and only 
   const at = MAIN.indexOf('function registerShortcuts');
   const body = MAIN.slice(at, at + 900);
   assert.match(body, /shortcutFor\(input\)/);
-  assert.match(body, /if \(!action\) return;\s*event\.preventDefault\(\)/);
+  assert.match(body, /if \(!action \|\| !shortcutWillAct\(action, tabShell\)\) return;\s*event\.preventDefault\(\)/);
 });
 
 test('the raise flashes the frame as well as focusing (Windows may refuse to hand focus over)', () => {
@@ -336,9 +336,25 @@ test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer tha
   assert.match(callText(MAIN, c.at), /typeof branch !== 'string' \|\| branch\.length > 200\) return/);
 });
 
-test('#35: Ctrl+T opens the branch form through the shell, which applies the + menu\'s rule', () => {
-  assert.match(MAIN, /action === 'new-branch'\) tabShell\.openCreate\(\)/);
+test('#35: Ctrl+Alt+T opens the branch form through the shell, which applies the rule of the + menu item', () => {
+  assert.match(MAIN, /action === 'new-branch'\) openBranchForm\(\)/);
   assert.doesNotMatch(MAIN, /accelerator:/);
+});
+
+test('#35 (Dexter F2): a key that will not act is not swallowed -- the decision comes BEFORE preventDefault', () => {
+  const at = MAIN.indexOf('function registerShortcuts');
+  const body = MAIN.slice(at, at + 900);
+  assert.match(body, /if \(!action \|\| !shortcutWillAct\(action, tabShell\)\) return;\s*event\.preventDefault\(\)/);
+});
+
+test('#35 (Dexter F3): Ctrl+Alt+T on a form that is already open hands the keyboard to its field', () => {
+  const at = MAIN.indexOf('function openBranchForm');
+  assert.ok(at !== -1, 'main has openBranchForm');
+  const body = MAIN.slice(at, at + 700);
+  assert.match(body, /const wasOpen = !!tabShell\.snapshot\(\)\.create/);
+  assert.match(body, /if \(!tabShell\.openCreate\(\)\) return false/);
+  assert.match(body, /if \(wasOpen[^]*win\.webContents\.focus\(\)/);
+  assert.match(body, /getElementById\('create-branch'\)\.focus\(\)/);
 });
 
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
