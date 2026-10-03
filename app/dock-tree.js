@@ -40,13 +40,18 @@ const DEFAULT_SIZE = { row: 180, col: 160 };          // a new cell beside / und
 const MAX_SIZE = 10000;
 const MAX_DEPTH = 12;                                 // junk input must not recurse without end
 const SIDES = ['left', 'right', 'top', 'bottom', 'center'];
+// Floating panels (D2): a float is a tab group hung over the dock area, outside the tree.
+const FLOAT_MIN = { width: 160, height: 120 };
+const FLOAT_DEFAULT = { width: 320, height: 260 };
+const CASCADE = 24;                                   // the first float's offset from the corner; each next one adds this
 
 // A size is stored at least 1: 5e-324 is "positive" but half of it is 0, and a stored 0 for a kid that
 // doesn't hold the terminal is read as "no size" by the next normalize (found by P2).
 const stored = v => Math.min(MAX_SIZE, Math.max(1, v));
 
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
-const isSize = v => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+const isSize = v => isNum(v) && v > 0;
 const TERM = () => ({ type: 'term' });
 
 function defaultLayout(ids) {
@@ -71,6 +76,30 @@ function freshId(used, also) {
 }
 const seatGroups = seat => new Set(Object.values(isObject(seat) ? seat : {}).map(s => (isObject(s) ? s.group : null)).filter(v => typeof v === 'string'));
 
+// A group's or float's stored name, or null. 'term' is the terminal's name in drop targets, so nothing can
+// carry it; a name already taken is no name. An unnamed one is named after the pass, when every kept id is known.
+function claimName(n, st) {
+  const id = typeof n.id === 'string' && n.id && n.id !== 'term' && !st.ids.has(n.id) ? n.id : null;
+  if (id) st.ids.add(id);
+  return id;
+}
+
+// A float's numbers, strictly: `Number(null)` is 0, a confident wrong position. Position is stored as the user
+// chose it (a whole number from 0); `fit` keeps it inside whatever window it is drawn in, storage never does.
+const floatPos = v => (typeof v === 'number' && !Number.isNaN(v) ? Math.min(MAX_SIZE, Math.max(0, Math.round(v))) : CASCADE);
+const floatSize = (v, min, dflt) => (isSize(v) ? Math.min(MAX_SIZE, Math.max(min, Math.round(v))) : dflt);
+const floatRect = f => ({
+  x: floatPos(f.x), y: floatPos(f.y),
+  w: floatSize(f.w, FLOAT_MIN.width, FLOAT_DEFAULT.width), h: floatSize(f.h, FLOAT_MIN.height, FLOAT_DEFAULT.height),
+});
+
+function cleanFloat(n, st) {
+  if (!isObject(n)) return null;
+  const tabs = (Array.isArray(n.tabs) ? n.tabs : []).filter(id => st.claim(id));
+  if (!tabs.length) return null;
+  return { id: claimName(n, st), tabs, ...floatRect(n) };
+}
+
 // One pass that enforces I1-I4 on a subtree. `st` carries what has been seen.
 function clean(n, st, depth) {
   if (!isObject(n) || depth > MAX_DEPTH) return null;
@@ -78,10 +107,7 @@ function clean(n, st, depth) {
   if (n.type === 'group') {
     const tabs = (Array.isArray(n.tabs) ? n.tabs : []).filter(id => st.claim(id));
     if (!tabs.length) return null;
-    // 'term' is the terminal's name in drop targets, so a group can't carry it.
-    const id = typeof n.id === 'string' && n.id && n.id !== 'term' && !st.ids.has(n.id) ? n.id : null;
-    if (id) st.ids.add(id);                         // an unnamed group is named after the pass, when every kept id is known
-    return { type: 'group', id, tabs };
+    return { type: 'group', id: claimName(n, st), tabs };
   }
   if (n.type !== 'split' || (n.dir !== 'row' && n.dir !== 'col') || !Array.isArray(n.kids)) return null;
   const rawSizes = Array.isArray(n.sizes) ? n.sizes : [];
@@ -116,6 +142,9 @@ function cleanSeat(raw, hiddenIds, liveGroups) {
     if (isObject(s) && nameOrNull(s.group) && nameOrNull(s.beside) && SEAT_SIDES.has(s.side)) {
       // A group that no longer exists is no group: show then falls through to "beside the neighbour".
       seat[id] = { group: liveGroups.has(s.group) ? s.group : null, beside: s.beside, side: s.side };
+      // A lone floating panel comes back floating where it was: its rectangle rides in the seat.
+      const f = s.float;
+      if (isObject(f) && isNum(f.x) && isNum(f.y) && isSize(f.w) && isSize(f.h)) seat[id].float = floatRect(f);
     }
   }
   return seat;
@@ -136,8 +165,11 @@ function normalize(raw, ids) {
     },
   };
   let r = clean(raw.root, st, 0);
+  // Each module is claimed in the tree first, then in a float, then as hidden: the first place that lists it keeps it.
+  const floats = (Array.isArray(raw.floats) ? raw.floats : []).map(f => cleanFloat(f, st)).filter(Boolean);
   const reserved = seatGroups(raw.seat);
   if (r) walk(r, (n) => { if (n.type === 'group' && n.id === null) n.id = freshId(st.ids, reserved); });
+  for (const f of floats) if (f.id === null) f.id = freshId(st.ids, reserved);
 
   if (!st.term) {
     if (!r) r = TERM();
@@ -154,7 +186,8 @@ function normalize(raw, ids) {
     else r = { type: 'split', dir: 'row', kids: [r, { type: 'group', id: freshId(st.ids, reserved), tabs: missing }], sizes: [0, DEFAULT_SIZE.row] };
   }
 
-  return { version: VERSION, root: r, floats: [], hidden: hiddenIds, seat: cleanSeat(raw.seat, hiddenIds, new Set(groups({ root: r }).map(x => x.id))) };
+  const live = new Set([...groups({ root: r }).map(x => x.id), ...floats.map(f => f.id)]);
+  return { version: VERSION, root: r, floats, hidden: hiddenIds, seat: cleanSeat(raw.seat, hiddenIds, live) };
 }
 
 // Only a plain object of string -> string survives; nothing else a window stored is trusted.
@@ -197,8 +230,12 @@ function selectionFromV1(raw) {
 // --- docking, hiding, showing -------------------------------------------------
 
 const clone = v => JSON.parse(JSON.stringify(v));
-const modulesIn = layout => [...groups(layout).flatMap(gr => gr.tabs), ...layout.hidden];
+const modulesIn = layout => [...groups(layout).flatMap(gr => gr.tabs), ...layout.floats.flatMap(f => f.tabs), ...layout.hidden];
 const groupOf = (layout, id) => groups(layout).find(gr => gr.tabs.includes(id)) || null;
+/** The float that holds a module, or null. (`groups` and `groupOf` are the TREE's: everything that walks the tree relies on that.) */
+const floatOf = (layout, id) => layout.floats.find(f => f.tabs.includes(id)) || null;
+/** Every tab group: the tree's, then the floats. */
+const allGroups = layout => [...groups(layout), ...layout.floats];
 const EDGES = ['left', 'right', 'top', 'bottom'];
 const dirOf = side => (side === 'left' || side === 'right' ? 'row' : 'col');
 const firstOf = side => side === 'left' || side === 'top';
@@ -563,8 +600,8 @@ function fit(layout, selection, viewport) {
 }
 
 const API = {
-  VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, defaultLayout, normalize, groups, count, hasTerm,
-  fromV1, readAny, selectionFromV1, groupOf, dock, hide, show, minSize, setSplitSizes,
+  VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
+  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, hide, show, minSize, setSplitSizes,
   cleanSelection, selectTab, toggleFoldAll, activeOf, fit,
 };
 

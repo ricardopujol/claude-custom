@@ -168,12 +168,6 @@ test('a seat is kept only for a hidden module, and only when well formed', () =>
   assert.deepEqual(bad.seat, {});
 });
 
-test('floats are not part of D1: their modules fall back into the tree', () => {
-  const l = T.normalize(v2(row([term, g('a', 'agents')], [0, 200]), { floats: [{ id: 'f', tabs: ['vault'], x: 1, y: 1, w: 9, h: 9 }] }), IDS);
-  assert.deepEqual(l.floats, []);
-  assert.deepEqual(T.groups(l)[0].tabs, IDS);
-});
-
 test('normalize never changes its input and is idempotent', () => {
   const raw = deepFreeze(v2(row([term, row([g('a', 'agents', 'nope'), g('e')], [1, 1]), g('b', 'agents', 'git')], [0, 300, 'x']),
     { hidden: ['vault', 'ghost'], seat: { vault: { group: null, beside: 'git', side: 'left' } } }));
