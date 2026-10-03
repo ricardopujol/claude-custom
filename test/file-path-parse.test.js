@@ -153,3 +153,24 @@ test('PROPERTY: options lie in the text, end after their start, shrink, and are 
     return true;
   }));
 });
+
+test('PR #92 Miguel I4: the URL guard is linear -- a long run then many tokens stays fast', () => {
+  const text = `${'x'.repeat(50000)} ${'a/b.txt '.repeat(2000)}`;
+  const t0 = Date.now();
+  const c = findCandidates(text);
+  assert.ok(Date.now() - t0 < 1000, `${Date.now() - t0} ms`);
+  assert.strictEqual(c.length, 32);
+  // and tokens inside a URL are still skipped, wherever the URL sits
+  assert.deepStrictEqual(paths('see https://h.example/a/b.html and ftp://x/y/z.txt then c/d.md'), [['c/d.md']]);
+});
+
+test('PR #92 Miguel S6: a path that starts right at a row break is found (the rows met with nothing between)', () => {
+  // "...one.txt" filled its row; the next row starts with another path.
+  const text = 'C:\\a\\one.txtC:\\b\\two.txt';
+  const c = findCandidates(text, [12]);
+  assert.ok(c.some(x => x.start === 12 && x.options.some(o => o.path === 'C:\\b\\two.txt')));
+  const rel = findCandidates('C:\\a\\one.txtapp/two.md', [12]);
+  assert.ok(rel.some(x => x.start === 12 && x.options.some(o => o.path === 'app/two.md')));
+  // without the break, a drive glued to a word is still not a start
+  assert.ok(!findCandidates(text).some(x => x.start === 12));
+});

@@ -106,10 +106,10 @@ test('#37 fileTargetText says what a click will do, by what main decided', () =>
 
 test('#37 fileRefusedText says why nothing opened', () => {
   const { fileRefusedText } = require('../app/link-click');
-  assert.strictEqual(fileRefusedText('C:\a.md', 'gone'), "Not opened: C:\a.md isn't there any more");
-  assert.strictEqual(fileRefusedText('C:\a.md', 'refused'), 'Not opened: C:\a.md (not a local path this tab can open)');
-  assert.strictEqual(fileRefusedText('C:\a.md', 'No application is associated'),
-    'Not opened: C:\a.md (No application is associated)');
+  assert.strictEqual(fileRefusedText('C:\\a.md', 'gone'), "Not opened: C:\\a.md isn't there any more");
+  assert.strictEqual(fileRefusedText('C:\\a.md', 'refused'), 'Not opened: C:\\a.md (not a local path this tab can open)');
+  assert.strictEqual(fileRefusedText('C:\\a.md', 'No application is associated'),
+    'Not opened: C:\\a.md (No application is associated)');
   assert.strictEqual(fileRefusedText(null, undefined), 'Not opened: that file');
-  assert.ok(fileRefusedText('C:\a.md', 'x'.repeat(1000)).length <= 300);
+  assert.ok(fileRefusedText('C:\\a.md', 'x'.repeat(1000)).length <= 300);
 });

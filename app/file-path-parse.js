@@ -90,19 +90,47 @@ function relativeAt(text, start, token, breaks) {
   return toOptions(text, start, ends, end);
 }
 
+// Where URLs (scheme://...) sit, found in ONE linear pass: a token inside one
+// is never a local path. (A regex anchored at each token's start re-scanned
+// everything before it: quadratic, PR #92 Miguel I4.)
+function urlSpans(text) {
+  const spans = [];
+  for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
+    let s = at;
+    while (s > 0 && /[\w+.-]/.test(text[s - 1])) s--;
+    if (s === at || !/[a-z]/i.test(text[s])) continue;
+    let e = at + 3;
+    while (e < text.length && !/\s/.test(text[e])) e++;
+    spans.push([s, e]);
+  }
+  return spans;
+}
+
+const REL_AT = /^(?:\.{1,2}[\\/])?[\w.\-]+(?:[\\/][\w.\-]+)*/;
+const ABS_AT = /^[A-Za-z]:[\\/][^\\/\s<>:"|?*`]/;
+
 function findCandidates(text, breaks = []) {
   if (typeof text !== 'string' || text === '') return [];
-  const bs = Array.isArray(breaks) ? breaks.filter(b => Number.isInteger(b)) : [];
+  const bs = Array.isArray(breaks) ? breaks.filter(b => Number.isInteger(b) && b >= 0 && b < text.length) : [];
+  const urls = urlSpans(text);
+  const inUrl = (i) => urls.some(([s, e]) => i >= s && i < e);
   const out = [];
-  for (const m of text.matchAll(ABS_START)) {
-    const options = absoluteAt(text, m.index, bs);
-    if (options.length) out.push({ start: m.index, options });
-  }
+  const starts = new Set();
+  const add = (start, options) => {
+    if (options.length && !starts.has(start)) { starts.add(start); out.push({ start, options }); }
+  };
+  for (const m of text.matchAll(ABS_START)) add(m.index, absoluteAt(text, m.index, bs));
   for (const m of text.matchAll(REL_TOKEN)) {
-    // A token inside a URL (scheme://host/...) is never a local path.
-    if (/[a-z][\w+.-]*:\/\/\S*$/i.test(text.slice(0, m.index))) continue;
-    const options = relativeAt(text, m.index, m[0], bs);
-    if (options.length) out.push({ start: m.index, options });
+    if (!inUrl(m.index)) add(m.index, relativeAt(text, m.index, m[0], bs));
+  }
+  // Two rows that met with nothing between glue the second row's path onto
+  // the first row's last word, where no start would be seen (Miguel S6).
+  for (const b of bs) {
+    if (inUrl(b)) continue;
+    const rest = text.slice(b, b + MAX_PATH_LENGTH + 32);
+    if (ABS_AT.test(rest)) add(b, absoluteAt(text, b, bs));
+    const m = REL_AT.exec(rest);
+    if (m) add(b, relativeAt(text, b, m[0], bs));
   }
   out.sort((a, b) => a.start - b.start);
   return out.slice(0, MAX_CANDIDATES);
