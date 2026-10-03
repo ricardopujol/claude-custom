@@ -30,6 +30,10 @@
          nothing about how the header already looks -- see
          app/top-bar-display.js's cueColour(null, theme). */
       --model-accent: #d08c4a;
+      /* Worktree occupancy (#44 + #47): an agent is working in this folder (--agent), and this tab's own
+         session is writing too (--warn). The same two colours as the strip's hatched edge. */
+      --agent: #6aa5d8;
+      --warn: #e6c34a;
     }
     * { box-sizing: border-box; }
     /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
@@ -536,13 +540,16 @@
       border-radius: 50%; background: var(--accent);
     }
 
-    #body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-    #mid { flex: 1; display: flex; min-height: 0; }
+    /* Dockable panels (D1): #dock is the area the tree fills. app/dock-tree-display.js gives every
+       box (the terminal, each group, each divider, each rail) its rectangle; nothing here lays them out. */
+    #body { flex: 1; display: flex; min-height: 0; }
+    #dock { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 
     #termwrap {
-      flex: 1; min-width: 0; padding: 8px 10px;
+      position: absolute; box-sizing: border-box; padding: 8px 10px;   /* the lock overlay and banner sit over it */
       background: var(--bg);
-      position: relative;            /* the lock overlay and banner sit over it */
+      /* The first paint, before the script places it: the default's 180 px group and 5 px divider on the right. */
+      left: 0; top: 0; right: 185px; bottom: 0;
     }
     #term { width: 100%; height: 100%; }
 
@@ -592,6 +599,55 @@
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
 
+    /* Worktree occupancy (#44 + #47, take B): a chrome bar over the terminal while an agent is working in this
+       folder, with a coloured left rule; the first-keystroke confirm sits over the input with the same rule.
+       Neither animates: movement means "needs you". */
+    #occupancy-banner {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 16;
+      display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--agent) 12%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--agent) 40%, var(--border));
+      border-left: 4px solid var(--agent);
+    }
+    #occupancy-banner.warn {
+      background: color-mix(in srgb, var(--warn) 14%, var(--chrome));
+      border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+      border-left-color: var(--warn);
+    }
+    #occupancy-banner[hidden], #occupancy-confirm[hidden] { display: none; }
+    #occupancy-banner-text { font-weight: 600; }
+    #occupancy-banner-since, #occupancy-banner-more, #occupancy-banner-note { color: var(--dim); }
+    #occupancy-banner.warn #occupancy-banner-note { color: var(--warn); }
+    #occupancy-banner .spacer { flex: 1; }
+    #occupancy-jump, #occupancy-confirm button {
+      padding: 3px 10px; border-radius: 4px; cursor: pointer; font: inherit;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    }
+    #occupancy-jump:hover, #occupancy-confirm button:hover { border-color: var(--agent); }
+    #occupancy-confirm kbd { font: inherit; font-size: 0.85em; color: var(--dim); margin-left: 4px; }
+    #occupancy-jump[hidden] { display: none; }
+    /* the terminal-banner (other live sessions) sits just under it while both show */
+    body.occupied #terminal-banner { top: 46px; }
+    #occupancy-confirm {
+      position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 18;
+      display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 5px;
+      font-size: 13px; color: var(--text);
+      background: color-mix(in srgb, var(--agent) 16%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--agent) 45%, var(--border));
+      border-left: 4px solid var(--agent);
+    }
+    #occupancy-confirm.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    #occupancy-confirm-text { flex: 1; }
+    /* the hub card's `-> worktree` line (#44) */
+    .agent .agent-where {
+      display: block; max-width: 100%; margin-top: 2px; padding: 0; border: 0; background: none; cursor: pointer;
+      font: inherit; font-size: 10px; text-align: left; color: var(--agent);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .agent .agent-where:hover { text-decoration: underline; }
+    .agent .agent-where-plus { margin-left: 4px; color: var(--dim); }
+
     #diag {
       width: 340px; flex: 0 0 340px;
       background: var(--chrome);
@@ -622,36 +678,49 @@
     /* --- agent roster ------------------------------------------------------
        Reactive, not a gallery: an agent appears when it first runs and its
        portrait reflects the mood machine's state. */
-    /* --- dock zones (layout pass L1, BACKLOG #22) ----------------------------
-       Every side panel is a module in one of four zones around the terminal.
-       Sizes come from app/dock-zones-display.js as --zone-<name> (0 for an
-       empty zone, the rail for a collapsed one); nothing here decides them.
-       The right zone's fallback is today's 180 px so the first paint, before
-       the script runs, looks like the old sidebar rather than a flash of none. */
+    /* --- dock groups (layout pass L1, BACKLOG #22; the split tree, #53) -------
+       Every side panel is a module in a tabbed group beside the terminal.
+       Rectangles come from app/dock-tree-display.js; nothing here decides them. */
     .zone {
       position: relative; min-width: 0; min-height: 0;
       background: var(--chrome);
       display: flex; flex-direction: column;
     }
-    .zone[data-empty] { display: none; }
-    .zone[data-zone="left"]   { width: var(--zone-left, 0px);    flex: 0 0 var(--zone-left, 0px);    border-right: 1px solid var(--border); }
-    .zone[data-zone="right"]  { width: var(--zone-right, 180px); flex: 0 0 var(--zone-right, 180px); border-left: 1px solid var(--border); }
-    .zone[data-zone="top"]    { height: var(--zone-top, 0px);    flex: 0 0 var(--zone-top, 0px);    border-bottom: 1px solid var(--border); }
-    .zone[data-zone="bottom"] { height: var(--zone-bottom, 0px); flex: 0 0 var(--zone-bottom, 0px); border-top: 1px solid var(--border); }
+    /* A group is an absolutely positioned box in #dock (dockable panels D1): its rectangle is set inline
+       by dock-tree-display.js, so it takes nothing from .zone's flex sizing. It stays a .zone so every
+       rule below that styles a zone's tabs and panels (has-bg, focus mode, the wide shape) still applies. */
+    .dgroup { position: absolute; box-sizing: border-box; overflow: hidden; }
+    /* The divider between two cells: a 5 px strip with a 1 px line down its middle. */
+    .dgutter { position: absolute; z-index: 5; -webkit-app-region: no-drag; }
+    .dgutter[data-dir="row"] { cursor: col-resize; background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat; }
+    .dgutter[data-dir="col"] { cursor: row-resize; background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat; }
+    .dgutter:hover, .dgutter.dragging { background-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    /* A folded cell: a rail of its modules' names, vertical beside the terminal and horizontal above or below it. */
+    .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
+    .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+    .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .drail button {
+      flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
+      cursor: pointer; background: transparent; color: var(--dim); border: 0; white-space: nowrap;
+    }
+    .drail[data-dir="v"] button { writing-mode: vertical-rl; padding: 10px 0; }
+    .drail[data-dir="h"] button { padding: 0 10px; }
+    .drail button:hover { color: var(--text); }
+    /* Dragging a tab: every zone of the cell under the pointer is lit, the one under it filled. */
+    #dock-overlay { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
+    #dock-overlay .dz {
+      position: absolute; box-sizing: border-box; border-radius: 3px;
+      border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+    #dock-overlay .dz.hot { border-style: solid; background: color-mix(in srgb, var(--accent) 40%, transparent); }
+    #dock-ghost {
+      position: fixed; z-index: 70; pointer-events: none; padding: 5px 9px; font-size: 11px; white-space: nowrap;
+      background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 3px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, .6); transform: rotate(-3deg);
+    }
+    body.dock-dragging { user-select: none; cursor: grabbing; }
     .zone-panels { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
     #panel-store { display: none; }
-
-    /* COLLAPSED, NOT GONE. A collapsed zone keeps its tab rail, so the way back
-       is always visible and one click away: the old sidebar once hid its own
-       tab bar with it, leaving nothing to click (and Ctrl+B was being eaten by
-       the terminal). On the sides the rail is vertical, 28 px. */
-    .zone[data-collapsed] .zone-panels,
-    .zone[data-collapsed] .zone-grip { display: none; }
-    .zone[data-shape="tall"][data-collapsed] .zone-tabs { flex-direction: column; border-bottom: 0; }
-    .zone[data-shape="tall"][data-collapsed] .zone-tabs button {
-      flex: 0 0 auto; writing-mode: vertical-rl; padding: 10px 0;
-      border-bottom: 0; border-left: 2px solid transparent;
-    }
 
     .zone-tabs {
       display: flex; flex: 0 0 auto;
@@ -667,6 +736,8 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .zone-tabs button:hover { color: var(--text); }
+    /* The ring sits INSIDE the button (negative offset): .dgroup and .drail clip their overflow, so an outer ring is cut off. */
+    .zone-tabs button:focus-visible, .drail button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
     /* FF12: the active-tab underline carries the model's colour cue, not the
        theme's own --accent -- one of the two surfaces (with the xterm
        cursor) Ricardo approved for the persistent per-model tint. Untinted,
@@ -680,13 +751,6 @@
     .zone .panel.on { display: flex; }
     #agents { flex: 1; overflow-y: auto; padding: 8px; }
 
-    /* Each zone's grip sits on its inner edge, over the terminal boundary. */
-    .zone-grip { position: absolute; z-index: 5; -webkit-app-region: no-drag; }
-    .zone[data-zone="right"] .zone-grip  { left: -3px;  top: 0; bottom: 0; width: 7px; cursor: col-resize; }
-    .zone[data-zone="left"] .zone-grip   { right: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; }
-    .zone[data-zone="top"] .zone-grip    { bottom: -3px; left: 0; right: 0; height: 7px; cursor: row-resize; }
-    .zone[data-zone="bottom"] .zone-grip { top: -3px;   left: 0; right: 0; height: 7px; cursor: row-resize; }
-    .zone-grip:hover, .zone-grip.dragging { background: var(--accent); opacity: .5; }
     #agents .empty { color: var(--dim); font-size: 11px; padding: 8px; line-height: 1.5; }
 
     /* A zone never paints outside itself: in a 160 px top zone the vault's form
@@ -698,7 +762,7 @@
 
     /* #9: each panel's main list takes the rest of the zone and scrolls; its
        header and form stay their own size, anchored below. Projects had no rule
-       at all and stopped 638 px short of the bottom (verify/probe-dock-zones.js). */
+       at all and stopped 638 px short of the bottom (L1's verify/probe-dock-zones.js, since replaced by probe-dock-tree.js). */
     #projects-body { padding: 8px 10px; gap: 8px; }
     #projects-list { flex: 1; min-height: 0; overflow-y: auto; }
     #vault-list, #fog-list, #model-list, #agents { min-height: 0; }
@@ -917,6 +981,64 @@
     .proj.current .proj-name::after { content: ' — you are here'; opacity: 0.6; font-size: 10px; }
     .proj-approx .proj-name::after { content: ' ~'; opacity: 0.6; }
 
+    /* The wand (BACKLOG #51): favourite skills as emoji buttons. Markup comes from app/wand-display.js. A dimmed
+       button is a skill that no longer exists; the flash is "typed", never "ran". */
+    #wand-body { padding: 8px 10px; }
+    .wand-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    #wand-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+    .zone[data-shape="wide"] .panel.on > #wand-root { flex: 1 1 auto; min-width: 240px; max-width: none; }
+    .wand-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .wand-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .wand-edit { font: inherit; font-size: 13px; line-height: 1; padding: 3px 7px; cursor: pointer; background: transparent;
+      color: var(--dim); border: 1px solid transparent; border-radius: 4px; }
+    .wand-edit:hover { color: var(--text); border-color: var(--border); }
+    .wand-edit.on { color: var(--accent); border-color: var(--accent); }
+    /* padding: the ✕ of an edit-mode cell hangs 6px outside it, and the panel clips what overflows */
+    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
+    .wand-cell { position: relative; display: block; }
+    .wand-btn { width: 100%; aspect-ratio: 1; padding: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 18px; line-height: 1; cursor: pointer; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; transition: border-color .12s, background .12s; }
+    .wand-btn:hover { border-color: var(--accent); }
+    .wand-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+    .wand-btn.dim { opacity: .35; filter: grayscale(1); }
+    .wand-btn.flash { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 22%, var(--panel)); }
+    .wand-add { font-size: 20px; color: var(--dim); border-style: dashed; }
+    .wand-x { position: absolute; top: -6px; right: -6px; width: 17px; height: 17px; padding: 0; font-size: 9px; line-height: 17px;
+      text-align: center; cursor: pointer; color: #fff; background: var(--bad); border: 0; border-radius: 50%; }
+    .wand-note { font-size: 11px; line-height: 1.5; color: var(--dim); margin: 0 0 8px; }
+    .wand-note.bad { color: var(--bad); }
+    .wand-note.warn { color: var(--accent); }
+    .wand-status { font-size: 11px; color: var(--ok); margin-top: 8px; }
+    .wand-error { font-size: 11px; color: var(--bad); margin-top: 8px; }
+    .wand-editor .wand-error { margin-top: 0; }
+    .wand-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 8px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 6px; }
+    .wand-ed-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+    .wand-ed-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+    .wand-editor input { font: inherit; font-size: 12px; min-width: 0; padding: 4px 6px; color: var(--text); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .wand-ed-row input { flex: 1; }
+    .wand-ed-emoji { flex: 0 0 4em !important; text-align: center; font-size: 16px !important; }
+    .wand-emoji-pick { display: flex; flex-wrap: wrap; gap: 3px; }
+    .wand-pick { font-size: 15px; line-height: 1; padding: 3px; cursor: pointer; background: transparent; border: 1px solid transparent; border-radius: 4px; }
+    .wand-pick:hover { border-color: var(--accent); }
+    .wand-picked { font-size: 12px; }
+    .wand-missing { color: var(--bad); font-size: 10px; }
+    .wand-skill-list { max-height: 150px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+    .wand-skill { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left; font: inherit; font-size: 11px;
+      padding: 4px 6px; cursor: pointer; color: var(--text); background: transparent; border: 0; border-bottom: 1px solid var(--border); }
+    .wand-skill:hover { background: var(--panel); }
+    .wand-skill.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+    .wand-skill-name { flex: 0 0 auto; }
+    .wand-skill-src { flex: 0 0 auto; font-size: 9px; color: var(--accent); }
+    .wand-skill-desc { flex: 1; min-width: 0; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wand-skill-none, .wand-skill-more { font-size: 11px; color: var(--dim); padding: 4px 6px; }
+    .wand-ed-actions { display: flex; gap: 6px; }
+    .wand-ed-actions button { font: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer; color: var(--text); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .wand-ed-actions button:hover:not(:disabled) { border-color: var(--accent); }
+
     /* The Style tab -- a container that GROWS. One section today (background
        image); app/style-display.js's STYLE_SECTIONS registry is what makes a
        second one later a markup-free addition. */
@@ -1080,7 +1202,10 @@
     #layout-menu label { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 7px; color: var(--text); }
     /* Focus mode (#1): only the terminal. The exit lives in the top-right corner,
        visible on hover; it covers only that corner, not the terminal's top row. */
-    body.focus-mode header, body.focus-mode .zone, body.focus-mode #diag { display: none; }
+    body.focus-mode header, body.focus-mode .zone, body.focus-mode #diag,
+    body.focus-mode .dgutter, body.focus-mode .drail, body.focus-mode #dock-overlay { display: none; }
+    /* ...and the terminal takes the whole area, wherever the layout last put it (inline rect). */
+    body.focus-mode #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;
@@ -1095,11 +1220,6 @@
     }
     #focus-exit kbd { background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-size: 10px; }
     body.focus-mode #focus-hot:hover #focus-exit, #focus-exit:focus-visible { visibility: visible; }
-    /* While a module's tab is dragged: the four edges a zone can be dropped on. */
-    .dock-drop { position: fixed; z-index: 40; background: color-mix(in srgb, var(--accent) 22%, transparent);
-      border: 2px dashed var(--accent); display: none; }
-    body.dock-dragging .dock-drop { display: block; }
-    .dock-drop.over { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 
     /* --- permission mode ---------------------------------------------------
        Five modes, measured by cycling shift+tab. Bypass is flagged because
@@ -1243,11 +1363,10 @@
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
     <div id="body">
-      <!-- Layout pass L1: four dock zones around the terminal. app/dock-zones-display.js
-           moves the panels below into them; empty zones take no space. -->
-      <aside class="zone" data-zone="top" data-shape="wide" data-empty><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
-      <div id="mid">
-      <aside class="zone" data-zone="left" data-shape="tall" data-empty><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
+      <!-- Dockable panels (D1): the area the layout tree fills. app/dock-tree-display.js
+           adds one box per group, divider and rail beside the terminal and moves the
+           panels below into the groups; #termwrap is placed, never reparented. -->
+      <div id="dock">
       <div id="termwrap"><div id="term"></div>
         <!-- fix/terminal-links: where the link under the pointer really goes,
              or that a clicked one wasn't opened. Text only (app/link-click.js). -->
@@ -1257,6 +1376,22 @@
         <div id="terminal-banner" role="status" hidden>
           <span id="terminal-banner-text"></span>
           <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
+        </div>
+        <!-- Worktree occupancy (#44 + #47): an agent launched from another session is working in this folder.
+             Text only (app/occupancy-display.js bannerModel); clears when the agent stops or its host dies. -->
+        <div id="occupancy-banner" role="status" hidden>
+          <span id="occupancy-banner-text"></span>
+          <span id="occupancy-banner-since"></span>
+          <span id="occupancy-banner-more"></span>
+          <span id="occupancy-banner-note"></span>
+          <span class="spacer"></span>
+          <button type="button" id="occupancy-jump" hidden></button>
+        </div>
+        <!-- The first keystroke typed while an agent is writing here is held behind this (app/occupancy-confirm.js). -->
+        <div id="occupancy-confirm" role="alertdialog" aria-labelledby="occupancy-confirm-text" hidden>
+          <span id="occupancy-confirm-text">An agent is writing here. Type anyway?</span>
+          <button type="button" id="occupancy-type">Type <kbd>Enter</kbd></button>
+          <button type="button" id="occupancy-wait">Wait <kbd>Esc</kbd></button>
         </div>
         <!-- Another session holds this worktree's lock: no session starts here
              until Open anyway. Over the terminal, which is empty meanwhile. -->
@@ -1274,14 +1409,13 @@
           </div>
         </div>
       </div>
-      <aside class="zone" data-zone="right" data-shape="tall"><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
+      <div id="dock-overlay"></div>
+      </div>
       <aside id="diag">
         <h2>Key diagnostics</h2>
         <div id="checks"></div>
         <div id="log"></div>
       </aside>
-      </div>
-      <aside class="zone" data-zone="bottom" data-shape="wide" data-empty><div class="zone-grip" title="Drag to resize"></div><nav class="zone-tabs"></nav><div class="zone-panels"></div></aside>
       <!-- Every module's panel. A panel no zone is showing waits here. The vault
            is a PANEL, never inside the terminal: nothing in it is written to the
            pty, so a secret cannot reach the session by being rendered in the
@@ -1401,6 +1535,13 @@
         <!-- A container that GROWS: one section today (background image), more
              later. app/style-display.js renders one entry per STYLE_SECTIONS,
              so adding a section is a one-element array change, not a new panel. -->
+        <!-- BACKLOG #51: the wand. app/wand-display.js draws it from the host's `wand` payload. -->
+        <div class="panel" data-panel="wand" id="wand-body">
+          <div id="wand-root"><div class="empty">reading the wand…</div></div>
+          <!-- Announced to screen readers: OUTSIDE #wand-root, whose markup is replaced on every draw (a live region
+               that is replaced is not read out). Visually hidden; the visible copy is in the panel. -->
+          <div id="wand-live" class="wand-live" role="status" aria-live="polite" aria-atomic="true"></div>
+        </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
         </div>
@@ -1415,6 +1556,9 @@
   <script src="./side-tabs.js"></script>
   <script src="./dock-layout.js"></script>
   <script src="./dock-zones-display.js"></script>
+  <script src="./dock-tree.js"></script>
+  <script src="./dock-drag.js"></script>
+  <script src="./dock-tree-display.js"></script>
   <script src="./secret-mask.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
@@ -1433,6 +1577,7 @@
   <script src="./colour-seeds.js"></script>
   <script src="./agent-log-display.js"></script>
   <script src="./loadout-display.js"></script>
+  <script src="./wand-display.js"></script>
   <script src="./top-bar-display.js"></script>
   <script src="./context-fill-display.js"></script>
   <script src="./status-fields-display.js"></script>
@@ -1442,6 +1587,8 @@
   <script src="./paste-action.js"></script>
   <script src="./worktree-status-display.js"></script>
   <script src="./tab-status.js"></script>
+  <script src="./occupancy-display.js"></script>
+  <script src="./occupancy-confirm.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>

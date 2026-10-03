@@ -42,6 +42,8 @@ const ALLOWED_GLOBALS = new Set([
   // app/dock-layout.js, app/dock-zones-display.js (layout pass L1): one
   // namespace each, reached through `window.`.
   'dockLayout', 'dockZones',
+  // app/dock-tree.js, app/dock-drag.js, app/dock-tree-display.js (dockable panels D1): the same.
+  'dockTree', 'dockDrag', 'dockTreeView',
   // app/secret-mask.js, app/attention-surface.js
   'createMask', 'surfacesFor',
   // the display modules
@@ -77,6 +79,8 @@ const ALLOWED_GLOBALS = new Set([
   'instanceCounts', 'modelLine', 'modelEntry',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
   'loadoutDisplay',
+  // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
+  'wandDisplay',
   // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object
   // rather than six bare globals.
   'portraitMedia',
@@ -105,6 +109,8 @@ const ALLOWED_GLOBALS = new Set([
   'worktreeStatus',
   // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
   'tabModel', 'tabStatus', 'goToSession',
+  // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
+  'occupancyDisplay', 'occupancyConfirm',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
   // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)

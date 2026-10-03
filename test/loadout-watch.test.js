@@ -62,55 +62,62 @@ test('other files in the state dir do not fire it', async () => {
   } finally { w.close(); }
 });
 
-test('the filter: loadout.json and an unnamed event fire; another name does not', async () => {
+// The tests below drive a fake watcher on a mocked clock: they are about what the
+// watcher does when its timers fire, not about how fast this machine fires them
+// (they failed under full-suite load on real sleeps).
+test('the filter: loadout.json and an unnamed event fire; another name does not', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const { watch, calls } = fakeWatch();
   let n = 0;
   const w = watchLoadout({ dir: tmpDir('cc-lw-'), onChange: () => { n++; }, debounceMs: 10, watch });
   calls[0].cb('rename', 'loadout.json');
-  await sleep(40);
+  t.mock.timers.tick(40);
   calls[0].cb('change', null);
-  await sleep(40);
+  t.mock.timers.tick(40);
   calls[0].cb('change', 'loadout.json.tmp123');
   calls[0].cb('change', 'cooldowns.json');
-  await sleep(40);
+  t.mock.timers.tick(40);
   w.close();
   assert.strictEqual(n, 2);
 });
 
-test('a watcher error re-arms the watch and asks the caller to look again', async () => {
+test('a watcher error re-arms the watch and asks the caller to look again', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const { watch, calls } = fakeWatch();
   let n = 0;
   const w = watchLoadout({ dir: tmpDir('cc-lw-'), onChange: () => { n++; }, debounceMs: 10, rearmMs: 30, watch });
   calls[0].emit('error', new Error('EPERM'));
-  await sleep(150);
+  t.mock.timers.tick(150);
   w.close();
   assert.strictEqual(calls.length, 2, 'a second watcher was armed');
   assert.strictEqual(calls[0].closed, true, 'the dead one was closed');
   assert.ok(n >= 1, 'a change while it was down is not lost');
 });
 
-test('a watch() that throws keeps retrying instead of giving up', async () => {
+test('a watch() that throws keeps retrying instead of giving up', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   let attempts = 0;
   const watch = () => { attempts++; throw new Error('ENOSPC'); };
   const w = watchLoadout({ dir: tmpDir('cc-lw-'), onChange: () => {}, rearmMs: 20, watch });
-  await sleep(120);
+  for (let i = 0; i < 5; i++) t.mock.timers.tick(20);   // five rearm periods
   w.close();
   assert.ok(attempts >= 3, `attempts=${attempts}`);
 });
 
-test('close() stops everything; a throwing onChange does not kill the watcher', async () => {
+test('close() stops everything; a throwing onChange does not kill the watcher', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const { watch, calls } = fakeWatch();
   let n = 0;
   const w = watchLoadout({ dir: tmpDir('cc-lw-'), onChange: () => { n++; throw new Error('bad'); }, debounceMs: 10, watch });
   calls[0].cb('change', 'loadout.json');
-  await sleep(40);
+  t.mock.timers.tick(40);
   calls[0].cb('change', 'loadout.json');
-  await sleep(40);
+  t.mock.timers.tick(40);
   assert.strictEqual(n, 2);
   w.close();
   assert.strictEqual(calls[0].closed, true);
   calls[0].cb('change', 'loadout.json');
-  await sleep(40);
+  t.mock.timers.tick(40);
   assert.strictEqual(n, 2, 'nothing fires after close');
 });
 

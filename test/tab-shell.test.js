@@ -39,7 +39,7 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 
 /** A shell whose every effect is a recording fake. */
-function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks } = {}) {
+function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
@@ -155,6 +155,8 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     return typeof h.openPr === 'function' ? h.openPr(branch) : h.openPr;
   } };
   if (marks !== undefined) deps.marks = marks;
+  if (occupancy !== undefined) deps.occupancy = occupancy;
+  deps.now = () => 1_000_000_000;
   h.shell = createShell(deps);
   return h;
 }
@@ -556,6 +558,32 @@ test('F2: Retry while the first host is STILL not listening waits for it instead
   await h.shell.select(key('feat-a'));
   const tab = h.shell.tabByKey(key('feat-a'));
   assert.strictEqual(h.spawns.length - before, 1);
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, first.token);
+});
+
+test('Y1: a host that lands late, with ANOTHER tab asking for its port meanwhile, is still never spawned twice for its own tab', async () => {
+  // The slow-host path the serialisation property no longer generates (its
+  // wait always succeeds): wait gives up, the host lands later. The shell's
+  // `pending` is per tab, so tab B asking for the same still-empty port is
+  // handed it too (the bind arbitrates between the two hosts, PR #75 F2). What
+  // the guard owes tab A is that ITS retry waits for the host it already
+  // spawned instead of spawning another onto the port.
+  const h = harness();
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  const before = h.spawns.length;
+  await h.shell.select(key('feat-a'));                // wait gives up: pending
+  const first = h.spawns[h.spawns.length - 1];
+  await h.shell.select(key('feat-b'));                // the same empty port, offered to B
+  assert.strictEqual(h.spawns[h.spawns.length - 1].port, first.port, 'B hashes to the same port');
+  h.failWait = false;                                 // A's host comes up during A's retry wait
+  await h.shell.select(key('feat-a'));
+  const ours = h.spawns.slice(before).filter(x => x.key === key('feat-a'));
+  assert.strictEqual(ours.length, 1, 'tab A was given a second spawn for the port its first host is still coming up on');
+  const tab = h.shell.tabByKey(key('feat-a'));
   assert.strictEqual(tab.started, true);
   assert.strictEqual(tab.token, first.token);
 });
@@ -1953,8 +1981,19 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
     async (n, delays) => {
       const occupied = new Map();          // port -> cwd
       const granted = [];
+      const landing = new Map();           // port -> the spawn that will occupy it
+      // NOT generated here: a wait that gives up while the host lands later. Then
+      // two tabs CAN be handed one port (pending is per tab; the host bind
+      // arbitrates, PR #75 F2), so "never both get it" is not the contract on that
+      // path. The Y1 test below covers it, and the guard it needs, on logical time.
       const names = Array.from({ length: n }, (_, i) => `t${i}`);
-      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      // Logical time: "ms" is a number of event-loop turns, not milliseconds. The
+      // property is about the ORDER the generated delays put events in, and that
+      // order is the same here with none of a real timer's dependence on load
+      // (this took 3.5 s of wall clock for 25 runs, and no more than the machine
+      // would allow).
+      const turns = (n) => new Promise(r => { let left = n; const step = () => (left-- <= 0 ? r() : setImmediate(step)); step(); });
+      const sleep = turns;
       const shell = createShell({
         mode: 'tabs', container: ROOT, log: () => {},
         git: { list: async () => porcelain([['dev', 'develop'], ...names.map(x => [x, `feat/${x}`])]), marker: noMarker },
@@ -1971,8 +2010,12 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
             return null;
           },
           probe: async (p) => (occupied.has(p) ? 'listening' : 'refused'),
-          spawn: ({ tab, port }) => { granted.push(port); setTimeout(() => occupied.set(port, tab.cwd), delays[1]); },
-          wait: async (port) => { await sleep(delays[2] + 3); return occupied.has(port); },
+          spawn: ({ tab, port }) => { granted.push(port); landing.set(port, turns(delays[1]).then(() => occupied.set(port, tab.cwd))); },
+          // The host answers once it has come up: wait is not given up on before
+          // the spawn lands. (On real timers that held only by the slack of
+          // elapsed time -- a 4 ms spawn against a 3 ms wait passed on a quiet
+          // machine and granted the port twice on a loaded one.)
+          wait: async (port) => { await sleep(delays[2] + 3); await landing.get(port); return occupied.has(port); },
           tokenFor: () => 't', tokenFile: () => 't', newToken: () => 't',
           control: async () => ({ ok: true }), identity: () => null, readToken: () => null,
         },
@@ -2157,4 +2200,127 @@ test('handleProbeCommand: reduced-motion takes a real boolean (#34 probe)', asyn
 test('the probe may drive the background view actions, by name only (#34)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['bgState', 'bgStyle', 'bgMatch']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+test('the probe may drive the dock tree\'s actions, by name only (dockable panels D1)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['state', 'select', 'move', 'boxes', 'layout', 'dock', 'hide', 'show', 'foldAll', 'drag', 'tabClick', 'gutter', 'gutterRace', 'abortedDrag', 'menuTick', 'menuButton', 'squeeze']) {
+    assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  }
+  assert.ok(!VIEW_PROBE_ACTIONS.has('dragDrop'), 'the HTML5 strip drop is gone');
+});
+
+test('the probe may read and operate the wand, by name only (#51)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+test('the probe may focus a wand control and press keys on it, by name only (#51 I3)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['wandFocus', 'wandKey']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+// Here, not in test/occupancy-wiring.test.js: that file reads sources as text, so it stays out of Stryker's
+// command, and a test outside the command must not be the only one that loads a mutated module.
+test('the probe may drive the occupancy page actions, by name only (#44 + #47)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+// --- worktree occupancy (#44 + #47) -----------------------------------------------
+
+const OCC_NOW = 1_000_000_000;
+const claimIn = (name, over = {}) => ({
+  agentId: 'a1', agent: 'electron-pro', worktree: wt(name), also: [], fromBranch: 'develop', fromRoot: wt('dev'),
+  hostPid: 4242, hostStartedAt: '1', firstAt: OCC_NOW - 4 * 60000, lastAt: OCC_NOW - 1000, count: 3, ...over,
+});
+
+test('occupancy: a tab a live claim sits in carries the strip mark; every other tab carries null', async () => {
+  const h = harness({ occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  const byLabel = Object.fromEntries(h.shell.model().map(e => [e.label, e.occupancy]));
+  assert.deepStrictEqual(byLabel.develop, null);
+  assert.deepStrictEqual(byLabel['feat/b'], null);
+  assert.deepStrictEqual(byLabel['feat/a'].tags, ['EP']);
+  assert.deepStrictEqual(byLabel['feat/a'].lines, ['electron-pro · from develop · 4 min']);
+  assert.strictEqual(byLabel['feat/a'].warn, false);
+});
+
+test('occupancy: no reader, or a reader that throws, draws nothing and never breaks the strip', async () => {
+  const none = harness();
+  await none.shell.open();
+  assert.ok(none.shell.model().every(e => e.occupancy === null));
+  const bad = harness({ occupancy: { claims: () => { throw new Error('boom'); } } });
+  await bad.shell.open();
+  assert.deepStrictEqual(labels(bad), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(bad.shell.model().every(e => e.occupancy === null));
+  const junk = harness({ occupancy: { claims: () => 'not a list' } });
+  await junk.shell.open();
+  assert.ok(junk.shell.model().every(e => e.occupancy === null));
+});
+
+test("occupancy: the tab's own session reporting a turn is the two-writers warning; idle is not", async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const mark = () => h.shell.model().find(e => e.label === 'feat/a').occupancy;
+  assert.strictEqual(mark().warn, false, 'no report yet: unknown is not a warning');
+  h.shell.report(aView, { turn: 'turn' });
+  assert.strictEqual(mark().warn, true);
+  assert.ok(mark().lines.includes("this tab's own session is writing too"));
+  h.shell.report(aView, { turn: 'idle' });
+  assert.strictEqual(mark().warn, false);
+  h.shell.report(aView, { turn: 'prompt' });
+  assert.strictEqual(mark().warn, false);
+});
+
+test("occupancy: each started tab's page is pushed what is in it and what it launched, only when that changed", async () => {
+  let claims = [];
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, occupancy: { claims: () => claims } });
+  await h.shell.open();
+  await flush();
+  const sentOcc = () => h.sent.filter(([, ch]) => ch === 'occupancy');
+  assert.strictEqual(sentOcc().length, 0, 'nothing to say yet: no chatter');
+  claims = [claimIn('feat-a')];
+  h.shell.refresh();
+  const first = sentOcc();
+  assert.deepStrictEqual(first.map(([k]) => k).sort(), [key('dev'), key('feat-a')].sort());
+  const toA = first.find(([k]) => k === key('feat-a'))[2];
+  const toDev = first.find(([k]) => k === key('dev'))[2];
+  assert.deepStrictEqual(toA.here.map(c => c.agentId), ['a1']);
+  assert.deepStrictEqual(toA.launched, []);
+  assert.deepStrictEqual(toDev.here, []);
+  assert.deepStrictEqual(toDev.launched.map(c => c.agentId), ['a1'], 'the launching session is told where its agent is');
+  h.shell.refresh();
+  assert.strictEqual(sentOcc().length, first.length, 'unchanged: not sent again');
+  claims = [];
+  h.shell.refresh();
+  const cleared = sentOcc().slice(first.length);
+  assert.deepStrictEqual(cleared.map(([, , p]) => p), [{ here: [], launched: [] }, { here: [], launched: [] }]);
+});
+
+test("occupancy: a tab with no page yet is not pushed to, and occupancyFor answers a page's own question", async () => {
+  const h = harness({ running: { 7700: wt('dev') }, occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  await flush();
+  h.shell.refresh();
+  assert.ok(h.sent.every(([k, ch]) => !(ch === 'occupancy' && k === key('feat-a'))), 'feat-a has no view');
+  const devView = h.shell.tabByKey(key('dev')).view;
+  assert.deepStrictEqual(h.shell.occupancyFor(devView).launched.map(c => c.agentId), ['a1']);
+  assert.strictEqual(h.shell.occupancyFor({}), null, 'a stranger is nobody');
+});
+
+test("occupancy: a reopened tab's fresh page is pushed again even though nothing changed", async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  await flush();
+  h.shell.refresh();
+  const before = h.sent.filter(([k, ch]) => ch === 'occupancy' && k === key('feat-a')).length;
+  assert.strictEqual(before, 1);
+  await h.shell.closeTab(key('feat-a'));
+  await h.shell.reopen();
+  await flush();
+  h.shell.refresh();
+  assert.strictEqual(h.sent.filter(([k, ch]) => ch === 'occupancy' && k === key('feat-a')).length, 2);
 });

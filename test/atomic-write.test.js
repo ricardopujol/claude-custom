@@ -253,17 +253,30 @@ test('async: a nonsense attempts count is refused, not looped on', async () => {
   }
 });
 
-test('async: the default sleep really waits, and does not block the loop', async () => {
+test('async: the default sleep really waits, and does not block the loop', async (t) => {
   // The whole reason for a separate async version: this caller CAN yield, so
   // it must, rather than freezing the thread the way Atomics.wait does.
+  //
+  // Driven by a mocked clock, not the wall clock: a real 20 ms timer measured
+  // with Date.now() is a statement about the scheduler, and under full-suite
+  // load it failed. Here the 20 ms is exact and the loop-yield is an event.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const rename = flakyAsync(['EPERM']);
+  const realTurn = () => new Promise(r => setImmediate(r));   // setImmediate is not mocked
   let ticked = false;
   setImmediate(() => { ticked = true; });
-  const t0 = Date.now();
-  await renameWithRetryAsync('a.tmp', 'b', { rename });
-  const took = Date.now() - t0;
-  assert.ok(took >= 18, `waited only ${took}ms -- the default async sleep is not real`);
+  let done = false;
+  const run = renameWithRetryAsync('a.tmp', 'b', { rename }).then(() => { done = true; });
+  await realTurn();
   assert.ok(ticked, 'the event loop must have kept turning during the wait');
+  assert.strictEqual(rename.calls.length, 1, 'it retried without waiting');
+  t.mock.timers.tick(19);
+  await realTurn();
+  assert.strictEqual(rename.calls.length, 1, 'the default sleep returned before the 20 ms backoff');
+  assert.strictEqual(done, false);
+  t.mock.timers.tick(1);
+  await run;
+  assert.strictEqual(rename.calls.length, 2, 'the retry never ran after the wait');
 });
 
 // --- the invariants, enumerated exhaustively ---------------------------------

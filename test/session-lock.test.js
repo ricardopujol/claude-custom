@@ -246,7 +246,11 @@ test('a lock replaced while its holder was being judged is not broken', async ()
     if (!replaced) { replaced = true; fs.unlinkSync(lock); fs.writeFileSync(lock, fresh); }
     return realStartTimes(pids);
   };
-  const r = await acquire(lock, me(), fast(t));
+  // A virtual clock that moves only when acquire sleeps. On the wall clock, an
+  // iteration slowed past fast()'s 150 ms deadline (full-suite load) is judged
+  // out of time before it re-reads, and reports the STALE read's holder (101).
+  let clock = 1000;
+  const r = await acquire(lock, me(), { ...fast(t), now: () => clock, sleep: async ms => { clock += ms; } });
   assert.strictEqual(r.state, 'blocked');
   assert.strictEqual(r.holder.pid, 102);
   assert.strictEqual(fs.readFileSync(lock, 'utf8'), fresh);

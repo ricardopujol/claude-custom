@@ -59,8 +59,21 @@ const CONTRACT = {
         onlyWhen: p => AGENT_TOOLS.includes(p && p.tool_name),
       },
       'tool_input.command': {
-        used: 'processes.js, the label shown in the Running panel',
+        used: 'processes.js, the label shown in the Running panel; agent-occupancy.js, which worktree a subagent command names (#44 + #47)',
         onlyWhen: p => (p && p.tool_name) === 'Bash',
+      },
+      // Worktree occupancy (#44 + #47). MEASURED against the real CLI by verify/probe-occupancy-payloads.js
+      // (claude 2.1.x, haiku): a subagent's Read, Edit and Write each fire PreToolUse under the occupancy
+      // matcher with `agent_id` + `agent_type` and an absolute `tool_input.file_path`; the agent_id is the one
+      // SubagentStop carries; a main-session call carries no agent_id. NOT measured: NotebookEdit's
+      // `notebook_path` (its documented field).
+      // A TEAMMATE (verify/probe-teammate-occupancy.js, interactive CLI): the same fields, with agent_id
+      // `a<name>-<hex>` and its NAME as agent_type. Grep and Glob carry the searched folder as an absolute
+      // `tool_input.path` WHEN ONE IS GIVEN (measured with forward slashes: `C:/Users/...`); it is optional, so
+      // it is not a contracted field here.
+      'tool_input.file_path': {
+        used: 'agent-occupancy.js, the worktree a subagent Read, Edit or Write is in (#44 + #47)',
+        onlyWhen: p => ['Read', 'Edit', 'Write'].includes(p && p.tool_name),
       },
       ...COMMON_FIELDS,
     },
@@ -126,12 +139,17 @@ const CONTRACT = {
       },
       agent_id: { used: 'processes.js, to end every call that subagent still has open; '
                       + 'mood-machine.js, to end THAT invocation and its foreground children' },
+      // MEASURED by verify/probe-teammate-occupancy.js (interactive CLI, 2026-10-03): present on a teammate's
+      // and a plain subagent's SubagentStop alike; the .meta.json beside it says `taskKind`.
+      agent_transcript_path: {
+        used: 'occupancy-producer.js teammateFromMeta: the .meta.json beside it says whether the agent that '
+            + 'stopped is an in_process_teammate (idle, its claim stays) or a subagent that finished',
+      },
       ...COMMON_FIELDS,
     },
     // Also arrives, unread for now, and worth knowing about:
     //   last_assistant_message -- what the agent concluded; would make the
     //                       "finished" notification say what it finished.
-    //   agent_transcript_path  -- per-agent token spend, per agent.
   },
   Stop: {
     fields: { ...COMMON_FIELDS },   // otherwise: the turn ended, which is the whole message

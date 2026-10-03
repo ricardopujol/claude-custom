@@ -11,6 +11,13 @@
  *                                  Node hook host/loadout-hook.js READS it with
  *                                  a plain fs read on every Agent spawn.
  *
+ *   .harness/state/wand.json       host/wand-control.js, STORE_KEY 'wand' (BACKLOG
+ *                                  #51, the wand: favourite skills as emoji
+ *                                  buttons). Install-wide, one global set. The
+ *                                  user types these by hand, so it opts in to
+ *                                  withLock and readState: a file it could not
+ *                                  read is never written over.
+ *
  *   .harness/state/vault.json      host/bugvault.js, STORE_KEY 'vault' (the bug
  *                                  vault; irreplaceable, so it opts in to
  *                                  withLock and readState).

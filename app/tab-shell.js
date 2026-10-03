@@ -46,6 +46,7 @@ const { checkBranch } = require('../host/worktree-ops');
 const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
 const tabStatusLib = require('./tab-status');
+const occupancyDisplay = require('./occupancy-display');
 const { planGoTo } = require('./go-to-session');
 
 // --- pure helpers ------------------------------------------------------------
@@ -162,6 +163,8 @@ function sanitizeStatus(s) {
  *   views.destroy(tab)
  *   views.send(tab, channel, payload)
  *   views.owns(tab, sender)-> boolean       the view's webContents is `sender`
+ *   occupancy.claims()     -> [claim]    the LIVE worktree-occupancy claims (host/occupancy-service.js); optional
+ *   now()                  -> ms         the clock the "4 min" labels read; optional
  *   ui.confirmClose(tab)   -> Promise<boolean>
  *   ui.changed(snapshot)
  *   ui.focusWindow()       restore + show + focus + flash
@@ -193,6 +196,9 @@ function createShell(deps) {
     git, hosts, ops, views, ui, log = () => {},
     // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
     marks = null,
+    // Worktree occupancy (#44 + #47): `claims()` -> the live claims. Optional; a reader that fails draws none.
+    occupancy = null,
+    now = Date.now,
     // How long Type /merged waits for the target page's answer; injected so a test doesn't wait.
     sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
     // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
@@ -265,6 +271,18 @@ function createShell(deps) {
     }
   }
 
+  // The live claims, or none: decoration, so a reader that fails or answers oddly never takes the strip down.
+  function readClaims() {
+    if (!occupancy || typeof occupancy.claims !== 'function') return [];
+    try {
+      const c = occupancy.claims();
+      return Array.isArray(c) ? c : [];
+    } catch (err) {
+      log('[shell] occupancy.claims threw:', err && err.message);
+      return [];
+    }
+  }
+
   /**
    * The branch a tab is on NOW: the reducer's, which follows `git switch`. The
    * record's `branch` is the one it opened on and never moves (Dexter #87 F1).
@@ -275,14 +293,42 @@ function createShell(deps) {
   }
 
   function model() {
+    const claims = readClaims();
+    const at = now();
     return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
       const t = tabs.get(e.key);
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
         badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(branchOf(e.key)),
+        // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
+        occupancy: occupancyDisplay.tabOccupancy(claims, e.key, { keyOf, turn: t && t.status ? t.status.turn : null, now: at }),
       };
     });
+  }
+
+  // What one tab's page is told: the claims that sit in its folder (its banner and keystroke confirm) and the
+  // ones its own session launched (its hub cards). Only what changed is sent.
+  const EMPTY_OCCUPANCY = JSON.stringify({ here: [], launched: [] });
+  function pushOccupancy() {
+    const claims = readClaims();
+    for (const tab of tabs.values()) {
+      if (!tab.view) continue;
+      const payload = occupancyDisplay.viewPayload(claims, tab.key, { keyOf });
+      const text = JSON.stringify(payload);
+      if (text === tab.occupancySent) continue;
+      tab.occupancySent = text;
+      try { views.send(tab, 'occupancy', payload); } catch (err) { log('[shell] sending occupancy threw:', err && err.message); }
+    }
+  }
+
+  /** The payload for the page that asked (its first paint), or null for a sender that is no tab's page. */
+  function occupancyFor(sender) {
+    const tab = tabForSender(sender);
+    if (!tab) return null;
+    const payload = occupancyDisplay.viewPayload(readClaims(), tab.key, { keyOf });
+    tab.occupancySent = JSON.stringify(payload);
+    return payload;
   }
 
   function snapshot() {
@@ -297,6 +343,7 @@ function createShell(deps) {
   function publish() {
     if (destroyed) return;
     try { ui.changed(snapshot()); } catch (err) { log('[shell] ui.changed threw:', err && err.message); }
+    pushOccupancy();
   }
 
   const tabByKey = (key) => tabs.get(key) || null;
@@ -311,7 +358,7 @@ function createShell(deps) {
       key: keyOf(entry.path), cwd: entry.path, branch: entry.branch === undefined ? null : entry.branch,
       isDev: entry.isDev === true, port: null, token: null, view: null,
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
-      attachPromise: null, unconfirmed: null, ended: false,
+      attachPromise: null, unconfirmed: null, ended: false, occupancySent: EMPTY_OCCUPANCY,
     };
   }
 
@@ -320,6 +367,7 @@ function createShell(deps) {
     tab.port = port;
     tab.token = token;
     tab.view = views.create(tab);
+    tab.occupancySent = EMPTY_OCCUPANCY;     // a fresh page knows nothing yet
     tab.started = true;
     tab.ended = false;          // a host of its own again: watched again (Dexter F2)
     // A host given up on earlier, if it ever binds, meets this one's lock and
@@ -984,7 +1032,7 @@ function createShell(deps) {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
     next: () => step(1), previous: () => step(-1),
-    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,
+    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
     refresh: publish,
     // Exposed for tests and the probe driver.
@@ -1077,15 +1125,21 @@ function shortcutWillAct(action, shell) {
 const PROBE_TOKEN_MIN = 16;
 // The selected view's probe actions (layout pass L1): named, so the driver can
 // never hand the page a string of code to run.
-const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'dragDrop', 'secretRedraw', 'reconnect', 'focusState',
+const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'secretRedraw', 'reconnect', 'focusState',
+  // dockable panels D1: verify/probe-dock-tree.js
+  'boxes', 'layout', 'dock', 'hide', 'show', 'foldAll', 'drag', 'tabClick', 'gutter', 'gutterRace', 'abortedDrag', 'menuTick', 'menuButton', 'squeeze',
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
   'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
   // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
   'gitTermInput',
+  // backlog #51: verify/probe-wand.js reads the wand and operates its controls
+  'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
   // backlog #34: verify/probe-video-background.js
-  'bgState', 'bgStyle', 'bgMatch']);
+  'bgState', 'bgStyle', 'bgMatch',
+  // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
+  'occState', 'occKey', 'occClick', 'occTurn']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

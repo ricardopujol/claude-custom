@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { buildHarnessSettings, writeHarnessSettings } = require('../host/settings-writer');
+const { buildHarnessSettings, writeHarnessSettings, OCCUPANCY_MATCHER } = require('../host/settings-writer');
 
 const HELPER = 'C:/tools/claude-custom-hook.exe';
 const PIPE = '\\\\.\\pipe\\claude-custom-abc123';
@@ -395,4 +395,42 @@ test('the tool belt hook survives being written to disk and read back', () => {
   const file = writeHarnessSettings(dir, { ...opts, loadoutHook }, 7701);
   const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.strictEqual(parsed.hooks.PreToolUse[1].matcher, 'Agent|Task');
+});
+
+// Backlog #44 + #47 (worktree occupancy): the occupancy claim needs a SUBAGENT's file tool calls, and the
+// host only ever saw Agent|Task|Bash. Opt-in, so the default settings are exactly what they always were.
+test('occupancy adds a PreToolUse entry for the file tools, LAST, and only when asked', () => {
+  const plain = buildHarnessSettings(opts);
+  assert.strictEqual(plain.hooks.PreToolUse.length, 1, 'default output is unchanged');
+  const s = buildHarnessSettings({ ...opts, occupancy: true });
+  const last = s.hooks.PreToolUse[s.hooks.PreToolUse.length - 1];
+  assert.strictEqual(last.matcher, 'Read|Edit|Write|NotebookEdit|Grep|Glob');
+  // (that these are exactly host/agent-occupancy.js TOUCH_TOOLS is pinned in test/agent-occupancy.test.js)
+  assert.strictEqual(JSON.stringify(s.hooks.PreToolUse[0]), JSON.stringify(plain.hooks.PreToolUse[0]),
+    'the first entry still belongs to the mood engine');
+  assert.strictEqual(last.hooks[0].command, plain.hooks.PreToolUse[0].hooks[0].command,
+    'the same helper, the same PreToolUse event');
+});
+
+test('the occupancy entry goes AFTER the tool belt entry, so PreToolUse[1] is still the belt', () => {
+  const loadoutHook = { nodePath: 'node', scriptPath: 'C:/x/loadout-hook.js', stateDir: 'C:/x/state' };
+  const s = buildHarnessSettings({ ...opts, loadoutHook, occupancy: true });
+  assert.strictEqual(s.hooks.PreToolUse.length, 3);
+  assert.strictEqual(s.hooks.PreToolUse[1].matcher, 'Agent|Task');
+  assert.strictEqual(s.hooks.PreToolUse[2].matcher, OCCUPANCY_MATCHER);
+});
+
+test('occupancy changes only PreToolUse: no other event grows a file-tool matcher', () => {
+  const plain = buildHarnessSettings(opts);
+  const s = buildHarnessSettings({ ...opts, occupancy: true });
+  for (const event of Object.keys(plain.hooks)) {
+    if (event === 'PreToolUse') continue;
+    assert.strictEqual(JSON.stringify(s.hooks[event]), JSON.stringify(plain.hooks[event]), event);
+  }
+});
+
+test('only a real true opts in (a truthy string is not a yes)', () => {
+  for (const v of ['yes', 1, {}, [], 'false']) {
+    assert.strictEqual(buildHarnessSettings({ ...opts, occupancy: v }).hooks.PreToolUse.length, 1, String(v));
+  }
 });
