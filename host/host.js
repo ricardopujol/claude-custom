@@ -1906,9 +1906,9 @@ currentCatalogue().catch(() => {});
 
 wss.on('connection', (ws, req) => {
   clients.add(ws);
+  ws.openedAt = Date.now();
   // A one-shot control client (raise, stop) never gets what is held for the next WINDOW (PR #93 Dexter F8)
   const oneShot = isControlClient(req && req.url);
-  ws.openedAt = Date.now();
   console.log(`[host] client attached (${clients.size} total)`);
 
   // Dexter, logic review 2026-09-15: a malformed WEBSOCKET frame (invalid

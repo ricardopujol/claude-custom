@@ -190,7 +190,8 @@ test('stop-if-idle: the holder counts its windows and stops in ONE step (Dexter 
 
 test('a window leaving starts the grace; a one-shot control client does not', () => {
   const src = HOST.replace(/\r\n/g, '\n');
-  assert.match(src, /wss\.on\('connection', \(ws\) => \{\n  clients\.add\(ws\);\n  ws\.openedAt = Date\.now\(\);/);
+  // (ws, req): the URL says whether it is a one-shot control client (PR #93 Dexter F8)
+  assert.match(src, /wss\.on\('connection', \(ws, req\) => \{\n  clients\.add\(ws\);\n  ws\.openedAt = Date\.now\(\);/);
   const close = src.slice(src.indexOf("  ws.on('close', () => {"), src.indexOf('\n  });\n', src.indexOf("  ws.on('close', () => {")));
   assert.match(close, /if \(leftAsWindow\(ws\.openedAt, Date\.now\(\)\)\) lastWindowLeftAt = Date\.now\(\);/);
 });
