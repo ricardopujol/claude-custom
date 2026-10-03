@@ -8,11 +8,12 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { parseFrontmatter, discoverSkills, SKILL_NAME } = require('../host/wand-skills');
 
 function tree(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wand-skills-'));
+  const root = tmpDir('wand-skills-');
   for (const [rel, text] of Object.entries(files)) {
     const file = path.join(root, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });

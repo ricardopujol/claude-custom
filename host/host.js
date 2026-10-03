@@ -422,7 +422,7 @@ watchLoadout({
   },
 });
 // The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
-// list is read from the CLI's own directories (host/wand-skills.js); CLAUDE_CUSTOM_CLAUDE_HOME is a probe seam
+// list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam
 // (host/probe-seams.js), unset in real use.
 const CLAUDE_HOME = seams.claudeHome || path.join(os.homedir(), '.claude');
 const skillLog = onceLogger((line) => console.log(line));

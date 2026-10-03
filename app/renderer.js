@@ -4369,9 +4369,9 @@ function handleControl(msg) {
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
     rosterIndexPayload = msg.rosterIndex || null;
-    loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
     renderRoster();
