@@ -45,6 +45,27 @@ test('it exited between the two questions: not live', async () => {
   assert.equal(await isLiveHost({ pid: 5, processStartedAt: '100' }, { isAlive: alive, startTimes: times({}) }), false);
 });
 
+const present = () => true;
+const gone = () => false;
+
+test('a host whose project folder is gone is not live, whatever its pid says (a probe\'s deleted temp world)', async () => {
+  const id = { pid: 37336, cwd: 'C:\\deleted\\proj', processStartedAt: '100' };
+  assert.equal(await isLiveHost(id, { exists: gone, isAlive: alive, startTimes: async () => null }), false, 'pid alive, start time unknowable');
+  assert.equal(await isLiveHost(id, { exists: gone, isAlive: dead, startTimes: times({}) }), false, 'pid dead');
+});
+
+test('a host whose project folder exists still fails closed when nothing can be learned', async () => {
+  const id = { pid: 37336, cwd: 'C:\\here\\proj', processStartedAt: '100' };
+  assert.equal(await isLiveHost(id, { exists: present, isAlive: alive, startTimes: async () => null }), true);
+});
+
+test('no cwd (or one that is not a string) behaves as before: the folder is not asked about', async () => {
+  const boom = () => { throw new Error('must not ask'); };
+  assert.equal(await isLiveHost({ pid: 5 }, { exists: boom, isAlive: alive, startTimes: times({}) }), true);
+  assert.equal(await isLiveHost({ pid: 5, cwd: '' }, { exists: boom, isAlive: alive, startTimes: times({}) }), true);
+  assert.equal(await isLiveHost({ pid: 5, cwd: 7 }, { exists: boom, isAlive: alive, startTimes: times({}) }), true);
+});
+
 test('junk identities are not live hosts', async () => {
   for (const id of [null, undefined, {}, { pid: 'x' }, { pid: 0 }, { pid: -3 }]) assert.equal(await isLiveHost(id, { isAlive: alive, startTimes: times({}) }), false, JSON.stringify(id));
 });

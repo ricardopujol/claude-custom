@@ -11,10 +11,14 @@
  * overwrites what it saved.
  */
 
-const procStart = require('../../host/proc-start');
+const fs = require('fs');
+const procStart =require('../../host/proc-start');
 
-async function isLiveHost(id, { isAlive = procStart.isAlive, startTimes = procStart.startTimes } = {}) {
+async function isLiveHost(id, { isAlive = procStart.isAlive, startTimes = procStart.startTimes, exists = fs.existsSync } = {}) {
   if (!id || !Number.isInteger(id.pid) || id.pid <= 0) return false;
+  // The refusal protects a real window open on this checkout, and its project folder exists. A folder that is gone
+  // (a probe's deleted temp world) can't belong to one, whatever the pid is now (and whether or not it can be asked).
+  if (typeof id.cwd === 'string' && id.cwd !== '' && !exists(id.cwd)) return false;
   const alive = isAlive(id.pid);
   if (alive === false) return false;
   if (alive !== true) return true;                                  // can't tell
