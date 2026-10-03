@@ -1222,6 +1222,20 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
       return { ok: true, before };
     },
+    // #34: the window as the OS minimises and restores it (the real events fire), and the OS's
+    // reduced-motion preference emulated on the selected view through the debugger protocol.
+    async windowState(state) {
+      if (state === 'minimize') win.minimize(); else win.restore();
+      return { ok: true, minimized: win.isMinimized() };
+    },
+    async reducedMotion(on) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      const dbg = sel.webContents.debugger;
+      if (!dbg.isAttached()) dbg.attach('1.3');
+      await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: on ? 'reduce' : 'no-preference' }] });
+      return { ok: true, on };
+    },
     async quit() {
       setTimeout(() => app.exit(0), 200);
       return { ok: true };

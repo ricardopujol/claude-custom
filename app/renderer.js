@@ -1177,6 +1177,41 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           }, 150);
         }, 50);
       });
+      // Backlog #34 (verify/probe-video-background.js): the background layer as it is on screen --
+      // the video's own state, the classes and variables the look paints, and the Style tab's note.
+      case 'bgState': {
+        const v = bgVideoEl;
+        const sec = document.querySelector('[data-section="background"]');
+        const note = sec && sec.querySelector('.style-note');
+        const err = sec && sec.querySelector('.style-error');
+        const match = document.getElementById('style-match');
+        const css = getComputedStyle(document.documentElement);
+        return JSON.stringify({
+          ok: true,
+          video: v ? { paused: v.paused, currentTime: v.currentTime, readyState: v.readyState, width: v.videoWidth,
+            muted: v.muted, loop: v.loop, src: v.getAttribute('src'), rect: rectOf(v) } : null,
+          hasBg: document.body.classList.contains('has-bg'), hasCustomBg: document.body.classList.contains('has-custom-bg'),
+          bgImage: document.getElementById('bg').style.backgroundImage,
+          veil: parseFloat(getComputedStyle(document.getElementById('bg'), '::after').opacity),
+          note: note ? note.textContent : null, error: err ? err.textContent : null,
+          matchDisabled: match ? match.disabled : null,
+          vars: { bg: css.getPropertyValue('--bg').trim(), chrome: css.getPropertyValue('--chrome').trim(), border: css.getPropertyValue('--border').trim(),
+            text: css.getPropertyValue('--text').trim(), dim: css.getPropertyValue('--dim').trim(), accent: css.getPropertyValue('--accent').trim(),
+            onAccent: css.getPropertyValue('--on-accent').trim() },
+          reducedMotion: reducedMotionQuery.matches, playback: backgroundPlaybackState(),
+          renderer: rectOf(document.getElementById('bg')),
+        });
+      }
+      // The Style tab's own sends, as the drop zone would make them: a path the host copies in.
+      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}) }); break;
+      // The Match colours button, as a click would press it.
+      case 'bgMatch': {
+        const b = document.getElementById('style-match');
+        if (!b) return JSON.stringify({ ok: false, error: 'no Match colours button' });
+        if (b.disabled) return JSON.stringify({ ok: false, error: 'the button is disabled' });
+        b.click();
+        break;
+      }
       // Backlog #36: who holds the keyboard now (the first open at load must leave it on the terminal).
       case 'focusState': return JSON.stringify({ ok: true, id: (document.activeElement && document.activeElement.id) || '',
         inTerm: !!(term.element && term.element.contains(document.activeElement)), shown: [...shownModules] });
