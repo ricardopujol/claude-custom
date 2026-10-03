@@ -133,7 +133,10 @@ function pickDiff({ calls, gitText } = {}) {
 function gitDiffHead(root, rel, { execFile = childProcess.execFile } = {}) {
   return new Promise((resolve) => {
     try {
-      execFile('git', ['-C', root, '-c', 'core.quotePath=false', 'diff', 'HEAD', '--', rel],
+      // --no-ext-diff / --no-textconv: a read must not run a program the repo's config names (diff.external,
+      // diff.<driver>.textconv) (PR #95 Miguel M4). `:(literal)`: `app/[id]/page.tsx` is a file name, not a
+      // glob that also matches app/i/ (Dexter D8).
+      execFile('git', ['-C', root, '-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--', `:(literal)${rel}`],
         { encoding: 'utf8', timeout: 8000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           if (err) {

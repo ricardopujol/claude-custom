@@ -159,7 +159,7 @@ test('gitDiffHead asks for HEAD against exactly that file, with -- so a name can
   const r = await gitDiffHead('C:\\r', '-evil.js', { execFile: (f, a, o, cb) => { seen = a; cb(null, 'diff text', ''); } });
   assert.deepStrictEqual(r, { ok: true, text: 'diff text' });
   assert.deepStrictEqual(seen.slice(0, 2), ['-C', 'C:\\r']);
-  assert.deepStrictEqual(seen.slice(-4), ['diff', 'HEAD', '--', '-evil.js']);
+  assert.deepStrictEqual(seen.slice(-3), ['HEAD', '--', ':(literal)-evil.js']);
 });
 
 test('a git failure is {ok:false}, not an empty diff', async () => {
@@ -199,4 +199,31 @@ test('diffFor: no calls and git failing is an error the page can show, not "no c
   const r = await diffFor({ root: ROOT, rel: 'a.js', projectsDir: tmpDir('cc-diff-fail-'), execFile: (f, a, o, cb) => cb(new Error('x'), '', 'fatal: not a git repository') });
   assert.strictEqual(r.ok, false);
   assert.match(r.error, /not a git repository/);
+});
+
+// ---- PR #95 Dexter D8, Miguel M4 ----
+
+test('M4: git is told not to run the repo\'s own diff drivers: no external diff, no textconv', async () => {
+  let seen;
+  await gitDiffHead('C:\\r', 'a.js', { execFile: (f, a, o, cb) => { seen = a; cb(null, '', ''); } });
+  assert.ok(seen.includes('--no-ext-diff') && seen.includes('--no-textconv'), seen.join(' '));
+  assert.ok(seen.indexOf('--no-ext-diff') < seen.indexOf('--'), 'options go before the pathspec separator');
+});
+
+test('D8: the path is a LITERAL pathspec: [id] is a folder name, not a glob', async () => {
+  const { execFileSync } = require('child_process');
+  const root = tmpDir('cc-diff-glob-');
+  const git = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e.invalid', ...a], { cwd: root, stdio: 'pipe', windowsHide: true });
+  git('init', '-q');
+  fs.mkdirSync(path.join(root, 'app', '[id]'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'app', 'i'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'app', '[id]', 'page.tsx'), 'one\n');
+  fs.writeFileSync(path.join(root, 'app', 'i', 'page.tsx'), 'one\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  fs.writeFileSync(path.join(root, 'app', '[id]', 'page.tsx'), 'two\n');
+  fs.writeFileSync(path.join(root, 'app', 'i', 'page.tsx'), 'two\n');
+  const r = await gitDiffHead(root, 'app/[id]/page.tsx');
+  assert.strictEqual(r.ok, true);
+  assert.match(r.text, /app\/\[id\]\/page\.tsx/);
+  assert.doesNotMatch(r.text, /app\/i\/page\.tsx/, 'the glob also matched the other folder');
 });
