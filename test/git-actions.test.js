@@ -134,14 +134,19 @@ test('property: Type /merged is enabled only when every condition holds', () => 
   const state = fc.constantFrom('merged', 'open', 'unmerged', 'deleted');
   const place = fc.constantFrom('worktree', 'had-worktree', 'dev');
   const tab = fc.oneof(fc.constant(null), fc.constant({ open: false }), fc.record({
-    open: fc.constant(true), started: fc.boolean(), known: fc.boolean(), working: fc.boolean(), needsInput: fc.boolean() }));
+    open: fc.constant(true), started: fc.boolean(), known: fc.boolean(), working: fc.boolean(), needsInput: fc.boolean(),
+    // PR #93: the host's turn (F1/F2) and the lock (F5) are conditions too. Without them here the oracle
+    // said "enabled" for a tab the rule rightly keeps off, and the property failed whenever fast-check
+    // happened to draw that tab (seen once in a full run after the develop merge).
+    turn: fc.constantFrom(null, 'idle', 'turn', 'prompt'), lock: fc.constantFrom(null, 'held', 'unlocked', 'override', 'blocked', 'pending') }));
   fc.assert(fc.property(state, place, fc.boolean(), tab, (st, pl, hasFolder, t) => {
     const b = { name: 'n', state: st, place: pl, pr: 3, prUrl: null, folder: hasFolder ? 'C:/x' : null };
     const a = by(A.actionsFor(b, { prsKnown: true, repoUrl: null, tab: t }), 'type-merged');
     const should = st === 'open' && pl === 'worktree' && hasFolder && !!t && t.open === true && t.started === true
-      && t.known === true && t.working === false && t.needsInput === false;
+      && t.known === true && t.working === false && t.needsInput === false
+      && t.turn === 'idle' && ['held', 'unlocked', 'override'].includes(t.lock);
     assert.strictEqual(a.enabled, should);
-  }));
+  }), { numRuns: 1000 });
 });
 
 test('which action does the drawer put the keyboard on first: the first enabled one, preferring Jump', () => {
