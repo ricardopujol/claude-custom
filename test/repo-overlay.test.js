@@ -93,3 +93,23 @@ test('D3: ./x.js, sub/../x.js and backslashes are the same file as x.js; a path 
     f('../up.js', 'edited', 1), f('/abs.js', 'edited', 1), f('C:/abs.js', 'edited', 1), f('.', 'edited', 1)]);
   assert.deepStrictEqual(o.files.map(x => [x.path, x.edits]), [['x.js', 3]]);
 });
+
+// ---- PR #95 Dexter D12: a folder's badge counts only files the tree can show ----
+
+test('D12: a file that was deleted (or is ignored) still shows under the filter but adds nothing to its folders', () => {
+  const listed = new Set(['src/a.js']);
+  const resolve = (p) => (listed.has(p) ? p : null);
+  const o = rollUp([f('src/old.js', 'edited', 3), f('src/a.js', 'edited', 1), f('documentation/x.md', 'edited', 2)], { resolve });
+  assert.deepStrictEqual(o.files.map(x => [x.path, x.edits]), [['src/old.js', 3], ['src/a.js', 1], ['documentation/x.md', 2]]);
+  assert.deepStrictEqual(o.dirs.map(d => [d.path, d.edits, d.edited]), [['', 1, 1], ['src', 1, 1]]);
+});
+
+test('D12: with no listing to ask (undefined), every touched file counts, as before', () => {
+  const o = rollUp([f('src/old.js', 'edited', 3)], { resolve: () => undefined });
+  assert.strictEqual(dir(o, 'src').edits, 3);
+});
+
+test('D12: the files carry no internal flags out of the roll-up', () => {
+  const o = rollUp([f('a.js', 'edited', 1)], { resolve: (p) => p });
+  assert.deepStrictEqual(Object.keys(o.files[0]).sort(), ['edits', 'path', 'tier']);
+});

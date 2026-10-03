@@ -60,7 +60,7 @@ function rollUp(fogFiles, { resolve } = {}) {
     const key = p.toLowerCase();
     const listed = typeof resolve === 'function' ? resolve(p) : undefined;
     const cur = files.get(key);
-    if (!cur) { files.set(key, { path: typeof listed === 'string' ? listed : p, tier: e.tier, edits, listed: typeof listed === 'string' }); continue; }
+    if (!cur) { files.set(key, { path: typeof listed === 'string' ? listed : p, tier: e.tier, edits, listed: listed === undefined ? undefined : typeof listed === 'string' }); continue; }
     cur.edits += edits;
     if (e.tier === TIER_EDITED) cur.tier = TIER_EDITED;
   }
@@ -68,7 +68,7 @@ function rollUp(fogFiles, { resolve } = {}) {
   // FOLDERS ARE CASE-INSENSITIVE TOO: `A/b.js` and `a/c.js` sit in one folder. One spelling per folder, the
   // listing's first (a listed file spells its folders the way the tree does), then the first seen.
   const spelling = new Map();
-  const ordered = [...files.values()].sort((a, b) => Number(b.listed) - Number(a.listed));
+  const ordered = [...files.values()].sort((a, b) => Number(b.listed === true) - Number(a.listed === true));
   for (const f of ordered) {
     const parts = f.path.split('/');
     for (let i = 0; i < parts.length - 1; i++) {
@@ -77,10 +77,14 @@ function rollUp(fogFiles, { resolve } = {}) {
     }
     f.path = parts.map((part, i) => (i < parts.length - 1 ? spelling.get(parts.slice(0, i + 1).join('/').toLowerCase()) : part)).join('/');
   }
-  for (const f of files.values()) delete f.listed;
 
+  // A FOLDER'S COUNT IS OF THE FILES THE TREE CAN SHOW (PR #95 Dexter D12): a file Claude edited and then deleted,
+  // or one that is gitignored, still appears under "Only what Claude touched" but adds nothing to its folders,
+  // so a folder's number is always the sum of the rows under it. With no listing to ask (undefined) every
+  // touched file counts.
   const dirs = new Map();
   for (const f of files.values()) {
+    if (f.listed === false) continue;
     for (const d of ancestorsOf(f.path)) {
       let row = dirs.get(d);
       if (!row) { row = { path: d, edits: 0, edited: 0, read: 0 }; dirs.set(d, row); }
@@ -88,7 +92,7 @@ function rollUp(fogFiles, { resolve } = {}) {
       if (f.tier === TIER_EDITED) row.edited += 1; else row.read += 1;
     }
   }
-  return { files: [...files.values()], dirs: [...dirs.values()] };
+  return { files: [...files.values()].map(({ path, tier, edits }) => ({ path, tier, edits })), dirs: [...dirs.values()] };
 }
 
 module.exports = { rollUp, ancestorsOf };

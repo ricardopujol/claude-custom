@@ -91,3 +91,17 @@ test('R5 (D3): any case spelling of a path is the same file: the row for the fir
     return o.files.every(x => x.edits === byKey.get(x.path.toLowerCase())) && root.edits === total && new Set(lowerDirs).size === lowerDirs.length;
   }), { numRuns: 800 });
 });
+
+test('R6 (D12): with a listing, a folder is exactly the sum over its LISTED files', () => {
+  fc.assert(fc.property(entries, fc.array(fc.boolean(), { minLength: 30, maxLength: 30 }), (list, mask) => {
+    const listedSet = new Set();
+    list.forEach((e, i) => { if (mask[i % mask.length]) listedSet.add(e.path.toLowerCase()); });
+    const o = rollUp(list, { resolve: (p) => (listedSet.has(p.toLowerCase()) ? p : null) });
+    const files = expected(list);
+    return o.dirs.every((d) => {
+      let edits = 0;
+      for (const [p, v] of files) if (listedSet.has(p.toLowerCase()) && under(d.path, p)) edits += v.edits;
+      return d.edits === edits;
+    });
+  }), { numRuns: 800 });
+});
