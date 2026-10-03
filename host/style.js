@@ -31,11 +31,16 @@ const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
 const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
-const { generateLook, noLookReason, DEFAULT_TERMINAL_FG } = require('./palette-gen');
+const {
+  generateLook, generateLookFrom, noLookReason, noSeedsReason, seedParts, DEFAULT_TERMINAL_FG,
+} = require('./palette-gen');
+const {
+  MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, SNIFF_BYTES, kindOfExt, maxBytesFor, signatureMatches,
+} = require('./background-media');
 
-// 25MB, per the FF6 brief. Pinned by an explicit boundary test, the way
-// host/control.js's MAX_TERMINAL_DIM is.
-const MAX_BYTES = 25 * 1024 * 1024;
+// 25MB for an image, per the FF6 brief; 100MB for a video loop (#34). Pinned by
+// explicit boundary tests, the way host/control.js's MAX_TERMINAL_DIM is.
+const MAX_BYTES = MAX_IMAGE_BYTES;
 
 const LOOK_DIR_NAME = '.claude-custom';
 const LOOK_FILE = 'look.json';
@@ -60,9 +65,10 @@ function extOf(p) {
  * PURE decision: may this candidate become the project's background, and if
  * so, where would the copy live? `size` is injected so a refusal can be
  * decided before anything is statted, and so this stays testable without a
- * real file. The destination is always `<project>/.claude-custom/background.<ext>`.
+ * real file; so is `head`, the file's first bytes, which a video's signature is
+ * checked against (host/background-media.js). The destination is always `<project>/.claude-custom/background.<ext>`.
  */
-function planBackgroundChoice({ source, cwd, size } = {}) {
+function planBackgroundChoice({ source, cwd, size, head } = {}) {
   const src = typeof source === 'string' ? source.trim() : '';
   if (!src) return { ok: false, reason: 'no file was given' };
   if (typeof cwd !== 'string' || !cwd.trim()) return { ok: false, reason: 'no project is open' };
@@ -71,17 +77,23 @@ function planBackgroundChoice({ source, cwd, size } = {}) {
   if (!ACCEPTED_EXTENSIONS.includes(ext)) {
     return {
       ok: false,
-      reason: `"${ext || '(no extension)'}" is not a supported image type -- ` +
+      reason: `"${ext || '(no extension)'}" is not a supported image or video type -- ` +
         `use ${ACCEPTED_EXTENSIONS.join(', ')}`,
     };
   }
 
-  if (typeof size === 'number' && Number.isFinite(size) && size > MAX_BYTES) {
+  const kind = kindOfExt(ext);
+  const cap = maxBytesFor(ext);
+  if (typeof size === 'number' && Number.isFinite(size) && size > cap) {
     return {
       ok: false,
-      reason: `that image is ${(size / (1024 * 1024)).toFixed(1)}MB -- ` +
-        `${Math.round(MAX_BYTES / (1024 * 1024))}MB is the limit`,
+      reason: `that ${kind} is ${(size / (1024 * 1024)).toFixed(1)}MB -- ` +
+        `${Math.round(cap / (1024 * 1024))}MB is the limit for a ${kind}`,
     };
+  }
+
+  if (!signatureMatches(ext, head)) {
+    return { ok: false, reason: `that file is not a real .${ext} video (its first bytes are wrong) -- not using it` };
   }
 
   return { ok: true, dest: path.join(lookDir(cwd), `background.${ext}`), ext };
@@ -288,6 +300,65 @@ function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
   return setLook({ cwd, patch: look, fsImpl });
 }
 
+/**
+ * "Match colours to this background" (#34): a look seeded by the colours the
+ * renderer sampled from the picture or the video's current frame -- `seeds`, a
+ * few #rrggbb strings; the host never sees the picture. Same refusals as a
+ * re-roll (it's a setLook), plus two of its own: nothing usable was sent, or no
+ * palette from these colours passes the contrast gates. Both leave the look,
+ * background and darkness exactly as they were.
+ */
+const NO_PALETTE_REASON = 'No readable palette in this background; kept your colours';
+
+// Why no palette came back, naming the real cause (Dexter D2, PR #91): when the
+// same colours DO give a palette against the default terminal text, it is this
+// theme's terminal text that no dark look can carry, and a different picture
+// would never fix it -- say so, as a re-roll does.
+function noMatchReason(seeds, terminalForeground, generate) {
+  const fg = terminalForeground || DEFAULT_TERMINAL_FG;
+  if (fg.toLowerCase() !== DEFAULT_TERMINAL_FG.toLowerCase()
+    && generate(seeds, () => 0.5, { terminalForeground: DEFAULT_TERMINAL_FG })) {
+    return `no palette from this background reads against this theme's terminal text (${fg}) -- ` +
+      'matched looks are dark, and this terminal text needs a light background; kept your colours';
+  }
+  return NO_PALETTE_REASON;
+}
+
+const NO_OWN_BACKGROUND_REASON = "there's no background of your own to match any more; kept your colours";
+const STALE_MATCH_REASON = 'the background changed while its colours were being read; kept your colours -- try again';
+
+// `setAt` names the background the renderer SAMPLED (its look.json setAt). The
+// renderer's own gate ran before it read the picture, and another window can
+// reset or replace the background in the meantime (Dexter D5, PR #91): a match
+// for a picture that is no longer the one showing is refused, never applied.
+function matchLook({ cwd, seeds, setAt, rng, terminalForeground, fsImpl = fs, generate = generateLookFrom } = {}) {
+  if (!seedParts(seeds)) return { ok: false, reason: noSeedsReason() };
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) return { ok: false, reason: refused };
+  if (!state.look.background) return { ok: false, reason: NO_OWN_BACKGROUND_REASON };
+  if (typeof setAt !== 'string' || state.look.background.setAt !== setAt) return { ok: false, reason: STALE_MATCH_REASON };
+  const look = generate(seeds, rng, { terminalForeground });
+  if (!look) return { ok: false, reason: noMatchReason(seeds, terminalForeground, generate) };
+  return setLook({ cwd, patch: look, fsImpl });
+}
+
+// The first bytes of a file, or null when they can't be read -- which a video
+// treats as a refusal. Only the head is read: a 100MB clip is never loaded.
+function readHead(fsImpl, file) {
+  let fd;
+  try {
+    fd = fsImpl.openSync(file, 'r');
+    const buf = Buffer.alloc(SNIFF_BYTES);
+    const n = fsImpl.readSync(fd, buf, 0, SNIFF_BYTES, 0);
+    return buf.subarray(0, n);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fsImpl.closeSync(fd); } catch { /* already closed */ } }
+  }
+}
+
 function tryUnlink(fsImpl, file) {
   try { fsImpl.unlinkSync(file); } catch { /* best effort */ }
 }
@@ -301,8 +372,17 @@ function tryUnlink(fsImpl, file) {
  * once look.json is written are the .bak and the older copies removed. If
  * the look.json write fails, the new copy is removed and the .bak restored,
  * so the result is either "new background, recorded" or "exactly as before".
+ *
+ * ASYNC for the copy only (Miguel M1, PR #91): a 100MB video copied with
+ * copyFileSync froze the host -- every viewer, the terminal -- for as long as
+ * the disk took. The copy goes to a temp name unique to THIS call, and
+ * everything after it (re-reading the look, setting the old copy aside,
+ * renaming, recording) runs with no await in between, so another action that
+ * lands during the copy is seen, not overwritten.
  */
-function setBackground({ source, cwd, fsImpl = fs } = {}) {
+let copySeq = 0;
+
+async function setBackground({ source, cwd, fsImpl = fs } = {}) {
   let stat;
   try {
     stat = fsImpl.statSync(source);
@@ -311,20 +391,34 @@ function setBackground({ source, cwd, fsImpl = fs } = {}) {
   }
   if (!stat.isFile()) return { ok: false, reason: 'that is not a file' };
 
-  const plan = planBackgroundChoice({ source, cwd, size: stat.size });
+  // Only a video has a signature to check; an image never costs a read.
+  const head = kindOfExt(extOf(source)) === 'video' ? readHead(fsImpl, source) : undefined;
+  const plan = planBackgroundChoice({ source, cwd, size: stat.size, head });
   if (!plan.ok) return plan;
 
-  const state = readLookState(cwd, fsImpl);
-  const refused = refusalFor(state, cwd);
-  if (refused) return { ok: false, reason: refused };
+  // Checked before the copy too: a refused folder never costs a 100MB copy.
+  const early = refusalFor(readLookState(cwd, fsImpl), cwd);
+  if (early) return { ok: false, reason: early };
 
-  const rename = { rename: fsImpl.renameSync };
-  const temp = `${plan.dest}.tmp${process.pid}`;
-  const bak = `${plan.dest}.bak${process.pid}`;
-  let setAside = false;
+  const seq = ++copySeq;
+  const temp = `${plan.dest}.tmp${process.pid}-${seq}`;
+  const bak = `${plan.dest}.bak${process.pid}-${seq}`;
   try {
     ensureLookDir(cwd, fsImpl);
-    fsImpl.copyFileSync(source, temp);
+    await fsImpl.promises.copyFile(source, temp);
+  } catch (err) {
+    tryUnlink(fsImpl, temp);
+    return { ok: false, reason: `could not copy the file: ${err.message}` };
+  }
+
+  // From here to the return, nothing awaits.
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) { tryUnlink(fsImpl, temp); return { ok: false, reason: refused }; }
+
+  const rename = { rename: fsImpl.renameSync };
+  let setAside = false;
+  try {
     if (fsImpl.existsSync(plan.dest)) {
       renameWithRetry(plan.dest, bak, rename);
       setAside = true;
@@ -333,7 +427,7 @@ function setBackground({ source, cwd, fsImpl = fs } = {}) {
   } catch (err) {
     tryUnlink(fsImpl, temp);
     if (setAside) { try { renameWithRetry(bak, plan.dest, rename); } catch { /* reported below */ } }
-    return { ok: false, reason: `could not copy the image: ${err.message}` };
+    return { ok: false, reason: `could not copy the file: ${err.message}` };
   }
 
   const file = path.basename(plan.dest);
@@ -380,11 +474,12 @@ function resetBackground({ cwd, fsImpl = fs } = {}) {
 function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
   const look = readLook(cwd, { fsImpl });
   if (!look.background) {
-    return { background: fallbackBackground, source: 'generated', setAt: null, look };
+    return { background: fallbackBackground, source: 'generated', kind: 'image', setAt: null, look };
   }
   return {
     background: path.join(lookDir(cwd), look.background.file),
     source: 'override',
+    kind: kindOfExt(extOf(look.background.file)) || 'image',
     setAt: look.background.setAt,
     look,
   };
@@ -392,8 +487,8 @@ function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
 
 module.exports = {
   planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
-  readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, LOOK_DIR_NAME,
-  seedLookIfNew, rerollLook,
+  readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, MAX_VIDEO_BYTES, LOOK_DIR_NAME,
+  seedLookIfNew, rerollLook, matchLook, NO_PALETTE_REASON, NO_OWN_BACKGROUND_REASON, STALE_MATCH_REASON,
   // the branch ledger (host/git-tree-service.js) lives in the same folder, behind the same ignore,
   // and refuses a linked folder the same way
   ensureLookDir, lookDirState,

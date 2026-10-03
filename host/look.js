@@ -22,7 +22,9 @@
 // Formats a background copy may be stored as. Shared with host/style.js, which
 // refuses anything else at upload time -- the same list, so a file that got in
 // through the front door is never refused on the way back out.
-const ACCEPTED_EXTENSIONS = Object.freeze(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg']);
+// Images and short video loops (backlog #34): host/background-media.js owns which is which.
+const { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } = require('./background-media');
+const ACCEPTED_EXTENSIONS = Object.freeze([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
 
 // A darkness of 1 would paint the veil fully opaque and the image would be
 // gone -- that is "remove the image", which has its own button.

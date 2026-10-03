@@ -1814,3 +1814,32 @@ test('refresh publishes a new snapshot (a mark was set)', async () => {
   assert.strictEqual(h.changes.length, before + 1);
   assert.deepStrictEqual(h.changes.at(-1).model.find(e => e.label === 'develop').mark, M);
 });
+
+test('handleProbeCommand: window-state minimises or restores, nothing else (#34 probe)', async () => {
+  const seen = [];
+  const api = { windowState: async (s) => { seen.push(s); return { ok: true, state: s }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'window-state', state: 'minimize' }), api), { ok: true, state: 'minimize' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'window-state', state: 'restore' }), api), { ok: true, state: 'restore' });
+  for (const state of [undefined, 'close', 'hide', 1, null]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'window-state', state }), api),
+      { ok: false, error: 'window-state needs minimize or restore' }, String(state));
+  }
+  assert.deepStrictEqual(seen, ['minimize', 'restore']);
+});
+
+test('handleProbeCommand: reduced-motion takes a real boolean (#34 probe)', async () => {
+  const seen = [];
+  const api = { reducedMotion: async (on) => { seen.push(on); return { ok: true, on }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'reduced-motion', on: true }), api), { ok: true, on: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'reduced-motion', on: false }), api), { ok: true, on: false });
+  for (const on of [undefined, 'true', 1, null]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'reduced-motion', on }), api),
+      { ok: false, error: 'reduced-motion needs true or false' }, String(on));
+  }
+  assert.deepStrictEqual(seen, [true, false]);
+});
+
+test('the probe may drive the background view actions, by name only (#34)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['bgState', 'bgStyle', 'bgMatch']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
