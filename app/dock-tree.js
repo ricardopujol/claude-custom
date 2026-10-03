@@ -256,34 +256,46 @@ function replaceCell(l, cell, wrap) {
  * joins the group as its last tab and is refused on the terminal.
  */
 function dock(layout, id, target) {
-  const from = groupOf(layout, id);
+  const fromTree = groupOf(layout, id);
+  const from = fromTree || floatOf(layout, id);                             // the tree group or the float it sits in
   if (!from && !layout.hidden.includes(id)) return layout;                  // unknown module
   if (!isObject(target)) return layout;
+  const byFloat = Object.prototype.hasOwnProperty.call(target, 'float');
   const byEdge = typeof target.edge === 'string';
-  if (byEdge ? !EDGES.includes(target.edge) : (typeof target.cell !== 'string' || !SIDES.includes(target.side))) return layout;
+  if (byFloat) {
+    if (!(target.float === true || isObject(target.float))) return layout;
+    // A panel already alone in its float: floating it again can only mean "move it there".
+    if (from && !fromTree && from.tabs.length === 1) return isObject(target.float) ? moveFloat(layout, from.id, target.float) : layout;
+  } else if (byEdge ? !EDGES.includes(target.edge) : (typeof target.cell !== 'string' || !SIDES.includes(target.side))) return layout;
   const side = byEdge ? target.edge : target.side;
-  if (!byEdge) {
-    if (target.cell === 'term') { if (side === 'center') return layout; }
+  if (!byEdge && !byFloat) {
+    const toFloat = layout.floats.some(f => f.id === target.cell);
+    if (toFloat) { if (side !== 'center') return layout; }                  // a float takes a tab, never a split
+    else if (target.cell === 'term') { if (side === 'center') return layout; }
     else if (!groups(layout).some(gr => gr.id === target.cell)) return layout;   // unknown cell
     // A panel dropped on its own group: nothing to join, and nothing to split out of when it is alone.
     if (from && from.id === target.cell && (side === 'center' || from.tabs.length === 1)) return layout;
   }
 
   const l = clone(layout);
-  const src = groupOf(l, id);
+  const src = groupOf(l, id) || floatOf(l, id);
   if (src) src.tabs = src.tabs.filter(t => t !== id);
   l.hidden = l.hidden.filter(h => h !== id);
   delete l.seat[id];
 
+  const used = new Set(allGroups(l).map(gr => gr.id));
+  if (byFloat) {
+    l.floats.push({ id: freshId(used, seatGroups(l.seat)), tabs: [id], ...spotFor(layout, target.float) });
+    return normalize(l, modulesIn(layout));
+  }
   let cellNode = l.root;
   if (!byEdge) {
-    cellNode = target.cell === 'term' ? null : groups(l).find(gr => gr.id === target.cell);
+    cellNode = target.cell === 'term' ? null : allGroups(l).find(gr => gr.id === target.cell);
     if (!cellNode) walk(l.root, (n) => { if (n.type === 'term') cellNode = n; });
   }
   if (!byEdge && side === 'center') {
     cellNode.tabs.push(id);
   } else {
-    const used = new Set(groups(l).map(gr => gr.id));
     const added = { type: 'group', id: freshId(used, seatGroups(l.seat)), tabs: [id] };
     const dir = dirOf(side);
     const first = firstOf(side);
@@ -296,8 +308,62 @@ function dock(layout, id, target) {
   const result = normalize(l, modulesIn(layout));
   // A lone panel dropped where it already sits (a rim it touches, the terminal's side next to it) rebuilds
   // the same picture under a new group name and the default size. Decided by the RESULT, not by the target.
-  if (from && from.tabs.length === 1 && sameShape(layout.root, result.root)) return layout;
+  // Only for a tree panel: one coming from a float always changes something (the float goes).
+  if (fromTree && fromTree.tabs.length === 1 && sameShape(layout.root, result.root)) return layout;
   return result;
+}
+
+// Where a new float goes: the spot asked for (any part of it may be missing or junk), else a cascade
+// position, so floats made one after another never stack exactly.
+function spotFor(layout, spot) {
+  const n = layout.floats.length % 8;
+  const at = CASCADE * (2 + n);
+  const s = isObject(spot) ? spot : {};
+  return floatRect({ x: isNum(s.x) ? s.x : at, y: isNum(s.y) ? s.y : at, w: s.w, h: s.h });
+}
+
+const viewportOf = (vp) => {
+  const v = isObject(vp) ? vp : null;
+  return v && isSize(v.width) && isSize(v.height) ? { width: Math.floor(v.width), height: Math.floor(v.height) } : null;
+};
+
+// Replace one float (by id) in a copy; the same layout when the change is not one.
+function withFloat(layout, floatId, change) {
+  const cur = layout.floats.find(f => f.id === floatId);
+  if (!cur) return layout;
+  const next = { ...cur, ...change(cur) };
+  if (['x', 'y', 'w', 'h'].every(k => next[k] === cur[k])) return layout;
+  const l = clone(layout);
+  l.floats[layout.floats.indexOf(cur)] = next;
+  return normalize(l, modulesIn(layout));
+}
+
+/**
+ * Move a float: `pos` is { x, y }, stored as a whole number from 0. With a `viewport` (the drag's own
+ * window) the float is kept whole inside it; without, the stored position is exactly what was asked for
+ * (storage never clamps to a window: a wider window gives the position back). Anything that isn't a
+ * float or a position, and a move that changes nothing, returns the same layout.
+ */
+function moveFloat(layout, floatId, pos, viewport) {
+  if (!isObject(pos) || !isNum(pos.x) || !isNum(pos.y)) return layout;
+  const vp = viewportOf(viewport);
+  return withFloat(layout, floatId, (f) => {
+    if (!vp) return { x: floatPos(pos.x), y: floatPos(pos.y) };
+    const w = Math.min(f.w, vp.width);
+    const h = Math.min(f.h, vp.height);
+    return { x: floatPos(Math.max(0, Math.min(pos.x, vp.width - w))), y: floatPos(Math.max(0, Math.min(pos.y, vp.height - h))) };
+  });
+}
+
+/** Resize a float: `size` is { w, h }, rounded and clamped to [160 x 120, 10000]; with a `viewport`, no further than its edge. */
+function resizeFloat(layout, floatId, size, viewport) {
+  if (!isObject(size) || !isSize(size.w) || !isSize(size.h)) return layout;
+  const vp = viewportOf(viewport);
+  return withFloat(layout, floatId, (f) => {
+    const w = vp ? Math.min(size.w, vp.width - f.x) : size.w;
+    const h = vp ? Math.min(size.h, vp.height - f.y) : size.h;
+    return { w: floatSize(w, FLOAT_MIN.width, FLOAT_DEFAULT.width), h: floatSize(h, FLOAT_MIN.height, FLOAT_DEFAULT.height) };
+  });
 }
 
 // What a tree looks like once group names and every size are set aside: split directions and order, tabs per group.
@@ -601,7 +667,7 @@ function fit(layout, selection, viewport) {
 
 const API = {
   VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
-  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, hide, show, minSize, setSplitSizes,
+  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, hide, show, minSize, setSplitSizes,
   cleanSelection, selectTab, toggleFoldAll, activeOf, fit,
 };
 

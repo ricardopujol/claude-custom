@@ -292,7 +292,7 @@ test('an unknown module, an unknown cell, an unknown side or an unknown target c
   assert.equal(T.dock(l, 'vault', { cell: 'nope', side: 'right' }), l);
   assert.equal(T.dock(l, 'vault', { cell: 'c', side: 'diagonal' }), l);
   assert.equal(T.dock(l, 'vault', { edge: 'middle' }), l);
-  for (const t of [null, undefined, 7, {}, { float: { x: 1, y: 1 } }]) assert.equal(T.dock(l, 'vault', t), l);
+  for (const t of [null, undefined, 7, {}, { float: 7 }]) assert.equal(T.dock(l, 'vault', t), l);   // { float: spot } is a target since D2
 });
 
 test('dock, hide and show never change their input and always return a whole layout', () => {
