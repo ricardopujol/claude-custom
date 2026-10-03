@@ -19,13 +19,19 @@ function fakeIpc() {
 }
 function fakeStore(seed = {}, states = {}) {
   const data = { ...seed };
-  return {
+  const store = {
     data,
+    writes: 0,
+    locked: 0,                         // how deep inside withLock we are: a write outside it is a lost-update risk
+    wroteUnlocked: 0,
     read: (name, fallback) => (name in data ? data[name] : fallback),
     update: (name, fallback, fn) => { data[name] = fn(name in data ? data[name] : fallback); return data[name]; },
+    write: (name, value) => { store.writes += 1; if (!store.locked) store.wroteUnlocked += 1; data[name] = JSON.parse(JSON.stringify(value)); return value; },
+    withLock: (name, fn) => { store.locked += 1; try { return fn(); } finally { store.locked -= 1; } },
     // Shaped like host/store.js readState: the value comes with `ok`.
     readState: name => states[name] || (name in data ? { status: 'ok', value: data[name] } : { status: 'missing', value: null }),
   };
+  return store;
 }
 const VIEW = {};
 function setup(store = fakeStore()) {
@@ -245,62 +251,170 @@ function presetSetup(store = fakeStore()) {
 }
 const PRESETS = [{ name: 'Reviewing', layout: TREE }, { name: 'Writing', layout: { ...TREE, hidden: ['fog'] } }];
 
-test('PRESET_NAMES is its own key and channels, none of them the layout ones, and holds a list of presets', () => {
+test('PRESET_NAMES is its own key and channels, none of them the layout ones: a list read by `get`, changed only by `op`', () => {
   assert.deepStrictEqual(PRESET_NAMES, {
-    key: 'layout-presets', get: 'layout-presets:get', set: 'layout-presets:set', push: 'layout-presets',
-    shape: 'array', maxBytes: 32 * 8192,
+    key: 'layout-presets', get: 'layout-presets:get', op: 'layout-presets:op', push: 'layout-presets',
+    shape: 'array',
   });
   for (const other of [{ key: LAYOUT_KEY, get: GET_CHANNEL, set: SET_CHANNEL, push: PUSH_CHANNEL }, TREE_NAMES]) {
-    for (const f of ['key', 'get', 'set', 'push']) assert.notStrictEqual(PRESET_NAMES[f], other[f], f);
+    for (const f of ['key', 'get', 'push']) assert.notStrictEqual(PRESET_NAMES[f], other[f], f);
   }
-  assert.ok(PRESET_NAMES.maxBytes >= DOCK_PRESETS.MAX_PRESETS * DOCK_PRESETS.MAX_PRESET_BYTES, '32 full presets fit');
 });
 
 test('the layout names keep their one-object rule and their 8192-byte cap: the shape is opt-in', () => {
   assert.strictEqual(TREE_NAMES.shape, undefined);
   assert.strictEqual(TREE_NAMES.maxBytes, undefined);
+  assert.strictEqual(TREE_NAMES.op, undefined);
 });
 
-test('a set of a list stores it under the presets key, pushes it, and echoes it', async () => {
-  const { call, store, sent, sync } = presetSetup(fakeStore({ [TREE_NAMES.key]: TREE }));
-  assert.deepStrictEqual(await call(PRESET_NAMES.set, PRESETS), PRESETS);
-  assert.deepStrictEqual(store.data[PRESET_NAMES.key], PRESETS);
+test('the presets register no whole-list `set`: the page can only say what the user did', () => {
+  const { ipcMain } = presetSetup();
+  assert.ok(ipcMain.handlers.has(PRESET_NAMES.get));
+  assert.ok(ipcMain.handlers.has(PRESET_NAMES.op));
+  assert.ok(!ipcMain.handlers.has('layout-presets:set'));
+  assert.ok(setup().ipcMain.handlers.has(SET_CHANNEL), 'the layout keeps its own set');
+});
+
+const SAVE = (name, layout = TREE, extra = {}) => ({ op: 'save', name, layout, ...extra });
+
+test('an op saves into the fresh list, pushes the new list to every view, and answers { ok, list }', async () => {
+  const { call, store, sent, sync } = presetSetup(fakeStore({ [TREE_NAMES.key]: TREE, [PRESET_NAMES.key]: PRESETS }));
+  const answer = await call(PRESET_NAMES.op, SAVE('Plan'));
+  const want = [...PRESETS, { name: 'Plan', layout: TREE }];
+  assert.deepStrictEqual(answer, { ok: true, list: want });
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key], want);
   assert.deepStrictEqual(store.data[TREE_NAMES.key], TREE, 'the tree record is untouched');
-  assert.deepStrictEqual(sent, [[PRESET_NAMES.push, PRESETS]]);
-  assert.strictEqual(sync.last, JSON.stringify(PRESETS));
+  assert.deepStrictEqual(sent, [[PRESET_NAMES.push, want]]);
+  assert.strictEqual(sync.last, JSON.stringify(want), 'the watcher is told, so it doesn\'t push this window its own write');
 });
 
-test('an empty list is a real value: deleting the last preset is stored, not refused', async () => {
+test('rename and delete go through the same op channel', async () => {
   const { call, store } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }));
-  assert.deepStrictEqual(await call(PRESET_NAMES.set, []), []);
-  assert.deepStrictEqual(store.data[PRESET_NAMES.key], []);
+  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'rename', name: 'reviewing', to: 'Docs' })).ok, true);
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Docs', 'Writing']);
+  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Writing' })).ok, true);
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Docs']);
+  assert.deepStrictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Docs' })).list, [], 'deleting the last one is stored, not refused');
 });
 
-test('the presets channel refuses anything that is not an array, and the layout channel still refuses an array', async () => {
-  const { call, store, sent } = presetSetup();
-  for (const bad of [null, {}, 'x', 7, undefined, { name: 'a', layout: {} }]) assert.strictEqual(await call(PRESET_NAMES.set, bad), null, JSON.stringify(bad));
-  assert.ok(!(PRESET_NAMES.key in store.data));
+test('PR #103 Dexter 1: two windows, one store: a save in B does not erase what A saved, however stale B\'s copy is', async () => {
+  const store = fakeStore({ [PRESET_NAMES.key]: [PRESETS[0]] });
+  const A = {}; const B = {};
+  const sentA = []; const sentB = [];
+  const ipcMain = fakeIpc();
+  // Two mains (two windows) share the one store file: each has its own handlers, sync and views.
+  const mk = (view, sent) => {
+    const ipc = fakeIpc();
+    registerLayoutHandlers({ ipcMain: ipc, store, sync: {}, names: PRESET_NAMES, isSender: s => s === view, send: (ch, v) => sent.push([ch, v]) });
+    return (...args) => ipc.handlers.get(PRESET_NAMES.op)({ sender: view }, ...args);
+  };
+  void ipcMain;
+  const opA = mk(A, sentA);
+  const opB = mk(B, sentB);
+  assert.strictEqual((await opA(SAVE('Focus'))).ok, true);
+  // B's poll was skipped (EBUSY), so B still believes the list is [Reviewing]; it saves Debug anyway.
+  assert.strictEqual((await opB(SAVE('Debug'))).ok, true);
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Reviewing', 'Focus', 'Debug']);
+  // and a delete in B of something A has since renamed away is a refusal, not a silent write
+  assert.strictEqual((await opA({ op: 'rename', name: 'Focus', to: 'Focused' })).ok, true);
+  assert.deepStrictEqual(await opB({ op: 'delete', name: 'Focus' }), { ok: false, reason: 'missing' });
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Reviewing', 'Focused', 'Debug']);
+});
+
+test('every write is one read-modify-write inside the store\'s lock, on a fresh read', async () => {
+  const store = fakeStore({ [PRESET_NAMES.key]: PRESETS });
+  const reads = [];
+  const readState = store.readState;
+  store.readState = (name) => { reads.push(store.locked); return readState(name); };
+  const { call } = presetSetup(store);
+  await call(PRESET_NAMES.op, SAVE('One'));
+  await call(PRESET_NAMES.op, SAVE('Two'));
+  assert.strictEqual(store.writes, 2);
+  assert.strictEqual(store.wroteUnlocked, 0, 'no write outside the lock');
+  assert.deepStrictEqual(reads, [1, 1], 'each op read the file itself, inside the lock');
+});
+
+test('PR #103 Dexter 2: an unreadable, corrupt or non-list file is never written over, whatever this window thought', async () => {
+  const cases = [
+    { [PRESET_NAMES.key]: { status: 'unreadable', value: null } },
+    { [PRESET_NAMES.key]: { status: 'corrupt', value: null } },
+    { [PRESET_NAMES.key]: { status: 'error', value: null } },
+    { [PRESET_NAMES.key]: { status: 'ok', value: { version: 2, presets: [] } } },
+    { [PRESET_NAMES.key]: { status: 'ok', value: 'text' } },
+  ];
+  for (const states of cases) {
+    const store = fakeStore({ [PRESET_NAMES.key]: PRESETS }, states);
+    const { call, sent } = presetSetup(store);
+    for (const req of [SAVE('Focus'), { op: 'rename', name: 'Reviewing', to: 'X' }, { op: 'delete', name: 'Reviewing' }]) {
+      assert.deepStrictEqual(await call(PRESET_NAMES.op, req), { ok: false, reason: 'unreadable' }, JSON.stringify(states));
+    }
+    assert.strictEqual(store.writes, 0, 'the file is untouched');
+    assert.deepStrictEqual(store.data[PRESET_NAMES.key], PRESETS);
+    assert.deepStrictEqual(sent, []);
+  }
+});
+
+test('with no file yet the first save starts the list; a read that throws is unreadable, not empty', async () => {
+  const fresh = presetSetup();
+  assert.deepStrictEqual((await fresh.call(PRESET_NAMES.op, SAVE('First'))).list.map(p => p.name), ['First']);
+  const throwing = fakeStore({ [PRESET_NAMES.key]: PRESETS });
+  throwing.readState = () => { throw new Error('disk'); };
+  const t = presetSetup(throwing);
+  assert.deepStrictEqual(await t.call(PRESET_NAMES.op, SAVE('X')), { ok: false, reason: 'unreadable' });
+  assert.strictEqual(throwing.writes, 0);
+});
+
+test('a refused op answers its reason, writes nothing and pushes nothing', async () => {
+  const { call, store, sent } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }));
+  assert.deepStrictEqual(await call(PRESET_NAMES.op, SAVE('reviewing')), { ok: false, reason: 'taken' });
+  assert.deepStrictEqual(await call(PRESET_NAMES.op, SAVE('')), { ok: false, reason: 'name' });
+  assert.deepStrictEqual(await call(PRESET_NAMES.op, { op: 'delete', name: 'Nope' }), { ok: false, reason: 'missing' });
+  for (const bad of [null, undefined, 'x', 7, [], {}, { op: 'set', list: [] }]) assert.deepStrictEqual(await call(PRESET_NAMES.op, bad), { ok: false, reason: 'op' }, JSON.stringify(bad));
+  assert.strictEqual(store.writes, 0);
   assert.deepStrictEqual(sent, []);
-  const tree = treeSetup();
-  assert.strictEqual(await tree.call(TREE_NAMES.set, PRESETS), null);
-  assert.strictEqual(await tree.call(TREE_NAMES.set, []), null);
 });
 
-test('the presets cap is its own: more than 8192 bytes is fine, more than 32 x 8192 is refused', async () => {
-  const { call, store } = presetSetup();
-  const big = [{ name: 'Big', layout: { pad: 'x'.repeat(10000) } }];
-  assert.deepStrictEqual(await call(PRESET_NAMES.set, big), big);
-  const tooBig = [{ name: 'Huge', layout: { pad: 'x'.repeat(PRESET_NAMES.maxBytes) } }];
-  assert.strictEqual(await call(PRESET_NAMES.set, tooBig), null);
-  assert.deepStrictEqual(store.data[PRESET_NAMES.key], big, 'the refused save left the stored list as it was');
+test('nothing this build cannot use is erased: foreign entries and fields ride through an op', async () => {
+  const stored = [{ name: 'Reviewing', layout: TREE, pinned: true }, 'junk', { name: 'x'.repeat(45), layout: TREE }, { shape: 'later' }];
+  const { call, store } = presetSetup(fakeStore({ [PRESET_NAMES.key]: stored }));
+  await call(PRESET_NAMES.op, SAVE('Plan'));
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key], [...stored, { name: 'Plan', layout: TREE }]);
+  await call(PRESET_NAMES.op, { op: 'rename', name: 'Reviewing', to: 'Looked at' });
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key][0], { name: 'Looked at', layout: TREE, pinned: true });
+});
+
+test('32 maximal presets, which the page\'s own rules allow, are stored: main\'s cap is the page\'s', async () => {
+  const pad = 'x'.repeat(DOCK_PRESETS.MAX_PRESET_BYTES - '{"pad":""}'.length);
+  const name = i => [...'\u{1F600}'.repeat(38)].join('') + String(10 + i);
+  const stored = Array.from({ length: 31 }, (_, i) => ({ name: name(i), layout: { pad } }));
+  const { call, store } = presetSetup(fakeStore({ [PRESET_NAMES.key]: stored }));
+  const answer = await call(PRESET_NAMES.op, SAVE(name(31), { pad }));
+  assert.strictEqual(answer.ok, true);
+  assert.strictEqual(store.data[PRESET_NAMES.key].length, 32);
+  assert.deepStrictEqual(await call(PRESET_NAMES.op, SAVE('one more')), { ok: false, reason: 'full' });
+});
+
+test('a lock that cannot be taken, or a write that fails, is said as `failed`: nothing is pushed', async () => {
+  const stuck = fakeStore({ [PRESET_NAMES.key]: PRESETS });
+  stuck.withLock = () => { throw new Error('lock timeout'); };
+  const a = presetSetup(stuck);
+  assert.deepStrictEqual(await a.call(PRESET_NAMES.op, SAVE('X')), { ok: false, reason: 'failed' });
+  assert.deepStrictEqual(a.sent, []);
+  const broken = fakeStore({ [PRESET_NAMES.key]: PRESETS });
+  broken.write = () => { throw new Error('EPERM'); };
+  const b = presetSetup(broken);
+  assert.deepStrictEqual(await b.call(PRESET_NAMES.op, SAVE('X')), { ok: false, reason: 'failed' });
+  assert.deepStrictEqual(b.sent, []);
+  assert.deepStrictEqual(broken.data[PRESET_NAMES.key], PRESETS);
 });
 
 test('a sender that is not a tab view gets nothing and changes nothing on the presets channels', async () => {
   const { ipcMain, store, sent } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }));
   const stranger = { sender: {} };
   assert.strictEqual(await ipcMain.handlers.get(PRESET_NAMES.get)(stranger), null);
-  assert.strictEqual(await ipcMain.handlers.get(PRESET_NAMES.set)(stranger, []), null);
+  assert.strictEqual(await ipcMain.handlers.get(PRESET_NAMES.op)(stranger, SAVE('X')), null);
   assert.deepStrictEqual(store.data[PRESET_NAMES.key], PRESETS);
+  assert.strictEqual(store.writes, 0);
   assert.deepStrictEqual(sent, []);
 });
 

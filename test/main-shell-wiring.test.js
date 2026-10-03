@@ -411,7 +411,7 @@ test('Miguel #4: the tab:raise handler keeps its own comment', () => {
 // --- layout pass L1 ----------------------------------------------------------
 
 test('L1: the global layout is served to this window\'s tab views and pushed to all of them', () => {
-  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES \} = require\('\.\/layout-bridge'\);/);
+  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
   const at = MAIN.indexOf('registerLayoutHandlers({');
   assert.ok(at !== -1, 'registerLayoutHandlers is called');
   const call = callText(MAIN, at);
@@ -438,7 +438,7 @@ test('L1: the preload exposes the layout bridge with one listener at a time', ()
 });
 
 test('D1: the tree layout is a second registration under TREE_NAMES, with its own sync and its own store file', () => {
-  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES \} = require\('\.\/layout-bridge'\);/);
+  assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
   const reg = callText(MAIN, MAIN.indexOf('registerLayoutHandlers({', MAIN.indexOf('registerLayoutHandlers({') + 1));
   assert.match(reg, /names: TREE_NAMES/);
   assert.match(reg, /sync: treeSync/);
@@ -453,7 +453,7 @@ test('D1: the tree layout is a second registration under TREE_NAMES, with its ow
 });
 
 test('D3: the preset list is a third registration under PRESET_NAMES, with its own sync and its own store file', () => {
-  assert.match(MAIN, /const \{ PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
+  assert.strictEqual(MAIN.split("require('./layout-bridge')").length - 1, 1, 'one require of the bridge');
   const first = MAIN.indexOf('registerLayoutHandlers({');
   const third = MAIN.indexOf('registerLayoutHandlers({', MAIN.indexOf('registerLayoutHandlers({', first + 1) + 1);
   assert.ok(third !== -1, 'a third registerLayoutHandlers call');
@@ -476,7 +476,8 @@ test('D3: the preload exposes layoutPresets with one listener at a time, on its 
   const PRELOAD = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'));
   assert.match(PRELOAD, /layoutPresets: \{/);
   assert.match(PRELOAD, /get: \(\) => ipcRenderer\.invoke\('layout-presets:get'\)/);
-  assert.match(PRELOAD, /set: \(list\) => ipcRenderer\.invoke\('layout-presets:set', list\)/);
+  assert.match(PRELOAD, /op: \(req\) => ipcRenderer\.invoke\('layout-presets:op', req\)/);
+  assert.doesNotMatch(PRELOAD, /layout-presets:set/, 'the page can no longer write the whole list');
   assert.match(PRELOAD, /ipcRenderer\.removeAllListeners\('layout-presets'\), ipcRenderer\.on\('layout-presets'/);
 });
 

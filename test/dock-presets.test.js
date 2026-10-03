@@ -41,8 +41,8 @@ test('trimming happens before the length check', () => {
 
 // --- names are what the user sees (PR #103 Dexter 5, Miguel S1) -----------------
 
-const COMPOSED = 'Café';
-const DECOMPOSED = 'Café';
+const COMPOSED = 'Caf\u00e9';
+const DECOMPOSED = 'Cafe\u0301';
 
 test('a name is stored NFC: composed and decomposed spellings are the same name', () => {
   assert.strictEqual(P.checkName(DECOMPOSED), COMPOSED);
@@ -50,11 +50,11 @@ test('a name is stored NFC: composed and decomposed spellings are the same name'
 });
 
 test('length is counted after NFC: 40 decomposed e-acutes are 40 characters, 41 are not', () => {
-  assert.strictEqual(P.checkName('é'.repeat(40)), 'é'.repeat(40));
-  assert.strictEqual(P.checkName('é'.repeat(41)), null);
-  assert.strictEqual(P.checkName('é'.repeat(41)), null);
+  assert.strictEqual(P.checkName('e\u0301'.repeat(40)), '\u00e9'.repeat(40));
+  assert.strictEqual(P.checkName('e\u0301'.repeat(41)), null);
+  assert.strictEqual(P.checkName('\u00e9'.repeat(41)), null);
   // the same visible name passes or fails the same way in either form
-  assert.strictEqual(P.checkName('é'.repeat(21)) !== null, P.checkName('é'.repeat(21)) !== null);
+  assert.strictEqual(P.checkName('e\u0301'.repeat(21)) !== null, P.checkName('\u00e9'.repeat(21)) !== null);
 });
 
 test('save under the other normalization form of an existing name is `taken`; replace keeps one preset', () => {
@@ -71,12 +71,12 @@ test('cleanPresets treats the two forms as one name too (the first wins)', () =>
 });
 
 test('German sharp s and SS are two different names: case folding here is lower-casing, not full folding', () => {
-  const list = [{ name: 'Straße', layout: { version: 2 } }];
+  const list = [{ name: 'Stra\u00dfe', layout: { version: 2 } }];
   assert.strictEqual(P.savePreset(list, 'STRASSE', { version: 2 }).ok, true);
 });
 
 test('line and paragraph separators, bidi overrides and zero-width characters are refused', () => {
-  for (const bad of ['a b', 'a b', 'a‮b', 'a​b', 'a‍b', 'a⁦b', 'a­b', 'a﻿b']) {
+  for (const bad of ['a\u2028b', 'a\u2029b', 'a\u202eb', 'a\u200bb', 'a\u200db', 'a\u2066b', 'a\u00adb', 'a\ufeffb']) {
     assert.strictEqual(P.checkName(bad), null, JSON.stringify(bad));
   }
 });

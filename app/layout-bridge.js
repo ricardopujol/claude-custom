@@ -15,6 +15,7 @@
  * project windows (other mains sharing the store file) make.
  */
 const fs = require('fs');
+const { applyOp } = require('./dock-presets');
 
 const LAYOUT_KEY = 'layout-global';
 const GET_CHANNEL = 'layout:get';
@@ -24,12 +25,12 @@ const PUSH_CHANNEL = 'layout-global';
 // is left alone: a window on an older build may still write it, and a version-2 object read by L1's
 // normalizer would come out as the default and be saved over it.
 const TREE_NAMES = { key: 'layout-tree', get: 'layout-tree:get', set: 'layout-tree:set', push: 'layout-tree' };
-// The layout presets (dockable panels D3): the same bridge holding an ARRAY, with a cap of its own
-// (32 presets x 8192 bytes: app/dock-presets.js MAX_PRESETS x MAX_PRESET_BYTES). `shape` and `maxBytes` are
-// opt-in, so the layout names above keep their one-object rule and their 8192-byte cap.
+// The layout presets (dockable panels D3): the same bridge holding an ARRAY. `shape` is opt-in, so the layout
+// names above keep their one-object rule. There is no whole-list `set`: the page sends `op` (what the user did:
+// save, rename, delete) and main applies it to a fresh locked read of the file (app/dock-presets.js applyOp).
 const PRESET_NAMES = {
-  key: 'layout-presets', get: 'layout-presets:get', set: 'layout-presets:set', push: 'layout-presets',
-  shape: 'array', maxBytes: 32 * 8192,
+  key: 'layout-presets', get: 'layout-presets:get', op: 'layout-presets:op', push: 'layout-presets',
+  shape: 'array',
 };
 const DEFAULT_NAMES = { key: LAYOUT_KEY, get: GET_CHANNEL, set: SET_CHANNEL, push: PUSH_CHANNEL };
 // Seven modules in four zones is well under 1 KB; the cap only stops a bad
@@ -39,7 +40,6 @@ const MAX_LAYOUT_BYTES = 8192;
 const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 // What a stored or sent value must be for these names: one plain object, or (the presets) one array.
 const validFor = names => (names && names.shape === 'array' ? Array.isArray : isPlainObject);
-const capFor = names => (names && Number.isInteger(names.maxBytes) ? names.maxBytes : MAX_LAYOUT_BYTES);
 
 function readLayout(store, key = LAYOUT_KEY, valid = isPlainObject) {
   try {
@@ -78,11 +78,42 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, nam
   const valid = validFor(names);
   ipcMain.handle(names.get, e => (fromView(e) ? readLayoutState(store, names.key, valid) : null));
 
+  if (names.op) ipcMain.handle(names.op, (e, req) => (fromView(e) ? runOp(req) : null));
+
+  // ONE read-modify-write on the store: under its lock, on a read made now, never on a list the page remembers.
+  // Anything but ok or missing (unreadable, corrupt, not a list) is refused and the file is left as it is.
+  function runOp(req) {
+    let result;
+    try {
+      result = store.withLock(names.key, () => {
+        let raw;
+        try {
+          const st = store.readState(names.key);
+          if (st.status === 'missing' || (st.status === 'ok' && (st.value === null || st.value === undefined))) raw = [];
+          else if (st.status === 'ok' && Array.isArray(st.value)) raw = st.value;
+          else return { ok: false, reason: 'unreadable' };
+        } catch { return { ok: false, reason: 'unreadable' }; }
+        const r = applyOp(raw, req);
+        if (r.ok) store.write(names.key, r.list);
+        return r;
+      });
+    } catch (err) {
+      console.error('[main] could not save the presets:', err && err.message);
+      return { ok: false, reason: 'failed' };
+    }
+    if (!result.ok) return { ok: false, reason: result.reason };
+    // The watcher must know what this window was just told (see `set` below).
+    sync.last = JSON.stringify(result.list);
+    try { send(names.push, result.list); } catch { /* window is going away */ }
+    return { ok: true, list: result.list };
+  }
+
+  if (!names.set) return;
   ipcMain.handle(names.set, (e, value) => {
     if (!fromView(e) || !valid(value)) return null;
     let json;
     try { json = JSON.stringify(value); } catch { return null; }
-    if (Buffer.byteLength(json, 'utf8') > capFor(names)) return null;
+    if (Buffer.byteLength(json, 'utf8') > MAX_LAYOUT_BYTES) return null;
     try {
       store.update(names.key, null, () => value);
     } catch (err) {

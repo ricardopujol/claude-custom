@@ -38,14 +38,17 @@ test('the Presets section is drawn by the Window menu, between the panels and th
   assert.ok(body.indexOf('appendPresetSection') < body.indexOf('Reset layout'), 'before Reset layout');
 });
 
-test('every write of the list goes through writePresets, which refuses while the stored list is unreadable', () => {
-  const sets = [...JS.matchAll(/\bpresetBridge\.set\(/g)];
-  assert.strictEqual(sets.length, 1, 'one set call in the renderer');
-  const body = fnBody('writePresets');
-  assert.match(body, /if \(!presetBridge \|\| !presetsState\.usable\)/);
-  assert.ok(body.indexOf('presetsState.usable') < body.indexOf('presetBridge.set(list)'), 'the check comes first');
-  assert.match(body, /window\.dockPresets\.presetsSaved\(answer\)/);
-  assert.match(body, /Couldn\\'t save the presets/);
+test('the list changes only by sending main an op, and only while the stored list is usable and no op is in flight', () => {
+  assert.strictEqual([...JS.matchAll(/\bpresetBridge\.op\(/g)].length, 1, 'one op call in the renderer');
+  assert.doesNotMatch(JS, /presetBridge\.set\(|layoutPresets\.set\(/, 'the page has no whole-list write');
+  const body = fnBody('sendPresetOp');
+  assert.match(body, /!presetsState\.usable \|\| presetsState\.busy/);
+  assert.ok(body.indexOf('presetsState.usable') < body.indexOf('presetBridge.op('), 'the check comes first');
+  assert.match(body, /window\.dockPresets\.afterOp\(answer\)/);
+});
+
+test('the page never computes the list: it asks main, which owns the fresh read', () => {
+  assert.doesNotMatch(JS, /dockPresets\.(savePreset|renamePreset|deletePreset|applyOp)\(/);
 });
 
 test('an unreadable list is shown as such and offers no way to save, rename or delete', () => {
@@ -57,7 +60,7 @@ test('an unreadable list is shown as such and offers no way to save, rename or d
 });
 
 test('the name field and both confirmations are rows in the menu: no prompt() or confirm()', () => {
-  for (const name of ['appendPresetSection', 'presetRow', 'runPresetOp', 'applyPreset', 'loadPresets', 'writePresets']) {
+  for (const name of ['appendPresetSection', 'presetRow', 'runPresetOp', 'applyPreset', 'loadPresets', 'sendPresetOp']) {
     assert.doesNotMatch(fnBody(name), /\b(prompt|confirm|alert)\(/, name);
   }
   assert.match(JS, /Delete '\$\{p\.name\}'\?/);

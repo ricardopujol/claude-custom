@@ -73,41 +73,60 @@ test('a stored layout that names a module this build lacks still draws, through 
 
 // --- afterGet ----------------------------------------------------------------------
 
-test('afterGet: an ok answer is a usable, cleaned list', () => {
+test('afterGet: an ok answer is a usable list of what this build can show, with how many it keeps unseen', () => {
   const r = P.afterGet({ status: 'ok', layout: [{ name: ' A ', layout: { version: 2 } }, { name: '' }] });
-  assert.deepStrictEqual(r, { usable: true, list: [{ name: 'A', layout: { version: 2 } }] });
+  assert.deepStrictEqual(r, { usable: true, list: [{ name: 'A', layout: { version: 2 } }], kept: 1 });
 });
 
 test('afterGet: MISSING is a usable empty list (the first save creates the file)', () => {
-  assert.deepStrictEqual(P.afterGet({ status: 'missing', layout: null }), { usable: true, list: [] });
+  assert.deepStrictEqual(P.afterGet({ status: 'missing', layout: null }), { usable: true, list: [], kept: 0 });
 });
 
 test('afterGet: unreadable, corrupt, an unknown status or no answer is NOT "no presets"', () => {
   for (const a of [{ status: 'unreadable', layout: null }, { status: 'corrupt', layout: null }, { status: 'weird' }, null, undefined, 'x', {}]) {
-    assert.deepStrictEqual(P.afterGet(a), { usable: false, list: [] }, JSON.stringify(a));
+    assert.deepStrictEqual(P.afterGet(a), { usable: false, list: [], kept: 0 }, JSON.stringify(a));
   }
 });
 
 test('afterGet: an ok answer whose value is not an array is corrupt, not an empty list', () => {
-  for (const v of [{}, 'x', 7, null]) assert.deepStrictEqual(P.afterGet({ status: 'ok', layout: v }), { usable: false, list: [] }, JSON.stringify(v));
+  for (const v of [{}, 'x', 7, null]) assert.deepStrictEqual(P.afterGet({ status: 'ok', layout: v }), { usable: false, list: [], kept: 0 }, JSON.stringify(v));
 });
 
-// --- presetsSaved --------------------------------------------------------------------
+// --- afterOp -------------------------------------------------------------------------
 
-test('presetsSaved: main echoes the list when it wrote it, and answers null when it refused or failed', () => {
-  assert.strictEqual(P.presetsSaved([]), true);
-  assert.strictEqual(P.presetsSaved([{ name: 'a', layout: {} }]), true);
-  for (const bad of [null, undefined, {}, 'x', 7, false]) assert.strictEqual(P.presetsSaved(bad), false);
+test('afterOp: main answers { ok, list } with the stored list; the page shows what it can and counts the rest', () => {
+  const stored = [{ name: 'A', layout: { version: 2 } }, 'junk', { name: 'B', layout: { version: 2 }, pinned: 1 }];
+  assert.deepStrictEqual(P.afterOp({ ok: true, list: stored }), {
+    ok: true, list: [{ name: 'A', layout: { version: 2 } }, { name: 'B', layout: { version: 2 } }], kept: 1,
+  });
+});
+
+test('afterOp: a refusal keeps its reason; anything else (no answer, junk, a list that is not a list) is `failed`', () => {
+  assert.deepStrictEqual(P.afterOp({ ok: false, reason: 'taken' }), { ok: false, reason: 'taken' });
+  assert.deepStrictEqual(P.afterOp({ ok: false, reason: 'unreadable' }), { ok: false, reason: 'unreadable' });
+  for (const bad of [null, undefined, 'x', 7, [], {}, { ok: true }, { ok: true, list: {} }, { ok: false }, { ok: false, reason: 7 }]) {
+    assert.deepStrictEqual(P.afterOp(bad), { ok: false, reason: 'failed' }, JSON.stringify(bad));
+  }
+});
+
+// --- keptText ------------------------------------------------------------------------
+
+test('keptText says how many presets from another version are kept, and nothing when none', () => {
+  assert.strictEqual(P.keptText(0), '');
+  assert.strictEqual(P.keptText(1), '1 preset from another version is kept');
+  assert.strictEqual(P.keptText(2), '2 presets from another version are kept');
 });
 
 // --- refusalText ---------------------------------------------------------------------
 
 test('every refusal has its own words, and an unknown one still says something', () => {
-  const reasons = ['name', 'taken', 'full', 'missing', 'layout', 'unreadable'];
+  const reasons = ['name', 'taken', 'full', 'missing', 'layout', 'unreadable', 'failed'];
   const texts = reasons.map(P.refusalText);
   for (const t of texts) assert.ok(typeof t === 'string' && t.length > 10, t);
   assert.strictEqual(new Set(texts).size, reasons.length);
   assert.match(P.refusalText('nonsense'), /couldn't/i);
+  assert.notStrictEqual(P.refusalText('failed'), P.refusalText('nonsense'), '`failed` has words of its own');
+  assert.notStrictEqual(P.refusalText('op'), P.refusalText('failed'));
   assert.match(P.refusalText('full'), /32/);
   assert.match(P.refusalText('name'), /40/);
 });

@@ -207,15 +207,29 @@ function thumbBoxes(layout, ids, fitFn) {
  * empty list, because saving over it would destroy the presets that are really there.
  */
 function afterGet(answer) {
-  const unusable = { usable: false, list: [] };
+  const unusable = { usable: false, list: [], kept: 0 };
   if (!isObject(answer)) return unusable;
-  if (answer.status === 'missing') return { usable: true, list: [] };
-  if (answer.status === 'ok' && Array.isArray(answer.layout)) return { usable: true, list: cleanPresets(answer.layout) };
+  if (answer.status === 'missing') return { usable: true, list: [], kept: 0 };
+  if (answer.status === 'ok' && Array.isArray(answer.layout)) return { usable: true, ...describe(answer.layout) };
   return unusable;
 }
 
-/** What `harness.layoutPresets.set` answered: main echoes the list once written, and answers null when it refused or failed. */
-function presetsSaved(answer) { return Array.isArray(answer); }
+/**
+ * What `harness.layoutPresets.op` answered -> the page's view of it. Main answers { ok: true, list } (the stored
+ * array, which may hold entries this build can't show) or { ok: false, reason }; anything else (no answer, a
+ * sender main refused, a call that threw) is `failed`, never taken for success.
+ */
+function afterOp(answer) {
+  if (isObject(answer) && answer.ok === true && Array.isArray(answer.list)) return { ok: true, ...describe(answer.list) };
+  if (isObject(answer) && answer.ok === false && typeof answer.reason === 'string') return { ok: false, reason: answer.reason };
+  return { ok: false, reason: 'failed' };
+}
+
+/** The line under the list that says presets this build can't show are still in the file ('' when none). */
+function keptText(n) {
+  if (!(n > 0)) return '';
+  return n === 1 ? '1 preset from another version is kept' : `${n} presets from another version are kept`;
+}
 
 const WORDS = {
   name: 'Use 1 to 40 characters, with no line breaks or other invisible characters.',
@@ -224,6 +238,7 @@ const WORDS = {
   missing: 'That preset isn\'t there any more.',
   layout: 'This layout can\'t be saved as a preset.',
   unreadable: 'The saved presets couldn\'t be read, so saving is off until they can be.',
+  failed: 'The presets couldn\'t be saved.',
 };
 /** The words for a refusal reason. */
 function refusalText(reason) {
@@ -233,7 +248,7 @@ function refusalText(reason) {
 const API = {
   NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, MAX_LIST_BYTES, THUMB, checkName, nameKey: keyOf, cleanPresets, describe, find,
   savePreset, renamePreset, deletePreset, applyOp,
-  thumbBoxes, afterGet, presetsSaved, refusalText,
+  thumbBoxes, afterGet, afterOp, keptText, refusalText,
 };
 
 // One namespace on the page (`window.dockPresets`), not loose globals.

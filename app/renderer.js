@@ -1084,17 +1084,24 @@ window.addEventListener('keydown', (e) => {
 // app/dock-presets.js holds every rule; this draws the rows. The name field and both confirmations are rows
 // inside the menu (no prompt() or confirm()), and the list is install-wide, in main's store (`layout-presets`).
 
-// The one write of the list. Refused while the stored list couldn't be read: saving then would replace presets
-// that are really there. Main answers null when it refused the list or the write failed; either is said, not swallowed.
-function writePresets(list, done) {
+// The one way the list changes: send main WHAT THE USER DID ({ op, name, ... }). Main applies it to a fresh locked
+// read of the file and answers with the list it stored, so this window never computes the list (and a stale copy
+// can't erase another window's preset), and an unreadable file is refused there, not here. While an op is in
+// flight the section is disabled (`busy`), so a second op can't start from the same stale view.
+function sendPresetOp(req, onAnswer) {
   const presetBridge = window.harness && window.harness.layoutPresets;
-  const notSaved = () => flashAttention({ urgent: false, title: 'Couldn\'t save the presets' });
-  if (!presetBridge || !presetsState.usable) { notSaved(); return; }
-  presetBridge.set(list).then((answer) => {
-    if (!window.dockPresets.presetsSaved(answer)) { notSaved(); return; }
-    presetsState = { loaded: true, usable: true, list: window.dockPresets.cleanPresets(answer) };
-    if (done) done();
-  }, notSaved);
+  if (!presetBridge || !presetsState.usable || presetsState.busy) return;
+  presetsState = { ...presetsState, busy: true };
+  if (layoutMenuFor === 'menu') openLayoutMenu();
+  const finish = (answer) => {
+    const r = window.dockPresets.afterOp(answer);
+    if (r.ok) presetsState = { loaded: true, usable: true, list: r.list, kept: r.kept, busy: false };
+    else if (r.reason === 'unreadable') presetsState = { loaded: true, usable: false, list: [], kept: 0, busy: false };
+    else presetsState = { ...presetsState, busy: false };
+    if (!r.ok && r.reason === 'failed') flashAttention({ urgent: false, title: 'Couldn\'t save the presets' });
+    onAnswer(r);
+  };
+  presetBridge.op(req).then(finish, () => finish(null));
 }
 
 // Redraw the open Window menu in place, unless a field is open (typing must not be thrown away by a push).
@@ -1102,15 +1109,17 @@ function refreshPresetMenu() {
   if (layoutMenuFor === 'menu' && presetUi.mode === 'idle') openLayoutMenu();
 }
 
-// A refusal stays in the field's row; a success writes the list and goes back to idle.
-function runPresetOp(result) {
-  if (!result.ok) {
-    presetUi = { ...presetUi, error: window.dockPresets.refusalText(result.reason) };
-    openLayoutMenu();
-    return;
-  }
-  // The write is asynchronous: a menu closed meanwhile stays closed.
-  writePresets(result.list, () => { presetUi = { mode: 'idle' }; if (layoutMenuFor === 'menu') openLayoutMenu(); });
+// A refusal stays in the field's row; a success goes back to idle. The menu may have been closed meanwhile: it stays closed.
+function runPresetOp(req) {
+  sendPresetOp(req, (r) => {
+    if (r.ok || r.reason === 'unreadable') presetUi = { mode: 'idle' };
+    // The name is taken: ask once, naming the preset that would go (its own spelling is kept).
+    else if (r.reason === 'taken' && req.op === 'save') {
+      const have = window.dockPresets.find(presetsState.list, req.name);
+      presetUi = { mode: 'replace', name: have ? have.name : req.name, text: req.name };
+    } else presetUi = { ...presetUi, error: window.dockPresets.refusalText(r.reason) };
+    if (layoutMenuFor === 'menu') openLayoutMenu();
+  });
 }
 
 function applyPreset(p, justThisTab) {
@@ -1170,12 +1179,11 @@ function presetRow(p, check) {
   if (presetUi.mode === 'rename' && presetUi.name === p.name) {
     return presetFieldRow({
       label: `New name for ${p.name}`, value: presetUi.text !== undefined ? presetUi.text : p.name, action: 'rename', commitText: 'Rename',
-      onCommit: (text) => runPresetOp(window.dockPresets.renamePreset(presetsState.list, p.name, text)),
+      onCommit: (text) => runPresetOp({ op: 'rename', name: p.name, to: text }),
     });
   }
   if (presetUi.mode === 'delete' && presetUi.name === p.name) {
-    return presetAskRow(`Delete '${p.name}'?`, 'Delete', 'delete-confirm',
-      () => runPresetOp(window.dockPresets.deletePreset(presetsState.list, p.name)));
+    return presetAskRow(`Delete '${p.name}'?`, 'Delete', 'delete-confirm', () => runPresetOp({ op: 'delete', name: p.name }));
   }
   const apply = node('button', { type: 'button', className: 'lm-apply', title: `Apply ${p.name}`, text: p.name,
     on: { click: () => applyPreset(p, check.box.checked) } });
@@ -1194,35 +1202,37 @@ function presetRow(p, check) {
 function appendPresetSection(check) {
   if (!(window.harness && window.harness.layoutPresets)) return;       // a window with no bridge has no presets
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
-  layoutMenu.appendChild(node('div', { className: 'lm-title', text: 'Presets' }));
+  const section = node('div', { className: 'lm-presets', 'aria-busy': presetsState.busy ? 'true' : 'false' });
+  layoutMenu.appendChild(section);
+  section.appendChild(node('div', { className: 'lm-title', text: 'Presets' }));
   if (!presetsState.loaded) {
-    layoutMenu.appendChild(node('div', { className: 'lm-note', text: 'Loading presets…' }));
+    section.appendChild(node('div', { className: 'lm-note', text: 'Loading presets…' }));
     return;
   }
   if (!presetsState.usable) {
-    layoutMenu.appendChild(node('div', { className: 'lm-note err', role: 'alert', text: window.dockPresets.refusalText('unreadable') }));
+    section.appendChild(node('div', { className: 'lm-note err', role: 'alert', text: window.dockPresets.refusalText('unreadable') }));
     return;
   }
-  for (const p of presetsState.list) for (const el of presetRow(p, check)) layoutMenu.appendChild(el);
+  // The list scrolls inside its own region (the menu never grows past the window); what is under it stays reachable.
+  const list = node('div', { className: 'lm-presets-list' });
+  for (const p of presetsState.list) for (const el of presetRow(p, check)) list.appendChild(el);
+  section.appendChild(list);
+  if (presetsState.kept > 0) section.appendChild(node('div', { className: 'lm-note', text: window.dockPresets.keptText(presetsState.kept) }));
   if (presetUi.mode === 'save') {
     for (const el of presetFieldRow({
       label: 'Name for this layout', value: presetUi.text || '', action: 'save', commitText: 'Save',
-      onCommit: (text) => {
-        const r = window.dockPresets.savePreset(presetsState.list, text, committedLayout());
-        // The name is taken: ask once, naming the preset that would go (its own spelling is kept).
-        if (!r.ok && r.reason === 'taken') { presetUi = { mode: 'replace', name: window.dockPresets.find(presetsState.list, text).name, text }; openLayoutMenu(); return; }
-        runPresetOp(r);
-      },
-    })) layoutMenu.appendChild(el);
+      onCommit: (text) => runPresetOp({ op: 'save', name: text, layout: committedLayout() }),
+    })) section.appendChild(el);
   } else if (presetUi.mode === 'replace') {
     for (const el of presetAskRow(`Replace '${presetUi.name}'?`, 'Replace', 'replace-confirm',
-      () => runPresetOp(window.dockPresets.savePreset(presetsState.list, presetUi.name, committedLayout(), { replace: true })))) layoutMenu.appendChild(el);
+      () => runPresetOp({ op: 'save', name: presetUi.name, layout: committedLayout(), replace: true }))) section.appendChild(el);
   } else {
     const save = node('button', { type: 'button', text: 'Save this layout…', title: 'Keep this arrangement under a name',
       on: { click: () => { presetUi = { mode: 'save', text: '' }; openLayoutMenu(); } } });
     save.dataset.presetAct = 'save-open';
-    layoutMenu.appendChild(save);
+    section.appendChild(save);
   }
+  if (presetsState.busy) for (const el of section.querySelectorAll('button, input')) el.disabled = true;
 }
 
 // The stored list, once the layout is loaded; another window's change replaces it. An unreadable file is
@@ -1232,7 +1242,7 @@ async function loadPresets() {
   if (!bridge) return;
   bridge.onChange((list) => {
     presetPushes += 1;
-    presetsState = { loaded: true, usable: true, list: window.dockPresets.cleanPresets(list) };
+    presetsState = { loaded: true, usable: true, ...window.dockPresets.describe(list), busy: presetsState.busy === true };
     refreshPresetMenu();
   });
   let answer = null;
