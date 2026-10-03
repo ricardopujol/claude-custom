@@ -100,6 +100,16 @@ const CONTRACT = {
     //     "completed", agentId } at the end. Absent on older CLIs and on
     //     truncated captures, so the machine falls back to binding a new
     //     agent_id to the oldest unbound invocation of its type;
+    //   a NAMED TEAMMATE's spawn result (Agent with `name`, in an
+    //     interactive session; measured 2026-10-03 from a transcript's
+    //     toolUseResult, the hook's tool_response is assumed equal):
+    //     { status: "teammate_spawned", agent_id: "<name>@<team>", teammate_id,
+    //       agent_type, name, team_name, ... } -- snake_case `agent_id`, an
+    //     ADDRESS and not the id the teammate's own events carry (its runtime
+    //     id is "a<name>-<16 hex>", unmeasured at hook level). No
+    //     run_in_background in its input. A named Agent call under
+    //     `claude -p` instead returns async_launched (captured:
+    //     test/hooks-real-named-agent.fixture.jsonl);
     //   tool_response.interrupted -- that call was killed; never a failure,
     //     and the run continues. Never yet observed true (32,137 real Bash
     //     results, all false, 2026-09-27); cancellation is

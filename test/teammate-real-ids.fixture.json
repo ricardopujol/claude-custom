@@ -1,0 +1,13 @@
+{
+  "_source": "Measured 2026-10-03 from the suno-pipeline session transcript 525f765a-abf7-4b6e-8bd5-7e228586dfcb (toolUseResult of the Agent spawn, prompt redacted) and its subagents/agent-amortimer-release-5a5bc27d7582b9b2.{jsonl,meta.json}. The HOOK tool_response is assumed to equal toolUseResult (as it does for async_launched); the hook agent_id/agent_type of a teammate's own calls was NOT captured (claude -p never produces a teammate), so the runtime id and both candidate types are fixtures of the two identities the transcript shows.",
+  "spawnInput": { "subagent_type": "mutation-tester", "name": "mortimer-release", "description": "Mortimer: develop->main mutation gate" },
+  "spawnResult": {
+    "status": "teammate_spawned", "prompt": "(redacted)",
+    "teammate_id": "mortimer-release@session-2e134ac8", "agent_id": "mortimer-release@session-2e134ac8",
+    "agent_type": "mutation-tester", "model": "sonnet", "name": "mortimer-release", "color": "yellow",
+    "tmux_session_name": "in-process", "tmux_window_name": "in-process", "tmux_pane_id": "in-process",
+    "team_name": "session-2e134ac8", "is_splitpane": false, "plan_mode_required": false
+  },
+  "runtimeId": "amortimer-release-5a5bc27d7582b9b2",
+  "runtimeTypes": ["mortimer-release", "mutation-tester"]
+}
