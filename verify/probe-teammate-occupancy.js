@@ -99,6 +99,10 @@ function cleanup() {
   if (host && host.pid) { try { killPidTree(host.pid); } catch { /* gone */ } }
 }
 process.on('SIGINT', () => { cleanup(); process.exit(130); });
+// A crash outside main()'s own catch must not leave a real CLI running in the checkout (PR #96 Miguel):
+// `exit` runs for every way out except a kill, and killPidTree is synchronous.
+process.on('exit', cleanup);
+process.on('uncaughtException', (err) => { console.log('FAIL  the probe crashed  -- ' + ((err && err.stack) || err)); cleanup(); process.exit(1); });
 
 async function main() {
   check('0: this repo has another worktree to work in', !!other, other || 'git lists only this checkout');
