@@ -691,3 +691,11 @@ test('boxText: what the live box holds after the prompt glyph (a draft, or the p
   assert.strictEqual(boxText(['nothing here']), null);
   assert.strictEqual(boxText(null), null);
 });
+
+test('D7 (wand): a command with a C1 control character is not a single-line slash command', () => {
+  const { planTyping } = require('../app/top-bar-display');
+  for (const cmd of ['/x a\u0085b', '/x \u009b2J', '/x \u009f']) {
+    assert.strictEqual(planTyping({ command: cmd, screen: 'ready', connected: true }).ok, false, JSON.stringify(cmd));
+  }
+  assert.strictEqual(planTyping({ command: '/x caf\u00e9', screen: 'ready', connected: true }).ok, true);
+});

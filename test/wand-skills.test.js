@@ -124,7 +124,7 @@ test('SKILL_NAME is exactly what the terminal typing path accepts', () => {
     assert.ok(SKILL_NAME.test(name), name);
     assert.ok(planTyping({ command: `/${name}`, screen: 'ready', connected: true }).ok, name);
   }
-  for (const name of ['', ' ', 'a b', 'a.b', '-a', ':a', 'a/b', 'a\nb', '__proto__x'.repeat(10)]) {
+  for (const name of ['', ' ', 'a b', 'a.b', '-a', ':a', 'a/b', 'a\nb', '__proto__x'.repeat(20)]) {
     assert.ok(!SKILL_NAME.test(name), JSON.stringify(name));
   }
 });
@@ -238,4 +238,74 @@ test('D1: a damaged or unreadable installed_plugins.json is unread, so plugin fa
   assert.match(r.unread[0].reason, /EBUSY/);
   // a missing registry is just "no plugins"
   assert.deepStrictEqual(discoverSkills({ claudeHome: tree({ x: '' }), projectDir: null }).unread, []);
+});
+
+// --- Dexter D10: a plugin the CLI will not load is not a skill; long prefixed names are fine ----------------
+
+function pluginHome(plugins, settings, installs) {
+  const files = {};
+  if (settings !== undefined) files['settings.json'] = JSON.stringify(settings);
+  const home = tree(files);
+  fs.mkdirSync(path.join(home, 'plugins'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: installs }));
+  return home;
+}
+
+test('D10: a plugin disabled in settings.json (enabledPlugins: false) lists no skills; an enabled or unlisted one does', () => {
+  const off = tree({ 'skills/deploy/SKILL.md': skill('deploy', 'x') });
+  const on = tree({ 'skills/review/SKILL.md': skill('review', 'x') });
+  const home = pluginHome(null, { enabledPlugins: { 'off@m': false, 'on@m': true } }, { 'off@m': [{ installPath: off }], 'on@m': [{ installPath: on }] });
+  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: null }).skills.map(s => s.name), ['on:review']);
+  const unlisted = pluginHome(null, {}, { 'off@m': [{ installPath: off }] });
+  assert.deepStrictEqual(discoverSkills({ claudeHome: unlisted, projectDir: null }).skills.map(s => s.name), ['off:deploy']);
+});
+
+test('D10: an install scoped to ANOTHER project is not listed here; to this project, or the user, it is', () => {
+  const p = tree({ 'skills/s/SKILL.md': skill('s', 'x') });
+  const here = tree({ x: '' });
+  const other = tree({ x: '' });
+  const home = pluginHome(null, undefined, {
+    'a@m': [{ scope: 'project', projectPath: other, installPath: p }],
+    'b@m': [{ scope: 'project', projectPath: here, installPath: p }],
+    'c@m': [{ scope: 'user', installPath: p }],
+  });
+  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: here }).skills.map(s => s.name), ['b:s', 'c:s']);
+  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: null }).skills.map(s => s.name), ['c:s'], 'no project: a project-scoped install cannot apply');
+});
+
+test('D10: a long plugin prefix plus a long skill name is listed (the cap is generous, not 64)', () => {
+  const longSkill = 'responsive-layout-accessibility-audit-helper';
+  const p = tree({ [`skills/${longSkill}/SKILL.md`]: skill(longSkill, 'x') });
+  const home = pluginHome(null, undefined, { 'frontend-design-toolkit@m': [{ installPath: p }] });
+  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: null }).skills.map(s => s.name), ['frontend-design-toolkit:' + longSkill]);
+  assert.ok(SKILL_NAME.test('a'.repeat(128)) && !SKILL_NAME.test('a'.repeat(129)));
+});
+
+test('D10: an unreadable settings.json is unread (so a plugin favourite is not dimmed), a missing one is fine', () => {
+  const p = tree({ 'skills/s/SKILL.md': skill('s', 'x') });
+  const bad = pluginHome(null, undefined, { 'a@m': [{ installPath: p }] });
+  fs.writeFileSync(path.join(bad, 'settings.json'), '{ nope');
+  assert.strictEqual(discoverSkills({ claudeHome: bad, projectDir: null }).unread.length, 1);
+  const none = pluginHome(null, undefined, { 'a@m': [{ installPath: p }] });
+  assert.deepStrictEqual(discoverSkills({ claudeHome: none, projectDir: null }).unread, []);
+});
+
+// --- Miguel S1: the CLI's own config dir -------------------------------------------------------------------
+
+test('S1: the claude home is the probe seam, else CLAUDE_CONFIG_DIR, else ~/.claude', () => {
+  const { claudeHomeOf } = require('../host/wand-skills');
+  const home = path.join(os.tmpdir(), 'h');
+  assert.strictEqual(claudeHomeOf({ seam: 'S', env: { CLAUDE_CONFIG_DIR: 'C' }, home }), 'S');
+  assert.strictEqual(claudeHomeOf({ seam: null, env: { CLAUDE_CONFIG_DIR: 'C' }, home }), 'C');
+  assert.strictEqual(claudeHomeOf({ seam: null, env: { CLAUDE_CONFIG_DIR: '' }, home }), path.join(home, '.claude'));
+  assert.strictEqual(claudeHomeOf({ seam: null, env: {}, home }), path.join(home, '.claude'));
+  assert.strictEqual(claudeHomeOf({ home }), path.join(home, '.claude'));
+});
+
+// --- Miguel S3: only a SKILL.md, or a skill folder appearing, is worth a rescan -------------------------------
+
+test('S3: a rescan is worth it for a SKILL.md or a top-level entry, not for a file a skill wrote', () => {
+  const { isSkillEvent } = require('../host/wand-skills');
+  for (const yes of ['SKILL.md', 'bedtime/SKILL.md', 'bedtime\\SKILL.md', 'a/b/skill.md', 'bedtime', 'new-skill', 'installed_plugins.json']) assert.ok(isSkillEvent(yes), yes);
+  for (const no of ['bedtime/scratch.log', 'bedtime\\notes.txt', 'bedtime/refs/a.md', 'bedtime/out.json']) assert.ok(!isSkillEvent(no), no);
 });

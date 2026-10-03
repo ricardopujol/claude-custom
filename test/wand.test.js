@@ -227,3 +227,25 @@ test('nextId: one past the largest f<number>, ignoring other ids; "f1" on an emp
   assert.strictEqual(wand.nextId([fav('f3', 'a', 'b'), fav('f10', 'a', 'b'), fav('custom', 'a', 'b')]), 'f11');
   assert.strictEqual(wand.nextId([fav('f9999999999999999999999', 'a', 'b')]).startsWith('f'), true);
 });
+
+// --- Dexter D11: a newer file is "version N", whatever shape it has ---------------------------------
+
+test('D11: a newer-version file of a DIFFERENT shape still says "version N", not "not a wand store"', () => {
+  const r = wand.load({ status: 'ok', value: { version: 2, favourites: { order: ['a'] } } });
+  assert.strictEqual(r.status, 'unavailable');
+  assert.match(r.reason, /version 2/);
+  assert.match(wand.load({ status: 'ok', value: { version: 7 } }).reason, /version 7/);
+  // a v1 file with the wrong shape is still "not a wand store"
+  assert.match(wand.load({ status: 'ok', value: { version: 1, favourites: {} } }).reason, /not a wand store/);
+});
+
+// --- Dexter D7: C1 and other non-printing characters are control characters too ---------------------------
+
+test('D7: C1 controls, line separators and zero-width characters in args are refused', () => {
+  for (const bad of ['a\u0085b', 'x\u009b2J', 'a\u2028b', 'a\u2029b', 'a\u200db', 'a\u00adb', 'a\ufeffb', '\u009f']) {
+    assert.strictEqual(wand.cleanArgs(bad), null, JSON.stringify(bad));
+  }
+  assert.strictEqual(wand.cleanArgs('caf\u00e9 \u65e5\u672c'), 'caf\u00e9 \u65e5\u672c', 'ordinary text, accents and CJK still pass');
+  assert.strictEqual(wand.cleanArgs('a\tb'), 'a b', 'a tab still collapses');
+  assert.strictEqual(wand.add([], { emoji: '\u{1F319}', skill: 'x', args: 'a\u0085b' }).ok, false);
+});

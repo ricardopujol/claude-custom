@@ -72,7 +72,9 @@ function isOneEmoji(s) {
 /** The arguments, collapsed and trimmed; '' for none; null for anything that cannot be typed on one line. */
 function cleanArgs(args) {
   if (args === undefined || args === null) return '';
-  if (!isStr(args) || /[\x00-\x08\x0a-\x1f\x7f]/.test(args)) return null;     // tab (\x09) collapses; the rest refuses
+  // Control (C0 and C1: U+0085 and U+009B among them), format (zero-width, soft hyphen), line and paragraph
+  // separators: none is printable text, and any could submit or edit something else (Dexter D7). A tab collapses.
+  if (!isStr(args) || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(args.replace(/\t/g, ' '))) return null;
   const t = args.replace(/\s+/g, ' ').trim();
   return t.length > MAX_ARGS ? null : t;
 }
@@ -128,12 +130,13 @@ function load(state) {
   if (state.status !== 'ok') return unavailable('the wand file could not be read');
 
   const v = state.value;
-  if (!isObj(v) || !Array.isArray(v.favourites)) return unavailable('the wand file is not a wand store');
-  if (v.version !== VERSION) {
-    return unavailable(typeof v.version === 'number'
-      ? `the wand file is version ${v.version}; this build reads version ${VERSION}`
-      : 'the wand file has no version');
+  // The version first: a newer build may have changed the shape too, and "not a wand store" (fix or delete it)
+  // is the wrong advice for a file a newer build wrote (Dexter D11).
+  if (isObj(v) && typeof v.version === 'number' && v.version !== VERSION) {
+    return unavailable(`the wand file is version ${v.version}, which this build does not support (it reads version ${VERSION})`);
   }
+  if (!isObj(v) || !Array.isArray(v.favourites)) return unavailable('the wand file is not a wand store');
+  if (v.version !== VERSION) return unavailable('the wand file has no version');
 
   const kept = [];
   let dropped = 0;

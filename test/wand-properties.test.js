@@ -143,3 +143,10 @@ test('property 4: a valid command is always something the typing path takes', ()
     assert.ok(planTyping({ command, screen: 'ready', connected: true }).ok, command);
   }), { numRuns: 300 });
 });
+
+test('D7 property: every string cleanArgs accepts has no control, format or separator character in it', () => {
+  fc.assert(fc.property(fc.string({ unit: 'binary', maxLength: 40 }), (s) => {
+    const r = wand.cleanArgs(s);
+    if (r !== null) assert.ok(!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(r), JSON.stringify(r));
+  }), { numRuns: 1000 });
+});

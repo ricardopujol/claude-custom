@@ -26,8 +26,10 @@ const nodeFs = require('fs');
 const path = require('path');
 
 // The terminal typing path accepts /[A-Za-z0-9:_-]+ (app/top-bar-display.js). A leading letter or
-// digit keeps `-x` (an option) and `:x` out; 64 is the same ceiling host/loadout.js puts on names.
-const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$/;
+// digit keeps `-x` (an option) and `:x` out. 128 covers a long plugin prefix plus a long skill name
+// (`frontend-design-toolkit:responsive-layout-accessibility-audit-helper` is 68): the CLI takes them, and so
+// does the typing path, so a 64 cap would have dropped real skills (Dexter D10).
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const DESCRIPTION_CAP = 400;
 
 const isStr = (x) => typeof x === 'string';
@@ -70,6 +72,11 @@ function parseFrontmatter(text) {
   };
   return { name: field('name'), description: field('description') };
 }
+
+const samePath = (a, b) => {
+  const n = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+  return n(a) === n(b);
+};
 
 const capDescription = (d) => {
   if (!isStr(d)) return '';
@@ -123,6 +130,17 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
     const registry = path.join(claudeHome, 'plugins', 'installed_plugins.json');
     let text = null;
     try { text = fs.readFileSync(registry, 'utf8'); } catch (err) { noteUnread(registry, err); /* ENOENT: no plugins installed */ }
+    // A plugin the CLI will not load is not a skill: settings.json's enabledPlugins says `false` for it.
+    let enabled = {};
+    const settingsFile = path.join(claudeHome, 'settings.json');
+    let settingsText = null;
+    try { settingsText = fs.readFileSync(settingsFile, 'utf8'); } catch (err) { noteUnread(settingsFile, err); }
+    if (settingsText !== null) {
+      try {
+        const ep = JSON.parse(settingsText).enabledPlugins;
+        if (ep && typeof ep === 'object' && !Array.isArray(ep)) enabled = ep;
+      } catch { unread.push({ file: settingsFile, reason: 'could not read (not JSON)' }); }
+    }
     if (text !== null) {
       let plugins = null;
       try { plugins = JSON.parse(text).plugins; } catch { /* reported below */ }
@@ -132,11 +150,15 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
       } else {
         const seen = new Set();
         for (const key of Object.keys(plugins)) {
+          if (enabled[key] === false) continue;
           const plugin = key.split('@')[0];
           const installs = Array.isArray(plugins[key]) ? plugins[key] : [plugins[key]];
           for (const inst of installs) {
             const where = inst && isStr(inst.installPath) ? inst.installPath : null;
             if (!where || seen.has(`${plugin}|${where}`)) continue;
+            // An install scoped to a project applies in THAT project only.
+            if ((inst.scope === 'project' || inst.scope === 'local')
+              && !(isStr(inst.projectPath) && isStr(projectDir) && projectDir && samePath(inst.projectPath, projectDir))) continue;
             seen.add(`${plugin}|${where}`);
             scan(path.join(where, 'skills'), 'plugin', plugin);
           }
@@ -150,4 +172,25 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
   return { skills, skipped, unread };
 }
 
-module.exports = { parseFrontmatter, discoverSkills, SKILL_NAME, DESCRIPTION_CAP };
+/**
+ * The CLI's own config dir: the probe seam, else CLAUDE_CONFIG_DIR (which the CLI honours), else ~/.claude
+ * (Miguel S1).
+ */
+function claudeHomeOf({ seam, env, home } = {}) {
+  if (isStr(seam) && seam !== '') return seam;
+  const fromEnv = env && env.CLAUDE_CONFIG_DIR;
+  if (isStr(fromEnv) && fromEnv !== '') return fromEnv;
+  return path.join(home || require('os').homedir(), '.claude');
+}
+
+/**
+ * Is a file-watch event under a skills directory worth a rescan? A SKILL.md, or a top-level entry (a skill
+ * folder appearing or going). Not a file a skill wrote into its own folder (Miguel S3). A null name, which
+ * some platforms send, is the watcher's job to treat as "maybe".
+ */
+function isSkillEvent(filename) {
+  const f = String(filename);
+  return /(^|[\\/])SKILL\.md$/i.test(f) || !/[\\/]/.test(f);
+}
+
+module.exports = { parseFrontmatter, discoverSkills, SKILL_NAME, DESCRIPTION_CAP, claudeHomeOf, isSkillEvent };

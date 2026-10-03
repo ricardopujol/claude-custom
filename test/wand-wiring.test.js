@@ -27,7 +27,7 @@ test('every wand message is a KNOWN control type, or it is typed into the pty as
 test('the host builds the control from the shared store and the skill reader, seeded from the claude-home seam', () => {
   assert.match(HOST, /const \{ createWandControl \} = require\('\.\/wand-control'\);/);
   assert.match(HOST, /const wandControl = createWandControl\(\{ store, log:/);
-  assert.match(HOST, /seams\.claudeHome \|\| path\.join\(os\.homedir\(\), '\.claude'\)/);
+  assert.match(HOST, /claudeHomeOf\(\{ seam: seams\.claudeHome, env: process\.env, home: os\.homedir\(\) \}\)/);
   assert.match(HOST, /discoverSkills\(\{ claudeHome: CLAUDE_HOME, projectDir: CWD \}\)/);
 });
 

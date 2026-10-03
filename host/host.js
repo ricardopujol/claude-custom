@@ -65,7 +65,7 @@ const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
 const { createWandControl } = require('./wand-control');
-const { discoverSkills } = require('./wand-skills');
+const { discoverSkills, claudeHomeOf, isSkillEvent } = require('./wand-skills');
 const { watchDir } = require('./wand-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
         CONTROL_TYPES, isControlClient } = require('./control');
@@ -394,7 +394,7 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
-// Three probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
+// Probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
 // gh, and the transcripts and the review reports come from the probe's own folders. Logged when set.
 const seams = readSeams(process.env);
 announce(seams, (line) => console.log(line));
@@ -424,7 +424,7 @@ watchLoadout({
 // The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
 // list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam
 // (host/probe-seams.js), unset in real use.
-const CLAUDE_HOME = seams.claudeHome || path.join(os.homedir(), '.claude');
+const CLAUDE_HOME = claudeHomeOf({ seam: seams.claudeHome, env: process.env, home: os.homedir() });
 // The control logs what is broken once per breakage (a debounced rescan finds the same file again).
 const wandControl = createWandControl({ store, log: (line) => console.log(line),
   readSkills: () => discoverSkills({ claudeHome: CLAUDE_HOME, projectDir: CWD }) });
@@ -444,9 +444,11 @@ const onSkillsChanged = () => {
   const frame = wandControl.skillsChanged();
   if (frame) broadcastControl(frame);
 };
-watchDir({ dir: path.join(CLAUDE_HOME, 'skills'), recursive: true, match: () => true, onChange: onSkillsChanged });
+watchDir({ dir: path.join(CLAUDE_HOME, 'skills'), recursive: true, match: isSkillEvent, onChange: onSkillsChanged });
 watchDir({ dir: path.join(CLAUDE_HOME, 'plugins'), match: (f) => f === 'installed_plugins.json', onChange: onSkillsChanged });
-watchDir({ dir: path.join(CWD, '.claude', 'skills'), recursive: true, match: () => true, onChange: onSkillsChanged });
+// a plugin switched on or off in settings.json changes which plugin skills exist
+watchDir({ dir: CLAUDE_HOME, match: (f) => f === 'settings.json', onChange: onSkillsChanged });
+watchDir({ dir: path.join(CWD, '.claude', 'skills'), recursive: true, match: isSkillEvent, onChange: onSkillsChanged });
 // One record per distinct bug CLASS, so a recurring defect category is a
 // visible count instead of a memory hand-carried between review rounds in PR
 // comments. Persisted through the shared store under `vault.json`, same as
