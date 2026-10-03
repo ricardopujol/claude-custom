@@ -130,3 +130,8 @@ test('PR #100 Miguel I2: both drags take pointer capture, and end themselves on 
   assert.match(body, /dragLayout = null;/);
   assert.match(body, /renderLayout\(\);/);
 });
+
+test('PR #100 Miguel S2: the page carries no [data-collapsed] CSS: folds are rails now, and nothing sets the attribute on a group', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  assert.doesNotMatch(html, /\[data-collapsed\]/);
+});
