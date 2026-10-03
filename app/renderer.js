@@ -338,8 +338,8 @@ function paintBarNow() {
       setText(barEls.summaryNote, m.summary.note || '');
       barEls.summary.classList.toggle('dim', m.summary.dim);
       barEls.summaryCard.classList.toggle('dim', m.summary.dim);
-      barEls.summary.setAttribute('aria-expanded', String(m.summary.pinned));
     }
+    barEls.summary.setAttribute('aria-expanded', String(!!(m.summary && m.summary.pinned)));
     barEls.prompt.hidden = m.prompt === null;
     if (m.prompt) {
       setText(barEls.text, m.prompt.head);

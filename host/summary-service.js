@@ -84,6 +84,7 @@ function createSummaryService({
   let lastCheckAt = null;
   let busy = null;
   let lastSent = null;
+  let lastSlotError = '';
 
   const sidNow = () => {
     const sid = sessionId();
@@ -182,7 +183,13 @@ function createSummaryService({
         publish();
         return;
       }
-      if (!slot.tryAcquire()) { scheduler.fail(sid, now(), SLOT_RETRY_MS); return; }
+      if (!slot.tryAcquire()) {
+        // Another host holding it is the ordinary case and says nothing; a slot that can't be made at all is said once.
+        const why = slot.lastError();
+        if (why && why !== lastSlotError) { lastSlotError = why; log('[summary] GPU slot unavailable:', why); }
+        scheduler.fail(sid, now(), SLOT_RETRY_MS);
+        return;
+      }
       held = true;
       const r = await ollama.summarize(buildPrompt(flat.transcript));
       if (!r.ok) {

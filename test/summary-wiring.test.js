@@ -49,6 +49,11 @@ test('the page paints from summaryDisplay.panelModel through the bar\'s own mode
   assert.match(paint, /barEls\.summaryLabel/);
 });
 
+test('aria-expanded follows the panel closing too (a hidden panel is never left "true")', () => {
+  const paint = RENDERER.slice(RENDERER.indexOf('function paintBarNow'), RENDERER.indexOf('function paintBarNow') + 5500);
+  assert.match(paint, /\r?\n    barEls\.summary\.setAttribute\('aria-expanded', String\(!!\(m\.summary && m\.summary\.pinned\)\)\);\r?\n/, 'outside the if (m.summary) block');
+});
+
 test('the control message and hello both feed it, and hello (a window that attached) can open it', () => {
   assert.match(RENDERER, /msg\.type === 'summary'/);
   assert.match(RENDERER, /applySummary\(msg, false\)/);

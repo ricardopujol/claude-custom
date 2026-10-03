@@ -296,6 +296,19 @@ test('a busy GPU slot is waited for (5 s), and the slot is released after a job'
   assert.strictEqual(r.svc.snapshot().off, null, 'a busy slot is not an error to show');
 });
 
+test('a slot that cannot be made at all is said once in the log; one that is merely held says nothing', async () => {
+  const held = rig({ slotFree: false });
+  await held.settle();
+  assert.ok(!held.log.some(l => /GPU slot/.test(l)), 'held by another host: the ordinary case');
+  const broken = rig({ slotFree: false });
+  broken.deps.slot.lastError = () => 'EACCES: permission denied';
+  const svc = createSummaryService(broken.deps);
+  await svc.tick(); broken.advance(QUIET_MS); await svc.tick();
+  broken.advance(SLOT_RETRY_MS); await svc.tick();
+  broken.advance(SLOT_RETRY_MS); await svc.tick();
+  assert.strictEqual(broken.log.filter(l => /GPU slot unavailable: EACCES/.test(l)).length, 1);
+});
+
 test('the slot is released even when the job throws, and tick never throws', async () => {
   const r = rig({ summarizeThrows: true });
   await r.settle();
