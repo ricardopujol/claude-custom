@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { zonePlan, dragSize, layoutRows, moveTargets, renderEffects, afterLayoutGet, overrideOnHello } = require('../app/dock-zones-display');
+const { zonePlan, dragSize, layoutRows, moveTargets, renderEffects, focusOnOpen, afterLayoutGet, overrideOnHello } = require('../app/dock-zones-display');
 const { defaultLayout, moveModule, selectModule, MIN, RAIL } = require('../app/dock-layout');
 const { TABS } = require('../app/side-tabs');
 const { faceSize } = require('../app/roster-width');
@@ -148,6 +148,29 @@ test('opening the vault focuses its search; leaving it sends focus back to the t
   assert.strictEqual(left.focus, 'term');
   assert.strictEqual(left.vaultLeft, true);
   assert.deepStrictEqual(left.newlyShown, ['agents']);
+});
+
+// --- the socket opening (backlog #36) ------------------------------------------
+
+test('THE REGRESSION (#36): a reconnect never takes focus from a field the user is typing in', () => {
+  // ws.onopen focused the terminal every time: a drop while a secret was
+  // half-typed in #vault-secret sent the rest of it into the session.
+  for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) {
+    assert.strictEqual(focusOnOpen({ tag, inTerm: false }), false, tag);
+  }
+  assert.strictEqual(focusOnOpen({ tag: 'DIV', editable: true, inTerm: false }), false, 'contenteditable');
+});
+
+test('the first open, with nothing focused, still focuses the terminal', () => {
+  assert.strictEqual(focusOnOpen(null), true, 'no active element');
+  assert.strictEqual(focusOnOpen({ tag: 'BODY', inTerm: false }), true);
+  assert.strictEqual(focusOnOpen({ tag: 'HTML', inTerm: false }), true);
+  assert.strictEqual(focusOnOpen(undefined), true);
+});
+
+test('focus already in the terminal's own textarea counts as the terminal, and a button holds nothing', () => {
+  assert.strictEqual(focusOnOpen({ tag: 'TEXTAREA', inTerm: true }), true);
+  assert.strictEqual(focusOnOpen({ tag: 'BUTTON', inTerm: false }), true);
 });
 
 // --- reading the stored layout (PR #82 Dexter F3, Miguel I1) -------------------

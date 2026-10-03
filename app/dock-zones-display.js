@@ -187,6 +187,22 @@ function renderEffects(before, after, { userAction = false } = {}) {
 }
 
 /**
+ * Whether the socket opening may focus the terminal. `held` describes what
+ * holds keyboard focus now: { tag, editable, inTerm }, or null for nothing.
+ *
+ * ws.onopen fires on EVERY reattach, not only the first. A text field outside
+ * the terminal (the vault's secret, a search box) keeps focus: taking it sent
+ * the rest of a half-typed secret into the session (backlog #36, the same
+ * class as renderEffects above). The first open has nothing focused, so the
+ * terminal still takes it then.
+ */
+function focusOnOpen(held) {
+  if (!held || held.inTerm) return true;
+  const typing = held.editable === true || ['INPUT', 'TEXTAREA', 'SELECT'].includes(held.tag);
+  return !typing;
+}
+
+/**
  * main's answer to `layout:get` -> what the page does. Only a MISSING store
  * file means "first launch: migrate and save"; an unreadable or corrupt one
  * (antivirus holding it, EBUSY) must never be overwritten by a migration
@@ -216,7 +232,7 @@ function overrideOnHello(pending, incoming) {
 }
 
 const API = {
-  zonePlan, dragSize, applyPlan, layoutRows, moveTargets, renderEffects, afterLayoutGet, overrideOnHello,
+  zonePlan, dragSize, applyPlan, layoutRows, moveTargets, renderEffects, focusOnOpen, afterLayoutGet, overrideOnHello,
   WIDE_FACE_CHROME,
 };
 
