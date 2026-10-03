@@ -56,6 +56,8 @@ const ROOT = path.join(__dirname, '..');
 const STATE_DIR = path.join(ROOT, '.harness', 'state');
 const WAND_FILE = path.join(STATE_DIR, 'wand.json');
 const LAYOUT_FILE = path.join(STATE_DIR, 'layout-global.json');
+// Dockable panels D1: the page's layout is the split tree, under its own key. Both go, so the launch is a first launch.
+const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
@@ -97,6 +99,7 @@ const freePort = () => new Promise((resolve, reject) => {
 // host.js hardcodes its state dir, so these two files are the checkout's own: snapshot, restore on every exit.
 const wandSnap = snapshotFile(WAND_FILE);
 const layoutSnap = snapshotFile(LAYOUT_FILE);
+const treeSnap = snapshotFile(TREE_FILE);
 // Reset sets bad files aside as wand.json.bad-*: the ones this run made are removed with it.
 const badsBefore = new Set(fs.existsSync(STATE_DIR) ? fs.readdirSync(STATE_DIR).filter(f => f.startsWith('wand.json.bad-')) : []);
 function removeOwnBads() {
@@ -104,7 +107,7 @@ function removeOwnBads() {
     for (const f of fs.readdirSync(STATE_DIR)) if (f.startsWith('wand.json.bad-') && !badsBefore.has(f)) fs.rmSync(path.join(STATE_DIR, f), { force: true });
   } catch { /* none */ }
 }
-hygiene.addCleanup(() => { wandSnap.restore(); layoutSnap.restore(); removeOwnBads(); });
+hygiene.addCleanup(() => { wandSnap.restore(); layoutSnap.restore(); treeSnap.restore(); removeOwnBads(); });
 hygiene.install();
 
 async function launchApp(cwd) {
@@ -228,6 +231,7 @@ async function main() {
   makeWorld();
   try { fs.unlinkSync(WAND_FILE); } catch { /* none */ }
   try { fs.unlinkSync(LAYOUT_FILE); } catch { /* none */ }
+  try { fs.unlinkSync(TREE_FILE); } catch { /* none */ }
 
   const app = await launchApp(dev);
   const ready = await viewReady(app);
@@ -257,7 +261,9 @@ async function main() {
   };
 
   // 1 -----------------------------------------------------------------------------
-  const where = Object.keys(ready.zones).find(z => ready.zones[z].tabs.includes('wand'));
+  // Dockable panels D1: the page reports groups of a split tree; the default layout has one, `right`.
+  const home = (ready.groups || []).find(g => g.tabs.includes('wand'));
+  const where = home ? home.id : null;
   check('1: the Wand module is in the dock (new modules land on the right)', where === 'right', String(where));
   await view(app, 'select', { id: 'wand' });
   const first = await waitFor(async () => { const s = await ws(); return s && s.ok && s.shown && s.buttons.length === 4 ? s : null; }, 20000);
@@ -343,9 +349,11 @@ async function main() {
   await view(app, 'wandSetField', { field: 'emoji', value: 'rocket' });
   await click({ act: 'pick-skill', skill: 'merged' });
   await click({ act: 'save' });
-  const refused = await waitFor(async () => { const s = await ws(); return s.error && s.editor ? s : null; }, 8000);
+  // Not named `refused`: that shadowed the module's flag, so main()'s own `refused = true` (a live host on this
+  // checkout) threw "Cannot access 'refused' before initialization" instead of printing REFUSED.
+  const refusal = await waitFor(async () => { const s = await ws(); return s.error && s.editor ? s : null; }, 8000);
   check('5: a refusal ("rocket" is not an emoji) is shown, the editor stays open, the file is untouched',
-    !!refused && /emoji/i.test(refused.error) && fs.readFileSync(WAND_FILE, 'utf8') === before, JSON.stringify(refused && refused.error));
+    !!refusal && /emoji/i.test(refusal.error) && fs.readFileSync(WAND_FILE, 'utf8') === before, JSON.stringify(refusal && refusal.error));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '5-editor-refusal.png') });
 
   // 6 -----------------------------------------------------------------------------
@@ -477,6 +485,7 @@ main()
     killEverything();
     wandSnap.restore();
     layoutSnap.restore();
+    treeSnap.restore();
     removeOwnBads();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
     if (refused) process.exit(2);
