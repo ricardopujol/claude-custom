@@ -82,6 +82,8 @@ const ALLOWED_GLOBALS = new Set([
   'portraitMedia',
   // app/bg-media-display.js (BACKLOG #34): one namespace object, IIFE-wrapped.
   'bgMedia',
+  // app/colour-seeds.js (BACKLOG #34): one namespace object, IIFE-wrapped.
+  'colourSeeds',
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
   // app/style-display.js, Window section (layout pass L2, #27/#28)
