@@ -228,3 +228,136 @@ test('isOccupancyOnly: the file-tool and search-tool PreToolUse the occupancy ma
   assert.strictEqual(isOccupancyOnly(ev('PreToolUse', {})), false);
   for (const junk of [null, undefined, {}, 3, { event: 'PreToolUse' }]) assert.strictEqual(isOccupancyOnly(junk), false);
 });
+
+// --- teammates (Ricardo, 2026-10-03) ----------------------------------------------------------------------
+// A named background agent in an interactive session is an `in_process_teammate`: it ends a turn, idles, and is
+// woken again by SendMessage. Its SubagentStop is the end of a TURN (verify/probe-teammate-occupancy.js), so
+// deleting its claim there made a worktree look free while its agent sat waiting for the next message.
+
+const { IDLE_MS, teammateFromMeta } = require('../host/occupancy-producer');
+const mate = (file, extra = {}) => edit(file, { agent_id: 'amate-1', agent_type: 'lane-x', ...extra });
+const stop = (id, extra = {}) => ev('SubagentStop', { agent_id: id, ...extra });
+const mateRig = (over = {}) => rig({ isTeammate: p => String(p.agent_id).startsWith('amate'), ...over });
+
+test('a TEAMMATE that stops is idle, not gone: its claim stays, and its touches are remembered', () => {
+  const r = mateRig();
+  r.p.handle(mate(path.join(FEAT, 'a.js')));
+  r.p.handle(stop('amate-1'));
+  assert.deepStrictEqual(r.removed, []);
+  r.clock = 5000;
+  r.p.handle(mate(path.join(FEAT, 'b.js')));
+  assert.strictEqual(r.writes[r.writes.length - 1].count, 2, 'woken: the same run of touches goes on');
+  assert.strictEqual(r.writes[r.writes.length - 1].firstAt, 1000);
+});
+
+test('an idle teammate\'s claim is removed once IDLE_MS have passed since its last touch, on a tick', () => {
+  const r = mateRig();
+  r.p.handle(mate(path.join(FEAT, 'a.js')));          // touched at 1000
+  r.clock = 2000;
+  r.p.handle(stop('amate-1'));
+  r.clock = 1000 + IDLE_MS - 1;
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, [], 'one millisecond short');
+  r.clock = 1000 + IDLE_MS;
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, ['amate-1']);
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, ['amate-1'], 'removed once');
+  r.clock += 1;
+  r.p.handle(mate(path.join(FEAT, 'a.js')));
+  assert.strictEqual(r.writes[r.writes.length - 1].count, 1, 'and it starts from scratch if it comes back');
+  assert.strictEqual(IDLE_MS, 10 * 60 * 1000);
+});
+
+test('the idle clock runs from the LATEST touch of any worktree, not the first', () => {
+  const r = mateRig();
+  r.p.handle(mate(path.join(FEAT, 'a.js')));          // 1000
+  r.clock = 400_000;
+  r.p.handle(mate(path.join(FEAT2, 'a.js')));         // 400000
+  r.p.handle(stop('amate-1'));
+  r.clock = 1000 + IDLE_MS + 5;
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, []);
+  r.clock = 400_000 + IDLE_MS;
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, ['amate-1']);
+});
+
+test('a teammate that stops long after its last touch is removed at that stop', () => {
+  const r = mateRig();
+  r.p.handle(mate(path.join(FEAT, 'a.js')));
+  r.clock = 1000 + IDLE_MS;
+  r.p.handle(stop('amate-1'));
+  assert.deepStrictEqual(r.removed, ['amate-1']);
+});
+
+test('a teammate that is WORKING is never expired by the tick, however long since its last touch (a long test run)', () => {
+  const r = mateRig();
+  r.p.handle(mate(path.join(FEAT, 'a.js')));
+  r.p.handle(stop('amate-1'));
+  r.clock = 3000;
+  r.p.handle(mate(path.join(FEAT, 'b.js')));          // woken: working again
+  r.clock = 3000 + IDLE_MS * 3;
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, []);
+});
+
+test('a plain subagent still loses its claim the moment it stops, teammate rule or not', () => {
+  const r = mateRig();
+  r.p.handle(edit(path.join(FEAT, 'a.js')));          // ag1: not a teammate
+  r.p.handle(stop('ag1'));
+  assert.deepStrictEqual(r.removed, ['ag1']);
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, ['ag1']);
+});
+
+test('a teammate that never claimed anything has nothing to keep; an isTeammate that throws reads as "plain"', () => {
+  const r = mateRig();
+  r.p.handle(stop('amate-9'));
+  assert.deepStrictEqual(r.removed, ['amate-9'], 'the same harmless delete as any agent that never claimed');
+  const bad = rig({ isTeammate: () => { throw new Error('meta'); } });
+  bad.p.handle(mate(path.join(FEAT, 'a.js')));
+  assert.doesNotThrow(() => bad.p.handle(stop('amate-1')));
+  assert.deepStrictEqual(bad.removed, ['amate-1']);
+});
+
+test('SessionEnd takes the idle teammates too, and the tick then has nothing left to expire', () => {
+  const r = mateRig();
+  r.p.handle(mate(path.join(FEAT, 'a.js')));
+  r.p.handle(stop('amate-1'));
+  r.p.handle(ev('SessionEnd', {}));
+  assert.strictEqual(r.removedAll, 1);
+  r.clock += IDLE_MS * 2;
+  r.p.tick();
+  assert.deepStrictEqual(r.removed, []);
+});
+
+test('tick never throws: nothing idle, or a writer that fails', () => {
+  const r = mateRig();
+  assert.doesNotThrow(() => r.p.tick());
+  r.p.handle(mate(path.join(FEAT, 'a.js')));
+  r.p.handle(stop('amate-1'));
+  r.writer.remove = () => { throw new Error('disk'); };
+  r.clock += IDLE_MS;
+  assert.doesNotThrow(() => r.p.tick());
+});
+
+test('teammateFromMeta: the .meta.json beside SubagentStop\'s agent_transcript_path says in_process_teammate', () => {
+  const fs = require('fs');
+  const { tmpDir } = require('./tmp-dir');
+  const dir = tmpDir('occ-mate-meta-');
+  const t = name => path.join(dir, `agent-${name}.jsonl`);
+  const meta = (name, body) => fs.writeFileSync(path.join(dir, `agent-${name}.meta.json`), body);
+  meta('mate', JSON.stringify({ agentType: 'lane-x', taskKind: 'in_process_teammate' }));
+  meta('plain', JSON.stringify({ agentType: 'code-reviewer' }));
+  meta('other', JSON.stringify({ taskKind: 'something_else' }));
+  meta('junk', '{not json');
+  meta('array', '[]');
+  assert.strictEqual(teammateFromMeta({ agent_transcript_path: t('mate') }), true);
+  for (const name of ['plain', 'other', 'junk', 'array', 'missing']) {
+    assert.strictEqual(teammateFromMeta({ agent_transcript_path: t(name) }), false, name);
+  }
+  for (const p of [null, undefined, {}, { agent_transcript_path: 5 }, { agent_transcript_path: '' }, { agent_transcript_path: 'no-extension' }]) {
+    assert.strictEqual(teammateFromMeta(p), false);
+  }
+});

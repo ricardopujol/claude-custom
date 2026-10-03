@@ -48,6 +48,23 @@ test('the hook handler gives every event to the producer, and keeps the file-too
   assert.ok(body.indexOf("if (ev.event === 'Status')") < give);
 });
 
+test('hook debug prints the occupancy-only events too, before the early return hides them from the debug lines below', () => {
+  // verify/probe-teammate-occupancy.js reads `[hook:full]` to see what a teammate's Read and Grep really send.
+  const body = handlerBody();
+  const debug = body.indexOf("if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(ev.payload || {}));");
+  assert.ok(debug !== -1, 'the debug line');
+  assert.ok(debug < body.indexOf('if (isOccupancyOnly(ev)) return;'), 'before the early return');
+});
+
+test('a teammate is recognised by its .meta.json, and its idle claim is expired on the host\'s own tick', () => {
+  const block = HOST.slice(HOST.indexOf('createOccupancyProducer({'), HOST.indexOf('});', HOST.indexOf('createOccupancyProducer({')));
+  assert.match(block, /isTeammate: teammateFromMeta,/);
+  assert.match(HOST, /const \{ createOccupancyProducer, isOccupancyOnly, teammateFromMeta \} = require\('\.\/occupancy-producer'\);/);
+  const timer = HOST.slice(HOST.indexOf('const moodTimer = setInterval(() => {'));
+  const end = timer.indexOf('\n}, ');
+  assert.ok(end !== -1 && timer.slice(0, end).includes('occupancy.tick();'), 'inside the mood timer');
+});
+
 test('boot sweeps dead claims with the SAME proof the readers use, and a host never sweeps on a missing helper', () => {
   assert.match(HOST, /sweepDead\(occupancyDir\(STATE_ROOT\), \{ judge: \(claims\) => judgeClaims\(claims, startTimes\)/);
   const sweepAt = HOST.indexOf('sweepDead(occupancyDir(STATE_ROOT)');

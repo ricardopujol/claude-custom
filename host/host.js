@@ -87,7 +87,7 @@ const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
-const { createOccupancyProducer, isOccupancyOnly } = require('./occupancy-producer');
+const { createOccupancyProducer, isOccupancyOnly, teammateFromMeta } = require('./occupancy-producer');
 const { createClaimWriter, occupancyDir, sweepDead } = require('./occupancy-store');
 const { judge: judgeClaims } = require('./occupancy-live');
 const { createRootsProvider } = require('./worktree-roots');
@@ -1125,6 +1125,8 @@ const occupancy = createOccupancyProducer({
     const inv = mood.invocations().find(i => i.agentId === agentId);
     return inv ? inv.name : null;
   },
+  // A teammate's SubagentStop ends a turn, not the agent: its claim is kept while it idles.
+  isTeammate: teammateFromMeta,
   log: (...a) => console.log(...a),
 });
 process.on('exit', () => { occupancyWriter.removeAll(); });
@@ -1152,6 +1154,8 @@ if (helperExists) {
     }
     // Worktree occupancy sees every hook event; the file-tool PreToolUse that only IT asked for goes no
     // further: their PostToolUse isn't hooked, so the Running panel would show every Read as running forever.
+    // (Under hook debug their payload is printed here: they never reach the `[hook:full]` line below.)
+    if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(ev.payload || {}));
     occupancy.handle(ev);
     if (isOccupancyOnly(ev)) return;
     // The context was just replaced (/clear) or summarised (compaction): the
@@ -1658,6 +1662,7 @@ mood.on('change', ({ agent, state }) => {
 const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
+  occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
   // own a clock of its own -- and on both falling edges: a sweep that removed
   // the last row, and a party that shrank with nothing left running.
