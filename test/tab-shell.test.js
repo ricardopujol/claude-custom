@@ -2161,6 +2161,13 @@ test('the probe may drive the background view actions, by name only (#34)', () =
   for (const a of ['bgState', 'bgStyle', 'bgMatch']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
+// Here, not in test/occupancy-wiring.test.js: that file reads sources as text, so it stays out of Stryker's
+// command, and a test outside the command must not be the only one that loads a mutated module.
+test('the probe may drive the occupancy page actions, by name only (#44 + #47)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
 // --- worktree occupancy (#44 + #47) -----------------------------------------------
 
 const OCC_NOW = 1_000_000_000;

@@ -143,12 +143,9 @@ test('a worktree page reports nothing new to the shell: the turn it already send
 
 // --- the probe's own hooks (verify/probe-worktree-occupancy.js) -----------------------------------
 
-test('the probe driver may drive the occupancy page actions, by name only', () => {
-  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
-});
-
-test('each of them exists on the ?probe=1 page, and a probe keystroke goes through xterm\'s own input path', () => {
+// (That the driver may call them, by name only, is pinned in test/tab-shell.test.js: it loads app/tab-shell.js,
+// which Stryker mutates, and this file is not in Stryker's command.)
+test('each of the probe\'s page actions exists on the ?probe=1 page, and a probe keystroke goes through xterm\'s own input path', () => {
   for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
   assert.match(RENDERER, /term\.input\(a\.data, true\)/);
 });
