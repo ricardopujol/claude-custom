@@ -114,7 +114,74 @@ function deletePreset(list, name) {
   return { ok: true, list: clean.filter((_, i) => i !== at) };
 }
 
-const API = { NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, checkName, cleanPresets, find, savePreset, renamePreset, deletePreset };
+// A window of 1200 x 750 drawn into the small picture beside each name.
+const THUMB = { width: 44, height: 28, window: { width: 1200, height: 750 } };
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+const tenth = v => Math.round(v * 10) / 10;
+
+/**
+ * The boxes of the little picture of a layout: its terminal and groups, fitted into a 1200 x 750 window and
+ * scaled to 44 x 28. `fitFn(layout, ids, viewport)` is the page's (normalize, then dockTree.fit), so a layout
+ * naming a module this build lacks still draws. Never throws; a fit that fails or answers junk draws nothing.
+ * Floating panels are not drawn here (their shape belongs to D2).
+ * @returns {{ kind: 'term'|'group', x: number, y: number, w: number, h: number }[]}
+ */
+function thumbBoxes(layout, ids, fitFn) {
+  if (typeof fitFn !== 'function') return [];
+  let fitted;
+  try { fitted = fitFn(layout, ids, { ...THUMB.window }); } catch { return []; }
+  if (!isObject(fitted) || !Array.isArray(fitted.boxes)) return [];
+  const sx = THUMB.width / THUMB.window.width;
+  const sy = THUMB.height / THUMB.window.height;
+  const out = [];
+  for (const b of fitted.boxes) {
+    if (!isObject(b) || (b.kind !== 'term' && b.kind !== 'group') || !isObject(b.rect)) continue;
+    const { x, y, width, height } = b.rect;
+    if (![x, y, width, height].every(isNum)) continue;
+    const bx = tenth(Math.min(Math.max(x * sx, 0), THUMB.width - 1));
+    const by = tenth(Math.min(Math.max(y * sy, 0), THUMB.height - 1));
+    out.push({
+      kind: b.kind, x: bx, y: by,
+      w: Math.min(Math.max(tenth(width * sx), 1), tenth(THUMB.width - bx)),
+      h: Math.min(Math.max(tenth(height * sy), 1), tenth(THUMB.height - by)),
+    });
+  }
+  return out;
+}
+
+/**
+ * The store's answer to `layout-presets:get` -> what the page does. Only MISSING is "no presets yet" (the first
+ * save creates the file); an unreadable or corrupt file (antivirus holding it, EBUSY) is "couldn't read": never an
+ * empty list, because saving over it would destroy the presets that are really there.
+ */
+function afterGet(answer) {
+  const none = { usable: false, list: [] };
+  if (!isObject(answer)) return none;
+  if (answer.status === 'missing') return { usable: true, list: [] };
+  if (answer.status === 'ok' && Array.isArray(answer.layout)) return { usable: true, list: cleanPresets(answer.layout) };
+  return none;
+}
+
+/** What `harness.layoutPresets.set` answered: main echoes the list once written, and answers null when it refused or failed. */
+function presetsSaved(answer) { return Array.isArray(answer); }
+
+const WORDS = {
+  name: 'Use 1 to 40 characters, with no line breaks.',
+  taken: 'A preset with that name already exists.',
+  full: 'You\'ve reached the limit of 32 presets. Delete one first.',
+  missing: 'That preset isn\'t there any more.',
+  layout: 'This layout can\'t be saved as a preset.',
+  unreadable: 'The saved presets couldn\'t be read, so saving is off until they can be.',
+};
+/** The words for a refusal reason. */
+function refusalText(reason) {
+  return Object.prototype.hasOwnProperty.call(WORDS, reason) ? WORDS[reason] : 'That couldn\'t be done.';
+}
+
+const API = {
+  NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, THUMB, checkName, cleanPresets, find, savePreset, renamePreset, deletePreset,
+  thumbBoxes, afterGet, presetsSaved, refusalText,
+};
 
 // One namespace on the page (`window.dockPresets`), not loose globals.
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
