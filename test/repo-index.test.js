@@ -188,3 +188,25 @@ test('real git: a folder that is not a repository is an error, not an empty list
   assert.strictEqual(r.ok, false);
   assert.match(r.error, /not a git repository/i);
 });
+
+// ---- PR #95 Dexter D3: the listing can say how it spells a file ----
+
+test('D3: buildIndex.resolve finds a file by any case and answers the listing\'s own spelling', () => {
+  const idx = buildIndex(['app/renderer.js', 'README.md']);
+  assert.strictEqual(idx.resolve('APP/Renderer.JS'), 'app/renderer.js');
+  assert.strictEqual(idx.resolve('readme.MD'), 'README.md');
+  assert.strictEqual(idx.resolve('app/other.js'), null);
+  assert.strictEqual(idx.resolve('app'), null, 'a folder is not a listed file');
+});
+
+test('D3: createIndex.resolve is undefined (unknown) until a listing worked or after one failed, never null', async () => {
+  let ok = true;
+  const ix = createIndex('C:\r', { execFile: (f, a, o, cb) => (ok ? cb(null, z('a.js'), '') : cb(new Error('x'), '', 'fatal: no')) });
+  assert.strictEqual(ix.resolve('a.js'), undefined);
+  await ix.refresh();
+  assert.strictEqual(ix.resolve('A.JS'), 'a.js');
+  assert.strictEqual(ix.resolve('b.js'), null);
+  ok = false;
+  await ix.refresh();
+  assert.strictEqual(ix.resolve('a.js'), undefined);
+});

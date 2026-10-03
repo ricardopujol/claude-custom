@@ -45,6 +45,7 @@ const byName = (a, b) => {
 function buildIndex(files) {
   // Map of Map: a file named `__proto__` or `constructor` must be an ordinary key.
   const dirs = new Map([['', new Map()]]);
+  const byLower = new Map();       // lower-cased file path -> the listing's own spelling (PR #95 Dexter D3)
   let size = 0;
   const seen = new Set();
   for (const file of files) {
@@ -53,6 +54,7 @@ function buildIndex(files) {
     const parts = file.split('/').filter(Boolean);
     if (!parts.length) continue;
     size += 1;
+    byLower.set(parts.join('/').toLowerCase(), parts.join('/'));
     for (let i = 0; i < parts.length; i++) {
       const parent = parts.slice(0, i).join('/');
       const isFile = i === parts.length - 1;
@@ -65,6 +67,9 @@ function buildIndex(files) {
   return {
     size,
     has: (dir) => dirs.has(dir),
+    // How the listing spells this file (Windows paths are case-insensitive: a transcript may say App\x.js for
+    // app/x.js), or null when it isn't a listed file.
+    resolve: (p) => (typeof p === 'string' ? byLower.get(p.toLowerCase()) || null : null),
     children(dir) {
       const m = dirs.get(dir);
       if (!m) return null;
@@ -126,6 +131,12 @@ function createIndex(root, deps = {}) {
     return running;
   }
 
+  // The listing's spelling of a file: a string; null when it is not listed; undefined when there is no listing
+  // to ask (never read, or git failed), which is not the same as "not listed".
+  function resolve(p) {
+    return state && state.ok ? state.index.resolve(p) : undefined;
+  }
+
   function list(dir) {
     if (!state) return { ok: false, error: 'the file list has not been read yet' };
     if (!state.ok) return { ok: false, error: state.error };
@@ -133,7 +144,7 @@ function createIndex(root, deps = {}) {
     return entries === null ? { ok: true, entries: [], missing: true } : { ok: true, entries };
   }
 
-  return { refresh, list };
+  return { refresh, list, resolve };
 }
 
 module.exports = { listFiles, parseLsFiles, buildIndex, createIndex, LS_FILES_ARGS };

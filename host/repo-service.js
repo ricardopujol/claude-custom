@@ -67,8 +67,10 @@ function createRepoService({
         try {
           const fog = await readFogFn({ cwd: root, projectsDir });
           const st = fog.status || {};
+          // the listing spells the files, so a transcript's other spelling of one is the same row
+          await ensureLoaded();
           return {
-            ok: true, ...rollUp(fog.files),
+            ok: true, ...rollUp(fog.files, { resolve: index.resolve }),
             status: { transcriptsFound: st.transcriptsFound, transcriptErrors: st.transcriptErrors, transcriptsMissing: st.transcriptsMissing },
           };
         } catch (err) {

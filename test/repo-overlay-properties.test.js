@@ -76,3 +76,18 @@ test('R4: the order of the input changes nothing', () => {
     return norm(rollUp(list)) === norm(rollUp(shuffled));
   }), { numRuns: 800 });
 });
+
+test('R5 (D3): any case spelling of a path is the same file: the row for the first spelling carries the sum of all', () => {
+  const flip = (p, mask) => p.split('').map((c, i) => ((mask >> (i % 20)) & 1 ? c.toUpperCase() : c.toLowerCase())).join('');
+  fc.assert(fc.property(fc.array(fc.tuple(pathArb, fc.integer({ min: 0, max: 1048575 }), fc.integer({ min: 1, max: 9 })), { minLength: 1, maxLength: 20 }), (items) => {
+    const list = items.map(([p, mask, edits]) => ({ path: flip(p, mask), tier: 'edited', edits }));
+    const o = rollUp(list);
+    const byKey = new Map();
+    for (const e of list) byKey.set(e.path.toLowerCase(), (byKey.get(e.path.toLowerCase()) || 0) + e.edits);
+    if (o.files.length !== byKey.size) return false;
+    const total = [...byKey.values()].reduce((a, b) => a + b, 0);
+    const root = o.dirs.find(d => d.path === '');
+    const lowerDirs = o.dirs.map(d => d.path.toLowerCase());
+    return o.files.every(x => x.edits === byKey.get(x.path.toLowerCase())) && root.edits === total && new Set(lowerDirs).size === lowerDirs.length;
+  }), { numRuns: 800 });
+});

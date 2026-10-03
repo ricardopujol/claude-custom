@@ -215,3 +215,16 @@ test('close stops the watch', async () => {
   svc.close();
   assert.strictEqual(closed, 1);
 });
+
+test('D3: the overlay is spelled the way the listing spells the file (case variants in the transcript are one row)', async () => {
+  const { root } = repo();
+  const readFog = async () => ({
+    files: [{ path: 'SRC/A.JS', tier: 'edited', edits: 2 }, { path: 'src/a.js', tier: 'edited', edits: 1 }],
+    status: { transcriptsFound: 1, transcriptErrors: 0, transcriptsMissing: false },
+  });
+  const svc = make({ root, readFog });
+  await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 1 });
+  const r = await svc.handle({ type: 'repo', action: 'overlay', seq: 2 });
+  assert.deepStrictEqual(r.files.map(f => [f.path, f.edits]), [['src/a.js', 3]]);
+  assert.deepStrictEqual(r.dirs.map(d => [d.path, d.edits]), [['', 3], ['src', 3]]);
+});

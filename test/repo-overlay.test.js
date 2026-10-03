@@ -65,3 +65,31 @@ test('a duplicate path (two sessions merged badly) is one row, the stronger tier
   assert.strictEqual(o.files[0].tier, 'edited');
   assert.strictEqual(dir(o, '').edits, 2);
 });
+
+// ---- PR #95 Dexter D3: the overlay's keys are spelled the way the listing spells them ----
+
+test('D3: App/renderer.js and app/renderer.js are one file: counts add, one row, folder and root agree', () => {
+  const o = rollUp([f('app/renderer.js', 'edited', 2), f('App/renderer.js', 'edited', 1), f('APP/RENDERER.JS', 'read')]);
+  assert.strictEqual(o.files.length, 1);
+  assert.strictEqual(o.files[0].edits, 3);
+  assert.strictEqual(o.files[0].tier, 'edited');
+  assert.deepStrictEqual(o.dirs.map(d => [d.path, d.edits]), [['', 3], ['app', 3]]);
+});
+
+test('D3: the row takes the LISTING\'s spelling when the listing knows the file (every variant spelled otherwise)', () => {
+  const resolve = (p) => (p.toLowerCase() === 'app/renderer.js' ? 'app/renderer.js' : null);
+  const o = rollUp([f('App\\Renderer.js', 'edited', 2), f('app/renderer.js', 'edited', 1)], { resolve });
+  assert.deepStrictEqual(o.files.map(x => [x.path, x.edits]), [['app/renderer.js', 3]]);
+  assert.deepStrictEqual(o.dirs.map(d => d.path), ['', 'app']);
+});
+
+test('D3: with no listing to ask, the first spelling seen names the file', () => {
+  const o = rollUp([f('App/x.js', 'edited', 1), f('app/x.js', 'edited', 1)]);
+  assert.deepStrictEqual(o.files.map(x => x.path), ['App/x.js']);
+});
+
+test('D3: ./x.js, sub/../x.js and backslashes are the same file as x.js; a path that climbs out or is absolute is no file here', () => {
+  const o = rollUp([f('./x.js', 'edited', 1), f('sub/../x.js', 'edited', 1), f('x.js', 'edited', 1), f('..\\up.js', 'edited', 1),
+    f('../up.js', 'edited', 1), f('/abs.js', 'edited', 1), f('C:/abs.js', 'edited', 1), f('.', 'edited', 1)]);
+  assert.deepStrictEqual(o.files.map(x => [x.path, x.edits]), [['x.js', 3]]);
+});
