@@ -2204,7 +2204,7 @@ test('the probe may drive the background view actions, by name only (#34)', () =
 
 test('the probe may drive the dock tree\'s actions, by name only (dockable panels D1)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['state', 'select', 'move', 'boxes', 'layout', 'dock', 'hide', 'show', 'foldAll', 'drag', 'tabClick', 'gutter', 'menuTick', 'menuButton', 'squeeze']) {
+  for (const a of ['state', 'select', 'move', 'boxes', 'layout', 'dock', 'hide', 'show', 'foldAll', 'drag', 'tabClick', 'gutter', 'gutterRace', 'abortedDrag', 'menuTick', 'menuButton', 'squeeze']) {
     assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
   }
   assert.ok(!VIEW_PROBE_ACTIONS.has('dragDrop'), 'the HTML5 strip drop is gone');

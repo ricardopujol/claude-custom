@@ -117,6 +117,31 @@ function sizesAfterDrag(node, split, i, delta) {
 }
 
 /**
+ * A divider is released on the placement as it is NOW, not as it was at pointerdown
+ * (another window may have hidden a panel or resized another split meanwhile, and
+ * writing the old snapshot back would undo that). Returns the sizes to give
+ * `setSplitSizes` for the split at the drag's path in `layout`, or null when that
+ * split isn't the one that was dragged any more (gone, another direction, another
+ * number of kids): then the drag is dropped and nothing changes.
+ * @param layout the placement at release
+ * @param drag   { path, i, node, sizes }: what pointerdown remembered and what `sizesAfterDrag` answered last
+ */
+function rebaseDrag(layout, drag) {
+  if (!isObject(layout) || !isObject(layout.root) || !isObject(drag) || !Array.isArray(drag.path)) return null;
+  if (!isObject(drag.node) || !Array.isArray(drag.sizes) || !drag.sizes.every(isSize) || !Number.isInteger(drag.i)) return null;
+  let cur = layout.root;
+  for (const k of drag.path) {
+    if (!isObject(cur) || cur.type !== 'split' || !Number.isInteger(k) || k < 0 || k >= cur.kids.length) return null;
+    cur = cur.kids[k];
+  }
+  if (!isObject(cur) || cur.type !== 'split' || cur.dir !== drag.node.dir || cur.kids.length !== drag.node.kids.length) return null;
+  if (cur.kids.length !== drag.sizes.length || hasTerm(cur) !== hasTerm(drag.node)) return null;
+  if (!hasTerm(cur)) return [...drag.sizes];                       // proportions: the whole drawn row
+  // Pixels: only the divider's two neighbours are the drag's; every other fixed kid keeps what is stored NOW.
+  return drag.sizes.map((v, k) => (k === drag.i - 1 || k === drag.i || hasTerm(cur.kids[k]) || !isSize(cur.sizes[k]) ? v : cur.sizes[k]));
+}
+
+/**
  * The Window menu's panel rows: every module of the layout in registry order,
  * hidden ones too. It lists hidden modules on purpose: it is the way back for
  * one, and the way out when every module is hidden and there is no tab left.
@@ -277,7 +302,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, dragSizes, sizesAfterDrag, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

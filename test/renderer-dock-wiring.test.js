@@ -105,3 +105,13 @@ test('#36: the socket opening focuses the terminal only as focusOnOpen says -- n
   assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
   assert.match(handler, /if \(window\.dockZones\.focusOnOpen\(first, window\.dockZones\.describeFocus\(document\.activeElement, term\.element\)\)\) term\.focus\(\);/);
 });
+
+test('PR #100 Dexter F6 / F3: a divider release is applied to the placement as it is NOW, and a drag that asks for nothing stores nothing', () => {
+  const start = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\r?\n\s+if \(!dividerDrag\) return;/);
+  assert.ok(start !== -1, 'the divider\'s pointerup handler must be findable');
+  const handler = JS.slice(start, JS.indexOf('\n  });', start));
+  assert.match(handler, /rebaseDrag\(committedLayout\(\)/, 'rebased onto what is saved now');
+  assert.match(handler, /setSplitSizes\(committedLayout\(\)/, 'and applied to it, not to the pointerdown snapshot');
+  assert.doesNotMatch(handler, /commitPlacement\(l\)|d\.base/, 'the stale snapshot is never what is committed');
+  assert.match(JS, /function committedLayout\(\) \{ return ownLayout \|\| globalLayout; \}/, 'what is saved, without the drawn-only drag layout');
+});

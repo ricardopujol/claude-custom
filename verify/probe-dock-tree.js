@@ -450,6 +450,39 @@ async function main() {
     check('7: ...with every other box where it was', tiles(later).length === 0 && later.termwrap.width === before7.termwrap.width && later.termwrap.height === before7.termwrap.height);
     await view(app, 'layout', { layout: example });
     cur = (await settled(app)).s;
+
+    // PR #100 Dexter F3: a divider pressed and released without moving stores nothing (the unit tests pin the
+    // decision; this is the page not writing).
+    const layoutIdle = JSON.stringify((await viewState(app)).layout);
+    const pushesIdle = (await viewState(app)).pushes;
+    await view(app, 'gutter', { path: bar.path, i: bar.i, delta: 0 });
+    await sleep(1200);
+    const idle = await viewState(app);
+    check('7: a divider pressed and released without moving writes nothing (PR #100 F3)', idle.pushes === pushesIdle && JSON.stringify(idle.layout) === layoutIdle, `pushes ${pushesIdle} -> ${idle.pushes}`);
+
+    // PR #100 Dexter F6: another window changes the layout while this one's divider is held. The release lands on
+    // THAT layout (it keeps what the other window did), or is dropped if the split is gone.
+    await view(app, 'hide', { id: 'git' });
+    const gitHidden = (await viewState(app)).layout;
+    await view(app, 'layout', { layout: example });
+    cur = (await settled(app)).s;
+    const widthBefore = groupWith(cur, 'agents').rect.width;
+    await view(app, 'gutterRace', { path: bar.path, i: bar.i, delta: 40, pushed: gitHidden });
+    const raced = (await settled(app)).s;
+    check('7: a divider released after another window hid Git keeps Git hidden and still moves the divider (PR #100 F6)',
+      raced.layout.hidden.includes('git') && Math.abs(groupWith(raced, 'agents').rect.width - widthBefore - 40) <= 2,
+      JSON.stringify([raced.layout.hidden, widthBefore, groupWith(raced, 'agents').rect.width]));
+    await view(app, 'layout', { layout: example });
+    await view(app, 'hide', { id: 'vault' });
+    const vaultHidden = (await viewState(app)).layout;
+    await view(app, 'layout', { layout: example });
+    cur = (await settled(app)).s;
+    await view(app, 'gutterRace', { path: bar.path, i: bar.i, delta: 40, pushed: vaultHidden });
+    const dropped = await viewState(app);
+    check('7: ...and when the dragged split is gone, the drag is dropped: the other window\'s layout stands (PR #100 F6)',
+      JSON.stringify(dropped.layout) === JSON.stringify(vaultHidden), JSON.stringify(dropped.layout.hidden));
+    await view(app, 'layout', { layout: example });
+    cur = (await settled(app)).s;
   }
 
   // 6 -----------------------------------------------------------------------------

@@ -830,7 +830,9 @@ function saveSelection() {
   try { localStorage.setItem('dockSelection2', JSON.stringify(selection)); } catch {}
 }
 
-function placementLayout() { return dragLayout || ownLayout || globalLayout; }
+// What is SAVED for this window, without a divider drag's drawn-only layout on top.
+function committedLayout() { return ownLayout || globalLayout; }
+function placementLayout() { return dragLayout || committedLayout(); }
 
 // The area the tree fills: #dock, which already gives the diagnostics pane its own room.
 function dockViewport() {
@@ -1335,6 +1337,22 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         g.dispatchEvent(ptr('pointerdown', x0, y0));
         window.dispatchEvent(ptr('pointermove', x0 + dx / 2, y0 + dy / 2));
         window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
+        window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
+        return JSON.stringify({ ok: true });
+      }
+      // PR #100 Dexter F6: a divider is pressed and moved, ANOTHER window's layout arrives (`pushed`, the same
+      // path as the main-process push), then the divider is released.
+      case 'gutterRace': {
+        const g = [...document.querySelectorAll('#dock > .dgutter')].find(el => el.dataset.path === String(a.path) && Number(el.dataset.i) === a.i);
+        if (!g) return JSON.stringify({ ok: false, error: 'no such divider' });
+        const r = g.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const dx = g.dataset.dir === 'row' ? a.delta : 0;
+        const dy = g.dataset.dir === 'col' ? a.delta : 0;
+        g.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
+        globalLayout = DTm.normalize(a.pushed, MODULE_IDS);
         window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
         return JSON.stringify({ ok: true });
       }
@@ -3476,7 +3494,7 @@ function renderProcesses(running) {
 // While a divider is dragged the layout is DRAWN (dragLayout) but not saved; the
 // one write happens on release. A store write per move frame is what let the old
 // width ratchet run frame by frame (L1, Miguel A18).
-let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter }
+let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter, sizes }
 (function initDividers() {
   const nodeAt = (layout, path) => path.reduce((n, k) => (n && n.kids ? n.kids[k] : null), layout.root);
   const splitAt = (path) => (lastPlan ? lastPlan.splits.find(s => s.path.join('.') === path.join('.')) : null);
@@ -3498,17 +3516,27 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter 
     const d = dividerDrag;
     const delta = (d.dir === 'row' ? e.clientX : e.clientY) - d.start;
     const sizes = window.dockTreeView.sizesAfterDrag(d.node, d.split, d.i, delta);
-    if (!sizes) return;
+    d.sizes = sizes;
+    if (!sizes) {
+      // Nothing to ask for (back at the start, or against a minimum): draw what is saved, store nothing.
+      if (dragLayout) { dragLayout = null; renderLayout(); }
+      return;
+    }
     dragLayout = DTm.setSplitSizes(d.base, d.path, sizes);
     renderLayout();
   });
   window.addEventListener('pointerup', () => {
     if (!dividerDrag) return;
-    dividerDrag.gutter.classList.remove('dragging');
+    const d = dividerDrag;
+    d.gutter.classList.remove('dragging');
     dividerDrag = null;
-    const l = dragLayout;
+    const moved = dragLayout !== null;
     dragLayout = null;
-    if (l) commitPlacement(l);     // the one real choice, saved once
+    // Applied to the placement as it is NOW, not as it was at pointerdown: another window may have changed it
+    // meanwhile, and saving the old snapshot back would undo that (PR #100 Dexter F6). If the split isn't the
+    // one that was dragged any more, the drag is dropped.
+    const rebased = moved ? window.dockTreeView.rebaseDrag(committedLayout(), { path: d.path, i: d.i, node: d.node, sizes: d.sizes }) : null;
+    if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), d.path, rebased));     // the one real choice, saved once
     else renderLayout();
   });
   // A drag the system took away is not a choice: the layout goes back to what it was.

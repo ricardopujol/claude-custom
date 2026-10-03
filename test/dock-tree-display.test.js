@@ -209,3 +209,44 @@ test('F3b: dragSizes refuses when either neighbour is already under its minimum'
   assert.strictEqual(V.dragSizes([36, 109], [80, 80], 1, 10), null);
   assert.deepStrictEqual(V.dragSizes([120, 200], [120, 120], 1, 40), [160, 160], 'at the minimum is not under it');
 });
+
+// --- PR #100 review (Dexter F6): a divider release lands on the placement AS IT IS NOW ----------
+
+test('F6: rebaseDrag applies the two neighbours\' new sizes to the placement at release, keeping what another window changed', () => {
+  const ids = ['a', 'b', 'c', 'd'];
+  const at = (sizes, hidden = []) => T.normalize({ ...v2({ type: 'split', dir: 'row', kids: [grp('l', 'a'), { type: 'term' }, grp('r', 'b'), grp('x', 'c')], sizes }), hidden }, ids);
+  const base = at([200, 0, 300, 150], ['d']);
+  const split = { px: [200, 400, 300, 150], min: [120, 320, 120, 120] };
+  const sizes = V.sizesAfterDrag(base.root, split, 2, -40);                 // the divider before r moves left
+  assert.deepStrictEqual(sizes, [200, 360, 340, 150]);
+  const drag = { path: [], i: 2, node: base.root, sizes };
+  // Meanwhile another window made the left group 260 wide and un-hid d.
+  const now = T.normalize({ ...v2(at([260, 0, 300, 150]).root), hidden: [] }, ids);
+  const rebased = V.rebaseDrag(now, drag);
+  assert.deepStrictEqual(rebased, [260, 360, 340, 150], 'their 260 survives, only the divider\'s two neighbours change');
+  const out = T.setSplitSizes(now, [], rebased);
+  assert.deepStrictEqual(out.hidden, [], 'and what they un-hid stays shown');
+});
+
+test('F6: if the split changed shape under the drag, the drag is dropped', () => {
+  const ids = ['a', 'b'];
+  const base = T.normalize(v2({ type: 'split', dir: 'row', kids: [{ type: 'term' }, grp('r', 'a'), grp('s', 'b')], sizes: [0, 200, 200] }), ids);
+  const drag = { path: [], i: 2, node: base.root, sizes: [320, 180, 220] };
+  // Another window hid b: the split has two kids now.
+  const fewer = T.hide(base, 'b');
+  assert.strictEqual(V.rebaseDrag(fewer, drag), null, 'a kid went');
+  // Another window turned the root into a column.
+  const flipped = T.normalize(v2({ type: 'split', dir: 'col', kids: [{ type: 'term' }, grp('r', 'a'), grp('s', 'b')], sizes: [0, 200, 200] }), ids);
+  assert.strictEqual(V.rebaseDrag(flipped, drag), null, 'the direction changed');
+  // The split at that path is gone altogether.
+  assert.strictEqual(V.rebaseDrag(T.defaultLayout(['a']), { ...drag, path: [1, 0] }), null);
+  assert.strictEqual(V.rebaseDrag(base, null), null);
+  assert.strictEqual(V.rebaseDrag(base, { ...drag, sizes: 'x' }), null);
+});
+
+test('F6: in a plain split the whole drawn row is the drag\'s answer', () => {
+  const ids = ['a', 'b'];
+  const base = T.normalize(v2({ type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'split', dir: 'col', kids: [grp('r', 'a'), grp('s', 'b')], sizes: [1, 1] }], sizes: [0, 200] }), ids);
+  const drag = { path: [1], i: 1, node: base.root.kids[1], sizes: [220, 175] };
+  assert.deepStrictEqual(V.rebaseDrag(base, drag), [220, 175]);
+});
