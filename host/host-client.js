@@ -38,6 +38,11 @@ const EXPECTED = Object.freeze({
   stop: { reply: null },
   // *Stop that session*: the holder answers whether it stopped (it then exits).
   'stop-if-idle': { reply: 'stop-if-idle' },
+  // Text typed into the session, as the renderer's own `input` does (the Git drawer's *Run /merged*
+  // sends it to ANOTHER tab's host). The host writes it to the pty and answers nothing, so the frame is
+  // done once it is written: the socket is closed politely (a hard close could drop it) and that
+  // close is the answer.
+  input: { reply: null, closeAfterSend: true },
 });
 
 const DEFAULT_TIMEOUT_MS = 3000;
@@ -51,6 +56,7 @@ function sendControl({ port, token, msg, timeoutMs = DEFAULT_TIMEOUT_MS, WebSock
     const expected = msg && typeof msg.type === 'string' && Object.hasOwn(EXPECTED, msg.type)
       ? EXPECTED[msg.type] : null;
     if (!expected) return resolve({ ok: false, error: `unsupported control type: ${msg && msg.type}` });
+    if (msg.type === 'input' && typeof msg.data !== 'string') return resolve({ ok: false, error: 'invalid input data' });
     const wait = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
 
     let ws = null;
@@ -88,8 +94,16 @@ function sendControl({ port, token, msg, timeoutMs = DEFAULT_TIMEOUT_MS, WebSock
           return finish({ ok: false, error: OLDER_HOST(msg.type) });
         }
         try {
-          ws.send(JSON.stringify(msg));
-          sent = true;
+          if (expected.closeAfterSend) {
+            sent = true;
+            ws.send(JSON.stringify(msg), (err) => {
+              if (err) return finish({ ok: false, error: `socket error: ${err.message}` });
+              try { ws.close(); } catch { /* already closed: its 'close' event ends this */ }
+            });
+          } else {
+            ws.send(JSON.stringify(msg));
+            sent = true;
+          }
         } catch (err) {
           finish({ ok: false, error: `socket error: ${err && err.message}` });
         }
