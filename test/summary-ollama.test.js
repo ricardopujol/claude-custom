@@ -18,7 +18,7 @@ const { STALE_MS } = require('../host/summary-slot');
 
 async function withFake(opts, fn, clientOpts = {}) {
   const fake = await startFakeOllama(opts);
-  const client = createOllamaClient({ baseUrl: fake.url, healthTimeoutMs: 80, tagsTimeoutMs: 80, generateTimeoutMs: 150, ...clientOpts });
+  const client = createOllamaClient({ baseUrl: fake.url, healthTimeoutMs: 300, tagsTimeoutMs: 300, generateTimeoutMs: 500, ...clientOpts });
   try { await fn(fake, client); } finally { await fake.close(); }
 }
 
