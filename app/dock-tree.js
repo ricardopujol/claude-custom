@@ -61,7 +61,15 @@ const hasTerm = n => n.type === 'term' || (n.type === 'split' && n.kids.some(has
 function walk(n, fn) { fn(n); if (n.type === 'split') n.kids.forEach(k => walk(k, fn)); }
 function groups(layout) { const out = []; walk(layout.root, (n) => { if (n.type === 'group') out.push(n); }); return out; }
 function count(layout, type) { let c = 0; walk(layout.root, (n) => { if (n.type === type) c += 1; }); return c; }
-function freshId(used) { let i = 1; while (used.has('g' + i)) i += 1; used.add('g' + i); return 'g' + i; }
+// `also`: names a hidden module's seat still points at. A destroyed group's name is free to reuse, but a new
+// group handed it would capture that seat (show would rejoin an unrelated group).
+function freshId(used, also) {
+  let i = 1;
+  while (used.has('g' + i) || (also && also.has('g' + i))) i += 1;
+  used.add('g' + i);
+  return 'g' + i;
+}
+const seatGroups = seat => new Set(Object.values(isObject(seat) ? seat : {}).map(s => (isObject(s) ? s.group : null)).filter(v => typeof v === 'string'));
 
 // One pass that enforces I1-I4 on a subtree. `st` carries what has been seen.
 function clean(n, st, depth) {
@@ -70,7 +78,8 @@ function clean(n, st, depth) {
   if (n.type === 'group') {
     const tabs = (Array.isArray(n.tabs) ? n.tabs : []).filter(id => st.claim(id));
     if (!tabs.length) return null;
-    const id = typeof n.id === 'string' && n.id && !st.ids.has(n.id) ? n.id : null;
+    // 'term' is the terminal's name in drop targets, so a group can't carry it.
+    const id = typeof n.id === 'string' && n.id && n.id !== 'term' && !st.ids.has(n.id) ? n.id : null;
     if (id) st.ids.add(id);                         // an unnamed group is named after the pass, when every kept id is known
     return { type: 'group', id, tabs };
   }
@@ -98,14 +107,15 @@ function clean(n, st, depth) {
 }
 
 const SEAT_SIDES = new Set(SIDES);
-function cleanSeat(raw, hiddenIds) {
+function cleanSeat(raw, hiddenIds, liveGroups) {
   const seat = {};
   if (!isObject(raw)) return seat;
   for (const id of hiddenIds) {
     const s = raw[id];
     const nameOrNull = v => v === null || typeof v === 'string';
     if (isObject(s) && nameOrNull(s.group) && nameOrNull(s.beside) && SEAT_SIDES.has(s.side)) {
-      seat[id] = { group: s.group, beside: s.beside, side: s.side };
+      // A group that no longer exists is no group: show then falls through to "beside the neighbour".
+      seat[id] = { group: liveGroups.has(s.group) ? s.group : null, beside: s.beside, side: s.side };
     }
   }
   return seat;
@@ -126,7 +136,8 @@ function normalize(raw, ids) {
     },
   };
   let r = clean(raw.root, st, 0);
-  if (r) walk(r, (n) => { if (n.type === 'group' && n.id === null) n.id = freshId(st.ids); });
+  const reserved = seatGroups(raw.seat);
+  if (r) walk(r, (n) => { if (n.type === 'group' && n.id === null) n.id = freshId(st.ids, reserved); });
 
   if (!st.term) {
     if (!r) r = TERM();
@@ -140,10 +151,10 @@ function normalize(raw, ids) {
     let first = null;
     walk(r, (n) => { if (!first && n.type === 'group') first = n; });
     if (first) first.tabs.push(...missing);
-    else r = { type: 'split', dir: 'row', kids: [r, { type: 'group', id: freshId(st.ids), tabs: missing }], sizes: [0, DEFAULT_SIZE.row] };
+    else r = { type: 'split', dir: 'row', kids: [r, { type: 'group', id: freshId(st.ids, reserved), tabs: missing }], sizes: [0, DEFAULT_SIZE.row] };
   }
 
-  return { version: VERSION, root: r, floats: [], hidden: hiddenIds, seat: cleanSeat(raw.seat, hiddenIds) };
+  return { version: VERSION, root: r, floats: [], hidden: hiddenIds, seat: cleanSeat(raw.seat, hiddenIds, new Set(groups({ root: r }).map(x => x.id))) };
 }
 
 // Only a plain object of string -> string survives; nothing else a window stored is trusted.
@@ -236,7 +247,7 @@ function dock(layout, id, target) {
     cellNode.tabs.push(id);
   } else {
     const used = new Set(groups(l).map(gr => gr.id));
-    const added = { type: 'group', id: freshId(used), tabs: [id] };
+    const added = { type: 'group', id: freshId(used, seatGroups(l.seat)), tabs: [id] };
     const dir = dirOf(side);
     const first = firstOf(side);
     // Beside the terminal the newcomer gets a default size and the terminal's side stays 0 (the spine

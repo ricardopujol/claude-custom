@@ -746,3 +746,53 @@ test('F1: a lone panel at the left, or in a column, dropped where it already is 
   const top = T.normalize(v2(col([g('t', 'git'), row([term, g('r', 'vault')], [0, 200])], [150, 0]), { hidden: IDS.filter(id => id !== 'git' && id !== 'vault') }), IDS);
   assert.equal(T.dock(top, 'git', { edge: 'top' }), top);
 });
+
+// --- PR #100 review (Dexter F2, F5) ------------------------------------------------
+
+test('F2: a seat never names a group that was destroyed, even when a new group takes the old name', () => {
+  const ids = ['A', 'B', 'C'];
+  let l = T.defaultLayout(ids);
+  l = T.dock(l, 'B', { cell: 'right', side: 'bottom' });
+  l = T.dock(l, 'C', { cell: 'g1', side: 'center' });
+  assert.deepEqual(T.groupOf(l, 'C').tabs, ['B', 'C']);
+  l = T.hide(l, 'C');
+  assert.equal(l.seat.C.group, 'g1');
+  l = T.dock(l, 'B', { cell: 'right', side: 'center' });                      // g1 is destroyed
+  assert.equal(l.seat.C.group, null, 'the seat forgets a group that no longer exists');
+  l = T.dock(l, 'A', { edge: 'top' });                                        // a new group must not inherit the name g1
+  l = T.show(l, 'C');
+  assert.ok(T.groupOf(l, 'C').tabs.includes('B'), 'C comes back beside B, not into the unrelated top group');
+  assert.ok(!T.groupOf(l, 'C').tabs.includes('A'));
+});
+
+test('F2: normalize never names a group after a group a seat still points at', () => {
+  const ids = ['A', 'B', 'C'];
+  const raw = v2(row([term, { type: 'group', tabs: ['A', 'B'] }], [0, 180]), {
+    hidden: ['C'], seat: { C: { group: 'g1', beside: 'B', side: 'center' } },
+  });
+  const l = T.normalize(raw, ids);
+  assert.notEqual(T.groupOf(l, 'A').id, 'g1', 'the unnamed group skips the name the seat holds');
+  assert.equal(l.seat.C.group, null, 'and the seat, naming no group of this tree, forgets it');
+});
+
+test('F2: dock never names a new group after one a seat points at', () => {
+  const ids = ['A', 'B', 'C'];
+  const l = T.normalize(v2(row([term, g('right', 'A', 'B')], [0, 180]), {
+    hidden: ['C'], seat: { C: { group: 'right', beside: 'B', side: 'center' } },
+  }), ids);
+  const next = T.dock(l, 'A', { edge: 'top' });
+  assert.equal(T.groupOf(next, 'A').id, 'g1');
+  const l2 = { ...l, seat: { C: { group: 'g1', beside: 'B', side: 'center' } } };    // hand-built: a seat naming a free name
+  assert.notEqual(T.groupOf(T.dock(l2, 'A', { edge: 'top' }), 'A').id, 'g1');
+});
+
+test('F5: a stored group named "term" is renamed, so the terminal and the group are told apart', () => {
+  const l = T.normalize(v2(row([term, g('term', 'git')], [0, 200]), { hidden: IDS.filter(id => id !== 'git') }), IDS);
+  const gr = T.groupOf(l, 'git');
+  assert.notEqual(gr.id, 'term');
+  // A drop on the group splits the group, never the terminal.
+  const next = T.dock(l, 'agents', { cell: gr.id, side: 'left' });
+  assert.equal(T.count(next, 'term'), 1);
+  assert.ok(next.root.kids.some(k => k.type === 'term'), 'the terminal is still a direct kid of the root');
+  assert.ok(T.groups(next).some(x => x.id === gr.id && x.tabs.includes('git')));
+});

@@ -118,6 +118,10 @@ function assertWellFormed(l) {
   });
   assert.strictEqual(new Set(l.hidden).size, l.hidden.length);
   for (const id of Object.keys(l.seat)) assert.ok(l.hidden.includes(id), `a seat for ${id}, which is not hidden`);
+  // PR #100 F2: a seat names a group that exists, never one that was destroyed (its name may have been reused).
+  const live = new Set(T.groups(l).map(gr => gr.id));
+  for (const [id, s] of Object.entries(l.seat)) assert.ok(s.group === null || live.has(s.group), `${id}'s seat names ${s.group}, which is not a group`);
+  assert.ok(!T.groups(l).some(gr => gr.id === 'term'), 'a group named like the terminal');
 }
 
 function run(layout, ops) {
