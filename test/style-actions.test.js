@@ -44,3 +44,28 @@ test('the "Random colours" button is drawn and sends reroll-look', () => {
     /getElementById\('style-reroll'\)[\s\S]{0,200}sendStyle\('colours', \{ action: 'reroll-look' \}\)/);
   assert.ok(sentActions().has('reroll-look'));
 });
+
+test('the "Match colours to this background" button is drawn, gated, and sends match-colours with only seeds (#34)', () => {
+  assert.match(RENDERER, /<button type="button" id="style-match"\$\{v\.canMatch \? '' : ' disabled'\}[^>]*>Match colours to this background<\/button>/);
+  assert.match(RENDERER,
+    /getElementById\('style-match'\)[\s\S]{0,400}sendStyle\('background', \{ action: 'match-colours', seeds \}\)/);
+  assert.ok(sentActions().has('match-colours'));
+  // the pixels never leave the page: only colourSeeds' hex list is sent
+  assert.match(RENDERER, /const seeds = colourSeeds\.seedsOf\(/);
+  assert.doesNotMatch(RENDERER, /getImageData[^;]*\bsendStyle/);
+});
+
+test('the Background section takes video files and says so (#34)', () => {
+  assert.match(RENDERER, /accept="image\/png,image\/jpeg,image\/webp,image\/gif,image\/svg\+xml,video\/webm,video\/mp4"/);
+  assert.match(RENDERER, /drop an image or a short video here/);
+  assert.match(RENDERER, /v\.note \? `<div class="style-note">/);
+});
+
+test('the background layer is drawn through bgMedia, and its play inputs come from the page and from main (#34)', () => {
+  assert.match(RENDERER, /bgMedia\.mediaFor\(/);
+  assert.match(RENDERER, /bgMedia\.applyPlayback\(/);
+  assert.match(RENDERER, /bgMedia\.unplayableNote\(/);
+  assert.match(RENDERER, /window\.harness\.playback\.onChange\(/);
+  assert.match(RENDERER, /prefers-reduced-motion: reduce/);
+  assert.match(RENDERER, /document\.addEventListener\('visibilitychange', syncBackgroundPlayback\)/);
+});

@@ -2795,16 +2795,106 @@ function flourish(milestone) {
   activeFlourish = { el, show, hide };
 }
 
-// `custom`: the project's own image rather than the generated art. Only a
-// custom image gets the darkness veil -- the generated SVG bakes its own dim.
-// `version` busts the image cache: a replaced background.png keeps its name.
-function applyBackground(filePath, { custom = false, version = '' } = {}) {
+// `custom`: the project's own picture rather than the generated art. Only a
+// custom one gets the darkness veil -- the generated SVG bakes its own dim.
+// `version` busts the cache: a replaced background.png keeps its name.
+// `kind` (backlog #34): 'video' draws a muted looping <video> inside #bg, under the
+// same veil; anything else is the CSS background image it always was.
+let bgVideoEl = null;       // the <video> in #bg, or null
+let failedBgUrl = null;     // a video the engine refused: not retried until the file changes
+
+// What the video's play rule is fed (app/bg-media-display.js shouldPlay). `visible` joins the
+// page's own visibility with main's hidden flag; the battery and the minimised flag come from main
+// only and stay null (unknown) until it has said.
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+const bgPlayback = { pageVisible: document.visibilityState === 'visible', hidden: null, minimised: null, onBattery: null };
+
+function backgroundPlaybackState() {
+  return {
+    visible: bgPlayback.pageVisible && bgPlayback.hidden !== true,
+    minimised: bgPlayback.minimised,
+    onBattery: bgPlayback.onBattery,
+    reducedMotion: reducedMotionQuery.matches,
+  };
+}
+
+function syncBackgroundPlayback() {
+  bgPlayback.pageVisible = document.visibilityState === 'visible';
+  if (bgVideoEl) bgMedia.applyPlayback(bgVideoEl, backgroundPlaybackState());
+}
+document.addEventListener('visibilitychange', syncBackgroundPlayback);
+reducedMotionQuery.addEventListener('change', syncBackgroundPlayback);
+if (window.harness && window.harness.playback) {
+  const takePlayback = (s) => {
+    if (!s || typeof s !== 'object') return;
+    bgPlayback.hidden = s.hidden === true ? true : s.hidden === false ? false : null;
+    bgPlayback.minimised = s.minimised === true ? true : s.minimised === false ? false : null;
+    bgPlayback.onBattery = s.onBattery === true ? true : s.onBattery === false ? false : null;
+    syncBackgroundPlayback();
+  };
+  window.harness.playback.onChange(takePlayback);
+  window.harness.playback.get().then(takePlayback).catch(() => { /* main has no answer: stays unknown */ });
+}
+
+// Release the decoder, not just the element: removing a <video> leaves its pipeline until GC.
+function removeBackgroundVideo() {
+  if (!bgVideoEl) return;
+  portraitMedia.unloadVideo(bgVideoEl);
+  bgVideoEl.remove();
+  bgVideoEl = null;
+}
+
+function showBackgroundVideo(url) {
+  if (bgVideoEl && bgVideoEl.getAttribute('src') === url) return;      // same file: keep its place in the loop
+  removeBackgroundVideo();
+  const bgEl = document.getElementById('bg');
+  const el = document.createElement('video');
+  el.className = 'bg-video';
+  el.muted = true;                     // never audio
+  el.loop = true;
+  el.setAttribute('playsinline', '');
+  el.preload = 'auto';
+  el.disablePictureInPicture = true;
+  el.addEventListener('loadeddata', syncBackgroundPlayback);
+  el.addEventListener('error', () => {
+    // Codec or corruption: say so quietly in the Style tab and show NO background -- never a
+    // black or frozen frame. The file stays; a different one is tried afresh.
+    if (el !== bgVideoEl) return;
+    const note = bgMedia.unplayableNote(el.error);
+    failedBgUrl = url;
+    clearBackgroundLayer();
+    styleState = reduceVideoError(styleState, note);
+    renderStylePanel();
+  });
+  bgVideoEl = el;
+  bgEl.prepend(el);
+  el.src = url;
+  syncBackgroundPlayback();
+}
+
+// No background at all: the theme's own colours show through, as before one was set.
+function clearBackgroundLayer() {
+  removeBackgroundVideo();
+  document.getElementById('bg').style.backgroundImage = '';
+  backgroundUrl = null;
+  document.body.classList.remove('has-bg', 'has-custom-bg');
+  if (lastTheme) applyTheme(lastTheme);
+}
+
+function applyBackground(filePath, { custom = false, version = '', kind = 'image' } = {}) {
   if (!filePath) return;
-  // encodeURI, then the two characters it leaves alone that a path can hold
-  // and a URL cannot: a project under "C:\a#b" must not lose half its path.
-  const encoded = encodeURI(String(filePath).replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
-  backgroundUrl = 'file:///' + encoded + (version ? '?v=' + encodeURIComponent(version) : '');
-  document.getElementById('bg').style.backgroundImage = `url("${backgroundUrl}")`;
+  const url = bgMedia.fileUrl(filePath, version);
+  const media = bgMedia.mediaFor({ kind, url });
+  if (media.tag === 'video' && url === failedBgUrl) return;     // already known not to play
+  failedBgUrl = null;
+  if (media.tag === 'video') {
+    document.getElementById('bg').style.backgroundImage = '';
+    showBackgroundVideo(media.attrs.src);
+  } else {
+    removeBackgroundVideo();
+    document.getElementById('bg').style.backgroundImage = `url("${media.url}")`;
+  }
+  backgroundUrl = url;
   document.body.classList.add('has-bg');
   document.body.classList.toggle('has-custom-bg', !!custom);
 
@@ -3261,11 +3351,36 @@ function applyStyleMessage(msg) {
   const look = (msg.style && msg.style.look) || msg.look || {};
   const source = (msg.style && msg.style.source) || msg.source;
   const setAt = (msg.style ? msg.style.setAt : msg.setAt) || '';
-  applyBackground(msg.background, { custom: source === 'override', version: setAt });
+  const kind = (msg.style ? msg.style.kind : msg.kind) === 'video' ? 'video' : 'image';
+  applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
   if (typeof look.darkness === 'number') {
     document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));
   }
   if (msg.theme) applyTheme(msg.theme);
+}
+
+// The picture's pixels, small: the image, or the video's CURRENT frame, drawn onto a 64x64
+// canvas. They are read here and reduced to a few hex colours by colourSeeds; only those colours
+// are ever sent anywhere (test/style-actions.test.js pins it).
+const SAMPLE_SIDE = 64;
+async function sampleBackgroundFrame() {
+  let source;
+  if (bgVideoEl) {
+    if (!(bgVideoEl.readyState >= 2 && bgVideoEl.videoWidth > 0)) throw new Error('the video has no frame yet');
+    source = bgVideoEl;
+  } else if (backgroundUrl) {
+    source = new Image();
+    source.src = backgroundUrl;
+    await source.decode();
+  } else {
+    throw new Error('there is no background to read');
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = SAMPLE_SIDE;
+  canvas.height = SAMPLE_SIDE;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(source, 0, 0, SAMPLE_SIDE, SAMPLE_SIDE);
+  return ctx.getImageData(0, 0, SAMPLE_SIDE, SAMPLE_SIDE).data;
 }
 
 // `ask` names the section asking; the host echoes it on the reply, so a
@@ -3327,14 +3442,17 @@ function renderStyleSection(section) {
     return (
       `<section class="style-section" data-section="background">${header}` +
       `<div class="style-current">${escapeHtml(v.description)}</div>` +
-      `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image here, or ` +
+      `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image or a short video here, or ` +
       `<label class="style-browse">choose a file<input type="file" id="style-bg-file" ` +
-      `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden></label></div>` +
+      `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,video/webm,video/mp4" hidden></label></div>` +
+      (v.note ? `<div class="style-note">${escapeHtml(v.note)}</div>` : '') +
       (v.isOverride
         ? `<span class="style-label">Darkness</span><div class="style-row">` +
           `<input type="range" id="style-dark" min="0" max="95" step="1" value="${dark === null ? 50 : dark}">` +
           `<span class="style-val" id="style-dark-val">${dark === null ? '—' : dark + '%'}</span></div>`
         : '') +
+      `<button type="button" id="style-match"${v.canMatch ? '' : ' disabled'} ` +
+      `title="A palette taken from this background's own colours, checked for contrast">Match colours to this background</button>` +
       `<button type="button" id="style-bg-reset"${v.isOverride ? '' : ' disabled'}>Reset to generated</button>` +
       (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
       `</section>`
@@ -3439,6 +3557,21 @@ function bindStyleSections() {
 
   const reroll = document.getElementById('style-reroll');
   if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
+
+  const match = document.getElementById('style-match');
+  if (match) {
+    match.addEventListener('click', async () => {
+      match.disabled = true;
+      try {
+        const seeds = colourSeeds.seedsOf(await sampleBackgroundFrame());
+        sendStyle('background', { action: 'match-colours', seeds });
+      } catch (err) {
+        styleState = reduceStyle(styleState, { type: 'style', ask: 'background',
+          error: `couldn't read this background's colours: ${err && err.message ? err.message : 'unknown reason'}` });
+        renderStylePanel();
+      }
+    });
+  }
 
   const resetBtn = document.getElementById('style-bg-reset');
   if (resetBtn) {

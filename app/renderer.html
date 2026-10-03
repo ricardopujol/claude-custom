@@ -69,6 +69,13 @@
       background-size: cover; background-position: center;
       pointer-events: none;
     }
+    /* A video background (backlog #34): the same layer, filled edge to edge. The darkness veil is
+       #bg::after, which comes later in paint order, so it sits OVER the video exactly as it does
+       over an image. */
+    #bg .bg-video {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; pointer-events: none;
+    }
     #app > * { position: relative; z-index: 1; }
 
     /* A project's OWN image is not pre-dimmed the way the generated art is, so
