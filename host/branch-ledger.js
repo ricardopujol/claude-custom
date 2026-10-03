@@ -112,7 +112,7 @@ function placeOf(content, cwd, places) {
  * With it, a line is credited to `rec.where` once a call has proven one (see the header).
  */
 function addLines(rec, text, projectRoot, places) {
-  const redirect = Array.isArray(places) && places.length > 0;
+  const redirect = Array.isArray(places);
   const parts = text.split('\n');
   parts.pop();
   for (const line of parts) {

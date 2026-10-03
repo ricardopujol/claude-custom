@@ -149,6 +149,34 @@ test('a line with no cwd proves nothing (there is no own folder to exclude); jun
   assert.strictEqual(r.where, null);
 });
 
+test('several calls on one line: the LAST one that proves a worktree is where the agent is', () => {
+  const r = emptyRecord();
+  addLines(r, lines(sub('m1', 3, [read(path.join(FEAT, 'a.py')), read(path.join(FIX, 'b.py')), read(path.join(DEV, 'c.py'))])), ROOT, PLACES);
+  assert.deepStrictEqual(spendBy(r), { 'fix/b': 3 });
+});
+
+test('only a tool_use block is a call: a block of another type that carries a name and an input moves nothing', () => {
+  const r = emptyRecord();
+  addLines(r, lines(sub('m1', 3, [{ type: 'tool_result', name: 'Read', input: { file_path: path.join(FEAT, 'a.py') } },
+    { type: 'text', text: 'x', name: 'Bash', input: { command: `cd ${FEAT}` } }])), ROOT, PLACES);
+  assert.deepStrictEqual(spendBy(r), { develop: 3 });
+});
+
+test('a record that already has a place, read by a caller that passes no places, is credited by its own lines', () => {
+  const r = emptyRecord();
+  addLines(r, lines(sub('m1', 1, [read(path.join(FEAT, 'a.py'))])), ROOT, PLACES);
+  addLines(r, lines(sub('m2', 4)), ROOT);
+  assert.deepStrictEqual(spendBy(r), { 'feat/a': 1, develop: 4 });
+});
+
+test('a `where` that is not a place (a ledger file is somebody else\'s text) is no place', () => {
+  for (const where of ['feat/a', { root: FEAT }, { branch: 'feat/a' }, { root: 5, branch: 'feat/a' }, { root: FEAT, branch: '' }, []]) {
+    const r = { ...emptyRecord(), where };
+    addLines(r, lines(sub('m1', 2)), ROOT, PLACES);
+    assert.deepStrictEqual(spendBy(r), { develop: 2 }, JSON.stringify(where));
+  }
+});
+
 test('a branch called __proto__ is data here too', () => {
   const r = emptyRecord();
   addLines(r, lines(sub('m1', 3, [read(path.join(FEAT, 'a.py'))])), ROOT, [{ root: DEV, branch: 'develop' }, { root: FEAT, branch: '__proto__' }]);
