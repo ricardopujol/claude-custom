@@ -3610,6 +3610,10 @@ function bindStyleSections() {
         styleState = reduceStyle(styleState, { type: 'style', ask: 'background',
           error: `couldn't read this background's colours: ${err && err.message ? err.message : 'unknown reason'}` });
         renderStylePanel();
+      } finally {
+        // sendStyle swallows a closed socket, so no reply may ever come to redraw the button: never
+        // leave it disabled for good (Miguel M3, PR #91). A reply that does come redraws it anyway.
+        match.disabled = false;
       }
     });
   }

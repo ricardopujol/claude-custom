@@ -55,6 +55,13 @@ test('the "Match colours to this background" button is drawn, gated, and sends m
   assert.doesNotMatch(RENDERER, /getImageData[^;]*\bsendStyle/);
 });
 
+test('M3: the Match button is re-enabled whatever happens to the request, even with no host to answer', () => {
+  const click = RENDERER.slice(RENDERER.indexOf("getElementById('style-match')"), RENDERER.indexOf("getElementById('style-bg-reset')"));
+  assert.match(click, /match\.disabled = true;/);
+  assert.match(click, /\} finally \{[\s\S]*?match\.disabled = false;[\s\S]*?\}/);
+  assert.match(RENDERER, /function sendStyle\(section, payload\) \{\s*try \{ ws\.send\([^\n]*\} catch \{/, 'sendStyle swallows a dead socket -- which is why the finally is needed');
+});
+
 test('D5: Match colours says which background it sampled, taken before the frame is read', () => {
   const click = RENDERER.slice(RENDERER.indexOf("getElementById('style-match')"));
   const taken = click.indexOf('const setAt = backgroundSetAt;');
