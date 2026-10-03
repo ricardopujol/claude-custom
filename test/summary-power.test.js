@@ -8,6 +8,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
+const path = require('path');
+const { POWERSHELL } = require('../host/proc-start');
 const { createPowerProbe, parseBatteryStatus, TTL_MS } = require('../host/summary-power');
 
 test('Win32_Battery.BatteryStatus: 1, 4 and 5 are discharging (on battery); the rest are on mains', () => {
@@ -37,6 +39,11 @@ test('on Windows it asks PowerShell for the battery status, with a timeout, and 
   assert.strictEqual(await p.onBattery(), true);
   assert.strictEqual(calls.length, 1);
   assert.match(calls[0].file, /powershell/i);
+  // Miguel B1 (PR #105): a bare powershell.exe is looked up in the process cwd first, and a host's cwd is a project
+  // folder: it is run by the absolute path host/proc-start.js already uses (PR #71 G1).
+  assert.ok(path.isAbsolute(calls[0].file), calls[0].file);
+  assert.strictEqual(calls[0].file, POWERSHELL);
+  assert.match(calls[0].file, /System32.WindowsPowerShell.v1\.0.powershell\.exe$/i);
   assert.ok(calls[0].args.join(' ').includes('Win32_Battery'));
   assert.ok(calls[0].args.includes('-NoProfile'));
   assert.ok(Number.isFinite(calls[0].opts.timeout) && calls[0].opts.timeout > 0);

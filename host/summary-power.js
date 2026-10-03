@@ -13,6 +13,7 @@
  */
 
 const { execFile } = require('child_process');
+const { POWERSHELL } = require('./proc-start');
 
 const TTL_MS = 60_000;
 const TIMEOUT_MS = 8_000;
@@ -39,7 +40,7 @@ function createPowerProbe({ platform = process.platform, run = runFile, now = Da
 
   async function ask() {
     try {
-      const out = await run('powershell.exe', [
+      const out = await run(POWERSHELL, [
         '-NoProfile', '-NonInteractive', '-Command',
         '(Get-CimInstance -ClassName Win32_Battery | Select-Object -First 1 -ExpandProperty BatteryStatus)',
       ], { timeout: TIMEOUT_MS, windowsHide: true });
