@@ -46,15 +46,15 @@ test('the edges of the bands: the top band ends at 187, the left band at 870', (
   assert.deepEqual(at(900, 26).target, { cell: 'right', side: 'top' });
 });
 
-test('every region of the terminal: four sides, and no zone at all in the middle', () => {
+test('every region of the terminal: four sides, and the middle floats the panel (D2)', () => {
   for (const [x, y, target] of [
     [400, 50, { cell: 'term', side: 'top' }],
     [400, 500, { cell: 'term', side: 'bottom' }],
     [100, 300, { cell: 'term', side: 'left' }],
     [700, 300, { cell: 'term', side: 'right' }],
-    [400, 300, null],                                          // D2 makes this the float zone
+    [400, 300, { float: true }],
   ]) assert.deepEqual(at(x, y).target, target, `${x},${y}`);
-  assert.equal(hotOf(at(400, 300)).length, 0);
+  assert.equal(hotOf(at(400, 300)).length, 1);
 });
 
 test('the terminal has no tab bar: its top band starts at its top edge', () => {
@@ -97,11 +97,11 @@ test('over a group the rim and that group\'s six zones are listed, and nothing o
   ]);
 });
 
-test('over the terminal: the rim and its four sides, no middle', () => {
+test('over the terminal: the rim, its four sides and the float zone in the middle', () => {
   const r = at(400, 300);
-  assert.deepEqual(r.zones.slice(4).map(z => z.target.side), ['top', 'bottom', 'left', 'right']);
+  assert.deepEqual(r.zones.slice(4).map(z => z.target.side || 'float'), ['top', 'bottom', 'left', 'right', 'float']);
   assert.deepEqual(r.zones.slice(4).map(z => z.rect), [
-    R(0, 0, 815, 168), R(0, 432, 815, 168), R(0, 168, 228, 264), R(587, 168, 228, 264),
+    R(0, 0, 815, 168), R(0, 432, 815, 168), R(0, 168, 228, 264), R(587, 168, 228, 264), R(228, 168, 359, 264),
   ]);
 });
 
@@ -148,12 +148,57 @@ test('zones never overlap each other, except that the rim lies over a cell\'s ow
   }
 });
 
-test('a cell\'s zones tile the cell exactly (a group) or all but its middle (the terminal)', () => {
+test('a cell\'s zones tile the cell exactly, the terminal\'s float zone included', () => {
   const sum = zs => zs.reduce((s, z) => s + area(z.rect), 0);
   const group = at(900, 300).zones.filter(z => !z.target.edge);
   assert.equal(sum(group), 180 * 600);
   const term = at(400, 300).zones.filter(z => !z.target.edge);
-  assert.equal(sum(term), 815 * 600 - 359 * 264);                  // less the middle: (815 - 2 x 228) by (600 - 2 x 168)
+  assert.equal(sum(term), 815 * 600);
+});
+
+// --- floats (D2) ------------------------------------------------------------------
+
+const FLOATS = [
+  ...BOXES,
+  { kind: 'float', id: 'f1', tabs: ['git'], active: 'git', rect: R(300, 100, 300, 200) },
+  { kind: 'float', id: 'f2', tabs: ['fog'], active: 'fog', rect: R(450, 150, 300, 200) },     // drawn after f1: on top where they overlap
+];
+
+test('over a float: the whole float is one zone, "join as a tab"; nothing of the cells under it', () => {
+  const r = at(350, 120, FLOATS);
+  assert.deepEqual(r.target, { cell: 'f1', side: 'center' });
+  assert.equal(r.zones.length, 4 + 1);
+  assert.deepEqual(r.zones[4].rect, R(300, 100, 300, 200));
+  assert.equal(hotOf(r).length, 1);
+});
+
+test('the topmost float wins where two overlap (the last drawn)', () => {
+  assert.deepEqual(at(500, 200, FLOATS).target, { cell: 'f2', side: 'center' });
+  assert.deepEqual(at(320, 200, FLOATS).target, { cell: 'f1', side: 'center' });
+});
+
+test('a float hides the cell under it, the window\'s rim still wins over it', () => {
+  const edge = [...BOXES, { kind: 'float', id: 'f', tabs: ['git'], active: 'git', rect: R(0, 0, 200, 200) }];
+  assert.deepEqual(at(100, 100, edge).target, { cell: 'f', side: 'center' }, 'over the terminal\'s top-left band, the float');
+  assert.deepEqual(at(100, 5, edge).target, { edge: 'top' }, 'the rim is first in the list');
+});
+
+test('the float being dragged by a tab is not a target: what is under it decides', () => {
+  assert.deepEqual(at(500, 200, FLOATS, VP, { exclude: 'f2' }).target, { cell: 'f1', side: 'center' });
+  assert.deepEqual(at(500, 280, FLOATS, VP, { exclude: 'f1' }).target, { cell: 'f2', side: 'center' });
+  assert.deepEqual(at(400, 250, FLOATS, VP, { exclude: 'f2' }).target, { cell: 'f1', side: 'center' });
+  const r = at(350, 120, FLOATS, VP, { exclude: 'f1' });
+  assert.deepEqual(r.target, { cell: 'term', side: 'top' }, 'the terminal under f1');
+  assert.deepEqual(at(350, 120, FLOATS, VP, { exclude: 7 }).target, { cell: 'f1', side: 'center' }, 'junk excludes nothing');
+});
+
+test('a float has no zones of its own beyond the one: not a tab bar, not bands', () => {
+  for (const [x, y] of [[310, 105], [445, 250], [320, 295]]) assert.deepEqual(at(x, y, FLOATS).target, { cell: 'f1', side: 'center' }, `${x},${y}`);
+});
+
+test('a float box with no rectangle is ignored, and the terminal\'s float zone is not offered over a float', () => {
+  assert.equal(D.zonesAt([{ kind: 'float', id: 'x' }, ...BOXES], VP, { x: 400, y: 300 }).target.float, true);
+  assert.deepEqual(at(400, 300, [...BOXES, { kind: 'float', id: 'g', tabs: ['a'], active: 'a', rect: R(380, 280, 100, 100) }]).target, { cell: 'g', side: 'center' });
 });
 
 test('the tab bar height is a parameter, and a bar taller than the group takes the whole group', () => {
