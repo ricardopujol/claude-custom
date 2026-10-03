@@ -224,7 +224,7 @@ function readAny(raw, ids) {
 
 /** A window's L1 selection as a tree selection: group ids are the zone names, so it maps straight across. */
 function selectionFromV1(raw) {
-  return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false };
+  return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false, floatOrder: [] };
 }
 
 // --- docking, hiding, showing -------------------------------------------------
@@ -501,27 +501,42 @@ function setSplitSizes(layout, path, sizes) {
 // never switches another (L1 S3a). A selection is { active: { [groupId]: moduleId }, foldAll }.
 
 /** A selection from anything stored. */
+const MAX_FLOAT_ORDER = 32;                           // a damaged file can't grow the list without end
+
+// A selection also holds which float is on top, bottom to top: pressing a float raises it in THIS window only,
+// so a click never writes the shared layout. Ids of floats that are gone stay until pushed out; `fit` ignores them.
 function cleanSelection(raw) {
   const r = isObject(raw) ? raw : {};
-  return { active: stringMap(r.active), foldAll: r.foldAll === true };
+  const order = (Array.isArray(r.floatOrder) ? r.floatOrder : []).filter(x => typeof x === 'string' && x !== '');
+  // Unique, keeping each id's LAST place (that is where it was last raised).
+  const floatOrder = order.filter((x, i) => order.lastIndexOf(x) === i).slice(-MAX_FLOAT_ORDER);
+  return { active: stringMap(r.active), foldAll: r.foldAll === true, floatOrder };
 }
 
-/** A tab click: that module shows in its group, and Ctrl+B's fold is undone. */
+/** Put a float on top of the others, in this window's selection. */
+function raiseFloat(sel, floatId) {
+  const s = cleanSelection(sel);
+  if (typeof floatId !== 'string' || floatId === '' || s.floatOrder[s.floatOrder.length - 1] === floatId) return s;
+  return cleanSelection({ ...s, floatOrder: [...s.floatOrder, floatId] });
+}
+
+/** A tab click: that module shows in its group (a float comes to the top), and Ctrl+B's fold is undone. */
 function selectTab(sel, layout, id) {
   const s = cleanSelection(sel);
-  const gr = groupOf(layout, id);
+  const gr = groupOf(layout, id) || floatOf(layout, id);
   if (!gr) return s;
-  return { active: { ...s.active, [gr.id]: id }, foldAll: false };
+  const picked = { ...s, active: { ...s.active, [gr.id]: id }, foldAll: false };
+  return layout.floats.includes(gr) ? raiseFloat(picked, gr.id) : picked;
 }
 
 function toggleFoldAll(sel) {
   const s = cleanSelection(sel);
-  return { active: s.active, foldAll: !s.foldAll };
+  return { ...s, foldAll: !s.foldAll };
 }
 
 /** What a group shows in this window: its choice if the group still holds it, else its first tab. */
 function activeOf(layout, sel, group) {
-  const gr = typeof group === 'string' ? groups(layout).find(x => x.id === group) : group;
+  const gr = typeof group === 'string' ? allGroups(layout).find(x => x.id === group) : group;
   if (!gr) return null;
   const want = cleanSelection(sel).active[gr.id];
   return typeof want === 'string' && gr.tabs.includes(want) ? want : gr.tabs[0];
@@ -668,6 +683,22 @@ function place(n, rect, path, ctx) {
   });
 }
 
+// Floats come after the tree's boxes, bottom to top: the ones never raised in this window (in layout order), then
+// the raised ones in the order they were raised. Each is drawn whole inside the area, shrunk if the area is smaller
+// than it; they never fold to rails and never take room from the terminal. Ctrl+B hides them (fit isn't asked).
+function placeFloats(layout, ctx, area) {
+  const rank = id => ctx.sel.floatOrder.indexOf(id);
+  const ordered = layout.floats.map((f, i) => ({ f, i })).sort((a, b) => (rank(a.f.id) - rank(b.f.id)) || a.i - b.i);
+  for (const { f } of ordered) {
+    const width = Math.min(f.w, area.width);
+    const height = Math.min(f.h, area.height);
+    ctx.boxes.push({
+      kind: 'float', id: f.id, tabs: [...f.tabs], active: activeOf(layout, ctx.sel, f),
+      rect: { x: Math.max(0, Math.min(f.x, area.width - width)), y: Math.max(0, Math.min(f.y, area.height - height)), width, height },
+    });
+  }
+}
+
 /**
  * @param layout    a normalized layout
  * @param selection this window's choices (anything: it is cleaned)
@@ -678,14 +709,16 @@ function place(n, rect, path, ctx) {
 function fit(layout, selection, viewport) {
   const vp = isObject(viewport) ? viewport : {};
   const ctx = { layout, sel: cleanSelection(selection), boxes: [], splits: [] };
-  place(layout.root, { x: 0, y: 0, width: dim(vp.width), height: dim(vp.height) }, [], ctx);
+  const area = { width: dim(vp.width), height: dim(vp.height) };
+  place(layout.root, { x: 0, y: 0, ...area }, [], ctx);
+  if (!ctx.sel.foldAll) placeFloats(layout, ctx, area);
   return { boxes: ctx.boxes, splits: ctx.splits };
 }
 
 const API = {
   VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, hide, show, minSize, setSplitSizes,
-  cleanSelection, selectTab, toggleFoldAll, activeOf, fit,
+  cleanSelection, selectTab, raiseFloat, toggleFoldAll, activeOf, fit,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.

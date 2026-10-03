@@ -425,30 +425,30 @@ test('setSplitSizes never changes its input', () => {
 // --- selection (belongs to the window, not to the layout) -----------------------
 
 test('cleanSelection reads anything: only string-to-string entries and a real true survive', () => {
-  assert.deepEqual(T.cleanSelection(null), { active: {}, foldAll: false });
-  assert.deepEqual(T.cleanSelection('x'), { active: {}, foldAll: false });
-  assert.deepEqual(T.cleanSelection({ active: { a: 'agents', b: 7, c: null, d: {} }, foldAll: 'yes' }), { active: { a: 'agents' }, foldAll: false });
-  assert.deepEqual(T.cleanSelection({ active: [1, 2], foldAll: true }), { active: {}, foldAll: true });
+  assert.deepEqual(T.cleanSelection(null), { active: {}, foldAll: false, floatOrder: [] });
+  assert.deepEqual(T.cleanSelection('x'), { active: {}, foldAll: false, floatOrder: [] });
+  assert.deepEqual(T.cleanSelection({ active: { a: 'agents', b: 7, c: null, d: {} }, foldAll: 'yes' }), { active: { a: 'agents' }, foldAll: false, floatOrder: [] });
+  assert.deepEqual(T.cleanSelection({ active: [1, 2], foldAll: true }), { active: {}, foldAll: true, floatOrder: [] });
   assert.deepEqual(T.cleanSelection({ active: { a: 'agents' }, foldAll: 1 }).foldAll, false);
 });
 
 test('selectTab shows that module in its group and unfolds everything', () => {
   const sel = T.selectTab({ active: { c: 'git' }, foldAll: true }, example(), 'vault');
-  assert.deepEqual(sel, { active: { c: 'git', b: 'vault' }, foldAll: false });
+  assert.deepEqual(sel, { active: { c: 'git', b: 'vault' }, foldAll: false, floatOrder: [] });
 });
 
 test('selectTab for a hidden or unknown module changes nothing but still returns a clean selection', () => {
   const l = example();
-  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'models'), { active: { a: 'agents' }, foldAll: true });
-  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'nope'), { active: { a: 'agents' }, foldAll: true });
-  assert.deepEqual(T.selectTab(7, l, 'nope'), { active: {}, foldAll: false });
+  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'models'), { active: { a: 'agents' }, foldAll: true, floatOrder: [] });
+  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'nope'), { active: { a: 'agents' }, foldAll: true, floatOrder: [] });
+  assert.deepEqual(T.selectTab(7, l, 'nope'), { active: {}, foldAll: false, floatOrder: [] });
 });
 
 test('toggleFoldAll flips Ctrl+B and keeps what each group shows', () => {
-  const sel = { active: { a: 'agents' }, foldAll: false };
-  assert.deepEqual(T.toggleFoldAll(sel), { active: { a: 'agents' }, foldAll: true });
+  const sel = { active: { a: 'agents' }, foldAll: false, floatOrder: [] };
+  assert.deepEqual(T.toggleFoldAll(sel), { active: { a: 'agents' }, foldAll: true, floatOrder: [] });
   assert.deepEqual(T.toggleFoldAll(T.toggleFoldAll(sel)), sel);
-  assert.deepEqual(T.toggleFoldAll(null), { active: {}, foldAll: true });
+  assert.deepEqual(T.toggleFoldAll(null), { active: {}, foldAll: true, floatOrder: [] });
 });
 
 test('activeOf: the window\'s choice if the group still holds it, else the group\'s first tab', () => {
@@ -710,9 +710,9 @@ test('readAny: version 2 normalizes, an L1 shape migrates, anything else is the 
 
 test('selectionFromV1: a window\'s L1 choices map straight across (group ids are the zone names)', () => {
   const sel = T.selectionFromV1({ active: { right: 'vault', left: null, top: 7, bottom: 'git' } });
-  assert.deepEqual(sel, { active: { right: 'vault', bottom: 'git' }, foldAll: false });
+  assert.deepEqual(sel, { active: { right: 'vault', bottom: 'git' }, foldAll: false, floatOrder: [] });
   for (const junk of [null, 7, {}, { active: 5 }]) {
-    assert.deepEqual(T.selectionFromV1(junk), { active: {}, foldAll: false });
+    assert.deepEqual(T.selectionFromV1(junk), { active: {}, foldAll: false, floatOrder: [] });
   }
 });
 

@@ -294,6 +294,95 @@ test('hide and show never change their input with floats around', () => {
   T.show(T.hide(l, 'git'), 'git');
 });
 
+// --- selection: which tab a float shows, and which float is on top (per window) ---------
+
+const NO_SEL = { active: {}, foldAll: false, floatOrder: [] };
+
+test('cleanSelection keeps a floatOrder of unique strings and nothing else', () => {
+  assert.deepEqual(T.cleanSelection(null), NO_SEL);
+  assert.deepEqual(T.cleanSelection({ floatOrder: ['f', 'g', 'f', 7, null, ''] }).floatOrder, ['g', 'f']);
+  assert.deepEqual(T.cleanSelection({ floatOrder: 'f' }).floatOrder, []);
+  assert.deepEqual(T.cleanSelection({ floatOrder: { 0: 'f' } }).floatOrder, []);
+  assert.equal(T.cleanSelection({ floatOrder: Array.from({ length: 500 }, (_, i) => `g${i}`) }).floatOrder.length, 32, 'a damaged file can\'t grow it without end');
+});
+
+test('raiseFloat puts a float last (on top); raising the top one changes nothing', () => {
+  const s = T.raiseFloat(T.raiseFloat(NO_SEL, 'f'), 'g');
+  assert.deepEqual(s.floatOrder, ['f', 'g']);
+  assert.deepEqual(T.raiseFloat(s, 'f').floatOrder, ['g', 'f']);
+  assert.deepEqual(T.raiseFloat(s, 'g'), s);
+  assert.deepEqual(T.raiseFloat(s, 7), s, 'not an id: nothing');
+  assert.deepEqual(T.raiseFloat(null, 'f'), { ...NO_SEL, floatOrder: ['f'] });
+});
+
+test('selectTab on a float\'s module shows it in its float and raises that float, in this window only', () => {
+  const two = T.dock(base(), 'vault', { cell: 'f', side: 'center' });
+  const s = T.selectTab({ active: { a: 'agents' }, foldAll: true, floatOrder: ['f', 'other'] }, two, 'vault');
+  assert.deepEqual(s, { active: { a: 'agents', f: 'vault' }, foldAll: false, floatOrder: ['other', 'f'] });
+});
+
+test('activeOf reads a float: its choice if it still holds it, else its first tab', () => {
+  const two = T.dock(base(), 'vault', { cell: 'f', side: 'center' });
+  assert.equal(T.activeOf(two, { active: { f: 'vault' } }, 'f'), 'vault');
+  assert.equal(T.activeOf(two, { active: { f: 'models' } }, 'f'), 'git');
+  assert.equal(T.activeOf(two, NO_SEL, 'f'), 'git');
+});
+
+// --- fit -------------------------------------------------------------------------
+
+const floatBoxes = f => f.boxes.filter(b => b.kind === 'float');
+const termRect = f => f.boxes.find(b => b.kind === 'term').rect;
+
+test('fit draws a float after the tree, with its tabs, shown tab and rectangle', () => {
+  const two = T.dock(base(), 'vault', { cell: 'f', side: 'center' });
+  const f = T.fit(two, { active: { f: 'vault' }, foldAll: false }, { width: 1000, height: 700 });
+  const last = f.boxes[f.boxes.length - 1];
+  assert.deepEqual(last, { kind: 'float', id: 'f', tabs: ['git', 'vault'], active: 'vault', rect: { x: 10, y: 20, width: 300, height: 200 } });
+  assert.equal(floatBoxes(f).length, 1);
+});
+
+test('floats are drawn bottom to top: those never raised first, then floatOrder', () => {
+  let l = base();
+  l = T.dock(l, 'agents', { float: { x: 50, y: 50 } });
+  l = T.dock(l, 'fog', { float: { x: 90, y: 90 } });
+  const [f1, f2, f3] = l.floats.map(f => f.id);
+  const draw = sel => floatBoxes(T.fit(l, sel, { width: 1000, height: 700 })).map(b => b.id);
+  assert.deepEqual(draw(NO_SEL), [f1, f2, f3]);
+  assert.deepEqual(draw({ ...NO_SEL, floatOrder: [f1] }), [f2, f3, f1]);
+  assert.deepEqual(draw({ ...NO_SEL, floatOrder: ['gone', f2, f1] }), [f3, f2, f1]);
+});
+
+test('a float is clamped whole inside the area, and shrunk when the area is smaller than it', () => {
+  const l = T.moveFloat(base(), 'f', { x: 900, y: 600 });                        // 300 x 200 at 900, 600
+  const at = (w, h) => floatBoxes(T.fit(l, NO_SEL, { width: w, height: h }))[0].rect;
+  assert.deepEqual(at(1000, 700), { x: 700, y: 500, width: 300, height: 200 });
+  assert.deepEqual(at(1500, 900), { x: 900, y: 600, width: 300, height: 200 }, 'a wider window gives the position back');
+  assert.deepEqual(at(250, 150), { x: 0, y: 0, width: 250, height: 150 });
+  assert.deepEqual(at(0, 0), { x: 0, y: 0, width: 0, height: 0 });
+});
+
+test('floats never change the terminal\'s rectangle or any group\'s', () => {
+  const withFloat = base();
+  const plain = T.hide(withFloat, 'git');                                         // the same tree, nothing floating
+  assert.deepEqual(plain.floats, []);
+  const vp = { width: 1000, height: 700 };
+  const treeOf = f => f.boxes.filter(b => b.kind !== 'float');
+  assert.deepEqual(treeOf(T.fit(withFloat, NO_SEL, vp)), treeOf(T.fit(plain, NO_SEL, vp)));
+  assert.deepEqual(termRect(T.fit(withFloat, NO_SEL, vp)), termRect(T.fit(plain, NO_SEL, vp)));
+});
+
+test('Ctrl+B (foldAll) hides every float; unfolding brings them back', () => {
+  const l = base();
+  assert.equal(floatBoxes(T.fit(l, { ...NO_SEL, foldAll: true }, { width: 1000, height: 700 })).length, 0);
+  assert.equal(floatBoxes(T.fit(l, NO_SEL, { width: 1000, height: 700 })).length, 1);
+});
+
+test('fit with floats never changes the layout or the selection', () => {
+  const l = deepFreeze(base());
+  const sel = deepFreeze({ active: { f: 'git' }, foldAll: false, floatOrder: ['f'] });
+  T.fit(l, sel, { width: 300, height: 300 });
+});
+
 // --- moveFloat, resizeFloat ------------------------------------------------------
 
 test('moveFloat sets the position, rounded and never negative, and keeps the size', () => {
