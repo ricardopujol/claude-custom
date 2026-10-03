@@ -339,6 +339,7 @@ function editorHtml(v) {
   if (!e) return '';
   return `<div class="wand-editor" data-no-card-click>` +
     `<div class="wand-ed-title">${e.isNew ? 'New favourite' : 'Edit favourite'}</div>` +
+    (v.error ? `<div class="wand-error" role="alert">${esc(v.error)}</div>` : '') +
     `<label class="wand-ed-row">Emoji <input type="text" class="wand-ed-emoji" data-wand-field="emoji" value="${esc(e.emoji)}" maxlength="16" size="4" autocomplete="off" spellcheck="false"></label>` +
     `<div class="wand-emoji-pick">${e.emojiChoices.map(x =>
       `<button type="button" class="wand-pick" data-wand-act="pick-emoji" data-wand-emoji="${esc(x)}" aria-label="${esc(x)}">${esc(x)}</button>`).join('')}</div>` +
@@ -367,7 +368,7 @@ function html(v) {
       `</div>`
     : '';
   return `<div class="wand">${head}${lines}${grid}${editorHtml(v)}` +
-    (v.error ? `<div class="wand-error" role="alert">${esc(v.error)}</div>` : '') +
+    (v.error && !v.editor ? `<div class="wand-error" role="alert">${esc(v.error)}</div>` : '') +
     (v.status ? `<div class="wand-status" role="status">${esc(v.status)}</div>` : '') +
     `</div>`;
 }

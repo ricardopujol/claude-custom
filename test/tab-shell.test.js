@@ -2158,3 +2158,8 @@ test('the probe may drive the background view actions, by name only (#34)', () =
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['bgState', 'bgStyle', 'bgMatch']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
+
+test('the probe may read and operate the wand, by name only (#51)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});

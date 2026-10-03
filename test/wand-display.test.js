@@ -374,6 +374,14 @@ test('html: the error and the status line are drawn in their own roles', () => {
   assert.match(W.html(W.view(W.typed(loaded(), 'f1', { ok: true }))), /role="status"[^>]*>[^<]*typed, press Enter/);
 });
 
+test('html: with the editor open the refusal sits at its TOP, once: a reason below a tall editor is out of sight', () => {
+  const s = W.reduce(W.ask(W.openEditor(W.toggleEdit(loaded()), null)), { type: 'wand', ok: false, reason: 'Pick one emoji.', ...wandMsg() });
+  const html = W.html(W.view(s));
+  assert.strictEqual((html.match(/role="alert"/g) || []).length, 1);
+  assert.ok(html.indexOf('role="alert"') < html.indexOf('data-wand-field="emoji"'), 'the alert comes before the fields');
+  assert.ok(html.indexOf('role="alert"') > html.indexOf('wand-editor'), 'and inside the editor');
+});
+
 test('clickAction: a dataset becomes an action; junk becomes null', () => {
   assert.deepStrictEqual(W.clickAction({ wandAct: 'toggle-edit' }), { kind: 'toggle-edit' });
   assert.deepStrictEqual(W.clickAction({ wandAct: 'press', wandId: 'f1' }), { kind: 'press', id: 'f1' });

@@ -1255,6 +1255,63 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         send(JSON.stringify({ type: 'input', data: a.data }));
         return JSON.stringify({ ok: true });
       }
+      // backlog #51 (verify/probe-wand.js): read the wand and operate its controls as a pointer would.
+      case 'wandState': {
+        const root = document.getElementById('wand-root');
+        const q = (s) => root.querySelector(s);
+        const ed = q('.wand-editor');
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.wandDisplay === 'object' && typeof window.wandDisplay.view === 'function',
+          shown: document.querySelector('.panel[data-panel="wand"]').classList.contains('on'),
+          text: root.textContent,
+          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => ({ id: b.dataset.wandId, emoji: b.textContent,
+            label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
+            title: b.title, draggable: b.draggable })),
+          deletes: root.querySelectorAll('.wand-x').length,
+          add: !!q('[data-wand-act="add"]'),
+          edit: !!q('.wand-edit.on'),
+          notes: [...root.querySelectorAll('.wand-note')].map(n => n.textContent),
+          status: (q('.wand-status') || {}).textContent || '',
+          error: (q('.wand-error') || {}).textContent || '',
+          editor: ed ? { emoji: q('[data-wand-field="emoji"]').value, picked: (q('.wand-picked') || {}).textContent || '',
+            query: q('[data-wand-field="query"]').value, args: q('[data-wand-field="args"]').value,
+            listed: [...root.querySelectorAll('.wand-skill')].map(b => b.dataset.wandSkill),
+            saveDisabled: !!(q('[data-wand-act="save"]') || {}).disabled } : null,
+          rect: rectOf(root),
+        });
+      }
+      case 'wandClick': {
+        const btn = [...document.querySelectorAll('#wand-root button[data-wand-act]')].find(b => b.dataset.wandAct === a.act
+          && (a.id === undefined || b.dataset.wandId === a.id) && (a.skill === undefined || b.dataset.wandSkill === a.skill)
+          && (a.emoji === undefined || b.dataset.wandEmoji === a.emoji));
+        if (!btn) return JSON.stringify({ ok: false, error: 'no wand control ' + JSON.stringify(a) });
+        const times = Number.isInteger(a.times) && a.times > 1 && a.times <= 3 ? a.times : 1;
+        for (let i = 0; i < times; i++) btn.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'wandSetField': {
+        const el = document.querySelector('#wand-root [data-wand-field="' + String(a.field) + '"]');
+        if (!el) return JSON.stringify({ ok: false, error: 'no editor field ' + a.field });
+        el.focus();
+        el.value = String(a.value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return JSON.stringify({ ok: true });
+      }
+      // a real drag inside the panel: from one favourite onto another's slot
+      case 'wandDrag': {
+        const root = document.getElementById('wand-root');
+        const src = [...root.querySelectorAll('.wand-btn[data-wand-id]')].find(b => b.dataset.wandId === a.from);
+        const cell = [...root.querySelectorAll('[data-wand-cell]')].find(c => c.dataset.wandCell === a.to);
+        if (!src || !cell) return JSON.stringify({ ok: false, error: 'no such favourite to drag' });
+        const dt = new DataTransfer();
+        const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+        fire(src, 'dragstart');
+        fire(cell, 'dragover');
+        const overlay = (document.getElementById('app') || document.body).classList.contains('dropping');
+        fire(cell, 'drop');
+        return JSON.stringify({ ok: true, fileDropOverlayShown: overlay });
+      }
       // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
       // dragged button is gone and no dragend will ever come; the drag must
       // already be over when the drop returns.

@@ -95,3 +95,9 @@ test('typing in the search box updates only the skill list, so the box keeps its
   assert.match(WAND, /wand-skill-list/);
   assert.match(WAND, /wandDisplay\.skillListHtml\(/);
 });
+
+test('the probe page answers every wand action the shell lets through', () => {
+  for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) {
+    assert.ok(RAW.includes(`case '${a}':`), `renderer.js must answer ${a}`);
+  }
+});

@@ -928,10 +928,11 @@
       color: var(--dim); border: 1px solid transparent; border-radius: 4px; }
     .wand-edit:hover { color: var(--text); border-color: var(--border); }
     .wand-edit.on { color: var(--accent); border-color: var(--accent); }
-    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 8px; }
+    /* padding: the ✕ of an edit-mode cell hangs 6px outside it, and the panel clips what overflows */
+    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
     .wand-cell { position: relative; display: block; }
     .wand-btn { width: 100%; aspect-ratio: 1; padding: 0; display: flex; align-items: center; justify-content: center;
-      font-size: 22px; line-height: 1; cursor: pointer; background: var(--panel); color: var(--text);
+      font-size: 18px; line-height: 1; cursor: pointer; background: var(--panel); color: var(--text);
       border: 1px solid var(--border); border-radius: 8px; transition: border-color .12s, background .12s; }
     .wand-btn:hover { border-color: var(--accent); }
     .wand-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
@@ -945,6 +946,7 @@
     .wand-note.warn { color: var(--accent); }
     .wand-status { font-size: 11px; color: var(--ok); margin-top: 8px; }
     .wand-error { font-size: 11px; color: var(--bad); margin-top: 8px; }
+    .wand-editor .wand-error { margin-top: 0; }
     .wand-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 8px; background: var(--panel);
       border: 1px solid var(--border); border-radius: 6px; }
     .wand-ed-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
