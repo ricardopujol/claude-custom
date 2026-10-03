@@ -127,6 +127,9 @@ test('the preload exposes exactly the tab bridge on the tab:* channels, replace-
   assert.match(p, /goToSession: \(holder\) => ipcRenderer\.invoke\('tab:goTo', holder\)/);
   // the Git panel's *Jump to its tab* (documentation/PLAN_GIT_TREE.md Task 10)
   assert.match(p, /selectFolder: \(folder\) => ipcRenderer\.invoke\('tab:selectFolder', folder\)/);
+  // the Git drawer's tab states and *Run /merged* (Enhancement #46)
+  assert.match(p, /tabStates: \(folders\) => ipcRenderer\.invoke\('tab:states', folders\)/);
+  assert.match(p, /runMerged: \(folder\) => ipcRenderer\.invoke\('tab:runMerged', folder\)/);
   assert.match(p, /raise: \(\) => ipcRenderer\.send\('tab:raise'\)/);
   assert.match(p, /onTabSelected: \(fn\) => \(ipcRenderer\.removeAllListeners\('tab-selected'\)/);
   assert.match(p, /onLockOverride: \(fn\) => \(ipcRenderer\.removeAllListeners\('lock-override'\)/);

@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('harness', {
   goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
   //   selectFolder a worktree folder -> { kind, text? }: the Git panel's *Jump to its tab*
   selectFolder: (folder) => ipcRenderer.invoke('tab:selectFolder', folder),
+  //   tabStates   worktree folders -> [{ folder, open, started, known, working, needsInput }]: the Git drawer's
+  //               view of those tabs' sessions (null working / needsInput: that session hasn't reported)
+  //   runMerged   a worktree folder -> { kind, text?, branch? }: switch to its tab, type /merged and Enter
+  tabStates: (folders) => ipcRenderer.invoke('tab:states', folders),
+  runMerged: (folder) => ipcRenderer.invoke('tab:runMerged', folder),
   raise: () => ipcRenderer.send('tab:raise'),
   // A link clicked in the terminal (fix/terminal-links). Main opens it in the
   // default browser if, and only if, it is plain http(s), and answers whether
