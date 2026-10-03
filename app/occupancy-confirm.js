@@ -4,9 +4,11 @@
  * decision 3: "inform + one confirm"). Nothing is made read-only -- that would fight the founding bet of
  * wrapping the real CLI -- but a person about to become a second writer is asked once.
  *
- *   createConfirm({ send, onChange }) -> { setClaims, input, type, wait, state }
+ *   createConfirm({ send, onChange }) -> { setClaims, forget, input, type, wait, state }
  *
- *   setClaims(here)   the live claims in THIS tab's folder (the page's `occupancy.here`)
+ *   setClaims(here)   the live claims in THIS tab's folder (the page's `occupancy.here`), plus the bedtime night's
+ *                     claim when one is going (`{ agentId: 'bedtime:<startedAt>', persist: true }`)
+ *   forget(id)        drop a persistent run's memory (the page forgets the night before)
  *   input(data)       the person's typing: 'sent' | 'held' | 'dropped'
  *   type() / wait()   the two answers to "An agent is writing here. Type anyway?"; true when there was a
  *                     question to answer
@@ -29,6 +31,10 @@
  *     is the first key a person reaches for when two writers meet (Miguel Y2). It approves nothing.
  *   - A RUN is one agent_id's stay. A second agent arriving is a new run (asked again); an agent whose claim
  *     went away and came back (the same id resumed) is a new run too.
+ *   - EXCEPT a PERSISTENT claim (`persist: true`, a bedtime night): its identity is the night's own, so it is
+ *     asked once for the whole night and its answer outlives its claim dropping out and coming back -- a socket
+ *     drop and reconnect, an overdue verdict and a late wake -- none of which is the run ending (PR #99 Dexter
+ *     F4). A different night is a different id, so it asks again.
  *   - The agent finishing while the question is open closes it and releases what was held: nothing is in
  *     the way any more.
  *   - The terminal's own replies are not typing: focus reports, mouse reports, cursor-position and device
@@ -68,6 +74,7 @@ const idsOf = (claims) => new Set((Array.isArray(claims) ? claims : [])
 function createConfirm({ send, onChange = () => {} } = {}) {
   let present = new Set();         // the agent ids in this folder right now
   const confirmed = new Set();     // the ones the person said Type to
+  const sticky = new Set();        // ids whose claim is persistent: their answer outlives the claim
   let held = null;                 // the held pieces (in order), or null when no question is open
   let heldLength = 0;
   let overflowed = false;          // a piece was dropped since the question opened: so is everything after it
@@ -81,7 +88,10 @@ function createConfirm({ send, onChange = () => {} } = {}) {
 
   function setClaims(claims) {
     present = idsOf(claims);
-    for (const id of [...confirmed]) if (!present.has(id)) confirmed.delete(id);   // that run ended
+    for (const c of Array.isArray(claims) ? claims : []) {
+      if (c && c.persist === true && typeof c.agentId === 'string' && c.agentId !== '') sticky.add(c.agentId);
+    }
+    for (const id of [...confirmed]) if (!present.has(id) && !sticky.has(id)) confirmed.delete(id);   // that run ended
     if (asking() && present.size === 0) {
       releaseAll(close());
       tell();
@@ -124,7 +134,12 @@ function createConfirm({ send, onChange = () => {} } = {}) {
     return true;
   }
 
-  return { setClaims, input, type, wait, state: () => ({ asking: asking() }) };
+  function forget(id) {
+    sticky.delete(id);
+    confirmed.delete(id);
+  }
+
+  return { setClaims, forget, input, type, wait, state: () => ({ asking: asking() }) };
 }
 
 const api = { createConfirm, isKeystroke, HOLD_MAX };

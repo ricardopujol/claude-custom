@@ -98,3 +98,10 @@ test('the occupancy chip\'s Jump and the bar\'s minutes refresh share the page\'
   assert.match(RENDERER, /jumpToFolder\(/);
   assert.match(RENDERER, /setInterval\(\(\) => \{ paintBar\(\); \}, 30000\)|setInterval\(\(\) => paintBar\(\), 30000\)/);
 });
+
+test('F4: the night is a persistent run for the confirm, and a new night forgets the last one', () => {
+  assert.match(RENDERER, /agentId: 'bedtime:' \+ bar\.bedtime\.startedAt, persist: true/);
+  assert.match(RENDERER, /bar\.nightKey !== key && occupancy\.confirm\) occupancy\.confirm\.forget\(bar\.nightKey\)/);
+  const close = RENDERER.slice(RENDERER.indexOf('ws.onclose = () => {'), RENDERER.indexOf('ws.onerror'));
+  assert.match(close, /applyBedtime\(null\)/, 'a drop still clears the night; the confirm remembers it');
+});

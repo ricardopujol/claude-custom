@@ -156,7 +156,7 @@ let sessionTurn = null;
 // The terminal bar (backlog #49 + #52): the host's latest main-session prompt and where the CLI echoed it in the
 // terminal buffer, the bedtime night, and the epoch that invalidates the anchor. Every decision is in
 // app/terminal-bar.js; this only holds the facts and paints what it says.
-const bar = { prompt: null, anchor: null, epoch: 0, lastLength: 0, bedtime: null, fullOpen: false, queued: false, chipsKey: '' };
+const bar = { prompt: null, anchor: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, chipsKey: '' };
 let wasWorking = false;
 let lastReportedTabStatus = null;
 function pend(event) {
@@ -311,8 +311,10 @@ function confirmQuestion() {
 }
 
 // A bedtime night is a run of its own for the confirm (a new night asks again, one that ends releases what was held).
+// `persist`: the night is ONE run for its whole life, so a socket drop or an overdue verdict that takes its claim away
+// for a moment doesn't make it a new run (PR #99 Dexter F4); a different night is a different id.
 function nightClaim() {
-  return bar.bedtime !== null ? { agentId: 'bedtime:' + bar.bedtime.startedAt } : null;
+  return bar.bedtime !== null ? { agentId: 'bedtime:' + bar.bedtime.startedAt, persist: true } : null;
 }
 function confirmClaims() {
   const night = nightClaim();
@@ -357,6 +359,12 @@ function applyBarPrompt(prompt, live) {
 
 function applyBedtime(payload) {
   bar.bedtime = payload && typeof payload === 'object' && typeof payload.startedAt === 'number' && Number.isFinite(payload.startedAt) ? payload : null;
+  // A new night forgets the last one's answer (its id is never seen again); the same night returning keeps it.
+  if (bar.bedtime !== null) {
+    const key = 'bedtime:' + bar.bedtime.startedAt;
+    if (bar.nightKey && bar.nightKey !== key && occupancy.confirm) occupancy.confirm.forget(bar.nightKey);
+    bar.nightKey = key;
+  }
   if (occupancy.confirm) occupancy.confirm.setClaims(confirmClaims());
   paintBar();
   reportTabStatus();
