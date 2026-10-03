@@ -721,3 +721,28 @@ test('selectionFromV1: a window\'s L1 choices map straight across (group ids are
     assert.deepEqual(T.selectionFromV1(junk), { active: {}, foldAll: false });
   }
 });
+
+// --- PR #100 review (Dexter F1, F2, F5) --------------------------------------------
+
+test('F1: a lone panel dropped where it already sits changes nothing: the very same layout comes back', () => {
+  const L = T.normalize(v2(row([term, g('right', 'git')], [0, 400]), { hidden: IDS.filter(id => id !== 'git') }), IDS);
+  assert.equal(T.dock(L, 'git', { edge: 'right' }), L, 'the right rim');
+  assert.equal(T.dock(L, 'git', { cell: 'term', side: 'right' }), L, "the terminal's right band");
+  assert.equal(T.groupOf(L, 'git').id, 'right');
+  assert.deepEqual(L.root.sizes, [0, 400]);
+});
+
+test('F1: a lone panel dropped somewhere else still moves, and keeps nothing of the old shape', () => {
+  const L = T.normalize(v2(row([term, g('right', 'git')], [0, 400]), { hidden: IDS.filter(id => id !== 'git') }), IDS);
+  assert.notEqual(T.dock(L, 'git', { edge: 'left' }), L);
+  assert.notEqual(T.dock(L, 'git', { edge: 'top' }), L);
+  assert.notEqual(T.dock(L, 'git', { cell: 'term', side: 'left' }), L);
+});
+
+test('F1: a lone panel at the left, or in a column, dropped where it already is also changes nothing', () => {
+  const left = T.normalize(v2(row([g('l', 'git'), term, g('r', 'vault')], [250, 0, 300]), { hidden: IDS.filter(id => id !== 'git' && id !== 'vault') }), IDS);
+  assert.equal(T.dock(left, 'git', { edge: 'left' }), left);
+  assert.equal(T.dock(left, 'git', { cell: 'term', side: 'left' }), left);
+  const top = T.normalize(v2(col([g('t', 'git'), row([term, g('r', 'vault')], [0, 200])], [150, 0]), { hidden: IDS.filter(id => id !== 'git' && id !== 'vault') }), IDS);
+  assert.equal(T.dock(top, 'git', { edge: 'top' }), top);
+});

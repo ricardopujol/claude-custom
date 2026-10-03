@@ -245,7 +245,19 @@ function dock(layout, id, target) {
     const sizes = pixels ? (first ? [DEFAULT_SIZE[dir], 0] : [0, DEFAULT_SIZE[dir]]) : [1, 1];
     replaceCell(l, cellNode, { type: 'split', dir, kids: first ? [added, cellNode] : [cellNode, added], sizes });
   }
-  return normalize(l, modulesIn(layout));
+  const result = normalize(l, modulesIn(layout));
+  // A lone panel dropped where it already sits (a rim it touches, the terminal's side next to it) rebuilds
+  // the same picture under a new group name and the default size. Decided by the RESULT, not by the target.
+  if (from && from.tabs.length === 1 && sameShape(layout.root, result.root)) return layout;
+  return result;
+}
+
+// What a tree looks like once group names and every size are set aside: split directions and order, tabs per group.
+function sameShape(a, b) {
+  if (a.type !== b.type) return false;
+  if (a.type === 'term') return true;
+  if (a.type === 'group') return a.tabs.length === b.tabs.length && a.tabs.every((t, i) => t === b.tabs[i]);
+  return a.dir === b.dir && a.kids.length === b.kids.length && a.kids.every((k, i) => sameShape(k, b.kids[i]));
 }
 
 // Child indexes from the root down to `node`, or null.

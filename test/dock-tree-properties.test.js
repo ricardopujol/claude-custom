@@ -222,3 +222,28 @@ test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 gave it
     }
   }), RUNS);
 });
+
+// What a tree looks like with group names and sizes set aside.
+const shapeOf = (n) => {
+  if (n.type === 'term') return 'T';
+  if (n.type === 'group') return `[${n.tabs.join(',')}]`;
+  return `${n.dir}(${n.kids.map(shapeOf).join(' ')})`;
+};
+
+test('P9 (PR #100 F1): dropping a lone panel on any target either returns the same layout or changes its shape', () => {
+  const targetArb = fc.oneof(
+    fc.record({ edge: fc.constantFrom('left', 'right', 'top', 'bottom') }),
+    fc.record({ pick: fc.nat(12), side: fc.constantFrom('left', 'right', 'top', 'bottom', 'center') }),
+  );
+  fc.assert(fc.property(rawArb, opsArb, fc.nat(12), targetArb, (raw, ops, which, t) => {
+    const l = run(T.normalize(raw, IDS), ops);
+    const lone = T.groups(l).filter(gr => gr.tabs.length === 1);
+    fc.pre(lone.length > 0);
+    const id = lone[which % lone.length].tabs[0];
+    const cells = ['term', ...T.groups(l).map(gr => gr.id)];
+    const target = t.edge ? { edge: t.edge } : { cell: cells[t.pick % cells.length], side: t.side };
+    const next = T.dock(l, id, target);
+    assertWellFormed(next);
+    assert.ok(next === l || shapeOf(next.root) !== shapeOf(l.root), `${JSON.stringify(target)} rebuilt the same picture as a new layout`);
+  }), RUNS);
+});
