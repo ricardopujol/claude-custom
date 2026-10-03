@@ -4,8 +4,9 @@
  * live in pure, tested modules (app/dock-layout.js, app/dock-zones-display.js);
  * this pins that the page actually USES them where the reviewers found the
  * page going wrong. Source assertions, because renderer.js needs a real DOM;
- * verify/probe-dock-zones.js drives the same paths in a real window
- * (check 8: a real drop, and a redraw with a secret half-typed).
+ * verify/probe-dock-tree.js drives the same paths in a real window (check 6: a
+ * real pointer drop; L1's probe-dock-zones.js, which also drove a redraw with a
+ * secret half-typed, was deleted with the page it measured).
  *
  * Repo-scanning, so deliberately NOT in Stryker's command.
  */
@@ -36,25 +37,35 @@ test('Dexter F2 / Miguel B1: a redraw moves focus only as renderEffects says -- 
 });
 
 test('Dexter F1 / Miguel I2: a drop ends the drag BEFORE the move redraws away its source', () => {
-  const at = JS.indexOf("s.addEventListener('drop', (e) => {");
-  assert.ok(at !== -1, 'the strip drop handler must be findable');
-  const handler = JS.slice(at, JS.indexOf('\n  });', at));
-  const end = handler.indexOf('endModuleDrag();');
+  const at = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\r?\n\s+if \(!press\) return;/);
+  assert.ok(at !== -1, 'the tab drag\'s pointerup handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('  });', at));
+  const end = handler.indexOf('end();');
   const move = handler.indexOf('commitPlacement(');
-  assert.ok(end !== -1 && move !== -1 && end < move, 'endModuleDrag() must run before commitPlacement()');
-  assert.match(JS, /window\.addEventListener\('dragend', endModuleDrag, true\);/);
+  assert.ok(end !== -1 && move !== -1 && end < move, 'end() must run before commitPlacement()');
+  assert.match(JS, /window\.addEventListener\('pointercancel', \(\) => \{ cancelTabDrag\(\); \}\);/);
+  const close = JS.indexOf('ws.onclose = () => {');
+  assert.ok(close !== -1 && /cancelTabDrag\(\);/.test(JS.slice(close, close + 400)), 'the socket closing drops a drag in flight');
 });
 
-test('Dexter F3 / Miguel I1: only afterLayoutGet\'s "migrate" saves over the stored layout at load', () => {
+test('Dexter F3 / Miguel I1: only a MISSING tree migrates and saves at load; unreadable keeps the default', () => {
   const body = fnBody('loadLayout');
-  assert.match(body, /const what = window\.dockZones\.afterLayoutGet\(answer\);/);
-  assert.match(body, /if \(what === 'migrate'\) bridge\.set\(globalLayout\)/);
-  assert.strictEqual([...body.matchAll(/bridge\.set\(/g)].length, 1, 'no other save at load');
+  assert.match(body, /const what = window\.dockTreeView\.afterTreeGet\(answer, v1Answer\);/);
+  // Every save at load sits in one of the two migrate branches, and nothing else saves.
+  const sets = [...body.matchAll(/bridge\.set\(/g)];
+  assert.strictEqual(sets.length, 2, 'the two migrations, no other save at load');
+  for (const s of sets) {
+    const before = body.slice(0, s.index);
+    assert.match(before.slice(before.lastIndexOf('else if (what ===')), /^else if \(what === 'migrate-(v1|legacy)'\)/, 'a save outside a migrate branch');
+  }
+  // The L1 key is only ever read: nothing in the renderer writes it any more.
+  assert.doesNotMatch(JS, /harness\.layout\.set\(/);
 });
 
-test('Dexter F4: the window seeds its own selection at load, and draws through mergeSelection', () => {
-  assert.match(fnBody('loadLayout'), /if \(!selection\) \{\s+selection = DL\.selectionOf\(effectiveLayout\(\)\);\s+saveSelection\(\);/);
-  assert.match(fnBody('effectiveLayout'), /DL\.mergeSelection\(placementLayout\(\), selection, MODULE_IDS\)/);
+test('Dexter F4: the window seeds its own selection ONCE at load, and draws through it', () => {
+  assert.match(fnBody('loadLayout'), /const seeded = localStorage\.getItem\('dockSelection2'\) !== null;/);
+  assert.match(fnBody('loadLayout'), /if \(!seeded\) saveSelection\(\);/);
+  assert.match(fnBody('renderLayout'), /treePlan\(placementLayout\(\), selection, TABS, dockViewport\(\)/);
 });
 
 test('Dexter F8: a tab\'s own layout goes through sendOverride, and the host\'s word through overrideOnHello', () => {
@@ -68,6 +79,12 @@ test('Dexter F6: opening the diagnostics pane re-fits the zones', () => {
   const at = JS.indexOf("document.getElementById('diag').classList.toggle('show');");
   assert.ok(at !== -1);
   assert.match(JS.slice(at, at + 400), /renderLayout\(\);/);
+});
+
+test('D1: #dock changing size without a window resize (the header wrapping) re-fits the boxes', () => {
+  // The boxes are absolute, so no flex layout absorbs a header that grows a line: the probe found the
+  // bottom group 5 px past the area at launch. The observer feeds the same coalesced resize path.
+  assert.match(JS, /new ResizeObserver\(\(\) => window\.dispatchEvent\(new Event\('resize'\)\)\)\.observe\(document\.getElementById\('dock'\)\);/);
 });
 
 test('entering focus mode gives the terminal the keyboard, never an invisible panel field', () => {
