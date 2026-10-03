@@ -59,8 +59,7 @@ const CONTRACT = {
         onlyWhen: p => AGENT_TOOLS.includes(p && p.tool_name),
       },
       'tool_input.command': {
-        used: 'processes.js, the label shown in the Running panel; agent-occupancy.js, which worktree a subagent's '
-            + 'command names (#44 + #47)',
+        used: 'processes.js, the label shown in the Running panel; agent-occupancy.js, which worktree a subagent command names (#44 + #47)',
         onlyWhen: p => (p && p.tool_name) === 'Bash',
       },
       // Worktree occupancy (#44 + #47). MEASURED against the real CLI by verify/probe-occupancy-payloads.js
@@ -69,7 +68,7 @@ const CONTRACT = {
       // SubagentStop carries; a main-session call carries no agent_id. NOT measured: NotebookEdit's
       // `notebook_path` (its documented field).
       'tool_input.file_path': {
-        used: 'agent-occupancy.js, the worktree a subagent's Read/Edit/Write is in (#44 + #47)',
+        used: 'agent-occupancy.js, the worktree a subagent Read, Edit or Write is in (#44 + #47)',
         onlyWhen: p => ['Read', 'Edit', 'Write'].includes(p && p.tool_name),
       },
       ...COMMON_FIELDS,
