@@ -303,6 +303,20 @@ test('a seat naming a float that has since gone is dropped to no group, and the 
   assert.ok(T.groupOf(back, 'vault'), 'it falls back into the tree');
 });
 
+test('show finds the old neighbour in a float too, and joins that float as a tab (PR #102 Dexter 5)', () => {
+  let l = T.dock(base(), 'fog', { cell: 'f', side: 'center' });                // f: git, fog
+  l = T.hide(l, 'fog');                                                        // seat: group f, beside git
+  l = T.dock(l, 'vault', { float: { x: 400, y: 50 } });
+  const gN = T.floatOf(l, 'vault').id;
+  l = T.dock(l, 'git', { cell: gN, side: 'center' });                          // f empties and goes; git now sits in gN
+  assert.equal(l.seat.fog.group, null);
+  assert.equal(l.seat.fog.beside, 'git');
+  const back = T.show(l, 'fog');
+  assert.equal(T.floatOf(back, 'fog').id, gN, 'fog joins the float its neighbour is in');
+  assert.ok(T.floatOf(back, 'fog').tabs.includes('git'));
+  assert.equal(T.groupOf(back, 'fog'), null, 'not a new group at the right edge');
+});
+
 test('hide and show never change their input with floats around', () => {
   const l = deepFreeze(T.dock(base(), 'vault', { cell: 'f', side: 'center' }));
   T.show(T.hide(l, 'git'), 'git');

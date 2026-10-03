@@ -474,6 +474,9 @@ function show(layout, id) {
     if (seat.float) return dock(layout, id, { float: { x: seat.float.x, y: seat.float.y, w: seat.float.w, h: seat.float.h } });
     const near = seat.beside && groupOf(layout, seat.beside);
     if (near) return dock(layout, id, { cell: near.id, side: seat.side });
+    // The neighbour may have floated since (PR #102 Dexter 5): a float takes a tab, never a split.
+    const nearFloat = seat.beside && floatOf(layout, seat.beside);
+    if (nearFloat) return dock(layout, id, { cell: nearFloat.id, side: 'center' });
   }
   return dock(layout, id, { edge: 'right' });
 }
