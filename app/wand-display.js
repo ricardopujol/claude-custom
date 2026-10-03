@@ -241,11 +241,16 @@ function view(state) {
     skillsNote: s.skillsError !== null ? `Couldn't read the skill list (${s.skillsError}), so no favourite is checked.` : null,
     buttons: mode === 'ok' ? s.favourites.map(f => ({
       id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, command: commandOf(f), title: titleOf(s, f),
+      // The accessible name: in edit mode a press OPENS THE EDITOR, and the keyboard can say so and reorder (Miguel I3).
+      label: s.edit ? `${commandOf(f)}, press Enter to edit, Alt+Left or Alt+Right to move` : commandOf(f),
       missing: isMissing(s, f.skill), flash: !!(s.flash && s.flash.id === f.id),
     })) : [],
     editor: mode === 'ok' ? editorView(s) : null,
     error: s.error,
     status: s.flash ? s.flash.text : s.notice,
+    // What a screen reader is told, from a node that is NOT rebuilt (renderer.html #wand-live): a live region that is
+    // replaced wholesale on each render is not announced (Miguel I3).
+    live: s.error || (s.flash ? s.flash.text : s.notice) || '',
   };
 }
 
@@ -349,6 +354,15 @@ function deleteMsg(state, id) {
   return { state: b.state, message: { type: 'wand-delete', id, req: b.req } };
 }
 
+/** Alt+Left / Alt+Right: one place, by naming the neighbour it swaps over (the keyboard's reorder, Miguel I3). */
+function moveStepMsg(state, id, dir) {
+  const s = state || emptyState();
+  const i = isStr(id) ? s.favourites.findIndex(f => f.id === id) : -1;
+  if (i === -1 || (dir !== -1 && dir !== 1)) return { state: s, message: null };
+  const neighbour = s.favourites[i + dir];
+  return neighbour ? moveMsg(s, id, neighbour.id) : { state: s, message: null };
+}
+
 /** A drop of `id` onto `targetId`'s slot: the id takes that slot's index. */
 function moveMsg(state, id, targetId) {
   const s = state || emptyState();
@@ -374,7 +388,7 @@ function resetMsg(state) {
 
 function buttonHtml(v, b) {
   const main = `<button type="button" class="wand-btn${b.missing ? ' dim' : ''}${b.flash ? ' flash' : ''}" ` +
-    `data-wand-act="press" data-wand-id="${esc(b.id)}" title="${esc(b.title)}" aria-label="${esc(b.command)}"` +
+    `data-wand-act="press" data-wand-id="${esc(b.id)}" title="${esc(b.title)}" aria-label="${esc(b.label)}"` +
     `${v.edit ? ' draggable="true"' : ''}><span class="wand-emoji">${esc(b.emoji)}</span></button>`;
   if (!v.edit) return main;
   return `<span class="wand-cell" data-wand-cell="${esc(b.id)}">${main}` +
@@ -402,7 +416,7 @@ function editorHtml(v) {
   if (!e) return '';
   return `<div class="wand-editor" data-no-card-click>` +
     `<div class="wand-ed-title">${e.isNew ? 'New favourite' : 'Edit favourite'}</div>` +
-    (v.error ? `<div class="wand-error" role="alert">${esc(v.error)}</div>` : '') +
+    (v.error ? `<div class="wand-error">${esc(v.error)}</div>` : '') +
     `<label class="wand-ed-row">Emoji <input type="text" class="wand-ed-emoji" data-wand-field="emoji" value="${esc(e.emoji)}" maxlength="16" size="4" autocomplete="off" spellcheck="false"></label>` +
     `<div class="wand-emoji-pick">${e.emojiChoices.map(x =>
       `<button type="button" class="wand-pick" data-wand-act="pick-emoji" data-wand-emoji="${esc(x)}" aria-label="${esc(x)}">${esc(x)}</button>`).join('')}</div>` +
@@ -432,8 +446,8 @@ function html(v) {
       `</div>`
     : '';
   return `<div class="wand">${head}${lines}${grid}${editorHtml(v)}` +
-    (v.error && !v.editor ? `<div class="wand-error" role="alert">${esc(v.error)}</div>` : '') +
-    (v.status ? `<div class="wand-status" role="status">${esc(v.status)}</div>` : '') +
+    (v.error && !v.editor ? `<div class="wand-error">${esc(v.error)}</div>` : '') +
+    (v.status ? `<div class="wand-status">${esc(v.status)}</div>` : '') +
     `</div>`;
 }
 
@@ -451,7 +465,7 @@ function clickAction(ds) {
 
 const api = {
   emptyState, reduce, begin, clearError, failed, view, html, skillListHtml, clickAction, clickPlan, typed, clearFlash, setNotice,
-  toggleEdit, openEditor, closeEditor, editorSet, editorSubmit, deleteMsg, moveMsg, resetMsg, skillsRequest, filterSkills,
+  toggleEdit, openEditor, closeEditor, editorSet, editorSubmit, deleteMsg, moveMsg, moveStepMsg, resetMsg, skillsRequest, filterSkills,
   boxCapacity, cellWidth, SKILL_LIST_CAP, FLASH_TEXT,
 };
 

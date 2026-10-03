@@ -171,3 +171,36 @@ test('I2: a Reset click goes out through wandSend', () => {
   assert.match(WAND, /action\.kind === 'reset'/);
   assert.match(WAND, /wandDisplay\.resetMsg\(wandState\)/);
 });
+
+// --- Miguel I3 / I4 ---------------------------------------------------------------------------------------------
+
+test('I4: Enter in the skill SEARCH box does nothing (it must not save the editor); Enter in the other fields saves', () => {
+  const at = WAND.indexOf("addEventListener('keydown'");
+  assert.ok(at !== -1);
+  const handler = WAND.slice(at, WAND.indexOf('addEventListener(', at + 10));
+  assert.match(handler, /if \(e\.target\.dataset\.wandField === 'query'\) \{ if \(e\.key === 'Enter'\) e\.preventDefault\(\); return; \}/);
+  assert.match(handler, /e\.key === 'Enter'[\s\S]*wandAct\(\{ kind: 'save' \}\)/);
+  assert.ok(handler.indexOf("=== 'query'") < handler.indexOf("wandAct({ kind: 'save' })"), 'the query check comes first');
+});
+
+test('I3: Alt+Left / Alt+Right on a focused favourite in edit mode move it, through wandSend', () => {
+  assert.match(WAND, /e\.altKey && \(e\.key === 'ArrowLeft' \|\| e\.key === 'ArrowRight'\)/);
+  assert.match(WAND, /wandDisplay\.moveStepMsg\(wandState, action\.id, action\.dir\)/);
+});
+
+test('I3: focus survives a rebuild: any control is found again, and an opened editor takes focus', () => {
+  const body = fnBody('renderWand');
+  assert.match(body, /wandFocusKey\(document\.activeElement\)/);
+  assert.match(body, /wandFindFocus\(/);
+  assert.match(body, /wandFocusEditor/);
+  assert.match(WAND, /wandFocusEditor = true/);
+});
+
+test('I3: the status is announced from a node OUTSIDE the rebuilt subtree', () => {
+  assert.match(HTML, /<div id="wand-live"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.ok(HTML.indexOf('id="wand-root"') < HTML.indexOf('id="wand-live"'));
+  const root = HTML.slice(HTML.indexOf('<div id="wand-root">'), HTML.indexOf('id="wand-live"')).replace(/<!--[\s\S]*?-->/g, '');
+  assert.match(root, /<\/div>\s*<div $/, 'the live region is a sibling of the root, not inside it');
+  assert.match(fnBody('renderWand'), /getElementById\('wand-live'\)/);
+  assert.match(fnBody('renderWand'), /\.textContent = v\.live/);
+});

@@ -3528,21 +3528,48 @@ let wandState = wandDisplay.emptyState();
 let wandBusy = false;          // a type in flight: two overlapping key sequences would garble the box
 let wandFlashTimer = null;
 let wandDragId = null;
+let wandFocusEditor = false;   // an editor was just opened: it takes focus on the next draw
 const wandRoot = document.getElementById('wand-root');
+
+// Where focus was inside the panel, as something that can be found again after a rebuild: an editor field with
+// its caret, or a control by what it does and which favourite / skill / emoji it is for.
+function wandFocusKey(el) {
+  if (!el || !el.dataset || !wandRoot || !wandRoot.contains(el)) return null;
+  const d = el.dataset;
+  if (d.wandField) return { field: d.wandField, start: el.selectionStart, end: el.selectionEnd };
+  if (d.wandAct) return { act: d.wandAct, id: d.wandId, skill: d.wandSkill, emoji: d.wandEmoji };
+  return null;
+}
+function wandFindFocus(k) {
+  if (k.field) return wandRoot.querySelector('[data-wand-field="' + k.field + '"]');
+  return [...wandRoot.querySelectorAll('button[data-wand-act]')].find(b => b.dataset.wandAct === k.act
+    && b.dataset.wandId === k.id && b.dataset.wandSkill === k.skill && b.dataset.wandEmoji === k.emoji) || null;
+}
 
 function renderWand() {
   if (!wandRoot) return;
-  // A redraw (a quiet refresh from another host, a skill rescan) must not eat what the user is typing:
-  // the editor's field, its caret and its focus are put back.
-  const a = document.activeElement;
-  const keep = a && wandRoot.contains(a) && a.dataset && a.dataset.wandField
-    ? { field: a.dataset.wandField, start: a.selectionStart, end: a.selectionEnd } : null;
-  wandRoot.innerHTML = wandDisplay.html(wandDisplay.view(wandState));
-  if (!keep) return;
-  const el = wandRoot.querySelector('[data-wand-field="' + keep.field + '"]');
-  if (!el) return;
-  el.focus({ preventScroll: true });
-  try { el.setSelectionRange(keep.start, keep.end); } catch { /* a field with no selection */ }
+  // A redraw (a click, a quiet refresh from another host, a skill rescan) must not lose the user's place: the focused
+  // control, and an editor field's text, caret and focus, are put back. A control that is gone (a favourite just
+  // deleted) hands focus to the first one left, so the keyboard user is never dropped onto the page body.
+  const key = wandFocusKey(document.activeElement);
+  const v = wandDisplay.view(wandState);
+  wandRoot.innerHTML = wandDisplay.html(v);
+  // Announced from a node OUTSIDE the rebuilt subtree: a live region replaced wholesale is not read out.
+  const live = document.getElementById('wand-live');
+  if (live && live.textContent !== v.live) live.textContent = v.live;
+  let target = null;
+  if (wandFocusEditor) {
+    target = wandRoot.querySelector('[data-wand-field="emoji"]');
+    if (target) wandFocusEditor = false;
+  }
+  if (!target && key) {
+    target = wandFindFocus(key) || wandRoot.querySelector('button[data-wand-act="press"]') || wandRoot.querySelector('button[data-wand-act]');
+  }
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if (key && key.field && target.dataset && target.dataset.wandField === key.field) {
+    try { target.setSelectionRange(key.start, key.end); } catch { /* a field with no selection */ }
+  }
 }
 
 function requestWandSkills() {
@@ -3580,10 +3607,12 @@ function wandAct(action) {
     const plan = wandDisplay.clickPlan(wandState, action.id, { cols: term.cols });
     if (!plan) return;
     if (plan.kind === 'type') { wandType(plan); return; }
+    if (plan.kind === 'edit') wandFocusEditor = true;
     wandState = plan.kind === 'missing' || plan.kind === 'toolong' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
   } else if (action.kind === 'toggle-edit') {
     wandState = wandDisplay.toggleEdit(wandState);
   } else if (action.kind === 'add') {
+    wandFocusEditor = true;
     wandState = wandDisplay.openEditor(wandState, null);
   } else if (action.kind === 'cancel') {
     wandState = wandDisplay.closeEditor(wandState);
@@ -3591,6 +3620,10 @@ function wandAct(action) {
     wandState = wandDisplay.editorSet(wandState, 'skill', action.skill);
   } else if (action.kind === 'pick-emoji') {
     wandState = wandDisplay.editorSet(wandState, 'emoji', action.emoji);
+  } else if (action.kind === 'move-step') {
+    const r = wandDisplay.moveStepMsg(wandState, action.id, action.dir);
+    wandState = r.state;
+    wandSend(r.message);
   } else if (action.kind === 'delete' || action.kind === 'save' || action.kind === 'reset') {
     const r = action.kind === 'delete' ? wandDisplay.deleteMsg(wandState, action.id)
       : action.kind === 'reset' ? wandDisplay.resetMsg(wandState) : wandDisplay.editorSubmit(wandState);
@@ -3617,7 +3650,15 @@ if (wandRoot) {
     }
   });
   wandRoot.addEventListener('keydown', (e) => {
+    // Alt+Left / Alt+Right on a favourite in edit mode: the keyboard's reorder (drag is mouse-only).
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && e.target.closest) {
+      const b = e.target.closest('button[data-wand-act="press"][draggable="true"]');
+      if (b) { e.preventDefault(); wandAct({ kind: 'move-step', id: b.dataset.wandId, dir: e.key === 'ArrowLeft' ? -1 : 1 }); return; }
+    }
     if (!(e.target && e.target.dataset && e.target.dataset.wandField)) return;
+    // Enter in the skill SEARCH box is not Save: it would save with whatever skill was picked before (or fail with
+    // "Pick a skill"), when the person is only searching.
+    if (e.target.dataset.wandField === 'query') { if (e.key === 'Enter') e.preventDefault(); return; }
     if (e.key === 'Enter') { e.preventDefault(); wandAct({ kind: 'save' }); }
     else if (e.key === 'Escape') { e.preventDefault(); wandAct({ kind: 'cancel' }); }
   });

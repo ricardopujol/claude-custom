@@ -920,6 +920,7 @@
     /* The wand (BACKLOG #51): favourite skills as emoji buttons. Markup comes from app/wand-display.js. A dimmed
        button is a skill that no longer exists; the flash is "typed", never "ran". */
     #wand-body { padding: 8px 10px; }
+    .wand-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     #wand-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
     .zone[data-shape="wide"] .panel.on > #wand-root { flex: 1 1 auto; min-width: 240px; max-width: none; }
     .wand-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
@@ -1461,6 +1462,9 @@
         <!-- BACKLOG #51: the wand. app/wand-display.js draws it from the host's `wand` payload. -->
         <div class="panel" data-panel="wand" id="wand-body">
           <div id="wand-root"><div class="empty">reading the wand…</div></div>
+          <!-- Announced to screen readers: OUTSIDE #wand-root, whose markup is replaced on every draw (a live region
+               that is replaced is not read out). Visually hidden; the visible copy is in the panel. -->
+          <div id="wand-live" class="wand-live" role="status" aria-live="polite" aria-atomic="true"></div>
         </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>

@@ -378,17 +378,17 @@ test('html: the picked skill is marked, and the free-entry emoji is the editor\'
 test('html: the error and the status line are drawn in their own roles', () => {
   const b = W.begin(loaded());
   const s = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'Pick one emoji.', ...wandMsg() });
-  assert.match(W.html(W.view(s)), /role="alert"[^>]*>Pick one emoji\./);
-  assert.match(W.html(W.view(W.typed(loaded(), 'f1', { ok: true }))), /role="status"[^>]*>[^<]*typed, press Enter/);
+  assert.match(W.html(W.view(s)), /class="wand-error"[^>]*>Pick one emoji\./);
+  assert.match(W.html(W.view(W.typed(loaded(), 'f1', { ok: true }))), /class="wand-status"[^>]*>[^<]*typed, press Enter/);
 });
 
 test('html: with the editor open the refusal sits at its TOP, once: a reason below a tall editor is out of sight', () => {
   const b = W.begin(W.openEditor(W.toggleEdit(loaded()), null));
   const s = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'Pick one emoji.', ...wandMsg() });
   const html = W.html(W.view(s));
-  assert.strictEqual((html.match(/role="alert"/g) || []).length, 1);
-  assert.ok(html.indexOf('role="alert"') < html.indexOf('data-wand-field="emoji"'), 'the alert comes before the fields');
-  assert.ok(html.indexOf('role="alert"') > html.indexOf('wand-editor'), 'and inside the editor');
+  assert.strictEqual((html.match(/class="wand-error"/g) || []).length, 1);
+  assert.ok(html.indexOf('class="wand-error"') < html.indexOf('data-wand-field="emoji"'), 'the error comes before the fields');
+  assert.ok(html.indexOf('class="wand-error"') > html.indexOf('wand-editor'), 'and inside the editor');
 });
 
 test('clickAction: a dataset becomes an action; junk becomes null', () => {
@@ -593,4 +593,42 @@ test('I2: the answer to MY reset says where the old file went', () => {
 
 test('I2: clickAction knows reset', () => {
   assert.deepStrictEqual(W.clickAction({ wandAct: 'reset' }), { kind: 'reset' });
+});
+
+// --- Miguel I3: keyboard access ----------------------------------------------------------------------------------
+
+test('I3: moveStepMsg moves a favourite one place left or right, by naming its neighbour (edit mode only)', () => {
+  const s = W.toggleEdit(loaded());
+  assert.deepStrictEqual(W.moveStepMsg(s, 'f2', -1).message, { type: 'wand-move', id: 'f2', target: 'f1', req: W.moveStepMsg(s, 'f2', -1).message.req });
+  assert.strictEqual(W.moveStepMsg(s, 'f2', 1).message.target, 'f3');
+  assert.strictEqual(W.moveStepMsg(s, 'f1', -1).message, null, 'already first');
+  assert.strictEqual(W.moveStepMsg(s, 'f3', 1).message, null, 'already last');
+  assert.strictEqual(W.moveStepMsg(s, 'nope', 1).message, null);
+  assert.strictEqual(W.moveStepMsg(s, 'f2', 0).message, null);
+  assert.strictEqual(W.moveStepMsg(s, 'f2', 2).message, null, 'one place only');
+  assert.strictEqual(W.moveStepMsg(loaded(), 'f2', 1).message, null, 'not in edit mode');
+});
+
+test('I3: in edit mode a favourite\'s accessible name says Enter edits it and Alt+arrows move it', () => {
+  const normal = W.view(loaded()).buttons[1];
+  const edit = W.view(W.toggleEdit(loaded())).buttons[1];
+  assert.strictEqual(normal.label, '/checkpoint wrap up');
+  assert.match(edit.label, /^\/checkpoint wrap up/);
+  assert.match(edit.label, /Enter to edit/);
+  assert.match(edit.label, /Alt\+Left or Alt\+Right to move/);
+  assert.match(W.html(W.view(W.toggleEdit(loaded()))), /aria-label="\/checkpoint wrap up[^"]*Enter to edit/);
+});
+
+test('I3: the live text is the error if there is one, else the status; it is NOT inside the rebuilt markup', () => {
+  const t = W.typed(loaded(), 'f1', { ok: true });
+  assert.strictEqual(W.view(t).live, 'typed, press Enter');
+  const b = W.begin(loaded());
+  const e = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'Pick one emoji.', ...wandMsg() });
+  assert.strictEqual(W.view(e).live, 'Pick one emoji.');
+  assert.strictEqual(W.view(loaded()).live, '');
+  assert.doesNotMatch(W.html(W.view(t)), /role="(status|alert)"/, 'a node that is replaced each render is not announced');
+});
+
+test('I3: clickAction does not know the keyboard-only move: it is not a data-attribute action', () => {
+  assert.strictEqual(W.clickAction({ wandAct: 'move-step', wandId: 'f1' }), null);
 });
