@@ -177,3 +177,71 @@ test('groups, count and hasTerm read the tree', () => {
   assert.equal(T.hasTerm(l.root), true);
   assert.equal(T.hasTerm(g('x', 'agents')), false);
 });
+
+// --- migration from L1 --------------------------------------------------------
+
+const DL = require('../app/dock-layout');
+const v1 = (zones, extra = {}) => ({
+  version: 1,
+  zones: { left: [], right: [], top: [], bottom: [], ...zones },
+  active: { left: null, right: null, top: null, bottom: null },
+  hidden: [],
+  size: { left: 200, right: 240, top: 170, bottom: 150 },
+  restore: null,
+  ...extra,
+});
+
+test('L1\'s default loads as the tree default', () => {
+  assert.deepEqual(T.fromV1(DL.defaultLayout(IDS), IDS), T.defaultLayout(IDS));
+});
+
+test('all four zones become the L1 picture: top over left-terminal-right over bottom', () => {
+  const l = T.fromV1(v1({ left: ['agents'], right: ['vault', 'git'], top: ['fog'], bottom: ['bugvault', 'models', 'projects', 'style'] }), IDS);
+  assert.deepEqual(l.root, col([
+    g('top', 'fog'),
+    row([g('left', 'agents'), term, g('right', 'vault', 'git')], [200, 0, 240]),
+    g('bottom', 'bugvault', 'models', 'projects', 'style'),
+  ], [170, 0, 150]));
+});
+
+test('an empty zone contributes nothing and the wrapper collapses', () => {
+  const lr = T.fromV1(v1({ left: ['agents'], right: IDS.slice(1) }), IDS);
+  assert.deepEqual(lr.root, row([g('left', 'agents'), term, g('right', ...IDS.slice(1))], [200, 0, 240]));
+  const b = T.fromV1(v1({ bottom: IDS }), IDS);
+  assert.deepEqual(b.root, col([term, g('bottom', ...IDS)], [0, 150]));
+});
+
+test('hidden carries over, and a module this build does not know is lost', () => {
+  const l = T.fromV1(v1({ right: ['agents', 'ghost', 'vault'] }, { hidden: ['git', 'ghost2'] }), IDS);
+  assert.deepEqual(l.hidden, ['git']);
+  assert.deepEqual(T.groups(l).flatMap(x => x.tabs).sort(), IDS.filter(i => i !== 'git').sort());
+});
+
+test('junk L1 input becomes the default', () => {
+  for (const junk of [null, { zones: 7 }, 'x', []]) {
+    assert.deepEqual(T.fromV1(junk, IDS), T.defaultLayout(IDS), JSON.stringify(junk));
+  }
+});
+
+test('fromV1 never changes its input', () => {
+  const raw = deepFreeze(v1({ left: ['agents'], right: IDS.slice(1) }));
+  assert.doesNotThrow(() => T.fromV1(raw, IDS));
+});
+
+test('readAny: version 2 normalizes, an L1 shape migrates, anything else is the default', () => {
+  const two = v2(row([term, g('a', 'agents')], [0, 222]));
+  assert.deepEqual(T.readAny(two, IDS), T.normalize(two, IDS));
+  const old = v1({ left: ['agents'], right: IDS.slice(1) });
+  assert.deepEqual(T.readAny(old, IDS), T.fromV1(old, IDS));
+  for (const junk of [null, 7, 'x', [], {}, { version: 3 }]) {
+    assert.deepEqual(T.readAny(junk, IDS), T.defaultLayout(IDS));
+  }
+});
+
+test('selectionFromV1: a window\'s L1 choices map straight across (group ids are the zone names)', () => {
+  const sel = T.selectionFromV1({ active: { right: 'vault', left: null, top: 7, bottom: 'git' } });
+  assert.deepEqual(sel, { active: { right: 'vault', bottom: 'git' }, foldAll: false });
+  for (const junk of [null, 7, {}, { active: 5 }]) {
+    assert.deepEqual(T.selectionFromV1(junk), { active: {}, foldAll: false });
+  }
+});

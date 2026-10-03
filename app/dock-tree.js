@@ -24,6 +24,11 @@
  */
 (function (root) {
 
+// Loaded the way app/dock-zones-display.js loads it: required under Node, a page global in the window.
+const layoutApi = typeof module !== 'undefined' && module.exports
+  ? require('./dock-layout')
+  : root.dockLayout;
+
 const VERSION = 2;
 const MIN = { width: 120, height: 80 };               // a panel
 const TERM_MIN = { width: 320, height: 160 };         // the terminal wins
@@ -137,8 +142,46 @@ function normalize(raw, ids) {
   return { version: VERSION, root: r, floats: [], hidden, seat: cleanSeat(raw.seat, hidden) };
 }
 
+// Only a plain object of string -> string survives; nothing else a window stored is trusted.
+function stringMap(o) {
+  const out = {};
+  if (!isObject(o)) return out;
+  for (const [k, v] of Object.entries(o)) if (typeof v === 'string') out[k] = v;
+  return out;
+}
+
+/**
+ * L1's four zones as a tree: col[top, row[left, term, right], bottom], each
+ * non-empty zone one group named after its zone, sizes carried, hidden carried.
+ * L1's own normalizer reads the input first, so its rules (unknown modules
+ * dropped, missing ones back on the right) clean it before it becomes a tree.
+ */
+function fromV1(raw, ids) {
+  const l = layoutApi.normalizeLayout(raw, ids);
+  const zone = z => (l.zones[z].length ? { type: 'group', id: z, tabs: l.zones[z] } : null);
+  const strip = (kids, sizes, dir) => ({
+    type: 'split', dir, kids: kids.filter(Boolean), sizes: sizes.filter((_, i) => kids[i]),
+  });
+  const middle = strip([zone('left'), TERM(), zone('right')], [l.size.left, 0, l.size.right], 'row');
+  const tree = strip([zone('top'), middle, zone('bottom')], [l.size.top, 0, l.size.bottom], 'col');
+  return normalize({ version: VERSION, root: tree, hidden: l.hidden, seat: {} }, ids);
+}
+
+/** A stored layout of either generation: version 2 as is, an L1 shape migrated, else the default. */
+function readAny(raw, ids) {
+  if (isObject(raw) && raw.version === VERSION) return normalize(raw, ids);
+  if (isObject(raw) && isObject(raw.zones)) return fromV1(raw, ids);
+  return defaultLayout(ids);
+}
+
+/** A window's L1 selection as a tree selection: group ids are the zone names, so it maps straight across. */
+function selectionFromV1(raw) {
+  return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false };
+}
+
 const API = {
   VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, defaultLayout, normalize, groups, count, hasTerm,
+  fromV1, readAny, selectionFromV1,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.
