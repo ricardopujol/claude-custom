@@ -94,12 +94,6 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
 // foreground -> { status: "completed", agentId, ... }, when the agent is done.
 const isAsyncLaunch = r => !!r && typeof r === 'object' && (r.isAsync === true || r.status === 'async_launched');
 const isCompleted = r => !!r && typeof r === 'object' && r.status === 'completed';
-// A NAMED TEAMMATE (Agent with `name`) answers differently again, measured
-// 2026-10-03 from a real session: { status: "teammate_spawned", agent_id:
-// "<name>@<team>", agent_type, name, ... } -- snake_case, and no
-// run_in_background in its input. It runs on after the spawn returns, so it is
-// background work exactly like an async launch.
-const isTeammateSpawn = r => !!r && typeof r === 'object' && r.status === 'teammate_spawned';
 // The id a spawn's result names: `agentId` for the async/foreground results,
 // `agent_id` for a teammate's.
 const resultAgentId = r => {
@@ -107,6 +101,25 @@ const resultAgentId = r => {
   for (const v of [r.agentId, r.agent_id]) if (typeof v === 'string' && v) return v;
   return null;
 };
+
+// A TEAMMATE HAS TWO IDENTITIES, and the spawn result only names one.
+// Measured on a real session (2026-10-03, transcript 525f765a-*):
+//   spawn result  agent_id "mortimer-release@session-2e134ac8"   (an ADDRESS:
+//                 name@team, reusable, never seen on a hook event so far)
+//   its runtime   agentId  "amortimer-release-5a5bc27d7582b9b2"  ("a" + name +
+//                 "-" + 16 hex: the transcript file name and, for every
+//                 ordinary subagent measured, the hook's agent_id)
+// What the hook agent_type of a teammate's own calls is -- its name, or the
+// type it was spawned as -- is NOT measured, so every one is accepted. A
+// teammate's record keeps both identities (an "alias") and is found by any.
+const isTeammateResult = r => !!r && typeof r === 'object'
+  && (r.status === 'teammate_spawned' || (typeof r.agent_id === 'string' && r.agent_id.includes('@')));
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function mateMatches(mate, agentId, agentType) {
+  if (agentId === mate.address || agentId === mate.runtimeId) return true;
+  if (typeof agentId === 'string' && new RegExp(`^a${escapeRe(mate.name)}-[0-9a-f]{8,}$`).test(agentId)) return true;
+  return typeof agentType === 'string' && (agentType === mate.name || agentType === mate.address);
+}
 
 // How many ended identities are remembered. A late echo arrives within
 // seconds; this is hundreds of spawns of headroom, not a history.
@@ -181,6 +194,18 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // agent_ids of runs holding a message they haven't drained yet (see
   // message()). Bounded like the rest.
   const queued = new Set();
+  // TEAMMATES, by name: { name, card, address, runtimeId, ended, reaped, wake }.
+  // A teammate outlives one run: it goes idle and is woken by SendMessage, so
+  // its identity is remembered after its record closes. Bounded, oldest out.
+  const mates = new Map();
+  // agent_ids of BACKGROUND runs the stall clock reaped: silence is not death
+  // (one long tool call is silent), so such a run's next event brings it back.
+  const reapedIds = new Set();
+  function rememberMate(mate) {
+    mates.delete(mate.name);
+    mates.set(mate.name, mate);
+    if (mates.size > REMEMBER_MAX) mates.delete(mates.keys().next().value);
+  }
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -207,9 +232,14 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // bound crosswise the CARD is unaffected -- both are the same name -- and
   // the spawn's result, which names its agentId, corrects it (see adopt()).
   function bind(agentId, agentType) {
-    if (!agentId || endedIds.has(agentId)) return null;   // over: not a new run
+    if (!agentId) return null;
     const known = invs.find(i => i.agentId === agentId);
     if (known) return known;
+    // A teammate's first sighting under its RUNTIME id: found by any of its
+    // identities, then bound to the id its events really carry.
+    const mate = invs.find(i => i.mate && !i.agentId && mateMatches(i.mate, agentId, agentType));
+    if (mate) { mate.agentId = agentId; mate.mate.runtimeId = agentId; return mate; }
+    if (endedIds.has(agentId)) return null;                // over: not a new run
     const free = agentType ? invs.find(i => !i.agentId && i.name === agentType) : undefined;
     if (!free) return null;          // never started here: not ours to credit
     free.agentId = agentId;
@@ -303,13 +333,15 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   //
   // ONE INSTANCE ENDING IS NOT THE AGENT ENDING: the card is derived from
   // whether any invocation of the name remains (F3), in this one place.
-  function end(list, completed) {
+  function end(list, completed, reaped = false) {
     const names = new Map();         // name -> finished (any of its ended runs)
     for (const inv of list) {
       const at = invs.indexOf(inv);
       if (at === -1) continue;
       invs.splice(at, 1);
       if (inv.agentId) rememberEnded(inv);
+      if (inv.mate) { inv.mate.ended = true; inv.mate.reaped = reaped; inv.mate.wake = false; }
+      else if (reaped && inv.background && inv.agentId) remember(reapedIds, inv.agentId);
       if (inv.key !== null) { spawns.delete(inv.key); remember(endedKeys, inv.key); }
       names.set(inv.name, names.get(inv.name) || completed(inv));
     }
@@ -332,6 +364,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // which it could not have finished without, were cut off.
   const finish = inv => end(subtree(inv), i => i === inv);
   const cutOff = list => end(list, () => false);
+  const reap = list => end(list, () => false, true);
 
   // A completed result for a spawn whose RECORD already closed. Usually an
   // echo of a run that's over (its id is in endedIds), and ignored. But a
@@ -345,8 +378,8 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // different live run.
   function lateResult(event, p) {
     const r = p.tool_response;
-    if (event !== 'PostToolUse' || !isCompleted(r) || !r.agentId) return;
-    const holder = invs.find(i => i.agentId === r.agentId);
+    if (event !== 'PostToolUse' || !isCompleted(r) || !resultAgentId(r)) return;
+    const holder = invs.find(i => i.agentId === resultAgentId(r));
     if (holder) finish(holder);
   }
 
@@ -361,13 +394,40 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       return;
     }
     const r = p.tool_response;
-    const named = resultAgentId(r);
+    // A TEAMMATE: the id its result names is an address, not the id its own
+    // events carry, so it is recorded as an alias and never adopted -- adopting
+    // it left every event of the run unattributed, and a reused name (an
+    // address, not a run id) was refused as "already ended" (Dexter, PR #94,
+    // F1/F3). It is background whatever else is true of the result.
+    if (isTeammateResult(r)) {
+      const address = resultAgentId(r);
+      const name = (typeof r.name === 'string' && r.name) || (p.tool_input && p.tool_input.name)
+        || (address && address.split('@')[0]);
+      if (name) {
+        const mate = mates.get(name) || { name };
+        Object.assign(mate, { card: inv.name, address: address || mate.address || null,
+          runtimeId: null, ended: false, reaped: false, wake: false });
+        rememberMate(mate);
+        inv.mate = mate;
+      }
+      inv.background = true;
+      return;
+    }
+    const named = typeof r?.agentId === 'string' && r.agentId ? r.agentId : null;
     if (named) {
       saysWho = true;
       if (!adopt(inv, named)) return;
     }
-    if (isAsyncLaunch(r) || isTeammateSpawn(r)) { inv.background = true; return; }
-    if (isCompleted(r)) finish(inv);
+    if (isCompleted(r)) { finish(inv); return; }
+    if (isAsyncLaunch(r)) { inv.background = true; return; }
+    // A status we don't know that still names a run: assume it is RUNNING.
+    // `completed` is the only status that means done; guessing the other way
+    // was the original bug (Miguel, PR #94, #1). Logged, so a renamed status
+    // is visible rather than silently wrong.
+    if (r && typeof r === 'object' && resultAgentId(r)) {
+      console.log(`[mood] unrecognised spawn status ${JSON.stringify(r.status)} naming a run: treated as background`);
+      inv.background = true;
+    }
   }
 
   // A RUN THAT COMES BACK. The CLI runs a finished agent again on its OLD
@@ -376,10 +436,11 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // end reopens as a new invocation bound to that id. It's background work:
   // the main turn ends while it runs. Returns it, or null for an id this host
   // never saw end (or one that's running: those aren't in endedIds).
-  function reopen(agentId, key) {
-    const name = endedIds.get(agentId);
+  function reopen(agentId, key, nameOverride, mate) {
+    const name = nameOverride !== undefined ? nameOverride : endedIds.get(agentId);
     if (name === undefined) return null;
     endedIds.delete(agentId);
+    reapedIds.delete(agentId);
     queued.delete(agentId);
     const a = ensure(name);
     if (!running(name)) {
@@ -393,6 +454,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       id: ++serial, key, name, agentId, parent: null, orphan: false, background: true,
       description: undefined, startedAt: now(), lastActivity: now(),
     };
+    if (mate) { inv.mate = mate; mate.ended = false; mate.reaped = false; mate.wake = false; mate.runtimeId = agentId; }
     invs.push(inv);
     if (key !== null) spawns.set(key, inv);
     setState(name, a, WORKING);
@@ -418,6 +480,12 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     if (!r || typeof r !== 'object' || r.success !== true) return;
     const key = p.tool_use_id ?? null;
     if (key !== null && (spawns.has(key) || endedKeys.has(key))) return;   // delivered twice
+    // A message to an idle TEAMMATE wakes it without any resumedAgentId (an
+    // inbox delivery, not a transcript resume): mark it, and its next event
+    // reopens it (Dexter, PR #94, F2). Addressed by name or by address.
+    const to = p.tool_input && p.tool_input.to;
+    const mate = typeof to === 'string' ? mates.get(to.split('@')[0]) : undefined;
+    if (mate && mate.ended) mate.wake = true;
     if (typeof r.resumedAgentId === 'string' && r.resumedAgentId) { reopen(r.resumedAgentId, key); return; }
     // A run still going drains the message at its next tool round. If it has
     // none left, because it's writing its last reply, it ENDS first, and the
@@ -438,8 +506,21 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // tells the two apart. A late SubagentStop then finishes the resumed run
   // early. That echo would have to lag a whole model turn, so it's accepted,
   // like the crosswise binding.
-  function wake(agentId) {
+  function wake(agentId, agentType) {
     if (queued.has(agentId)) reopen(agentId, null);   // a no-op while the run is still going
+    // A REAPED background run speaking again was only quiet, not dead.
+    else if (reapedIds.has(agentId)) reopen(agentId, null);
+    // A teammate whose run ended and that either was woken by a message or was
+    // only reaped for silence (Dexter, PR #94, F2/F5).
+    else {
+      for (const mate of mates.values()) {
+        if (!mate.ended || !(mate.wake || mate.reaped)) continue;
+        if (!mateMatches(mate, agentId, agentType)) continue;
+        if (invs.some(i => i.mate === mate)) continue;
+        reopen(agentId, null, mate.card, mate);
+        break;
+      }
+    }
   }
 
   function handle({ event, payload }) {
@@ -447,7 +528,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     const tool = p.tool_name;
     if (p.agent_id) {
       saysWho = true;
-      if (event !== 'SubagentStop') wake(p.agent_id);
+      if (event !== 'SubagentStop') wake(p.agent_id, p.agent_type);
       // A tool round of that run COMPLETED, so a message queued for it drained.
       if (event === 'PostToolUse' || event === 'PostToolUseFailure') queued.delete(p.agent_id);
     }
@@ -645,7 +726,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     }
     // A reaped run was cut off, so it sleeps at once -- not whenever the idle
     // clock catches up (test/mood-machine-kills.test.js).
-    if (gone.size) cutOff([...gone]);
+    if (gone.size) reap([...gone]);
 
     for (const [agent, a] of agents) {
       if (a.state === SLEEPING) continue;
