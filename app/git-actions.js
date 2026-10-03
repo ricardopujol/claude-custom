@@ -25,6 +25,8 @@
 (function (root) {
 
 const OPEN_WORKTREE_WHY = 'needs agent-creator to attach an existing branch';
+// The lock states whose host runs the session (host/session-gate.js): held, no lock to take, or opened anyway.
+const RUNS_A_SESSION = ['held', 'unlocked', 'override'];
 
 const yes = (id, label) => ({ id, label, enabled: true, why: null });
 const no = (id, label, why) => ({ id, label, enabled: false, why });
@@ -63,6 +65,11 @@ function openWorktree(b) {
  * re-check must agree). Working first: that is the first thing to wait for.
  */
 function sessionBusyWhy(t) {
+  // PR #93 Dexter F5: a blocked tab's host has no terminal, so nothing typed would arrive; a pending one
+  // hasn't started its session. Only a tab that runs its session takes keys.
+  if (t.lock === 'blocked') return 'is blocked: another session holds this worktree';
+  if (t.lock === 'pending') return "hasn't taken its worktree's lock yet";
+  if (!RUNS_A_SESSION.includes(t.lock)) return "can't tell whether it holds its worktree's session";
   if (t.working !== false || t.turn === 'turn') return 'is working: wait for it to finish';
   if (t.needsInput !== false || t.turn === 'prompt') return 'is waiting for you: answer it first';
   if (t.turn !== 'idle') return "hasn't said whether a turn is running: can't tell whether it's at rest";

@@ -1112,6 +1112,21 @@ test('PR #93 Dexter F4 / Miguel I1: a double click or a held Enter types /merged
   assert.strictEqual(c.kind, 'sent');
 });
 
+test('PR #93 Dexter F5: a tab blocked by another session (no terminal) is told, and nothing is typed', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  answerTyping(h, { ok: true, box: '' });
+  for (const [lock, re] of [['blocked', /another session holds/], ['pending', /hasn't taken/], [null, /can't tell whether it holds/]]) {
+    h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...idleStatus, lock });
+    const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+    assert.strictEqual(r.kind, 'explain', String(lock));
+    assert.match(r.text, re);
+  }
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
+});
+
 // --- Go to that session ------------------------------------------------------
 
 test('goTo: a tab in THIS window is selected', async () => {

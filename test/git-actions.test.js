@@ -14,7 +14,7 @@ const A = require('../app/git-actions');
 const open = { name: 'feat/b', state: 'open', pr: 91, prUrl: 'https://github.com/o/r/pull/91', place: 'worktree', folder: 'C:/p/feat-b' };
 const merged = { name: 'feat/a', state: 'merged', pr: 5, prUrl: 'https://github.com/o/r/pull/5', place: 'had-worktree', folder: null };
 const unmerged = { name: 'spike/c', state: 'unmerged', pr: null, prUrl: null, place: 'dev', folder: null };
-const idle = { open: true, started: true, known: true, working: false, needsInput: false, turn: 'idle' };
+const idle = { open: true, started: true, known: true, working: false, needsInput: false, turn: 'idle', lock: 'held' };
 const ctx = (over = {}) => ({ prsKnown: true, repoUrl: 'https://github.com/o/r', tab: idle, ...over });
 const by = (list, id) => list.find(a => a.id === id);
 
@@ -148,4 +148,16 @@ test('which action does the drawer put the keyboard on first: the first enabled 
   assert.strictEqual(A.firstFocus(A.actionsFor(open, ctx())), 'jump');
   assert.strictEqual(A.firstFocus(A.actionsFor(unmerged, ctx({ tab: null }))), 'copy', 'jump and open-pr are off: copy is the first enabled');
   assert.strictEqual(A.firstFocus(A.actionsFor(merged, ctx({ tab: null }))), 'open-pr');
+});
+
+// PR #93 Dexter F5: a tab whose worktree is held by another session has no terminal: nothing would be typed.
+test('Dexter F5: Run /merged is off for a blocked or not-yet-locked tab, and for one whose lock is unknown', () => {
+  for (const [lock, re] of [['blocked', /another session holds/], ['pending', /hasn't taken/], [null, /can't tell whether it holds/]]) {
+    const a = by(A.actionsFor(open, ctx({ tab: { ...idle, lock } })), 'run-merged');
+    assert.strictEqual(a.enabled, false, String(lock));
+    assert.match(a.why, re);
+  }
+  for (const lock of ['held', 'unlocked', 'override']) {
+    assert.strictEqual(by(A.actionsFor(open, ctx({ tab: { ...idle, lock } })), 'run-merged').enabled, true, lock);
+  }
 });
