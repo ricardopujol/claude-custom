@@ -22,6 +22,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const STALE_MS = 90_000;
+const CLAIM_STALE_MS = 10_000;
 
 const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
 const isPid = (n) => Number.isInteger(n) && n > 0;
@@ -30,7 +31,9 @@ function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return !!err && err.code === 'EPERM'; }
 }
 
-function createSlot({ file, now = Date.now, pid = process.pid, isAlive = processAlive, staleMs = STALE_MS } = {}) {
+function createSlot({ file, now = Date.now, pid = process.pid, isAlive = processAlive, staleMs = STALE_MS, fsImpl = fs } = {}) {
+  const fs = fsImpl;
+  const claimFile = file + '.takeover';
   let token = null;
   let error = '';
 
@@ -80,6 +83,24 @@ function createSlot({ file, now = Date.now, pid = process.pid, isAlive = process
     return !!(o && isPid(o.pid) && !isAlive(o.pid));
   }
 
+  // Breaking a stale slot is check-then-act, so it is serialised: whoever creates the claim file (create-exclusive) is the
+  // only host that may break a slot, and it re-reads the slot under the claim. Without it a second host could delete the
+  // FIRST host's fresh slot and both would hold the GPU (Dexter F3, PR #105). A claimant that died leaves its claim
+  // behind, so a claim older than CLAIM_STALE_MS is cleared (on this tick; the takeover goes through on the next).
+  function claim() {
+    try {
+      fs.writeFileSync(claimFile, JSON.stringify({ pid, at: now() }), { flag: 'wx' });
+      return true;
+    } catch (err) {
+      if (err && err.code === 'EEXIST') {
+        let age = 0;
+        try { age = Date.now() - fs.statSync(claimFile).mtimeMs; } catch { /* gone: next tick */ }
+        if (age > CLAIM_STALE_MS) { try { fs.unlinkSync(claimFile); } catch { /* somebody else cleared it */ } }
+      }
+      return false;
+    }
+  }
+
   function tryAcquire() {
     if (token !== null) return false;
     const first = create();
@@ -88,11 +109,16 @@ function createSlot({ file, now = Date.now, pid = process.pid, isAlive = process
     const h = holder();
     if (h.gone) return create() === 'ok';
     if (!isStale(h)) return false;
-    // Only break the very slot that was judged: another host may have taken it over a moment ago.
-    const again = holder();
-    if (!again.gone && again.raw !== h.raw) return false;
-    try { fs.unlinkSync(file); } catch { /* somebody else broke it first: create() decides */ }
-    return create() === 'ok';
+    if (!claim()) return false;
+    try {
+      // Under the claim: only the very slot that was judged may be broken.
+      const again = holder();
+      if (!again.gone && again.raw !== h.raw) return false;
+      if (!again.gone) { try { fs.unlinkSync(file); } catch { /* gone already: create() decides */ } }
+      return create() === 'ok';
+    } finally {
+      try { fs.unlinkSync(claimFile); } catch { /* already cleared */ }
+    }
   }
 
   function release() {

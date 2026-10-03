@@ -104,3 +104,61 @@ test('a folder that cannot be written is a refusal with a reason, never a throw'
   assert.strictEqual(a.tryAcquire(), false);
   assert.ok(typeof a.lastError() === 'string' && a.lastError() !== '');
 });
+
+// Dexter F3 (PR #105): taking over a stale slot was check-then-act, so a second host could delete the FIRST host's fresh
+// slot and both would hold the GPU. The takeover is now claimed with a create-exclusive file and re-verified.
+test('two hosts taking over the same stale slot at once: only one of them ever holds it', () => {
+  const file = path.join(tmp(), 'job.lock');
+  fs.writeFileSync(file, JSON.stringify({ pid: 4242, at: 1_000_000, token: 'dead-host' }));
+  const now = clock(1_000_000 + STALE_MS + 5000);
+  const b = createSlot({ file, pid: 222, now, isAlive: (p) => p !== 4242 });
+  let bResult = null;
+  let reads = 0;
+  // Host A reads the slot twice while judging it (judge, then re-verify before it breaks it). Host B runs its WHOLE
+  // takeover inside A's second read: the interleaving that let both through.
+  const aFs = { ...fs, readFileSync: (f, ...rest) => {
+    if (f === file && ++reads === 2) bResult = b.tryAcquire();
+    return fs.readFileSync(f, ...rest);
+  } };
+  const a = createSlot({ file, pid: 111, now, isAlive: (p) => p !== 4242, fsImpl: aFs });
+  const aResult = a.tryAcquire();
+  assert.ok(reads >= 2 && bResult !== null, 'the interleaving actually ran');
+  const holders = [aResult, bResult === true].filter(Boolean).length;
+  assert.ok(holders <= 1, `both took the slot: A=${aResult} B=${bResult}`);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).pid === 111 || JSON.parse(fs.readFileSync(file, 'utf8')).pid === 222, true);
+});
+
+test('a takeover that finds the slot already re-made by someone else leaves it alone', () => {
+  const file = path.join(tmp(), 'job.lock');
+  fs.writeFileSync(file, JSON.stringify({ pid: 4242, at: 1_000_000, token: 'dead-host' }));
+  const now = clock(1_000_000 + STALE_MS + 5000);
+  let first = true;
+  const aFs = { ...fs, readFileSync: (f, ...rest) => {
+    if (f === file && !first) fs.writeFileSync(file, JSON.stringify({ pid: 333, at: now(), token: 'fresh' }));   // another host got there between judge and break
+    first = false;
+    return fs.readFileSync(f, ...rest);
+  } };
+  const a = createSlot({ file, pid: 111, now, isAlive: (p) => p !== 4242, fsImpl: aFs });
+  assert.strictEqual(a.tryAcquire(), false);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).token, 'fresh', 'the fresh slot was not deleted');
+});
+
+test('the takeover claim never outlives the takeover, and a crashed claimant\'s claim goes stale', () => {
+  const dir = tmp();
+  const file = path.join(dir, 'job.lock');
+  fs.writeFileSync(file, JSON.stringify({ pid: 4242, at: 1_000_000, token: 'dead-host' }));
+  const now = clock(1_000_000 + STALE_MS + 5000);
+  const a = createSlot({ file, pid: 111, now, isAlive: (p) => p !== 4242 });
+  assert.strictEqual(a.tryAcquire(), true);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['job.lock'], 'no claim file left behind');
+  a.release();
+  // a claimant that died between creating its claim and removing it
+  fs.writeFileSync(file, JSON.stringify({ pid: 4242, at: 1_000_000, token: 'dead-host' }));
+  fs.writeFileSync(file + '.takeover', '{}');
+  const b = createSlot({ file, pid: 222, now, isAlive: (p) => p !== 4242 });
+  assert.strictEqual(b.tryAcquire(), false, 'a fresh claim is respected');
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(file + '.takeover', old, old);
+  assert.strictEqual(b.tryAcquire(), false, 'the stale claim is cleared on this tick...');
+  assert.strictEqual(b.tryAcquire(), true, '...and the takeover goes through on the next');
+});
