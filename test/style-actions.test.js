@@ -75,8 +75,7 @@ test('M5: applyBackground checks that mediaFor described the background before i
   const guard = body.indexOf('if (!media) return;');
   const firstUse = body.indexOf('media.tag');
   assert.ok(guard > 0 && guard < firstUse, 'the null check comes before the first media.tag');
-  // and mediaFor really can answer null
-  assert.strictEqual(require('../app/bg-media-display').mediaFor({ kind: 'video', url: '' }), null);
+  // mediaFor really can answer null: test/bg-media-display.test.js pins it (it is mutated, so it is not read from here)
 });
 
 test('D5: Match colours says which background it sampled, taken before the frame is read', () => {
