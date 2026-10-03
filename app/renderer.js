@@ -387,23 +387,23 @@ document.addEventListener('keydown', (e) => {
   // consumes the key first. This comment is left as the signpost.
 });
 
-// --- fog of war ---
-// A closed whitelist: the tier decides a CSS class, so it must never be
-// interpolated straight from host data even though it is an enum today.
-const TIER_CLASS = { edited: 'edited', read: 'read', dark: 'dark' };
-const FOG_ROW_CAP = 600;
-// ----------------------------------------------------------
-// Asked for on demand, never pushed: a cold read is ~175ms of synchronous work
-// in the host, and the host's event loop is what delivers hook events.
-function requestFog() {
-  const list = document.getElementById('fog-list');
-  if (!list.dataset.loaded) document.getElementById('fog-summary').textContent = 'reading the map…';
-  // Silently dropped if the socket is not open yet; ws.onopen asks again. A
-  // swallowed throw here is what left the panel reading "reading the map…"
-  // forever, which looks like a slow host rather than a lost message.
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try { ws.send(JSON.stringify({ type: 'fog' })); } catch {}
-}
+// --- the repo browser and code reader (#45 + #32) ---
+// The Files tab took the Map's slot (module id `fog`, kept for saved layouts) and a file opens in a split
+// beside the terminal. All of it is app/repo-*.js; this is only the wiring: the socket to send on, how to type
+// into the CLI's box (typeCommand, below: never Enter), and where to put the keyboard back.
+const repoBrowser = window.repoBrowser.create({
+  doc: document,
+  send: (obj) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try { ws.send(JSON.stringify(obj)); return true; } catch { return false; }
+  },
+  harness: window.harness,
+  storage: (() => { try { return localStorage; } catch { return null; } })(),
+  // the reader's width is kept per tab: every tab's page shares one localStorage, so the key names this one
+  storageKey: () => `repoReaderWidth:${document.getElementById('cwd').textContent || ''}`,
+  typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
+  focusTerminal: () => term.focus(),
+});
 
 // --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
 // Asked for when the panel opens, on reconnect, and every 30s while it's showing:
@@ -526,64 +526,6 @@ document.getElementById('projects-list').addEventListener('click', (e) => {
   document.getElementById('projects-note').textContent = 'opening a window…';
   document.getElementById('projects-note').style.display = '';
 });
-
-function renderFog(fog) {
-  const list = document.getElementById('fog-list');
-  const summary = document.getElementById('fog-summary');
-  const files = fog.files || [];
-  const status = fog.status || {};
-  list.dataset.loaded = '1';
-
-  // STATUS FIRST. Every failure in this feature otherwise renders as a
-  // confident map, and one of them ("git unavailable") renders as PERFECT
-  // coverage with zero blind spots -- the feature lying in the exact direction
-  // that makes you stop looking. A partial map that says what it is missing is
-  // usable; a complete-looking wrong one is worse than no map.
-  const warnings = [];
-  if (status.failed) warnings.push(`the map could not be read: ${escapeHtml(status.error || 'unknown error')}`);
-  if (status.transcriptsMissing) warnings.push('no transcripts for this project — nothing has been recorded here yet');
-  if (status.transcriptErrors) warnings.push(`${status.transcriptErrors} transcript(s) unreadable — those files may show as unexplored`);
-  if (!status.trackedOk && !status.failed) {
-    warnings.push('file list unavailable (not a git repo?) — <b>never-opened files are NOT counted</b>');
-  }
-
-  if (!files.length) {
-    summary.innerHTML = warnings.length
-      ? warnings.map(w => `<span class="fog-warn">${w}</span>`).join('<br>')
-      : 'nothing read yet — the whole project is dark.';
-    list.innerHTML = '';
-    return;
-  }
-
-  const dark = files.filter(f => f.tier === 'dark').length;
-  const edited = files.filter(f => f.tier === 'edited').length;
-  // The host already computed these against the project; recomputing them here
-  // would be a second definition of one number, free to drift from the first.
-  const explored = Number.isFinite(fog.explored) ? fog.explored : files.length - dark;
-  const total = Number.isFinite(fog.total) ? fog.total : files.length;
-
-  summary.innerHTML =
-    `<b>${explored}</b> of <b>${total}</b> files explored · <b>${edited}</b> edited · ` +
-    `<span class="dark-count">${dark} never opened</span>` +
-    warnings.map(w => `<br><span class="fog-warn">${w}</span>`).join('');
-
-  // Capped. One innerHTML string with a div per file is a multi-second layout
-  // freeze on a large repo, and nobody reads the 3000th row.
-  const shown = files.slice(0, FOG_ROW_CAP);
-  list.innerHTML = shown.map(f => {
-    // Brightness is applied per row rather than bucketed into classes: the
-    // decay is continuous, and three shades would discard the signal.
-    const dim = f.tier === 'dark' ? '' : `style="opacity:${(0.35 + f.brightness * 0.65).toFixed(2)}"`;
-    const count = f.touches ? `<span class="n">${f.touches}</span>` : '';
-    const tier = TIER_CLASS[f.tier] || 'dark';
-    return `<div class="fog-row ${tier}" ${dim} title="${escapeHtml(f.path)}">` +
-           `<span class="name"><bdi>${escapeHtml(f.path)}</bdi></span>${count}</div>`;
-  }).join('');
-
-  if (files.length > shown.length) {
-    list.innerHTML += `<div class="fog-more">+${files.length - shown.length} more</div>`;
-  }
-}
 
 // --- bug vault ----------------------------------------------------------------
 // Pushed by the host in `hello` and again after every add/setFixed, never
@@ -758,7 +700,7 @@ function zonesViewport() {
 }
 
 function onModuleShown(id) {
-  if (id === 'fog') requestFog();
+  if (id === 'fog') repoBrowser.show();
   if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
@@ -1249,6 +1191,11 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
       // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
       // CLI box with it). Bounded, and only ever this tab's own socket.
+      // the repo browser (verify/probe-repo-browser.js): named sub-actions of the Files tab and the reader
+      case 'repoProbe': {
+        const r = repoBrowser.probe(a.what, a);
+        return r && typeof r.then === 'function' ? r.then(x => JSON.stringify(x)) : JSON.stringify(r);
+      }
       case 'gitTermInput': {
         if (typeof a.data !== 'string' || !a.data || a.data.length > 2000) return JSON.stringify({ ok: false, error: 'gitTermInput needs text' });
         send(JSON.stringify({ type: 'input', data: a.data }));
@@ -3434,7 +3381,7 @@ function typePlanned(enterInsert, command, done) {
  * say the turn is really over, so that step is the person's). `done({ ok, box })`, `box` being what the
  * box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
  */
-function typeCommand(command, done) {
+function typeCommand(command, done, kind) {
   term.focus();
   const lines = screenLines();
   if (vimInsertShown(lines)) vimSeen = true;
@@ -3442,6 +3389,7 @@ function typeCommand(command, done) {
     command,
     screen: inputState(lines, { vim: vimSeen }),
     connected: !!ws && ws.readyState === WebSocket.OPEN,
+    kind,                       // 'mention' types the reader's `@path#Lx-y` (never Enter, like /merged)
   });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
   const box = boxText(lines);
@@ -4123,6 +4071,8 @@ function handleControl(msg) {
     // is already on screen and the session appears twice.
     term.reset();
     document.getElementById('cwd').textContent = msg.cwd || '';
+    // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
+    repoBrowser.setControls(msg.controls);
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
     renderTitle();
@@ -4346,8 +4296,8 @@ function handleControl(msg) {
     renderCooldowns(msg.cooldowns);
     return;
   }
-  if (msg.type === 'fog') {
-    renderFog(msg);
+  if (msg.type === 'repo') {
+    repoBrowser.onMessage(msg);
     return;
   }
   if (msg.type === 'git-tree') {
@@ -4525,7 +4475,7 @@ function connect() {
     if (agentLog.open) openAgentLog(agentLog.agent);
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
-    if (shownModules.has('fog')) requestFog();
+    if (shownModules.has('fog')) repoBrowser.show();
     if (shownModules.has('git')) requestGitTree();
     if (shownModules.has('projects')) requestProjects();
     // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
@@ -4569,6 +4519,8 @@ function connect() {
 
   ws.onclose = () => {
     dot.classList.remove('on');
+    // a Files ask in flight will never be answered by this socket: fail it now, not after its timeout
+    repoBrowser.failAll('the connection to the session dropped');
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; reportTabStatus(); }
     // Detach is normal, not fatal — the host keeps the session alive, so just

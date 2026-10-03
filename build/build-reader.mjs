@@ -1,4 +1,4 @@
-// Builds the code reader's CodeMirror 6 bundle (#32): build/codemirror-entry.mjs -> app/vendor/codemirror-reader.js.
+// Builds the code reader's CodeMirror 6 bundle (#32): build/codemirror-entry.mjs -> app/codemirror-reader.js.
 //
 //   npm run build:reader
 //
@@ -14,7 +14,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const result = await build({
   entryPoints: [path.join(root, 'build', 'codemirror-entry.mjs')],
-  outfile: path.join(root, 'app', 'vendor', 'codemirror-reader.js'),
+  outfile: path.join(root, 'app', 'codemirror-reader.js'),
   bundle: true,
   format: 'iife',
   globalName: 'repoCodeMirror',
@@ -27,4 +27,4 @@ const result = await build({
   logLevel: 'info',
 });
 const out = Object.values(result.metafile.outputs)[0];
-console.log(`built app/vendor/codemirror-reader.js: ${(out.bytes / 1024).toFixed(0)} KB`);
+console.log(`built app/codemirror-reader.js: ${(out.bytes / 1024).toFixed(0)} KB`);

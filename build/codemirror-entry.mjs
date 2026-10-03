@@ -1,5 +1,5 @@
 // The code reader's CodeMirror 6 bundle, source (#32). Built by build/build-reader.mjs into
-// app/vendor/codemirror-reader.js and loaded by app/repo-reader.js on the FIRST file open, never at startup.
+// app/codemirror-reader.js and loaded by app/repo-reader.js on the FIRST file open, never at startup.
 //
 // READ-ONLY by construction: EditorState.readOnly is on (a selection and the caret still work, which is
 // what "@ in prompt" for a line range needs) and nothing here imports an editing command or keymap.
@@ -141,6 +141,13 @@ function create(parent, { onSelection } = {}) {
       view.dom.dataset.mode = mode === 'diff' ? 'diff' : 'file';
     },
     selection,
+    // Whole lines from..to (1-based), as dragging the mouse down them would select (the probe uses it).
+    setSelection(fromLine, toLine) {
+      const doc = view.state.doc;
+      const a = doc.line(Math.max(1, Math.min(doc.lines, fromLine)));
+      const b = doc.line(Math.max(1, Math.min(doc.lines, toLine)));
+      view.dispatch({ selection: { anchor: a.from, head: b.to } });
+    },
     lines: () => view.state.doc.lines,
     text: () => view.state.doc.toString(),
     focus: () => view.focus(),

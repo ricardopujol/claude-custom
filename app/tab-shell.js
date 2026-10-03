@@ -1084,6 +1084,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
   // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
   'gitTermInput',
+  // the repo browser and code reader: verify/probe-repo-browser.js
+  'repoProbe',
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch']);
 

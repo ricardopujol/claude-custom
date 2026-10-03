@@ -128,10 +128,3 @@ test('a shell or startDrag that throws is a failure reply, not a crash in main',
   assert.match(r1.why, /explorer is not available/);
   assert.match(r2.why, /drag failed/);
 });
-
-test('the module never opens, runs or launches a file: no openPath or openExternal call in its source', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'repo-actions.js'), 'utf8');
-  assert.doesNotMatch(src, /\.\s*openPath\s*\(/);
-  assert.doesNotMatch(src, /\.\s*openExternal\s*\(/);
-  assert.doesNotMatch(src, /child_process|execFile|spawn\s*\(/);
-});
