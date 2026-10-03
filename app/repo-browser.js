@@ -43,6 +43,7 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
     doc, requester, harness, storage,
     onOpen: (path) => reader.open(path),
     onMention: mentionFile,
+    isShown,
   });
   said = panel.say;
   panel.onOverlay((overlay) => reader.setOverlay(overlay && overlay.ok ? overlay : null));

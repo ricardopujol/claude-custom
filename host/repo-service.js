@@ -43,10 +43,13 @@ function createRepoService({
   let watcher = null;
   let loaded = null;
   let overlayInFlight = null;
+  let changes = 0;           // worktree changes seen: an overlay read begun before one may not include it
+  let overlayAt = 0;         // the change count the in-flight overlay read began at
 
   function ensureWatching() {
     if (watcher) return;
     watcher = watch(root, async () => {
+      changes += 1;
       try {
         await index.refresh({ again: true });
         announce({ type: 'repo', action: 'changed' });
@@ -62,7 +65,11 @@ function createRepoService({
   };
 
   function readOverlay() {
+    // PR #95 Dexter D4: an ask that comes after a change must not be answered from a read that began before
+    // it (a cold read of the transcripts takes seconds): it waits for that read, then reads again.
+    if (overlayInFlight && overlayAt !== changes) return overlayInFlight.then(() => readOverlay());
     if (!overlayInFlight) {
+      overlayAt = changes;
       overlayInFlight = (async () => {
         try {
           const fog = await readFogFn({ cwd: root, projectsDir });

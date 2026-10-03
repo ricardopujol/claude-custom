@@ -24,11 +24,11 @@
 (function (root) {
 
 const ONLY_KEY = 'repoOnlyTouched';
-const OVERLAY_EVERY_MS = 5000;
 const SAID_MS = 6000;
 
-function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, now = Date.now } = {}) {
+function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, isShown = () => true, now = Date.now } = {}) {
   const display = root.repoTreeDisplay || (typeof require === 'function' ? require('./repo-tree-display') : null);
+  const { createRefresher } = root.repoRefresh || (typeof require === 'function' ? require('./repo-refresh') : {});
   const el = {
     note: doc.getElementById('files-note'),
     only: doc.getElementById('files-only'),
@@ -44,9 +44,6 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, n
   // released, and a probe has no mouse. main's refusals of bad paths are checked directly (harnessDrag).
   const probing = (() => { try { return new URLSearchParams(root.location.search).get('probe') === '1'; } catch { return false; } })();
   const dragRequests = [];
-  let lastOverlayAt = -Infinity;
-  let overlayTimer = null;
-  let overlayBusy = false;
   let renders = 0;
 
   try { state.onlyTouched = !!storage && storage.getItem(ONLY_KEY) === '1'; } catch { /* storage refused */ }
@@ -82,34 +79,28 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, n
   }
 
   async function loadOverlay() {
-    if (overlayBusy) return;
-    overlayBusy = true;
-    lastOverlayAt = now();
-    try {
-      const r = await requester.request('overlay');
-      state.overlay = r;
-    } finally {
-      overlayBusy = false;
-    }
+    state.overlay = await requester.request('overlay');
     if (onOverlay) onOverlay(state.overlay);
     render();
   }
   let onOverlay = null;
 
-  function show() {
-    if (!state.loadedRoot || state.error) loadDir('');
-    loadOverlay();
-  }
-
-  // The host's `changed` push: re-list the root and every open folder; the overlay at most every 5s (it
-  // re-reads transcripts, and the active one grows with every turn).
-  function onChanged() {
+  function reloadTree() {
     loadDir('');
     for (const dir of state.expanded) loadDir(dir);
-    const wait = OVERLAY_EVERY_MS - (now() - lastOverlayAt);
-    if (wait <= 0) loadOverlay();
-    else if (overlayTimer === null) overlayTimer = setTimeout(() => { overlayTimer = null; loadOverlay(); }, wait);
   }
+
+  // WHEN things are re-read is app/repo-refresh.js's (tested): the overlay at most every 5s with a follow-up for
+  // a change that lands mid-read (Dexter D4), and nothing at all while the tab is hidden (Miguel M1).
+  const refresher = createRefresher({ reloadTree, loadOverlay, isShown, now });
+
+  function show() {
+    if (!state.loadedRoot || state.error) loadDir('');
+    refresher.shown();
+  }
+
+  // The host's `changed` push.
+  function onChanged() { refresher.onChanged(); }
 
   // ---- drawing ----
 
@@ -360,7 +351,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, n
 
   return {
     show, onChanged, setSelected, probe, say,
-    refresh: () => { loadDir(''); loadOverlay(); },
+    refresh: () => { loadDir(''); refresher.askOverlay({ urgent: true }); },
     onOverlay: (fn) => { onOverlay = fn; },
     overlay: () => state.overlay,
   };

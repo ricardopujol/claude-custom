@@ -228,3 +228,40 @@ test('D3: the overlay is spelled the way the listing spells the file (case varia
   assert.deepStrictEqual(r.files.map(f => [f.path, f.edits]), [['src/a.js', 3]]);
   assert.deepStrictEqual(r.dirs.map(d => [d.path, d.edits]), [['', 3], ['src', 3]]);
 });
+
+// ---- PR #95 Dexter D4: an overlay ask that arrives after a change is not answered from a read begun before it ----
+
+test('D4: a change while an overlay read is in flight makes the next ask read again, and it sees the change', async () => {
+  const { root } = repo();
+  let handler = null;
+  const gates = [];
+  let truth = ['a.js'];
+  const readFog = () => new Promise((resolve) => {
+    const snapshot = [...truth];                       // what this read saw when it began
+    gates.push(() => resolve({ files: snapshot.map(p => ({ path: p, tier: 'edited', edits: 1 })), status: {} }));
+  });
+  const svc = make({ root, readFog, watch: (d, onChange) => { handler = onChange; return { close() {} }; } });
+  await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 1 });      // starts the watch
+  const first = svc.handle({ type: 'repo', action: 'overlay', seq: 2 });
+  await new Promise(r => setTimeout(r, 20));
+  truth = ['a.js', 'b.js'];                           // Claude edits b.js while the read is running
+  await handler();
+  const second = svc.handle({ type: 'repo', action: 'overlay', seq: 3 });
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(gates.length, 1, 'the second ask waits for the first, then reads again');
+  gates[0]();
+  await first;
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(gates.length, 2, 'a second read was started after the change');
+  gates[1]();
+  const r2 = await second;
+  assert.deepStrictEqual(r2.files.map(f => f.path).sort(), ['a.js', 'b.js']);
+});
+
+test('D4: with no change in between, overlapping asks still share one read', async () => {
+  const { root } = repo();
+  let reads = 0;
+  const svc = make({ root, readFog: async () => { reads++; await new Promise(r => setTimeout(r, 20)); return { files: [], status: {} }; } });
+  await Promise.all([1, 2, 3].map(seq => svc.handle({ type: 'repo', action: 'overlay', seq })));
+  assert.strictEqual(reads, 1);
+});
