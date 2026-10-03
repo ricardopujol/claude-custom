@@ -115,3 +115,62 @@ test('#31 (Dexter F5): a turn STARTING (not a session still working) ends a pend
 });
 
 
+
+test('the shell\'s override menu item clicks the Open anyway button: one switch, not two', () => {
+  assert.match(JS, /window\.harness\.onLockOverride\(\(\) => document\.getElementById\('lock-open-anyway'\)\.click\(\)\)/);
+});
+
+test('the preload exposes exactly the tab bridge on the tab:* channels, replace-don\'t-accumulate', () => {
+  const p = strip(PRELOAD);
+  assert.match(p, /tabStatus: \(status\) => ipcRenderer\.send\('tab:status', status\)/);
+  assert.match(p, /closeTab: \(\) => ipcRenderer\.send\('tab:close'\)/);
+  assert.match(p, /goToSession: \(holder\) => ipcRenderer\.invoke\('tab:goTo', holder\)/);
+  // the Git panel's *Jump to its tab* (documentation/PLAN_GIT_TREE.md Task 10)
+  assert.match(p, /selectFolder: \(folder\) => ipcRenderer\.invoke\('tab:selectFolder', folder\)/);
+  assert.match(p, /raise: \(\) => ipcRenderer\.send\('tab:raise'\)/);
+  assert.match(p, /onTabSelected: \(fn\) => \(ipcRenderer\.removeAllListeners\('tab-selected'\)/);
+  assert.match(p, /onLockOverride: \(fn\) => \(ipcRenderer\.removeAllListeners\('lock-override'\)/);
+});
+
+// --- fix/terminal-links (2026-10-01) ------------------------------------------------
+
+test('a link clicked in the terminal goes to main through the bridge: no confirm, no window.open', () => {
+  const opts = JS.slice(JS.indexOf('const term = new Terminal({'), JS.indexOf('\n});', JS.indexOf('const term = new Terminal({')));
+  assert.match(opts, /linkHandler: \{/, 'xterm\'s default handler confirm()s, then window.open()s a blank page');
+  assert.match(opts, /activate: \(event, uri\) => openTerminalLink\(event, uri\)/);
+  const body = fnBody('openTerminalLink');
+  assert.match(body, /window\.harness\.openExternal\(uri\)/);
+  assert.doesNotMatch(body, /confirm\(|window\.open\(/);
+});
+
+test('PR #81 Dexter F2: only a single left click opens it, once (through linkClick.shouldOpen)', () => {
+  const body = fnBody('openTerminalLink');
+  assert.match(body, /linkClick\.shouldOpen\(event, uri, lastLinkOpened, Date\.now\(\)\)/);
+  assert.match(body, /lastLinkOpened = r\.last;/);
+  assert.match(body, /if \(!r\.open/);
+});
+
+test('PR #81 Dexter F1 (Ricardo: plain click + show target): hovering a link shows where it really goes', () => {
+  const opts = JS.slice(JS.indexOf('const term = new Terminal({'), JS.indexOf('\n});', JS.indexOf('const term = new Terminal({')));
+  assert.match(opts, /hover: \(_event, uri\) => showLinkTarget\(linkClick\.targetText\(uri\)\)/);
+  assert.match(opts, /leave: \(\) => showLinkTarget\(null\)/);
+  const show = fnBody('showLinkTarget');
+  assert.match(show, /textContent = /, 'a URL is text, never markup');
+  assert.doesNotMatch(show, /innerHTML/);
+  assert.match(HTML, /<div id="link-target"[^>]*\bhidden\b/);
+});
+
+test('PR #81 Dexter F5: a link main refused says so, instead of doing nothing visible', () => {
+  const body = fnBody('openTerminalLink');
+  assert.match(body, /opened === false\) flashLinkTarget\(linkClick\.refusedText\(uri\)\)/);
+});
+
+test('renderer.html loads link-click.js before renderer.js', () => {
+  const a = HTML.indexOf('<script src="./link-click.js"></script>');
+  const b = HTML.indexOf('<script src="./renderer.js"></script>');
+  assert.ok(a !== -1 && b > a);
+});
+
+test('the bridge asks main to open a link, and hears whether it did', () => {
+  assert.match(strip(PRELOAD), /openExternal: \(url\) => ipcRenderer\.invoke\('tab:openExternal', url\)/);
+});
