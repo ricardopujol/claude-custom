@@ -17,6 +17,9 @@
  * worktree. So a subagent's record keeps `where`, the last worktree one of its calls proved
  * (host/agent-occupancy.js touchOf, the occupancy claim's own test), and its spend goes to that
  * worktree's branch. Until a call proves one, a line is credited by its own gitBranch, as before.
+ * The folder that never counts as a place is the LAUNCHING one, and that is where the transcript is
+ * FILED (<projects>\<encoded worktree>\), not the cwd on a line: measured on the same session, the
+ * cwd follows a `cd` in Bash, and a call back into dev from elsewhere would move the agent to dev.
  *
  * BRANCH NAMES ARE DATA, NOT KEYS OF OURS (PR #84 Miguel B2 / Dexter F12): a branch may be called
  * `__proto__`, `constructor` or `toString`. Maps keyed by a branch name are only ever read with
@@ -109,9 +112,11 @@ function placeOf(content, cwd, places) {
  * '\n' is a line still being written: it's ignored here, and the caller reads it next time.
  *
  * `places` is given for a SUBAGENT's transcript only: the project's worktrees as `[{ root, branch }]`.
- * With it, a line is credited to `rec.where` once a call has proven one (see the header).
+ * With it, a line is credited to `rec.where` once a call has proven one (see the header). `home` is
+ * the launching folder, the one the transcript is filed under; when no listed worktree is, the line's
+ * own cwd stands in for it.
  */
-function addLines(rec, text, projectRoot, places) {
+function addLines(rec, text, projectRoot, places, home) {
   const redirect = Array.isArray(places);
   const parts = text.split('\n');
   parts.pop();
@@ -136,7 +141,7 @@ function addLines(rec, text, projectRoot, places) {
     // stays where the agent was: one message of lag per move. The alternative is reading ahead in a
     // file that is still being written.
     if (redirect) {
-      const moved = placeOf(msg.content, o.cwd, places);
+      const moved = placeOf(msg.content, isStr(home) ? home : o.cwd, places);
       if (moved !== null) rec.where = moved;
     }
     if (repeat) continue;
@@ -245,9 +250,9 @@ function cloneRecord(r) {
  * is never touched, so a read that fails halfway leaves the ledger exactly as it was and the retry
  * counts every line once (PR #84 Dexter F8 / Miguel I1). Resumes on a line boundary; a prefix that
  * no longer matches (rewritten) or a file shorter than what was read (truncated) starts over from 0.
- * `places` is passed for a subagent's transcript only (addLines).
+ * `places` and `home` are passed for a subagent's transcript only (addLines).
  */
-async function readNew(file, prev, projectRoot, open, places) {
+async function readNew(file, prev, projectRoot, open, places, home) {
   const fh = await open(file, 'r');
   try {
     const { size } = await fh.stat();
@@ -286,7 +291,7 @@ async function readNew(file, prev, projectRoot, open, places) {
       }
       const nl = data.lastIndexOf(NL);
       if (nl >= 0) {
-        addLines(rec, data.subarray(0, nl + 1).toString('utf8'), projectRoot, places);
+        addLines(rec, data.subarray(0, nl + 1).toString('utf8'), projectRoot, places, home);
         consumed += nl + 1;
         carry = Buffer.from(data.subarray(nl + 1));
       } else {
@@ -338,6 +343,9 @@ async function updateLedger(ledger, { projectsDir, projectRoot, worktrees, now =
   let waiting = false;
   for (const d of dirs) {
     if (!d.isDirectory() || !d.name.startsWith(prefix)) continue;
+    // the worktree this folder's sessions were launched from: the one whose encoded name the folder carries
+    const launcher = Array.isArray(worktrees) ? worktrees.find(w => w && projectDirName(w.root) === d.name) : null;
+    const home = launcher ? launcher.root : null;
     const { files, errors: listErrors } = await transcriptFiles(path.join(projectsDir, d.name));
     if (files === null) { errors++; continue; }
     errors += listErrors;
@@ -356,7 +364,7 @@ async function updateLedger(ledger, { projectsDir, projectRoot, worktrees, now =
       try {
         // which FILE it is decides (a subagents\ transcript), not its meta: one whose meta can't be
         // read yet is a subagent's all the same
-        const r = await readNew(entry.file, prev, projectRoot, open, entry.subagent ? worktrees : undefined);
+        const r = await readNew(entry.file, prev, projectRoot, open, entry.subagent ? worktrees : undefined, home);
         // only ever goes up: a wall clock stepping back must not let an older record win the
         // merge again (PR #84 Dexter round 2)
         r.rec.at = Math.max(now(), num(prev.at) + 1);

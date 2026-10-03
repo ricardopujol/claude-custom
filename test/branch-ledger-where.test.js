@@ -149,6 +149,37 @@ test('a line with no cwd proves nothing (there is no own folder to exclude); jun
   assert.strictEqual(r.where, null);
 });
 
+// THE LAUNCHING FOLDER IS WHERE THE TRANSCRIPT IS FILED, not the cwd on a line. Measured on the same live
+// session: the cwd follows a `cd` in Bash (60 lines of one teammate said `~\.claude\reviews\personal-agent`),
+// and with the line's cwd as "the folder that never counts", the agent's next call into dev moved it to dev.
+test('with the launching folder given, a call into it never moves the agent -- whatever cwd the line carries', () => {
+  const away = 'C:\\Users\\x\\.claude\\reviews\\p';
+  const r = emptyRecord();
+  addLines(r, lines(
+    sub('m1', 1, [read(path.join(FEAT, 'a.py'))]),
+    sub('m2', 2, [use('Bash', { command: `cd ${away}` })]),
+    sub('m3', 4, [read(path.join(DEV, 'Documentation', 'brief.md'))], { cwd: away }),
+    sub('m4', 8, [use('Bash', { command: 'cd C:/p/dev && git status' })], { cwd: away })), ROOT, PLACES, DEV);
+  assert.deepStrictEqual(spendBy(r), { 'feat/a': 15 });
+  assert.strictEqual(r.where.branch, 'feat/a');
+});
+
+test('...and a session launched IN a worktree: its agent\'s calls there move nothing, even from a line that says another cwd', () => {
+  const r = emptyRecord();
+  addLines(r, lines(
+    sub('m1', 3, [read(path.join(FEAT, 'a.py'))], { cwd: 'C:\\elsewhere', gitBranch: 'feat/a' }),
+    sub('m2', 4, [read(path.join(DEV, 'a.py'))], { cwd: FEAT, gitBranch: 'feat/a' })), ROOT, PLACES, FEAT);
+  // m1: no place proven (FEAT is home), so by its own line: loose on feat/a. m2: dev is another worktree.
+  assert.strictEqual(r.branches['feat/a'].loose, 3);
+  assert.strictEqual(r.branches.develop.spend, 4);
+});
+
+test('with no launching folder known (a transcript filed under no listed worktree), the line\'s cwd is the fallback', () => {
+  const r = emptyRecord();
+  addLines(r, lines(sub('m1', 1, [read(path.join(DEV, 'a.py'))]), sub('m2', 2, [read(path.join(FEAT, 'a.py'))])), ROOT, PLACES, null);
+  assert.deepStrictEqual(spendBy(r), { develop: 1, 'feat/a': 2 });
+});
+
 test('several calls on one line: the LAST one that proves a worktree is where the agent is', () => {
   const r = emptyRecord();
   addLines(r, lines(sub('m1', 3, [read(path.join(FEAT, 'a.py')), read(path.join(FIX, 'b.py')), read(path.join(DEV, 'c.py'))])), ROOT, PLACES);
@@ -297,6 +328,28 @@ test('updateLedger: a caller that passes no worktrees at all reads everything as
   fs.writeFileSync(path.join(subs, 'agent-ag1.jsonl'), lines(sub('m1', 10, [read(path.join(FEAT, 'a.py'))])));
   const { ledger, errors } = await updateLedger(emptyLedger(), { projectsDir: dir, projectRoot: ROOT });
   assert.strictEqual(errors, 0);
+  assert.strictEqual(totals(ledger).develop.spend, 10);
+});
+
+test('updateLedger: the launching folder is the worktree whose encoded name the transcript folder carries', async () => {
+  const { dir, subs } = projects();           // filed under projectDirName(DEV)
+  const away = 'C:\\Users\\x\\.claude\\reviews\\p';
+  fs.writeFileSync(path.join(subs, 'agent-ag1.jsonl'), lines(
+    sub('m1', 10, [read(path.join(FEAT, 'a.py'))]),
+    sub('m2', 5, [read(path.join(DEV, 'brief.md'))], { cwd: away }),
+    sub('m3', 2, [], { cwd: away })));
+  const { ledger } = await updateLedger(emptyLedger(), { projectsDir: dir, projectRoot: ROOT, worktrees: PLACES });
+  assert.strictEqual(totals(ledger)['feat/a'].spend, 17, 'the call into dev, made from elsewhere, did not move it to develop');
+  assert.strictEqual(totals(ledger).develop, undefined);
+});
+
+test('updateLedger: a transcript filed under a folder no listed worktree encodes to falls back to the line\'s cwd', async () => {
+  const dir = tmpDir('branch-ledger-where-');
+  const subs = path.join(dir, projectDirName('C:\\p\\gone-worktree'), 's1', 'subagents');
+  fs.mkdirSync(subs, { recursive: true });
+  fs.writeFileSync(path.join(subs, 'agent-ag1.jsonl'), lines(
+    sub('m1', 10, [read(path.join(DEV, 'a.py'))], { cwd: 'C:\\p\\gone-worktree', gitBranch: 'gone' })));
+  const { ledger } = await updateLedger(emptyLedger(), { projectsDir: dir, projectRoot: ROOT, worktrees: PLACES });
   assert.strictEqual(totals(ledger).develop.spend, 10);
 });
 

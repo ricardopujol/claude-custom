@@ -9,10 +9,15 @@
  *
  *   <projects>\<encoded launching folder>\<session>\subagents\agent-<id>.jsonl   (+ .meta.json)
  *
- * MEASURED 2026-10-03 on personal-agent session 3c8efad6 (six teammates in six worktrees): every line of a
- * subagent's transcript carries the LAUNCHING session's cwd and gitBranch, and its .meta.json has no cwd. Only
+ * MEASURED 2026-10-03 on personal-agent session 3c8efad6 (six teammates in six worktrees): a subagent's lines
+ * carry the SESSION's cwd and gitBranch, never the worktree it works in, and its .meta.json has no cwd. Only
  * the tool_use blocks name the worktree -- so they are judged by the hook path's own test
- * (host/agent-occupancy.js touchOf), with the line's cwd as the launching folder that never counts.
+ * (host/agent-occupancy.js touchOf).
+ *
+ * THE LAUNCHING FOLDER (the one that never counts) IS WHERE THE TRANSCRIPT IS FILED, not the cwd on a line.
+ * Measured on the same session: that cwd follows a `cd` in Bash (60 lines of one teammate said
+ * `~\.claude\reviews\personal-agent`), and with it as the launching folder the agent's next call into dev read
+ * as "working in dev". A transcript under <projects>\<encoded root>\ was launched from that root.
  *
  * Run by the Electron main process, once per window, beside the reader (host/occupancy-service.js). It costs
  * no hook: a pass lists a few folders, and reads only the NEW bytes of the transcripts that are fresh.
@@ -43,7 +48,7 @@
 const fs = require('fs');
 const path = require('path');
 const { touchOf, buildClaim, parseClaim, safeAgentId, claimFileName } = require('./agent-occupancy');
-const { normPath } = require('./project-layout');
+const { normPath, samePath } = require('./project-layout');
 const { projectDirName } = require('./project-dir');
 const { readMeta, SUBAGENTS } = require('./transcripts');
 
@@ -67,7 +72,7 @@ const errText = err => (err && err.message) || String(err);
  */
 function newState({ teammate = false } = {}) {
   return {
-    offset: null, agentId: null, cwd: null, branch: null,
+    offset: null, agentId: null, branch: null,
     teammate, name: null, metaKnown: false, all: new Map(), current: new Map(),
   };
 }
@@ -87,10 +92,11 @@ function bump(map, worktree, at) {
 
 /**
  * Folds the COMPLETE lines of `text` into `state` (mutated and returned). Only an agent's own assistant
- * messages count: a line with a safe `agentId`, and, for a touch, a `cwd` (the launching folder). `fallbackAt`
- * times a line that carries no usable timestamp.
+ * messages count: a line with a safe `agentId`. `ownRoot` is the launching folder (where the transcript is
+ * filed), which never counts as a touch; the session's branch is read off a line written IN that folder.
+ * `fallbackAt` times a line that carries no usable timestamp.
  */
-function foldLines(state, text, roots, fallbackAt) {
+function foldLines(state, text, roots, fallbackAt, ownRoot) {
   for (const line of String(text).split('\n')) {
     if (line === '' || !line.includes('"assistant"')) continue;
     let o;
@@ -101,14 +107,14 @@ function foldLines(state, text, roots, fallbackAt) {
     const id = safeAgentId(o.agentId);
     if (id === null) continue;
     state.agentId = id;
-    if (isStr(o.cwd)) state.cwd = o.cwd;
-    if (isStr(o.gitBranch)) state.branch = o.gitBranch;
+    // a line written elsewhere (after a cd) carries that folder's branch, or none: not the session's
+    if (isStr(o.gitBranch) && samePath(o.cwd, ownRoot)) state.branch = o.gitBranch;
     const stamp = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
     const at = Number.isFinite(stamp) ? stamp : fallbackAt;
-    if (Array.isArray(msg.content) && isStr(o.cwd)) {
+    if (Array.isArray(msg.content)) {
       for (const b of msg.content) {
         if (!b || typeof b !== 'object' || b.type !== 'tool_use') continue;
-        const worktree = touchOf(b.name, b.input, roots, o.cwd);
+        const worktree = touchOf(b.name, b.input, roots, ownRoot);
         if (worktree === null) continue;
         bump(state.all, worktree, at);
         bump(state.current, worktree, at);
@@ -148,13 +154,19 @@ function createTranscriptScanner({
 
   const logOnce = (key, ...args) => { if (!logged.has(key)) { logged.add(key); log(...args); } };
 
-  // The fresh agent transcripts under every worktree's project folder. `complete` is false when a folder
-  // that exists could not be listed: its transcripts may be there, unseen.
+  // The fresh agent transcripts under every worktree's project folder, each with the root it is filed under
+  // (its launching folder). `complete` is false when a folder that exists could not be listed: its
+  // transcripts may be there, unseen. Two roots whose names encode alike (`feat-a`, `feat.a`) share one
+  // folder: the first one git lists is taken as the launcher, the same one on every pass.
   async function listFresh(known) {
     const files = [];
     let complete = true;
+    const seen = new Set();
     for (const root of known) {
-      const base = path.join(projectsDir, projectDirName(root));
+      const name = projectDirName(root);
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const base = path.join(projectsDir, name);
       let sessions;
       try {
         sessions = await fsp.readdir(base, { withFileTypes: true });
@@ -178,7 +190,7 @@ function createTranscriptScanner({
           const file = path.join(sub, f);
           let st;
           try { st = await fsp.stat(file); } catch { continue; }      // gone between the listing and the stat
-          if (now() - st.mtimeMs < staleMs) files.push({ file, size: st.size, mtimeMs: st.mtimeMs });
+          if (now() - st.mtimeMs < staleMs) files.push({ file, root, size: st.size, mtimeMs: st.mtimeMs });
         }
       }
     }
@@ -195,7 +207,7 @@ function createTranscriptScanner({
   }
 
   // Reads what is new in one transcript into its state: at most `tailBytes` from the end, complete lines.
-  async function readNew({ file, size, mtimeMs }, state, known) {
+  async function readNew({ file, root, size, mtimeMs }, state, known) {
     if (state.offset !== null && state.offset > size) {
       // shorter than what was read: a different file now. What it is (its meta) is asked for again too.
       Object.assign(state, newState());
@@ -216,7 +228,7 @@ function createTranscriptScanner({
     // and foldLines drops it like any other junk: the cut line is never half-read.
     const end = data.lastIndexOf(NL);
     if (end < 0) { state.offset = start; return; }       // a line still being written: next time
-    foldLines(state, data.subarray(0, end + 1).toString('utf8'), known, mtimeMs);
+    foldLines(state, data.subarray(0, end + 1).toString('utf8'), known, mtimeMs, root);
     state.offset = start + end + 1;
   }
 
@@ -257,9 +269,9 @@ function createTranscriptScanner({
         logOnce(`read|${f.file}`, `[occupancy] ${f.file} can't be read:`, errText(err));
         continue;
       }
-      if (state.agentId === null || !isStr(state.cwd) || !path.isAbsolute(state.cwd)) continue;
+      if (state.agentId === null) continue;
       const rec = buildClaim({
-        agentId: state.agentId, agent: state.name, fromBranch: state.branch, fromRoot: state.cwd,
+        agentId: state.agentId, agent: state.name, fromBranch: state.branch, fromRoot: f.root,
         hostPid: ownPid, hostStartedAt: started, touches: touchesOf(state),
       });
       if (rec !== null) wanted.set(state.agentId, rec);

@@ -5,6 +5,11 @@
  * this build runs. This one reads what every session leaves on disk: the tail of each fresh subagent
  * transcript, judged by the same test (host/agent-occupancy.js touchOf), written into the same store.
  *
+ * THE LAUNCHING FOLDER IS WHERE THE TRANSCRIPT IS FILED, NOT THE `cwd` ON ITS LINES. Measured on the live
+ * personal-agent session (2026-10-03): 60 lines of one teammate carried cwd `~\.claude\reviews\personal-agent`
+ * -- the cwd follows a `cd` in Bash -- and its next call into the launching folder then read as "working in
+ * dev". A transcript under <projects>\<encoded root>\ was launched from that root, whatever its lines say.
+ *
  * Real files throughout: a temp projects folder, a temp state folder, the real claim writer.
  */
 const test = require('node:test');
@@ -108,11 +113,45 @@ test('only agent-*.jsonl under subagents\\ is a transcript: another .jsonl besid
   assert.deepStrictEqual(r.claims().map(c => c.agentId), ['a1']);
 });
 
-test('a line whose cwd is not an absolute folder names no launching session: no claim, and nothing to complain about', async () => {
+test('the launching folder is the one the transcript is FILED UNDER, whatever cwd its lines carry (it follows a cd)', async () => {
   const r = rig();
-  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { cwd: 'some/relative/dir' }));
-  assert.deepStrictEqual(await r.scanner.pass(), { claimed: [], removed: [] });
+  const away = path.resolve('/occ-scan-reviews');
+  // a1: cd'd away, then calls back into the launching folder -- not a claim on dev
+  r.put('a1', line('a1', [use('Bash', { command: `cd ${away}` })], { at: T0 })
+    + line('a1', [read(path.join(DEV, 'handoffs', 'brief.md')), use('Bash', { command: `cd ${DEV} && git status` })], { at: T0 + 1000, cwd: away }));
+  // a2: the same, and it works in FEAT: one claim, launched from DEV on develop, though its last lines say otherwise
+  r.put('a2', line('a2', [read(path.join(FEAT, 'a.py'))], { at: T0 })
+    + line('a2', [read(path.join(FEAT, 'b.py')), read(path.join(DEV, 'brief.md'))], { at: T0 + 1000, cwd: away, branch: 'HEAD' })
+    + line('a2', [text('thinking')], { at: T0 + 2000, cwd: 'some/relative/dir', branch: 'elsewhere' }));
+  // a3: a line with no cwd at all still proves its touch
+  const bare = JSON.parse(line('a3', [read(path.join(FEAT2, 'a.py'))]));
+  delete bare.cwd;
+  delete bare.gitBranch;
+  r.put('a3', JSON.stringify(bare) + '\n');
+  await r.scanner.pass();
+  assert.deepStrictEqual(r.claims().map(c => [c.agentId, c.worktree, c.also, c.fromRoot, c.fromBranch]),
+    [['a2', FEAT, [], DEV, 'develop'], ['a3', FEAT2, [], DEV, null]]);
   assert.deepStrictEqual(r.logs, []);
+});
+
+test('the session\'s branch is read off a line written IN the launching folder; with none, the claim names no branch', async () => {
+  const r = rig();
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { cwd: path.resolve('/occ-scan-reviews'), branch: 'not-this-one' }));
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1').fromBranch, null);
+  assert.strictEqual(r.claim('a1').fromRoot, DEV);
+});
+
+test('two worktrees whose names encode alike share one transcript folder: the first one git lists is the launcher', async () => {
+  const r = rig();
+  const dash = path.join(BASE, 'feat-z');
+  const dot = path.join(BASE, 'feat.z');
+  assert.strictEqual(projectDirName(dash), projectDirName(dot));
+  r.roots = [DEV, dash, dot];
+  r.put('a1', line('a1', [read(path.join(DEV, 'a.py'))], { cwd: dash, branch: 'feat/z' }), { from: dash });
+  await r.scanner.pass();
+  await r.scanner.pass();
+  assert.deepStrictEqual(r.claims().map(c => [c.agentId, c.worktree, c.fromRoot]), [['a1', DEV, dash]]);
 });
 
 test('Grep, Glob and Bash count; a call in the launching folder, outside every worktree, or with a relative path does not', async () => {
@@ -125,7 +164,7 @@ test('Grep, Glob and Bash count; a call in the launching folder, outside every w
   assert.deepStrictEqual(r.claims().map(c => [c.agentId, c.worktree]), [['a1', FEAT2], ['a2', FEAT], ['a3', FEAT]]);
 });
 
-test('the launching folder is the LINE\'s cwd: a session that runs in a worktree claims nothing there, and dev when its agent goes to dev', async () => {
+test('a session that runs in a worktree: its agent claims nothing there, and dev when it goes to dev', async () => {
   const r = rig();
   r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { cwd: FEAT, branch: 'feat/x' }), { from: FEAT });
   r.put('a2', line('a2', [read(path.join(DEV, 'a.py'))], { cwd: FEAT, branch: 'feat/x' }), { from: FEAT });
@@ -293,8 +332,7 @@ test('lines that are not an agent\'s own assistant messages prove nothing: user 
   r.put('a1', userLine() + '{not json "assistant"\n' + '\n'
     + JSON.stringify({ type: 'user', agentId: 'a1', cwd: DEV, message: { role: 'user', content: [read(path.join(FEAT, 'a.py'))] } }) + '\n'
     + line('../evil', [read(path.join(FEAT, 'a.py'))])
-    + JSON.stringify({ type: 'assistant', agentId: 'a1', cwd: DEV, message: null }) + '\n'
-    + JSON.stringify({ type: 'assistant', agentId: 'a1', message: { content: [read(path.join(FEAT, 'a.py'))] } }) + '\n');
+    + JSON.stringify({ type: 'assistant', agentId: 'a1', cwd: DEV, message: null }) + '\n');
   await r.scanner.pass();
   assert.deepStrictEqual(r.claims(), []);
 });
@@ -503,7 +541,7 @@ test('fold: lines out of order in time still give the earliest first touch and t
   const s = T.newState();
   T.foldLines(s, line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 + 5000 })
     + line('a1', [read(path.join(FEAT, 'b.py'))], { at: T0 + 1000 })
-    + line('a1', [read(path.join(FEAT, 'c.py'))], { at: T0 + 3000 }), ROOTS, T0);
+    + line('a1', [read(path.join(FEAT, 'c.py'))], { at: T0 + 3000 }), ROOTS, T0, DEV);
   assert.deepStrictEqual(T.touchesOf(s), [{ worktree: FEAT, firstAt: T0 + 1000, lastAt: T0 + 5000, count: 3 }]);
 });
 
@@ -511,7 +549,7 @@ test('fold: the touches are bounded, the least recently touched worktree forgott
   const many = Array.from({ length: T.TOUCHES_MAX + 3 }, (_, i) => path.join(BASE, `wt-${i}`));
   const s = T.newState({ teammate: true });
   T.foldLines(s, many.map((root, i) => line('a1', [read(path.join(root, 'a.py'))], { at: T0 + i })).join('')
-    + line('a1', [read(path.join(many[3], 'again.py'))], { at: T0 + 100 }), [DEV, ...many], T0);
+    + line('a1', [read(path.join(many[3], 'again.py'))], { at: T0 + 100 }), [DEV, ...many], T0, DEV);
   const kept = T.touchesOf(s).map(t => t.worktree);
   assert.strictEqual(kept.length, T.TOUCHES_MAX);
   assert.ok(!kept.includes(many[0]) && !kept.includes(many[2]), 'the oldest went');
@@ -527,12 +565,12 @@ test('PROPERTY: folding a transcript in any number of chunks gives the same touc
     let at = T0;
     const all = ms.map((m) => { at += m.dt; return line('a1', m.blocks, { at, stop: m.stop }); });
     const whole = T.newState({ teammate });
-    T.foldLines(whole, all.join(''), ROOTS, T0);
+    T.foldLines(whole, all.join(''), ROOTS, T0, DEV);
     const parts = T.newState({ teammate });
     const idx = [...new Set(cuts.map(c => c % (all.length + 1)))].sort((a, b) => a - b);
     let from = 0;
     for (const cut of [...idx, all.length]) {
-      if (cut > from) T.foldLines(parts, all.slice(from, cut).join(''), ROOTS, T0);
+      if (cut > from) T.foldLines(parts, all.slice(from, cut).join(''), ROOTS, T0, DEV);
       from = Math.max(from, cut);
     }
     assert.deepStrictEqual(T.touchesOf(parts), T.touchesOf(whole));
@@ -548,9 +586,9 @@ test('PROPERTY: a plain subagent\'s touches are exactly the calls since its last
     let at = T0;
     const body = steps.map((s) => { at += 1000; return s === 'end' ? done('a1', at) : line('a1', [read(path.join(s.root, 'a.py'))], { at }); }).join('');
     const plain = T.newState({ teammate: false });
-    T.foldLines(plain, body, ROOTS, T0);
+    T.foldLines(plain, body, ROOTS, T0, DEV);
     const mate = T.newState({ teammate: true });
-    T.foldLines(mate, body, ROOTS, T0);
+    T.foldLines(mate, body, ROOTS, T0, DEV);
     const lastEnd = steps.lastIndexOf('end');
     const since = steps.slice(lastEnd + 1).filter(s => s !== 'end');
     const count = list => list.reduce((n, t) => n + t.count, 0);
