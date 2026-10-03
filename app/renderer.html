@@ -34,6 +34,9 @@
          session is writing too (--warn). The same two colours as the strip's hatched edge. */
       --agent: #6aa5d8;
       --warn: #e6c34a;
+      /* Backlog #52: a session in a /bedtime night (the strip's night tab, the bar's moon chip). */
+      --night: #1a2350;
+      --night-edge: #7f93e0;
     }
     * { box-sizing: border-box; }
     /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
@@ -596,36 +599,58 @@
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
 
-    /* Worktree occupancy (#44 + #47, take B): a chrome bar over the terminal while an agent is working in this
-       folder, with a coloured left rule; the first-keystroke confirm sits over the input with the same rule.
-       Neither animates: movement means "needs you". */
-    #occupancy-banner {
+    /* The terminal bar (#49 last prompt + #52 bedtime, with #47's occupancy banner folded in as a chip;
+       documentation/DESIGN_TERMINAL_BAR.md): ONE row over the terminal, the prompt on the left once it has scrolled
+       away, the status chips on the right. Absent when there is nothing to say. It never animates (movement means
+       "needs you"), focus mode hides it with the rest of the chrome, and it is part of the terminal, not a dock panel. */
+    #terminal-bar {
       position: absolute; top: 6px; left: 10px; right: 10px; z-index: 16;
-      display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      display: flex; align-items: center; gap: 12px; padding: 5px 10px; border-radius: 5px;
       font-size: 12px; line-height: 1.4; color: var(--text);
-      background: color-mix(in srgb, var(--agent) 12%, var(--chrome));
-      border: 1px solid color-mix(in srgb, var(--agent) 40%, var(--border));
-      border-left: 4px solid var(--agent);
+      background: color-mix(in srgb, var(--chrome) 94%, transparent);
+      border: 1px solid var(--border);
     }
-    #occupancy-banner.warn {
-      background: color-mix(in srgb, var(--warn) 14%, var(--chrome));
-      border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
-      border-left-color: var(--warn);
+    #terminal-bar[hidden], #occupancy-confirm[hidden], #bar-prompt[hidden], #bar-prompt-full[hidden] { display: none; }
+    body.focus-mode #terminal-bar { display: none; }
+    #bar-prompt {
+      flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
+      background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
     }
-    #occupancy-banner[hidden], #occupancy-confirm[hidden] { display: none; }
-    #occupancy-banner-text { font-weight: 600; }
-    #occupancy-banner-since, #occupancy-banner-more, #occupancy-banner-note { color: var(--dim); }
-    #occupancy-banner.warn #occupancy-banner-note { color: var(--warn); }
-    #occupancy-banner .spacer { flex: 1; }
-    #occupancy-jump, #occupancy-confirm button {
+    #bar-prompt .bar-caret { color: var(--accent); flex: 0 0 auto; }
+    #bar-prompt-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #bar-prompt-age { flex: 0 0 auto; color: var(--dim); white-space: nowrap; }
+    #bar-prompt-full {
+      position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; z-index: 17;
+      max-height: 40vh; overflow: auto; padding: 8px 10px; border-radius: 5px; white-space: pre-wrap;
+      user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
+    }
+    #bar-chips { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+    .bar-chip {
+      position: relative; display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; cursor: default;
+      font: inherit; color: var(--text); white-space: nowrap;
+      background: var(--panel); border: 1px solid var(--border); border-left-width: 3px;
+    }
+    .bar-chip.bedtime { background: color-mix(in srgb, var(--night) 70%, var(--chrome)); border-color: color-mix(in srgb, var(--night-edge) 45%, var(--border)); border-left-color: var(--night-edge); }
+    .bar-chip.occupancy { border-left: 3px solid var(--agent); font-variant-numeric: tabular-nums; }
+    .bar-chip.occupancy.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    button.bar-chip { cursor: pointer; }
+    button.bar-chip:hover { border-color: var(--agent); }
+    /* hover or focus expands a chip: the detail lines under it, right-aligned to the bar */
+    .bar-chip .chip-long {
+      display: none; position: absolute; top: 100%; right: 0; margin-top: 4px; z-index: 17; min-width: max-content;
+      padding: 6px 10px; border-radius: 5px; white-space: pre; text-align: left; font-weight: 400;
+      background: var(--chrome); border: 1px solid var(--border); color: var(--text);
+    }
+    .bar-chip:hover .chip-long, .bar-chip:focus-visible .chip-long { display: block; }
+    .bar-chip.occupancy.warn .chip-long { border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    #occupancy-confirm button {
       padding: 3px 10px; border-radius: 4px; cursor: pointer; font: inherit;
       background: var(--panel); color: var(--text); border: 1px solid var(--border);
     }
-    #occupancy-jump:hover, #occupancy-confirm button:hover { border-color: var(--agent); }
+    #occupancy-confirm button:hover { border-color: var(--agent); }
     #occupancy-confirm kbd { font: inherit; font-size: 0.85em; color: var(--dim); margin-left: 4px; }
-    #occupancy-jump[hidden] { display: none; }
-    /* the terminal-banner (other live sessions) sits just under it while both show */
-    body.occupied #terminal-banner { top: 46px; }
+    /* the terminal-banner (other live sessions) sits just under the bar while it shows */
+    body.bar-open #terminal-banner { top: 46px; }
     #occupancy-confirm {
       position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 18;
       display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 5px;
@@ -1311,17 +1336,17 @@
           <span id="terminal-banner-text"></span>
           <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
         </div>
-        <!-- Worktree occupancy (#44 + #47): an agent launched from another session is working in this folder.
-             Text only (app/occupancy-display.js bannerModel); clears when the agent stops or its host dies. -->
-        <div id="occupancy-banner" role="status" hidden>
-          <span id="occupancy-banner-text"></span>
-          <span id="occupancy-banner-since"></span>
-          <span id="occupancy-banner-more"></span>
-          <span id="occupancy-banner-note"></span>
-          <span class="spacer"></span>
-          <button type="button" id="occupancy-jump" hidden></button>
+        <!-- The terminal bar (#49 + #52, with #47's occupancy banner folded in as a chip): one row, the prompt left
+             once it has scrolled away, the chips right. Text only, painted from app/terminal-bar.js's model. -->
+        <div id="terminal-bar" role="status" hidden>
+          <button type="button" id="bar-prompt" hidden title="Show the whole prompt">
+            <span class="bar-caret">❯</span><span id="bar-prompt-text"></span><span id="bar-prompt-age"></span>
+          </button>
+          <div id="bar-prompt-full" hidden></div>
+          <div id="bar-chips"></div>
         </div>
-        <!-- The first keystroke typed while an agent is writing here is held behind this (app/occupancy-confirm.js). -->
+        <!-- The first keystroke typed while an agent is writing here, or an overnight run is going, is held behind
+             this (app/occupancy-confirm.js). -->
         <div id="occupancy-confirm" role="alertdialog" aria-labelledby="occupancy-confirm-text" hidden>
           <span id="occupancy-confirm-text">An agent is writing here. Type anyway?</span>
           <button type="button" id="occupancy-type">Type <kbd>Enter</kbd></button>
@@ -1513,6 +1538,7 @@
   <script src="./tab-status.js"></script>
   <script src="./occupancy-display.js"></script>
   <script src="./occupancy-confirm.js"></script>
+  <script src="./terminal-bar.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>

@@ -106,11 +106,9 @@ test('the page loads both occupancy modules, before renderer.js', () => {
   }
 });
 
-test('the banner and the confirm exist, hidden, over the terminal, each with its parts', () => {
-  assert.match(HTML, /<div id="occupancy-banner" role="status" hidden>/);
-  for (const id of ['occupancy-banner-text', 'occupancy-banner-since', 'occupancy-banner-more', 'occupancy-banner-note', 'occupancy-jump']) {
-    assert.match(HTML, new RegExp(`id="${id}"`), id);
-  }
+test('the banner is retired into the terminal bar\'s chip; the confirm exists, hidden, over the terminal, with its parts', () => {
+  assert.doesNotMatch(HTML, /id="occupancy-banner/, 'one bar, not a banner beside it (backlog #47 folded into #49 + #52)');
+  assert.doesNotMatch(HTML, /id="occupancy-jump"/);
   assert.match(HTML, /<div id="occupancy-confirm" role="alertdialog"[^>]*hidden>/);
   assert.match(HTML, /id="occupancy-type"/);
   assert.match(HTML, /id="occupancy-wait"/);
@@ -118,20 +116,20 @@ test('the banner and the confirm exist, hidden, over the terminal, each with its
   assert.match(HTML, /<button type="button" id="occupancy-type">Type <kbd>Enter<\/kbd><\/button>/);
   assert.match(HTML, /<button type="button" id="occupancy-wait">Wait <kbd>Esc<\/kbd><\/button>/);
   const termwrap = HTML.slice(HTML.indexOf('<div id="termwrap">'), HTML.indexOf('<aside class="zone" data-zone="right"'));
-  assert.ok(termwrap.includes('id="occupancy-banner"') && termwrap.includes('id="occupancy-confirm"'), 'inside #termwrap');
+  assert.ok(termwrap.includes('id="terminal-bar"') && termwrap.includes('id="occupancy-confirm"'), 'inside #termwrap');
 });
 
-test('both carry the coloured left rule, the warn colour for two writers, and never animate', () => {
+test('the confirm and the occupancy chip carry the coloured left rule, the warn colour for two writers, and never animate', () => {
   const rule = (selector) => {
     const at = HTML.indexOf(selector + ' {');
     return at === -1 ? null : HTML.slice(at, HTML.indexOf('}', at));
   };
-  assert.match(rule('#occupancy-banner'), /border-left:[^;]*var\(--agent\)/);
-  assert.match(rule('#occupancy-banner.warn'), /var\(--warn\)/);
+  assert.match(rule('.bar-chip.occupancy'), /border-left:[^;]*var\(--agent\)/);
+  assert.match(rule('.bar-chip.occupancy.warn'), /var\(--warn\)/);
   assert.match(rule('#occupancy-confirm'), /border-left:[^;]*var\(--agent\)/);
   assert.match(HTML, /--agent:\s*#/);
   assert.match(HTML, /--warn:\s*#/);
-  assert.doesNotMatch(rule('#occupancy-banner') + rule('#occupancy-confirm'), /animation|transition/);
+  assert.doesNotMatch(rule('.bar-chip.occupancy') + rule('#occupancy-confirm'), /animation|transition/);
 });
 
 // --- renderer.js ---------------------------------------------------------------------------------
@@ -162,7 +160,7 @@ test('the confirm releases through the same send the keystroke would have used',
   assert.match(RENDERER, /occupancyConfirm\.createConfirm\(\{\s*send: \(data\) => send\(data\)/);
 });
 
-test('the two buttons answer the confirm; the card line and Jump go through selectFolder', () => {
+test('the two buttons answer the confirm; the card line and the chip\'s Jump go through selectFolder', () => {
   assert.match(RENDERER, /getElementById\('occupancy-type'\)\.addEventListener\('click', \(\) => occupancy\.confirm\.type\(\)\)/);
   assert.match(RENDERER, /getElementById\('occupancy-wait'\)\.addEventListener\('click', \(\) => occupancy\.confirm\.wait\(\)\)/);
   assert.match(RENDERER, /window\.harness\.selectFolder\(/);
@@ -183,7 +181,7 @@ test('a worktree page reports nothing new to the shell: the turn it already send
 // (That the driver may call them, by name only, is pinned in test/tab-shell.test.js: it loads app/tab-shell.js,
 // which Stryker mutates, and this file is not in Stryker's command.)
 test('each of the probe\'s page actions exists on the ?probe=1 page, and a probe keystroke goes through xterm\'s own input path', () => {
-  for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
+  for (const a of ['occState', 'occKey', 'occClick', 'occTurn', 'barState', 'barScroll', 'barClick']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
   assert.match(RENDERER, /term\.input\(a\.data, true\)/);
 });
 
