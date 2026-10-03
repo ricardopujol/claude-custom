@@ -360,8 +360,10 @@ async function main() {
   await sleep(800);
   const still2 = await bgState(app);
   check('4: ...and it never plays while the setting is on', still2.video.paused && still2.video.currentTime === 0);
+  check('4: ...and the Style tab says why it is still (Miguel M2)', /reduced motion/.test(still2.paused || ''), JSON.stringify(still2.paused));
   await command(app, { cmd: 'reduced-motion', on: false });
   check('4: with the setting off it plays again', await waitFor(() => moves(app), 10000, 150) === true);
+  check('4: ...and the note is gone', (await bgState(app)).paused === null);
 
   // 5 -----------------------------------------------------------------------------
   const look0 = lookNow();

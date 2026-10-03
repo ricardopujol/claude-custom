@@ -1194,6 +1194,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           bgImage: document.getElementById('bg').style.backgroundImage,
           veil: parseFloat(getComputedStyle(document.getElementById('bg'), '::after').opacity),
           note: note ? note.textContent : null, error: err ? err.textContent : null,
+          paused: (() => { const p = document.getElementById('style-bg-paused'); return p && !p.hidden ? p.textContent : null; })(),
           matchDisabled: match ? match.disabled : null,
           vars: { bg: css.getPropertyValue('--bg').trim(), chrome: css.getPropertyValue('--chrome').trim(), border: css.getPropertyValue('--border').trim(),
             text: css.getPropertyValue('--text').trim(), dim: css.getPropertyValue('--dim').trim(), accent: css.getPropertyValue('--accent').trim(),
@@ -2857,6 +2858,20 @@ function backgroundPlaybackState() {
 function syncBackgroundPlayback() {
   bgPlayback.pageVisible = document.visibilityState === 'visible';
   if (bgVideoEl) bgMedia.applyPlayback(bgVideoEl, backgroundPlaybackState());
+  showPausedNote();
+}
+
+// Why a video background is standing still, in the Style tab (Miguel M2): only while there IS a
+// video, and only for the reasons a person looking at the tab could be wondering about.
+function pausedNoteText() {
+  return bgVideoEl ? bgMedia.pausedNote(backgroundPlaybackState()) : null;
+}
+function showPausedNote() {
+  const el = document.getElementById('style-bg-paused');
+  if (!el) return;
+  const note = pausedNoteText();
+  el.textContent = note || '';
+  el.hidden = !note;
 }
 document.addEventListener('visibilitychange', syncBackgroundPlayback);
 reducedMotionQuery.addEventListener('change', syncBackgroundPlayback);
@@ -2878,6 +2893,7 @@ function removeBackgroundVideo() {
   portraitMedia.unloadVideo(bgVideoEl);
   bgVideoEl.remove();
   bgVideoEl = null;
+  showPausedNote();
 }
 
 function showBackgroundVideo(url) {
@@ -3487,6 +3503,7 @@ function renderStyleSection(section) {
       `<label class="style-browse">choose a file<input type="file" id="style-bg-file" ` +
       `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,video/webm,video/mp4" hidden></label></div>` +
       (v.note ? `<div class="style-note">${escapeHtml(v.note)}</div>` : '') +
+      ((pn) => `<div class="style-paused" id="style-bg-paused"${pn ? '' : ' hidden'}>${escapeHtml(pn || '')}</div>`)(pausedNoteText()) +
       (v.isOverride
         ? `<span class="style-label">Darkness</span><div class="style-row">` +
           `<input type="range" id="style-dark" min="0" max="95" step="1" value="${dark === null ? 50 : dark}">` +

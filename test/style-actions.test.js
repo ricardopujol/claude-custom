@@ -62,6 +62,14 @@ test('M3: the Match button is re-enabled whatever happens to the request, even w
   assert.match(RENDERER, /function sendStyle\(section, payload\) \{\s*try \{ ws\.send\([^\n]*\} catch \{/, 'sendStyle swallows a dead socket -- which is why the finally is needed');
 });
 
+test('M2: the Background section has a paused note, kept current by every playback change', () => {
+  assert.match(RENDERER, /<div class="style-paused" id="style-bg-paused"\$\{pn \? '' : ' hidden'\}>/);
+  const sync = RENDERER.slice(RENDERER.indexOf('function syncBackgroundPlayback()'));
+  assert.match(sync.slice(0, sync.indexOf('\n}')), /showPausedNote\(\);/, 'every play-rule input updates the note');
+  assert.match(RENDERER, /function removeBackgroundVideo\(\) \{[\s\S]*?showPausedNote\(\);\s*\}/, 'no video, no note');
+  assert.match(RENDERER, /bgVideoEl \? bgMedia\.pausedNote\(backgroundPlaybackState\(\)\) : null/);
+});
+
 test('M5: applyBackground checks that mediaFor described the background before it reads .tag', () => {
   const body = RENDERER.slice(RENDERER.indexOf('function applyBackground('));
   const guard = body.indexOf('if (!media) return;');

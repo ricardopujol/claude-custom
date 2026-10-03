@@ -16,6 +16,10 @@
  *   - `applyPlayback(video, state)`: carries the decision out on a real element.
  *   - `unplayableNote(error)`: the Style tab's words for a video the engine
  *     refused (codec, corruption). The file stays; there is just no background.
+ *   - `pausedNote(state)`: the Style tab's words for a video that is held still
+ *     ON PURPOSE -- on battery, or reduced motion -- so a still background is
+ *     never mistaken for a broken one (Miguel M2, PR #91). Minimised or hidden
+ *     get none: nobody can see the Style tab then.
  *
  * "Not yet known" is asymmetric on purpose. `visible` must be exactly `true`:
  * a window that has not said it is on screen is not decoding video. The three
@@ -102,7 +106,14 @@ function unplayableNote(error) {
   return `This video can't be played: ${reason}`;
 }
 
-const API = { shouldPlay, playbackAction, applyPlayback, mediaFor, fileUrl, unplayableNote };
+function pausedNote(state) {
+  const s = state && typeof state === 'object' ? state : {};
+  if (s.reducedMotion === true) return 'Held on its first frame: your system asks for reduced motion';
+  if (s.onBattery === true) return 'Paused while on battery; it plays again when you plug in';
+  return null;
+}
+
+const API = { shouldPlay, playbackAction, applyPlayback, mediaFor, fileUrl, unplayableNote, pausedNote };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.bgMedia = API;

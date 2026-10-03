@@ -155,3 +155,24 @@ test('unplayableNote: no code is said honestly, never a blank reason', () => {
     assert.doesNotMatch(unplayableNote(e), /undefined|null/);
   }
 });
+
+// Miguel M2 (PR #91): on battery the video stood still and nothing said why.
+test('M2: pausedNote says why a video is held still on purpose, and is quiet otherwise', () => {
+  const { pausedNote } = require('../app/bg-media-display');
+  assert.match(pausedNote({ visible: true, onBattery: true }), /on battery/);
+  assert.match(pausedNote({ visible: true, reducedMotion: true }), /reduced motion/);
+  assert.match(pausedNote({ visible: true, onBattery: true, reducedMotion: true }), /reduced motion/, 'the still frame is the reason that shows');
+  for (const s of [{ visible: true }, { visible: true, onBattery: false }, { visible: true, onBattery: null },
+    { visible: false, minimised: true }, null, undefined, 'x']) {
+    assert.strictEqual(pausedNote(s), null, JSON.stringify(s));
+  }
+});
+
+test('PROPERTY M2: whenever the play rule stops a visible video for battery or motion, there is a note', () => {
+  const { pausedNote, shouldPlay } = require('../app/bg-media-display');
+  const tri = fc.constantFrom(true, false, null, undefined);
+  fc.assert(fc.property(tri, tri, (onBattery, reducedMotion) => {
+    const s = { visible: true, minimised: false, onBattery, reducedMotion };
+    assert.strictEqual(pausedNote(s) !== null, !shouldPlay(s), JSON.stringify(s));
+  }));
+});
