@@ -32,10 +32,13 @@ const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
 const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
 const { generateLook, noLookReason, DEFAULT_TERMINAL_FG } = require('./palette-gen');
+const {
+  MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, SNIFF_BYTES, kindOfExt, maxBytesFor, signatureMatches,
+} = require('./background-media');
 
-// 25MB, per the FF6 brief. Pinned by an explicit boundary test, the way
-// host/control.js's MAX_TERMINAL_DIM is.
-const MAX_BYTES = 25 * 1024 * 1024;
+// 25MB for an image, per the FF6 brief; 100MB for a video loop (#34). Pinned by
+// explicit boundary tests, the way host/control.js's MAX_TERMINAL_DIM is.
+const MAX_BYTES = MAX_IMAGE_BYTES;
 
 const LOOK_DIR_NAME = '.claude-custom';
 const LOOK_FILE = 'look.json';
@@ -60,9 +63,10 @@ function extOf(p) {
  * PURE decision: may this candidate become the project's background, and if
  * so, where would the copy live? `size` is injected so a refusal can be
  * decided before anything is statted, and so this stays testable without a
- * real file. The destination is always `<project>/.claude-custom/background.<ext>`.
+ * real file; so is `head`, the file's first bytes, which a video's signature is
+ * checked against (host/background-media.js). The destination is always `<project>/.claude-custom/background.<ext>`.
  */
-function planBackgroundChoice({ source, cwd, size } = {}) {
+function planBackgroundChoice({ source, cwd, size, head } = {}) {
   const src = typeof source === 'string' ? source.trim() : '';
   if (!src) return { ok: false, reason: 'no file was given' };
   if (typeof cwd !== 'string' || !cwd.trim()) return { ok: false, reason: 'no project is open' };
@@ -71,17 +75,23 @@ function planBackgroundChoice({ source, cwd, size } = {}) {
   if (!ACCEPTED_EXTENSIONS.includes(ext)) {
     return {
       ok: false,
-      reason: `"${ext || '(no extension)'}" is not a supported image type -- ` +
+      reason: `"${ext || '(no extension)'}" is not a supported image or video type -- ` +
         `use ${ACCEPTED_EXTENSIONS.join(', ')}`,
     };
   }
 
-  if (typeof size === 'number' && Number.isFinite(size) && size > MAX_BYTES) {
+  const kind = kindOfExt(ext);
+  const cap = maxBytesFor(ext);
+  if (typeof size === 'number' && Number.isFinite(size) && size > cap) {
     return {
       ok: false,
-      reason: `that image is ${(size / (1024 * 1024)).toFixed(1)}MB -- ` +
-        `${Math.round(MAX_BYTES / (1024 * 1024))}MB is the limit`,
+      reason: `that ${kind} is ${(size / (1024 * 1024)).toFixed(1)}MB -- ` +
+        `${Math.round(cap / (1024 * 1024))}MB is the limit for a ${kind}`,
     };
+  }
+
+  if (!signatureMatches(ext, head)) {
+    return { ok: false, reason: `that file is not a real .${ext} video (its first bytes are wrong) -- not using it` };
   }
 
   return { ok: true, dest: path.join(lookDir(cwd), `background.${ext}`), ext };
@@ -288,6 +298,22 @@ function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
   return setLook({ cwd, patch: look, fsImpl });
 }
 
+// The first bytes of a file, or null when they can't be read -- which a video
+// treats as a refusal. Only the head is read: a 100MB clip is never loaded.
+function readHead(fsImpl, file) {
+  let fd;
+  try {
+    fd = fsImpl.openSync(file, 'r');
+    const buf = Buffer.alloc(SNIFF_BYTES);
+    const n = fsImpl.readSync(fd, buf, 0, SNIFF_BYTES, 0);
+    return buf.subarray(0, n);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fsImpl.closeSync(fd); } catch { /* already closed */ } }
+  }
+}
+
 function tryUnlink(fsImpl, file) {
   try { fsImpl.unlinkSync(file); } catch { /* best effort */ }
 }
@@ -311,7 +337,9 @@ function setBackground({ source, cwd, fsImpl = fs } = {}) {
   }
   if (!stat.isFile()) return { ok: false, reason: 'that is not a file' };
 
-  const plan = planBackgroundChoice({ source, cwd, size: stat.size });
+  // Only a video has a signature to check; an image never costs a read.
+  const head = kindOfExt(extOf(source)) === 'video' ? readHead(fsImpl, source) : undefined;
+  const plan = planBackgroundChoice({ source, cwd, size: stat.size, head });
   if (!plan.ok) return plan;
 
   const state = readLookState(cwd, fsImpl);
@@ -333,7 +361,7 @@ function setBackground({ source, cwd, fsImpl = fs } = {}) {
   } catch (err) {
     tryUnlink(fsImpl, temp);
     if (setAside) { try { renameWithRetry(bak, plan.dest, rename); } catch { /* reported below */ } }
-    return { ok: false, reason: `could not copy the image: ${err.message}` };
+    return { ok: false, reason: `could not copy the file: ${err.message}` };
   }
 
   const file = path.basename(plan.dest);
@@ -380,11 +408,12 @@ function resetBackground({ cwd, fsImpl = fs } = {}) {
 function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
   const look = readLook(cwd, { fsImpl });
   if (!look.background) {
-    return { background: fallbackBackground, source: 'generated', setAt: null, look };
+    return { background: fallbackBackground, source: 'generated', kind: 'image', setAt: null, look };
   }
   return {
     background: path.join(lookDir(cwd), look.background.file),
     source: 'override',
+    kind: kindOfExt(extOf(look.background.file)) || 'image',
     setAt: look.background.setAt,
     look,
   };
@@ -392,7 +421,7 @@ function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
 
 module.exports = {
   planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
-  readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, LOOK_DIR_NAME,
+  readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, MAX_VIDEO_BYTES, LOOK_DIR_NAME,
   seedLookIfNew, rerollLook,
   // the branch ledger (host/git-tree-service.js) lives in the same folder, behind the same ignore,
   // and refuses a linked folder the same way
