@@ -207,7 +207,7 @@ test('Dexter F1: whatever generateLook returns passes for the foreground it was 
 // --- generateLookFrom: a look seeded by a background's own colours (#34) --------
 
 const {
-  generateLookFrom, drawLookFrom, seedParts, hexToOklch, TAME_PARTS_DRAW, noSeedsReason,
+  generateLookFrom, drawLookFrom, seedParts, hexToOklch, tameDraw, noSeedsReason,
 } = require('../host/palette-gen');
 
 const hueGap = (a, b) => { const d = Math.abs(a - b) % 360; return Math.min(d, 360 - d); };
@@ -304,7 +304,7 @@ test('generateLookFrom retries a failing candidate, then uses the tame draw, the
 test('the tame draw is exported and passes on its own for any hue', () => {
   for (const h of [0, 60, 120, 180, 240, 300]) {
     const parts = { base: { L: 0.5, C: 0.1, h }, accent: null };
-    assert.deepStrictEqual(lookFailures(TAME_PARTS_DRAW(parts)), [], `hue ${h}`);
+    assert.deepStrictEqual(lookFailures(tameDraw(parts)), [], `hue ${h}`);
   }
 });
 
@@ -346,4 +346,10 @@ test('the seeded draw nearly always passes first time, so a match is a draw and 
     if (lookFailures(drawLookFrom(rng, parts)).length === 0) first++;
   }
   assert.ok(first / trials >= 0.95, `${first}/${trials} draws passed first time`);
+});
+
+test('M7: the tame draw is a function named like one, tameDraw, and the constant-style name is gone', () => {
+  const pg = require('../host/palette-gen');
+  assert.strictEqual(typeof pg.tameDraw, 'function');
+  assert.strictEqual(pg.TAME_PARTS_DRAW, undefined);
 });

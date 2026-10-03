@@ -285,7 +285,7 @@ function drawLookFrom(rng, parts) {
 }
 
 /** The draw with every random choice at its midpoint: the safe fallback, still seeded. */
-function TAME_PARTS_DRAW(parts) {
+function tameDraw(parts) {
   return drawLookFrom(() => 0.5, parts);
 }
 
@@ -304,7 +304,7 @@ function generateLookFrom(seeds, rng = Math.random, { terminalForeground = DEFAU
     const look = candidate(rng, parts);
     if (passes(look)) return look;
   }
-  const tame = TAME_PARTS_DRAW(parts);
+  const tame = tameDraw(parts);
   return passes(tame) ? tame : null;
 }
 
@@ -315,5 +315,5 @@ function noSeedsReason() {
 module.exports = {
   generateLook, drawLook, lookFailures, noLookReason, oklchToHex, SAFE_LOOK, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
   MIN_TEXT_CONTRAST, MIN_CONTROL_CONTRAST, MAX_BG_LUMINANCE,
-  generateLookFrom, drawLookFrom, seedParts, hexToOklch, TAME_PARTS_DRAW, noSeedsReason, MAX_SEEDS,
+  generateLookFrom, drawLookFrom, seedParts, hexToOklch, tameDraw, noSeedsReason, MAX_SEEDS,
 };
