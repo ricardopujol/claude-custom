@@ -14,7 +14,9 @@
  *                             (result lines are the bulk of a transcript and hold file contents: only the
  *                             ones that answer a wanted call are worth a JSON.parse)
  *     addResult(entry)        record whether each answered call succeeded
- *     calls()                 [{ id, name, input, at }] for calls with a successful result, in order seen
+ *     calls()                 [{ id, name, input, at, doneAt }] for calls with a successful result, in order
+ *                             seen: `at` is when it was requested, `doneAt` when its result arrived (what a
+ *                             call that waited at a permission prompt really ran at)
  *   resultOk(block)           is this tool_result block a success?
  *
  * A refusal is recognised by its words as well as by is_error: Claude Code's rejection text is not always
@@ -60,12 +62,13 @@ function createCollector({ wanted } = {}) {
     addResult(entry) {
       const content = entry && entry.message && entry.message.content;
       if (!Array.isArray(content)) return;
+      const doneAt = Date.parse(entry.timestamp);
       for (const b of content) {
-        if (b && b.type === 'tool_result' && pending.has(b.tool_use_id)) outcome.set(b.tool_use_id, resultOk(b));
+        if (b && b.type === 'tool_result' && pending.has(b.tool_use_id)) outcome.set(b.tool_use_id, { ok: resultOk(b), doneAt });
       }
     },
     calls() {
-      return uses.filter(u => outcome.get(u.id) === true);
+      return uses.filter(u => outcome.get(u.id) && outcome.get(u.id).ok === true).map(u => ({ ...u, doneAt: outcome.get(u.id).doneAt }));
     },
   };
 }

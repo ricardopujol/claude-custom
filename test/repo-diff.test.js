@@ -178,13 +178,13 @@ test('a huge git diff is cut at the cap and says so', async () => {
 
 // ---- the whole thing ----
 
-test('diffFor: calls found -> Claude\'s, and git is not even run', async () => {
+test('diffFor: calls found and the file unchanged since -> Claude (git is asked, since the file may have moved on, but does not win)', async () => {
   let ran = 0;
   const dir = projects([[edit(`${ROOT}/a.js`, 'o', 0, 'n', 1)]]);
-  const r = await diffFor({ root: ROOT, rel: 'a.js', projectsDir: dir, execFile: () => { ran++; } });
+  const r = await diffFor({ root: ROOT, rel: 'a.js', projectsDir: dir, execFile: (f, a, o, cb) => { ran++; cb(null, 'diff --git', ''); } });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.source, 'claude');
-  assert.strictEqual(ran, 0);
+  assert.strictEqual(ran, 1);
 });
 
 test('diffFor: no calls -> git\'s diff; git says nothing -> source null', async () => {

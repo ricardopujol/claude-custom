@@ -197,8 +197,13 @@ const APP_JS = [
 const HOSTILE = 'a&amp;b<tag>.js'.replace(/[<>]/g, '');     // Windows can't hold < or >; `&amp;` is the markup-shaped part
 const SPACED = 'my file.md';
 
-function at(n) { return new Date(Date.parse('2026-10-03T12:00:00Z') + n * 1000).toISOString(); }
-const toolUse = (name, input, n) => ({ type: 'assistant', timestamp: at(n), message: { content: [{ type: 'tool_use', name, input }] } });
+// well in the past, so "the file changed since Claude's last call" is only true when the probe changes it
+function at(n) { return new Date(Date.parse('2026-09-01T12:00:00Z') + n * 1000).toISOString(); }
+let toolId = 0;
+const toolUse = (name, input, n) => ({ type: 'assistant', timestamp: at(n), message: { content: [{ type: 'tool_use', id: `toolu_probe_${++toolId}`, name, input }] } });
+// the answer Claude Code records for a call; a call without one (or with is_error) is not a change
+const toolResult = (use, n, content = 'ok', is_error = undefined) => ({ type: 'user', timestamp: at(n),
+  message: { content: [{ type: 'tool_result', tool_use_id: use.message.content[0].id, content, ...(is_error ? { is_error } : {}) }] } });
 
 function makeRepo() {
   fs.mkdirSync(path.join(dev, 'src'), { recursive: true });
@@ -233,12 +238,18 @@ function makeRepo() {
   const dir = path.join(projectsDir, projectDirName(dev));
   fs.mkdirSync(dir, { recursive: true });
   const abs = (rel) => path.join(dev, rel);
+  const e1 = toolUse('Edit', { file_path: abs('src/app.js'), old_string: "const greeting = 'hi';", new_string: "const greeting = 'hello';" }, 3);
+  const e2 = toolUse('Edit', { file_path: abs('src/app.js'), old_string: 'return a - b;', new_string: 'return a + b;' }, 4);
+  const w1 = toolUse('Write', { file_path: abs('src/written.js'), content: 'exports.written = true;\nexports.second = 2;\n' }, 5);
+  // an Edit that FAILED ("Found 2 matches") and a Write the person refused: neither is a change (Dexter D1)
+  const bad = toolUse('Edit', { file_path: abs('src/util.js'), old_string: 'one', new_string: 'uno' }, 6);
+  const refused = toolUse('Write', { file_path: abs('docs/never.md'), content: 'x' }, 7);
   const lines = [
     toolUse('Read', { file_path: abs('README.md') }, 1),
     toolUse('Read', { file_path: abs('docs/guide.md') }, 2),
-    toolUse('Edit', { file_path: abs('src/app.js'), old_string: "const greeting = 'hi';", new_string: "const greeting = 'hello';" }, 3),
-    toolUse('Edit', { file_path: abs('src/app.js'), old_string: 'return a - b;', new_string: 'return a + b;' }, 4),
-    toolUse('Write', { file_path: abs('src/written.js'), content: 'exports.written = true;\nexports.second = 2;\n' }, 5),
+    e1, toolResult(e1, 3), e2, toolResult(e2, 4), w1, toolResult(w1, 5),
+    bad, toolResult(bad, 6, 'Found 2 matches of the string to replace', true),
+    refused, toolResult(refused, 7, "The user doesn't want to proceed with this tool use. The tool use was rejected.", true),
   ].map(l => JSON.stringify(l)).join('\n');
   fs.writeFileSync(path.join(dir, 's1.jsonl'), lines);
 }
@@ -401,7 +412,14 @@ async function main() {
   check('7: README.md (only read) has NO Diff toggle', !!readme && !readme.diffVisible);
   await rp(app, 'click', { path: 'src/util.js' });
   const util = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.path === 'src/util.js' && s.text.includes('exports.one') ? s : null; }, 8000);
-  check('7: src/util.js (changed by hand, no Claude call) has NO Diff toggle either', !!util && !util.diffVisible);
+  check('7 (Dexter D1): src/util.js had only a FAILED Edit in the transcript: still untouched (no badge) and docs/never.md (a refused Write) is not in the overlay',
+    rowOf(await rp(app, 'state'), 'src/util.js').badge === '' && !rowsOf(await rp(app, 'state')).some(r => r.path === 'docs/never.md' && r.badge));
+  check('7 (Dexter D2): src/util.js was changed by hand (git calls it modified): it HAS the Diff toggle, and the diff is git\'s, with the added line',
+    !!util && util.diffVisible, JSON.stringify(util && { diffVisible: util.diffVisible }));
+  await rp(app, 'reader.toggleDiff');
+  const utilDiff = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.mode === 'diff' && /exports\.two = 2/.test(s.text) ? s : null; }, 10000);
+  check('7 (D2): ...labelled git diff HEAD', !!utilDiff && /git diff HEAD/.test(utilDiff.meta), JSON.stringify(utilDiff && utilDiff.meta));
+  await rp(app, 'reader.toggleDiff');
 
   // 8 ------------------------------------------------------------------------------
   await rp(app, 'click', { path: 'src/app.js' });

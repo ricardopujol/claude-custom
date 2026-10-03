@@ -41,17 +41,17 @@ const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 const clip = (s) => (s.length > MAX_STRING ? s.slice(0, MAX_STRING) : s);
 
 // `at` is a call's own time; a call whose input is for another file, or malformed, is no call here.
-function callFrom(block, root, rel, at) {
+function callFrom(block, root, rel, at, doneAt) {
   if (!block || (block.name !== 'Edit' && block.name !== 'Write')) return null;
   const input = block.input;
   if (!input || typeof input.file_path !== 'string') return null;
   const seen = relativeTo(root, input.file_path);
   if (seen === null || seen.toLowerCase() !== rel.toLowerCase()) return null;
   if (block.name === 'Write') {
-    return typeof input.content === 'string' ? { tool: 'Write', at, content: clip(input.content) } : null;
+    return typeof input.content === 'string' ? { tool: 'Write', at, doneAt, content: clip(input.content) } : null;
   }
   if (typeof input.old_string !== 'string' || typeof input.new_string !== 'string') return null;
-  return { tool: 'Edit', at, oldString: clip(input.old_string), newString: clip(input.new_string) };
+  return { tool: 'Edit', at, doneAt, oldString: clip(input.old_string), newString: clip(input.new_string) };
 }
 
 async function claudeCallsFor({ root, rel, projectsDir } = {}) {
@@ -80,7 +80,7 @@ async function claudeCallsFor({ root, rel, projectsDir } = {}) {
     let lastTime = -Infinity;
     for (const call of collector.calls()) {
       if (Number.isFinite(call.at)) lastTime = call.at;
-      const c = callFrom(call, root, rel, call.at);
+      const c = callFrom(call, root, rel, call.at, call.doneAt);
       if (c) found.push({ c, when: lastTime });
     }
     await yieldToLoop();
@@ -126,9 +126,34 @@ function renderCalls(calls) {
   return out.join('\n');
 }
 
-function pickDiff({ calls, gitText } = {}) {
-  if (Array.isArray(calls) && calls.length) return { source: 'claude', text: renderCalls(calls) };
-  if (typeof gitText === 'string' && gitText !== '') return { source: 'git', text: gitText };
+// WHICH DIFF (PR #95 Dexter D2), defined once:
+//   - Claude's own calls while they still describe the file: it has not changed since the last of them
+//     COMPLETED (a call that waited at a permission prompt is written long after it was requested, so the time
+//     is its result's);
+//   - once the file has changed since (a Bash sed, a hand edit, another session) those calls describe a past
+//     state, maybe already committed: `git diff HEAD` of the CURRENT state, when non-empty;
+//   - no calls: git's diff when non-empty, else nothing.
+// Unknown times (no stat, no timestamps) cannot say the file moved on, so the calls stand.
+const SLACK_MS = 2000;     // the write itself lands a moment after the result is stamped
+
+function lastDone(calls) {
+  let t = NaN;
+  for (const c of calls) {
+    const v = Number.isFinite(c.doneAt) ? c.doneAt : c.at;
+    if (Number.isFinite(v) && !(t >= v)) t = v;
+  }
+  return t;
+}
+
+function pickDiff({ calls, gitText, fileMtimeMs } = {}) {
+  const haveGit = typeof gitText === 'string' && gitText !== '';
+  if (Array.isArray(calls) && calls.length) {
+    const done = lastDone(calls);
+    const moved = typeof fileMtimeMs === 'number' && Number.isFinite(fileMtimeMs) && Number.isFinite(done) && fileMtimeMs > done + SLACK_MS;
+    if (moved && haveGit) return { source: 'git', text: gitText };
+    return { source: 'claude', text: renderCalls(calls) };
+  }
+  if (haveGit) return { source: 'git', text: gitText };
   return { source: null, text: '' };
 }
 
@@ -157,15 +182,30 @@ function gitDiffHead(root, rel, { execFile = childProcess.execFile } = {}) {
   });
 }
 
-async function diffFor({ root, rel, projectsDir, execFile } = {}) {
+// Is the file modified against HEAD? true / false, or null when git can't say (the Diff toggle then relies on the
+// overlay alone). `--quiet` exits 1 for a difference.
+function gitModified(root, rel, { execFile = childProcess.execFile } = {}) {
+  return new Promise((resolve) => {
+    try {
+      execFile('git', ['-C', root, '-c', 'core.quotePath=false', 'diff', '--quiet', '--no-ext-diff', '--no-textconv', 'HEAD', '--', `:(literal)${rel}`],
+        { timeout: 8000, windowsHide: true },
+        (err) => resolve(!err ? false : err.code === 1 ? true : null));
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function diffFor({ root, rel, projectsDir, execFile, fileMtimeMs } = {}) {
   const found = await claudeCallsFor({ root, rel, projectsDir });
+  const git = await gitDiffHead(root, rel, execFile ? { execFile } : undefined);
   if (found.calls.length) {
-    const r = pickDiff({ calls: found.calls });
+    // git only REFINES here: if it can't answer, Claude's calls are still the answer
+    const r = pickDiff({ calls: found.calls, gitText: git.ok ? git.text : '', fileMtimeMs });
     return { ok: true, ...r, count: found.calls.length, ...(found.truncated ? { truncated: true } : {}) };
   }
-  const git = await gitDiffHead(root, rel, execFile ? { execFile } : undefined);
   if (!git.ok) return { ok: false, error: git.error };
   return { ok: true, ...pickDiff({ calls: [], gitText: git.text }), count: 0 };
 }
 
-module.exports = { claudeCallsFor, renderCalls, pickDiff, gitDiffHead, diffFor, MAX_CALLS, MAX_WRITE_LINES, MAX_STRING, MAX_GIT_CHARS };
+module.exports = { claudeCallsFor, renderCalls, pickDiff, gitDiffHead, gitModified, diffFor, SLACK_MS, MAX_CALLS, MAX_WRITE_LINES, MAX_STRING, MAX_GIT_CHARS };

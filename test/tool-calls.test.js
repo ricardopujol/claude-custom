@@ -24,7 +24,7 @@ function run(entries) {
 
 test('a call with a plain successful result is kept, with its id, name, input and time', () => {
   const calls = run([use('t1', 'Edit', { file_path: 'a' }, 5000), result('t1', 'The file a has been updated.')]);
-  assert.deepStrictEqual(calls, [{ id: 't1', name: 'Edit', input: { file_path: 'a' }, at: 5000 }]);
+  assert.deepStrictEqual(calls, [{ id: 't1', name: 'Edit', input: { file_path: 'a' }, at: 5000, doneAt: NaN }]);
 });
 
 test('is_error: true drops the call ("Found 2 matches"), and the retry that worked stays', () => {
@@ -80,4 +80,11 @@ test('resultOk: content as a string or as text blocks; is_error must be exactly 
   assert.strictEqual(resultOk({ content: 'x', is_error: 'true' }), true, 'only the boolean true is an error');
   assert.strictEqual(resultOk({}), true);
   assert.strictEqual(resultOk(null), false);
+});
+
+test('D2: a call carries when its RESULT arrived (doneAt): the moment it actually ran, not when it was requested', () => {
+  const res = { type: 'user', timestamp: new Date(9000).toISOString(), message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } };
+  const calls = run([use('t1', 'Edit', { file_path: 'a' }, 1000), res]);
+  assert.strictEqual(calls[0].at, 1000);
+  assert.strictEqual(calls[0].doneAt, 9000);
 });

@@ -291,3 +291,35 @@ test('D5: a listing that worked is still asked once, not on every list', async (
   await svc.handle({ type: 'repo', action: 'list', dir: '', seq: 2 });
   assert.strictEqual(n, 1);
 });
+
+// ---- PR #95 Dexter D2: the Diff's reach and rule need the file's time and whether git calls it modified ----
+
+test('D2: a read says whether git calls the file modified, so Bash and hand changes get the Diff toggle', async () => {
+  const { root } = repo();
+  const asked = [];
+  const svc = make({ root, readFog: noFog, modified: async (r, rel) => { asked.push([r, rel]); return rel === 'src/a.js'; } });
+  const yes = await svc.handle({ type: 'repo', action: 'read', path: 'src/a.js', seq: 1 });
+  const no = await svc.handle({ type: 'repo', action: 'read', path: 'README.md', seq: 2 });
+  assert.strictEqual(yes.modified, true);
+  assert.strictEqual(no.modified, false);
+  assert.deepStrictEqual(asked, [[root, 'src/a.js'], [root, 'README.md']]);
+});
+
+test('D2: modified is null when git can\'t say, and absent on a refusal (nothing was read)', async () => {
+  const { root } = repo();
+  const svc = make({ root, readFog: noFog, modified: async () => null });
+  assert.strictEqual((await svc.handle({ type: 'repo', action: 'read', path: 'src/a.js', seq: 1 })).modified, null);
+  const bin = await svc.handle({ type: 'repo', action: 'read', path: 'blob.bin', seq: 2 });
+  assert.ok(!('modified' in bin));
+  assert.ok(!('modified' in await svc.handle({ type: 'repo', action: 'read', path: '../x', seq: 3 })));
+});
+
+test('D2: a diff is asked with the file\'s own mtime, so the rule can tell the file moved on', async () => {
+  const { root } = repo();
+  const seen = [];
+  const svc = make({ root, readFog: noFog, diff: async (o) => { seen.push(o); return { ok: true, source: 'git', text: 'x' }; } });
+  await svc.handle({ type: 'repo', action: 'diff', path: 'src/a.js', seq: 1 });
+  assert.strictEqual(seen[0].fileMtimeMs, fs.statSync(path.join(root, 'src', 'a.js')).mtimeMs);
+  await svc.handle({ type: 'repo', action: 'diff', path: 'src/deleted.js', seq: 2 });
+  assert.strictEqual(seen[1].fileMtimeMs, undefined, 'no file, no time: the rule falls back to the calls');
+});

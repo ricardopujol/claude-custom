@@ -55,7 +55,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   };
 
   const state = {
-    path: null, mode: 'file', stamp: null, overlayFiles: new Map(), editor: null, cmLoaded: false,
+    path: null, mode: 'file', stamp: null, modified: false, overlayFiles: new Map(), editor: null, cmLoaded: false,
     token: 0, status: '', diffSource: null,
   };
   let cmPromise = null;
@@ -162,7 +162,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     el.path.textContent = state.path || '';
     el.path.title = state.path || '';
     const edited = state.path && state.overlayFiles.get(state.path);
-    el.diff.hidden = !(edited && edited.tier === 'edited');
+    // Diff is offered for a file Claude edited AND for one git calls modified (a Bash or hand change, PR #95 Dexter D2)
+    el.diff.hidden = !((edited && edited.tier === 'edited') || state.modified);
     el.diff.textContent = state.mode === 'diff' ? 'File' : 'Diff';
     el.diff.setAttribute('aria-pressed', state.mode === 'diff' ? 'true' : 'false');
     const bits = [];
@@ -188,6 +189,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     if (token !== state.token) return;
     if (!r.ok) {
       state.stamp = null;
+      state.modified = false;
       showNote(refusalText(r), { reveal: r.why === 'too-large' || r.why === 'binary' || r.why === 'unreadable' });
       paintHead();
       return;
@@ -196,6 +198,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     if (token !== state.token) return;
     hideNote();
     state.stamp = { size: r.size, mtimeMs: r.mtimeMs };
+    state.modified = r.modified === true;
     editor.show({ text: r.text, name: r.path, mode: 'file', language: lang.languageFor(r.path) });
     paintHead();
     if (state.mode === 'diff') await showDiff(token);

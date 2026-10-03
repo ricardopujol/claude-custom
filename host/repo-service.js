@@ -27,7 +27,7 @@
 const { guardPath, lexical } = require('./repo-guard');
 const { createIndex } = require('./repo-index');
 const { readRepoFile, statRepoFile } = require('./repo-read');
-const { diffFor } = require('./repo-diff');
+const { diffFor, gitModified } = require('./repo-diff');
 const { rollUp } = require('./repo-overlay');
 const { readFog } = require('./fog');
 const { watchRepo } = require('./repo-watch');
@@ -37,7 +37,7 @@ const validSeq = (s) => (Number.isSafeInteger(s) || (typeof s === 'string' && s.
 
 function createRepoService({
   root, projectsDir, readFog: readFogFn = readFog, index = createIndex(root),
-  guard = guardPath, read = readRepoFile, stat = statRepoFile, diff = diffFor,
+  guard = guardPath, read = readRepoFile, stat = statRepoFile, diff = diffFor, modified = gitModified,
   watch = watchRepo, announce = () => {},
 } = {}) {
   let watcher = null;
@@ -115,14 +115,21 @@ function createRepoService({
         const g = await guard(root, msg.path);
         if (!g.ok) return { ok: false, why: g.why, path: msg.path.slice(0, 200) };
         ensureWatching();
-        const r = msg.action === 'read' ? await read(g.real || g.abs) : await stat(g.real || g.abs);
-        return { ...r, path: g.rel };
+        if (msg.action === 'stat') return { ...(await stat(g.real || g.abs)), path: g.rel };
+        // `modified` (git diff --quiet): a file changed by Bash or by hand gets the Diff toggle too (PR #95 Dexter
+        // D2). Asked beside the read, and only attached to one that succeeded.
+        const [r, m] = await Promise.all([read(g.real || g.abs), modified(root, g.rel)]);
+        return { ...r, ...(r.ok ? { modified: m } : {}), path: g.rel };
       }
       case 'diff': {
         if (typeof msg.path !== 'string') return { ok: false, why: 'bad request', error: 'no path' };
         const lex = lexical(root, msg.path);
         if (!lex.ok) return { ok: false, why: lex.why, path: msg.path.slice(0, 200) };
-        const r = await diff({ root, rel: lex.rel, projectsDir });
+        // The file's own time lets the diff tell that it has changed since Claude's last call (host/repo-diff.js
+        // pickDiff). A deleted or unreadable file has none, and the calls stand.
+        const g = await guard(root, lex.rel);
+        const st = g.ok ? await stat(g.real || g.abs) : null;
+        const r = await diff({ root, rel: lex.rel, projectsDir, fileMtimeMs: st && st.ok ? st.mtimeMs : undefined });
         return { ...r, path: lex.rel };
       }
       default:
