@@ -713,6 +713,10 @@
     /* the Git dial takes the whole wide zone, so its drawer can sit beside it (#46) */
     .zone[data-shape="wide"] .panel.on > #git-dial,
     .zone[data-shape="wide"] .panel.on > #style-sections { flex: 1 1 auto; min-width: 280px; max-width: none; }
+    /* ...and the zone's full HEIGHT: a wide panel lays its children out flex-start, so without a definite
+       height the svg's height:100% fell back to its aspect ratio -- a dial 3x the zone, clipped, with its
+       text hidden as "narrow" (window probe 3b, PR #93) */
+    .zone[data-shape="wide"] .panel.on > #git-dial { align-self: stretch; height: 100%; overflow: hidden; }
     /* Agents in a row: the roster flows as a grid of cards, not one tall list. */
     .zone[data-shape="wide"] #agents {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
