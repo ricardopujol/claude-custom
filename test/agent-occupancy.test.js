@@ -134,6 +134,10 @@ test('touchOf is the same test without an event: the worktree one tool call prov
 
 test('TOUCH_TOOLS is what the occupancy matcher hooks: the file tools and the search tools', () => {
   assert.deepStrictEqual([...O.TOUCH_TOOLS].sort(), ['Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']);
+  // ...and the matcher asks for exactly those: a tool in one and not the other is either a hook nobody reads
+  // or a rule no event ever reaches
+  const { OCCUPANCY_MATCHER } = require('../host/settings-writer');
+  assert.deepStrictEqual(OCCUPANCY_MATCHER.split('|').sort(), [...O.TOUCH_TOOLS].sort());
 });
 
 test('an agent with no agent_type is still a claim, with a null name', () => {

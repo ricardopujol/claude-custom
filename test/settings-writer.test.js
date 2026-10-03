@@ -405,9 +405,7 @@ test('occupancy adds a PreToolUse entry for the file tools, LAST, and only when 
   const s = buildHarnessSettings({ ...opts, occupancy: true });
   const last = s.hooks.PreToolUse[s.hooks.PreToolUse.length - 1];
   assert.strictEqual(last.matcher, 'Read|Edit|Write|NotebookEdit|Grep|Glob');
-  // the matcher and host/agent-occupancy.js agree on which tools are a touch (a tool in one and not the other
-  // is either a hook nobody reads or a rule no event ever reaches)
-  assert.deepStrictEqual(last.matcher.split('|').sort(), [...require('../host/agent-occupancy').TOUCH_TOOLS].sort());
+  // (that these are exactly host/agent-occupancy.js TOUCH_TOOLS is pinned in test/agent-occupancy.test.js)
   assert.strictEqual(JSON.stringify(s.hooks.PreToolUse[0]), JSON.stringify(plain.hooks.PreToolUse[0]),
     'the first entry still belongs to the mood engine');
   assert.strictEqual(last.hooks[0].command, plain.hooks.PreToolUse[0].hooks[0].command,
