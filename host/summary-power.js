@@ -55,7 +55,7 @@ function createPowerProbe({ platform = process.platform, run = runFile, now = Da
     if (cached && now() - cached.at < TTL_MS) return cached.value;
     if (inFlight) return inFlight;
     inFlight = ask().then((value) => {
-      if (value !== null) cached = { at: now(), value };
+      cached = { at: now(), value };         // an unknown answer too: a broken PowerShell is not respawned on every ask
       return value;
     }).finally(() => { inFlight = null; });
     return inFlight;

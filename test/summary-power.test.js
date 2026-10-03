@@ -81,11 +81,16 @@ test('the answer is cached for a minute, and asked again after it', async () => 
   assert.strictEqual(n, 2);
 });
 
-test('an unknown answer is not cached: the next ask tries again', async () => {
+test('an unknown answer is cached for a minute too, so a broken PowerShell is not respawned on every ask (Miguel S1)', async () => {
+  let t = 1_000_000;
   let n = 0;
-  const p = createPowerProbe({ platform: 'win32', run: async () => { n += 1; if (n === 1) throw new Error('slow'); return '2'; } });
+  const p = createPowerProbe({ platform: 'win32', now: () => t, run: async () => { n += 1; if (n === 1) throw new Error('blocked by policy'); return '2'; } });
   assert.strictEqual(await p.onBattery(), null);
-  assert.strictEqual(await p.onBattery(), false);
+  t += TTL_MS - 1;
+  assert.strictEqual(await p.onBattery(), null);
+  assert.strictEqual(n, 1);
+  t += 1;
+  assert.strictEqual(await p.onBattery(), false, 'asked again after the minute');
   assert.strictEqual(n, 2);
 });
 
