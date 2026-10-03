@@ -30,6 +30,10 @@
          nothing about how the header already looks -- see
          app/top-bar-display.js's cueColour(null, theme). */
       --model-accent: #d08c4a;
+      /* Worktree occupancy (#44 + #47): an agent is working in this folder (--agent), and this tab's own
+         session is writing too (--warn). The same two colours as the strip's hatched edge. */
+      --agent: #6aa5d8;
+      --warn: #e6c34a;
     }
     * { box-sizing: border-box; }
     /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
@@ -591,6 +595,54 @@
       background: none; border: none; color: var(--dim); cursor: pointer; font-size: 15px; line-height: 1;
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
+
+    /* Worktree occupancy (#44 + #47, take B): a chrome bar over the terminal while an agent is working in this
+       folder, with a coloured left rule; the first-keystroke confirm sits over the input with the same rule.
+       Neither animates: movement means "needs you". */
+    #occupancy-banner {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 16;
+      display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--agent) 12%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--agent) 40%, var(--border));
+      border-left: 4px solid var(--agent);
+    }
+    #occupancy-banner.warn {
+      background: color-mix(in srgb, var(--warn) 14%, var(--chrome));
+      border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+      border-left-color: var(--warn);
+    }
+    #occupancy-banner[hidden], #occupancy-confirm[hidden] { display: none; }
+    #occupancy-banner-text { font-weight: 600; }
+    #occupancy-banner-since, #occupancy-banner-more, #occupancy-banner-note { color: var(--dim); }
+    #occupancy-banner.warn #occupancy-banner-note { color: var(--warn); }
+    #occupancy-banner .spacer { flex: 1; }
+    #occupancy-jump, #occupancy-confirm button {
+      padding: 3px 10px; border-radius: 4px; cursor: pointer; font: inherit;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    }
+    #occupancy-jump:hover, #occupancy-confirm button:hover { border-color: var(--agent); }
+    #occupancy-jump[hidden] { display: none; }
+    /* the terminal-banner (other live sessions) sits just under it while both show */
+    body.occupied #terminal-banner { top: 46px; }
+    #occupancy-confirm {
+      position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 18;
+      display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 5px;
+      font-size: 13px; color: var(--text);
+      background: color-mix(in srgb, var(--agent) 16%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--agent) 45%, var(--border));
+      border-left: 4px solid var(--agent);
+    }
+    #occupancy-confirm.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    #occupancy-confirm-text { flex: 1; }
+    /* the hub card's `-> worktree` line (#44) */
+    .agent .agent-where {
+      display: block; max-width: 100%; margin-top: 2px; padding: 0; border: 0; background: none; cursor: pointer;
+      font: inherit; font-size: 10px; text-align: left; color: var(--agent);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .agent .agent-where:hover { text-decoration: underline; }
+    .agent .agent-where-plus { margin-left: 4px; color: var(--dim); }
 
     #diag {
       width: 340px; flex: 0 0 340px;
@@ -1258,6 +1310,22 @@
           <span id="terminal-banner-text"></span>
           <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
         </div>
+        <!-- Worktree occupancy (#44 + #47): an agent launched from another session is working in this folder.
+             Text only (app/occupancy-display.js bannerModel); clears when the agent stops or its host dies. -->
+        <div id="occupancy-banner" role="status" hidden>
+          <span id="occupancy-banner-text"></span>
+          <span id="occupancy-banner-since"></span>
+          <span id="occupancy-banner-more"></span>
+          <span id="occupancy-banner-note"></span>
+          <span class="spacer"></span>
+          <button type="button" id="occupancy-jump" hidden></button>
+        </div>
+        <!-- The first keystroke typed while an agent is writing here is held behind this (app/occupancy-confirm.js). -->
+        <div id="occupancy-confirm" role="alertdialog" aria-labelledby="occupancy-confirm-text" hidden>
+          <span id="occupancy-confirm-text">An agent is writing here. Type anyway?</span>
+          <button type="button" id="occupancy-type">Type</button>
+          <button type="button" id="occupancy-wait">Wait</button>
+        </div>
         <!-- Another session holds this worktree's lock: no session starts here
              until Open anyway. Over the terminal, which is empty meanwhile. -->
         <div id="lock-overlay" role="alertdialog" aria-labelledby="lock-overlay-title" hidden>
@@ -1442,6 +1510,8 @@
   <script src="./paste-action.js"></script>
   <script src="./worktree-status-display.js"></script>
   <script src="./tab-status.js"></script>
+  <script src="./occupancy-display.js"></script>
+  <script src="./occupancy-confirm.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>

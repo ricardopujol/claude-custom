@@ -16,8 +16,9 @@
  *   - Never asked with no live claim: with none, every key goes straight through.
  *   - The first keystroke of an unconfirmed run opens the question and is HELD, with whatever follows while
  *     it is open (up to HOLD_MAX characters; the rest is dropped, never queued without limit). *Type*
- *     releases all of it, once, in order, and approves the agents that are there: not asked again for that
- *     run. *Wait* drops it and remembers nothing, so the next keystroke asks again. Escape while the question
+ *     releases every held piece, once, in order, EACH THROUGH send (a paste arrives as its own control
+ *     frame, so pieces are never glued together), and approves the agents that are there: not asked again
+ *     for that run. *Wait* drops it and remembers nothing, so the next keystroke asks again. Escape while the question
  *     is open is Wait.
  *   - A RUN is one agent_id's stay. A second agent arriving is a new run (asked again); an agent whose claim
  *     went away and came back (the same id resumed) is a new run too.
@@ -58,20 +59,23 @@ const idsOf = (claims) => new Set((Array.isArray(claims) ? claims : [])
 function createConfirm({ send, onChange = () => {} } = {}) {
   let present = new Set();         // the agent ids in this folder right now
   const confirmed = new Set();     // the ones the person said Type to
-  let held = null;                 // the held text, or null when no question is open
+  let held = null;                 // the held pieces (in order), or null when no question is open
+  let heldLength = 0;
 
   const asking = () => held !== null;
   const tell = () => { try { onChange({ asking: asking() }); } catch { /* a listener must not wedge the confirm */ } };
-  const release = (text) => { try { send(text); } catch { /* the socket is the caller's to report */ } };
+  const release = (data) => { try { send(data); } catch { /* the socket is the caller's to report */ } };
+  const releaseAll = (pieces) => { for (const piece of pieces) release(piece); };
   const unconfirmed = () => [...present].some(id => !confirmed.has(id));
 
   function setClaims(claims) {
     present = idsOf(claims);
     for (const id of [...confirmed]) if (!present.has(id)) confirmed.delete(id);   // that run ended
     if (asking() && present.size === 0) {
-      const text = held;
+      const pieces = held;
       held = null;
-      release(text);
+      heldLength = 0;
+      releaseAll(pieces);
       tell();
     }
   }
@@ -83,19 +87,21 @@ function createConfirm({ send, onChange = () => {} } = {}) {
     }
     if (asking() && data === ESC) { wait(); return 'dropped'; }
     const wasAsking = asking();
-    if (!wasAsking) held = '';
-    if (held.length + data.length > HOLD_MAX) { if (!wasAsking) tell(); return 'dropped'; }
-    held += data;
+    if (!wasAsking) { held = []; heldLength = 0; }
+    if (heldLength + data.length > HOLD_MAX) { if (!wasAsking) tell(); return 'dropped'; }
+    held.push(data);
+    heldLength += data.length;
     if (!wasAsking) tell();
     return 'held';
   }
 
   function type() {
     if (!asking()) return false;
-    const text = held;
+    const pieces = held;
     held = null;
+    heldLength = 0;
     for (const id of present) confirmed.add(id);
-    release(text);
+    releaseAll(pieces);
     tell();
     return true;
   }
@@ -103,6 +109,7 @@ function createConfirm({ send, onChange = () => {} } = {}) {
   function wait() {
     if (!asking()) return false;
     held = null;
+    heldLength = 0;
     tell();
     return true;
   }

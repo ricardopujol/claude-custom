@@ -61,13 +61,13 @@ test('Wait drops the held keystroke, and the next keystroke asks again (a Wait i
   assert.strictEqual(r.c.state().asking, true);
 });
 
-test('what is typed while the question is open is held with it, in order, and released together on Type', () => {
+test('what is typed while the question is open is held with it, in order, and released on Type', () => {
   const r = rig();
   r.c.setClaims(here('a1'));
   assert.strictEqual(r.c.input('h'), 'held');
   assert.strictEqual(r.c.input('i'), 'held');
   r.c.type();
-  assert.deepStrictEqual(r.sent, ['hi'], 'one release, in order');
+  assert.deepStrictEqual(r.sent, ['h', 'i'], 'each piece released once, in order, never glued (a paste is its own frame)');
 });
 
 test('...and dropped together on Wait', () => {

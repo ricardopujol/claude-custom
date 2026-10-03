@@ -40,7 +40,12 @@ const { projectLabel } = require('../host/project-path');
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
 const { readIdentity, readTokenFile } = require('../host/host-identity');
-const { readLook } = require('../host/style');
+const { readLook, lookDirState, ensureLookDir } = require('../host/style');
+// Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
+// launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
+const { createOccupancyService } = require('../host/occupancy-service');
+const { occupancyDir } = require('../host/occupancy-store');
+const { startTimes } = require('../host/proc-start');
 const { readOpenPrs, parseOpenPrs, openPrFor } = require('../host/open-prs');
 const { readSeams, fixtureReader } = require('../host/probe-seams');
 const tabMarks = require('./tab-marks');
@@ -327,6 +332,7 @@ function markSubmenu(branch) {
 
 let win = null;
 let tabShell = null;
+let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
 
 const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
@@ -834,6 +840,9 @@ function registerIpc() {
     : { kind: 'explain', text: "That tab's window can't be found." }));
   // The Git drawer (Enhancement #46): what the tabs of its worktrees are doing, and *Type /merged*, which
   // switches to that branch's tab and types `/merged` + Enter into its session.
+  // Worktree occupancy: a page's first paint asks what is in its folder and what its session launched; after
+  // that main pushes `occupancy` on change.
+  ipcMain.handle('occupancy:get', (e) => (isTabView(e.sender) ? tabShell.occupancyFor(e.sender) : null));
   ipcMain.handle('tab:states', (e, folders) => (isTabView(e.sender) ? tabShell.tabStates(e.sender, folders) : []));
   ipcMain.handle('tab:typeMerged', (e, folder, branch) => (isTabView(e.sender)
     ? tabShell.typeMerged(e.sender, folder, branch)
@@ -1338,6 +1347,20 @@ app.whenReady().then(async () => {
   const openPrsReader = seams.openPrsFixture
     ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
     : readOpenPrs;
+  occupancyService = createOccupancyService({
+    dir: occupancyDir(STATE_ROOT),
+    // The watcher creates the folder if it is missing (a first claim must be seen). Through the look folder's
+    // own guard: a `.claude-custom` that is a link to somewhere else is never written through, and a fresh
+    // one gets its .gitignore before anything lands in it.
+    ensureDir: () => {
+      if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
+      ensureLookDir(STATE_ROOT, fs);
+      fs.mkdirSync(occupancyDir(STATE_ROOT), { recursive: true });
+    },
+    startTimes,
+    onChange: () => { if (tabShell) tabShell.refresh(); },
+    log: (...a) => console.log(...a),
+  });
   tabShell = createShell({
     mode: MODE,
     container: PROJECT ? PROJECT.root : null,
@@ -1346,6 +1369,8 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
+    // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
+    occupancy: { claims: () => occupancyService.current() },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
     prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
@@ -1392,6 +1417,7 @@ app.whenReady().then(async () => {
 
   reloadMarks();
   if (MODE === 'tabs') pruneGoneMarks();
+  occupancyService.start();
   const first = await tabShell.open();
   if (attachOnlyRefusal) {
     console.error('[main] Open refused:', attachOnlyRefusal.reason);
@@ -1418,3 +1444,5 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   app.quit();
 });
+
+app.on('will-quit', () => { if (occupancyService) occupancyService.close(); });

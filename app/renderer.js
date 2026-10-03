@@ -190,6 +190,87 @@ document.getElementById('terminal-banner-dismiss').addEventListener('click', () 
   el.hidden = true;
 });
 
+// --- worktree occupancy (backlog #44 + #47) ----------------------------------------
+// What main pushes (app/occupancy-display.js viewPayload): `here` is the live agent claims in THIS folder (the
+// banner, and the first-keystroke confirm), `launched` the ones THIS session launched (the roster cards'
+// `-> worktree` lines). Every decision is in app/occupancy-display.js and app/occupancy-confirm.js; this only
+// paints what they return, and sends what the confirm releases. Nothing here makes anything read-only.
+const occupancy = { here: [], launched: [], confirm: null, jumpNote: '' };
+const occupancyEls = {
+  banner: document.getElementById('occupancy-banner'),
+  text: document.getElementById('occupancy-banner-text'),
+  since: document.getElementById('occupancy-banner-since'),
+  more: document.getElementById('occupancy-banner-more'),
+  note: document.getElementById('occupancy-banner-note'),
+  jump: document.getElementById('occupancy-jump'),
+  confirm: document.getElementById('occupancy-confirm'),
+};
+
+function paintOccupancyBanner() {
+  const m = window.occupancyDisplay
+    ? window.occupancyDisplay.bannerModel(occupancy.here, { turn: sessionTurn, now: Date.now() }) : null;
+  occupancyEls.banner.hidden = m === null;
+  document.body.classList.toggle('occupied', m !== null);
+  occupancyEls.banner.classList.toggle('warn', !!m && m.warn);
+  occupancyEls.confirm.classList.toggle('warn', !!m && m.warn);
+  if (m === null) return;
+  occupancyEls.text.textContent = m.text;
+  occupancyEls.since.textContent = m.since ? '· ' + m.since : '';
+  occupancyEls.more.textContent = m.more;
+  occupancyEls.note.textContent = occupancy.jumpNote || m.note;
+  occupancyEls.jump.hidden = m.jump === null;
+  if (m.jump) {
+    occupancyEls.jump.textContent = m.jump.label;
+    occupancyEls.jump.dataset.root = m.jump.root;
+  }
+}
+
+function paintOccupancyConfirm(state) {
+  occupancyEls.confirm.hidden = !(state && state.asking);
+}
+
+function applyOccupancy(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  occupancy.here = Array.isArray(p.here) ? p.here : [];
+  occupancy.launched = Array.isArray(p.launched) ? p.launched : [];
+  occupancy.jumpNote = '';
+  if (occupancy.confirm) occupancy.confirm.setClaims(occupancy.here);
+  paintOccupancyBanner();
+  if (typeof renderRoster === 'function') renderRoster();
+}
+
+// The person's own typing: through the confirm when there is one. A raw `send` stays for everything the program
+// types itself (the top bar, Type /merged, resize), which is never the person becoming a second writer.
+function userInput(data) {
+  if (occupancy.confirm) occupancy.confirm.input(data); else send(data);
+}
+
+if (window.occupancyConfirm) {
+  occupancy.confirm = occupancyConfirm.createConfirm({ send: (data) => send(data), onChange: paintOccupancyConfirm });
+}
+document.getElementById('occupancy-type').addEventListener('click', () => occupancy.confirm.type());
+document.getElementById('occupancy-wait').addEventListener('click', () => occupancy.confirm.wait());
+
+// Jump to the launching session's tab, or the worktree an agent is in: the Git drawer's own path.
+async function jumpToFolder(folder) {
+  if (!folder || !(window.harness && window.harness.selectFolder)) return;
+  let r = null;
+  try { r = await window.harness.selectFolder(folder); } catch { r = null; }
+  if (r && r.kind === 'explain' && r.text) {
+    occupancy.jumpNote = r.text;
+    paintOccupancyBanner();
+  }
+}
+occupancyEls.jump.addEventListener('click', () => jumpToFolder(occupancyEls.jump.dataset.root));
+
+// The minutes on the banner go stale between pushes.
+setInterval(() => { if (!occupancyEls.banner.hidden) paintOccupancyBanner(); }, 30000);
+
+if (window.harness && window.harness.occupancy) {
+  window.harness.occupancy.onChange(applyOccupancy);
+  window.harness.occupancy.get().then(applyOccupancy).catch(() => { /* the next push carries it */ });
+}
+
 // --- terminal ---------------------------------------------------------------
 const term = new Terminal({
   allowProposedApi: true,          // required by the unicode11 addon
@@ -2114,6 +2195,19 @@ function beltClick(target) {
   return true;
 }
 
+// #44: where an agent launched from THIS session is working, when it has touched another worktree. Nothing at
+// all for an agent that hasn't. A button, so a click on it is never "open the log" (cardClickAgent skips them).
+function occupancyWhereHtml(agent) {
+  const line = window.occupancyDisplay ? window.occupancyDisplay.cardLine(occupancy.launched, agent) : null;
+  if (!line) return '';
+  return `<button type="button" class="agent-where" data-where-root="${escapeHtml(line.root)}" title="${escapeHtml(line.title)}">` +
+    `${escapeHtml(line.text)}${line.plus > 0 ? `<span class="agent-where-plus">+${line.plus}</span>` : ''}</button>`;
+}
+agentsEl.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.agent-where');
+  if (b && b.dataset.whereRoot) jumpToFolder(b.dataset.whereRoot).then(() => {}, () => {});
+});
+
 function countBadgeHtml(agent, counts) {
   // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
   // concurrent run is news.
@@ -2308,6 +2402,7 @@ function renderRoster() {
         countBadgeHtml(r.agent, counts) + `</div>` +
       `<div class="state">${r.state}</div>` +
       agentModelHtml(r.agent) +
+      occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +
       beltHtml(r.agent) +
       `</div>` +
@@ -4172,6 +4267,7 @@ function handleControl(msg) {
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
     sessionTurn = msg.turn === undefined ? null : msg.turn;
+    paintOccupancyBanner();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
@@ -4339,6 +4435,7 @@ function handleControl(msg) {
   }
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
+    paintOccupancyBanner();
     reportTabStatus();
     return;
   }
@@ -4570,7 +4667,7 @@ function connect() {
   ws.onclose = () => {
     dot.classList.remove('on');
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
-    if (sessionTurn !== null) { sessionTurn = null; reportTabStatus(); }
+    if (sessionTurn !== null) { sessionTurn = null; paintOccupancyBanner(); reportTabStatus(); }
     // Detach is normal, not fatal — the host keeps the session alive, so just
     // keep trying to reattach.
     setTimeout(connect, 1000);
@@ -4603,7 +4700,7 @@ term.onKey(() => { if (term.hasSelection()) term.clearSelection(); });
 term.onData((data) => {
   logLine(pendingKeyDesc || 'input', data);
   pendingKeyDesc = null;
-  send(data);
+  userInput(data);
 });
 
 // Bracketed-paste and other multi-byte writes.
@@ -4750,7 +4847,7 @@ term.attachCustomKeyEventHandler((e) => {
   if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
     hit.add('shiftEnter'); renderChecks();
     logLine('Shift+Enter', '\x1b\r');
-    send('\x1b\r');
+    userInput('\x1b\r');
     return false;
   }
 
@@ -4811,10 +4908,10 @@ async function pasteFromClipboard() {
   if (action.kind === 'text') {
     const frame = pasteFrame(action.text, term.modes.bracketedPasteMode);
     logLine('Ctrl+V', JSON.parse(frame).data);
-    send(frame);
+    userInput(frame);
   } else if (action.kind === 'image') {
     logLine('Ctrl+V (image)', action.data);
-    send(action.data);
+    userInput(action.data);
   }
 }
 
