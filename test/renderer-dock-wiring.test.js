@@ -83,6 +83,8 @@ test('#36: the socket opening focuses the terminal only as focusOnOpen says -- n
   assert.ok(at !== -1, 'ws.onopen must be findable');
   const handler = JS.slice(at, JS.indexOf('\n  };', at));
   const focusCalls = [...handler.matchAll(/term\.focus\(\)/g)];
+  assert.match(handler, /sendResize\(\);/, 'the slice reaches past the focus line');
+  assert.match(handler, /const first = !socketOpened;\s+socketOpened = true;/, '"first" is a flag, not read from focus');
   assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
-  assert.match(handler, /if \(window\.dockZones\.focusOnOpen\(heldFocus\(\)\)\) term\.focus\(\);/);
+  assert.match(handler, /if \(window\.dockZones\.focusOnOpen\(first, window\.dockZones\.describeFocus\(document\.activeElement, term\.element\)\)\) term\.focus\(\);/);
 });

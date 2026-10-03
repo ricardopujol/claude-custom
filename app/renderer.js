@@ -1141,7 +1141,13 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const before = ws;
         const sent = [];
         const sub = term.onData((d) => { sent.push(d); });
-        if (a.blur) { if (document.activeElement) document.activeElement.blur(); } else { field.focus(); field.value = 'dummy-'; }
+        if (a.blur) { if (document.activeElement) document.activeElement.blur(); }
+        else {
+          field.focus();
+          field.value = 'dummy-';
+          // Tab onto a control beside the field (the Show button): `a.focus` is its selector.
+          if (a.focus) document.querySelector(a.focus).focus();
+        }
         const startedIn = document.activeElement && document.activeElement.id;
         ws.close();
         const t0 = Date.now();
@@ -1155,11 +1161,16 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             document.execCommand('insertText', false, 'tail');
             setTimeout(() => {
               sub.dispose();
-              resolve(JSON.stringify({ ok: true, reattached: up, startedIn, heldId, inTerm, value: field.value, sent: sent.map(d => JSON.stringify(d)) }));
+              const value = field.value;
+              field.value = '';   // nothing left over for the next step
+              resolve(JSON.stringify({ ok: true, reattached: up, startedIn, heldId, inTerm, value, sent }));
             }, 150);
           }, 150);
         }, 50);
       });
+      // Backlog #36: who holds the keyboard now (the first open at load must leave it on the terminal).
+      case 'focusState': return JSON.stringify({ ok: true, id: (document.activeElement && document.activeElement.id) || '',
+        inTerm: !!(term.element && term.element.contains(document.activeElement)), shown: [...shownModules] });
       case 'measure': {
         // #9: does each showing panel's content reach the bottom of its zone?
         const out = {};
@@ -4084,12 +4095,9 @@ const dot = document.getElementById('dot');
 let ws = null;
 let pendingKeyDesc = null;
 
-// What holds keyboard focus now, as dockZones.focusOnOpen reads it.
-function heldFocus() {
-  const el = document.activeElement;
-  if (!el) return null;
-  return { tag: el.tagName, editable: el.isContentEditable === true, inTerm: !!(term.element && term.element.contains(el)) };
-}
+// Has this page's socket ever opened? ws.onopen's focus rule needs the first open
+// told apart from a reattach (backlog #36).
+let socketOpened = false;
 
 function connect() {
   // The token goes in the URL, which is the only channel a WebSocket
@@ -4099,9 +4107,11 @@ function connect() {
 
   ws.onopen = () => {
     dot.classList.add('on');
-    // Every reattach lands here, not only the first open: a field the user is
-    // typing in (the vault's secret) keeps focus (backlog #36).
-    if (window.dockZones.focusOnOpen(heldFocus())) term.focus();
+    // Every reattach lands here, not only the first open: after the first, a
+    // visible element the user is on (the vault's secret) keeps focus (backlog #36).
+    const first = !socketOpened;
+    socketOpened = true;
+    if (window.dockZones.focusOnOpen(first, window.dockZones.describeFocus(document.activeElement, term.element))) term.focus();
     sendResize();
     // A log open across a reattach is asked for again: the host's log session
     // belongs to the old socket and died with it.

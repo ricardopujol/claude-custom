@@ -16,6 +16,10 @@
  *   2  with the field focused, the socket drops and reattaches: focus is still
  *      in the field, the typed tail landed in it, and nothing reached the session
  *   3  with nothing focused, a reattach still gives the terminal the keyboard
+ *   4  Tab onto the Show button, then a reattach: the button keeps focus (a
+ *      Shift+Tab from the terminal would send keys into the session)
+ *   5  a window relaunched with the vault already docked at load (so #vault-search
+ *      holds focus before the socket opens): the FIRST open focuses the terminal
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills;
  * ELECTRON_RUN_AS_NODE and every other CLAUDE_CUSTOM_* variable is deleted;
@@ -30,6 +34,7 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const HARNESS_DIR = path.join(ROOT, '.harness');
+const LAYOUT_FILE = path.join(HARNESS_DIR, 'state', 'layout-global.json');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 
@@ -73,6 +78,19 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.once('error', reject);
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
+
+// --- the install's own layout file: aside for the run, back afterwards ---------
+// Check 5 needs the layout the first launch saved (vault showing) to be read
+// by the second, and the probe must leave none behind.
+const LAYOUT_BACKUP = `${LAYOUT_FILE}.probe-backup`;
+let movedAside = false;
+function setAsideLayout() {
+  if (fs.existsSync(LAYOUT_FILE)) { fs.renameSync(LAYOUT_FILE, LAYOUT_BACKUP); movedAside = true; }
+}
+function restoreLayout() {
+  try { fs.rmSync(LAYOUT_FILE, { force: true }); } catch { /* gone */ }
+  if (movedAside) { try { fs.renameSync(LAYOUT_BACKUP, LAYOUT_FILE); } catch (e) { console.log(`(could not restore ${LAYOUT_FILE}: ${e.message})`); } }
+}
 
 // --- the app -------------------------------------------------------------------------
 async function launchApp(cwd) {
@@ -125,23 +143,6 @@ function command(app, cmd, timeoutMs = 30000) {
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
 const viewState = (app) => view(app, 'state');
 
-// The three sizes that must agree once the page has refitted. Polled: the refit
-// runs on a timer after each layout change.
-async function sizesAgree(app) {
-  const s = await waitFor(async () => {
-    const v = await viewState(app);
-    if (!v || !v.ok || !v.fit || !v.sent) return null;
-    const same = v.term.cols === v.fit.cols && v.term.rows === v.fit.rows
-      && v.sent.cols === v.term.cols && v.sent.rows === v.term.rows;
-    return same ? v : null;
-  }, 4000);
-  if (s) return { ok: true, s };
-  const v = await viewState(app);
-  return { ok: false, s: v };
-}
-
-const sizeText = (v) => (v && v.term ? `term ${v.term.cols}x${v.term.rows}, fits ${v.fit && `${v.fit.cols}x${v.fit.rows}`}, sent ${v.sent && `${v.sent.cols}x${v.sent.rows}`}` : JSON.stringify(v));
-
 const seenPids = new Set();
 function hostsUnder(dir) {
   const out = [];
@@ -158,13 +159,15 @@ function killEverything() {
   for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
 }
 hygiene.addCleanup(killEverything);
+hygiene.addCleanup(restoreLayout);
 
 async function main() {
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
 
-  const app = await launchApp(container);
+  setAsideLayout();
+  let app = await launchApp(container);
   const ready = await viewReady(app);
   check('1: the window came up with a session and the probe hook', !!ready, ready ? '' : app.out.slice(-600));
   if (!ready) return;
@@ -180,12 +183,29 @@ async function main() {
     `started in #${r.startedIn}, held #${r.heldId}`);
   check('2 (#36): ...the next characters landed in the field, none in the session',
     r.value === 'dummy-tail' && !r.sent.join('').includes('tail'),
-    `field is ${JSON.stringify(r.value)}, the session got ${r.sent.join(' ') || 'nothing'}`);
+    `field is ${JSON.stringify(r.value)}, the session got ${JSON.stringify(r.sent.join('')) || 'nothing'}`);
 
   // 3 -----------------------------------------------------------------------------
   const t = await view(app, 'reconnect', { blur: true });
   check('3: with nothing focused, a reattach gives the terminal the keyboard', t.ok && t.reattached && t.inTerm,
     JSON.stringify(t));
+
+  // 4 -----------------------------------------------------------------------------
+  const b = await view(app, 'reconnect', { blur: false, focus: '#vault-mask' });
+  check('4 (#36): Tab onto Show, then a reattach: the button keeps focus, the terminal does not take it',
+    b.ok && b.reattached && b.heldId === 'vault-mask' && !b.inTerm, `held #${b.heldId}, in terminal ${b.inTerm}`);
+  check('4 (#36): ...and no typed characters reached the session', !b.sent.join('').includes('tail'),
+    JSON.stringify(b.sent.join('')));
+
+  // 5 -----------------------------------------------------------------------------
+  await command(app, { cmd: 'quit' });
+  await waitFor(() => app.exited, 15000);
+  app = await launchApp(container);
+  const again = await viewReady(app);
+  const f = again && await view(app, 'focusState');
+  check('5: relaunched, the vault is showing at load', !!f && f.shown.includes('vault'), f ? `shown ${f.shown}` : 'no view');
+  check('5 (#36 Dexter F1): ...and the FIRST open still focuses the terminal, not #vault-search',
+    !!f && f.inTerm, f ? `focus is #${f.id}, in terminal ${f.inTerm}` : '');
 
   await command(app, { cmd: 'quit' });
 }
@@ -206,6 +226,7 @@ main()
   .catch((err) => { console.log(`FAIL  probe crashed: ${err && err.stack}`); failures++; })
   .finally(() => {
     killEverything();
+    restoreLayout();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);
