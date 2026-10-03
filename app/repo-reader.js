@@ -231,8 +231,12 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   async function checkStale() {
     if (!state.path || !state.stamp || el.pane.hidden) return;
     const path = state.path;
+    // The token says which OPEN this answer belongs to (PR #95 Dexter D14): a stat asked before a Reload, and
+    // answered while its read is out, describes a file that is about to be replaced and must not raise the bar
+    // over the fresh text.
+    const token = state.token;
     const r = await requester.request('stat', { path });
-    if (path !== state.path) return;
+    if (path !== state.path || token !== state.token) return;
     if (!r.ok && r.why === 'gone') { showBar('This file was deleted on disk. What you see is the last version read.', { reload: false }); return; }
     if (!r.ok) return;                                  // can't tell: say nothing rather than guess
     if (r.size !== state.stamp.size || r.mtimeMs !== state.stamp.mtimeMs) {
