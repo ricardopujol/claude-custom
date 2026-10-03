@@ -499,6 +499,7 @@ async function main() {
   const afterEsc = await viewState(app);
   check('6: mid-drag the overlay holds the zones with exactly one hot, and a ghost follows',
     esc.ok && esc.during.dragging && esc.during.ghost && esc.during.zones >= 5 && esc.during.hot === 1, JSON.stringify(esc.during));
+  check('6: three more moves within the same zone rebuild the overlay no more (PR #100 S1)', esc.ok && esc.during.idleRedraws === 0, JSON.stringify(esc.during));
   check('6: Esc mid-drag changes nothing and clears the overlay',
     JSON.stringify(afterEsc.layout) === layoutBefore && !esc.after.dragging && esc.after.zones === 0 && !esc.after.ghost, JSON.stringify(esc.after));
   const drag = await view(app, 'drag', { id: 'vault', to: toGitRight });

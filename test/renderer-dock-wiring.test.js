@@ -145,3 +145,10 @@ test('PR #100 Miguel I4: tab and rail buttons have a focus ring that sits inside
   assert.match(html, /\.dgroup \{[^}]*overflow: hidden/, 'the reason: the group clips');
   assert.match(html, /\.drail \{[^}]*overflow: hidden/, 'and so does the rail');
 });
+
+test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its start and rebuilds the overlay only when the zones change', () => {
+  assert.doesNotMatch(JS, /pointInDock/, 'no per-move getBoundingClientRect');
+  assert.match(JS, /rect: dock\.getBoundingClientRect\(\), viewport: dockViewport\(\)/);
+  assert.match(JS, /zonesAt\(lastPlan \? lastPlan\.boxes : \[\], drag\.viewport, \{ x: e\.clientX - drag\.rect\.left, y: e\.clientY - drag\.rect\.top \}\)/);
+  assert.match(JS, /if \(sig !== drag\.sig\) \{ drag\.sig = sig; drawZones\(hit\.zones\); \}/);
+});

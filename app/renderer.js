@@ -1067,14 +1067,15 @@ window.addEventListener('keydown', (e) => {
 // of the cell under the pointer is lit in #dock-overlay and the one under it
 // fills; a drop on a zone docks, anywhere else changes nothing.
 let cancelTabDrag = () => {};      // the socket closing ends a drag too
+let tabDragDraws = 0;             // how many times the drag rebuilt the overlay: the probe checks an idle pointer costs none
 (function initTabDrag() {
   const dock = document.getElementById('dock');
   const overlay = document.getElementById('dock-overlay');
   let press = null;                // { id, label, x, y, el, pointerId }: the button is down, not yet dragged
-  let drag = null;                 // { id, ghost, target }
+  let drag = null;                 // { id, ghost, target, rect, viewport, sig }
 
-  const pointInDock = (e) => { const r = dock.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   function drawZones(zones) {
+    tabDragDraws += 1;
     overlay.textContent = '';
     for (const z of zones) {
       const el = node('div', { className: z.hot ? 'dz hot' : 'dz' });
@@ -1106,15 +1107,18 @@ let cancelTabDrag = () => {};      // the socket closing ends a drag too
     if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
     if (!drag) {
       if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
-      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null };
+      // The dock's rectangle and size are read once, here: a move event must not force a layout every time.
+      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null };
       document.body.appendChild(drag.ghost);
       document.body.classList.add('dock-dragging');
     }
     drag.ghost.style.left = `${e.clientX + 12}px`;
     drag.ghost.style.top = `${e.clientY + 10}px`;
-    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], dockViewport(), pointInDock(e));
+    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top });
     drag.target = hit.target;
-    drawZones(hit.zones);
+    // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
+    const sig = JSON.stringify(hit.zones);
+    if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
   });
   window.addEventListener('pointerup', () => {
     if (!press) return;
@@ -1317,6 +1321,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         window.dispatchEvent(ptr('pointermove', x0 + 8, y0 + 8));
         window.dispatchEvent(ptr('pointermove', x1, y1));
         const during = overlayState();
+        const draws0 = tabDragDraws;
+        for (let k = 0; k < 3; k++) window.dispatchEvent(ptr('pointermove', x1, y1));   // the pointer has not moved to another zone
+        during.idleRedraws = tabDragDraws - draws0;
         if (a.escape) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
         else window.dispatchEvent(ptr('pointerup', x1, y1));
         window.dispatchEvent(ptr('pointerup', x1, y1));       // a no-op when the drag already ended: nothing stays pressed
