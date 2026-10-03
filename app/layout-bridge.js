@@ -20,15 +20,20 @@ const LAYOUT_KEY = 'layout-global';
 const GET_CHANNEL = 'layout:get';
 const SET_CHANNEL = 'layout:set';
 const PUSH_CHANNEL = 'layout-global';
+// The split-tree layout (dockable panels D1) is the same bridge under its own names. `layout-global`
+// is left alone: a window on an older build may still write it, and a version-2 object read by L1's
+// normalizer would come out as the default and be saved over it.
+const TREE_NAMES = { key: 'layout-tree', get: 'layout-tree:get', set: 'layout-tree:set', push: 'layout-tree' };
+const DEFAULT_NAMES = { key: LAYOUT_KEY, get: GET_CHANNEL, set: SET_CHANNEL, push: PUSH_CHANNEL };
 // Seven modules in four zones is well under 1 KB; the cap only stops a bad
 // sender from bloating the store and every push.
 const MAX_LAYOUT_BYTES = 8192;
 
 const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 
-function readLayout(store) {
+function readLayout(store, key = LAYOUT_KEY) {
   try {
-    const rec = store.read(LAYOUT_KEY, null);
+    const rec = store.read(key, null);
     return isPlainObject(rec) ? rec : null;
   } catch {
     return null;
@@ -41,12 +46,12 @@ function readLayout(store) {
  * else. An unreadable file (antivirus holding it, EBUSY) or a corrupt one is
  * said so, never reported as "nothing saved" (PR #82 Dexter F3, Miguel I1).
  */
-function readLayoutState(store) {
+function readLayoutState(store, key = LAYOUT_KEY) {
   let st;
   try {
     st = typeof store.readState === 'function'
-      ? store.readState(LAYOUT_KEY)
-      : { status: 'ok', value: store.read(LAYOUT_KEY, null) };
+      ? store.readState(key)
+      : { status: 'ok', value: store.read(key, null) };
   } catch {
     return { status: 'unreadable', layout: null };
   }
@@ -56,18 +61,18 @@ function readLayoutState(store) {
   return isPlainObject(st.value) ? { status: 'ok', layout: st.value } : { status: 'corrupt', layout: null };
 }
 
-function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send }) {
+function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, names = DEFAULT_NAMES }) {
   const fromView = e => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
 
-  ipcMain.handle(GET_CHANNEL, e => (fromView(e) ? readLayoutState(store) : null));
+  ipcMain.handle(names.get, e => (fromView(e) ? readLayoutState(store, names.key) : null));
 
-  ipcMain.handle(SET_CHANNEL, (e, value) => {
+  ipcMain.handle(names.set, (e, value) => {
     if (!fromView(e) || !isPlainObject(value)) return null;
     let json;
     try { json = JSON.stringify(value); } catch { return null; }
     if (Buffer.byteLength(json, 'utf8') > MAX_LAYOUT_BYTES) return null;
     try {
-      store.update(LAYOUT_KEY, null, () => value);
+      store.update(names.key, null, () => value);
     } catch (err) {
       console.error('[main] could not save the layout:', err && err.message);
       return null;
@@ -75,7 +80,7 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send }) {
     // The watcher must know what this window was just told, or it would push
     // the same layout back when its own write lands in the file.
     sync.last = json;
-    try { send(PUSH_CHANNEL, value); } catch { /* window is going away */ }
+    try { send(names.push, value); } catch { /* window is going away */ }
     return value;
   });
 }
@@ -88,19 +93,19 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send }) {
  * Returns stop().
  */
 function watchLayout({
-  store, file, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile, sync = {}, send,
+  store, file, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile, sync = {}, send, names = DEFAULT_NAMES,
 }) {
-  const now = () => { const l = readLayout(store); return l === null ? null : JSON.stringify(l); };
+  const now = () => { const l = readLayout(store, names.key); return l === null ? null : JSON.stringify(l); };
   sync.last = now();
   const listener = () => {
     if (typeof store.readState === 'function') {
-      const st = store.readState(LAYOUT_KEY);
+      const st = store.readState(names.key);
       if (st.status !== 'ok' && st.status !== 'missing') return;
     }
     const json = now();
     if (json === null || json === sync.last) return;
     sync.last = json;
-    try { send(PUSH_CHANNEL, JSON.parse(json)); } catch { /* window is going away */ }
+    try { send(names.push, JSON.parse(json)); } catch { /* window is going away */ }
   };
   watchFile(file, { interval: intervalMs, persistent: false }, listener);
   return () => unwatchFile(file, listener);
@@ -108,5 +113,5 @@ function watchLayout({
 
 module.exports = {
   readLayout, readLayoutState, registerLayoutHandlers, watchLayout,
-  LAYOUT_KEY, GET_CHANNEL, SET_CHANNEL, PUSH_CHANNEL, MAX_LAYOUT_BYTES,
+  LAYOUT_KEY, GET_CHANNEL, SET_CHANNEL, PUSH_CHANNEL, MAX_LAYOUT_BYTES, TREE_NAMES,
 };

@@ -229,4 +229,14 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(layout); } catch (err) { console.error('[preload] layout-global listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('layout-global')),
   },
+  // The split-tree layout (dockable panels D1): the same shape under its own key. The page reads
+  // `layout` once, to migrate from it, and never writes it.
+  layoutTree: {
+    get: () => ipcRenderer.invoke('layout-tree:get'),
+    set: (layout) => ipcRenderer.invoke('layout-tree:set', layout),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('layout-tree'), ipcRenderer.on('layout-tree',
+      (_e, layout) => {
+        try { fn(layout); } catch (err) { console.error('[preload] layout-tree listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('layout-tree')),
+  },
 });
