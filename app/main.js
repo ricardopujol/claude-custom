@@ -44,8 +44,13 @@ const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
 const { createOccupancyService } = require('../host/occupancy-service');
-const { occupancyDir } = require('../host/occupancy-store');
-const { startTimes } = require('../host/proc-start');
+const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
+const { startTimes, createSelfStartTime } = require('../host/proc-start');
+// ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
+// host of this build runs (a plain terminal, an older build). host/occupancy-transcripts.js.
+const { createTranscriptScanner } = require('../host/occupancy-transcripts');
+const { createRootsProvider } = require('../host/worktree-roots');
+const { defaultProjectsDir } = require('../host/session-model');
 const { readOpenPrs, parseOpenPrs, openPrFor } = require('../host/open-prs');
 const { readSeams, fixtureReader } = require('../host/probe-seams');
 const tabMarks = require('./tab-marks');
@@ -333,6 +338,7 @@ function markSubmenu(branch) {
 let win = null;
 let tabShell = null;
 let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
+let transcriptOccupancy = null;    // ...and the fallback producer: claims read off the subagent transcripts
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
 
 const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
@@ -1368,6 +1374,19 @@ app.whenReady().then(async () => {
     onChange: () => { if (tabShell) tabShell.refresh(); },
     log: (...a) => console.log(...a),
   });
+  transcriptOccupancy = createTranscriptScanner({
+    projectsDir: seams.projectsDir || defaultProjectsDir(),
+    roots: createRootsProvider({ cwd: STATE_ROOT, log: (...a) => console.log(...a) }),
+    // The SAME store the hosts write to. The proof a reader checks is this window's own process: its claims
+    // go dark with it, and close() removes the ones it still owns.
+    writer: createClaimWriter({ stateRoot: STATE_ROOT, log: (...a) => console.log(...a) }),
+    dir: occupancyDir(STATE_ROOT),
+    ownPid: process.pid,
+    ownStartedAt: createSelfStartTime(),
+    // one producer per agent: what the readers already show as live is left to whoever wrote it
+    liveClaims: () => occupancyService.current(),
+    log: (...a) => console.log(...a),
+  });
   tabShell = createShell({
     mode: MODE,
     container: PROJECT ? PROJECT.root : null,
@@ -1425,6 +1444,7 @@ app.whenReady().then(async () => {
   reloadMarks();
   if (MODE === 'tabs') pruneGoneMarks();
   occupancyService.start();
+  transcriptOccupancy.start();
   const first = await tabShell.open();
   if (attachOnlyRefusal) {
     console.error('[main] Open refused:', attachOnlyRefusal.reason);
@@ -1452,4 +1472,4 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('will-quit', () => { if (occupancyService) occupancyService.close(); });
+app.on('will-quit', () => { if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });

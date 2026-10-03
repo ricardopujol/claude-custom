@@ -257,3 +257,25 @@ test('sweepDead never deletes a claim that came back live between the read and t
   assert.deepStrictEqual(out.removed, [], 'the file no longer says what was judged');
   assert.deepStrictEqual(files(r.dir), ['a.json']);
 });
+
+// --- forget (host/occupancy-transcripts.js: another producer took an agent's claim over) -----------------
+
+test('forget drops the writer\'s own record of a claim WITHOUT touching the file, so removeAll no longer deletes it', () => {
+  const r = rig();
+  r.writer.write(record());
+  r.writer.write(record({ agentId: 'ag2' }));
+  // another producer now owns ag1's file
+  fs.writeFileSync(path.join(r.dir, 'ag1.json'), O.serializeClaim(record({ hostPid: 9999 })));
+  r.writer.forget('ag1');
+  r.writer.removeAll();
+  assert.deepStrictEqual(files(r.dir), ['ag1.json'], 'only this writer\'s own claim went');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r.dir, 'ag1.json'), 'utf8')).hostPid, 9999);
+});
+
+test('after forget, the same claim is written again at once (the 30 s window was about a file this writer no longer has)', () => {
+  const r = rig();
+  r.writer.write(record());
+  r.writer.forget('ag1');
+  assert.strictEqual(r.writer.write(record()).wrote, true);
+  assert.doesNotThrow(() => r.writer.forget('never-written'));
+});

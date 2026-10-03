@@ -94,7 +94,13 @@ function createClaimWriter({ stateRoot, fsImpl = fs, now = Date.now, log = () =>
     for (const id of [...written.keys()]) remove(id);
   }
 
-  return { write, remove, removeAll };
+  // The file is somebody else's now (another producer claims that agent): this writer stops answering for
+  // it, and removeAll leaves it alone. Nothing on disk changes.
+  function forget(agentId) {
+    written.delete(agentId);
+  }
+
+  return { write, remove, removeAll, forget };
 }
 
 /**

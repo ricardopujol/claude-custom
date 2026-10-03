@@ -52,6 +52,35 @@ test('the shell reads the live claims from it, and it starts once the shell is o
   assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^}]*occupancyService\.close\(\)/);
 });
 
+// The fallback producer (host/occupancy-transcripts.js): claims read off the subagent transcripts, for the
+// sessions no host of this build runs.
+function scannerBlock() {
+  const start = MAIN.indexOf('createTranscriptScanner({', MAIN.indexOf('transcriptOccupancy = '));
+  assert.ok(start !== -1, 'main creates the transcript scanner');
+  return MAIN.slice(start, MAIN.indexOf('log: (...a) => console.log(...a),', start));
+}
+
+test('main runs the transcript scanner over the project\'s worktrees, into the SAME store, with its own pid and start time as the proof', () => {
+  const block = scannerBlock();
+  assert.match(block, /projectsDir: seams\.projectsDir \|\| defaultProjectsDir\(\)/);
+  assert.match(block, /roots: createRootsProvider\(\{ cwd: STATE_ROOT/);
+  assert.match(block, /writer: createClaimWriter\(\{ stateRoot: STATE_ROOT/);
+  assert.match(block, /dir: occupancyDir\(STATE_ROOT\)/);
+  assert.match(block, /ownPid: process\.pid/);
+  assert.match(block, /ownStartedAt: createSelfStartTime\(\)/);
+});
+
+test('the scanner leaves an agent to the producer the readers already show (the live claims of the service)', () => {
+  assert.match(scannerBlock(), /liveClaims: \(\) => occupancyService\.current\(\)/);
+});
+
+test('the scanner starts after the reader, and on quit it removes the claims it still owns', () => {
+  const service = MAIN.indexOf('occupancyService.start()');
+  const scanner = MAIN.indexOf('transcriptOccupancy.start()');
+  assert.ok(service !== -1 && scanner > service, 'the reader first: the scanner asks it who is live');
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^}]*transcriptOccupancy\.close\(\)/);
+});
+
 test('occupancy:get answers only one of this window\'s tab pages', () => {
   assert.match(MAIN, /ipcMain\.handle\('occupancy:get', \(e\) => \(isTabView\(e\.sender\) \? tabShell\.occupancyFor\(e\.sender\) : null\)\)/);
 });
