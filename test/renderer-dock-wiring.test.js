@@ -117,8 +117,11 @@ test('PR #100 Dexter F6 / F3: a divider release is applied to the placement as i
 });
 
 test('PR #100 Miguel I2: both drags take pointer capture, and end themselves on a move with no button, a lost capture and a blur', () => {
-  assert.strictEqual([...JS.matchAll(/\.setPointerCapture\(e\.pointerId\)/g)].length, 2, 'the tab drag and the divider drag');
-  assert.strictEqual([...JS.matchAll(/if \(e\.buttons === 0\) \{ (end|cancelDividerDrag)\(\); return; \}/g)].length, 2);
+  assert.strictEqual([...JS.matchAll(/\.setPointerCapture\(e\.pointerId\)/g)].length, 3, 'the tab drag, the divider drag and the float drag (D2)');
+  assert.strictEqual([...JS.matchAll(/if \(e\.buttons === 0\) \{ (end|cancelDividerDrag|cancelFloatDrag)\(\); return; \}/g)].length, 3);
+  assert.match(JS, /window\.addEventListener\('lostpointercapture', cancelFloatDrag\);/);
+  assert.match(JS, /window\.addEventListener\('blur', cancelFloatDrag\);/);
+  assert.match(JS, /window\.addEventListener\('pointercancel', cancelFloatDrag\);/);
   assert.match(JS, /window\.addEventListener\('lostpointercapture', \(\) => \{ cancelTabDrag\(\); \}\);/);
   assert.match(JS, /window\.addEventListener\('blur', \(\) => \{ cancelTabDrag\(\); \}\);/);
   assert.match(JS, /window\.addEventListener\('lostpointercapture', cancelDividerDrag\);/);
@@ -149,8 +152,27 @@ test('PR #100 Miguel I4: tab and rail buttons have a focus ring that sits inside
 test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its start and rebuilds the overlay only when the zones change', () => {
   assert.doesNotMatch(JS, /pointInDock/, 'no per-move getBoundingClientRect');
   assert.match(JS, /rect: dock\.getBoundingClientRect\(\), viewport: dockViewport\(\)/);
-  assert.match(JS, /zonesAt\(lastPlan \? lastPlan\.boxes : \[\], drag\.viewport, \{ x: e\.clientX - drag\.rect\.left, y: e\.clientY - drag\.rect\.top \}\)/);
+  assert.match(JS, /drag\.at = \{ x: e\.clientX - drag\.rect\.left, y: e\.clientY - drag\.rect\.top \};/);
+  assert.match(JS, /zonesAt\(lastPlan \? lastPlan\.boxes : \[\], drag\.viewport, drag\.at, \{ exclude: drag\.exclude \}\)/);
   assert.match(JS, /if \(sig !== drag\.sig\) \{ drag\.sig = sig; drawZones\(hit\.zones\); \}/);
+});
+
+test('D2: a float move or resize is drawn while it goes and saved once on release, on the placement as it is NOW; a press only raises, in the selection', () => {
+  const up = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\r?\n\s+if \(!floatDrag\) return;/);
+  assert.ok(up !== -1, 'the float drag\'s pointerup handler must be findable');
+  const release = JS.slice(up, JS.indexOf('\n  });', up));
+  assert.match(release, /commitPlacement\(apply\(committedLayout\(\), d\)\)/, 'applied to what is saved now, never the pointerdown snapshot');
+  assert.doesNotMatch(release, /d\.base/);
+  const down = JS.search(/dock\.addEventListener\('pointerdown', \(e\) => \{\r?\n\s+if \(e\.button !== 0\) return;\r?\n\s+const el = e\.target\.closest && e\.target\.closest\('\.dfloat'\)/);
+  assert.ok(down !== -1, 'the float press handler must be findable');
+  const press = JS.slice(down, JS.indexOf('\n  });', down));
+  assert.match(press, /DTm\.raiseFloat\(selection, id\)/);
+  assert.match(press, /saveSelection\(\)/, 'raising is this window\'s selection');
+  assert.doesNotMatch(press, /commitPlacement|saveGlobalLayout|sendOverride/, 'a press never writes the shared layout');
+  assert.match(JS, /if \(!floatDrag\) return;\r?\n\s+if \(e\.buttons === 0\)/, 'the move handler ends a drag whose release never came');
+  // The tab drag excludes the float its panel is dragged out of, and a drop on the terminal's middle asks the model where.
+  assert.match(JS, /DTm\.floatOf\(placementLayout\(\), press\.id\)/);
+  assert.match(JS, /d\.target\.float === true \? \{ float: DTm\.floatSpotAt\(d\.at, d\.viewport\) \} : d\.target/);
 });
 
 test('PR #100 Miguel S3: every save of the global layout goes through one helper that says so when the store refuses it', () => {

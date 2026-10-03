@@ -679,8 +679,11 @@ async function main() {
     await sleep(1300);
     s = (await settled(app)).s;
     const rs = flOf(s, 'vault').rect;
-    check('12: dragging the corner grip resizes the float by the drag, its top left corner staying put',
-      Math.abs(rs.width - mv.width - 70) <= 1 && Math.abs(rs.height - mv.height - 40) <= 1 && Math.abs(rs.left - mv.left) <= 1 && Math.abs(rs.top - mv.top) <= 1, JSON.stringify([mv, rs]));
+    // The corner may not go past the window's edge, so the drag is asked for in full only where there is room for it.
+    const wantW = Math.min(mv.width + 70, s.dock.right - mv.left);
+    const wantH = Math.min(mv.height + 40, s.dock.bottom - mv.top);
+    check('12: dragging the corner grip resizes the float by the drag (stopping at the window\'s edge), its top left corner staying put',
+      Math.abs(rs.width - wantW) <= 1 && Math.abs(rs.height - wantH) <= 1 && rs.width > mv.width + 1 && rs.height > mv.height + 1 && Math.abs(rs.left - mv.left) <= 1 && Math.abs(rs.top - mv.top) <= 1, JSON.stringify([mv, rs, wantW, wantH]));
     check('12: ...with one store write', s.pushes === before13.pushes + 1, `pushes ${before13.pushes} -> ${s.pushes}`);
     check('12: ...and the panel inside the float fills it', flOf(s, 'vault').panelRects.every(p => p.right <= flOf(s, 'vault').rect.right + 1 && p.bottom <= flOf(s, 'vault').rect.bottom + 1));
 
