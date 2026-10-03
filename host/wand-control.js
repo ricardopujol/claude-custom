@@ -63,9 +63,10 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
     return { state, loaded: wand.load(state) };
   }
 
+  const fileName = (() => { try { return typeof store.pathOf === 'function' ? store.pathOf(STORE_KEY) : null; } catch { return null; } })();
   const viewOf = (loaded) => ({
     status: loaded.status, favourites: loaded.favourites, unavailable: loaded.status === 'unavailable' ? loaded.reason : null,
-    dropped: loaded.dropped,
+    dropped: loaded.dropped, file: fileName,
   });
 
   // --- skills ---------------------------------------------------------------------------------------
@@ -169,6 +170,12 @@ function createWandControl({ store, readSkills, log = () => {} } = {}) {
       outcome = locked(() => {
         const { loaded } = snapshot();
         if (loaded.status === 'unavailable') return { blocked: viewOf(loaded) };
+        // Favourites the file holds that did not load are text the user typed: an edit would write the kept ones
+        // back and erase the rest for good. Refused instead, until the file is fixed (Dexter D2 / Miguel I1).
+        if (loaded.dropped > 0) {
+          const n = loaded.dropped;
+          return { refused: `${n} favourite${n === 1 ? '' : 's'} in ${fileName || 'the wand file'} ${n === 1 ? "isn't" : "aren't"} valid, so editing is off and nothing was changed. Fix or remove ${n === 1 ? 'it' : 'them'} in the file.`, view: viewOf(loaded) };
+        }
         const r = op(loaded.favourites, m);
         if (!r.ok) return { refused: r.reason, view: viewOf(loaded) };
         store.write(STORE_KEY, wand.serialize(r.favourites));

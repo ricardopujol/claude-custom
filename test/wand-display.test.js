@@ -407,3 +407,20 @@ test('failed(): an edit that never left the window is shown now, and a save in f
   assert.strictEqual(f.asked, false);
   assert.strictEqual(W.view(W.failed(loaded(), '')).error, 'the wand was not changed');
 });
+
+// --- Dexter D2 / Miguel I1: invalid favourites turn editing off, and the warning says so ---------------------
+
+test('D2/I1: while favourites in the file did not load, editing is OFF and the warning says why and where', () => {
+  const s = W.toggleEdit(loaded({ dropped: 2, file: 'C:/x/.harness/state/wand.json' }));
+  const v = W.view(s);
+  assert.strictEqual(v.canEdit, false);
+  assert.strictEqual(v.edit, false);
+  assert.match(v.warning, /2 favourites/);
+  assert.match(v.warning, /editing is off/i);
+  assert.match(v.warning, /C:\/x\/\.harness\/state\/wand\.json/);
+  const html = W.html(v);
+  assert.doesNotMatch(html, /data-wand-act="toggle-edit"/);
+  assert.doesNotMatch(html, /data-wand-act="add"/);
+  assert.strictEqual(W.openEditor(s, 'f1').editor, null);
+  assert.strictEqual(W.deleteMsg(s, 'f1').message, null);
+});

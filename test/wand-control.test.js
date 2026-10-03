@@ -342,3 +342,45 @@ test('S4: unread sources are logged too, once per breakage', () => {
   assert.strictEqual(lines.length, 1);
   assert.match(lines[0], /could not read p/);
 });
+
+// --- Dexter D2 / Miguel I1: what the wand could not read is never erased by an edit -----------------------
+
+test('D2/I1: while the file holds favourites that did not load, EVERY edit is refused and the file is untouched', () => {
+  const { control, file } = setup();
+  const raw = JSON.stringify({ version: 1, favourites: [
+    { id: 'a', emoji: '\u{1F642}\u{1F642}', skill: 'tdd', args: '' },     // two emoji: dropped by load()
+    { id: 'f1', emoji: '\u{1F319}', skill: 'bedtime', args: '' },
+  ] });
+  fs.writeFileSync(file, raw);
+  const p = control.payload();
+  assert.strictEqual(p.status, 'ok');
+  assert.strictEqual(p.dropped, 1);
+  for (const msg of [
+    { type: 'wand-delete', id: 'f1' },
+    { type: 'wand-add', emoji: '\u{1F680}', skill: 'merged' },
+    { type: 'wand-update', id: 'f1', patch: { emoji: '\u{1F680}' } },
+    { type: 'wand-move', id: 'f1', target: 'f1' },
+  ]) {
+    const f = control.handle(msg);
+    assert.strictEqual(f.ok, false, JSON.stringify(msg));
+    assert.match(f.reason, /aren't valid|isn't valid/);
+    assert.match(f.reason, /nothing was changed/i);
+    assert.strictEqual(f.dropped, 1, 'the frame still says so');
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), raw, 'the hand-typed entry is still in the file');
+  }
+});
+
+test('D2/I1: once the file is fixed (nothing dropped) edits work again', () => {
+  const { control, file } = setup();
+  fs.writeFileSync(file, JSON.stringify({ version: 1, favourites: [{ id: 'a', emoji: 'no', skill: 'tdd', args: '' }] }));
+  assert.strictEqual(control.handle({ type: 'wand-add', emoji: '\u{1F680}', skill: 'merged' }).ok, false);
+  fs.writeFileSync(file, JSON.stringify({ version: 1, favourites: [{ id: 'a', emoji: '\u{1F680}', skill: 'tdd', args: '' }] }));
+  assert.strictEqual(control.handle({ type: 'wand-add', emoji: '\u{1F680}', skill: 'merged' }).ok, true);
+});
+
+test('the payload names the file, so the panel can show where it is (Miguel I2)', () => {
+  const { control, file } = setup();
+  assert.strictEqual(control.payload().file, file);
+  const noPath = createWandControl({ store: { read: () => undefined, write() {} }, readSkills: () => ({ skills: [] }) });
+  assert.strictEqual(noPath.payload().file, null);
+});

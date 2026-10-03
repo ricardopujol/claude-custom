@@ -48,7 +48,7 @@ const EDITOR_FIELDS = ['emoji', 'skill', 'args', 'query'];
 
 function emptyState() {
   return {
-    loaded: false, status: null, favourites: [], unavailable: null, dropped: 0,
+    loaded: false, status: null, favourites: [], unavailable: null, dropped: 0, file: null,
     skills: [], skillsLoaded: false, skillsError: null,
     edit: false, editor: null, error: null, notice: null, flash: null, asked: false,
   };
@@ -79,7 +79,8 @@ function applyWand(cur, w) {
   if (status !== 'ok' && status !== 'missing' && status !== 'unavailable') return cur;
   if (status !== 'unavailable' && !Array.isArray(w.favourites)) return cur;
 
-  const next = { ...cur, loaded: true, status, dropped: Number.isInteger(w.dropped) && w.dropped > 0 ? w.dropped : 0 };
+  const next = { ...cur, loaded: true, status, dropped: Number.isInteger(w.dropped) && w.dropped > 0 ? w.dropped : 0,
+    file: isStr(w.file) && w.file !== '' ? w.file : cur.file };
   if (Array.isArray(w.skills)) {
     next.skills = readSkills(w.skills);
     next.skillsLoaded = true;
@@ -207,11 +208,15 @@ function view(state) {
     note = 'reading the wand…';
   }
   const n = s.dropped;
+  // Favourites the file holds that did not load: shown nowhere, and the host refuses every edit while they are
+  // there (an edit would erase them for good), so the panel offers none and says where to fix it.
+  const canEdit = mode === 'ok' && n === 0;
   return {
     mode, note,
-    canEdit: mode === 'ok',
-    edit: mode === 'ok' && s.edit,
-    warning: n > 0 ? `${n} favourite${n === 1 ? '' : 's'} in the file ${n === 1 ? "wasn't" : "weren't"} valid and ${n === 1 ? "isn't" : "aren't"} shown.` : null,
+    canEdit,
+    edit: canEdit && s.edit,
+    file: s.file,
+    warning: n > 0 ? `${n} favourite${n === 1 ? '' : 's'} in ${s.file || 'the file'} ${n === 1 ? "isn't" : "aren't"} valid and ${n === 1 ? "isn't" : "aren't"} shown, so editing is off until ${n === 1 ? 'it is' : 'they are'} fixed.` : null,
     skillsNote: s.skillsError !== null ? `Couldn't read the skill list (${s.skillsError}), so no favourite is checked.` : null,
     buttons: mode === 'ok' ? s.favourites.map(f => ({
       id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, command: commandOf(f), title: titleOf(s, f),
@@ -260,7 +265,7 @@ function toggleEdit(state) {
 
 function openEditor(state, id) {
   const s = state || emptyState();
-  if (!s.edit || s.status === 'unavailable') return s;
+  if (!s.edit || s.status === 'unavailable' || s.dropped > 0) return s;
   if (id === null) {
     return { ...s, error: null, editor: { id: null, emoji: '', skill: '', args: '', query: '', saving: false } };
   }
@@ -292,14 +297,14 @@ function editorSubmit(state) {
 
 function deleteMsg(state, id) {
   const s = state || emptyState();
-  if (!s.edit || !isStr(id) || !s.favourites.some(f => f.id === id)) return { state: s, message: null };
+  if (!s.edit || s.dropped > 0 || !isStr(id) || !s.favourites.some(f => f.id === id)) return { state: s, message: null };
   return { state: ask(s), message: { type: 'wand-delete', id } };
 }
 
 /** A drop of `id` onto `targetId`'s slot: the id takes that slot's index. */
 function moveMsg(state, id, targetId) {
   const s = state || emptyState();
-  if (!s.edit || !isStr(id) || !isStr(targetId) || id === targetId) return { state: s, message: null };
+  if (!s.edit || s.dropped > 0 || !isStr(id) || !isStr(targetId) || id === targetId) return { state: s, message: null };
   const to = s.favourites.findIndex(f => f.id === targetId);
   if (to === -1 || !s.favourites.some(f => f.id === id)) return { state: s, message: null };
   return { state: ask(s), message: { type: 'wand-move', id, to } };
