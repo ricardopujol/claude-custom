@@ -253,10 +253,10 @@ test('/api/tags over the cap is a bad reply, never "the model is installed"', as
   });
 });
 
-test('the health check never reads a body', async () => {
-  await withFake({ rootStatus: 200 }, async (fake, c) => {
-    assert.deepStrictEqual(await c.health(), { ok: true });
-  });
-  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'summary-ollama.js'), 'utf8');
-  assert.match(src, /twice\('\/', \{ timeoutMs: healthMs, skipBody: true \}\)/);
+test('the health check never reads a body: only the status is looked at', async () => {
+  let cancelled = 0;
+  const res = { status: 200, headers: { get: () => null }, body: { cancel: async () => { cancelled += 1; }, getReader: () => { throw new Error('read the body'); } }, text: async () => { throw new Error('read the body'); } };
+  const c = createOllamaClient({ baseUrl: 'http://127.0.0.1:1', fetchImpl: async () => res });
+  assert.deepStrictEqual(await c.health(), { ok: true });
+  assert.strictEqual(cancelled, 1, 'and the body is let go');
 });
