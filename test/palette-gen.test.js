@@ -383,3 +383,29 @@ test('PROPERTY D1: any all-grey seed list gives a look with no hue at all', () =
     for (const k of ['appColor', 'textColor', 'accentColor', 'secondaryColor']) assert.ok(isGrey(look[k]), `${k} ${look[k]}`);
   }), { numRuns: 200 });
 });
+
+// Dexter D3 (PR #91): the 30° accent gap was checked on the SEEDS, then ±3° of jitter on each side
+// could bring the drawn accent to 24° from the drawn app colour.
+const { drawHues, ACCENT_HUE_GAP } = require('../host/palette-gen');
+const scripted = (...vals) => { let i = 0; return () => (i < vals.length ? vals[i++] : 0.5); };
+
+test('D3: seeds exactly at the gap, jittered towards each other, still draw an accent at least the gap away', () => {
+  const parts = { base: { L: 0.5, C: 0.1, h: 100 }, accent: { L: 0.6, C: 0.12, h: 130 } };
+  // first draw near 1: hue ~103; second draw 0: accent ~127 -- 24° apart before the fix
+  const { hue, accentHue } = drawHues(scripted(0.9999, 0), parts);
+  assert.ok(hueGap(hue, accentHue) >= ACCENT_HUE_GAP - 1e-9, `${hue} vs ${accentHue}`);
+  assert.ok(accentHue > hue, 'pushed out on its own side, not flipped across the app colour');
+  // across 0°/360° too
+  const wrapped = drawHues(scripted(0, 0.9999), { base: { L: 0.5, C: 0.1, h: 2 }, accent: { L: 0.6, C: 0.12, h: 332 } });
+  assert.ok(hueGap(wrapped.hue, wrapped.accentHue) >= ACCENT_HUE_GAP - 1e-9, JSON.stringify(wrapped));
+});
+
+test('PROPERTY D3: whenever an accent seed is chosen, the drawn accent is at least the gap from the drawn app hue', () => {
+  const hue = fc.double({ min: 0, max: 359.999, noNaN: true });
+  fc.assert(fc.property(hue, fc.double({ min: ACCENT_HUE_GAP, max: 180, noNaN: true }), fc.boolean(), fc.integer(),
+    (h, gap, up, seed) => {
+      const parts = { base: { L: 0.5, C: 0.1, h }, accent: { L: 0.6, C: 0.12, h: ((up ? h + gap : h - gap) + 360) % 360 } };
+      const d = drawHues(mulberry32(seed), parts);
+      assert.ok(hueGap(d.hue, d.accentHue) >= ACCENT_HUE_GAP - 1e-9, JSON.stringify({ h, gap, d }));
+    }), { numRuns: 500 });
+});

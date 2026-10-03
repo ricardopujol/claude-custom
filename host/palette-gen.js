@@ -268,13 +268,20 @@ const wrap = (h) => ((h % 360) + 360) % 360;
 /**
  * The hues of one draw: `hue` (app colour and text) and `accentHue`, or both
  * null for a grey picture -- it has no hue, so none is invented (Dexter D1).
+ * The accent keeps ACCENT_HUE_GAP from the app colour AFTER the jitter: the
+ * seeds were checked for the gap, and ±3° on each side could undo it, so a
+ * drawn accent closer than the gap is pushed back out to it (Dexter D3).
  */
 function drawHues(rng, parts) {
   const { base, accent } = parts;
   if (typeof base.h !== 'number' || !(base.C >= CHROMA_MIN)) return { hue: null, accentHue: null };
   const hue = wrap(base.h + between(rng, -3, 3));
   if (!accent) return { hue, accentHue: wrap(base.h + between(rng, 150, 210)) };
-  return { hue, accentHue: wrap(accent.h + between(rng, -3, 3)) };
+  let accentHue = wrap(accent.h + between(rng, -3, 3));
+  if (hueGap(accentHue, hue) < ACCENT_HUE_GAP) {
+    accentHue = wrap(hue + (wrap(accentHue - hue) <= 180 ? ACCENT_HUE_GAP : -ACCENT_HUE_GAP));
+  }
+  return { hue, accentHue };
 }
 
 /**
