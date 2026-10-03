@@ -85,6 +85,55 @@ test('paint: dots, glyph and health appear only when the model says so', () => {
   assert.strictEqual(child(busy, 'health').textContent, '↓3');
 });
 
+test('#31 paint: a tab pulses only as the model says (needs / done), never on a guess', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [
+    entry({ key: 'plain' }),
+    entry({ key: 'n', pulse: 'needs' }),
+    entry({ key: 'd', pulse: 'done' }),
+    entry({ key: 'odd', pulse: 'sparkle' }),
+    entry({ key: 'sel', selected: true, pulse: null }),
+  ] }, bridgeSpy());
+  const cls = doc.byId.tabs.children.map(t => t.className.split(' '));
+  assert.ok(!cls[0].some(c => c.startsWith('pulse-')));
+  assert.ok(cls[1].includes('pulse-needs') && !cls[1].includes('pulse-done'));
+  assert.ok(cls[2].includes('pulse-done') && !cls[2].includes('pulse-needs'));
+  assert.ok(!cls[3].some(c => c.startsWith('pulse-')), 'an unknown pulse draws nothing');
+  assert.ok(!cls[4].some(c => c.startsWith('pulse-')));
+});
+
+test('#31 the page has a keyframe for each look, and a steady highlight under prefers-reduced-motion', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.match(html, /\.tab\.pulse-needs\s*\{[^}]*animation:[^}]*tab-pulse-needs/);
+  assert.match(html, /\.tab\.pulse-done\s*\{[^}]*animation:[^}]*tab-pulse-done/);
+  assert.match(html, /@keyframes tab-pulse-needs/);
+  assert.match(html, /@keyframes tab-pulse-done/);
+  const reduced = html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduced, /\.tab\.pulse-needs[^{]*\{[^}]*animation:\s*none/);
+  assert.match(reduced, /\.tab\.pulse-done[^{]*\{[^}]*animation:\s*none/);
+  assert.match(reduced, /\.tab\.pulse-needs[^{]*\{[^}]*(background|box-shadow)/, 'still highlighted, just not moving');
+});
+
+test('#31 (Miguel S1 S2 S3): hover still shows on a pulsing tab, the working dot honours reduced motion, one set of colours per look', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  // A running animation outranks a plain :hover background, so the hover rule stops it.
+  assert.match(html, /\.tab\.pulse-needs:hover,\s*\.tab\.pulse-done:hover\s*\{[^}]*animation:\s*none[^}]*background:/);
+  const reduced = html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduced, /\.dot\.working\s*\{[^}]*animation:\s*none/);
+  // The held colours ARE the keyframes' peak, named once per look, not copied.
+  for (const look of ['needs', 'done']) {
+    const rule = new RegExp(`\\.tab\\.pulse-${look}\\s*\\{([^}]*)\\}`).exec(html);
+    assert.ok(rule, look);
+    for (const v of ['--pulse-lo-bg', '--pulse-hi-bg', '--pulse-lo-line', '--pulse-hi-line']) {
+      assert.match(rule[1], new RegExp(`${v}:`), `${look} defines ${v}`);
+    }
+  }
+  assert.match(html, /@keyframes tab-pulse-needs\s*\{[^]*?var\(--pulse-lo-bg\)[^]*?var\(--pulse-hi-bg\)/);
+  assert.match(reduced, /background:\s*var\(--pulse-hi-bg\)/);
+  assert.match(reduced, /var\(--pulse-hi-line\)/);
+  assert.doesNotMatch(reduced, /color-mix/, 'no colour copied into the reduced-motion block');
+});
+
 test('paint: an unknown lock glyph draws nothing rather than a guess', () => {
   const doc = fakeDoc();
   paint(doc, { model: [entry({ lockGlyph: 'mystery' })] }, bridgeSpy());
@@ -391,4 +440,26 @@ test('tab-strip.html has the + and a static branch form outside #tabs', () => {
   }
   assert.match(html, /id="create"[^>]*\bhidden\b/);
   assert.match(html, /id="plus"[^>]*\bhidden\b/);
+});
+
+// --- #40 tab marks ---------------------------------------------------------------
+
+test('paint: a mark sits just before the label, its meaning on hover', () => {
+  const doc = fakeDoc();
+  const mark = { id: 'waiting', emoji: 'W', meaning: 'Waiting on a merge' };
+  paint(doc, { model: [entry({ working: true, mark }), entry({ key: 'b', mark: null }), entry({ key: 'c' })] }, bridgeSpy());
+  const [marked, cleared, absent] = doc.byId.tabs.children;
+  const m = child(marked, 'mark');
+  assert.strictEqual(m.tag, 'span');
+  assert.strictEqual(m.textContent, 'W');
+  assert.strictEqual(m.title, 'Waiting on a merge');
+  assert.strictEqual(marked.children.indexOf(m), marked.children.indexOf(child(marked, 'label')) - 1);
+  assert.strictEqual(child(cleared, 'mark'), undefined);
+  assert.strictEqual(child(absent, 'mark'), undefined);
+});
+
+test('paint: a mark without an emoji draws nothing', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ mark: { id: 'x', emoji: '', meaning: 'm' } }), entry({ key: 'b', mark: 'W' })] }, bridgeSpy());
+  for (const t of doc.byId.tabs.children) assert.strictEqual(child(t, 'mark'), undefined);
 });

@@ -89,12 +89,19 @@ function paintTab(doc, entry, bridge) {
   if (entry.selected) cls.push('selected');
   if (!entry.started) cls.push('dim');
   if (entry.isDev) cls.push('dev');
+  // #31: the model decides who pulses (never the selected tab); this only names the look.
+  if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);
   const tab = el(doc, 'div', cls.join(' '));
   tab.dataset.key = entry.key;
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
   if (entry.working) tab.appendChild(el(doc, 'span', 'dot working')).title = 'Working';
   if (entry.needsInput) tab.appendChild(el(doc, 'span', 'dot needs')).title = 'Needs your input';
+  // #40: the person's own mark on the tab; its meaning on hover.
+  const mark = entry.mark;
+  if (mark && typeof mark === 'object' && nonEmpty(mark.emoji)) {
+    tab.appendChild(el(doc, 'span', 'mark', mark.emoji)).title = nonEmpty(mark.meaning) ? mark.meaning : '';
+  }
   tab.appendChild(el(doc, 'span', 'label', entry.label));
   if (entry.lockGlyph && GLYPHS[entry.lockGlyph]) {
     const g = tab.appendChild(el(doc, 'span', `glyph ${entry.lockGlyph}`, GLYPHS[entry.lockGlyph]));

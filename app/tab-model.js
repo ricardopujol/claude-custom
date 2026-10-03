@@ -13,7 +13,7 @@
  * host/project-layout: this file must load in a browser page too.
  *
  * RUNTIME, per key: `{ started, port, token, status }` where `status` is
- * `{ working, needsInput, lock, health }` as that tab's renderer last reported
+ * `{ working, needsInput, finished, lock, health }` as that tab's renderer last reported
  * it (app/tab-status.js), or `null` before it reports. PR 3 adds `setup`
  * (`{ running, line, error, log }` while or after Contract E ran for a tab the
  * `+` made) and `createdWarning` (Contract A's optional warning). `runtime` is
@@ -58,8 +58,19 @@ function glyphFor(lock) {
 }
 
 /**
+ * #31: how an UNSELECTED tab calls for a look: 'needs' (urgent) outranks 'done'
+ * (calm), else null. Only a real `true` counts. The selected tab never gets one
+ * (stripModel), because you are already looking at it.
+ */
+function pulseFor(st) {
+  if (!st) return null;
+  if (st.needsInput === true) return 'needs';
+  return st.finished === true ? 'done' : null;
+}
+
+/**
  * stripModel({ tabs }, runtime, selectedKey, { keyOf }) ->
- *   [{ key, label, isDev, selected, started, closable, working, needsInput,
+ *   [{ key, label, isDev, selected, started, closable, working, needsInput, pulse,
  *      lockGlyph, health, phase, error, note, setup, createdWarning }]
  * Dev first (order otherwise as given). Exactly one entry is selected: the one
  * matching `selectedKey`, else dev (else the first entry).
@@ -87,6 +98,7 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       closable: t.isDev !== true && !single && t.phase !== 'removing',
       working: !!st && st.working === true,
       needsInput: !!st && st.needsInput === true,
+      pulse: i === selIdx ? null : pulseFor(st),
       lockGlyph: st ? glyphFor(st.lock) : null,
       health: st && isString(st.health) && st.health !== '' ? st.health : null,
       phase: isString(t.phase) ? t.phase : null,

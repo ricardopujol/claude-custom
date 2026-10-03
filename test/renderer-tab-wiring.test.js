@@ -85,7 +85,7 @@ test('the status goes through tab-status.js and is deduplicated with sameStatus'
 
 test('every input of the status reports it: mood, attention, the lock and the health', () => {
   assert.match(branch('mood'), /reportTabStatus\(\)/);
-  assert.match(branch('attention'), /tabPendingUrgent = true/);
+  assert.match(branch('attention'), /pend\('urgent'\)/);
   assert.match(branch('attention'), /reportTabStatus\(\)/);
   assert.match(fnBody('renderLock'), /reportTabStatus\(\)/);
   assert.match(fnBody('renderBranchHealth'), /reportTabStatus\(\)/);
@@ -96,9 +96,25 @@ test('only an URGENT attention message marks the tab as needing input', () => {
   assert.match(branch('attention'), /msg\.urgent === true/);
 });
 
-test('being selected clears the pending flag and re-reports', () => {
-  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ tabPendingUrgent = false; reportTabStatus\(\); \}\)/);
+test('being selected is a look: the pending flags clear and the page re-reports', () => {
+  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ pend\('looked'\); reportTabStatus\(\); \}\)/);
 });
+
+test('#31: only urgent === true / === false attention marks the tab; a finished turn answers an urgent one', () => {
+  const b = branch('attention');
+  assert.match(b, /if \(msg\.urgent === true\) \{ pend\('urgent'\); reportTabStatus\(\); \}/);
+  assert.match(b, /else if \(msg\.urgent === false\) \{ pend\('finished'\); reportTabStatus\(\); \}/);
+  assert.match(fnBody('reportTabStatus'), /pendingUrgent: tabPending\.urgent/);
+  assert.match(fnBody('reportTabStatus'), /pendingFinished: tabPending\.finished/);
+  assert.match(fnBody('pend'), /window\.tabStatus\.pendingAfter\(tabPending, event\)/);
+});
+
+test('#31 (Dexter F5): a turn STARTING (not a session still working) ends a pending finished', () => {
+  const body = fnBody('reportTabStatus');
+  assert.match(body, /if \(anyWorking && !wasWorking\) pend\('working'\);\s*wasWorking = anyWorking;/);
+});
+
+
 
 test('the shell\'s override menu item clicks the Open anyway button: one switch, not two', () => {
   assert.match(JS, /window\.harness\.onLockOverride\(\(\) => document\.getElementById\('lock-open-anyway'\)\.click\(\)\)/);

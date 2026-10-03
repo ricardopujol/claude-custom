@@ -148,14 +148,23 @@ document.getElementById('lock-go-to').addEventListener('click', async () => {
 
 // What this tab tells the shell about itself (PR 2): working, needs input, lock,
 // health. tab-status.js decides; this only sends it when it changed.
-let tabPendingUrgent = false;
+// What waits for a look (#31): an urgent need, a finished turn. tab-status.js decides the transitions.
+let tabPending = { urgent: false, finished: false };
+let wasWorking = false;
 let lastReportedTabStatus = null;
+function pend(event) {
+  if (window.tabStatus) tabPending = window.tabStatus.pendingAfter(tabPending, event);
+}
 function reportTabStatus() {
   if (!(window.harness && window.harness.tabStatus && window.tabStatus)) return;
   const anyWorking = typeof roster !== 'undefined' && [...roster.values()].some(r => r && r.state === 'working');
+  // A turn STARTING ends a finished one; a session still working when it finishes keeps it.
+  if (anyWorking && !wasWorking) pend('working');
+  wasWorking = anyWorking;
   const status = window.tabStatus.tabStatus({
     mainMood: anyWorking ? 'working' : null,
-    pendingUrgent: tabPendingUrgent,
+    pendingUrgent: tabPending.urgent,
+    pendingFinished: tabPending.finished,
     lock: tabLock,
     health: tabHealth,
   }, { healthMarker: worktreeStatus.healthMarker });
@@ -165,7 +174,7 @@ function reportTabStatus() {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { tabPendingUrgent = false; reportTabStatus(); });
+  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.
@@ -1190,6 +1199,46 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           resolve(JSON.stringify({ ok: true, focusable: field.offsetParent !== null, shown: [...shownModules], after }));
         }, 150);
       });
+      // Backlog #36: the socket drops and reattaches. With a dummy half-secret in
+      // the field (`a.blur` false) focus must still be in it, and what is typed
+      // next lands there, not in the session; with nothing focused (`a.blur`)
+      // the reattach gives the terminal the keyboard. insertText goes to
+      // whatever holds focus, as a keystroke does.
+      case 'reconnect': return new Promise((resolve) => {
+        const field = document.getElementById('vault-secret');
+        const before = ws;
+        const sent = [];
+        const sub = term.onData((d) => { sent.push(d); });
+        if (a.blur) { if (document.activeElement) document.activeElement.blur(); }
+        else {
+          field.focus();
+          field.value = 'dummy-';
+          // Tab onto a control beside the field (the Show button): `a.focus` is its selector.
+          if (a.focus) document.querySelector(a.focus).focus();
+        }
+        const startedIn = document.activeElement && document.activeElement.id;
+        ws.close();
+        const t0 = Date.now();
+        const poll = setInterval(() => {
+          const up = ws !== before && ws.readyState === WebSocket.OPEN;
+          if (!up && Date.now() - t0 < 10000) return;
+          clearInterval(poll);
+          setTimeout(() => {
+            const heldId = document.activeElement && document.activeElement.id;
+            const inTerm = !!(term.element && term.element.contains(document.activeElement));
+            document.execCommand('insertText', false, 'tail');
+            setTimeout(() => {
+              sub.dispose();
+              const value = field.value;
+              field.value = '';   // nothing left over for the next step
+              resolve(JSON.stringify({ ok: true, reattached: up, startedIn, heldId, inTerm, value, sent }));
+            }, 150);
+          }, 150);
+        }, 50);
+      });
+      // Backlog #36: who holds the keyboard now (the first open at load must leave it on the terminal).
+      case 'focusState': return JSON.stringify({ ok: true, id: (document.activeElement && document.activeElement.id) || '',
+        inTerm: !!(term.element && term.element.contains(document.activeElement)), shown: [...shownModules] });
       case 'measure': {
         // #9: does each showing panel's content reach the bottom of its zone?
         const out = {};
@@ -3924,8 +3973,10 @@ function handleControl(msg) {
     // case the feature was built for: watching the terminal while a long task
     // runs and wanting to be told when it ends.
     const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
-    // An urgent message is waiting for you until this tab is looked at.
-    if (msg.urgent === true) { tabPendingUrgent = true; reportTabStatus(); }
+    // An urgent message waits for you until this tab is looked at; so does a finished one, which
+    // also answers an urgent one still pending (#31). Anything else marks nothing.
+    if (msg.urgent === true) { pend('urgent'); reportTabStatus(); }
+    else if (msg.urgent === false) { pend('finished'); reportTabStatus(); }
 
     if (window.harness && window.harness.attention) {
       // Preferred path: main raises it, so it needs no page permission and can
@@ -4114,6 +4165,10 @@ const dot = document.getElementById('dot');
 let ws = null;
 let pendingKeyDesc = null;
 
+// Has this page's socket ever opened? ws.onopen's focus rule needs the first open
+// told apart from a reattach (backlog #36).
+let socketOpened = false;
+
 function connect() {
   // The token goes in the URL, which is the only channel a WebSocket
   // handshake offers. It never touches the pty.
@@ -4122,7 +4177,11 @@ function connect() {
 
   ws.onopen = () => {
     dot.classList.add('on');
-    term.focus();
+    // Every reattach lands here, not only the first open: after the first, a
+    // visible element the user is on (the vault's secret) keeps focus (backlog #36).
+    const first = !socketOpened;
+    socketOpened = true;
+    if (window.dockZones.focusOnOpen(first, window.dockZones.describeFocus(document.activeElement, term.element))) term.focus();
     sendResize();
     // A log open across a reattach is asked for again: the host's log session
     // belongs to the old socket and died with it.

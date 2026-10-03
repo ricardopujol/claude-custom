@@ -6,7 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { addLines, emptyRecord, spendOf } = require('../host/branch-ledger');
+const { addLines, localDay, emptyRecord, spendOf } = require('../host/branch-ledger');
 
 const ROOT = 'C:\\p';
 const a = (id, branch, input, cwd = 'C:\\p\\dev', ts = '2026-09-20T10:00:00Z') => JSON.stringify({
@@ -66,10 +66,11 @@ test('the project root itself counts, as well as anything inside it', () => {
 test('first and last day, and the cwds a branch ran in', () => {
   const r = emptyRecord();
   addLines(r, lines(
-    a('1', 'feat/a', 1, 'C:\\p\\feat-a', '2026-09-21T01:00:00Z'),
-    a('2', 'feat/a', 1, 'c:\\P\\feat-a\\', '2026-09-20T01:00:00Z'),
-    a('3', 'feat/b', 1, 'C:\\p\\dev', '2026-09-22T01:00:00Z')), ROOT);
-  assert.deepStrictEqual(r.branches['feat/a'], { spend: 4, loose: 0, first: '2026-09-20', last: '2026-09-21', cwds: ['C:\\p\\feat-a'] });
+    // days are local (#38): the expected ones are derived with localDay, no stamp is the same day in every zone
+    a('1', 'feat/a', 1, 'C:\\p\\feat-a', '2026-09-21T12:00:00Z'),
+    a('2', 'feat/a', 1, 'c:\\P\\feat-a\\', '2026-09-20T12:00:00Z'),
+    a('3', 'feat/b', 1, 'C:\\p\\dev', '2026-09-22T12:00:00Z')), ROOT);
+  assert.deepStrictEqual(r.branches['feat/a'], { spend: 4, loose: 0, first: localDay('2026-09-20T12:00:00Z'), last: localDay('2026-09-21T12:00:00Z'), cwds: ['C:\\p\\feat-a'] });
   assert.strictEqual(r.branches['feat/b'].spend, 2);
 });
 

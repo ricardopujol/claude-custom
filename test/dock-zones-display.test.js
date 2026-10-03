@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { zonePlan, dragSize, layoutRows, moveTargets, renderEffects, afterLayoutGet, overrideOnHello } = require('../app/dock-zones-display');
+const { zonePlan, dragSize, layoutRows, moveTargets, renderEffects, describeFocus, focusOnOpen, afterLayoutGet, overrideOnHello } = require('../app/dock-zones-display');
 const { defaultLayout, moveModule, selectModule, MIN, RAIL } = require('../app/dock-layout');
 const { TABS } = require('../app/side-tabs');
 const { faceSize } = require('../app/roster-width');
@@ -148,6 +148,61 @@ test('opening the vault focuses its search; leaving it sends focus back to the t
   assert.strictEqual(left.focus, 'term');
   assert.strictEqual(left.vaultLeft, true);
   assert.deepStrictEqual(left.newlyShown, ['agents']);
+});
+
+// --- the socket opening (backlog #36) ------------------------------------------
+
+const H = (over = {}) => ({ tag: 'INPUT', type: 'password', isTerminal: false, visible: true, connected: true, ...over });
+
+test('THE REGRESSION (#36): a reconnect never takes focus from a field the user is typing in', () => {
+  // ws.onopen focused the terminal every time: a drop while a secret was
+  // half-typed in #vault-secret sent the rest of it into the session.
+  for (const type of ['password', 'text', 'search', 'checkbox']) {
+    assert.strictEqual(focusOnOpen(false, H({ type })), false, type);
+  }
+  assert.strictEqual(focusOnOpen(false, H({ tag: 'TEXTAREA', type: 'textarea' })), false);
+  assert.strictEqual(focusOnOpen(false, H({ tag: 'SELECT', type: 'select-one' })), false);
+  assert.strictEqual(focusOnOpen(false, H({ tag: 'DIV', type: null })), false, 'contenteditable');
+});
+
+test('a BUTTON in the vault form on reconnect holds focus (Tab onto Show, then Shift+Tab, must not reach the session)', () => {
+  assert.strictEqual(focusOnOpen(false, H({ tag: 'BUTTON', type: 'button' })), false);
+});
+
+test('vault shown at load: the FIRST open focuses the terminal even though #vault-search holds focus', () => {
+  // The layout restored at load focuses the vault's search before the socket
+  // opens; "first" is a flag, never read from what has focus.
+  assert.strictEqual(focusOnOpen(true, H({ type: 'search' })), true);
+  assert.strictEqual(focusOnOpen(true, H({ tag: 'BUTTON', type: 'button' })), true);
+});
+
+test('a hidden or detached focused element on reconnect gives the terminal the keyboard', () => {
+  assert.strictEqual(focusOnOpen(false, H({ visible: false })), true, 'hidden');
+  assert.strictEqual(focusOnOpen(false, H({ connected: false })), true, 'detached');
+});
+
+test('nothing, body, or the terminal textarea on reconnect: the terminal takes focus', () => {
+  assert.strictEqual(focusOnOpen(false, null), true);
+  assert.strictEqual(focusOnOpen(false, undefined), true);
+  assert.strictEqual(focusOnOpen(false, H({ tag: 'BODY', type: null })), true);
+  assert.strictEqual(focusOnOpen(false, H({ tag: 'HTML', type: null })), true);
+  assert.strictEqual(focusOnOpen(false, H({ tag: 'TEXTAREA', type: 'textarea', isTerminal: true })), true);
+});
+
+test('describeFocus reads an element into the descriptor focusOnOpen decides on', () => {
+  const inside = { tagName: 'TEXTAREA', type: 'textarea', isConnected: true, getClientRects: () => [1] };
+  const termEl = { contains: (e) => e === inside };
+  const field = { tagName: 'INPUT', type: 'password', isConnected: true, getClientRects: () => [1] };
+  const hidden = { tagName: 'INPUT', type: 'text', isConnected: true, getClientRects: () => [] };
+  const gone = { tagName: 'INPUT', type: 'text', isConnected: false, getClientRects: () => [] };
+  const div = { tagName: 'DIV', isConnected: true, getClientRects: () => [1] };
+  assert.strictEqual(describeFocus(null, termEl), null);
+  assert.deepStrictEqual(describeFocus(inside, termEl), { tag: 'TEXTAREA', type: 'textarea', isTerminal: true, visible: true, connected: true });
+  assert.deepStrictEqual(describeFocus(field, termEl), { tag: 'INPUT', type: 'password', isTerminal: false, visible: true, connected: true });
+  assert.strictEqual(describeFocus(hidden, termEl).visible, false);
+  assert.strictEqual(describeFocus(gone, termEl).connected, false);
+  assert.strictEqual(describeFocus(div, termEl).type, null);
+  assert.strictEqual(describeFocus(field, null).isTerminal, false, 'no terminal yet');
 });
 
 // --- reading the stored layout (PR #82 Dexter F3, Miguel I1) -------------------

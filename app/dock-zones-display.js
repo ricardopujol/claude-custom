@@ -187,6 +187,42 @@ function renderEffects(before, after, { userAction = false } = {}) {
 }
 
 /**
+ * What holds keyboard focus, as focusOnOpen reads it: { tag, type, isTerminal,
+ * visible, connected }, or null for nothing. `el` is document.activeElement,
+ * `termEl` xterm's root element.
+ */
+function describeFocus(el, termEl) {
+  if (!el) return null;
+  return {
+    tag: el.tagName,
+    type: el.type === undefined ? null : el.type,
+    isTerminal: !!(termEl && termEl.contains(el)),
+    visible: typeof el.getClientRects === 'function' && el.getClientRects().length > 0,
+    connected: el.isConnected === true,
+  };
+}
+
+/**
+ * Whether the socket opening focuses the terminal. `first` is whether this is
+ * the FIRST open of this page's socket (a flag the page keeps, never read from
+ * what has focus: a stored layout showing the vault focuses its search before
+ * the socket opens, and that must not cost a new tab the keyboard).
+ *
+ * ws.onopen fires on every reattach. On a RECONNECT focus stays on any visible
+ * element outside the terminal: taking it sent the rest of a half-typed vault
+ * secret into the session, and a Tab onto a button then Shift+Tab would send
+ * keys there too (backlog #36, the same class as renderEffects above). The
+ * terminal takes it only when nothing, the body, its own textarea, or an
+ * element that is hidden or gone holds it.
+ */
+function focusOnOpen(first, held) {
+  if (first) return true;
+  if (!held || held.isTerminal) return true;
+  if (held.tag === 'BODY' || held.tag === 'HTML') return true;
+  return !held.visible || !held.connected;
+}
+
+/**
  * main's answer to `layout:get` -> what the page does. Only a MISSING store
  * file means "first launch: migrate and save"; an unreadable or corrupt one
  * (antivirus holding it, EBUSY) must never be overwritten by a migration
@@ -216,7 +252,7 @@ function overrideOnHello(pending, incoming) {
 }
 
 const API = {
-  zonePlan, dragSize, applyPlan, layoutRows, moveTargets, renderEffects, afterLayoutGet, overrideOnHello,
+  zonePlan, dragSize, applyPlan, layoutRows, moveTargets, renderEffects, describeFocus, focusOnOpen, afterLayoutGet, overrideOnHello,
   WIDE_FACE_CHROME,
 };
 

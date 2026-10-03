@@ -29,7 +29,7 @@ const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
-const { createShell, handleProbeCommand, probeLineReader, shortcutFor, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -40,6 +40,8 @@ const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
 const { readIdentity, readTokenFile } = require('../host/host-identity');
 const { readLook } = require('../host/style');
+const tabMarks = require('./tab-marks');
+const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
@@ -247,6 +249,77 @@ function listWorktrees() {
   });
 }
 
+// --- tab marks (#40, DESIGN_TAB_MARKS.md) -------------------------------------------
+// The file is re-read before every menu, every save and every poll, so a mark
+// set in another window of this project shows here by the next poll. Two
+// windows saving in the same instant can lose one of the two marks (read,
+// set, write, with no lock): accepted for a purely visual mark (Miguel #87 G1).
+let marks = { state: 'missing', store: tabMarks.emptyMarks() };
+
+function reloadMarks() {
+  marks = loadMarks(marksFileFor(STATE_ROOT));
+  return marks;
+}
+
+/**
+ * Set (or, with null, clear) a branch's mark; true when it was saved. Never
+ * writes over a file it couldn't read.
+ */
+function chooseMark(branch, id) {
+  const cur = reloadMarks();
+  if (cur.store === null) return false;
+  let saved = false;
+  try {
+    const next = tabMarks.setMark(cur.store, branch, id);
+    saveMarks(STATE_ROOT, next);
+    marks = { state: 'ok', store: next };
+    saved = true;
+  } catch (err) {
+    console.error('[marks] could not save:', err && err.message);
+  }
+  if (tabShell) tabShell.refresh();
+  return saved;
+}
+
+// Marks on branches that no longer exist go (/merged --sweep deleted them).
+// A git that fails, or answers nothing, prunes nothing.
+function pruneGoneMarks() {
+  execFile('git', ['-C', HOST_PROJECT.dev, 'for-each-ref', '--format=%(refname)', 'refs/heads'], {
+    timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+  }, (err, stdout) => {
+    if (err) return;
+    const live = tabMarks.liveBranchesFrom(String(stdout));
+    const cur = reloadMarks();
+    if (live === null || cur.state !== 'ok') return;
+    const next = tabMarks.pruneMarks(cur.store, live);
+    if (tabMarks.markCount(next) === tabMarks.markCount(cur.store)) return;
+    try {
+      saveMarks(STATE_ROOT, next);
+      marks = { state: 'ok', store: next };
+    } catch (err2) {
+      console.error('[marks] could not prune:', err2 && err2.message);
+    }
+    if (tabShell) tabShell.refresh();
+  });
+}
+
+/** The tab's **Mark ▸** submenu, built from the file as it is now. */
+function markSubmenu(branch) {
+  const cur = reloadMarks();
+  const m = tabMarks.markMenuModel(cur.store, branch, cur.state);
+  return {
+    label: m.enabled ? 'Mark' : `Mark (${m.why})`,
+    enabled: m.enabled,
+    submenu: [
+      // Checkboxes, not a radio group: Electron ticks a radio group's first item
+      // when none is, so an unmarked tab would show "Review this code" ticked (Dexter #87 F2).
+      ...m.rows.map(r => ({ label: r.label, type: 'checkbox', checked: r.checked, click: () => chooseMark(branch, r.choose) })),
+      { type: 'separator' },
+      { label: 'Clear mark', enabled: m.canClear, click: () => chooseMark(branch, null) },
+    ],
+  };
+}
+
 let win = null;
 let tabShell = null;
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
@@ -340,6 +413,7 @@ function createWindow() {
     sendFocus();
     win.flashFrame(false);
     setCue(false);            // looked at: the cue has done its job
+    tabShell.looked();        // ...and so has the selected tab's pulse (#31)
     focusSelected();
   });
   win.on('blur', () => { focused = false; sendFocus(); });
@@ -502,13 +576,26 @@ function applySelection(snapshot) {
   lastFocusedView = step.lastFocused;
 }
 
+// Ctrl+Alt+T. A form that is ALREADY open is not a transition, so neither
+// applySelection nor the strip page would hand it the keyboard: do it here, or
+// the branch name typed next goes into the terminal (PR #90 Dexter F3).
+function openBranchForm() {
+  const wasOpen = !!tabShell.snapshot().create;
+  if (!tabShell.openCreate()) return false;
+  if (wasOpen && win && !win.isDestroyed()) {
+    win.webContents.focus();
+    win.webContents.executeJavaScript("document.getElementById('create-branch').focus()").catch(() => {});
+  }
+  return true;
+}
+
 // Keyboard shortcuts, with no menu bar to carry them. Registered on the strip
 // AND on every tab view (focus is usually in a view). preventDefault ONLY for a
 // key shortcutFor names: everything else reaches xterm untouched.
 function registerShortcuts(wc) {
   wc.on('before-input-event', (event, input) => {
     const action = shortcutFor(input);
-    if (!action) return;
+    if (!action || !shortcutWillAct(action, tabShell)) return;
     event.preventDefault();
     // A held key is swallowed (it must not type Tab into the terminal) but acts
     // once: repeating would spin through tabs, starting a host on each.
@@ -516,6 +603,7 @@ function registerShortcuts(wc) {
     if (action === 'next-tab') tabShell.next();
     else if (action === 'prev-tab') tabShell.previous();
     else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
+    else if (action === 'new-branch') openBranchForm();
     else if (action === 'focus-mode') setFocusMode(!focusMode);
     else if (action === 'devtools') {
       const v = selectedView();
@@ -656,6 +744,8 @@ function registerIpc() {
     if (!fromStrip(e) || typeof key !== 'string') return;
     const st = tabShell.menuState(key);
     Menu.buildFromTemplate([
+      markSubmenu(tabShell.branchOf(key)),
+      { type: 'separator' },
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
@@ -1053,7 +1143,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
@@ -1091,7 +1181,23 @@ function startProbeDriver(port) {
     // Started, not awaited: the probe watches the setup's progress through `state`.
     async create(branch) { tabShell.createWorktree(branch).catch(logShellError('create')); return { ok: true }; },
     async reopen() { return tabShell.reopen(); },
+    // #40: the same call the Mark ▸ menu's click makes.
+    async mark(branch, id) {
+      const saved = chooseMark(branch, id);
+      return saved ? { ok: true, state: marks.state } : { ok: false, state: marks.state, error: 'not saved' };
+    },
+    // Dexter #87 F2: the submenu as ELECTRON built it, so its own defaults show.
+    async markMenu(branch) {
+      const built = Menu.buildFromTemplate([markSubmenu(branch)]).items[0];
+      return {
+        ok: true, label: built.label, enabled: built.enabled,
+        items: built.submenu.items.filter(i => i.type !== 'separator')
+          .map(i => ({ label: i.label, type: i.type, checked: i.checked, enabled: i.enabled })),
+      };
+    },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
+    // The window's own `focus` handler, run as the OS would.
+    async windowFocus() { win.emit('focus'); return { ok: true, osFocused: win.isFocused() }; },
     async select(label) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
@@ -1192,6 +1298,7 @@ app.whenReady().then(async () => {
     launchedFrom: LAUNCH_CWD,
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
+    marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
     // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.
     ops: createOps({ dir: scriptsDir(process.env) }),
@@ -1234,6 +1341,8 @@ app.whenReady().then(async () => {
   createWindow();
   registerIpc();
 
+  reloadMarks();
+  if (MODE === 'tabs') pruneGoneMarks();
   const first = await tabShell.open();
   if (attachOnlyRefusal) {
     console.error('[main] Open refused:', attachOnlyRefusal.reason);
@@ -1249,7 +1358,7 @@ app.whenReady().then(async () => {
     console.error('[main] could not start:', first.error);
     if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) { app.exit(1); return; }
   }
-  if (MODE === 'tabs') setInterval(() => { tabShell.poll(); }, POLL_MS);
+  if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
 
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) runScreenshotPath();

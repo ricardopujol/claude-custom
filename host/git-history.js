@@ -16,9 +16,11 @@ const { execFile } = require('child_process');
 const US = '\x1f';
 const RS = '\x1e';
 // The merge commit GitHub writes: subject "Merge pull request #N from owner/branch", body line 1 =
-// the PR title. %P gives both parents; %b the body.
+// the PR title. %P gives both parents; %b the body. Days are asked as `short-local`: plain `short`
+// prints in the zone STORED in the commit, while the ledger's days are the viewer's local ones
+// (host/branch-ledger.js localDay), so the two clocks only agree when both are local (PR #88 F1).
 const MERGE_FORMAT = '--format=%H%x1f%ad%x1f%s%x1f%P%x1f%b%x1e';
-const REF_FORMAT = '--format=%(refname)%1f%(committerdate:short)%1f%(objectname)';
+const REF_FORMAT = '--format=%(refname)%1f%(committerdate:short-local)%1f%(objectname)';
 const PR_MERGE = /^Merge pull request #(\d+) from [^/\s]+\/(\S+)$/;
 const BRANCH_MERGE = /^Merge branch '([^']+)'(?: into \S+)?$/;
 
@@ -233,7 +235,7 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
   const integration = integrationOf(refs);
   if (!integration) return { ok: false, error: 'no develop, main or master branch' };
   try {
-    merges = parseMerges(await run(['log', '--merges', '--first-parent', '--reverse', '--date=short',
+    merges = parseMerges(await run(['log', '--merges', '--first-parent', '--reverse', '--date=short-local',
       MERGE_FORMAT, integration], cwd));
     g = await parseGraphYielding(await run(['log', '--all', GRAPH_FORMAT], cwd));
   } catch (err) {

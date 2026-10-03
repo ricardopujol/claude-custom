@@ -165,7 +165,8 @@ test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
 
 test('the poller runs every 3 s', () => {
   assert.match(MAIN, /const POLL_MS = 3000/);
-  assert.match(MAIN, /setInterval\(\(\) => \{ tabShell\.poll\(\); \}, POLL_MS\)/);
+  // #40: each poll re-reads the tab marks first, so another window's mark shows by the next one.
+  assert.match(MAIN, /setInterval\(\(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}, POLL_MS\)/);
 });
 
 test('the probe driver does nothing without its env var, and only listens locally', () => {
@@ -203,7 +204,7 @@ test('the shortcuts are registered on the strip AND on every tab view, and only 
   const at = MAIN.indexOf('function registerShortcuts');
   const body = MAIN.slice(at, at + 900);
   assert.match(body, /shortcutFor\(input\)/);
-  assert.match(body, /if \(!action\) return;\s*event\.preventDefault\(\)/);
+  assert.match(body, /if \(!action \|\| !shortcutWillAct\(action, tabShell\)\) return;\s*event\.preventDefault\(\)/);
 });
 
 test('the raise flashes the frame as well as focusing (Windows may refuse to hand focus over)', () => {
@@ -335,6 +336,33 @@ test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer tha
   assert.match(callText(MAIN, c.at), /typeof branch !== 'string' \|\| branch\.length > 200\) return/);
 });
 
+test('#35: Ctrl+Alt+T opens the branch form through the shell, which applies the rule of the + menu item', () => {
+  assert.match(MAIN, /action === 'new-branch'\) openBranchForm\(\)/);
+  assert.doesNotMatch(MAIN, /accelerator:/);
+});
+
+test('#35 (Dexter F2): a key that will not act is not swallowed -- the decision comes BEFORE preventDefault', () => {
+  const at = MAIN.indexOf('function registerShortcuts');
+  const body = MAIN.slice(at, at + 900);
+  assert.match(body, /if \(!action \|\| !shortcutWillAct\(action, tabShell\)\) return;\s*event\.preventDefault\(\)/);
+});
+
+test('#35 (Dexter F3): Ctrl+Alt+T on a form that is already open hands the keyboard to its field', () => {
+  const at = MAIN.indexOf('function openBranchForm');
+  assert.ok(at !== -1, 'main has openBranchForm');
+  const body = MAIN.slice(at, at + 700);
+  assert.match(body, /const wasOpen = !!tabShell\.snapshot\(\)\.create/);
+  assert.match(body, /if \(!tabShell\.openCreate\(\)\) return false/);
+  assert.match(body, /if \(wasOpen[^]*win\.webContents\.focus\(\)/);
+  assert.match(body, /getElementById\('create-branch'\)\.focus\(\)/);
+});
+
+test('#31 (Dexter F1): the window regaining focus is a look at the selected tab', () => {
+  const at = MAIN.indexOf("win.on('focus'");
+  const body = MAIN.slice(at, at + 400);
+  assert.match(body, /tabShell.looked()/);
+});
+
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
@@ -461,4 +489,33 @@ test('#37: tab:checkPaths and tab:openPath are gated FIRST and resolve against t
 test('#37: shell.openPath and shell.showItemInFolder are reached only through app/file-link.js', () => {
   assert.deepStrictEqual([...MAIN.matchAll(/shell\.(openPath|showItemInFolder)\(/g)].map(m => m[0]), []);
   assert.match(MAIN, /const fileLink = require\('\.\/file-link'\);/);
+});
+
+// --- #40 tab marks ---------------------------------------------------------------
+
+test('the tab menu offers Mark first, for the branch the tab is on NOW (Dexter #87 F1)', () => {
+  assert.match(MAIN, /Menu\.buildFromTemplate\(\[\s*markSubmenu\(tabShell\.branchOf\(key\)\),/);
+});
+
+test('the shell reads marks from the loaded store; the window prunes once, in tabs mode', () => {
+  assert.match(MAIN, /marks: \{ markFor: \(branch\) => tabMarks\.markFor\(marks\.store, branch\) \}/);
+  assert.match(MAIN, /reloadMarks\(\);\s*if \(MODE === 'tabs'\) pruneGoneMarks\(\);/);
+});
+
+test('a mark is never saved over a file that could not be read', () => {
+  const body = MAIN.slice(MAIN.indexOf('function chooseMark('), MAIN.indexOf('function pruneGoneMarks('));
+  assert.match(body, /const cur = reloadMarks\(\);\s*if \(cur\.store === null\) return false;/);
+  const prune = MAIN.slice(MAIN.indexOf('function pruneGoneMarks('), MAIN.indexOf('function markSubmenu('));
+  assert.match(prune, /if \(live === null \|\| cur\.state !== 'ok'\) return;/);
+  assert.match(prune, /'--format=%\(refname\)', 'refs\/heads'/);
+});
+
+test('the Mark rows are checkboxes: a radio group gets a default tick from Electron (Dexter #87 F2)', () => {
+  const body = MAIN.slice(MAIN.indexOf('function markSubmenu('), MAIN.indexOf('let win = null;'));
+  assert.match(body, /type: 'checkbox', checked: r.checked/);
+  assert.doesNotMatch(body, /'radio'/);
+});
+
+test('a Mark row does what its model row says: the ticked one clears (Dexter #87 r2)', () => {
+  assert.match(MAIN, /click: \(\) => chooseMark\(branch, r\.choose\) \}\)\),/);
 });
