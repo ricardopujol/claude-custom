@@ -296,8 +296,11 @@ function sideOf(layout, a, b) {
 
 /**
  * Hide a module and remember its seat: the group it left (when that group
- * survives), the neighbour it sat beside and on which side, so `show` can put
- * it back where it was.
+ * survives), the neighbour it sat beside and on which side. `show` puts a tab
+ * back into its group; a lone panel, whose group went with it, comes back by
+ * splitting beside that neighbour at an even split. The seat records where, not
+ * how big: the panel's old size isn't remembered, and the neighbour's slot is
+ * shared (design section 4's op table).
  */
 function hide(layout, id) {
   const gr = groupOf(layout, id);
