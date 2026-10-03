@@ -43,6 +43,7 @@ const { currentBranch } = require('./git-branch');
 const { readHistory, readOrigin } = require('./git-history');
 const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
 const { readOpenPrs, parseOpenPrs } = require('./open-prs');
+const { readSeams, announce, fixtureReader } = require('./probe-seams');
 const { createReader: createReviewReader } = require('./review-reports');
 const { createGitTreeService, ledgerFileFor } = require('./git-tree-service');
 const { loadCatalogue } = require('./openrouter');
@@ -390,21 +391,20 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
-// Three probe seams (verify/probe-git-tree.js), unset in real use: a file of `gh pr list` JSON stands in for
-// gh (no network, no account), and the transcripts and the review reports come from folders of the
-// probe's own, not ~/.claude.
-const OPEN_PRS_FIXTURE = process.env.CLAUDE_CUSTOM_OPEN_PRS_FIXTURE || null;
-const fixtureOpenPrs = async () => {
-  try { return parseOpenPrs(fs.readFileSync(OPEN_PRS_FIXTURE, 'utf8')); } catch { return null; }
-};
+// Three probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
+// gh, and the transcripts and the review reports come from the probe's own folders. Logged when set.
+const seams = readSeams(process.env);
+announce(seams, (line) => console.log(line));
 const gitTree = createGitTreeService({
-  cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: process.env.CLAUDE_CUSTOM_GIT_PROJECTS_DIR || defaultProjectsDir(),
+  cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: seams.projectsDir || defaultProjectsDir(),
   ledgerFile: () => ledgerFileFor(STATE_ROOT),
   readHistory, loadLedger, updateLedger, saveLedger, currentBranch, now: Date.now,
-  readOpenPrs: OPEN_PRS_FIXTURE ? fixtureOpenPrs : readOpenPrs,
+  readOpenPrs: seams.openPrsFixture
+    ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
+    : readOpenPrs,
   // The drawer (Enhancement #46): origin's URL for *Open PR*, and ~/.claude/reviews/<project>/ verdicts.
   readRemote: readOrigin,
-  readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: process.env.CLAUDE_CUSTOM_REVIEWS_DIR || undefined }),
+  readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
