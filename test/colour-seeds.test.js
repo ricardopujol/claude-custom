@@ -231,3 +231,28 @@ test('seeding and refinement do not depend on the order the pixels come in', () 
   const backward = dominantColours(picture([...runs].reverse()), { count: 2 });
   assert.deepStrictEqual(backward, forward);
 });
+
+// A plain <script> has no `module`: evaluating the file the way the page does proves BOTH load paths.
+// `process` is injected because Stryker reads the active mutant through it; real code never touches it.
+test('load path: with module.exports it exports, without it it hangs colourSeeds off window or the global', () => {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  const src = fs.readFileSync(require.resolve('../app/colour-seeds'), 'utf8');
+  const load = (sandbox) => {
+    const ctx = vm.createContext({ process, ...sandbox });
+    vm.runInContext(src, ctx, { filename: 'colour-seeds-as-script' });
+    return ctx;
+  };
+
+  const mod = { exports: {} };
+  const asModule = load({ module: mod });
+  assert.strictEqual(typeof mod.exports.dominantColours, 'function');
+  assert.strictEqual(asModule.colourSeeds, undefined, 'a module load leaves no global behind');
+
+  const win = {};
+  load({ window: win });
+  assert.strictEqual(typeof win.colourSeeds.dominantColours, 'function');
+
+  assert.strictEqual(typeof load({}).colourSeeds.seedsOf, 'function');
+  assert.strictEqual(typeof load({ module: {} }).colourSeeds.seedsOf, 'function', 'a `module` without exports is not CommonJS');
+});
