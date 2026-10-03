@@ -27,10 +27,12 @@ const TIMEOUT_MS = 15000;
 
 const accepts = (controls) => Array.isArray(controls) && controls.includes('repo');
 
+const OLDER = "This session's host is older than this window and can't list files. Restart the session (close this tab and open it again) to browse files.";
+
+// `undefined` is "no hello yet" (the socket opens before the host says hello): not a claim about the host.
 function hostNote(controls) {
-  return accepts(controls)
-    ? null
-    : "This session's host is older than this window and can't list files. Restart the session (close this tab and open it again) to browse files.";
+  if (accepts(controls)) return null;
+  return controls === undefined ? 'Waiting for the session to connect.' : OLDER;
 }
 
 function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout } = {}) {

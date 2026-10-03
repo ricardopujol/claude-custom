@@ -4,7 +4,7 @@
  * the one `repo` conversation with the host that feeds both. renderer.js only wires it in (a hello, a control
  * message, the tab being shown, the socket dropping, and how to type into the terminal).
  *
- *   create({ doc, send, harness, storage, typeMention, focusTerminal, root? }) ->
+ *   create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown }) ->
  *     { setControls(list), onMessage(msg), show(), failAll(reason), probe(action, args) }
  *
  * `typeMention(text, done)` is the page's typeAndCheck path (PR #93): it clears a one-line draft, refuses a
@@ -18,7 +18,7 @@
  */
 (function (root) {
 
-function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey } = {}) {
+function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown } = {}) {
   const R = root.repoRequester || (typeof require === 'function' ? require('./repo-requester') : null);
   const Panel = root.repoFilesPanel || (typeof require === 'function' ? require('./repo-files-panel') : null);
   const Reader = root.repoReader || (typeof require === 'function' ? require('./repo-reader') : null);
@@ -50,7 +50,9 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
   requester.onChanged(() => { panel.onChanged(); reader.onRepoChanged(); });
 
   return {
-    setControls: (list) => requester.setControls(list),
+    // The socket opens BEFORE the host says hello, so a tab that was showing Files at load asked once with no
+    // controls to go on and was told to wait: when the hello arrives it asks again.
+    setControls: (list) => { requester.setControls(list); if (isShown && isShown()) panel.show(); },
     onMessage: (msg) => requester.onMessage(msg),
     show: () => panel.show(),
     failAll: (reason) => requester.failAll(reason),

@@ -51,7 +51,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     diff: $('reader-diff'), mention: $('reader-mention'), reveal: $('reader-reveal'), close: $('reader-close'),
     bar: $('reader-bar'), barText: $('reader-bar-text'), reload: $('reader-reload'),
     body: $('reader-body'), note: $('reader-note'), noteText: $('reader-note-text'), noteReveal: $('reader-note-reveal'),
-    mid: $('mid'),
+    termwrap: $('termwrap'),
   };
 
   const state = {
@@ -106,29 +106,34 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
 
   // ---- the pane ----
 
-  function widthBounds() {
-    const total = el.mid ? el.mid.getBoundingClientRect().width : 0;
-    return { min: MIN_PANE, max: Math.max(MIN_PANE, total - MIN_TERM) };
+  // The room the terminal and the reader SHARE (the dock zones beside them are not theirs to take): what the
+  // terminal has now, plus what the reader already holds. The terminal always keeps MIN_TERM of it.
+  function sharedRoom() {
+    const term = el.termwrap ? el.termwrap.getBoundingClientRect().width : 0;
+    return term + (el.pane.hidden ? 0 : el.pane.getBoundingClientRect().width);
   }
-  function setWidth(px, { save = true } = {}) {
-    const { min, max } = widthBounds();
+  function widthBounds(room = sharedRoom()) {
+    return { min: MIN_PANE, max: Math.max(MIN_PANE, room - MIN_TERM) };
+  }
+  function setWidth(px, { save = true, room } = {}) {
+    const { min, max } = widthBounds(room);
     const w = Math.round(Math.min(max, Math.max(min, px)));
     el.pane.style.width = `${w}px`;
     if (save) { try { if (storage) storage.setItem(keyNow(), String(w)); } catch { /* storage refused */ } }
     return w;
   }
-  function restoreWidth() {
+  function restoreWidth(room) {
     let saved = NaN;
     try { const raw = storage ? storage.getItem(keyNow()) : null; saved = raw === null ? NaN : Number(raw); } catch { /* storage refused */ }
-    const total = el.mid ? el.mid.getBoundingClientRect().width : 900;
-    setWidth(Number.isFinite(saved) && saved > 0 ? saved : total * 0.45, { save: false });
+    setWidth(Number.isFinite(saved) && saved > 0 ? saved : room * 0.45, { save: false, room });
   }
 
   function showPane() {
     if (!el.pane.hidden) return;
+    const room = sharedRoom();          // measured while the reader is hidden: the terminal has it all
     el.pane.hidden = false;
     el.split.hidden = false;
-    restoreWidth();
+    restoreWidth(room);
   }
 
   function close() {
@@ -178,6 +183,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     showPane();
     clearBar();
     paintHead();
+    if (!el.note.hidden) showNote('reading\u2026', { reveal: false });
     const r = await requester.request('read', { path });
     if (token !== state.token) return;
     if (!r.ok) {

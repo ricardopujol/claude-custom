@@ -93,7 +93,7 @@ test('a socket that is not open fails at once and says so', async () => {
 });
 
 test('a host that did not list `repo` is never sent one: the frame would be typed into its session', async () => {
-  for (const controls of [undefined, [], ['resize', 'fog'], 'repo', null]) {
+  for (const controls of [[], ['resize', 'fog'], 'repo', null]) {
     const { r, sent } = rig();
     r.setControls(controls);
     const out = await r.request('list', { dir: '' });
@@ -103,11 +103,13 @@ test('a host that did not list `repo` is never sent one: the frame would be type
   }
 });
 
-test('before any hello, nothing is sent either', async () => {
+test('before any hello, nothing is sent either, and it says it is waiting (not that the host is older)', async () => {
   const { r, sent } = rig();
   const out = await r.request('list', { dir: '' });
   assert.strictEqual(sent.length, 0);
   assert.strictEqual(out.ok, false);
+  assert.match(out.error, /waiting/i);
+  assert.doesNotMatch(out.error, /older/);
 });
 
 test('failAll answers every pending ask with the reason (a dropped socket), and clears their timers', async () => {
@@ -133,5 +135,6 @@ test('hostNote says what to do, only when the host is the problem', () => {
   assert.strictEqual(hostNote(['repo']), null);
   assert.strictEqual(hostNote(['resize', 'repo']), null);
   assert.match(hostNote(['resize']), /restart/i);
-  assert.match(hostNote(undefined), /restart/i);
+  assert.match(hostNote(null), /restart/i);
+  assert.match(hostNote(undefined), /waiting/i);
 });

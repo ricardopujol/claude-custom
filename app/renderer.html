@@ -251,10 +251,11 @@
     #reader-split[hidden], #reader[hidden] { display: none; }
     body.reader-resizing { user-select: none; cursor: col-resize; }
     #reader { flex: 0 0 auto; display: flex; flex-direction: column; min-width: 240px; min-height: 0; background: var(--bg); }
-    #reader-head { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 11px;
+    #reader-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 8px; font-size: 11px;
       background: var(--chrome); border-bottom: 1px solid var(--border); }
-    #reader-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
-    #reader-meta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10.5px; }
+    #reader-path { flex: 1 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
+    #reader-meta { order: 9; flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10.5px; }
+    #reader-meta:empty { display: none; }
     #reader-head button, #reader-bar button, #reader-note button { background: transparent; color: var(--text); border: 1px solid var(--border);
       border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap; }
     #reader-head button:hover, #reader-bar button:hover, #reader-note button:hover { border-color: var(--accent); color: var(--accent); }
@@ -1308,11 +1309,11 @@
       <section id="reader" aria-label="File reader" hidden>
         <header id="reader-head">
           <span id="reader-path"></span>
-          <span id="reader-meta"></span>
           <button type="button" id="reader-diff" title="What Claude changed in this file" aria-pressed="false" hidden>Diff</button>
           <button type="button" id="reader-mention" title="Type @this-file (or the selected lines) into the prompt; you press Enter">@ in prompt</button>
           <button type="button" id="reader-reveal" title="Show this file in Explorer">Show in Explorer</button>
           <button type="button" id="reader-close" title="Close (Esc)" aria-label="Close the reader">&times;</button>
+          <span id="reader-meta" role="status"></span>
         </header>
         <div id="reader-bar" role="status" hidden><span id="reader-bar-text"></span><button type="button" id="reader-reload">Reload</button></div>
         <div id="reader-body"></div>

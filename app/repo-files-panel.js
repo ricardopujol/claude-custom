@@ -39,6 +39,11 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, n
     children: new Map(), expanded: new Set(), overlay: null, onlyTouched: false,
     selected: null, error: null, focused: null, loadedRoot: false, menu: null, saidTimer: null,
   };
+  // A page main opened with ?probe=1 (verify/probe-repo-browser.js) records a file drag instead of starting it:
+  // a real webContents.startDrag opens the OS's modal drag loop, which freezes the window until a mouse button is
+  // released, and a probe has no mouse. main's refusals of bad paths are checked directly (harnessDrag).
+  const probing = (() => { try { return new URLSearchParams(root.location.search).get('probe') === '1'; } catch { return false; } })();
+  const dragRequests = [];
   let lastOverlayAt = -Infinity;
   let overlayTimer = null;
   let overlayBusy = false;
@@ -59,7 +64,12 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, n
   async function loadDir(dir) {
     const r = await requester.request('list', { dir });
     if (!r.ok) {
+      // git can't answer, so NO listing is current: drop what was drawn (the host drops its last good tree for
+      // the same reason) rather than show a stale tree under a warning. Open folders stay open, and are listed
+      // again when git answers.
       state.error = r.error || 'the file list could not be read';
+      state.children.clear();
+      state.loadedRoot = false;
       render();
       return false;
     }
@@ -241,6 +251,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, n
     if (!row) return;
     e.preventDefault();
     if (row.dataset.kind !== 'file') return;
+    if (probing) { dragRequests.push(row.dataset.path); return; }
     const r = harness && harness.repoDrag ? await harness.repoDrag(row.dataset.path) : { ok: false, why: 'unavailable' };
     if (!r || r.ok !== true) say(`Could not drag it out: ${(r && r.why) || 'refused'}`);
   });
@@ -301,7 +312,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, n
       case 'state':
         return {
           ok: true, renders, error: state.error, note: el.note.textContent, noteWarn: el.note.classList.contains('fog-warn'),
-          onlyTouched: state.onlyTouched, selected: state.selected, said: el.said ? el.said.textContent : '',
+          onlyTouched: state.onlyTouched, selected: state.selected, said: el.said ? el.said.textContent : '', dragRequests: [...dragRequests],
           rows: [...el.tree.querySelectorAll('.fr')].map(r => ({
             path: r.dataset.path || null, kind: r.dataset.kind || (r.classList.contains('loading') ? 'loading' : 'more'),
             cls: r.className, text: r.textContent, title: r.title, depth: Number(r.getAttribute('aria-level')) - 1,

@@ -403,6 +403,7 @@ const repoBrowser = window.repoBrowser.create({
   storageKey: () => `repoReaderWidth:${document.getElementById('cwd').textContent || ''}`,
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
   focusTerminal: () => term.focus(),
+  isShown: () => shownModules.has('fog'),
 });
 
 // --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------

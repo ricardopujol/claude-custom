@@ -32,11 +32,13 @@
  *  13  the divider: dragged, the width changes, is remembered per tab, and comes back on the next open; Esc
  *      closes the reader and the terminal takes its width back
  *  14  a new file appears in the tree without a reload
- *  15  a worktree that is not a repository says so (never an empty tree that reads as clean)
+ *  15  git failing under the tab (HEAD broken, then put back) says "not a git repository" in the warning colour and
+ *      draws no rows, so it can never read as a clean, empty repo; fixed, the tree comes back
  *
  * NOT done here, on purpose: Show in Explorer on a real file (it would open Explorer on the machine running
- * this) and a real OS drag-out (it needs a held mouse). main's guard for both is test/repo-actions.test.js;
- * this checks that the page asks and that main refuses the bad ones.
+ * this) and a real OS drag-out (webContents.startDrag opens the OS's modal drag loop, which freezes the window
+ * until a mouse button is released: a probe page records the request instead). main's guard for both is
+ * test/repo-actions.test.js; this checks that the page asks, and that main refuses the bad ones.
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and every
  * CLAUDE_CUSTOM_* variable is stripped from the window under test, then only the probe's own are set; the
@@ -177,7 +179,8 @@ async function viewReady(app) {
     if (!sel || !sel.started) return null;
     const v = await view(app, 'state');
     return v && v.ok && v.sent ? v : null;
-  }, 45000);
+    // 150s: a window on a busy machine can take half a minute to connect (develop's own probes do too)
+  }, 150000);
 }
 
 // ---- the fixture ----
@@ -249,16 +252,16 @@ function allProcesses() {
   return JSON.parse(ps.stdout);
 }
 const MB = (b) => (b / 1048576).toFixed(1);
-// median of three: one reading can land on a GC or a paint
+// median of five: one reading can land on a GC or a paint
 async function memory(app) {
   const samples = [];
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     const { summary } = summarize(allProcesses(), app.child.pid);
     samples.push(summary);
-    if (i < 2) await sleep(1000);
+    if (i < 4) await sleep(1000);
   }
   samples.sort((a, b) => a.harnessPrivateBytes - b.harnessPrivateBytes);
-  return samples[1];
+  return samples[2];
 }
 
 // ---- the stand-in CLI box ----
@@ -279,7 +282,8 @@ async function main() {
   setAsideLayout();
   const app = await launchApp(container);
   const ready = await viewReady(app);
-  check('the window came up with a session and the probe hook', !!ready, ready ? '' : app.out.slice(-600));
+  const vstate = ready ? null : await view(app, 'state');
+  check('the window came up with a session and the probe hook', !!ready, ready ? '' : `${app.out.slice(-800)} | state: ${JSON.stringify(await command(app, { cmd: 'state' })).slice(0, 900)} | view: ${(() => { const v = vstate || {}; return JSON.stringify({ ok: v.ok, sent: v.sent, term: v.term, fit: v.fit, shown: v.shown, error: v.error }); })()} | exited: ${app.exited}`);
   if (!ready) return;
   const stateNow = async () => (await command(app, { cmd: 'state' })) || {};
   console.log(`      host cwd: ${JSON.stringify(((await stateNow()).hosts || []).map(h => h.cwd))}`);
@@ -370,12 +374,14 @@ async function main() {
   await sleep(1500);
   const memAfter = await memory(app);
   const after = await rp(app, 'reader.state');
-  console.log(`      MEMORY before the first open: harness private ${MB(memBefore.harnessPrivateBytes)} MB, ${memBefore.processes} processes, page JS heap ${heapBefore === null ? 'n/a' : MB(heapBefore)} MB`);
-  console.log(`      MEMORY after  the first open: harness private ${MB(memAfter.harnessPrivateBytes)} MB, ${memAfter.processes} processes, page JS heap ${after.heap === null ? 'n/a' : MB(after.heap)} MB`);
-  console.log(`      MEMORY delta: ${MB(memAfter.harnessPrivateBytes - memBefore.harnessPrivateBytes)} MB private (whole harness tree), ${heapBefore === null || after.heap === null ? 'n/a' : MB(after.heap - heapBefore)} MB page JS heap`);
+  const rend = (m) => (m.byRole['electron:renderer'] || { privateBytes: 0, count: 0 });
+  console.log(`      MEMORY before the first open: harness private ${MB(memBefore.harnessPrivateBytes)} MB (${memBefore.processes} processes); renderers ${MB(rend(memBefore).privateBytes)} MB x${rend(memBefore).count}; page JS heap ${heapBefore === null ? 'n/a' : MB(heapBefore)} MB`);
+  console.log(`      MEMORY after  the first open: harness private ${MB(memAfter.harnessPrivateBytes)} MB (${memAfter.processes} processes); renderers ${MB(rend(memAfter).privateBytes)} MB x${rend(memAfter).count}; page JS heap ${after.heap === null ? 'n/a' : MB(after.heap)} MB`);
+  console.log(`      MEMORY delta: renderers ${MB(rend(memAfter).privateBytes - rend(memBefore).privateBytes)} MB (this is what opening the first file costs: CodeMirror and one document); whole harness tree ${MB(memAfter.harnessPrivateBytes - memBefore.harnessPrivateBytes)} MB (the host's own GC swings this by tens of MB, so it is not the number to judge)`);
   const byRole = (m) => Object.fromEntries(Object.entries(m.byRole).filter(([k]) => /electron:renderer|electron:main|host/.test(k)).map(([k, v]) => [k, `${MB(v.privateBytes)} MB x${v.count}`]));
   console.log(`      MEMORY by role before: ${JSON.stringify(byRole(memBefore))}`);
   console.log(`      MEMORY by role after : ${JSON.stringify(byRole(memAfter))}`);
+  console.log('      (the page JS heap is performance.memory, which Chromium rounds to coarse steps without --enable-precise-memory-info: it reads the same before and after, so the OS numbers above are the evidence)');
   check('6: memory was measured before and after the first open (a number, not a threshold: #20 has no target yet)', memBefore.harnessPrivateBytes > 0 && memAfter.harnessPrivateBytes > 0);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '5-reader.png') });
 
@@ -418,13 +424,13 @@ async function main() {
   await rp(app, 'click', { path: 'data' });
   await waitFor(async () => rowOf(await rp(app, 'state'), 'data/big.txt'), 8000);
   await rp(app, 'click', { path: 'data/big.txt' });
-  const big = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.path === 'data/big.txt' && s.noteShown ? s : null; }, 10000);
+  const big = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.path === 'data/big.txt' && s.noteShown && /over the/.test(s.noteText) ? s : null; }, 10000);
   check('9: a file over 2 MB opens nothing and says its size and the limit, with Show in Explorer',
     !!big && /2\.0 MB/.test(big.noteText) && big.noteRevealShown && big.bodyHidden, JSON.stringify(big && big.noteText));
   await rp(app, 'click', { path: 'bin' });
   await waitFor(async () => rowOf(await rp(app, 'state'), 'bin/blob.bin'), 8000);
   await rp(app, 'click', { path: 'bin/blob.bin' });
-  const bin = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.path === 'bin/blob.bin' && s.noteShown ? s : null; }, 10000);
+  const bin = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.path === 'bin/blob.bin' && s.noteShown && /binary/.test(s.noteText) ? s : null; }, 10000);
   check('9: a binary file says binary, with Show in Explorer', !!bin && /binary/.test(bin.noteText) && bin.noteRevealShown, JSON.stringify(bin && bin.noteText));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-binary.png') });
 
@@ -480,8 +486,9 @@ async function main() {
   await rp(app, 'key', { path: 'src', key: 'Escape' });
   const dragFile = await rp(app, 'dragStart', { path: 'README.md' });
   const dragDir = await rp(app, 'dragStart', { path: 'src' });
-  check('12: a drag on a file row is taken over (default prevented: main starts the OS drag) and a folder row starts nothing',
-    dragFile.ok && dragFile.defaultPrevented && dragDir.ok && dragDir.defaultPrevented, JSON.stringify({ dragFile, dragDir }));
+  const dragged12 = (await rp(app, 'state')).dragRequests;
+  check('12: a drag on a file row is taken over (default prevented, so main can start the OS drag) and asks main for exactly that file; a folder row asks for nothing',
+    dragFile.ok && dragFile.defaultPrevented && dragDir.ok && dragDir.defaultPrevented && JSON.stringify(dragged12) === JSON.stringify(['README.md']), JSON.stringify({ dragFile, dragDir, dragged12 }));
   // a name with a space can't be mentioned: refused with the reason, box unchanged
   const boxWas = boxLine();
   await rp(app, 'reader.open', { path: SPACED });
@@ -516,25 +523,25 @@ async function main() {
   fs.rmSync(path.join(dev, 'src', 'later.js'));
   check('14: ...and goes when it is deleted', !!(await waitFor(async () => { const s = await rp(app, 'state'); return !rowOf(s, 'src/later.js') ? s : null; }, 12000)));
 
+  // 15 -----------------------------------------------------------------------------
+  // git can't answer (here: HEAD is garbage, so git says "not a git repository"): the tab says so, in the warning
+  // colour, and draws NO rows, so an unreadable repo can never look like a clean, empty one. A change under the
+  // watch makes the host list again; HEAD is put back afterwards and the tree comes back.
+  const headFile = path.join(dev, '.git', 'HEAD');
+  const head = fs.readFileSync(headFile, 'utf8');
+  fs.writeFileSync(headFile, 'this is not a ref\n');
+  fs.writeFileSync(path.join(dev, 'src', 'trigger.js'), 'x\n');
+  const err = await waitFor(async () => { const s = await rp(app, 'state'); return s.ok && s.error ? s : null; }, 15000);
+  check('15: git failing: the tab says "not a git repository" in the warning colour and draws no rows (it cannot read as a clean, empty repo)',
+    !!err && /not a git repository/i.test(err.note) && err.noteWarn && rowsOf(err).length === 0, JSON.stringify(err && { note: err.note, error: err.error, rows: err.rows.length }));
+  await command(app, { cmd: 'screenshot', file: path.join(shots, '15-git-failed.png') });
+  fs.writeFileSync(headFile, head);
+  fs.writeFileSync(path.join(dev, 'src', 'trigger.js'), 'y\n');
+  const healed = await waitFor(async () => { const s = await rp(app, 'state'); return s.ok && !s.error && rowOf(s, 'README.md') ? s : null; }, 15000);
+  check('15: git back: the tree comes back and the warning goes', !!healed, JSON.stringify(healed && { note: healed.note, error: healed.error }));
+
   await command(app, { cmd: 'quit' });
   await waitFor(() => app.exited, 10000);
-
-  // 15 -----------------------------------------------------------------------------
-  // A worktree that is not a repository: said plainly, never an empty tree that reads as a clean repo.
-  const plain = path.join(tmp, 'plain', 'dev');
-  fs.mkdirSync(plain, { recursive: true });
-  fs.writeFileSync(path.join(plain, 'a.txt'), 'x\n');
-  const bare = await launchApp(path.join(tmp, 'plain'));
-  const bareReady = await viewReady(bare);
-  check('15: a second window on a folder that is not a repository came up', !!bareReady, bareReady ? '' : bare.out.slice(-400));
-  if (bareReady) {
-    await view(bare, 'move', { id: 'fog', target: 'left' });
-    const err = await waitFor(async () => { const s = await rp(bare, 'state'); return s.ok && s.error ? s : null; }, 20000);
-    check('15: the tab says "not a git repository" in the warning colour, and draws no rows (so it cannot read as a clean, empty repo)',
-      !!err && /not a git repository/i.test(err.note) && err.noteWarn && rowsOf(err).length === 0, JSON.stringify(err && { note: err.note, error: err.error, rows: err.rows.length }));
-    await command(bare, { cmd: 'screenshot', file: path.join(shots, '15-not-a-repo.png') });
-  }
-  await command(bare, { cmd: 'quit' });
 }
 
 main()
