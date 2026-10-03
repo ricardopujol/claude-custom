@@ -154,12 +154,14 @@ function setRect(el, r) {
 /**
  * Keep one element per key under `dock`: made once, moved on every render,
  * removed when its key is gone. A gutter being dragged keeps its element (and
- * its pointer capture) because its key doesn't change.
+ * its pointer capture) because its key doesn't change. Returns the element of
+ * each item and the stale ones; the plan's own boxes are never written to.
  */
 function syncPool(dock, selector, items, keyOf, make, before) {
   const have = new Map();
   for (const el of dock.querySelectorAll(selector)) have.set(el.dataset.key, el);
   const live = new Set();
+  const elOf = new Map();
   for (const item of items) {
     const key = keyOf(item);
     live.add(key);
@@ -169,11 +171,11 @@ function syncPool(dock, selector, items, keyOf, make, before) {
       el.dataset.key = key;
       dock.insertBefore(el, before);
     }
-    item.el = el;
+    elOf.set(item, el);
   }
   const stale = [];
   for (const [key, el] of have) if (!live.has(key)) stale.push(el);
-  return stale;
+  return { elOf, stale };
 }
 
 function applyTabs(doc, nav, tabs) {
@@ -212,19 +214,19 @@ function applyBoxes(plan, doc) {
 
   const mk = (tag, cls) => { const el = doc.createElement(tag); el.className = cls; return el; };
   const groupBoxes = plan.boxes.filter(b => b.kind === 'group');
-  const staleGroups = syncPool(dock, ':scope > .dgroup', groupBoxes, b => b.id, (b) => {
+  const groupPool = syncPool(dock, ':scope > .dgroup', groupBoxes, b => b.id, (b) => {
     const el = mk('aside', 'zone dgroup');
     el.dataset.group = b.id;
     el.append(mk('nav', 'zone-tabs'), mk('div', 'zone-panels'));
     return el;
   }, overlay);
   const gutters = plan.boxes.filter(b => b.kind === 'gutter');
-  const staleGutters = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, () => mk('div', 'dgutter'), overlay);
+  const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, () => mk('div', 'dgutter'), overlay);
   const rails = plan.boxes.filter(b => b.kind === 'rail');
-  const staleRails = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
+  const railPool = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
 
   for (const b of groupBoxes) {
-    const el = b.el;
+    const el = groupPool.elOf.get(b);
     el.dataset.shape = b.shape;
     setRect(el, b.rect);
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
@@ -235,25 +237,27 @@ function applyBoxes(plan, doc) {
     }
   }
   for (const b of gutters) {
-    b.el.dataset.path = b.path.join('.');
-    b.el.dataset.i = String(b.i);
-    b.el.dataset.dir = b.dir;
-    setRect(b.el, b.rect);
+    const el = gutterPool.elOf.get(b);
+    el.dataset.path = b.path.join('.');
+    el.dataset.i = String(b.i);
+    el.dataset.dir = b.dir;
+    setRect(el, b.rect);
   }
   for (const b of rails) {
-    b.el.dataset.dir = b.dir;
-    setRect(b.el, b.rect);
+    const el = railPool.elOf.get(b);
+    el.dataset.dir = b.dir;
+    setRect(el, b.rect);
     const sig = b.modules.join(',');
-    if (b.el.dataset.sig !== sig) {
-      b.el.dataset.sig = sig;
-      b.el.textContent = '';
+    if (el.dataset.sig !== sig) {
+      el.dataset.sig = sig;
+      el.textContent = '';
       for (const t of b.tabs) {
         const btn = doc.createElement('button');
         btn.type = 'button';
         btn.dataset.module = t.id;
         btn.title = t.title;
         btn.textContent = t.label;
-        b.el.appendChild(btn);
+        el.appendChild(btn);
       }
     }
   }
@@ -265,7 +269,7 @@ function applyBoxes(plan, doc) {
     p.classList.toggle('on', on);
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
-  for (const el of [...staleGroups, ...staleGutters, ...staleRails]) el.remove();
+  for (const el of [...groupPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
