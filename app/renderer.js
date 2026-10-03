@@ -249,7 +249,7 @@ function barState() {
   const cs = getComputedStyle(barEls.bar);
   return {
     bar: {
-      hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, display: cs.display,
+      hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, transitionDuration: cs.transitionDuration, display: cs.display,
       top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
       prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden },
       chips: [...barEls.chips.children].map(c => ({
