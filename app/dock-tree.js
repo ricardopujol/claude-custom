@@ -308,9 +308,45 @@ function show(layout, id) {
   return dock(layout, id, { edge: 'right' });
 }
 
+// --- sizes ---------------------------------------------------------------------
+
+/** The least a subtree may be given: rows add widths (and gutters) and take the tallest, columns the mirror. */
+function minSize(n) {
+  if (n.type === 'term') return { ...TERM_MIN };
+  if (n.type === 'group') return { ...MIN };
+  const ms = n.kids.map(minSize);
+  const gutters = GUTTER * (n.kids.length - 1);
+  if (n.dir === 'row') return { width: ms.reduce((s, m) => s + m.width, 0) + gutters, height: Math.max(...ms.map(m => m.height)) };
+  return { width: Math.max(...ms.map(m => m.width)), height: ms.reduce((s, m) => s + m.height, 0) + gutters };
+}
+const along = (n, dir) => minSize(n)[dir === 'row' ? 'width' : 'height'];
+
+/**
+ * A divider drag's result: the sizes of the split at `path` (child indexes from
+ * the root). Rounded, never under a kid's minimum, never over MAX_SIZE, the kid
+ * that holds the terminal still 0. Anything that isn't a well-formed request
+ * for an existing split changes nothing.
+ */
+function setSplitSizes(layout, path, sizes) {
+  if (!Array.isArray(path) || !Array.isArray(sizes) || !sizes.every(isSize)) return layout;
+  const at = (tree) => {
+    let n = tree;
+    for (const i of path) {
+      if (n.type !== 'split' || !Number.isInteger(i) || i < 0 || i >= n.kids.length) return null;
+      n = n.kids[i];
+    }
+    return n.type === 'split' && n.kids.length === sizes.length ? n : null;
+  };
+  if (!at(layout.root)) return layout;
+  const l = clone(layout);
+  const split = at(l.root);
+  split.sizes = split.kids.map((k, i) => (hasTerm(k) ? 0 : Math.min(MAX_SIZE, Math.max(along(k, split.dir), Math.round(sizes[i])))));
+  return normalize(l, modulesIn(layout));
+}
+
 const API = {
   VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, defaultLayout, normalize, groups, count, hasTerm,
-  fromV1, readAny, selectionFromV1, groupOf, dock, hide, show,
+  fromV1, readAny, selectionFromV1, groupOf, dock, hide, show, minSize, setSplitSizes,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.

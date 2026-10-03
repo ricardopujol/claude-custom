@@ -371,6 +371,53 @@ test('show of a module that is not hidden, or unknown, changes nothing', () => {
   assert.equal(T.show(l, 'nope'), l);
 });
 
+// --- sizes ---------------------------------------------------------------------
+
+test('minSize: the terminal and a panel have their own, a row adds widths and a column adds heights', () => {
+  assert.deepEqual(T.minSize(term), { width: 320, height: 160 });
+  assert.deepEqual(T.minSize(g('x', 'agents')), { width: 120, height: 80 });
+  assert.deepEqual(T.minSize(row([g('x', 'agents'), g('y', 'vault')], [1, 1])), { width: 120 + 5 + 120, height: 80 });
+  assert.deepEqual(T.minSize(col([g('x', 'agents'), g('y', 'vault')], [1, 1])), { width: 120, height: 80 + 5 + 80 });
+});
+
+test('minSize of the example: the right column is 120 wide and 3 x 80 + 2 gutters tall, the taller side', () => {
+  const l = example();
+  assert.deepEqual(T.minSize(l.root.kids[1]), { width: 120, height: 250 });
+  assert.deepEqual(T.minSize(l.root.kids[0]), { width: 320, height: 160 + 5 + 80 });
+  assert.deepEqual(T.minSize(l.root), { width: 320 + 5 + 120, height: 250 });
+});
+
+test('setSplitSizes stores rounded pixels, the terminal\'s side keeps 0', () => {
+  const l = T.setSplitSizes(example(), [], [999, 300.4]);
+  assert.deepEqual(l.root.sizes, [0, 300]);
+  const col3 = T.setSplitSizes(example(), [1], [100.6, 200, 300]);
+  assert.deepEqual(col3.root.kids[1].sizes, [101, 200, 300]);
+  assert.deepEqual(T.setSplitSizes(example(), [0], [1, 120]).root.kids[0].sizes, [0, 120]);
+});
+
+test('setSplitSizes raises a size under its minimum and caps a huge one', () => {
+  const l = T.setSplitSizes(example(), [1], [10, 200, 300]);
+  assert.deepEqual(l.root.kids[1].sizes, [80, 200, 300]);
+  assert.deepEqual(T.setSplitSizes(example(), [], [1, 20]).root.sizes, [0, 120]);
+  assert.deepEqual(T.setSplitSizes(example(), [], [1, 1e9]).root.sizes, [0, 10000]);
+});
+
+test('setSplitSizes with a bad path, a wrong length or a size that is not a positive number changes nothing', () => {
+  const l = example();
+  for (const [path, sizes] of [
+    [[5], [1, 1]], [[0, 0, 0], [1, 1]], [[-1], [1, 1]], [[0.5], [1, 1]], ['x', [1, 1]], [null, [1, 1]],
+    [[1, 0], [1, 1]],                       // a path that ends on a group
+    [[], [1]], [[], [1, 2, 3]], [[], 'ab'], [[], null],
+    [[], [null, 200]], [[], ['200', 200]], [[], [0, 200]], [[], [-1, 200]], [[], [NaN, 200]], [[], [200, Infinity]],
+  ]) assert.equal(T.setSplitSizes(l, path, sizes), l, JSON.stringify([path, sizes]));
+});
+
+test('setSplitSizes never changes its input', () => {
+  const l = deepFreeze(example());
+  assert.doesNotThrow(() => T.setSplitSizes(l, [1], [100, 200, 300]));
+  assert.deepEqual(l.root.kids[1].sizes, [1, 1, 1]);
+});
+
 // --- migration from L1 --------------------------------------------------------
 
 const DL = require('../app/dock-layout');
