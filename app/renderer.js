@@ -959,12 +959,17 @@ function selectModule(id) { commitSelection(DTm.selectTab(selection, placementLa
 // one, every change goes there until Reset to global.
 const layoutMenu = document.getElementById('layout-menu');
 let layoutMenuFor = null;               // 'menu' | a module id (right-click) | null
+// The Presets section's inline field (dockable panels D3): { mode, name, text, error }. mode is 'idle', 'save'
+// (the name field), 'replace' (asking to replace `name`), 'rename' (`name`'s field) or 'delete' (asking about `name`).
+let presetUi = { mode: 'idle' };
+let presetsState = { loaded: false, usable: false, list: [] };   // the stored list, as main last said
 
 function closeLayoutMenu() {
   if (layoutMenu.hidden) return false;
   layoutMenu.hidden = true;
   layoutMenu.textContent = '';
   layoutMenuFor = null;
+  presetUi = { mode: 'idle' };           // a half-typed name doesn't outlive the menu
   return true;
 }
 
@@ -1020,7 +1025,9 @@ function openMoveMenu(id, x, y) {
 // left to click.
 function openLayoutMenu() {
   const anchor = document.getElementById('layout-btn').getBoundingClientRect();
+  const keepField = presetUi;             // a redraw in place keeps the field being typed in
   closeLayoutMenu();
+  presetUi = keepField;
   layoutMenuFor = 'menu';
   const check = justThisTabCheck();
   layoutMenu.appendChild(node('div', { className: 'lm-title', text: ownLayout ? 'This tab\'s own layout' : 'Layout (every tab)' }));
@@ -1035,6 +1042,7 @@ function openLayoutMenu() {
     });
     layoutMenu.appendChild(node('label', {}, [box, node('span', { text: row.label })]));
   }
+  appendPresetSection(check);
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
   layoutMenu.appendChild(node('button', {
@@ -1067,8 +1075,167 @@ window.addEventListener('mousedown', (e) => {
   if (!layoutMenu.hidden && !layoutMenu.contains(e.target) && !e.target.closest('#layout-btn')) closeLayoutMenu();
 });
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && closeLayoutMenu()) { e.preventDefault(); e.stopPropagation(); }
+  if (e.key === 'Escape' && (backOutOfPresetField() || closeLayoutMenu())) { e.preventDefault(); e.stopPropagation(); }
 }, true);
+
+// --- layout presets (BACKLOG #53, dockable panels D3) -------------------------------------
+// The Presets section of the Window menu: save the current placement under a name, apply it, rename, delete.
+// app/dock-presets.js holds every rule; this draws the rows. The name field and both confirmations are rows
+// inside the menu (no prompt() or confirm()), and the list is install-wide, in main's store (`layout-presets`).
+
+// The one write of the list. Refused while the stored list couldn't be read: saving then would replace presets
+// that are really there. Main answers null when it refused the list or the write failed; either is said, not swallowed.
+function writePresets(list, done) {
+  const presetBridge = window.harness && window.harness.layoutPresets;
+  const notSaved = () => flashAttention({ urgent: false, title: 'Couldn\'t save the presets' });
+  if (!presetBridge || !presetsState.usable) { notSaved(); return; }
+  presetBridge.set(list).then((answer) => {
+    if (!window.dockPresets.presetsSaved(answer)) { notSaved(); return; }
+    presetsState = { loaded: true, usable: true, list: window.dockPresets.cleanPresets(answer) };
+    if (done) done();
+  }, notSaved);
+}
+
+// Redraw the open Window menu in place, unless a field is open (typing must not be thrown away by a push).
+function refreshPresetMenu() {
+  if (layoutMenuFor === 'menu' && presetUi.mode === 'idle') openLayoutMenu();
+}
+
+// A refusal stays in the field's row; a success writes the list and goes back to idle.
+function runPresetOp(result) {
+  if (!result.ok) {
+    presetUi = { ...presetUi, error: window.dockPresets.refusalText(result.reason) };
+    openLayoutMenu();
+    return;
+  }
+  writePresets(result.list, () => { presetUi = { mode: 'idle' }; openLayoutMenu(); });
+}
+
+function applyPreset(p, justThisTab) {
+  commitPlacement(p.layout, { justThisTab });
+  closeLayoutMenu();
+}
+
+function backOutOfPresetField() {
+  if (layoutMenu.hidden || presetUi.mode === 'idle') return false;
+  presetUi = { mode: 'idle' };
+  openLayoutMenu();
+  return true;
+}
+
+// The small picture of a layout beside its name: the boxes dockPresets.thumbBoxes fits into 44 x 28.
+function presetThumb(layout) {
+  const thumb = node('span', { className: 'lm-thumb', 'aria-hidden': 'true' });
+  const fitFn = (l, ids, viewport) => DTm.fit(DTm.normalize(l, ids), null, viewport);
+  for (const b of window.dockPresets.thumbBoxes(layout, MODULE_IDS, fitFn)) {
+    const box = node('i', { className: b.kind });
+    Object.assign(box.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.w}px`, height: `${b.h}px` });
+    thumb.appendChild(box);
+  }
+  return thumb;
+}
+
+// A text field row: Enter commits, the buttons beside it commit or back out. Esc is handled by the menu's own key handler.
+function presetFieldRow({ label, value, action, commitText, onCommit }) {
+  const field = node('input', { type: 'text', value, maxLength: window.dockPresets.NAME_MAX * 2, 'aria-label': label, placeholder: 'Preset name' });
+  field.dataset.presetField = action;
+  field.addEventListener('input', () => { presetUi.text = field.value; });
+  const commit = () => { presetUi.text = field.value; onCommit(field.value); };      // a refusal redraws with what was typed
+  field.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+  const rows = [node('div', { className: 'lm-row' }, [
+    field,
+    node('button', { type: 'button', text: commitText, on: { click: commit } }),
+    node('button', { type: 'button', text: 'Cancel', on: { click: () => backOutOfPresetField() } }),
+  ])];
+  if (presetUi.error) rows.push(node('div', { className: 'lm-note err', role: 'alert', text: presetUi.error }));
+  queueMicrotask(() => { try { field.focus(); field.select(); } catch { /* the menu closed meanwhile */ } });
+  return rows;
+}
+
+// An "are you sure" row: the question, then the confirming button and Cancel.
+function presetAskRow(question, confirmText, action, onConfirm) {
+  const yes = node('button', { type: 'button', text: confirmText, on: { click: onConfirm } });
+  yes.dataset.presetAct = action;
+  queueMicrotask(() => { try { yes.focus(); } catch { /* the menu closed meanwhile */ } });
+  return [node('div', { className: 'lm-row' }, [
+    node('span', { className: 'lm-name', text: question }),
+    yes,
+    node('button', { type: 'button', text: 'Cancel', on: { click: () => backOutOfPresetField() } }),
+  ])];
+}
+
+function presetRow(p, check) {
+  if (presetUi.mode === 'rename' && presetUi.name === p.name) {
+    return presetFieldRow({
+      label: `New name for ${p.name}`, value: presetUi.text !== undefined ? presetUi.text : p.name, action: 'rename', commitText: 'Rename',
+      onCommit: (text) => runPresetOp(window.dockPresets.renamePreset(presetsState.list, p.name, text)),
+    });
+  }
+  if (presetUi.mode === 'delete' && presetUi.name === p.name) {
+    return presetAskRow(`Delete '${p.name}'?`, 'Delete', 'delete-confirm',
+      () => runPresetOp(window.dockPresets.deletePreset(presetsState.list, p.name)));
+  }
+  const apply = node('button', { type: 'button', className: 'lm-apply', title: `Apply ${p.name}`, text: p.name,
+    on: { click: () => applyPreset(p, check.box.checked) } });
+  apply.dataset.presetAct = 'apply';
+  const rename = node('button', { type: 'button', className: 'lm-mini', text: '✎', title: 'Rename', 'aria-label': `Rename ${p.name}`,
+    on: { click: () => { presetUi = { mode: 'rename', name: p.name, text: p.name }; openLayoutMenu(); } } });
+  rename.dataset.presetAct = 'rename';
+  const del = node('button', { type: 'button', className: 'lm-mini', text: '✕', title: 'Delete', 'aria-label': `Delete ${p.name}`,
+    on: { click: () => { presetUi = { mode: 'delete', name: p.name }; openLayoutMenu(); } } });
+  del.dataset.presetAct = 'delete';
+  const row = node('div', { className: 'lm-row lm-preset' }, [presetThumb(p.layout), apply, rename, del]);
+  row.dataset.preset = p.name;
+  return [row];
+}
+
+function appendPresetSection(check) {
+  if (!(window.harness && window.harness.layoutPresets)) return;       // a window with no bridge has no presets
+  layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
+  layoutMenu.appendChild(node('div', { className: 'lm-title', text: 'Presets' }));
+  if (!presetsState.loaded) {
+    layoutMenu.appendChild(node('div', { className: 'lm-note', text: 'Loading presets…' }));
+    return;
+  }
+  if (!presetsState.usable) {
+    layoutMenu.appendChild(node('div', { className: 'lm-note err', role: 'alert', text: window.dockPresets.refusalText('unreadable') }));
+    return;
+  }
+  for (const p of presetsState.list) for (const el of presetRow(p, check)) layoutMenu.appendChild(el);
+  if (presetUi.mode === 'save') {
+    for (const el of presetFieldRow({
+      label: 'Name for this layout', value: presetUi.text || '', action: 'save', commitText: 'Save',
+      onCommit: (text) => {
+        const r = window.dockPresets.savePreset(presetsState.list, text, committedLayout());
+        if (!r.ok && r.reason === 'taken') { presetUi = { mode: 'replace', name: window.dockPresets.checkName(text), text }; openLayoutMenu(); return; }
+        runPresetOp(r);
+      },
+    })) layoutMenu.appendChild(el);
+  } else if (presetUi.mode === 'replace') {
+    for (const el of presetAskRow(`Replace '${presetUi.name}'?`, 'Replace', 'replace-confirm',
+      () => runPresetOp(window.dockPresets.savePreset(presetsState.list, presetUi.name, committedLayout(), { replace: true })))) layoutMenu.appendChild(el);
+  } else {
+    const save = node('button', { type: 'button', text: 'Save this layout…', title: 'Keep this arrangement under a name',
+      on: { click: () => { presetUi = { mode: 'save', text: '' }; openLayoutMenu(); } } });
+    save.dataset.presetAct = 'save-open';
+    layoutMenu.appendChild(save);
+  }
+}
+
+// The stored list, once the layout is loaded; another window's change replaces it. An unreadable file is
+// "couldn't read" (saving stays off), never "no presets": see dockPresets.afterGet.
+async function loadPresets() {
+  const bridge = window.harness && window.harness.layoutPresets;
+  if (!bridge) return;
+  bridge.onChange((list) => {
+    presetsState = { loaded: true, usable: true, list: window.dockPresets.cleanPresets(list) };
+    refreshPresetMenu();
+  });
+  let answer = null;
+  try { answer = await bridge.get(); } catch { /* unreadable: afterGet says so */ }
+  presetsState = { loaded: true, ...window.dockPresets.afterGet(answer) };
+  refreshPresetMenu();
+}
 
 // --- dragging a module's tab (dockable panels D1) ---------------------------------
 // Pointer events, not HTML5 drag-and-drop: the zones are drawn and hit-tested by
@@ -1424,6 +1591,35 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true });
       }
       case 'closeMenu': closeLayoutMenu(); break;
+      // Layout presets (D3, verify/probe-dock-tree.js): what the list and the open menu's Presets section hold ...
+      case 'presets':
+        return JSON.stringify({
+          ok: true, exported: typeof (window.dockPresets || {}).thumbBoxes, loaded: presetsState.loaded, usable: presetsState.usable,
+          names: presetsState.list.map(p => p.name), mode: presetUi.mode, menuOpen: !layoutMenu.hidden,
+          rows: [...layoutMenu.querySelectorAll('.lm-preset')].map(r => ({
+            name: r.dataset.preset, boxes: r.querySelectorAll('.lm-thumb i').length,
+            labels: [...r.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || b.textContent),
+            focusable: [...r.querySelectorAll('button')].every(b => b.tabIndex >= 0 && !b.disabled),
+          })),
+          notes: [...layoutMenu.querySelectorAll('.lm-note')].map(n => n.textContent),
+          saveOpen: !!layoutMenu.querySelector('[data-preset-act="save-open"]'),
+          fields: [...layoutMenu.querySelectorAll('input[data-preset-field]')].map(i => ({ action: i.dataset.presetField, value: i.value })),
+          asking: [...layoutMenu.querySelectorAll('.lm-row .lm-name')].map(s => s.textContent),
+        });
+      // ... and a click on, or typing into, an element of the open menu (a CSS selector), as a pointer and keys would.
+      case 'menuClick': {
+        const el = layoutMenu.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        el.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'menuType': {
+        const el = layoutMenu.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        if (typeof a.text === 'string') { el.value = a.text; el.dispatchEvent(new Event('input', { bubbles: true })); }
+        if (typeof a.key === 'string') el.dispatchEvent(new KeyboardEvent('keydown', { key: a.key, bubbles: true, cancelable: true }));
+        return JSON.stringify({ ok: true });
+      }
       // Layout pass L3 (verify/probe-git-tree.js): read the Git panel, hover a spoke, pin and jump.
       case 'gitState': {
         const body = document.getElementById('git-body');
@@ -1784,6 +1980,7 @@ window.addEventListener('DOMContentLoaded', () => {
     selection = DTm.selectTab(selection, l, forced);
     renderLayout();
   });
+  loadPresets();
 
   // Screenshot support only: type a value into the new-secret field and reveal
   // it, so the toggle can actually be LOOKED at. Never a real secret -- the

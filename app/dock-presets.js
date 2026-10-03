@@ -155,11 +155,11 @@ function thumbBoxes(layout, ids, fitFn) {
  * empty list, because saving over it would destroy the presets that are really there.
  */
 function afterGet(answer) {
-  const none = { usable: false, list: [] };
-  if (!isObject(answer)) return none;
+  const unusable = { usable: false, list: [] };
+  if (!isObject(answer)) return unusable;
   if (answer.status === 'missing') return { usable: true, list: [] };
   if (answer.status === 'ok' && Array.isArray(answer.layout)) return { usable: true, list: cleanPresets(answer.layout) };
-  return none;
+  return unusable;
 }
 
 /** What `harness.layoutPresets.set` answered: main echoes the list once written, and answers null when it refused or failed. */

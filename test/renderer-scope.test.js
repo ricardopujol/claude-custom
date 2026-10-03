@@ -44,6 +44,8 @@ const ALLOWED_GLOBALS = new Set([
   'dockLayout', 'dockZones',
   // app/dock-tree.js, app/dock-drag.js, app/dock-tree-display.js (dockable panels D1): the same.
   'dockTree', 'dockDrag', 'dockTreeView',
+  // app/dock-presets.js (dockable panels D3): the layout presets, one namespace.
+  'dockPresets',
   // app/secret-mask.js, app/attention-surface.js
   'createMask', 'surfacesFor',
   // the display modules
