@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
+const { nextId, withResults } = require('./transcript-fixtures');
 
 const { claudeCallsFor, renderCalls, pickDiff, gitDiffHead, diffFor, MAX_CALLS, MAX_WRITE_LINES } = require('../host/repo-diff');
 
@@ -17,7 +18,7 @@ const at = (n) => new Date(T + n * 1000).toISOString();
 
 const use = (name, input, n) => ({
   type: 'assistant', timestamp: at(n),
-  message: { content: [{ type: 'tool_use', name, input }] },
+  message: { content: [{ type: 'tool_use', id: nextId(), name, input }] },
 });
 const edit = (file, o, n, nw, k) => use('Edit', { file_path: file, old_string: o, new_string: nw }, k);
 const write = (file, content, k) => use('Write', { file_path: file, content }, k);
@@ -26,11 +27,11 @@ function projects(sessions, { subagent } = {}) {
   const base = tmpDir('cc-diff-');
   const proj = path.join(base, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(proj, { recursive: true });
-  sessions.forEach((entries, i) => fs.writeFileSync(path.join(proj, `s${i}.jsonl`), entries.map(e => JSON.stringify(e)).join('\n')));
+  sessions.forEach((entries, i) => fs.writeFileSync(path.join(proj, `s${i}.jsonl`), withResults(entries).map(e => JSON.stringify(e)).join('\n')));
   if (subagent) {
     const sub = path.join(proj, 's0', 'subagents');
     fs.mkdirSync(sub, { recursive: true });
-    fs.writeFileSync(path.join(sub, 'agent-1.jsonl'), subagent.map(e => JSON.stringify(e)).join('\n'));
+    fs.writeFileSync(path.join(sub, 'agent-1.jsonl'), withResults(subagent).map(e => JSON.stringify(e)).join('\n'));
   }
   return base;
 }
@@ -65,7 +66,7 @@ test('a half-written last line (the transcript is being appended) is skipped, no
   const dir = tmpDir('cc-diff-partial-');
   const proj = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(proj, { recursive: true });
-  fs.writeFileSync(path.join(proj, 's.jsonl'), JSON.stringify(edit(`${ROOT}/a.js`, 'o', 0, 'n', 1)) + '\n{"type":"assistant","message":{"con');
+  fs.writeFileSync(path.join(proj, 's.jsonl'), withResults([edit(`${ROOT}/a.js`, 'o', 0, 'n', 1)]).map(e => JSON.stringify(e)).join('\n') + '\n{"type":"assistant","message":{"con');
   const r = await claudeCallsFor({ root: ROOT, rel: 'a.js', projectsDir: dir });
   assert.strictEqual(r.calls.length, 1);
 });

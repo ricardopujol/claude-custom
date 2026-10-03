@@ -15,6 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
+const { nextId, withResults } = require('./transcript-fixtures');
 
 const {
   readFog, brightness, relativeTo,
@@ -35,7 +36,7 @@ function projectDir() {
 const toolUse = (name, file, at) => ({
   type: 'assistant',
   timestamp: iso(at),
-  message: { content: [{ type: 'tool_use', name, input: { file_path: file } }] },
+  message: { content: [{ type: 'tool_use', id: nextId(), name, input: { file_path: file } }] },
 });
 
 function withTranscripts(files) {
@@ -43,7 +44,7 @@ function withTranscripts(files) {
   for (const [name, entries] of Object.entries(files)) {
     const full = path.join(project, name);
     fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, entries.map(e => JSON.stringify(e)).join('\n'), 'utf8');
+    fs.writeFileSync(full, withResults(entries).map(e => JSON.stringify(e)).join('\n'), 'utf8');
   }
   return dir;
 }

@@ -8,13 +8,14 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
+const { nextId, withResults } = require('./transcript-fixtures');
 const { readFog } = require('../host/fog');
 
 const T0 = Date.parse('2026-09-13T12:00:00Z');
 const CWD = 'C:/Users/ricar/VibeCode/proj';
 const call = (name, file, at) => ({
   type: 'assistant', timestamp: new Date(at).toISOString(),
-  message: { content: [{ type: 'tool_use', name, input: { file_path: file } }] },
+  message: { content: [{ type: 'tool_use', id: nextId(), name, input: { file_path: file } }] },
 });
 
 function dirWith(sessions) {
@@ -22,7 +23,7 @@ function dirWith(sessions) {
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   sessions.forEach((entries, i) => fs.writeFileSync(path.join(project, `s${i}.jsonl`),
-    entries.map(e => JSON.stringify(e)).join('\n'), 'utf8'));
+    withResults(entries).map(e => JSON.stringify(e)).join('\n'), 'utf8'));
   return dir;
 }
 const fogOf = (sessions) => readFog({ cwd: CWD, projectsDir: dirWith(sessions), now: () => T0 });

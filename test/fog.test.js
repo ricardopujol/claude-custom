@@ -18,6 +18,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
+const { nextId, withResults } = require('./transcript-fixtures');
 
 const { readFog, TIERS, TIER_PEAK, brightness, relativeTo,
         DECAY_HALFLIFE_MS, MIN_BRIGHTNESS, FLOOR_FOR } = require('../host/fog');
@@ -31,14 +32,14 @@ function transcriptDir(entries) {
   const project = path.join(dir, 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(project, { recursive: true });
   fs.writeFileSync(path.join(project, 'session-a.jsonl'),
-    entries.map(e => JSON.stringify(e)).join('\n'), 'utf8');
+    withResults(entries).map(e => JSON.stringify(e)).join('\n'), 'utf8');
   return dir;
 }
 
 const toolUse = (name, file, at) => ({
   type: 'assistant',
   timestamp: iso(at),
-  message: { content: [{ type: 'tool_use', name, input: { file_path: file } }] },
+  message: { content: [{ type: 'tool_use', id: nextId(), name, input: { file_path: file } }] },
 });
 
 const fogFor = entries => readFog({
@@ -280,7 +281,7 @@ test('a changed transcript IS re-parsed, or the map goes stale', async () => {
   const opts = { cwd: CWD, projectsDir: dir, now: () => T0 };
   assert.strictEqual((await readFog(opts)).files.length, 1);
 
-  fs.appendFileSync(file, '\n' + JSON.stringify(toolUse('Edit', CWD + '/b.js', T0 - 500)));
+  fs.appendFileSync(file, '\n' + withResults([toolUse('Edit', CWD + '/b.js', T0 - 500)]).map(e => JSON.stringify(e)).join('\n'));
   const after = await readFog(opts);
   assert.strictEqual(after.files.length, 2, 'an appended transcript was not picked up');
 });

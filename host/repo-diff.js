@@ -29,6 +29,7 @@ const childProcess = require('child_process');
 const { projectDirName } = require('./project-dir');
 const { transcriptFiles } = require('./transcripts');
 const { relativeTo } = require('./fog');
+const { createCollector } = require('./tool-calls');
 
 const MAX_CALLS = 200;
 const MAX_STRING = 400 * 1024;
@@ -39,8 +40,9 @@ const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
 const clip = (s) => (s.length > MAX_STRING ? s.slice(0, MAX_STRING) : s);
 
+// `at` is a call's own time; a call whose input is for another file, or malformed, is no call here.
 function callFrom(block, root, rel, at) {
-  if (!block || block.type !== 'tool_use' || (block.name !== 'Edit' && block.name !== 'Write')) return null;
+  if (!block || (block.name !== 'Edit' && block.name !== 'Write')) return null;
   const input = block.input;
   if (!input || typeof input.file_path !== 'string') return null;
   const seen = relativeTo(root, input.file_path);
@@ -61,23 +63,21 @@ async function claudeCallsFor({ root, rel, projectsDir } = {}) {
   for (const { file } of files) {
     let raw;
     try { raw = await fsp.readFile(file, 'utf8'); } catch { continue; }
+    // A call counts only once its tool_result says it happened (PR #95 Dexter D1): an Edit that answered "Found
+    // 2 matches", a Write refused at the prompt and a call never answered are not changes.
+    const collector = createCollector({ wanted: name => name === 'Edit' || name === 'Write' });
     const lines = raw.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (line.indexOf('tool_use') !== -1 && line.toLowerCase().indexOf(base) !== -1) {
-        try {
-          const entry = JSON.parse(line);
-          const content = entry && entry.message && entry.message.content;
-          if (Array.isArray(content)) {
-            const at = Date.parse(entry.timestamp);
-            for (const block of content) {
-              const c = callFrom(block, root, rel, Number.isFinite(at) ? at : NaN);
-              if (c) found.push(c);
-            }
-          }
-        } catch { /* appended live: a partial final line is normal */ }
-      }
+      try {
+        if (collector.wantsResultLine(line)) collector.addResult(JSON.parse(line));
+        else if (line.indexOf('"tool_use"') !== -1 && line.toLowerCase().indexOf(base) !== -1) collector.addUse(JSON.parse(line));
+      } catch { /* appended live: a partial final line is normal */ }
       if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
+    }
+    for (const call of collector.calls()) {
+      const c = callFrom(call, root, rel, call.at);
+      if (c) found.push(c);
     }
     await yieldToLoop();
   }
