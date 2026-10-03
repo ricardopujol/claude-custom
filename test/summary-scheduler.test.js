@@ -12,13 +12,22 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 
-const { createScheduler, QUIET_MS, MIN_GAP_MS } = require('../host/summary-scheduler');
+const { createScheduler, QUIET_MS, MIN_GAP_MS, MAX_WAIT_MS } = require('../host/summary-scheduler');
 
 const S = 1000;
 
-test('the design constants: 25 s quiet, 2 min per tab', () => {
+test('the design constants: 25 s quiet, 2 min per tab, and a tab that never goes quiet waits at most 2 min more', () => {
   assert.strictEqual(QUIET_MS, 25 * S);
   assert.strictEqual(MIN_GAP_MS, 120 * S);
+  assert.strictEqual(MAX_WAIT_MS, 120 * S);
+});
+
+// Dexter F1 (PR #105): a tab with turns arriving every few seconds never goes quiet, so the debounce alone starves it.
+test('a tab that never goes quiet is due once it has been waiting MAX_WAIT_MS, and not a millisecond before', () => {
+  const s2 = createScheduler();
+  for (let t = 0; t <= 200 * S; t += 20 * S) s2.activity('busy', t);        // a turn every 20 s: always inside the quiet window
+  assert.strictEqual(s2.ready(MAX_WAIT_MS - 1), null);
+  assert.strictEqual(s2.ready(MAX_WAIT_MS), 'busy');
 });
 
 test('a tab nobody wrote to is never due: an idle tab costs nothing', () => {
@@ -200,15 +209,17 @@ test('property: under any sequence of events, never two jobs, every start respec
     const s = createScheduler();
     let now = 0;
     const lastActivity = {};
+    const firstActivity = {};     // since the last time a job ended with nothing new
     const startedAt = {};     // when the last SUMMARY (finish) started: the only thing that spends the cap
     const pending = {};
     for (const o of ops) {
       now += o.dt;
-      if (o.op === 'activity') { s.activity(o.key, now); lastActivity[o.key] = now; continue; }
+      if (o.op === 'activity') { s.activity(o.key, now); lastActivity[o.key] = now; if (firstActivity[o.key] == null) firstActivity[o.key] = now; continue; }
       if (o.op === 'end') {
         const k = s.running();
         if (k === null) continue;
         if (o.how === 'finish') { s.finish(k, now); startedAt[k] = pending[k]; } else if (o.how === 'fail') s.fail(k, now, o.hold); else s.clean(k, now);
+        if (o.how !== 'fail') firstActivity[k] = lastActivity[k] >= pending[k] ? lastActivity[k] : null;
         assert.strictEqual(s.running(), null);
         continue;
       }
@@ -216,7 +227,7 @@ test('property: under any sequence of events, never two jobs, every start respec
       if (k === null) continue;
       assert.notStrictEqual(o.battery, true, 'nothing is due on battery');
       assert.strictEqual(s.running(), null, 'nothing is due while a job runs');
-      assert.ok(now - lastActivity[k] >= QUIET_MS, 'quiet respected');
+      assert.ok(now - lastActivity[k] >= QUIET_MS || now - firstActivity[k] >= MAX_WAIT_MS, 'quiet, or waited long enough');
       if (startedAt[k] !== undefined) assert.ok(now - startedAt[k] >= MIN_GAP_MS, 'per-tab cap respected');
       assert.strictEqual(s.start(k, now), true);
       pending[k] = now;

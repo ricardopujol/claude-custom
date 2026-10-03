@@ -15,7 +15,7 @@ const os = require('os');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
 
-const { createSummaryService, readTailFile, RETRY_MS, SLOT_RETRY_MS, TAIL_SIZES } = require('../host/summary-service');
+const { createSummaryService, readTailFile, readFromFile, RETRY_MS, SLOT_RETRY_MS, TAIL_SIZES } = require('../host/summary-service');
 const { createScheduler, QUIET_MS } = require('../host/summary-scheduler');
 const { createSummaryStore } = require('../host/summary-store');
 const { INSTRUCTION } = require('../host/summary-text');
@@ -31,7 +31,7 @@ function rig(over = {}) {
   const now = () => clock.t;
   const log = [];
   const broadcasts = [];
-  const file = { size: 100, mtimeMs: 1, text: jl(userLine('u1', 'fix the drawer'), asstLine('a1', 'Looking at the drawer now.')) };
+  const file = { mtimeMs: 1, text: jl(userLine('u1', 'fix the drawer'), asstLine('a1', 'Looking at the drawer now.')) };
   const cfg = {
     sid: SID,
     check: { ok: true },
@@ -40,12 +40,13 @@ function rig(over = {}) {
     slotFree: true,
     ...over,
   };
-  const calls = { stat: 0, readTail: [], check: 0, summarize: [], acquire: 0, release: 0, battery: 0 };
+  const calls = { stat: 0, readTail: [], readFrom: [], check: 0, summarize: [], acquire: 0, release: 0, battery: 0 };
   const deps = {
     now,
     sessionId: () => cfg.sid,
     transcriptFile: (sid) => path.join('X', sid + '.jsonl'),
-    stat: () => { calls.stat += 1; return file.missing ? null : { size: file.size, mtimeMs: file.mtimeMs }; },
+    stat: () => { calls.stat += 1; return file.missing ? null : { size: file.size !== undefined ? file.size : file.text.length, mtimeMs: file.mtimeMs }; },
+    readFrom: (f, offset) => { calls.readFrom.push(offset); if (file.throws) throw new Error('disk gone'); return file.text.slice(offset); },
     readTail: (f, bytes) => { calls.readTail.push(bytes); if (file.throws) throw new Error('disk gone'); return file.text; },
     ollama: {
       check: async () => { calls.check += 1; return cfg.check; },
@@ -62,7 +63,8 @@ function rig(over = {}) {
   const advance = (ms) => { clock.t += ms; };
   // the first tick sees the transcript (activity), the rest wait out the quiet period
   const settle = async () => { await svc.tick(); advance(QUIET_MS); await svc.tick(); };
-  return { svc, cfg, calls, file, clock, advance, broadcasts, log, deps, settle };
+  const grow = (line) => { file.text += '\n' + line; file.mtimeMs += 1; };
+  return { svc, cfg, calls, file, clock, advance, broadcasts, log, deps, settle, grow };
 }
 
 const last = (r) => r.broadcasts[r.broadcasts.length - 1];
@@ -135,15 +137,13 @@ test('an unchanged transcript is never summarised again: an idle tab costs nothi
 test('a transcript that grew only by tool calls costs no GPU job (the newest message is the one already summarised)', async () => {
   const r = rig();
   await r.settle();
-  r.file.size += 500; r.file.mtimeMs += 1;
-  r.file.text += '\n' + jl(toolLine('t1'));
+  r.grow(jl(toolLine('t1')));
   r.advance(1000); await r.svc.tick();
   r.advance(120_000); await r.svc.tick();
-  assert.strictEqual(r.calls.readTail.length, 2, 'the job ran and looked');
+  assert.strictEqual(r.calls.readTail.length, 1, 'not even a job: tool lines are not a turn (Dexter F1)');
   assert.strictEqual(r.calls.summarize.length, 1);
   assert.strictEqual(r.calls.acquire, 1, 'the slot is not taken for a no-op');
-  r.file.size += 500; r.file.mtimeMs += 1;
-  r.file.text += '\n' + jl(userLine('u2', 'a real message'));
+  r.grow(jl(userLine('u2', 'a real message')));
   r.advance(1000); await r.svc.tick();
   r.advance(QUIET_MS); await r.svc.tick();
   assert.strictEqual(r.calls.summarize.length, 2, 'and the no-op did not spend the cap');
@@ -152,8 +152,7 @@ test('a transcript that grew only by tool calls costs no GPU job (the newest mes
 test('a new message after the cap is summarised again, and not before the 2 minute cap', async () => {
   const r = rig();
   await r.settle();                                   // job 1 started at T0+25s
-  r.file.size += 100; r.file.mtimeMs += 1;
-  r.file.text += '\n' + jl(userLine('u2', 'now the hover card'));
+  r.grow(jl(userLine('u2', 'now the hover card')));
   r.advance(1000); await r.svc.tick();               // sees the change
   r.advance(QUIET_MS); await r.svc.tick();            // quiet, but inside the cap
   assert.strictEqual(r.calls.summarize.length, 1);
@@ -220,7 +219,7 @@ test('Ollama not running is SAID, the last summary is kept, and the retry waits 
   assert.strictEqual(r.calls.summarize.length, 0);
   assert.deepStrictEqual(last(r), { type: 'summary', summary: null, off: { reason: 'ollama-down', model: 'llama3.2:3b' } });
   const checks = r.calls.check;
-  r.file.size += 1; r.file.mtimeMs += 1; r.file.text += '\n' + jl(userLine('u2', 'more'));
+  r.grow(jl(userLine('u2', 'more')));
   r.advance(RETRY_MS - 1); await r.svc.tick();
   assert.strictEqual(r.calls.check, checks, 'not asked again inside the minute');
   r.advance(1); await r.svc.tick();
@@ -271,7 +270,7 @@ test('a later success clears the failure note and a failure keeps the summary th
   await r.settle();
   const kept = r.svc.snapshot().summary;
   r.cfg.summarize = { ok: false, reason: 'timeout' };
-  r.file.size += 1; r.file.mtimeMs += 1; r.file.text += '\n' + jl(userLine('u2', 'again'));
+  r.grow(jl(userLine('u2', 'again')));
   r.advance(1000); await r.svc.tick();
   r.advance(120_000); await r.svc.tick();
   assert.strictEqual(r.svc.snapshot().off.reason, 'failed');
@@ -375,7 +374,7 @@ test('a new session (/clear) starts clean: the old one is forgotten and the snap
   await r.settle();
   assert.ok(r.svc.snapshot().summary);
   r.cfg.sid = 'sess-2';
-  r.file.size += 1; r.file.mtimeMs += 1;
+  r.file.mtimeMs += 1;
   r.file.text = jl(userLine('n1', 'a fresh start'));
   await r.svc.tick();
   assert.deepStrictEqual(r.svc.snapshot(), { summary: null, off: null });
@@ -434,4 +433,94 @@ test('readTailFile: a big file gives its last bytes, starting on a line boundary
 test('readTailFile: a missing or unreadable file is null, not an empty string', () => {
   assert.strictEqual(readTailFile(path.join(os.tmpdir(), 'no-such-dir-xyz', 'a.jsonl'), 100), null);
   assert.strictEqual(readTailFile(os.tmpdir(), 100), null);
+});
+
+
+// --- Dexter F1 (PR #105): the quiet period follows main-session TURNS, not transcript bytes -----------------------------
+
+test('a transcript that grows only by tool lines never resets the quiet clock', async () => {
+  const r = rig();
+  await r.svc.tick();                                   // the session is seen: its first look counts as a turn
+  for (let i = 0; i < 6; i++) { r.advance(10_000); r.grow(jl(toolLine('t' + i))); await r.svc.tick(); }
+  assert.strictEqual(r.calls.summarize.length, 1, 'quiet since the first look, in spite of a tool line every 10 s');
+});
+
+test('what a change appended is read from where the last look ended, not the whole transcript', async () => {
+  const r = rig();
+  await r.svc.tick();
+  const before = r.file.text.length;
+  r.advance(5000); r.grow(jl(toolLine('t1'))); await r.svc.tick();
+  assert.deepStrictEqual(r.calls.readFrom, [before]);
+});
+
+test('a run that writes a line every 20 s for 60 minutes gets at least one summary, and a new lane gets its first', async () => {
+  const r = rig();
+  r.file.text = jl(toolLine('t0'));                     // a new lane: nothing said yet
+  await r.svc.tick();
+  let said = false;
+  for (let sec = 5; sec <= 3600; sec += 5) {
+    r.advance(5000);
+    if (sec % 20 === 0) {
+      // a tool line every 20 s, and one assistant text in the middle of the hour
+      r.grow(sec === 1800 ? jl(asstLine('mid', 'Halfway: the migration is done.')) : jl(toolLine('t' + sec)));
+    }
+    await r.svc.tick();
+    if (r.svc.snapshot().summary) said = true;
+  }
+  assert.ok(said, 'a summary was made');
+  assert.match(r.calls.summarize[0], /Halfway: the migration is done\./);
+  assert.ok(r.calls.summarize.length >= 1);
+});
+
+test('even a conversation turn every 20 s for an hour is summarised: the quiet wait is bounded', async () => {
+  const r = rig();
+  await r.svc.tick();
+  let n = 0;
+  for (let sec = 5; sec <= 3600; sec += 5) {
+    r.advance(5000);
+    if (sec % 20 === 0) r.grow(jl(asstLine('m' + (n++), 'Step ' + n + ' done.')));
+    await r.svc.tick();
+  }
+  assert.ok(r.calls.summarize.length >= 20, 'one about every 2 minutes, not none: ' + r.calls.summarize.length);
+  assert.ok(r.calls.summarize.length <= 31, 'and never faster than the 2 minute cap: ' + r.calls.summarize.length);
+});
+
+test('a transcript that shrank (rewritten) counts as new: nothing can be said about what was appended', async () => {
+  const r = rig();
+  await r.settle();
+  assert.strictEqual(r.calls.summarize.length, 1);
+  r.file.text = jl(userLine('z1', 'a rewritten transcript'));
+  r.file.mtimeMs += 1;
+  r.advance(120_000); await r.svc.tick();
+  r.advance(QUIET_MS); await r.svc.tick();
+  assert.strictEqual(r.calls.summarize.length, 2);
+});
+
+test('readFromFile: what was appended after an offset, on a line boundary', () => {
+  const a = 'first line\n';
+  const f = tmpFile(a + 'second line\nthird line\n');
+  assert.strictEqual(readFromFile(f, a.length), 'second line\nthird line\n');
+  assert.strictEqual(readFromFile(f, 0), 'first line\nsecond line\nthird line\n');
+  assert.strictEqual(readFromFile(f, a.length + 23), '', 'nothing new');
+  assert.strictEqual(readFromFile(f, 10_000), '', 'an offset past the end (a shrunk file) is nothing, not an error');
+});
+
+test('readFromFile: an offset in the middle of a line drops that half line, never parses a fragment', () => {
+  const f = tmpFile('first line\nsecond line\nthird line\n');
+  assert.strictEqual(readFromFile(f, 14), 'third line\n');
+});
+
+test('readFromFile: a huge append is read from its last maxBytes, on a line boundary', () => {
+  const rows = Array.from({ length: 100 }, (_, i) => 'row-' + String(i).padStart(3, '0') + '-' + 'x'.repeat(30));
+  const f = tmpFile(rows.join('\n') + '\n');
+  const out = readFromFile(f, 0, 500);
+  assert.ok(out.length <= 500);
+  const got = out.split('\n').filter(Boolean);
+  assert.strictEqual(got[got.length - 1], rows[99]);
+  for (const g of got) assert.match(g, /^row-\d{3}-x{30}$/);
+});
+
+test('readFromFile: a missing file or a directory is null', () => {
+  assert.strictEqual(readFromFile(path.join(os.tmpdir(), 'no-such-dir-xyz', 'a.jsonl'), 0), null);
+  assert.strictEqual(readFromFile(os.tmpdir(), 0), null);
 });

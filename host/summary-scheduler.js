@@ -16,7 +16,7 @@
  * THE RULES (measured: ~2.5 s of GPU per summary on the 3B model; the GPU is shared by every tab):
  *   - A tab is only ever due if something happened in it (`activity`); an idle tab costs nothing.
  *   - It must have been QUIET for QUIET_MS (the debounce: a streaming turn would otherwise trigger a job every few
- *     seconds), and its last SUMMARY must have started MIN_GAP_MS ago (one per tab per 2 minutes).
+ *     seconds) or have been waiting MAX_WAIT_MS (a tab that never goes quiet is still summarised), and its last SUMMARY must have started MIN_GAP_MS ago (one per tab per 2 minutes).
  *   - One job at a time. Of the tabs that are due, the one that has waited longest goes first.
  *   - Never on battery. Only a real `true` pauses: an unknown power state (a desktop, a probe that failed) runs.
  *   - A failure or a no-op gives the cap back (no summary was made, no GPU was spent); the hold on a failure is the
@@ -29,6 +29,9 @@
 
 const QUIET_MS = 25_000;
 const MIN_GAP_MS = 120_000;
+// A tab whose turns keep arriving never goes quiet (Dexter F1, PR #105); the 2 minute cap is already the rate limit, so
+// the quiet wait is bounded: waiting this long since the tab first had something new makes it due anyway.
+const MAX_WAIT_MS = 120_000;
 
 const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
 const isKey = (k) => typeof k === 'string' && k !== '';
@@ -64,7 +67,7 @@ function createScheduler() {
       let best = null;
       for (const [key, st] of tabs) {
         if (!st.dirty) continue;
-        if (now - st.lastActivity < QUIET_MS) continue;
+        if (now - st.lastActivity < QUIET_MS && now - st.dirtySince < MAX_WAIT_MS) continue;
         if (st.lastStartAt !== null && now - st.lastStartAt < MIN_GAP_MS) continue;
         if (st.holdUntil !== null && now < st.holdUntil) continue;
         if (best === null || st.dirtySince < best.since) best = { key, since: st.dirtySince };
@@ -115,4 +118,4 @@ function createScheduler() {
   };
 }
 
-module.exports = { createScheduler, QUIET_MS, MIN_GAP_MS };
+module.exports = { createScheduler, QUIET_MS, MIN_GAP_MS, MAX_WAIT_MS };

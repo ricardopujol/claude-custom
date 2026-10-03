@@ -65,6 +65,34 @@ function readTailFile(file, bytes) {
   }
 }
 
+/**
+ * What was appended to a file at and after `offset` (at most the last `maxBytes` of it), as text starting on a line
+ * boundary; null when it can't be read. Read-only. A change a tick sees is usually a line or two.
+ */
+function readFromFile(file, offset, maxBytes = 1024 * 1024) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    const info = fs.fstatSync(fd);
+    if (!info.isFile()) return null;
+    const size = info.size;
+    if (size <= offset) return '';
+    const start = Math.max(offset, size - maxBytes);
+    const from = Math.max(0, start - 1);              // one byte before says whether the cut falls on a line start
+    const buf = Buffer.alloc(size - from);
+    const n = fs.readSync(fd, buf, 0, buf.length, from);
+    const text = buf.toString('utf8', 0, n);
+    if (from === start) return text;                  // from the very start of the file
+    if (text.charCodeAt(0) === 10) return text.slice(1);
+    const nl = text.indexOf('\n');
+    return nl < 0 ? '' : text.slice(nl + 1);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* nothing to do */ } }
+  }
+}
+
 function statFile(file) {
   try {
     const st = fs.statSync(file);
@@ -75,11 +103,12 @@ function statFile(file) {
 }
 
 function createSummaryService({
-  now = Date.now, sessionId, transcriptFile, stat = statFile, readTail = readTailFile,
+  now = Date.now, sessionId, transcriptFile, stat = statFile, readTail = readTailFile, readFrom = readFromFile,
   ollama, store, scheduler, slot, onBattery = async () => null, broadcast = () => {}, log = () => {}, model = DEFAULT_MODEL,
 }) {
   let current = null;        // the session being watched
   let seen = null;           // the transcript's last size:mtime
+  let seenSize = null;       // ...and its size, so a change can be read from where the last look ended
   let off = null;
   let lastCheckAt = null;
   let busy = null;
@@ -128,6 +157,7 @@ function createSummaryService({
       if (current !== null) scheduler.forget(current);
       current = sid;
       seen = null;
+      seenSize = null;
       publish();
     }
     if (sid === null) return;
@@ -136,7 +166,13 @@ function createSummaryService({
     const sig = st.size + ':' + st.mtimeMs;
     if (sig === seen) return;
     seen = sig;
-    scheduler.activity(sid, now());
+    const prev = seenSize;
+    seenSize = st.size;
+    // The quiet clock follows main-session TURNS, not bytes (Dexter F1, PR #105): a tool call or result is not one. The
+    // first look, and a transcript that shrank (rewritten), can't say what is new, so they count as a turn.
+    if (prev === null || st.size < prev) { scheduler.activity(sid, now()); return; }
+    const added = readFrom(transcriptFile(sid), prev);
+    if (typeof added !== 'string' || flattenTranscript(added).messages.length > 0) scheduler.activity(sid, now());
   }
 
   async function healthCheck() {
@@ -232,4 +268,4 @@ function createSummaryService({
   return { tick, snapshot };
 }
 
-module.exports = { createSummaryService, readTailFile, statFile, RETRY_MS, SLOT_RETRY_MS, TICK_MS, TAIL_SIZES };
+module.exports = { createSummaryService, readTailFile, readFromFile, statFile, RETRY_MS, SLOT_RETRY_MS, TICK_MS, TAIL_SIZES };
