@@ -210,3 +210,36 @@ test('D3: createIndex.resolve is undefined (unknown) until a listing worked or a
   await ix.refresh();
   assert.strictEqual(ix.resolve('a.js'), undefined);
 });
+
+// ---- PR #95 Dexter D13: git prints an untracked nested repository as `dir/` ----
+
+test('D13: a trailing-slash entry (an untracked nested repo) is a FOLDER row marked nested, never a file', () => {
+  const idx = buildIndex(['a/', 'b.js', 'tools/vendor-x/', 'tools/t.js']);
+  assert.deepStrictEqual(idx.children('').map(e => `${e.kind}:${e.name}${e.nested ? ':nested' : ''}`), ['dir:a:nested', 'dir:tools', 'file:b.js']);
+  assert.deepStrictEqual(idx.children('tools').map(e => `${e.kind}:${e.name}${e.nested ? ':nested' : ''}`), ['dir:vendor-x:nested', 'file:t.js']);
+  assert.deepStrictEqual(idx.children('a'), [], 'its contents belong to its own repo: nothing is listed under it');
+});
+
+test('D13: a nested repo is not a file: it is not counted, resolved or openable', () => {
+  const idx = buildIndex(['a/', 'b.js']);
+  assert.strictEqual(idx.size, 1);
+  assert.strictEqual(idx.resolve('a'), null);
+});
+
+test('D13: a real folder with the same name as a nested one stays an ordinary folder', () => {
+  const idx = buildIndex(['a/', 'a/x.js']);
+  assert.deepStrictEqual(idx.children('').map(e => [e.name, e.kind, !!e.nested]), [['a', 'dir', false]]);
+});
+
+test('D13 (real git): an untracked folder with its own .git is listed as `dir/` and shown as a nested folder', async () => {
+  const { root, git } = realRepo();
+  const nested = path.join(root, 'tools', 'vendor-x');
+  fs.mkdirSync(nested, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: nested, stdio: 'pipe', windowsHide: true });
+  fs.writeFileSync(path.join(nested, 'f.js'), 'x');
+  void git;
+  const r = await listFiles(root);
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.files.includes('tools/vendor-x/'), r.files.join(', '));
+  assert.strictEqual(buildIndex(r.files).children('tools').find(e => e.name === 'vendor-x').kind, 'dir');
+});

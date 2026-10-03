@@ -26,6 +26,7 @@
 (function (root) {
 
 const ROW_CAP = 2000;
+const NESTED_TITLE = 'a nested git repository: its files belong to its own repo and are not listed here';
 const DOT = '●';
 
 const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
@@ -105,7 +106,8 @@ function listedRows(children, expanded, ix) {
     for (const e of entries) {
       if (e.kind === 'dir') {
         const open = expanded.has(e.path);
-        out.push({ kind: 'dir', path: e.path, name: e.name, depth, expanded: open, ...dirLook(ix.dirs.get(e.path)) });
+        out.push({ kind: 'dir', path: e.path, name: e.name, depth, expanded: open, ...dirLook(ix.dirs.get(e.path)),
+          ...(e.nested === true ? { nested: true, title: NESTED_TITLE } : {}) });
         if (open) walk(e.path, depth + 1);
       } else {
         out.push({ kind: 'file', path: e.path, name: e.name, depth, ...fileLook(ix.files.get(e.path)) });

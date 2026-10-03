@@ -51,17 +51,26 @@ function buildIndex(files) {
   for (const file of files) {
     if (typeof file !== 'string' || seen.has(file)) continue;
     seen.add(file);
+    // A trailing slash is git's way of printing an untracked NESTED REPOSITORY (a folder with its own .git):
+    // a folder, marked nested, never a file (PR #95 Dexter D13). Its contents belong to its own repo.
+    const nested = file.endsWith('/');
     const parts = file.split('/').filter(Boolean);
     if (!parts.length) continue;
-    size += 1;
-    byLower.set(parts.join('/').toLowerCase(), parts.join('/'));
+    if (!nested) {
+      size += 1;
+      byLower.set(parts.join('/').toLowerCase(), parts.join('/'));
+    }
     for (let i = 0; i < parts.length; i++) {
       const parent = parts.slice(0, i).join('/');
-      const isFile = i === parts.length - 1;
+      const last = i === parts.length - 1;
+      const isFile = last && !nested;
       const full = parts.slice(0, i + 1).join('/');
       if (!dirs.has(parent)) dirs.set(parent, new Map());
       if (!isFile && !dirs.has(full)) dirs.set(full, new Map());
-      dirs.get(parent).set(parts[i], { name: parts[i], path: full, kind: isFile ? 'file' : 'dir' });
+      const existing = dirs.get(parent).get(parts[i]);
+      // a nested marker never overwrites a folder that has listed files of its own (the order git prints them in)
+      if (last && nested && existing && existing.kind === 'dir') continue;
+      dirs.get(parent).set(parts[i], { name: parts[i], path: full, kind: isFile ? 'file' : 'dir', ...(last && nested ? { nested: true } : {}) });
     }
   }
   return {

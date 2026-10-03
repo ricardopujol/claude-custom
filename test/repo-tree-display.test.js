@@ -125,3 +125,16 @@ test('a failed overlay says so in the error\'s words', () => {
   const n = overlayNote({ ok: false, error: 'the overlay could not be read: boom' }, null);
   assert.deepStrictEqual(n, { text: 'the overlay could not be read: boom', warn: true });
 });
+
+// ---- PR #95 Dexter D13 ----
+
+test('D13: a nested repository row is a folder that says what it is, and its listing is empty', () => {
+  const r = rows({
+    children: kids({ '': [{ name: 'vendor-x', path: 'vendor-x', kind: 'dir', nested: true }, file('a.js', 'a.js')], 'vendor-x': [] }),
+    expanded: new Set(), overlay: overlay(),
+  });
+  assert.strictEqual(r[0].kind, 'dir');
+  assert.strictEqual(r[0].nested, true);
+  assert.match(r[0].title, /nested git repository/);
+  assert.strictEqual(r[1].nested, undefined);
+});
