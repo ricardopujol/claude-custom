@@ -32,8 +32,8 @@
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and
  * every CLAUDE_CUSTOM_* variable are deleted before the window is launched; registry, portraits,
  * uploads and user data are temp folders. The window's store is `<worktree>/.harness/state`: the
- * layout files in it are moved aside and put back, so the probe leaves no layout behind and never
- * touches another checkout's. A small window is a held-down #dock (`squeeze`), not an OS window.
+ * layout files in it are snapshotted and put back (idempotently), so the probe leaves no layout behind and
+ * never touches another checkout's. It REFUSES (exit 2) while a live host is open on this checkout. A small window is a held-down #dock (`squeeze`), not an OS window.
  * The only processes stopped are the ones this probe started. WINDOWS ONLY.
  */
 const { spawn, execFileSync } = require('child_process');
@@ -48,6 +48,7 @@ const STATE_DIR = path.join(HARNESS_DIR, 'state');
 const V1_FILE = path.join(STATE_DIR, 'layout-global.json');
 const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
+const { snapshotFile } = require('./lib/file-snapshot');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 const { TABS } = require(path.join(ROOT, 'app', 'side-tabs'));
 
@@ -96,15 +97,14 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
-// --- the window's layout files: aside for the run, back afterwards ----------------
-const BACKUPS = [];
-function setAside(file) {
-  if (fs.existsSync(file)) { fs.renameSync(file, `${file}.probe-backup`); BACKUPS.push(file); }
-}
-function restoreLayouts() {
-  for (const f of [V1_FILE, TREE_FILE]) { try { fs.rmSync(f, { force: true }); } catch { /* gone */ } }
-  for (const f of BACKUPS) { try { fs.renameSync(`${f}.probe-backup`, f); } catch (e) { console.log(`(could not restore ${f}: ${e.message})`); } }
-}
+// --- the window's layout files: snapshotted for the run, put back afterwards ----------
+// host.js hardcodes its state dir, so these two files are the checkout's own. A snapshot's restore() is
+// idempotent and never throws (verify/lib/file-snapshot.js), so the SIGINT cleanup and the final one can both
+// run without the second deleting what the first put back (PR #100 Miguel I1).
+const v1Snap = snapshotFile(V1_FILE);
+const treeSnap = snapshotFile(TREE_FILE);
+// Refused runs touched nothing, so they put nothing back (a live host may be watching the very file).
+function restoreLayouts() { if (refused) return; v1Snap.restore(); treeSnap.restore(); }
 const readBytes = (f) => { try { return fs.readFileSync(f); } catch { return null; } };
 
 // --- the app ----------------------------------------------------------------------------
@@ -279,14 +279,36 @@ async function quitApp(app) {
   await sleep(3000);                                      // the old window lets go of its user-data lock
 }
 
+// A live host on THIS checkout that is not one of ours: its window would see the layout files moved under it and
+// the probe's trees pushed into it, and the restore would overwrite what it saved (PR #100 Miguel I1, as probe-wand).
+function liveForeignHost() {
+  let files = [];
+  try { files = fs.readdirSync(path.join(HARNESS_DIR, 'hosts')).filter(f => f.endsWith('.json')); } catch { return null; }
+  for (const f of files) {
+    const id = readIdentity({ dir: HARNESS_DIR, port: Number(f.replace(/\.json$/, '')) });
+    if (!id || !Number.isInteger(id.pid)) continue;
+    let alive = false;
+    try { process.kill(id.pid, 0); alive = true; } catch (err) { alive = !!err && err.code === 'EPERM'; }
+    if (alive && !path.resolve(String(id.cwd || '')).toLowerCase().startsWith(path.resolve(tmp).toLowerCase() + path.sep)) return id;
+  }
+  return null;
+}
+
+let refused = false;
+
 async function main() {
+  const foreign = liveForeignHost();
+  if (foreign) {
+    refused = true;
+    console.log(`REFUSED: a live host (pid ${foreign.pid}, ${foreign.cwd}) is open on this checkout. The probe moves .harness/state/layout-*.json on purpose; close that window, or run the probe from another checkout.`);
+    return;
+  }
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
   git(dev, 'worktree', 'add', '-q', featA, '-b', 'feat/a');
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  setAside(V1_FILE);
-  setAside(TREE_FILE);
+  for (const f of [V1_FILE, TREE_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
 
   // 2: an L1 layout, saved by an older build: Vault showing on the right at 240, Agents along the bottom.
   const v1 = {
@@ -566,6 +588,7 @@ main()
     restoreLayouts();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
     if (process.env.DOCK_PROBE_SHOTS) console.log(`screenshots: ${shots}`);
+    if (refused) process.exit(2);
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);
   });
