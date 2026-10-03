@@ -353,3 +353,33 @@ test('M7: the tame draw is a function named like one, tameDraw, and the constant
   assert.strictEqual(typeof pg.tameDraw, 'function');
   assert.strictEqual(pg.TAME_PARTS_DRAW, undefined);
 });
+
+// Dexter D1 (PR #91): a grey picture has no hue. It was read as hue 0 (red), so every grey picture's
+// accent came out green-cyan and its secondary text pink.
+const isGrey = (hex) => hex.slice(1, 3) === hex.slice(3, 5) && hex.slice(3, 5) === hex.slice(5, 7);
+
+test('D1: a grey has no hue -- null, not 0 (which is red)', () => {
+  for (const g of ['#808080', '#000000', '#ffffff', '#202020']) assert.strictEqual(hexToOklch(g).h, null, g);
+  assert.strictEqual(seedParts(['#808080']).base.h, null);
+});
+
+test('D1: a grey picture gives a neutral palette, every colour grey, the accent too, and it passes the gates', () => {
+  for (let seed = 0; seed < 60; seed++) {
+    const look = generateLookFrom(['#808080'], mulberry32(seed));
+    assert.ok(look, `seed ${seed}`);
+    assert.deepStrictEqual(lookFailures(look), [], `seed ${seed}`);
+    for (const k of ['appColor', 'textColor', 'accentColor', 'secondaryColor']) assert.ok(isGrey(look[k]), `${k} ${look[k]} (seed ${seed})`);
+  }
+  const tame = tameDraw(seedParts(['#202020', '#808080', '#f0f0f0']));
+  assert.deepStrictEqual(lookFailures(tame), []);
+  for (const k of ['appColor', 'textColor', 'accentColor', 'secondaryColor']) assert.ok(isGrey(tame[k]), `tame ${k} ${tame[k]}`);
+});
+
+test('PROPERTY D1: any all-grey seed list gives a look with no hue at all', () => {
+  const grey = fc.integer({ min: 0, max: 255 }).map((v) => '#' + v.toString(16).padStart(2, '0').repeat(3));
+  fc.assert(fc.property(fc.array(grey, { minLength: 1, maxLength: 8 }), fc.integer(), (s, seed) => {
+    const look = generateLookFrom(s, mulberry32(seed));
+    assert.ok(look);
+    for (const k of ['appColor', 'textColor', 'accentColor', 'secondaryColor']) assert.ok(isGrey(look[k]), `${k} ${look[k]}`);
+  }), { numRuns: 200 });
+});

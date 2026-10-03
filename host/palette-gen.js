@@ -213,7 +213,10 @@ function srgbToLinear(c) {
   return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
 }
 
-/** #rrggbb to OKLCH { L, C, h } (h in degrees, 0 when there is no chroma), or null. */
+/**
+ * #rrggbb to OKLCH { L, C, h }, or null. `h` is in degrees, and NULL when there is
+ * no chroma: a grey has no hue, and 0 would be a hue -- red (Dexter D1, PR #91).
+ */
 function hexToOklch(hex) {
   if (typeof hex !== 'string' || !HEX_RE.test(hex)) return null;
   const n = parseInt(hex.slice(1), 16);
@@ -227,7 +230,7 @@ function hexToOklch(hex) {
   const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
   const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
   const C = Math.hypot(a, bb);
-  const h = C < 1e-4 ? 0 : ((Math.atan2(bb, a) * 180) / Math.PI + 360) % 360;
+  const h = C < 1e-4 ? null : ((Math.atan2(bb, a) * 180) / Math.PI + 360) % 360;
   return { L, C: C < 1e-4 ? 0 : C, h };
 }
 
@@ -251,7 +254,7 @@ function seedParts(seeds) {
   const all = seeds.slice(0, MAX_SEEDS).map(hexToOklch).filter(Boolean);
   if (!all.length) return null;
   const chromatic = all.filter((c) => c.C >= CHROMA_MIN);
-  const base = chromatic.length ? chromatic[0] : { L: all[0].L, C: 0, h: 0 };
+  const base = chromatic.length ? chromatic[0] : { L: all[0].L, C: 0, h: null };
   let accent = null;
   for (const c of chromatic) {
     if (hueGap(c.h, base.h) >= ACCENT_HUE_GAP && (!accent || c.C > accent.C)) accent = c;
@@ -263,24 +266,39 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const wrap = (h) => ((h % 360) + 360) % 360;
 
 /**
- * One seeded draw, unchecked, like drawLook. A grey base stays neutral (almost
- * no chroma); a coloured one keeps its hue within a few degrees so a re-roll
- * varies without leaving the picture's colour.
+ * The hues of one draw: `hue` (app colour and text) and `accentHue`, or both
+ * null for a grey picture -- it has no hue, so none is invented (Dexter D1).
+ */
+function drawHues(rng, parts) {
+  const { base, accent } = parts;
+  if (typeof base.h !== 'number' || !(base.C >= CHROMA_MIN)) return { hue: null, accentHue: null };
+  const hue = wrap(base.h + between(rng, -3, 3));
+  if (!accent) return { hue, accentHue: wrap(base.h + between(rng, 150, 210)) };
+  return { hue, accentHue: wrap(accent.h + between(rng, -3, 3)) };
+}
+
+/**
+ * One seeded draw, unchecked, like drawLook. A grey picture gives a grey look --
+ * every colour neutral, the accent too; a coloured one keeps its hue within a
+ * few degrees so a re-roll varies without leaving the picture's colour.
  */
 function drawLookFrom(rng, parts) {
   const { base, accent } = parts;
-  const chromatic = base.C >= CHROMA_MIN;
-  const hue = wrap(base.h + between(rng, -3, 3));
-  const accentHue = accent
-    ? wrap(accent.h + between(rng, -3, 3))
-    : wrap(base.h + between(rng, 150, 210));
+  const { hue, accentHue } = drawHues(rng, parts);
+  if (hue === null) {
+    return {
+      appColor: oklchToHex(between(rng, 0.17, 0.25), 0, 0),
+      textColor: oklchToHex(between(rng, 0.9, 0.96), 0, 0),
+      accentColor: oklchToHex(between(rng, 0.76, 0.84), 0, 0),
+      secondaryColor: oklchToHex(between(rng, 0.73, 0.79), 0, 0),
+    };
+  }
   const accentChroma = accent ? clamp(accent.C * between(rng, 0.9, 1.1), 0.09, 0.15) : between(rng, 0.09, 0.15);
   return {
-    appColor: oklchToHex(between(rng, 0.17, 0.25), chromatic ? between(rng, 0.025, 0.05) : between(rng, 0, 0.008), hue),
-    textColor: oklchToHex(between(rng, 0.9, 0.96), chromatic ? between(rng, 0.005, 0.025) : between(rng, 0, 0.006), hue),
+    appColor: oklchToHex(between(rng, 0.17, 0.25), between(rng, 0.025, 0.05), hue),
+    textColor: oklchToHex(between(rng, 0.9, 0.96), between(rng, 0.005, 0.025), hue),
     accentColor: oklchToHex(between(rng, 0.76, 0.84), accentChroma, accentHue),
-    secondaryColor: oklchToHex(between(rng, 0.73, 0.79), chromatic ? between(rng, 0.02, 0.06) : between(rng, 0, 0.01),
-      wrap(base.h + between(rng, -25, 25))),
+    secondaryColor: oklchToHex(between(rng, 0.73, 0.79), between(rng, 0.02, 0.06), wrap(base.h + between(rng, -25, 25))),
   };
 }
 
@@ -315,5 +333,5 @@ function noSeedsReason() {
 module.exports = {
   generateLook, drawLook, lookFailures, noLookReason, oklchToHex, SAFE_LOOK, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
   MIN_TEXT_CONTRAST, MIN_CONTROL_CONTRAST, MAX_BG_LUMINANCE,
-  generateLookFrom, drawLookFrom, seedParts, hexToOklch, tameDraw, noSeedsReason, MAX_SEEDS,
+  generateLookFrom, drawLookFrom, drawHues, seedParts, hexToOklch, tameDraw, noSeedsReason, MAX_SEEDS, ACCENT_HUE_GAP,
 };
