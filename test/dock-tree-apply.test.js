@@ -358,6 +358,114 @@ test('I4: a selection change keeps focus on the very button that has it', () => 
   assert.strictEqual(w.doc.activeElement, b);
 });
 
+// --- floats (D2) -----------------------------------------------------------------------
+
+const floated = (ids = ['vault']) => {
+  let l = T.defaultLayout(IDS);
+  ids.forEach((id, i) => { l = T.dock(l, id, { float: { x: 100 + 40 * i, y: 80 + 40 * i } }); });
+  return l;
+};
+const SEL = (floatOrder = []) => ({ active: {}, foldAll: false, floatOrder });
+
+test('D2: a float is a group element with a float class, its rectangle, its tabs and its panel', () => {
+  const w = makeDoc();
+  const l = floated();
+  const id = l.floats[0].id;
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const el = groupEl(w.dock, id);
+  assert.ok(el, 'the float got an element under #dock');
+  assert.ok(el.classes.has('dfloat') && el.classes.has('dgroup') && el.classes.has('zone'));
+  assert.deepStrictEqual([el.style.left, el.style.top, el.style.width, el.style.height], ['100px', '80px', '320px', '260px']);
+  assert.deepStrictEqual([...tabButtons(el)].map(b => b.dataset.module), ['vault']);
+  assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'));
+  assert.ok(w.panels.vault.classes.has('on'));
+  assert.ok(!groupEl(w.dock, 'right').classes.has('dfloat'), 'a tree group is not a float');
+  assert.ok(!groupEl(w.dock, 'right').querySelector('.dfloat-grip'));
+});
+
+test('D2: a float has one resize grip, made once and kept across renders', () => {
+  const w = makeDoc();
+  const l = floated();
+  const id = l.floats[0].id;
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const grip = groupEl(w.dock, id).querySelector('.dfloat-grip');
+  assert.ok(grip);
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  assert.strictEqual(groupEl(w.dock, id).querySelectorAll('.dfloat-grip').length, 1);
+  assert.strictEqual(groupEl(w.dock, id).querySelector('.dfloat-grip'), grip);
+});
+
+test('D2: floats are stacked by draw order, above every group, below the overlay\'s level', () => {
+  const w = makeDoc();
+  const l = floated(['vault', 'git']);
+  const [a, b] = l.floats.map(f => f.id);
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const z = id => Number(groupEl(w.dock, id).style.zIndex);
+  assert.ok(z(a) < z(b));
+  assert.ok(z(a) > 5, 'above the gutters (z 5)');
+  V.applyBoxes(plan(l, SEL([a])), w.doc);                       // raising the first puts it on top
+  assert.ok(z(a) > z(b));
+  assert.ok(z(a) < 40 && z(b) < 40, 'below #dock-overlay (z 40)');
+  assert.strictEqual(groupEl(w.dock, 'right').style.zIndex || '', '', 'a tree group has no z-index');
+});
+
+test('D2: raising a float moves nothing in the DOM (no element is recreated or reparented)', () => {
+  const w = makeDoc();
+  const l = floated(['vault', 'git']);
+  const [a] = l.floats.map(f => f.id);
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const el = groupEl(w.dock, a);
+  const before = [el.moves, w.panels.vault.moves];
+  V.applyBoxes(plan(l, SEL([a])), w.doc);
+  assert.strictEqual(groupEl(w.dock, a), el);
+  assert.deepStrictEqual([el.moves, w.panels.vault.moves], before);
+});
+
+test('D2: a float that goes (docked, hidden, or Ctrl+B) loses its element and its panel waits in the store', () => {
+  const w = makeDoc();
+  const l = floated();
+  const id = l.floats[0].id;
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  V.applyBoxes(plan(l, { active: {}, foldAll: true, floatOrder: [] }), w.doc);
+  assert.ok(!groupEl(w.dock, id));
+  assert.strictEqual(w.panels.vault.parentNode, w.store);
+  assert.ok(!w.panels.vault.classes.has('on'));
+  V.applyBoxes(plan(l, SEL()), w.doc);                          // unfolded: back
+  assert.ok(groupEl(w.dock, id));
+  assert.strictEqual(w.panels.vault.parentNode, groupEl(w.dock, id).querySelector('.zone-panels'));
+});
+
+test('D2: the same panel DOM node moves from its group into a float and back (never rebuilt)', () => {
+  const w = makeDoc();
+  const home = T.defaultLayout(IDS);
+  V.applyBoxes(plan(home, { active: { right: 'vault' }, foldAll: false, floatOrder: [] }), w.doc);
+  const node = w.panels.vault;
+  const out = T.dock(home, 'vault', { float: { x: 10, y: 10 } });
+  V.applyBoxes(plan(out, SEL()), w.doc);
+  assert.strictEqual(w.panels.vault, node);
+  assert.strictEqual(node.parentNode.parentNode.dataset.group, out.floats[0].id);
+  V.applyBoxes(plan(T.dock(out, 'vault', { cell: 'right', side: 'center' }), { active: { right: 'vault' }, foldAll: false, floatOrder: [] }), w.doc);
+  assert.strictEqual(node.parentNode.parentNode.dataset.group, 'right');
+});
+
+test('D2: an element that was a group and is now a float of the same name takes the float class and grip, and loses them going back', () => {
+  const w = makeDoc();
+  const l = T.dock(T.defaultLayout(IDS), 'vault', { float: true });
+  const id = l.floats[0].id;
+  const asGroup = T.dock(T.dock(l, 'vault', { cell: 'right', side: 'center' }), 'git', { cell: 'right', side: 'top' });
+  const gid = T.groupOf(asGroup, 'git') && T.groupOf(asGroup, 'git') && T.groups(asGroup).find(g => g.tabs.includes('git')).id;
+  assert.strictEqual(gid, id, 'sanity: the freed name is reused by the next new group');
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const el = groupEl(w.dock, id);
+  assert.ok(el.classes.has('dfloat'));
+  V.applyBoxes(plan(asGroup, NO_SEL), w.doc);
+  const same = groupEl(w.dock, id);
+  assert.strictEqual(same, el);
+  assert.ok(!same.classes.has('dfloat'));
+  assert.ok(!same.querySelector('.dfloat-grip'));
+  assert.strictEqual(same.style.zIndex || '', '');
+});
+
 test('I4: focus is never invented: a module that is gone, or focus held elsewhere, is left alone', () => {
   const w = makeDoc();
   const l = T.defaultLayout(IDS);

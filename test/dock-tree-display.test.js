@@ -43,6 +43,29 @@ test('the selection is this window\'s: its choice shows, and only that tab is on
   assert.strictEqual(p.face, null, 'Agents not showing: the portrait size is left alone');
 });
 
+test('a float is planned like a group: its tabs, shown panel and shape; its panel is on screen (D2)', () => {
+  const l = T.dock(T.dock(T.defaultLayout(IDS), 'vault', { float: { x: 100, y: 80 } }), 'git', { cell: T.floatOf(T.dock(T.defaultLayout(IDS), 'vault', { float: { x: 100, y: 80 } }), 'vault').id, side: 'center' });
+  const p = plan(l, { width: 1000, height: 600 }, { active: {}, foldAll: false, floatOrder: [] });
+  const f = p.boxes.find(b => b.kind === 'float');
+  assert.deepStrictEqual(f.tabs.map(t => [t.id, t.on]), [['vault', true], ['git', false]]);
+  assert.strictEqual(f.panel, 'vault');
+  assert.strictEqual(f.shape, 'tall');
+  assert.deepStrictEqual(f.rect, { x: 100, y: 80, width: 320, height: 260 });
+  assert.deepStrictEqual(p.shown.sort(), ['agents', 'vault']);
+});
+
+test('a float showing Agents sets the portrait size when no group does', () => {
+  const l = T.dock(T.hide(T.defaultLayout(IDS), 'agents'), 'agents', { float: { x: 0, y: 0, w: 300, h: 400 } });
+  assert.strictEqual(plan(l, { width: 1000, height: 600 }).face, faceSize(300));
+});
+
+test('Ctrl+B plans no float, so a float\'s panel is not on screen', () => {
+  const l = T.dock(T.defaultLayout(IDS), 'vault', { float: true });
+  const p = plan(l, { width: 1000, height: 600 }, { active: {}, foldAll: true, floatOrder: [] });
+  assert.ok(!p.boxes.some(b => b.kind === 'float'));
+  assert.ok(!p.shown.includes('vault'));
+});
+
 test('an id the registry does not have gets no tab', () => {
   const l = T.defaultLayout(IDS);
   const p = V.treePlan(l, NO_SEL, TABS.filter(t => t.id !== 'style'), { width: 1000, height: 600 }, { faceSize });

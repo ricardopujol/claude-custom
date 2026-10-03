@@ -57,7 +57,7 @@ function treePlan(layout, selection, tabs, viewport, { faceSize } = {}) {
   });
   const drawn = boxes.map((b) => {
     if (b.kind === 'rail') return { ...b, tabs: named(b.modules) };
-    if (b.kind !== 'group') return b;
+    if (b.kind !== 'group' && b.kind !== 'float') return b;       // a float is planned exactly like a group
     const shape = shapeOf(b.rect);
     if (b.active !== null) shown.push(b.active);
     if (b.active === 'agents') {
@@ -183,6 +183,8 @@ function afterTreeGet(treeAnswer, v1Answer, { v1Bridge = true } = {}) {
 
 // --- the DOM half ---------------------------------------------------------------
 
+const FLOAT_Z = 10;       // the first float's z-index; each next one is one more (app/renderer.html: gutters 5, overlay 40)
+
 function setRect(el, r) {
   el.style.left = `${r.x}px`;
   el.style.top = `${r.y}px`;
@@ -264,7 +266,8 @@ function applyBoxes(plan, doc) {
   if (term && termwrap) setRect(termwrap, term.rect);
 
   const mk = (tag, cls) => { const el = doc.createElement(tag); el.className = cls; return el; };
-  const groupBoxes = plan.boxes.filter(b => b.kind === 'group');
+  // A float is a group element with a float class (D2): the same tabs, panel holder and reuse by id.
+  const groupBoxes = plan.boxes.filter(b => b.kind === 'group' || b.kind === 'float');
   const groupPool = syncPool(dock, ':scope > .dgroup', groupBoxes, b => b.id, (b) => {
     const el = mk('aside', 'zone dgroup');
     el.dataset.group = b.id;
@@ -276,10 +279,19 @@ function applyBoxes(plan, doc) {
   const rails = plan.boxes.filter(b => b.kind === 'rail');
   const railPool = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
 
+  let floatsDrawn = 0;
   for (const b of groupBoxes) {
     const el = groupPool.elOf.get(b);
     el.dataset.shape = b.shape;
     setRect(el, b.rect);
+    // Floats are drawn in stacking order, so the draw order IS the z-order: above the gutters (5), below the
+    // drag overlay (40). A float that is a tree group again (the name was reused) loses all of it.
+    const isFloat = b.kind === 'float';
+    el.classList.toggle('dfloat', isFloat);
+    el.style.zIndex = isFloat ? String(FLOAT_Z + floatsDrawn++) : '';
+    const grip = el.querySelector('.dfloat-grip');
+    if (isFloat && !grip) el.appendChild(mk('div', 'dfloat-grip'));
+    else if (!isFloat && grip) grip.remove();
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
     const holder = el.querySelector('.zone-panels');
     if (b.panel !== null) {
