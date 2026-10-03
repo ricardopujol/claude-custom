@@ -69,6 +69,7 @@ function emptyRecord() {
 
 const inProject = (cwd, root) => typeof cwd === 'string' && (samePath(cwd, root) || isInside(cwd, root));
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
+const sameDirName = process.platform === 'win32' ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
 
 const two = n => String(n).padStart(2, '0');
 
@@ -344,7 +345,8 @@ async function updateLedger(ledger, { projectsDir, projectRoot, worktrees, now =
   for (const d of dirs) {
     if (!d.isDirectory() || !d.name.startsWith(prefix)) continue;
     // the worktree this folder's sessions were launched from: the one whose encoded name the folder carries
-    const launcher = Array.isArray(worktrees) ? worktrees.find(w => w && projectDirName(w.root) === d.name) : null;
+    // (on Windows in any case: the folder is named after the cwd as it was typed, git lists it as it is on disk)
+    const launcher = Array.isArray(worktrees) ? worktrees.find(w => w && sameDirName(projectDirName(w.root), d.name)) : null;
     const home = launcher ? launcher.root : null;
     const { files, errors: listErrors } = await transcriptFiles(path.join(projectsDir, d.name));
     if (files === null) { errors++; continue; }

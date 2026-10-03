@@ -343,6 +343,19 @@ test('updateLedger: the launching folder is the worktree whose encoded name the 
   assert.strictEqual(totals(ledger).develop, undefined);
 });
 
+test('updateLedger: on Windows a folder is the same folder in any case, and so is the name it encodes to (PR #96 Dexter F7)', { skip: process.platform !== 'win32' }, async () => {
+  // Claude Code names the transcript folder after the cwd AS TYPED (`cd c:\p\DEV`); git lists it as it is on disk.
+  const dir = tmpDir('branch-ledger-where-');
+  const subs = path.join(dir, projectDirName('C:\\p\\DEV'), 's1', 'subagents');
+  fs.mkdirSync(subs, { recursive: true });
+  const away = 'C:\\Users\\x\\.claude\\reviews\\p';
+  fs.writeFileSync(path.join(subs, 'agent-ag1.jsonl'), lines(
+    sub('m1', 10, [read(path.join(FEAT, 'a.py'))]),
+    sub('m2', 5, [read(path.join(DEV, 'brief.md'))], { cwd: away })));
+  const { ledger } = await updateLedger(emptyLedger(), { projectsDir: dir, projectRoot: ROOT, worktrees: PLACES });
+  assert.strictEqual(totals(ledger)['feat/a'].spend, 15, 'dev is still the launching folder: the call into it moved nothing');
+});
+
 test('updateLedger: a transcript filed under a folder no listed worktree encodes to falls back to the line\'s cwd', async () => {
   const dir = tmpDir('branch-ledger-where-');
   const subs = path.join(dir, projectDirName('C:\\p\\gone-worktree'), 's1', 'subagents');
