@@ -34,6 +34,9 @@ const TABS = [
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
   { id: 'projects', label: 'Projects', title: 'Switch to another project, each in its own window' },
   { id: 'style', label: 'Style', title: 'How the harness looks' },
+  // BACKLOG #51: favourite skills as emoji buttons. An ordinary module like the rest: it docks, moves and
+  // hides through the same layout (app/dock-layout.js), which this entry does not touch.
+  { id: 'wand', label: 'Wand', title: 'Favourite skills: one click types the command, you press Enter' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

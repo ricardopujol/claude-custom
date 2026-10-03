@@ -541,3 +541,46 @@ test('occupancy page: the hatched edge is stripes in the agent colour, the warni
   assert.doesNotMatch(rule('.agent-tag') || '', /animation/);
   assert.match(rule('.tab'), /position:\s*relative/);
 });
+
+// --- backlog #52: the night tab -------------------------------------------------------------------
+
+test('night paint: a tab in a bedtime night gets the night class and a moon right of the label; others do not', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ key: 'a', night: true }), entry({ key: 'b' }), entry({ key: 'c', night: 'yes' })] }, bridgeSpy());
+  const [night, plain, odd] = doc.byId.tabs.children;
+  assert.ok(classesOf(night).includes('night'));
+  const moon = child(night, 'moon');
+  assert.strictEqual(moon.textContent, '🌙');
+  assert.strictEqual(night.children.indexOf(moon) > night.children.indexOf(child(night, 'label')), true, 'after the label');
+  for (const t of [plain, odd]) {
+    assert.ok(!classesOf(t).includes('night'), 'only a real true');
+    assert.strictEqual(child(t, 'moon'), undefined);
+  }
+});
+
+test('night paint: the moon sits after the occupancy tags, before the lock glyph and the health text', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ night: true, occupancy: OCC(), lockGlyph: 'warn', health: '↓2' })] }, bridgeSpy());
+  const [tab] = doc.byId.tabs.children;
+  const order = tab.children.map(c => c.className.split(' ')[0]);
+  assert.ok(order.indexOf('agent-tags') < order.indexOf('moon'), order.join());
+  assert.ok(order.indexOf('moon') < order.indexOf('glyph'), order.join());
+  assert.ok(order.indexOf('moon') < order.indexOf('health'), order.join());
+});
+
+test('night paint: the moon says what it means on hover, and the night never takes the pulse class', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ night: true, pulse: 'needs' })] }, bridgeSpy());
+  const [tab] = doc.byId.tabs.children;
+  assert.match(child(tab, 'moon').title, /overnight/i);
+  assert.ok(classesOf(tab).includes('pulse-needs'), 'the pulse still shows: #31 outranks the night');
+});
+
+test('tab-strip.html: the night tab is a still deep blue declared after .selected, and never animates', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.match(html, /--night:\s*#[0-9a-f]{6}/i);
+  const rule = (sel) => { const at = html.indexOf(sel + ' {'); return at === -1 ? null : html.slice(at, html.indexOf('}', at)); };
+  assert.match(rule('.tab.night'), /background:\s*var\(--night\)/);
+  assert.doesNotMatch(rule('.tab.night') + rule('.tab.night:hover') + rule('.moon'), /animation|transition/);
+  assert.ok(html.indexOf('.tab.night {') > html.indexOf('.tab.selected {'), 'declared after .selected so it wins the background');
+});

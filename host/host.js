@@ -64,6 +64,9 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
+const { createWandControl } = require('./wand-control');
+const { discoverSkills, claudeHomeOf, isSkillEvent } = require('./wand-skills');
+const { watchDir } = require('./wand-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
@@ -71,6 +74,10 @@ const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
+const { createPromptKeeper } = require('./prompt-keeper');
+const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
+const { createNightStatus } = require('./night-status');
+const { countNightPrs } = require('./night-prs');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
@@ -342,6 +349,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   pipeName: PIPE_NAME,
   // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
   occupancy: true,
+  // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
+  bedtime: true,
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
@@ -400,7 +409,7 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
-// Three probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
+// Probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
 // gh, and the transcripts and the review reports come from the probe's own folders. Logged when set.
 const seams = readSeams(process.env);
 announce(seams, (line) => console.log(line));
@@ -432,6 +441,35 @@ watchLoadout({
     if (frame) broadcastControl(frame);
   },
 });
+// The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
+// list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam
+// (host/probe-seams.js), unset in real use.
+const CLAUDE_HOME = claudeHomeOf({ seam: seams.claudeHome, env: process.env, home: os.homedir() });
+// The control logs what is broken once per breakage (a debounced rescan finds the same file again).
+// `emit`: a busy read of wand.json is looked at again shortly, and what it finds is broadcast (host/wand-control.js).
+const wandControl = createWandControl({ store, log: (line) => console.log(line), emit: (frame) => broadcastControl(frame),
+  readSkills: () => discoverSkills({ claudeHome: CLAUDE_HOME, projectDir: CWD }) });
+// The wand watches the state file (another host's edit) and the skill directories (a skill added while the
+// harness runs). Both frames are QUIET, so neither touches a refusal on screen. The CLI's directories are
+// watched, never created: only the state dir is ours.
+watchDir({
+  dir: path.join(HARNESS_DIR, 'state'),
+  create: true,
+  match: (f) => f === 'wand.json',
+  onChange: () => {
+    const frame = wandControl.changed();
+    if (frame) broadcastControl(frame);
+  },
+});
+const onSkillsChanged = () => {
+  const frame = wandControl.skillsChanged();
+  if (frame) broadcastControl(frame);
+};
+watchDir({ dir: path.join(CLAUDE_HOME, 'skills'), recursive: true, match: isSkillEvent, onChange: onSkillsChanged });
+watchDir({ dir: path.join(CLAUDE_HOME, 'plugins'), match: (f) => f === 'installed_plugins.json', onChange: onSkillsChanged });
+// a plugin switched on or off in settings.json changes which plugin skills exist
+watchDir({ dir: CLAUDE_HOME, match: (f) => f === 'settings.json', onChange: onSkillsChanged });
+watchDir({ dir: path.join(CWD, '.claude', 'skills'), recursive: true, match: isSkillEvent, onChange: onSkillsChanged });
 // One record per distinct bug CLASS, so a recurring defect category is a
 // visible count instead of a memory hand-carried between review rounds in PR
 // comments. Persisted through the shared store under `vault.json`, same as
@@ -475,6 +513,8 @@ attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
 // the Git drawer's Type /merged types into this session, and the subagent roster can't see a turn with no
 // agent in it. null until SessionStart: a host without hooks never claims idle.
 const turnState = createTurnState();
+// Backlog #49: the main session's latest prompt, for the terminal bar. A reconnecting window gets it in `hello`.
+const promptKeeper = createPromptKeeper();
 
 // Provider is fixed at spawn: the pty environment cannot change under a running
 // process, so switching backend means a new session rather than a hot swap.
@@ -1117,6 +1157,14 @@ function seatPayload(seats) {
 // point the whole module has run.
 const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
 
+// Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
+// calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.
+const night = createNightStatus({
+  bedtime: createBedtime(),
+  countPrs: (since) => countNightPrs(CWD, since),
+  onChange: (payload) => broadcastControl({ type: 'bedtime', bedtime: payload }),
+});
+
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
 // worktree, and deletes it when the agent stops (or this host exits). Every window reads them.
 const occupancyWriter = createClaimWriter({ stateRoot: STATE_ROOT, log: (...a) => console.log(...a) });
@@ -1165,7 +1213,13 @@ if (helperExists) {
     // the probe that reads it only wants who touched which path.)
     if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
     occupancy.handle(ev);
+    // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
+    if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
+    night.handle(ev);
     if (isOccupancyOnly(ev)) return;
+    // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
+    // panel would show it as a process.
+    if (isBedtimeOnly(ev)) return;
     // The context was just replaced (/clear) or summarised (compaction): the
     // last fill is no longer true, whether or not the CLI re-fires the
     // statusLine right after. Unknown until a document says otherwise.
@@ -1671,6 +1725,7 @@ const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
   occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
+  night.tick();              // a night that went overdue: a verdict of time, pushed when the clock makes it
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
   // own a clock of its own -- and on both falling edges: a sweep that removed
   // the last row, and a party that shrank with nothing left running.
@@ -2006,6 +2061,9 @@ wss.on('connection', (ws, req) => {
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
     turn: turnState.snapshot(),
+    // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
+    prompt: promptKeeper.snapshot(),
+    bedtime: night.payload(),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
@@ -2028,6 +2086,8 @@ wss.on('connection', (ws, req) => {
     // The tool belt: what is equipped on which agent type, plus the catalogue
     // the renderer draws from. Read off disk here, so a reattach is never stale.
     loadout: loadoutControl.payload(),
+    // The wand: the favourites (or why they are unavailable) and the skills they can point at.
+    wand: wandControl.payload(),
     // Layout pass L1: this tab's own layout, or null for the global one.
     layoutOverride,
     vault: vaultPayload(),
@@ -2371,6 +2431,12 @@ wss.on('connection', (ws, req) => {
     }
     if (msg.type === 'roster') {
       handleRosterMessage(msg);
+      return;
+    }
+    if (wandControl.handles(msg.type)) {
+      // Broadcast, refusal included: the frame carries the true state, and two windows disagreeing about
+      // a favourite is worse than a redraw. Answers are never `quiet` (host/wand-control.js).
+      broadcastControl(wandControl.handle(msg));
       return;
     }
     if (msg.type === 'loadout-equip' || msg.type === 'loadout-unequip') {

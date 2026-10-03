@@ -142,17 +142,19 @@ test('persistence fails CLOSED: only an explicit choice is stored', () => {
   const src = raw.replace(/\/\*[\s\S]*?\*\//g, '')
                  .replace(new RegExp('^\\s*//[^' + NL + ']*', 'gm'), '');
 
-  const grips = src.slice(src.indexOf('(function initZoneGrips() {'), src.indexOf('})();', src.indexOf('(function initZoneGrips() {')));
-  assert.ok(grips.length > 100, 'the grip code must be findable for this check to mean anything');
+  // The dividers of the split tree (dockable panels D1) took the grips' place.
+  const grips = src.slice(src.indexOf('(function initDividers() {'), src.indexOf('})();', src.indexOf('(function initDividers() {')));
+  assert.ok(grips.length > 100, 'the divider code must be findable for this check to mean anything');
 
   // COUNT THE SAVES, don't parse the calls (Mortimer, PR #33: a pattern that
   // matched the call's shape waved a second persisting site through).
   const saves = [...grips.matchAll(/commitPlacement\(/g)];
-  assert.strictEqual(saves.length, 1, `exactly one grip path may save; found ${saves.length}`);
-  const up = grips.indexOf("addEventListener('mouseup'");
-  const move = grips.indexOf("addEventListener('mousemove'");
+  assert.strictEqual(saves.length, 1, `exactly one divider path may save; found ${saves.length}`);
+  const up = grips.indexOf("addEventListener('pointerup'");
+  const move = grips.indexOf("addEventListener('pointermove'");
   assert.ok(up !== -1 && move !== -1 && saves[0].index > up,
     'the one save must be on release -- a human choosing a size -- never while moving');
+  assert.ok(move < up && !/commitPlacement|\.set\(/.test(grips.slice(move, up)), 'the move path only draws');
 
   // And the window resize only draws.
   const at = src.indexOf("window.addEventListener('resize', () => {");

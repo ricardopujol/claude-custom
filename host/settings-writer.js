@@ -52,6 +52,12 @@ const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage';    // completion and er
 // Running panel -- their PostToolUse isn't hooked, so the panel would show every Read as running forever.
 // The same tools as host/agent-occupancy.js TOUCH_TOOLS (test/settings-writer.test.js holds them together).
 const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
+// Backlog #52 (bedtime): a /bedtime night is the loop's own ScheduleWakeup calls (host/bedtime-state.js, measured by
+// verify/probe-bedtime-signal.js): the call itself (PreToolUse: delaySeconds, prompt, stop) and its result
+// (PostToolUse: tool_response.scheduledFor). Opt-in (`bedtime: true`) and SEPARATE entries, so the mood engine's are
+// untouched; host/host.js consumes them itself (isBedtimeOnly) and never lets them reach the mood engine or the
+// Running panel, which would show a ScheduleWakeup as a process. One call per wake (~every 25 min), so no tax.
+const BEDTIME_MATCHER = 'ScheduleWakeup';
 const HOOK_TIMEOUT_SECONDS = 5;
 
 const quote = s => `"${s}"`;
@@ -117,7 +123,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -163,6 +169,10 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
   // LAST, so PreToolUse[0] stays the mood engine's and [1] the tool belt's.
   if (occupancy === true) settings.hooks.PreToolUse.push(entry(OCCUPANCY_MATCHER, 'PreToolUse'));
+  if (bedtime === true) {
+    settings.hooks.PreToolUse.push(entry(BEDTIME_MATCHER, 'PreToolUse'));
+    settings.hooks.PostToolUse.push(entry(BEDTIME_MATCHER, 'PostToolUse'));
+  }
   return settings;
 }
 
@@ -240,4 +250,4 @@ function buildClaudeArgs({ settingsFile, helperExists } = {}) {
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };

@@ -18,7 +18,7 @@
  */
 (function (root) {
 
-function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown } = {}) {
+function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect } = {}) {
   const R = root.repoRequester || (typeof require === 'function' ? require('./repo-requester') : null);
   const Panel = root.repoFilesPanel || (typeof require === 'function' ? require('./repo-files-panel') : null);
   const Reader = root.repoReader || (typeof require === 'function' ? require('./repo-reader') : null);
@@ -28,7 +28,7 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
   let said = () => {};
 
   const reader = Reader.create({
-    doc, requester, harness, storage, storageKey, typeMention,
+    doc, requester, harness, storage, storageKey, typeMention, termRect,
     onClose: () => { panel.setSelected(null); if (focusTerminal) focusTerminal(); },
   });
 
@@ -57,6 +57,8 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
     setControls: (list) => { requester.setControls(list); if (isShown && isShown()) panel.show(); },
     onMessage: (msg) => requester.onMessage(msg),
     show: () => panel.show(),
+    // after the dock tree places #termwrap (renderer.js renderLayout): the reader takes its strip of it
+    layout: () => reader.layout(),
     failAll: (reason) => requester.failAll(reason),
     // verify/probe-repo-browser.js: named actions only, JSON answers
     probe: (action, a) => (typeof action === 'string' && action.startsWith('reader.') ? reader.probe(action.slice(7), a)

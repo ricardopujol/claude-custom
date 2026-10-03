@@ -300,3 +300,73 @@ test('PROPERTY: with no live claim nothing is ever held or dropped', () => {
     return true;
   }), { numRuns: 100 });
 });
+
+// --- PR #99 Dexter F4: a bedtime night is ONE run for its whole life, whatever the socket or the clock does ------
+const night = (startedAt) => ({ agentId: `bedtime:${startedAt}`, persist: true });
+
+test('F4: a persistent run (a bedtime night) stays confirmed when its claim drops out and comes back: a socket drop, a reconnect', () => {
+  const r = rig();
+  r.c.setClaims([night(1000)]);
+  r.c.input('a');
+  r.c.type();
+  r.c.setClaims([]);                     // the socket dropped: the night is unknown for a moment
+  r.c.setClaims([night(1000)]);          // hello restored it
+  assert.strictEqual(r.c.input('b'), 'sent', 'not asked a second time in the same run');
+  assert.strictEqual(r.c.state().asking, false);
+});
+
+test('F4: ...and across an overdue verdict and a late wake (the claim goes, then the same night returns)', () => {
+  const r = rig();
+  r.c.setClaims([night(5)]);
+  r.c.input('a'); r.c.type();
+  r.c.setClaims([]);
+  r.c.setClaims([]);
+  r.c.setClaims([night(5)]);
+  assert.strictEqual(r.c.input('b'), 'sent');
+});
+
+test('F4: a DIFFERENT night is a new run, asked again; and an agent\'s claim (not persistent) that comes back is still a new run', () => {
+  const r = rig();
+  r.c.setClaims([night(1)]);
+  r.c.input('a'); r.c.type();
+  r.c.setClaims([night(2)]);
+  assert.strictEqual(r.c.input('b'), 'held');
+  r.c.wait();
+  const q = rig();
+  q.c.setClaims(here('a1'));
+  q.c.input('a'); q.c.type();
+  q.c.setClaims([]);
+  q.c.setClaims(here('a1'));
+  assert.strictEqual(q.c.input('b'), 'held', 'the old rule for agents is unchanged');
+});
+
+test('F4: forget(id) drops a persistent run\'s memory, so the same id asks again', () => {
+  const r = rig();
+  r.c.setClaims([night(1)]);
+  r.c.input('a'); r.c.type();
+  r.c.forget('bedtime:1');
+  r.c.setClaims([]);
+  r.c.setClaims([night(1)]);
+  assert.strictEqual(r.c.input('b'), 'held');
+});
+
+test('F4: a persistent run that is gone while the question is open still closes it and releases what was held', () => {
+  const r = rig();
+  r.c.setClaims([night(1)]);
+  r.c.input('a');
+  assert.strictEqual(r.c.state().asking, true);
+  r.c.setClaims([]);
+  assert.strictEqual(r.c.state().asking, false);
+  assert.deepStrictEqual(r.sent, ['a']);
+});
+
+test('F4: only a real true is persistent', () => {
+  for (const persist of ['yes', 1, undefined, null]) {
+    const r = rig();
+    r.c.setClaims([{ agentId: 'x', persist }]);
+    r.c.input('a'); r.c.type();
+    r.c.setClaims([]);
+    r.c.setClaims([{ agentId: 'x', persist }]);
+    assert.strictEqual(r.c.input('b'), 'held', String(persist));
+  }
+});

@@ -153,6 +153,16 @@ let tabPending = { urgent: false, finished: false };
 // The host's measure of the MAIN session from the CLI's hooks (host/turn-state.js): 'idle' | 'turn' |
 // 'prompt', or null -- not said yet, an older host, or the socket is down. Unknown is not idle (PR #93 F1/F2).
 let sessionTurn = null;
+// The terminal bar (backlog #49 + #52): the host's latest main-session prompt and where the CLI echoed it in the
+// terminal buffer, the bedtime night, and the epoch that invalidates the anchor. Every decision is in
+// app/terminal-bar.js; this only holds the facts and paints what it says.
+const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, paintKey: '', chipsKey: '' };
+// How long the CLI's echo of a submitted prompt is waited for in the terminal buffer, and how many of the newest lines
+// are searched, before the prompt fails visible (PR #99 Dexter F6).
+const LOCATE_MS = 3000;
+const LOCATE_SCAN = 400;
+// The bar's own height in CSS px (top offset + row): the terminal rows it hides while a chip keeps it open (F7).
+const BAR_COVER_PX = 40;
 let wasWorking = false;
 let lastReportedTabStatus = null;
 function pend(event) {
@@ -171,6 +181,7 @@ function reportTabStatus() {
     lock: tabLock,
     health: tabHealth,
     turn: sessionTurn,
+    night: bar.bedtime !== null,
   }, { healthMarker: worktreeStatus.healthMarker });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
@@ -190,43 +201,156 @@ document.getElementById('terminal-banner-dismiss').addEventListener('click', () 
   el.hidden = true;
 });
 
-// --- worktree occupancy (backlog #44 + #47) ----------------------------------------
-// What main pushes (app/occupancy-display.js viewPayload): `here` is the live agent claims in THIS folder (the
-// banner, and the first-keystroke confirm), `launched` the ones THIS session launched (the roster cards'
-// `-> worktree` lines). Every decision is in app/occupancy-display.js and app/occupancy-confirm.js; this only
-// paints what they return, and sends what the confirm releases. Nothing here makes anything read-only.
+// --- worktree occupancy and the terminal bar (backlog #44 + #47, #49, #52) --------------
+// What main pushes (app/occupancy-display.js viewPayload): `here` is the live agent claims in THIS folder (the bar's
+// occupancy chip, and the first-keystroke confirm), `launched` the ones THIS session launched (the roster cards'
+// `-> worktree` lines). #47's banner is retired into the bar: ONE row over the terminal, the last prompt on the left
+// once it has scrolled away (#49), the status chips on the right -- a moon for a /bedtime night (#52) and the agents'
+// initials for occupancy. Every decision is in app/terminal-bar.js, app/occupancy-display.js and
+// app/occupancy-confirm.js; this only paints what they return, and sends what the confirm releases. Nothing here
+// makes anything read-only, and nothing animates.
 const occupancy = { here: [], launched: [], confirm: null, jumpNote: '' };
-const occupancyEls = {
-  banner: document.getElementById('occupancy-banner'),
-  text: document.getElementById('occupancy-banner-text'),
-  since: document.getElementById('occupancy-banner-since'),
-  more: document.getElementById('occupancy-banner-more'),
-  note: document.getElementById('occupancy-banner-note'),
-  jump: document.getElementById('occupancy-jump'),
-  confirm: document.getElementById('occupancy-confirm'),
+const occupancyEls = { confirm: document.getElementById('occupancy-confirm'), confirmText: document.getElementById('occupancy-confirm-text') };
+const barEls = {
+  bar: document.getElementById('terminal-bar'),
+  prompt: document.getElementById('bar-prompt'),
+  text: document.getElementById('bar-prompt-text'),
+  age: document.getElementById('bar-prompt-age'),
+  full: document.getElementById('bar-prompt-full'),
+  chips: document.getElementById('bar-chips'),
 };
 
-function paintOccupancyBanner() {
-  const m = window.occupancyDisplay
-    ? window.occupancyDisplay.bannerModel(occupancy.here, { turn: sessionTurn, now: Date.now() }) : null;
-  occupancyEls.banner.hidden = m === null;
-  document.body.classList.toggle('occupied', m !== null);
-  occupancyEls.banner.classList.toggle('warn', !!m && m.warn);
-  occupancyEls.confirm.classList.toggle('warn', !!m && m.warn);
-  if (m === null) return;
-  occupancyEls.text.textContent = m.text;
-  occupancyEls.since.textContent = m.since ? '· ' + m.since : '';
-  occupancyEls.more.textContent = m.more;
-  occupancyEls.note.textContent = occupancy.jumpNote || m.note;
-  occupancyEls.jump.hidden = m.jump === null;
-  if (m.jump) {
-    occupancyEls.jump.textContent = m.jump.label;
-    occupancyEls.jump.dataset.root = m.jump.root;
+// The bar's own place in time: coalesced, so a burst of scrolling paints once. A timer, not requestAnimationFrame:
+// a tab that isn't showing gets no animation frames, and its bar still has to be right when it comes back.
+function paintBar() {
+  if (bar.queued) return;
+  bar.queued = true;
+  setTimeout(() => { bar.queued = false; paintBarNow(); }, 16);
+}
+
+function chipElement(c) {
+  const jumps = c.kind === 'occupancy' && c.jump;
+  const el = document.createElement(jumps ? 'button' : 'span');
+  el.className = 'bar-chip ' + (c.kind === 'bedtime' ? 'bedtime' : 'occupancy') + (c.warn ? ' warn' : '');
+  if (jumps) { el.type = 'button'; el.dataset.root = c.jump.root; } else { el.tabIndex = 0; el.setAttribute('role', 'note'); }
+  el.setAttribute('aria-label', c.short + (c.long ? ': ' + c.long.split('\n').join(', ') : ''));
+  const short = document.createElement('span');
+  short.className = 'chip-short';
+  short.textContent = c.short;
+  el.appendChild(short);
+  const lines = c.long ? c.long.split('\n') : [];
+  if (jumps) lines.push(c.jump.label);
+  if (lines.length) {
+    const long = document.createElement('span');
+    long.className = 'chip-long';
+    long.textContent = lines.join('\n');
+    el.appendChild(long);
   }
+  if (jumps) el.addEventListener('click', () => jumpToFolder(c.jump.root));
+  return el;
+}
+
+// What the probe reads back (verify/probe-terminal-bar.js): the bar as painted, and the buffer it was painted from.
+function barState() {
+  const buf = term.buffer.active;
+  const cs = getComputedStyle(barEls.bar);
+  return {
+    bar: {
+      hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, transitionDuration: cs.transitionDuration, display: cs.display,
+      top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
+      prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden,
+        expanded: barEls.prompt.getAttribute('aria-expanded') },
+      chips: [...barEls.chips.children].map(c => ({
+        kind: c.classList.contains('bedtime') ? 'bedtime' : 'occupancy', warn: c.classList.contains('warn'), tag: c.tagName.toLowerCase(),
+        short: c.querySelector('.chip-short').textContent, long: c.querySelector('.chip-long') ? c.querySelector('.chip-long').textContent : '',
+        leftRule: getComputedStyle(c).borderLeftWidth, animation: getComputedStyle(c).animationName,
+        color: getComputedStyle(c).color, background: getComputedStyle(c).backgroundColor,
+      })),
+    },
+    buffer: { viewportY: buf.viewportY, baseY: buf.baseY, cursorY: buf.cursorY, length: buf.length, rows: term.rows, type: buf.type },
+    // the text of the buffer line the anchor points at: the probe checks it is where the echo is
+    anchorText: bar.anchor && typeof bar.anchor.line === 'number' && buf.getLine(bar.anchor.line) ? buf.getLine(bar.anchor.line).translateToString(true) : null,
+    locating: !!bar.locate,
+    epoch: bar.epoch, anchor: bar.anchor, prompt: bar.prompt, bedtime: bar.bedtime,
+  };
+}
+
+function paintBarNow() {
+  const now = Date.now();
+  const buf = term.buffer.active;
+  // A buffer that shrank was cleared: every absolute line moved, so the anchor is no longer a place (fails visible).
+  if (buf.length < bar.lastLength) bar.epoch += 1;
+  bar.lastLength = buf.length;
+  const chip = window.occupancyDisplay ? window.occupancyDisplay.chipModel(occupancy.here, { turn: sessionTurn, now }) : null;
+  if (chip && occupancy.jumpNote) chip.lines.push(occupancy.jumpNote);
+  // A chip keeps the bar open over the terminal's first rows, so a prompt line under it is as good as scrolled away.
+  const rowPx = term.rows > 0 ? document.getElementById('term').clientHeight / term.rows : 0;
+  const coveredRows = (bar.bedtime !== null || chip !== null) && rowPx > 0 ? Math.ceil(BAR_COVER_PX / rowPx) : 0;
+  const m = terminalBar.barModel({
+    prompt: bar.prompt,
+    anchor: bar.anchor,
+    // An alternate screen (a full-screen TUI) keeps no scrollback to scroll away into, and a full scrollback is
+    // trimming from the top: in both the lines are not where they were, so the prompt shows.
+    view: { viewportY: buf.viewportY, bufferLength: buf.length, full: buf.type === 'alternate' || buf.length >= term.options.scrollback + term.rows, epoch: bar.epoch, coveredRows },
+    now,
+    bedtime: bar.bedtime,
+    occupancy: chip,
+    focusMode: document.body.classList.contains('focus-mode'),
+  });
+  if (!m.prompt) bar.fullOpen = false;
+  // Nothing changed since the last paint (a scroll event per streamed line asks for a paint each): no DOM writes at all,
+  // so a selection inside the whole-prompt view survives (PR #99 Miguel Y1, G1).
+  const key = JSON.stringify([m, bar.fullOpen]);
+  if (key !== bar.paintKey) {
+    bar.paintKey = key;
+    barEls.bar.hidden = !m.visible;
+    document.body.classList.toggle('bar-open', m.visible);
+    barEls.prompt.hidden = m.prompt === null;
+    if (m.prompt) {
+      setText(barEls.text, m.prompt.head);
+      setText(barEls.age, m.prompt.age ? '· ' + m.prompt.age : '');
+      setText(barEls.full, m.prompt.full);
+    }
+    barEls.full.hidden = !(m.prompt && bar.fullOpen);
+    barEls.prompt.setAttribute('aria-expanded', String(!!(m.prompt && bar.fullOpen)));
+    // Rebuilt only when the chips themselves changed, so a hover isn't dropped by the 30 s minute refresh.
+    const chipsKey = JSON.stringify(m.chips);
+    if (chipsKey !== bar.chipsKey) {
+      bar.chipsKey = chipsKey;
+      barEls.chips.replaceChildren(...m.chips.map(chipElement));
+    }
+  }
+  paintOccupancyConfirm(occupancy.confirm ? occupancy.confirm.state() : null);
+}
+
+// A write that changes nothing still replaces the text node, which collapses a selection inside it.
+function setText(el, value) {
+  if (el.textContent !== value) el.textContent = value;
+}
+
+// The confirm's words follow what is going on here: an overnight run, agents writing, or both.
+function confirmQuestion() {
+  const parts = [];
+  if (bar.bedtime !== null) parts.push('An overnight run is going.');
+  if (occupancy.here.length > 0 || parts.length === 0) parts.push('An agent is writing here.');
+  return parts.join(' ') + ' Type anyway?';
+}
+
+// A bedtime night is a run of its own for the confirm (a new night asks again, one that ends releases what was held).
+// `persist`: the night is ONE run for its whole life, so a socket drop or an overdue verdict that takes its claim away
+// for a moment doesn't make it a new run (PR #99 Dexter F4); a different night is a different id.
+function nightClaim() {
+  return bar.bedtime !== null ? { agentId: 'bedtime:' + bar.bedtime.startedAt, persist: true } : null;
+}
+function confirmClaims() {
+  const night = nightClaim();
+  return night ? [...occupancy.here, night] : occupancy.here;
 }
 
 function paintOccupancyConfirm(state) {
   occupancyEls.confirm.hidden = !(state && state.asking);
+  occupancyEls.confirm.classList.toggle('warn', occupancy.here.length > 0 && sessionTurn === 'turn');
+  occupancyEls.confirmText.textContent = confirmQuestion();
 }
 
 function applyOccupancy(payload) {
@@ -234,9 +358,80 @@ function applyOccupancy(payload) {
   occupancy.here = Array.isArray(p.here) ? p.here : [];
   occupancy.launched = Array.isArray(p.launched) ? p.launched : [];
   occupancy.jumpNote = '';
-  if (occupancy.confirm) occupancy.confirm.setClaims(occupancy.here);
-  paintOccupancyBanner();
+  if (occupancy.confirm) occupancy.confirm.setClaims(confirmClaims());
+  paintBar();
   if (typeof renderRoster === 'function') renderRoster();
+}
+
+// The newest buffer lines from `from`, as text (what findEcho searches).
+function bufferTexts(from) {
+  const buf = term.buffer.active;
+  const out = [];
+  for (let i = from; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    out.push(line ? line.translateToString(true) : '');
+  }
+  return out;
+}
+
+// Find the line the CLI ECHOED the prompt on, by its text (PR #99 Dexter F6; measured by verify/probe-prompt-anchor.js:
+// the real CLI pins its input box to the bottom row, so the cursor is 24-30 lines BELOW the echo and tells nothing).
+// It runs once the terminal has parsed what came before the prompt event, then again as output is parsed, and keeps the
+// newest match for LOCATE_MS: the echo may not be drawn yet, and an older echo of the same words is only a stand-in.
+function locateEcho() {
+  const loc = bar.locate;
+  if (!loc) return;
+  if (!bar.prompt || bar.prompt.seq !== loc.seq) { clearTimeout(loc.timer); bar.locate = null; return; }
+  const buf = term.buffer.active;
+  const from = Math.max(0, buf.length - LOCATE_SCAN);
+  const at = terminalBar.findEcho(bufferTexts(from), loc.needle);
+  if (at < 0) return;
+  const line = from + at;
+  const a = bar.anchor;
+  if (a && a.locating !== true && a.seq === loc.seq && a.epoch === bar.epoch && a.line >= line) return;
+  bar.anchor = terminalBar.makeAnchor(bar.prompt, { line, epoch: bar.epoch });
+  paintBar();
+}
+
+// The host's latest main-session prompt. A LIVE one (a control message) is LOCATED in the terminal by its echo (above);
+// until it is found its anchor is "locating" (the bar doesn't flash), and one that is never found within LOCATE_MS (a
+// pasted block the CLI shows collapsed, a prompt it echoes differently) FAILS VISIBLE: no anchor, the prompt shows. One
+// that arrives in `hello` (a window that attached later) has no place in this buffer, so it shows until the next one.
+function applyBarPrompt(prompt, live) {
+  const p = prompt && typeof prompt === 'object' && typeof prompt.text === 'string' && typeof prompt.seq === 'number' && Number.isFinite(prompt.seq) ? prompt : null;
+  const changed = !bar.prompt || !p || bar.prompt.seq !== p.seq;
+  if (bar.locate) { clearTimeout(bar.locate.timer); bar.locate = null; }
+  bar.prompt = p;
+  bar.anchor = null;
+  if (changed) bar.fullOpen = false;
+  const needle = p && live ? terminalBar.echoNeedle(p.text) : null;
+  if (p && needle) {
+    bar.anchor = terminalBar.locatingAnchor(p, bar.epoch);
+    const loc = { seq: p.seq, needle, queued: false, timer: null };
+    loc.timer = setTimeout(() => {
+      if (bar.locate !== loc) return;
+      bar.locate = null;
+      if (bar.anchor && bar.anchor.locating === true) { bar.anchor = null; paintBar(); }
+    }, LOCATE_MS);
+    bar.locate = loc;
+    term.write('', () => { if (bar.locate === loc) locateEcho(); });
+  }
+  paintBar();
+}
+
+
+
+function applyBedtime(payload) {
+  bar.bedtime = payload && typeof payload === 'object' && typeof payload.startedAt === 'number' && Number.isFinite(payload.startedAt) ? payload : null;
+  // A new night forgets the last one's answer (its id is never seen again); the same night returning keeps it.
+  if (bar.bedtime !== null) {
+    const key = 'bedtime:' + bar.bedtime.startedAt;
+    if (bar.nightKey && bar.nightKey !== key && occupancy.confirm) occupancy.confirm.forget(bar.nightKey);
+    bar.nightKey = key;
+  }
+  if (occupancy.confirm) occupancy.confirm.setClaims(confirmClaims());
+  paintBar();
+  reportTabStatus();
 }
 
 // The person's own typing: through the confirm when there is one. A raw `send` stays for everything the program
@@ -250,6 +445,16 @@ if (window.occupancyConfirm) {
 }
 document.getElementById('occupancy-type').addEventListener('click', () => occupancy.confirm.type());
 document.getElementById('occupancy-wait').addEventListener('click', () => occupancy.confirm.wait());
+// The prompt part opens the whole prompt (scrollable, selectable) and closes it again.
+barEls.prompt.addEventListener('click', () => { bar.fullOpen = !bar.fullOpen; paintBarNow(); });
+// Escape closes it again, from inside the bar only: the terminal's own Escape (interrupt) is never taken (PR #99 Miguel G3).
+barEls.bar.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !bar.fullOpen) return;
+  bar.fullOpen = false;
+  paintBarNow();
+  e.stopPropagation();
+  term.focus();
+});
 
 // Jump to the launching session's tab, or the worktree an agent is in: the Git drawer's own path.
 async function jumpToFolder(folder) {
@@ -258,13 +463,12 @@ async function jumpToFolder(folder) {
   try { r = await window.harness.selectFolder(folder); } catch { r = null; }
   if (r && r.kind === 'explain' && r.text) {
     occupancy.jumpNote = r.text;
-    paintOccupancyBanner();
+    paintBar();
   }
 }
-occupancyEls.jump.addEventListener('click', () => jumpToFolder(occupancyEls.jump.dataset.root));
 
-// The minutes on the banner go stale between pushes.
-setInterval(() => { if (!occupancyEls.banner.hidden) paintOccupancyBanner(); }, 30000);
+// The minutes on the bar (the prompt's age, "wake due") go stale between pushes.
+setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0) paintBar(); }, 30000);
 
 if (window.harness && window.harness.occupancy) {
   window.harness.occupancy.onChange(applyOccupancy);
@@ -410,6 +614,13 @@ try {
 
 fit.fit();
 
+// The terminal bar's view of the buffer (#49). The prompt part follows the viewport; a resize reflows every line
+// and an erased scrollback (CSI 3 J: what /clear sends) moves them, so each starts a new epoch and the anchored
+// prompt shows instead of vanishing. CSI 2 J is NOT one: it erases the screen only, and a TUI repaints with it.
+term.onScroll(() => paintBar());
+term.onResize(() => { bar.epoch += 1; paintBar(); });
+term.parser.registerCsiHandler({ final: 'J' }, (params) => { if (params[0] === 3) { bar.epoch += 1; paintBar(); } return false; });
+
 // --- diagnostics ------------------------------------------------------------
 const CHECKS = [
   { id: 'shiftTab',   label: 'Shift+Tab  (permission modes)' },
@@ -485,6 +696,8 @@ const repoBrowser = window.repoBrowser.create({
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
+  // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
+  termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
 
 // --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
@@ -737,54 +950,57 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 // An isolated panel. Nothing in it is ever written to the pty: the secret only
 // ever travels renderer -> main -> OS clipboard, and the host that owns the
 // terminal never sees it. Pasting is then the user's own deliberate act.
-/// --- dock zones (layout pass L1, BACKLOG #22) -------------------------------
-// Every side panel is a module in one of four zones (app/dock-layout.js has
-// every rule; app/dock-zones-display.js draws and decides a redraw's effects).
+/// --- the dock tree (BACKLOG #53, dockable panels D1; was L1's four zones, #22) ----
+// Every side panel is a module in a tabbed group of a split tree around the
+// terminal (app/dock-tree.js has every rule; app/dock-tree-display.js draws; and
+// app/dock-zones-display.js still decides a redraw's effects). L1's app/dock-layout.js
+// stays loaded for one reason: fromV1 and the pre-L1 migration read the old shapes with it.
 // Two kinds of state, kept apart on purpose:
-//   - PLACEMENT (which zone holds which module, hidden ones, sizes): the global
-//     layout in main (install-wide), or this tab's own, kept by its host.
-//   - SELECTION (which module each zone shows, zones collapsed on purpose,
-//     Ctrl+B's memory): this window's own, saved in localStorage and read at
-//     load, the way `sideTab` always was. Clicking Vault here must not switch
-//     every other project window to Vault (S3a; PR #82 Dexter F4).
+//   - PLACEMENT (the tree, hidden modules, sizes): the global layout in main
+//     (install-wide, store key `layout-tree`), or this tab's own, kept by its host.
+//   - SELECTION (which module each group shows, Ctrl+B's fold): this window's
+//     own, saved in localStorage (`dockSelection2`). Clicking Vault here must not
+//     switch every other project window to Vault (S3a; PR #82 Dexter F4).
 const MODULE_IDS = TABS.map(t => t.id);
 const DL = window.dockLayout;
-let globalLayout = DL.defaultLayout(MODULE_IDS);
+const DTm = window.dockTree;
+let globalLayout = DTm.defaultLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
 let pendingOverride = null;      // { layout } sent to the host, not yet echoed back
-let dragLayout = null;           // a grip being dragged: drawn, not yet saved
-let selection = null;            // DL.selectionOf(...) or null = not seeded yet
+let dragLayout = null;           // a divider being dragged: drawn, not yet saved
+let selection = DTm.cleanSelection(null);
+let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let shownModules = new Set();
+let layoutPushes = 0;            // layouts pushed to this window by main: the probe counts the store writes with it
 
+// This window's selection. A window that has none yet is seeded ONCE from L1's
+// (`dockSelection`: group ids are the zone names, so it maps straight across).
 function readSelection() {
   try {
-    const raw = JSON.parse(localStorage.getItem('dockSelection') || 'null');
-    return raw && typeof raw === 'object' ? raw : null;
-  } catch { return null; }
+    const raw = localStorage.getItem('dockSelection2');
+    if (raw !== null) return DTm.cleanSelection(JSON.parse(raw));
+    return DTm.selectionFromV1(JSON.parse(localStorage.getItem('dockSelection') || 'null'));
+  } catch { return DTm.cleanSelection(null); }
 }
 function saveSelection() {
-  try { localStorage.setItem('dockSelection', JSON.stringify(selection)); } catch {}
+  try { localStorage.setItem('dockSelection2', JSON.stringify(selection)); } catch {}
 }
 
-function placementLayout() { return dragLayout || ownLayout || globalLayout; }
+// What is SAVED for this window, without a divider drag's drawn-only layout on top.
+function committedLayout() { return ownLayout || globalLayout; }
+function placementLayout() { return dragLayout || committedLayout(); }
 
-// The layout this window draws: the placement, with THIS window's selection.
-function effectiveLayout() {
-  return DL.mergeSelection(placementLayout(), selection, MODULE_IDS);
-}
-
-// The room the zones share with the terminal: #body minus the diagnostics pane.
-function zonesViewport() {
-  const body = document.getElementById('body');
-  const diag = document.getElementById('diag');
-  const diagW = diag && diag.classList.contains('show') ? diag.offsetWidth : 0;
-  return { width: body.clientWidth - diagW, height: body.clientHeight };
+// The area the tree fills: #dock, which already gives the diagnostics pane its own room.
+function dockViewport() {
+  const dock = document.getElementById('dock');
+  return { width: dock.clientWidth, height: dock.clientHeight };
 }
 
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
   if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
+  if (id === 'wand') requestWandSkills();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
@@ -809,8 +1025,10 @@ function onVaultLeft() {
 // a redraw never moves keyboard focus unless the vault opened or closed, or
 // the user acted (PR #82 Dexter F2, Miguel B1).
 function renderLayout({ userAction = false } = {}) {
-  const plan = window.dockZones.zonePlan(effectiveLayout(), TABS, zonesViewport(), { faceSize: window.faceSize });
-  window.dockZones.applyPlan(plan, document);
+  const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize });
+  lastPlan = plan;
+  window.dockTreeView.applyBoxes(plan, document);
+  repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
   const now = new Set(plan.shown);
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
@@ -826,7 +1044,7 @@ function renderLayout({ userAction = false } = {}) {
 
 // A selection change (tab click, Ctrl+B) stays in this window.
 function commitSelection(next) {
-  selection = DL.selectionOf(next);
+  selection = DTm.cleanSelection(next);
   saveSelection();
   renderLayout({ userAction: true });
 }
@@ -839,27 +1057,37 @@ function sendOverride(layout) {
   try { ws.send(JSON.stringify({ type: 'layout-override', layout })); } catch { /* not attached: hello resends */ }
 }
 
-const placementOf = l => JSON.stringify({ zones: l.zones, hidden: l.hidden, size: l.size });
+const placementOf = l => JSON.stringify(l);
 
-// A placement change (move, hide, resize) goes to this tab's own layout when it
-// has one or `justThisTab` asks for one, else to the global layout. A change
-// that moves nothing is a selection change only: no store write, no push to
-// every window, no broadcast (PR #82 Miguel S3).
-function commitPlacement(next, { justThisTab = false } = {}) {
-  const l = DL.normalizeLayout(next, MODULE_IDS);
+// Save the global layout. Main answers null when it refused the layout (not an object, over the size cap) or the
+// write failed, and the call rejects when the bridge is gone: either way this window shows a layout that was not
+// saved, which is said once per failed save instead of swallowed (PR #100 Miguel S3).
+function saveGlobalLayout(l) {
+  const bridge = window.harness && window.harness.layoutTree;
+  if (!bridge) return;
+  const notSaved = () => flashAttention({ urgent: false, title: 'Couldn\'t save the layout' });
+  bridge.set(l).then((answer) => { if (!window.dockTreeView.layoutSaved(answer)) notSaved(); }, notSaved);
+}
+
+// A placement change (dock, hide, show, resize) goes to this tab's own layout
+// when it has one or `justThisTab` asks for one, else to the global layout. A
+// change that moves nothing writes nothing: no store write, no push to every
+// window, no broadcast (PR #82 Miguel S3). `select` is the module the change
+// is about (a dropped or ticked panel): it shows in its group in THIS window.
+function commitPlacement(next, { justThisTab = false, select = null } = {}) {
+  const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   if (placementOf(l) === placementOf(toOwn && ownLayout ? ownLayout : globalLayout) && (!justThisTab || ownLayout)) {
-    commitSelection(l);
+    renderLayout({ userAction: true });
     return;
   }
-  selection = DL.selectionOf(l);
-  saveSelection();
+  if (select !== null) { selection = DTm.selectTab(selection, l, select); saveSelection(); }
   if (toOwn) {
     ownLayout = l;
     sendOverride(l);
   } else {
     globalLayout = l;
-    if (window.harness && window.harness.layout) window.harness.layout.set(l).catch(() => {});
+    saveGlobalLayout(l);
   }
   renderLayout({ userAction: true });
 }
@@ -869,17 +1097,21 @@ function dropOwnLayout({ makeGlobal = false } = {}) {
   if (!ownLayout) return;
   if (makeGlobal) {
     globalLayout = ownLayout;
-    if (window.harness && window.harness.layout) window.harness.layout.set(ownLayout).catch(() => {});
+    saveGlobalLayout(ownLayout);
   }
   ownLayout = null;
   sendOverride(null);
   renderLayout({ userAction: true });
 }
 
-function toggleAllZones() { commitSelection(DL.toggleAll(effectiveLayout())); }
+function toggleAllZones() { commitSelection(DTm.toggleFoldAll(selection)); }
+
+// A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
+function selectModule(id) { commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
 
 // --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
-// Three ways in, one rule (DL.moveModule) and one save path (commitPlacement).
+// Ways in (the Window menu's checks, a tab's right-click, dragging a tab), one
+// rule set (app/dock-tree.js dock / hide / show) and one save path (commitPlacement).
 // *Just this tab* sends the change to this tab's own layout; once a tab has
 // one, every change goes there until Reset to global.
 const layoutMenu = document.getElementById('layout-menu');
@@ -921,55 +1153,50 @@ function showLayoutMenu(x, y) {
   layoutMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
 }
 
-// A module tab's right-click: Move to Left / Right / Top / Bottom / Hide.
+// A module tab's right-click: Hide. (Move and Float arrive in D2 / D4; a tab is moved by dragging it.)
 function openMoveMenu(id, x, y) {
   closeLayoutMenu();
   layoutMenuFor = id;
   const label = (TABS.find(t => t.id === id) || {}).label || id;
   const check = justThisTabCheck();
-  layoutMenu.appendChild(node('div', { className: 'lm-title', text: `Move ${label} to` }));
-  for (const t of window.dockZones.moveTargets(effectiveLayout(), id)) {
-    layoutMenu.appendChild(node('button', {
-      type: 'button', text: t.label, disabled: !t.enabled,
-      on: { click: () => {
-        commitPlacement(DL.moveModule(effectiveLayout(), id, t.target), { justThisTab: check.box.checked });
-        closeLayoutMenu();
-      } },
-    }));
-  }
+  layoutMenu.appendChild(node('div', { className: 'lm-title', text: label }));
+  layoutMenu.appendChild(node('button', {
+    type: 'button', text: 'Hide',
+    on: { click: () => {
+      commitPlacement(DTm.hide(placementLayout(), id), { justThisTab: check.box.checked });
+      closeLayoutMenu();
+    } },
+  }));
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
   showLayoutMenu(x, y);
 }
 
-// The ▦ layout menu: every module and where it sits, hidden ones included, so
-// there is never a layout with nothing left to click.
-const ROW_TARGETS = [['left', 'L', 'Left'], ['right', 'R', 'Right'], ['top', 'T', 'Top'], ['bottom', 'B', 'Bottom'], ['hide', '–', 'Hidden']];
+// The ▦ Window menu: a check per module, hidden ones included (unticking hides,
+// ticking brings it back to its seat), so there is never a layout with nothing
+// left to click.
 function openLayoutMenu() {
   const anchor = document.getElementById('layout-btn').getBoundingClientRect();
   closeLayoutMenu();
   layoutMenuFor = 'menu';
   const check = justThisTabCheck();
   layoutMenu.appendChild(node('div', { className: 'lm-title', text: ownLayout ? 'This tab\'s own layout' : 'Layout (every tab)' }));
-  for (const row of window.dockZones.layoutRows(effectiveLayout(), TABS)) {
-    const at = row.at === 'hidden' ? 'hide' : row.at;
-    layoutMenu.appendChild(node('div', { className: 'lm-row' }, [
-      node('span', { className: 'lm-name', text: row.label }),
-      ...ROW_TARGETS.map(([target, short, long]) => node('button', {
-        type: 'button', text: short, title: long, className: target === at ? 'on' : '',
-        on: { click: () => {
-          if (target === at) return;
-          commitPlacement(DL.moveModule(effectiveLayout(), row.id, target), { justThisTab: check.box.checked });
-          openLayoutMenu();                       // redrawn in place, still open
-        } },
-      })),
-    ]));
+  for (const row of window.dockTreeView.menuRows(placementLayout(), TABS)) {
+    const box = node('input', { type: 'checkbox', checked: row.shown });
+    box.dataset.module = row.id;
+    box.addEventListener('change', () => {
+      const l = placementLayout();
+      if (box.checked) commitPlacement(DTm.show(l, row.id), { justThisTab: check.box.checked, select: row.id });
+      else commitPlacement(DTm.hide(l, row.id), { justThisTab: check.box.checked });
+      openLayoutMenu();                           // redrawn in place, still open
+    });
+    layoutMenu.appendChild(node('label', {}, [box, node('span', { text: row.label })]));
   }
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
   layoutMenu.appendChild(node('button', {
-    type: 'button', text: 'Reset to default', title: 'Every panel back on the right, default sizes',
-    on: { click: () => { commitPlacement(DL.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
+    type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
+    on: { click: () => { commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
   if (ownLayout) {
     layoutMenu.appendChild(node('button', {
@@ -1000,55 +1227,82 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && closeLayoutMenu()) { e.preventDefault(); e.stopPropagation(); }
 }, true);
 
-// Drag a module's tab onto one of four edge strips that appear while dragging.
-const dropStrips = ['left', 'right', 'top', 'bottom'].map((target) => {
-  const s = node('div', { className: 'dock-drop', title: `Move here (${target})` });
-  s.dataset.target = target;
-  document.body.appendChild(s);
-  return s;
-});
-function placeDropStrips() {
-  const b = document.getElementById('body').getBoundingClientRect();
-  const T = 56;   // strip thickness
-  const at = { left: [b.left, b.top, T, b.height], right: [b.right - T, b.top, T, b.height],
-    top: [b.left, b.top, b.width, T], bottom: [b.left, b.bottom - T, b.width, T] };
-  for (const s of dropStrips) {
-    const [l, t, w, h] = at[s.dataset.target];
-    Object.assign(s.style, { left: `${l}px`, top: `${t}px`, width: `${w}px`, height: `${h}px` });
+// --- dragging a module's tab (dockable panels D1) ---------------------------------
+// Pointer events, not HTML5 drag-and-drop: the zones are drawn and hit-tested by
+// app/dock-drag.js, and HTML5 drag gives no control over either. A press that
+// never moves 5 px stays a click (it selects the tab). While dragging, every zone
+// of the cell under the pointer is lit in #dock-overlay and the one under it
+// fills; a drop on a zone docks, anywhere else changes nothing.
+let cancelTabDrag = () => {};      // the socket closing ends a drag too
+let tabDragDraws = 0;             // how many times the drag rebuilt the overlay: the probe checks an idle pointer costs none
+(function initTabDrag() {
+  const dock = document.getElementById('dock');
+  const overlay = document.getElementById('dock-overlay');
+  let press = null;                // { id, label, x, y, el, pointerId }: the button is down, not yet dragged
+  let drag = null;                 // { id, ghost, target, rect, viewport, sig }
+
+  function drawZones(zones) {
+    tabDragDraws += 1;
+    overlay.textContent = '';
+    for (const z of zones) {
+      const el = node('div', { className: z.hot ? 'dz hot' : 'dz' });
+      Object.assign(el.style, { left: `${z.rect.x}px`, top: `${z.rect.y}px`, width: `${z.rect.width}px`, height: `${z.rect.height}px` });
+      overlay.appendChild(el);
+    }
   }
-}
-let draggingModule = null;
-document.addEventListener('dragstart', (e) => {
-  const button = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
-  if (!button) return;
-  draggingModule = button.dataset.module;
-  e.dataTransfer.setData('text/x-dock-module', draggingModule);
-  e.dataTransfer.effectAllowed = 'move';
-  placeDropStrips();
-  document.body.classList.add('dock-dragging');
-});
-for (const s of dropStrips) {
-  s.addEventListener('dragover', (e) => { if (draggingModule) { e.preventDefault(); s.classList.add('over'); } });
-  s.addEventListener('dragleave', () => s.classList.remove('over'));
-  s.addEventListener('drop', (e) => {
-    e.preventDefault();
-    const id = draggingModule;
-    // Ended HERE, before the move redraws: the redraw removes the dragged tab
-    // button, and a removed source never fires the dragend that was meant to
-    // clean up -- the strips stayed up and the file drop zone stayed disarmed
-    // (PR #82 Dexter F1, Miguel I2).
-    endModuleDrag();
-    if (id) commitPlacement(DL.moveModule(effectiveLayout(), id, s.dataset.target));
+  function end() {
+    if (press) { try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ } }
+    press = null;
+    if (drag) drag.ghost.remove();
+    drag = null;
+    overlay.textContent = '';
+    document.body.classList.remove('dock-dragging');
+  }
+  cancelTabDrag = () => { if (press || drag) end(); };
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
+    if (!b) return;
+    press = { id: b.dataset.module, label: b.textContent, x: e.clientX, y: e.clientY, el: b, pointerId: e.pointerId };
+    // Capture keeps the moves and the release coming to this page when the pointer leaves the window; if the
+    // release is lost anyway (Alt-Tab, an OS dialog), the three guards below end the drag (PR #100 Miguel I2).
+    try { b.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
   });
-}
-function endModuleDrag() {
-  draggingModule = null;
-  document.body.classList.remove('dock-dragging');
-  for (const s of dropStrips) s.classList.remove('over');
-}
-// A drag cancelled or dropped anywhere else: its source still exists, so
-// dragend arrives. Captured on window so nothing on the way can swallow it.
-window.addEventListener('dragend', endModuleDrag, true);
+  window.addEventListener('pointermove', (e) => {
+    if (!press) return;
+    if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
+    if (!drag) {
+      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
+      // The dock's rectangle and size are read once, here: a move event must not force a layout every time.
+      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null };
+      document.body.appendChild(drag.ghost);
+      document.body.classList.add('dock-dragging');
+    }
+    drag.ghost.style.left = `${e.clientX + 12}px`;
+    drag.ghost.style.top = `${e.clientY + 10}px`;
+    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top });
+    drag.target = hit.target;
+    // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
+    const sig = JSON.stringify(hit.zones);
+    if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
+  });
+  window.addEventListener('pointerup', () => {
+    if (!press) return;
+    const d = drag;
+    // Ended BEFORE the drop redraws: the redraw removes the dragged tab's button,
+    // and a removed source never reports an end (L1 PR #82 Dexter F1, Miguel I2).
+    end();
+    if (!d) return;                                     // never moved: the click that follows selects the tab
+    if (d.target) commitPlacement(DTm.dock(placementLayout(), d.id, d.target), { select: d.id });
+  });
+  window.addEventListener('pointercancel', () => { cancelTabDrag(); });
+  window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
+  window.addEventListener('blur', () => { cancelTabDrag(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
+  }, true);
+})();
 
 // --- focus mode (layout pass L1, #1) -----------------------------------------
 // Only the terminal: main lifts this view over the tab strip and tells every
@@ -1068,6 +1322,7 @@ function applyFocusMode(on) {
   // and Ctrl+B never reached the terminal's handler (probe check 7, found
   // after check 8 left focus in #vault-secret).
   if (on) term.focus();
+  paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
@@ -1076,99 +1331,256 @@ for (const id of ['focus-btn', 'focus-exit']) {
   document.getElementById(id).addEventListener('click', () => { if (focusBridge) focusBridge.toggle(); });
 }
 
+// A tab in a group, or a button on a rail. (The click a finished tab drag leaves
+// behind lands on the drop's common ancestor, not on a tab: nothing to swallow.)
 document.addEventListener('click', (e) => {
-  const button = e.target.closest('.zone-tabs button[data-module]');
+  const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
-  commitSelection(DL.selectModule(effectiveLayout(), button.dataset.module));
+  selectModule(button.dataset.module);
 });
 
 document.getElementById('side-hint').addEventListener('click', toggleAllZones);
 
-// S2: the first launch after the upgrade has no global layout yet; it starts
+// S2: the first launch after the upgrade has no stored layout at all; it starts
 // from this window's old per-window settings so nothing moves under anyone.
 function legacyLayout() {
   let legacy = {};
   try { legacy = { sideTab: localStorage.getItem('sideTab'), rosterWidth: localStorage.getItem('rosterWidth') }; } catch {}
-  return DL.fromLegacy(legacy, MODULE_IDS);
+  return DTm.fromV1(DL.fromLegacy(legacy, MODULE_IDS), MODULE_IDS);
 }
 
 async function loadLayout() {
-  globalLayout = legacyLayout();
+  globalLayout = DTm.defaultLayout(MODULE_IDS);
+  const seeded = localStorage.getItem('dockSelection2') !== null;
   selection = readSelection();
+  if (!seeded) saveSelection();            // seeded ONCE from L1's, so a later push never brings another window's choices (Dexter F4)
   renderLayout();                          // draw at once; the stored layout may take a moment
-  const bridge = window.harness && window.harness.layout;
+  const bridge = window.harness && window.harness.layoutTree;
   if (bridge) {
     bridge.onChange((l) => {
-      globalLayout = DL.normalizeLayout(l, MODULE_IDS);
+      layoutPushes += 1;
+      globalLayout = DTm.normalize(l, MODULE_IDS);
       if (!ownLayout) renderLayout();
     });
     let answer = null;
+    let v1Answer = null;
     try { answer = await bridge.get(); } catch { /* unreadable: keep */ }
-    // Only a MISSING file is a first launch to migrate and save. Unreadable or
-    // corrupt (antivirus holding it) keeps the old settings drawn and saves
-    // nothing, so the user's real layout is never overwritten (PR #82 Dexter F3,
-    // Miguel I1); their next real change saves as usual.
-    const what = window.dockZones.afterLayoutGet(answer);
-    if (what === 'migrate') bridge.set(globalLayout).catch(() => {});
-    else if (what === 'use') { globalLayout = DL.normalizeLayout(answer.layout, MODULE_IDS); renderLayout(); }
-  }
-  // This window's selection is seeded ONCE, from what it shows at load (S2), so
-  // a layout another window pushes later never brings that window's choices
-  // with it (PR #82 Dexter F4).
-  if (!selection) {
-    selection = DL.selectionOf(effectiveLayout());
-    saveSelection();
+    // The L1 key is read only when there is no tree yet, to migrate from it, and never written by this build.
+    if (answer && answer.status === 'missing' && window.harness.layout) {
+      try { v1Answer = await window.harness.layout.get(); } catch { /* unreadable: keep */ }
+    }
+    // Only a MISSING tree is a first launch to migrate and save. Unreadable or
+    // corrupt (antivirus holding it) draws the default and saves nothing, so the
+    // user's real layout is never overwritten (PR #82 Dexter F3, Miguel I1); their
+    // next real change saves as usual.
+    const what = window.dockTreeView.afterTreeGet(answer, v1Answer, { v1Bridge: !!window.harness.layout });
+    if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); renderLayout(); }
+    else if (what === 'migrate-v1') {
+      globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);
+      saveGlobalLayout(globalLayout);
+      renderLayout();
+    } else if (what === 'migrate-legacy') {
+      globalLayout = legacyLayout();
+      saveGlobalLayout(globalLayout);
+      renderLayout();
+    } else flashAttention({ urgent: false, title: 'Couldn\'t read the saved layout; showing the default' });
   }
 }
 
 // The host's word on this tab's own layout: in `hello` and on every change. A
 // change this window made that the host hasn't echoed yet wins, and is sent
-// again (PR #82 Dexter F8; dockZones.overrideOnHello is the tested rule).
+// again (PR #82 Dexter F8; dockZones.overrideOnHello is the tested rule). A host
+// started by an older window may hold an L1 layout: readAny migrates it.
 function applyLayoutOverride(incoming) {
   const r = window.dockZones.overrideOnHello(pendingOverride, incoming);
   if (r.settled) pendingOverride = null;
-  ownLayout = r.apply && typeof r.apply === 'object' ? DL.normalizeLayout(r.apply, MODULE_IDS) : null;
+  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readAny(r.apply, MODULE_IDS) : null;
   if (r.resend && pendingOverride) {
     try { ws.send(JSON.stringify({ type: 'layout-override', layout: pendingOverride.layout })); } catch { /* next hello */ }
   }
   renderLayout();
 }
 
-// verify/probe-dock-zones.js drives and measures the zones through named
+// verify/probe-dock-tree.js drives and measures the dock through named
 // actions, defined only on a page main opened with ?probe=1 (its probe driver
 // is running). Answers JSON text.
 if (new URLSearchParams(location.search).get('probe') === '1') {
   const rectOf = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+  // A pointer event as a mouse would make it, for the synthetic drags below: they run the same listeners a real one does.
+  const ptr = (type, x, y) => new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerId: 1, pointerType: 'mouse', isPrimary: true });
+  const overlayState = () => ({
+    zones: document.querySelectorAll('#dock-overlay .dz').length,
+    hot: document.querySelectorAll('#dock-overlay .dz.hot').length,
+    dragging: document.body.classList.contains('dock-dragging'),
+    ghost: !!document.querySelector('#dock-ghost'),         // made on the fly by the drag, so not a getElementById
+  });
   window.__dockProbe = (req) => {
     const a = (req && req.args) || {};
     switch (req && req.action) {
       case 'state': {
-        const zones = {};
-        for (const el of document.querySelectorAll('.zone')) {
-          zones[el.dataset.zone] = {
-            empty: el.hasAttribute('data-empty'), collapsed: el.hasAttribute('data-collapsed'), rect: rectOf(el),
-            tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
-            panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
-          };
-        }
+        // `focusTerm`: the keyboard goes to the terminal first, as a click on it would, so a real key reaches xterm's handler.
+        if (a.focusTerm === true) term.focus();
+        const groups = [...document.querySelectorAll('#dock > .dgroup')].map(el => ({
+          id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
+          tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
+          on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
+          panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
+          panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
+        }));
+        // The vault's field is tagged the first time it is asked for, so a later state shows whether it is the SAME node.
+        const vaultField = document.getElementById('vault-search');
+        if (vaultField && !vaultField.__probeTag) vaultField.__probeTag = Math.random().toString(36).slice(2);
+        const rails = [...document.querySelectorAll('#dock > .drail')].map(el => ({
+          dir: el.dataset.dir, rect: rectOf(el), modules: [...el.querySelectorAll('button')].map(b => b.dataset.module),
+        }));
+        const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
+          path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),
+        }));
         let proposed = null;
         try { proposed = fit.proposeDimensions() || null; } catch {}
         return JSON.stringify({
-          ok: true, layout: effectiveLayout(), own: ownLayout !== null, shown: [...shownModules], zones,
+          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, rails, gutters,
           term: { cols: term.cols, rows: term.rows }, fit: proposed, sent: lastSentResize,
-          termwrap: rectOf(document.getElementById('termwrap')),
+          termwrap: rectOf(document.getElementById('termwrap')), dock: rectOf(document.getElementById('dock')),
+          termParent: document.getElementById('termwrap').parentNode.id, pushes: layoutPushes,
           header: !!document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none',
-          innerHeight: window.innerHeight, focus: focusOn,
+          innerHeight: window.innerHeight, focus: focusOn, overlay: overlayState(), title: document.title,
+          vaultNode: vaultField ? vaultField.__probeTag : null,
+          // Plain <script> files that fail to export break only the real window, never a unit test.
+          exports: { fit: typeof (window.dockTree || {}).fit, applyBoxes: typeof (window.dockTreeView || {}).applyBoxes, zonesAt: typeof (window.dockDrag || {}).zonesAt },
         });
       }
-      case 'move': commitPlacement(DL.moveModule(effectiveLayout(), a.id, a.target), { justThisTab: a.justThisTab === true }); break;
-      case 'select': commitSelection(DL.selectModule(effectiveLayout(), a.id)); break;
-      case 'toggleAll': toggleAllZones(); break;
+      case 'boxes': return JSON.stringify({ ok: true, boxes: lastPlan ? lastPlan.boxes : [], splits: lastPlan ? lastPlan.splits : [] });
+      // A small window, without an OS window to resize: #dock is held at `width` x `height` (either may be left
+      // out, and none puts it back to filling its row). The tree is fitted to it exactly as to a real window.
+      case 'squeeze': {
+        const dock = document.getElementById('dock');
+        dock.style.flex = a.width ? 'none' : '';
+        dock.style.width = a.width ? `${a.width}px` : '';
+        dock.style.height = a.height ? `${a.height}px` : '';
+        dock.style.alignSelf = a.height ? 'flex-start' : '';
+        renderLayout();
+        break;
+      }
+      // The placement, read or replaced as a whole (`layout`: anything; it is normalized).
+      case 'layout':
+        if (a.layout !== undefined) commitPlacement(a.layout, { justThisTab: a.justThisTab === true });
+        return JSON.stringify({ ok: true, layout: placementLayout() });
+      case 'dock': commitPlacement(DTm.dock(placementLayout(), a.id, a.target), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      case 'hide': commitPlacement(DTm.hide(placementLayout(), a.id), { justThisTab: a.justThisTab === true }); break;
+      case 'show': commitPlacement(DTm.show(placementLayout(), a.id), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      // Kept for the other probes (git, vault reconnect), which move a module to an edge or hide it by name.
+      case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(placementLayout(), a.id) : DTm.dock(placementLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      case 'select': selectModule(a.id); break;
+      case 'foldAll': case 'toggleAll': toggleAllZones(); break;
       case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
+      // A tab dragged to `to` ({ x, y } relative to #dock) by synthetic pointer events: down on the tab, two moves,
+      // then what the overlay shows MID-drag, then the release (or Escape when `escape`).
+      case 'drag': {
+        const btn = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!btn) return JSON.stringify({ ok: false, error: 'no such tab' });
+        const from = btn.getBoundingClientRect();
+        const d = document.getElementById('dock').getBoundingClientRect();
+        const x0 = from.left + from.width / 2;
+        const y0 = from.top + from.height / 2;
+        const x1 = d.left + a.to.x;
+        const y1 = d.top + a.to.y;
+        btn.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + 8, y0 + 8));
+        window.dispatchEvent(ptr('pointermove', x1, y1));
+        const during = overlayState();
+        const draws0 = tabDragDraws;
+        for (let k = 0; k < 3; k++) window.dispatchEvent(ptr('pointermove', x1, y1));   // the pointer has not moved to another zone
+        during.idleRedraws = tabDragDraws - draws0;
+        if (a.escape) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        else window.dispatchEvent(ptr('pointerup', x1, y1));
+        window.dispatchEvent(ptr('pointerup', x1, y1));       // a no-op when the drag already ended: nothing stays pressed
+        return JSON.stringify({ ok: true, during, after: overlayState() });
+      }
+      // A press and release on a tab without moving: it must select, not drag.
+      case 'tabClick': {
+        const btn = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!btn) return JSON.stringify({ ok: false, error: 'no such tab' });
+        const r = btn.getBoundingClientRect();
+        btn.dispatchEvent(ptr('pointerdown', r.left + 3, r.top + 3));
+        window.dispatchEvent(ptr('pointerup', r.left + 3, r.top + 3));
+        btn.click();
+        return JSON.stringify({ ok: true, after: overlayState() });
+      }
+      // A divider dragged by `delta` px (synthetic pointer events on the bar), in two steps; `hold` leaves the bar pressed.
+      case 'gutter': {
+        const g = [...document.querySelectorAll('#dock > .dgutter')].find(el => el.dataset.path === String(a.path) && Number(el.dataset.i) === a.i);
+        if (!g) return JSON.stringify({ ok: false, error: 'no such divider' });
+        const r = g.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const dx = g.dataset.dir === 'row' ? a.delta : 0;
+        const dy = g.dataset.dir === 'col' ? a.delta : 0;
+        g.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + dx / 2, y0 + dy / 2));
+        window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
+        window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
+        return JSON.stringify({ ok: true });
+      }
+      // PR #100 Miguel I2: a drag whose release never comes (no pointerup is sent). `kind` is 'tab' (`id`) or
+      // 'gutter' (`path`, `i`, `delta`); `how` is 'nobutton' (a move arrives with no button down) or 'blur'.
+      case 'abortedDrag': {
+        const gut = a.kind === 'gutter';
+        const el = gut
+          ? [...document.querySelectorAll('#dock > .dgutter')].find(e2 => e2.dataset.path === String(a.path) && Number(e2.dataset.i) === a.i)
+          : document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        const r = el.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const step = gut ? (el.dataset.dir === 'row' ? [a.delta, 0] : [0, a.delta]) : [30, 30];
+        const snap = () => ({ ...overlayState(), divider: dividerDrag !== null, drawn: dragLayout !== null });
+        el.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + step[0] / 2, y0 + step[1] / 2));
+        window.dispatchEvent(ptr('pointermove', x0 + step[0], y0 + step[1]));
+        const during = snap();
+        if (a.how === 'blur') window.dispatchEvent(new Event('blur'));
+        else window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x0 + step[0], clientY: y0 + step[1], button: 0, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        return JSON.stringify({ ok: true, during, after: snap() });
+      }
+      // PR #100 Dexter F6: a divider is pressed and moved, ANOTHER window's layout arrives (`pushed`, the same
+      // path as the main-process push), then the divider is released.
+      case 'gutterRace': {
+        const g = [...document.querySelectorAll('#dock > .dgutter')].find(el => el.dataset.path === String(a.path) && Number(el.dataset.i) === a.i);
+        if (!g) return JSON.stringify({ ok: false, error: 'no such divider' });
+        const r = g.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const dx = g.dataset.dir === 'row' ? a.delta : 0;
+        const dy = g.dataset.dir === 'col' ? a.delta : 0;
+        g.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
+        globalLayout = DTm.normalize(a.pushed, MODULE_IDS);
+        window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
+        return JSON.stringify({ ok: true });
+      }
       // The menus, opened as a click would, so a screenshot can look at them.
       case 'openMenu':
         if (a.which === 'move') openMoveMenu(String(a.id), 300, 200); else openLayoutMenu();
-        return JSON.stringify({ ok: true, items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })) });
+        return JSON.stringify({ ok: true,
+          items: [...layoutMenu.querySelectorAll('button')].map(b => ({ text: b.textContent, disabled: b.disabled, on: b.classList.contains('on') })),
+          rows: [...layoutMenu.querySelectorAll('label')].map((l) => {
+            const input = l.querySelector('input');
+            return { text: l.textContent, id: (input && input.dataset.module) || null, checked: !!(input && input.checked) };
+          }) });
+      // A panel's check in the open Window menu, clicked as a pointer would.
+      case 'menuTick': {
+        const box = layoutMenu.querySelector(`input[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!box) return JSON.stringify({ ok: false, error: 'no such row' });
+        box.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'menuButton': {
+        const b = [...layoutMenu.querySelectorAll('button')].find(x => x.textContent === a.text);
+        if (!b) return JSON.stringify({ ok: false, error: 'no such button' });
+        b.click();
+        return JSON.stringify({ ok: true });
+      }
       case 'closeMenu': closeLayoutMenu(); break;
       // Layout pass L3 (verify/probe-git-tree.js): read the Git panel, hover a spoke, pin and jump.
       case 'gitState': {
@@ -1276,12 +1688,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // one of the page's occupancy controls; and the session's turn, as the host's `turn` message would set it.
       case 'occState': return JSON.stringify({
         ok: true,
-        banner: {
-          hidden: occupancyEls.banner.hidden, text: occupancyEls.text.textContent, since: occupancyEls.since.textContent,
-          more: occupancyEls.more.textContent, note: occupancyEls.note.textContent,
-          warn: occupancyEls.banner.classList.contains('warn'), jump: occupancyEls.jump.hidden ? null : occupancyEls.jump.textContent,
-          leftRule: getComputedStyle(occupancyEls.banner).borderLeftWidth, animation: getComputedStyle(occupancyEls.banner).animationName,
-        },
+        bar: barState(),
         confirm: {
           hidden: occupancyEls.confirm.hidden, warn: occupancyEls.confirm.classList.contains('warn'),
           text: document.getElementById('occupancy-confirm-text').textContent,
@@ -1295,7 +1702,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true });
       case 'occClick': {
         const el = { type: occupancyEls.confirm.querySelector('#occupancy-type'), wait: occupancyEls.confirm.querySelector('#occupancy-wait'),
-          jump: occupancyEls.jump, where: document.querySelector('.agent-where') }[a.target];
+          jump: barEls.chips.querySelector('button.bar-chip'), where: document.querySelector('.agent-where') }[a.target];
         const hiddenAnswer = (a.target === 'type' || a.target === 'wait') && occupancyEls.confirm.hidden;
         if (!el || el.hidden || hiddenAnswer) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
         el.click();
@@ -1303,9 +1710,51 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       }
       case 'occTurn':
         sessionTurn = ['idle', 'turn', 'prompt'].includes(a.turn) ? a.turn : null;
-        paintOccupancyBanner();
+        paintBar();
         reportTabStatus();
         return JSON.stringify({ ok: true, turn: sessionTurn });
+      // backlog #49 + #52 (verify/probe-terminal-bar.js): the bar as painted and the buffer it reads; a scroll of the
+      // terminal (which goes through xterm's own onScroll, as a wheel does); a click on the prompt part or a chip.
+      case 'barState': return JSON.stringify({ ok: true, ...barState() });
+      case 'barScroll': {
+        if (a.to === 'top') term.scrollToTop();
+        else if (a.to === 'bottom') term.scrollToBottom();
+        else if (Number.isInteger(a.to) && a.to >= 0 && a.to < 1e6) term.scrollToLine(a.to);
+        else return JSON.stringify({ ok: false, error: 'barScroll needs top, bottom or a line number' });
+        return JSON.stringify({ ok: true, viewportY: term.buffer.active.viewportY });
+      }
+      // What /clear sends: the real escape through xterm's own parser, answered once it has been parsed
+      case 'barClear': return new Promise((resolve) => {
+        term.write('\x1b[3J', () => resolve(JSON.stringify({ ok: true, epoch: bar.epoch })));
+      });
+      // a light or dark look, as applyTheme would set the chrome variables (the chips must read under both)
+      case 'barLook': {
+        const looks = { light: { '--bg': '#f4f1ea', '--chrome': '#ece8de', '--border': '#cfc8b8', '--text': '#1d1b16', '--dim': '#6b665a' },
+          dark: { '--bg': '#11131a', '--chrome': '#171a23', '--border': '#262b38', '--text': '#c7cede', '--dim': '#6d7689' } };
+        const look = looks[a.mode];
+        if (!look) return JSON.stringify({ ok: false, error: 'barLook needs light or dark' });
+        for (const [k, v] of Object.entries(look)) document.documentElement.style.setProperty(k, v);
+        paintBar();
+        return JSON.stringify({ ok: true });
+      }
+      // a selection in the whole-prompt view (Y1: it must survive a repaint that changes nothing)
+      case 'barSelection': {
+        if (a.select) {
+          const range = document.createRange();
+          range.selectNodeContents(barEls.full);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        return JSON.stringify({ ok: true, text: String(window.getSelection()) });
+      }
+      case 'barClick': {
+        const el = { prompt: barEls.prompt, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
+        if (!el || el.hidden) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
+        el.focus();
+        el.click();
+        return JSON.stringify({ ok: true });
+      }
       // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
       // CLI box with it). Bounded, and only ever this tab's own socket.
       // the repo browser (verify/probe-repo-browser.js): named sub-actions of the Files tab and the reader
@@ -1318,20 +1767,77 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         send(JSON.stringify({ type: 'input', data: a.data }));
         return JSON.stringify({ ok: true });
       }
-      // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
-      // dragged button is gone and no dragend will ever come; the drag must
-      // already be over when the drop returns.
-      case 'dragDrop': {
-        const btn = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
-        const strip = dropStrips.find(s => s.dataset.target === a.target);
-        if (!btn || !strip) return JSON.stringify({ ok: false, error: 'no such tab or strip' });
+      // backlog #51 (verify/probe-wand.js): read the wand and operate its controls as a pointer would.
+      case 'wandState': {
+        const root = document.getElementById('wand-root');
+        const q = (s) => root.querySelector(s);
+        const ed = q('.wand-editor');
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.wandDisplay === 'object' && typeof window.wandDisplay.view === 'function',
+          shown: document.querySelector('.panel[data-panel="wand"]').classList.contains('on'),
+          text: root.textContent,
+          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => ({ id: b.dataset.wandId, emoji: b.textContent,
+            label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
+            title: b.title, draggable: b.draggable })),
+          deletes: root.querySelectorAll('.wand-x').length,
+          add: !!q('[data-wand-act="add"]'),
+          edit: !!q('.wand-edit.on'),
+          notes: [...root.querySelectorAll('.wand-note')].map(n => n.textContent),
+          status: (q('.wand-status') || {}).textContent || '',
+          error: (q('.wand-error') || {}).textContent || '',
+          editor: ed ? { emoji: q('[data-wand-field="emoji"]').value, picked: (q('.wand-picked') || {}).textContent || '',
+            query: q('[data-wand-field="query"]').value, args: q('[data-wand-field="args"]').value,
+            listed: [...root.querySelectorAll('.wand-skill')].map(b => b.dataset.wandSkill),
+            saveDisabled: !!(q('[data-wand-act="save"]') || {}).disabled } : null,
+          rect: rectOf(root),
+          liveText: (document.getElementById('wand-live') || {}).textContent || '',
+          focus: (() => { const d = document.activeElement && document.activeElement.dataset; return d && root.contains(document.activeElement)
+            ? { act: d.wandAct || null, id: d.wandId || null, field: d.wandField || null } : null; })(),
+        });
+      }
+      case 'wandClick': {
+        const btn = [...document.querySelectorAll('#wand-root button[data-wand-act]')].find(b => b.dataset.wandAct === a.act
+          && (a.id === undefined || b.dataset.wandId === a.id) && (a.skill === undefined || b.dataset.wandSkill === a.skill)
+          && (a.emoji === undefined || b.dataset.wandEmoji === a.emoji));
+        if (!btn) return JSON.stringify({ ok: false, error: 'no wand control ' + JSON.stringify(a) });
+        const times = Number.isInteger(a.times) && a.times > 1 && a.times <= 3 ? a.times : 1;
+        for (let i = 0; i < times; i++) btn.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'wandSetField': {
+        const el = document.querySelector('#wand-root [data-wand-field="' + String(a.field) + '"]');
+        if (!el) return JSON.stringify({ ok: false, error: 'no editor field ' + a.field });
+        el.focus();
+        el.value = String(a.value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return JSON.stringify({ ok: true });
+      }
+      // keyboard access (Miguel I3 / I4): focus a control, press a key on it
+      case 'wandFocus': case 'wandKey': {
+        const root = document.getElementById('wand-root');
+        const el = a.field ? root.querySelector('[data-wand-field="' + String(a.field) + '"]')
+          : [...root.querySelectorAll('button[data-wand-act]')].find(b => b.dataset.wandAct === a.act && (a.id === undefined || b.dataset.wandId === a.id));
+        if (!el) return JSON.stringify({ ok: false, error: 'no wand control ' + JSON.stringify(a) });
+        el.focus();
+        if (req.action === 'wandFocus') return JSON.stringify({ ok: true });
+        const ev = new KeyboardEvent('keydown', { key: String(a.key), altKey: a.alt === true, bubbles: true, cancelable: true });
+        el.dispatchEvent(ev);
+        return JSON.stringify({ ok: true, defaultPrevented: ev.defaultPrevented });
+      }
+      // a real drag inside the panel: from one favourite onto another's slot
+      case 'wandDrag': {
+        const root = document.getElementById('wand-root');
+        const src = [...root.querySelectorAll('.wand-btn[data-wand-id]')].find(b => b.dataset.wandId === a.from);
+        const cell = [...root.querySelectorAll('[data-wand-cell]')].find(c => c.dataset.wandCell === a.to);
+        if (!src || !cell) return JSON.stringify({ ok: false, error: 'no such favourite to drag' });
         const dt = new DataTransfer();
-        btn.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        const during = document.body.classList.contains('dock-dragging');
-        strip.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        strip.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        return JSON.stringify({ ok: true, during, sourceGone: !btn.isConnected, dragging: draggingModule,
-          stripsUp: document.body.classList.contains('dock-dragging') });
+        const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+        fire(src, 'dragstart');
+        fire(cell, 'dragover');
+        const overlay = (document.getElementById('app') || document.body).classList.contains('dropping');
+        fire(cell, 'drop');
+        return JSON.stringify({ ok: true, fileDropOverlayShown: overlay });
       }
       // PR #82 Dexter F2 / Miguel B1: half a secret typed, then every kind of
       // passive redraw. Focus must still be in the secret field after each.
@@ -1473,10 +1979,9 @@ window.addEventListener('DOMContentLoaded', () => {
   const forced = new URLSearchParams(location.search).get('tab');
   loadLayout().then(() => {
     if (!forced || !isKnownTab(forced)) return;
-    const l = effectiveLayout();
-    if (DL.ZONES.some(z => l.active[z] === forced)) return;
-    const pinned = DL.selectModule(l, forced);
-    selection = { active: pinned.active, restore: pinned.restore };
+    const l = placementLayout();
+    if (!DTm.groupOf(l, forced)) return;      // a hidden module has no group to show in
+    selection = DTm.selectTab(selection, l, forced);
     renderLayout();
   });
 
@@ -3225,43 +3730,77 @@ function renderProcesses(running) {
   }).join('');
 }
 
-// --- zone sizes (layout pass L1) ---------------------------------------------
-// Every zone resizes from its inner edge (the old roster grip, for all four).
-// The SIZE POLICY lives in app/dock-layout.js (minimums, the terminal's room,
-// shrinking with the window) and the portrait size follows the Agents zone in
-// app/dock-zones-display.js; nothing here decides either.
+// --- dividers (dockable panels D1) -------------------------------------------
+// Every bar between two cells resizes them. The SIZE POLICY lives in
+// app/dock-tree.js (minimums, the terminal's room, shrinking with the window) and
+// what a drag asks for in app/dock-tree-display.js (dragSizes / sizesAfterDrag);
+// nothing here decides either.
 //
-// While a grip is dragged the layout is DRAWN (dragLayout) but not saved; the
-// one write happens on release. A store write per mousemove frame is what let
-// the old width ratchet run frame by frame (Miguel, A18).
-(function initZoneGrips() {
-  let dragging = null;     // { zone, grip, el }
-  document.getElementById('body').addEventListener('mousedown', (e) => {
-    const grip = e.target.closest('.zone-grip');
-    if (!grip) return;
-    const el = grip.closest('.zone');
-    dragging = { zone: el.dataset.zone, grip, el };
-    grip.classList.add('dragging');
+// While a divider is dragged the layout is DRAWN (dragLayout) but not saved; the
+// one write happens on release. A store write per move frame is what let the old
+// width ratchet run frame by frame (L1, Miguel A18).
+let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter, sizes }
+(function initDividers() {
+  const nodeAt = (layout, path) => path.reduce((n, k) => (n && n.kids ? n.kids[k] : null), layout.root);
+  const splitAt = (path) => (lastPlan ? lastPlan.splits.find(s => s.path.join('.') === path.join('.')) : null);
+
+  document.getElementById('dock').addEventListener('pointerdown', (e) => {
+    const g = e.target.closest && e.target.closest('.dgutter');
+    if (!g || e.button !== 0) return;
+    const path = g.dataset.path === '' ? [] : g.dataset.path.split('.').map(Number);
+    const base = placementLayout();
+    const split = splitAt(path);
+    const n = nodeAt(base, path);
+    if (!split || !n) return;
+    dividerDrag = { path, i: Number(g.dataset.i), dir: g.dataset.dir, start: g.dataset.dir === 'row' ? e.clientX : e.clientY, base, split, node: n, gutter: g, pointerId: e.pointerId };
+    g.classList.add('dragging');
+    // As the tab drag does (PR #100 Miguel I2): capture, and a drag that lost its release ends itself.
+    try { g.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
     e.preventDefault();
   });
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    // Measured from the zone's own anchored edge, not the window's: the
-    // diagnostics pane can sit between the right zone and the window edge.
-    const px = window.dockZones.dragSize(dragging.zone, { x: e.clientX, y: e.clientY },
-      dragging.el.getBoundingClientRect());
-    if (px === null) return;
-    dragLayout = DL.setSize(dragLayout || effectiveLayout(), dragging.zone, px);
+  // A drag the system took away, or whose release never came, is not a choice: drop it and draw what is saved.
+  function cancelDividerDrag() {
+    if (!dividerDrag) return;
+    const d = dividerDrag;
+    d.gutter.classList.remove('dragging');
+    try { d.gutter.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
+    dividerDrag = null;
+    dragLayout = null;
+    renderLayout();
+  }
+  window.addEventListener('pointermove', (e) => {
+    if (!dividerDrag) return;
+    if (e.buttons === 0) { cancelDividerDrag(); return; }
+    const d = dividerDrag;
+    const delta = (d.dir === 'row' ? e.clientX : e.clientY) - d.start;
+    const sizes = window.dockTreeView.sizesAfterDrag(d.node, d.split, d.i, delta);
+    d.sizes = sizes;
+    if (!sizes) {
+      // Nothing to ask for (back at the start, or against a minimum): draw what is saved, store nothing.
+      if (dragLayout) { dragLayout = null; renderLayout(); }
+      return;
+    }
+    dragLayout = DTm.setSplitSizes(d.base, d.path, sizes);
     renderLayout();
   });
-  window.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging.grip.classList.remove('dragging');
-    dragging = null;
-    const l = dragLayout;
+  window.addEventListener('pointerup', () => {
+    if (!dividerDrag) return;
+    const d = dividerDrag;
+    d.gutter.classList.remove('dragging');
+    try { d.gutter.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
+    dividerDrag = null;
+    const moved = dragLayout !== null;
     dragLayout = null;
-    if (l) commitPlacement(l);     // the one real choice, saved once
+    // Applied to the placement as it is NOW, not as it was at pointerdown: another window may have changed it
+    // meanwhile, and saving the old snapshot back would undo that (PR #100 Dexter F6). If the split isn't the
+    // one that was dragged any more, the drag is dropped.
+    const rebased = moved ? window.dockTreeView.rebaseDrag(committedLayout(), { path: d.path, i: d.i, node: d.node, sizes: d.sizes }) : null;
+    if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), d.path, rebased));     // the one real choice, saved once
+    else renderLayout();
   });
+  window.addEventListener('pointercancel', cancelDividerDrag);
+  window.addEventListener('lostpointercapture', cancelDividerDrag);   // after a normal release the drag is already over
+  window.addEventListener('blur', cancelDividerDrag);
 })();
 
 // The window changing size re-fits the zones, never saving: the stored sizes
@@ -3276,6 +3815,10 @@ window.addEventListener('resize', () => {
     renderLayout();
   });
 });
+// The area can change without the window resizing: the header wrapping onto a second line as its fields
+// fill in, the diagnostics pane opening. The boxes are absolute, so nothing else would re-fit them (the
+// probe found the bottom group 5 px past the area at launch). It goes through the same coalesced path.
+new ResizeObserver(() => window.dispatchEvent(new Event('resize'))).observe(document.getElementById('dock'));
 
 // --- attention --------------------------------------------------------------
 // A visible cue in the window as well as the OS toast, so the reason is still
@@ -3336,6 +3879,15 @@ let vimSeen = false;
 // "vim on, Esc, first click" still read 'ready'. Once latched it costs nothing.
 term.onWriteParsed(() => {
   if (!vimSeen && vimInsertShown(screenLines())) vimSeen = true;
+});
+// The terminal bar's echo search (#49) hooks the same event AFTER the vim latch above: the latch's own test
+// (renderer-top-bar.test.js) reads the first onWriteParsed, which must stay the latch's.
+// Output arriving while a prompt is being located may be its echo (app/renderer.js locateEcho).
+term.onWriteParsed(() => {
+  const loc = bar.locate;
+  if (!loc || loc.queued) return;
+  loc.queued = true;
+  setTimeout(() => { loc.queued = false; if (bar.locate === loc) locateEcho(); }, 50);
 });
 const NOTICE_MS = 12000;
 
@@ -3478,7 +4030,14 @@ function requestSwitch(kind, raw) {
  * CURSOR, Dexter r2 N1), Ctrl-U (a draft is cleared, never submitted with the command; the CLI's Ctrl+Y gets
  * it back), `i` first in vim NORMAL (Dexter r2 N2). Spaced PTY_STEP_MS apart, or a line is taken for a paste.
  */
+// ONE typing sequence at a time in this tab, whoever asks (top bar, Git drawer, wand): two interleaved sequences
+// share one input box, and the top bar's Enter could submit what the other typed (Dexter D8).
+let typingBusy = false;
 function typeAndCheck(enterInsert, command, done) {
+  if (typingBusy) { done({ ok: false, reason: 'another command is still being typed' }); return; }
+  typingBusy = true;
+  const settle = done;
+  done = (r) => { typingBusy = false; settle(r); };
   const input = data => send(JSON.stringify({ type: 'input', data }));
   const keys = typingKeys(command, enterInsert);
   keys.forEach((k, i) => setTimeout(() => input(k), PTY_STEP_MS * i));
@@ -3534,6 +4093,180 @@ if (window.harness && window.harness.onTypeCommand) {
     typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }));
   });
 }
+
+// WAND-BEGIN
+// The wand (BACKLOG #51): favourite skills as emoji buttons. app/wand-display.js decides everything (what
+// shows, what a click means, what each edit sends); this is only the DOM and the socket. A click TYPES
+// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and NEVER presses Enter: nothing
+// in this section writes a CR or an input frame, and test/renderer-wand-wiring.test.js pins that.
+let wandState = wandDisplay.emptyState();
+let wandBusy = false;          // a type in flight: two overlapping key sequences would garble the box
+let wandFlashTimer = null;
+let wandDragId = null;
+let wandFocusEditor = false;   // an editor was just opened: it takes focus on the next draw
+const wandRoot = document.getElementById('wand-root');
+
+// Where focus was inside the panel, as something that can be found again after a rebuild: an editor field with
+// its caret, or a control by what it does and which favourite / skill / emoji it is for.
+function wandFocusKey(el) {
+  if (!el || !el.dataset || !wandRoot || !wandRoot.contains(el)) return null;
+  const d = el.dataset;
+  if (d.wandField) return { field: d.wandField, start: el.selectionStart, end: el.selectionEnd };
+  if (d.wandAct) return { act: d.wandAct, id: d.wandId, skill: d.wandSkill, emoji: d.wandEmoji };
+  return null;
+}
+function wandFindFocus(k) {
+  if (k.field) return wandRoot.querySelector('[data-wand-field="' + k.field + '"]');
+  return [...wandRoot.querySelectorAll('button[data-wand-act]')].find(b => b.dataset.wandAct === k.act
+    && b.dataset.wandId === k.id && b.dataset.wandSkill === k.skill && b.dataset.wandEmoji === k.emoji) || null;
+}
+
+function renderWand() {
+  if (!wandRoot) return;
+  // A redraw (a click, a quiet refresh from another host, a skill rescan) must not lose the user's place: the focused
+  // control, and an editor field's text, caret and focus, are put back. A control that is gone (a favourite just
+  // deleted) hands focus to the first one left, so the keyboard user is never dropped onto the page body.
+  const key = wandFocusKey(document.activeElement);
+  const v = wandDisplay.view(wandState);
+  wandRoot.innerHTML = wandDisplay.html(v);
+  // Announced from a node OUTSIDE the rebuilt subtree: a live region replaced wholesale is not read out.
+  const live = document.getElementById('wand-live');
+  if (live && live.textContent !== v.live) live.textContent = v.live;
+  let target = null;
+  if (wandFocusEditor) {
+    target = wandRoot.querySelector('[data-wand-field="emoji"]');
+    if (target) wandFocusEditor = false;
+  }
+  if (!target && key) {
+    target = wandFindFocus(key) || wandRoot.querySelector('button[data-wand-act="press"]') || wandRoot.querySelector('button[data-wand-act]');
+  }
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if (key && key.field && target.dataset && target.dataset.wandField === key.field) {
+    try { target.setSelectionRange(key.start, key.end); } catch { /* a field with no selection */ }
+  }
+}
+
+function requestWandSkills() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;   // the hello carries them; ws.onopen follows
+  try { ws.send(JSON.stringify(wandDisplay.skillsRequest())); } catch { /* not attached */ }
+}
+
+// Every edit goes through here: a send with no socket is SHOWN, never silently dropped (no answer is coming).
+function wandSend(message) {
+  if (!message) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    wandState = wandDisplay.failed(wandState, 'not connected to the host');
+    renderWand();
+    return;
+  }
+  ws.send(JSON.stringify(message));
+}
+
+function wandType(plan) {
+  if (wandBusy) return;
+  wandBusy = true;
+  typeCommand(plan.command, (r) => {
+    wandBusy = false;
+    wandState = wandDisplay.typed(wandState, plan.id, r);
+    renderWand();
+    clearTimeout(wandFlashTimer);
+    if (r.ok) {
+      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, 2500);
+    }
+  });
+}
+
+function wandAct(action) {
+  if (action.kind === 'press') {
+    const plan = wandDisplay.clickPlan(wandState, action.id, { cols: term.cols });
+    if (!plan) return;
+    if (plan.kind === 'type') { wandType(plan); return; }
+    if (plan.kind === 'edit') wandFocusEditor = true;
+    wandState = plan.kind === 'missing' || plan.kind === 'toolong' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
+  } else if (action.kind === 'toggle-edit') {
+    wandState = wandDisplay.toggleEdit(wandState);
+  } else if (action.kind === 'add') {
+    wandFocusEditor = true;
+    wandState = wandDisplay.openEditor(wandState, null);
+  } else if (action.kind === 'cancel') {
+    wandState = wandDisplay.closeEditor(wandState);
+  } else if (action.kind === 'pick-skill') {
+    wandState = wandDisplay.editorSet(wandState, 'skill', action.skill);
+  } else if (action.kind === 'pick-emoji') {
+    wandState = wandDisplay.editorSet(wandState, 'emoji', action.emoji);
+  } else if (action.kind === 'move-step') {
+    const r = wandDisplay.moveStepMsg(wandState, action.id, action.dir);
+    wandState = r.state;
+    wandSend(r.message);
+  } else if (action.kind === 'delete' || action.kind === 'save' || action.kind === 'reset') {
+    const r = action.kind === 'delete' ? wandDisplay.deleteMsg(wandState, action.id)
+      : action.kind === 'reset' ? wandDisplay.resetMsg(wandState) : wandDisplay.editorSubmit(wandState);
+    wandState = r.state;
+    wandSend(r.message);
+  }
+  renderWand();
+}
+
+if (wandRoot) {
+  // Delegated, so a redraw never needs rebinding.
+  wandRoot.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('button[data-wand-act]');
+    const action = btn && wandDisplay.clickAction(btn.dataset);
+    if (action) wandAct(action);
+  });
+  wandRoot.addEventListener('input', (e) => {
+    const field = e.target && e.target.dataset && e.target.dataset.wandField;
+    if (!field) return;
+    wandState = wandDisplay.editorSet(wandState, field, e.target.value);
+    if (field === 'query') {       // only the list: the box the user is typing in is left alone
+      const list = wandRoot.querySelector('.wand-skill-list');
+      if (list) list.innerHTML = wandDisplay.skillListHtml(wandDisplay.view(wandState));
+    }
+  });
+  wandRoot.addEventListener('keydown', (e) => {
+    // Alt+Left / Alt+Right on a favourite in edit mode: the keyboard's reorder (drag is mouse-only).
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && e.target.closest) {
+      const b = e.target.closest('button[data-wand-act="press"][draggable="true"]');
+      if (b) { e.preventDefault(); wandAct({ kind: 'move-step', id: b.dataset.wandId, dir: e.key === 'ArrowLeft' ? -1 : 1 }); return; }
+    }
+    if (!(e.target && e.target.dataset && e.target.dataset.wandField)) return;
+    // Enter in the skill SEARCH box is not Save: it would save with whatever skill was picked before (or fail with
+    // "Pick a skill"), when the person is only searching.
+    if (e.target.dataset.wandField === 'query') { if (e.key === 'Enter') e.preventDefault(); return; }
+    if (e.key === 'Enter') { e.preventDefault(); wandAct({ kind: 'save' }); }
+    else if (e.key === 'Escape') { e.preventDefault(); wandAct({ kind: 'cancel' }); }
+  });
+  // Reorder by dragging (edit mode). Stopped here, so the page-wide file-drop handler never sees it.
+  wandRoot.addEventListener('dragstart', (e) => {
+    const b = e.target.closest && e.target.closest('button[data-wand-act="press"][draggable="true"]');
+    if (!b) return;
+    wandDragId = b.dataset.wandId;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/x-wand-favourite', wandDragId);
+  });
+  wandRoot.addEventListener('dragover', (e) => {
+    if (!wandDragId) return;
+    e.stopPropagation();
+    if (e.target.closest && e.target.closest('[data-wand-cell]')) e.preventDefault();
+  });
+  wandRoot.addEventListener('drop', (e) => {
+    const cell = e.target.closest && e.target.closest('[data-wand-cell]');
+    if (!wandDragId) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const from = wandDragId;
+    wandDragId = null;
+    if (!cell) return;
+    const r = wandDisplay.moveMsg(wandState, from, cell.dataset.wandCell);
+    wandState = r.state;
+    wandSend(r.message);
+    renderWand();
+  });
+  wandRoot.addEventListener('dragend', () => { wandDragId = null; });
+  renderWand();
+}
+// WAND-END
 
 // BACKLOG E #5, #3. The Claude choices, redrawn with a star per choice and
 // favourited ones first -- app/models-favourites.js's pinFavouritesFirst
@@ -4255,7 +4988,11 @@ function handleControl(msg) {
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
     sessionTurn = msg.turn === undefined ? null : msg.turn;
-    paintOccupancyBanner();
+    // The terminal bar: the latest prompt (no place in this buffer: it shows) and the bedtime night; both absent
+    // from an older host, which is "none", never a stale one.
+    applyBarPrompt(msg.prompt, false);
+    applyBedtime(msg.bedtime);
+    paintBar();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
@@ -4263,6 +5000,8 @@ function handleControl(msg) {
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
     rosterIndexPayload = msg.rosterIndex || null;
+    wandState = wandDisplay.reduce(wandState, msg);
+    renderWand();
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
@@ -4277,6 +5016,11 @@ function handleControl(msg) {
   if (msg.type === 'loadout') {
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     renderRoster();
+    return;
+  }
+  if (msg.type === 'wand') {
+    wandState = wandDisplay.reduce(wandState, msg);
+    renderWand();
     return;
   }
   if (msg.type === 'mood') {
@@ -4423,8 +5167,16 @@ function handleControl(msg) {
   }
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
-    paintOccupancyBanner();
+    paintBar();
     reportTabStatus();
+    return;
+  }
+  if (msg.type === 'prompt') {
+    applyBarPrompt(msg.prompt, true);
+    return;
+  }
+  if (msg.type === 'bedtime') {
+    applyBedtime(msg.bedtime);
     return;
   }
   if (msg.type === 'cooldowns') {
@@ -4656,8 +5408,11 @@ function connect() {
     dot.classList.remove('on');
     // a Files ask in flight will never be answered by this socket: fail it now, not after its timeout
     repoBrowser.failAll('the connection to the session dropped');
+    cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
-    if (sessionTurn !== null) { sessionTurn = null; paintOccupancyBanner(); reportTabStatus(); }
+    if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
+    if (bar.bedtime !== null) applyBedtime(null);
     // Detach is normal, not fatal — the host keeps the session alive, so just
     // keep trying to reattach.
     setTimeout(connect, 1000);
@@ -4670,7 +5425,7 @@ function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
 }
 
-// The last size the host was sent: verify/probe-dock-zones.js compares it with
+// The last size the host was sent: verify/probe-dock-tree.js compares it with
 // xterm's own and with what fits the container after every layout change.
 let lastSentResize = null;
 function sendResize() {
@@ -4708,8 +5463,6 @@ term.onBinary((data) => send(data));
 const dropZone = document.getElementById('app') || document.body;
 
 dropZone.addEventListener('dragover', (e) => {
-  // A module tab being dragged to another zone is not a file (layout pass L1).
-  if (draggingModule) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'copy';
   dropZone.classList.add('dropping');
@@ -4721,7 +5474,6 @@ for (const leave of ['dragleave', 'dragend']) {
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropZone.classList.remove('dropping');
-  if (draggingModule) return;
 
   // Dropping ONTO an agent's face is a portrait upload, not a path-into-the-
   // prompt drop -- checked first and returned early, because `.face` sits

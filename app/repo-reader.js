@@ -41,7 +41,7 @@ const REFUSALS = {
 };
 const refusalText = (r) => (REFUSALS[r.why] ? REFUSALS[r.why](r) : `The reader refused this path: ${r.why || r.error || 'unknown reason'}.`);
 
-function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidth', typeMention, onClose } = {}) {
+function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidth', typeMention, onClose, termRect } = {}) {
   const keyNow = () => (typeof storageKey === 'function' ? storageKey() : storageKey);
   const lang = root.repoLanguage || (typeof require === 'function' ? require('./repo-language') : null);
   const mention = root.repoMention || (typeof require === 'function' ? require('./repo-mention') : null);
@@ -55,7 +55,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   };
 
   const state = {
-    path: null, mode: 'file', stamp: null, modified: false, overlayFiles: new Map(), editor: null, cmLoaded: false,
+    path: null, mode: 'file', stamp: null, modified: false, width: 0, overlayFiles: new Map(), editor: null, cmLoaded: false,
     token: 0, status: '', diffSource: null,
   };
   let cmPromise = null;
@@ -106,19 +106,43 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
 
   // ---- the pane ----
 
-  // The room the terminal and the reader SHARE (the dock zones beside them are not theirs to take): what the
-  // terminal has now, plus what the reader already holds. The terminal always keeps MIN_TERM of it.
-  function sharedRoom() {
-    const term = el.termwrap ? el.termwrap.getBoundingClientRect().width : 0;
-    return term + (el.pane.hidden ? 0 : el.pane.getBoundingClientRect().width);
+  // WHERE THE READER SITS. The dock tree (app/dock-tree-display.js) places #termwrap with an inline rectangle on
+  // every render, and the terminal bar and the other overlays live inside it. The reader is a pair of absolutely
+  // positioned siblings in #dock that take the right part of THAT rectangle: layout() (called by renderer.js
+  // after every applyBoxes) shortens #termwrap by the reader's width and puts the reader and its divider in the
+  // freed strip. The terminal bar therefore stays over the terminal only, and the terminal's own resize
+  // observer refits it. `termRect()` is the plan's full terminal rectangle in #dock's coordinates.
+  const SPLIT = 6;
+  const fullRect = () => {
+    const r = typeof termRect === 'function' ? termRect() : null;
+    if (r && Number.isFinite(r.width)) return r;
+    return { x: el.termwrap.offsetLeft, y: el.termwrap.offsetTop, width: el.termwrap.offsetWidth + (el.pane.hidden ? 0 : state.width + SPLIT), height: el.termwrap.offsetHeight };
+  };
+  const roomNow = () => fullRect().width;
+  function widthBounds(room = roomNow()) {
+    return { min: MIN_PANE, max: Math.max(MIN_PANE, room - SPLIT - MIN_TERM) };
   }
-  function widthBounds(room = sharedRoom()) {
-    return { min: MIN_PANE, max: Math.max(MIN_PANE, room - MIN_TERM) };
+  function layout() {
+    if (el.pane.hidden) return;
+    if (doc.body.classList && doc.body.classList.contains('focus-mode')) return;       // only the terminal shows
+    const r = fullRect();
+    const { min, max } = widthBounds(r.width);
+    const w = Math.round(Math.min(max, Math.max(min, state.width)));
+    el.termwrap.style.width = `${Math.max(0, r.width - w - SPLIT)}px`;
+    el.split.style.left = `${r.x + r.width - w - SPLIT}px`;
+    el.split.style.top = `${r.y}px`;
+    el.split.style.width = `${SPLIT}px`;
+    el.split.style.height = `${r.height}px`;
+    el.pane.style.left = `${r.x + r.width - w}px`;
+    el.pane.style.top = `${r.y}px`;
+    el.pane.style.width = `${w}px`;
+    el.pane.style.height = `${r.height}px`;
   }
   function setWidth(px, { save = true, room } = {}) {
     const { min, max } = widthBounds(room);
     const w = Math.round(Math.min(max, Math.max(min, px)));
-    el.pane.style.width = `${w}px`;
+    state.width = w;
+    layout();
     if (save) { try { if (storage) storage.setItem(keyNow(), String(w)); } catch { /* storage refused */ } }
     return w;
   }
@@ -130,7 +154,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
 
   function showPane() {
     if (!el.pane.hidden) return;
-    const room = sharedRoom();          // measured while the reader is hidden: the terminal has it all
+    const room = roomNow();
     el.pane.hidden = false;
     el.split.hidden = false;
     restoreWidth(room);
@@ -141,6 +165,9 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     state.token += 1;
     el.pane.hidden = true;
     el.split.hidden = true;
+    // the terminal takes its whole rectangle back (its observer refits it)
+    const r = fullRect();
+    el.termwrap.style.width = `${r.width}px`;
     state.path = null;
     state.stamp = null;
     if (onClose) onClose();
@@ -294,22 +321,25 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   });
   el.split.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    // The pane's right edge doesn't move as it grows (the terminal takes up the slack), so its width is
-    // that edge minus the pointer.
-    setWidth(el.pane.getBoundingClientRect().right - e.clientX, { save: false });
+    // The reader's right edge is the terminal rectangle's right edge, which doesn't move as it grows: its width is
+    // that edge minus the pointer (in #dock's coordinates), less half the divider.
+    const r = fullRect();
+    const dock = doc.getElementById('dock');
+    const dockLeft = dock ? dock.getBoundingClientRect().left : 0;
+    setWidth(r.x + r.width - (e.clientX - dockLeft) - SPLIT / 2, { save: false });
   });
   const endDrag = () => {
     if (!dragging) return;
     dragging = false;
     doc.body.classList.remove('reader-resizing');
-    setWidth(el.pane.getBoundingClientRect().width);
+    setWidth(state.width);
   };
   el.split.addEventListener('pointerup', endDrag);
   el.split.addEventListener('pointercancel', endDrag);
   el.split.addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
-    setWidth(el.pane.getBoundingClientRect().width + (e.key === 'ArrowLeft' ? WIDTH_STEP : -WIDTH_STEP));
+    setWidth(state.width + (e.key === 'ArrowLeft' ? WIDTH_STEP : -WIDTH_STEP));
   });
 
   // ---- for the browser and the probe ----
@@ -367,7 +397,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
 
   return {
     open, close, isOpen: () => !el.pane.hidden, path: () => state.path,
-    setOverlay, onRepoChanged: checkStale, probe,
+    setOverlay, onRepoChanged: checkStale, probe, layout,
     editor: () => state.editor,
   };
 }

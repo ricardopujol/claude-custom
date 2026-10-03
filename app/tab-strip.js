@@ -111,6 +111,10 @@ function paintTab(doc, entry, bridge) {
   // The hatched lower edge. It NEVER animates: movement on the strip means "needs you".
   const occ = occupancyOf(entry.occupancy);
   if (occ) cls.push(occ.warn ? 'occupied occupied-warn' : 'occupied');
+  // Backlog #52: a /bedtime night turns the tab deep blue. Distinct from #31's pulse, which still wins while the tab
+  // needs you (the pulse animates the background; the night is a still colour).
+  const night = entry.night === true;
+  if (night) cls.push('night');
   const tab = el(doc, 'div', cls.join(' '));
   tab.dataset.key = entry.key;
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
@@ -130,6 +134,7 @@ function paintTab(doc, entry, bridge) {
     for (const t of occ.tags) tags.appendChild(el(doc, 'span', 'agent-tag', t));
     if (occ.more > 0) tags.appendChild(el(doc, 'span', 'agent-tag', `+${occ.more}`));
   }
+  if (night) tab.appendChild(el(doc, 'span', 'moon', '🌙')).title = 'An overnight (/bedtime) run is going in this session';
   if (entry.lockGlyph && GLYPHS[entry.lockGlyph]) {
     const g = tab.appendChild(el(doc, 'span', `glyph ${entry.lockGlyph}`, GLYPHS[entry.lockGlyph]));
     g.title = GLYPH_TITLES[entry.lockGlyph];

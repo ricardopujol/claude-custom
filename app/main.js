@@ -27,7 +27,7 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
+const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
@@ -1070,6 +1070,14 @@ function registerIpc() {
     store: uiStore, sync: layoutSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${LAYOUT_KEY}.json`),
   });
+  // The split-tree layout (dockable panels D1) under its own key. The pair above stays: an older
+  // window still writes it, and it is read once to migrate into the tree, never written by this build.
+  const treeSync = {};
+  registerLayoutHandlers({ ipcMain, store: uiStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
+  watchLayout({
+    store: uiStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${TREE_NAMES.key}.json`),
+  });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
   // not project-scoped, so it lives here rather than going to the host.
@@ -1223,11 +1231,12 @@ function startProbeDriver(port) {
           "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
-      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js).
+      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
+      // moon, background, animation -- verify/probe-terminal-bar.js).
       let stripOccupancy = null;
       try {
         stripOccupancy = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height, night: t.classList.contains('night'), moon: !!t.querySelector('.moon'), bg: getComputedStyle(t).backgroundColor, anim: getComputedStyle(t).animationName })))"));
       } catch (err) { stripOccupancy = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
