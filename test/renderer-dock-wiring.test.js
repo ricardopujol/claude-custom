@@ -135,3 +135,13 @@ test('PR #100 Miguel S2: the page carries no [data-collapsed] CSS: folds are rai
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
   assert.doesNotMatch(html, /\[data-collapsed\]/);
 });
+
+test('PR #100 Miguel I4: tab and rail buttons have a focus ring that sits inside them, so the clipped boxes cannot cut it off', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const rule = /\.zone-tabs button:focus-visible, \.drail button:focus-visible \{([^}]*)\}/.exec(html);
+  assert.ok(rule, 'one rule for both');
+  assert.match(rule[1], /outline: 2px solid var\(--accent\)/);
+  assert.match(rule[1], /outline-offset: -2px/);
+  assert.match(html, /\.dgroup \{[^}]*overflow: hidden/, 'the reason: the group clips');
+  assert.match(html, /\.drail \{[^}]*overflow: hidden/, 'and so does the rail');
+});

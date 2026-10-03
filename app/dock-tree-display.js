@@ -224,7 +224,17 @@ function applyTabs(doc, nav, tabs) {
     }
   }
   const on = new Set(tabs.filter(t => t.on).map(t => t.id));
-  for (const b of nav.querySelectorAll('button[data-module]')) b.classList.toggle('on', on.has(b.dataset.module));
+  for (const b of nav.querySelectorAll('button[data-module]')) {
+    b.classList.toggle('on', on.has(b.dataset.module));
+    b.setAttribute('aria-pressed', on.has(b.dataset.module) ? 'true' : 'false');     // the colour/underline alone says nothing to a screen reader
+  }
+}
+
+// The module whose tab or rail button is `el` (what holds keyboard focus), or null.
+function moduleOfButton(el) {
+  const holder = el && el.parentNode;
+  if (!holder || typeof el.dataset.module !== 'string') return null;
+  return holder.classList.contains('zone-tabs') || holder.classList.contains('drail') ? el.dataset.module : null;
 }
 
 /**
@@ -233,6 +243,8 @@ function applyTabs(doc, nav, tabs) {
  * `#panel-store` that keeps panels no group is showing.
  */
 function applyBoxes(plan, doc) {
+  const held = doc.activeElement;
+  const heldModule = moduleOfButton(held);
   const dock = doc.getElementById('dock');
   const store = doc.getElementById('panel-store');
   const overlay = doc.getElementById('dock-overlay');
@@ -299,6 +311,14 @@ function applyBoxes(plan, doc) {
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
   for (const el of [...groupPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
+  // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
+  // would drop it on the page; it goes to the same module's button when there is one. Anything else that
+  // moves focus (the vault opening, the terminal after a click) is the page's own rule and runs after this.
+  if (heldModule !== null && held.isConnected === false) {
+    const next = [...dock.querySelectorAll(`button[data-module="${heldModule}"]`)]
+      .find(b => b.parentNode.classList.contains('zone-tabs') || b.parentNode.classList.contains('drail'));
+    if (next) next.focus();
+  }
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 

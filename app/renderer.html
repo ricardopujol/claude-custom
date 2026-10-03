@@ -736,6 +736,8 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .zone-tabs button:hover { color: var(--text); }
+    /* The ring sits INSIDE the button (negative offset): .dgroup and .drail clip their overflow, so an outer ring is cut off. */
+    .zone-tabs button:focus-visible, .drail button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
     /* FF12: the active-tab underline carries the model's colour cue, not the
        theme's own --accent -- one of the two surfaces (with the xterm
        cursor) Ricardo approved for the persistent per-model tint. Untinted,

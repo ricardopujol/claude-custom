@@ -54,6 +54,9 @@ class El {
   }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  top() { let e = this; while (e.parentNode) e = e.parentNode; return e; }
+  get isConnected() { return this.top().tagName === 'HTML'; }
+  focus() { this.top().focused = this; }          // only an element that is in the document keeps focus (see activeElement)
 
   _adopt(el, at) {
     if (el.parentNode) el.parentNode.children.splice(el.parentNode.children.indexOf(el), 1);
@@ -118,6 +121,8 @@ function makeDoc() {
   const byId = new Map([...html.descendants()].filter(e => e.id).map(e => [e.id, e]));
   const doc = {
     documentElement: html,
+    // A removed element loses focus, as in a browser.
+    get activeElement() { const a = html.focused; return a && a.isConnected ? a : body; },     // a browser says <body>, never null
     getElementById: id => byId.get(id) || null,
     createElement: tag => new El(tag),
     querySelector: sel => html.querySelector(sel),
@@ -300,4 +305,69 @@ test('applyBoxes never writes to the plan it was given', () => {
   const before = JSON.stringify(p);
   V.applyBoxes(p, w.doc);
   assert.strictEqual(JSON.stringify(p), before);
+});
+
+// --- PR #100 Miguel I4: tabs carry their state, and focus survives a redraw that replaces its element -----------
+
+test('I4: the showing tab is aria-pressed, the others are not, and a selection change moves it without a rebuild', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(plan(l), w.doc);
+  const nav = groupEl(w.dock, 'right').querySelector('.zone-tabs');
+  const before = [...nav.children];
+  assert.ok(before.every(b => b.tagName === 'BUTTON'), 'they stay buttons');
+  assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), IDS.map(id => (id === 'agents' ? 'true' : 'false')));
+  V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc);
+  assert.deepStrictEqual([...nav.children], before);
+  assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), IDS.map(id => (id === 'vault' ? 'true' : 'false')));
+});
+
+const focusedModule = w => { const a = w.doc.activeElement; return a ? [a.tagName, a.dataset.module, a.parentNode.classes.has('drail') ? 'rail' : 'tab'] : null; };
+const tabOf = (w, id) => w.root.querySelectorAll(`button[data-module="${id}"]`)[0];
+
+test('I4: a group folding to a rail, and back, keeps focus on that module\'s button', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(plan(l), w.doc);
+  tabOf(w, 'vault').focus();
+  assert.deepStrictEqual(focusedModule(w), ['BUTTON', 'vault', 'tab']);
+  V.applyBoxes(plan(l, NO_SEL, { width: 440, height: 600 }), w.doc);              // the group becomes a rail: its tab is removed
+  assert.deepStrictEqual(focusedModule(w), ['BUTTON', 'vault', 'rail']);
+  V.applyBoxes(plan(l), w.doc);                                                    // and back
+  assert.deepStrictEqual(focusedModule(w), ['BUTTON', 'vault', 'tab']);
+});
+
+test('I4: a tab bar rebuilt around the focused tab keeps focus on the same module\'s new button', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(plan(l), w.doc);
+  const old = tabOf(w, 'git');
+  old.focus();
+  V.applyBoxes(plan(T.hide(l, 'style')), w.doc);
+  assert.notStrictEqual(tabOf(w, 'git'), old);
+  assert.strictEqual(w.doc.activeElement, tabOf(w, 'git'));
+});
+
+test('I4: a selection change keeps focus on the very button that has it', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(plan(l), w.doc);
+  const b = tabOf(w, 'vault');
+  b.focus();
+  V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc);
+  assert.strictEqual(w.doc.activeElement, b);
+});
+
+test('I4: focus is never invented: a module that is gone, or focus held elsewhere, is left alone', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(plan(l), w.doc);
+  tabOf(w, 'vault').focus();
+  V.applyBoxes(plan(T.hide(l, 'vault')), w.doc);
+  assert.strictEqual(w.doc.activeElement.tagName, 'BODY', 'its button is gone and nothing takes the focus (the page\'s own rule decides)');
+  const field = new El('input');
+  w.root.children[0].appendChild(field);
+  field.focus();
+  V.applyBoxes(plan(l, NO_SEL, { width: 440, height: 600 }), w.doc);
+  assert.strictEqual(w.doc.activeElement, field, 'focus held outside the tabs is not touched');
 });
