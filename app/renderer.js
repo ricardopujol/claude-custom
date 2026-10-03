@@ -1279,6 +1279,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             listed: [...root.querySelectorAll('.wand-skill')].map(b => b.dataset.wandSkill),
             saveDisabled: !!(q('[data-wand-act="save"]') || {}).disabled } : null,
           rect: rectOf(root),
+          liveText: (document.getElementById('wand-live') || {}).textContent || '',
+          focus: (() => { const d = document.activeElement && document.activeElement.dataset; return d && root.contains(document.activeElement)
+            ? { act: d.wandAct || null, id: d.wandId || null, field: d.wandField || null } : null; })(),
         });
       }
       case 'wandClick': {
@@ -1297,6 +1300,18 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         el.value = String(a.value);
         el.dispatchEvent(new Event('input', { bubbles: true }));
         return JSON.stringify({ ok: true });
+      }
+      // keyboard access (Miguel I3 / I4): focus a control, press a key on it
+      case 'wandFocus': case 'wandKey': {
+        const root = document.getElementById('wand-root');
+        const el = a.field ? root.querySelector('[data-wand-field="' + String(a.field) + '"]')
+          : [...root.querySelectorAll('button[data-wand-act]')].find(b => b.dataset.wandAct === a.act && (a.id === undefined || b.dataset.wandId === a.id));
+        if (!el) return JSON.stringify({ ok: false, error: 'no wand control ' + JSON.stringify(a) });
+        el.focus();
+        if (req.action === 'wandFocus') return JSON.stringify({ ok: true });
+        const ev = new KeyboardEvent('keydown', { key: String(a.key), altKey: a.alt === true, bubbles: true, cancelable: true });
+        el.dispatchEvent(ev);
+        return JSON.stringify({ ok: true, defaultPrevented: ev.defaultPrevented });
       }
       // a real drag inside the panel: from one favourite onto another's slot
       case 'wandDrag': {

@@ -97,7 +97,7 @@ test('typing in the search box updates only the skill list, so the box keeps its
 });
 
 test('the probe page answers every wand action the shell lets through', () => {
-  for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) {
+  for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey']) {
     assert.ok(RAW.includes(`case '${a}':`), `renderer.js must answer ${a}`);
   }
 });

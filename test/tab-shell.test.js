@@ -2163,3 +2163,8 @@ test('the probe may read and operate the wand, by name only (#51)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
+
+test('the probe may focus a wand control and press keys on it, by name only (#51 I3)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['wandFocus', 'wandKey']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});

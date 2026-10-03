@@ -28,6 +28,14 @@
  *      that reads as "no favourites"), edit controls disappear, the file is left alone; putting it back
  *      brings the buttons back (the other-host propagation path)
  *   9  a skill that appears on disk while the harness runs clears its favourite's dimming
+ *  10  keyboard access (Miguel I3 / I4): Alt+Left / Alt+Right on a focused favourite reorders it by one place and
+ *      focus stays on it; the pencil keeps focus across its rebuild; opening the editor focuses it; Enter in the
+ *      skill SEARCH box saves nothing; the status text reaches a live region outside the rebuilt markup
+ *  11  Reset wand (Miguel I2): a corrupt file shows its absolute path, and Reset moves it to wand.json.bad-<time>
+ *      with its bytes intact (never deleting it), then the default set shows
+ *
+ * REFUSES to run while a live host is open on this checkout (Miguel S2): the probe corrupts and restores
+ * .harness/state/wand.json on purpose, and a real window would see it.
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills and no prompt is ever sent;
  * ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable of an enclosing tab are stripped; skills come from a
@@ -89,7 +97,14 @@ const freePort = () => new Promise((resolve, reject) => {
 // host.js hardcodes its state dir, so these two files are the checkout's own: snapshot, restore on every exit.
 const wandSnap = snapshotFile(WAND_FILE);
 const layoutSnap = snapshotFile(LAYOUT_FILE);
-hygiene.addCleanup(() => { wandSnap.restore(); layoutSnap.restore(); });
+// Reset sets bad files aside as wand.json.bad-*: the ones this run made are removed with it.
+const badsBefore = new Set(fs.existsSync(STATE_DIR) ? fs.readdirSync(STATE_DIR).filter(f => f.startsWith('wand.json.bad-')) : []);
+function removeOwnBads() {
+  try {
+    for (const f of fs.readdirSync(STATE_DIR)) if (f.startsWith('wand.json.bad-') && !badsBefore.has(f)) fs.rmSync(path.join(STATE_DIR, f), { force: true });
+  } catch { /* none */ }
+}
+hygiene.addCleanup(() => { wandSnap.restore(); layoutSnap.restore(); removeOwnBads(); });
 hygiene.install();
 
 async function launchApp(cwd) {
@@ -186,7 +201,30 @@ function makeWorld() {
   fs.writeFileSync(path.join(dev, '.claude', 'skills', 'nameless', 'SKILL.md'), '---\ndescription: no name\n---\n');
 }
 
+// A live host on THIS checkout that is not one of ours: its window would see the probe's corrupt-file test and
+// have its own edits overwritten by the restore (Miguel S2).
+function liveForeignHost() {
+  let files = [];
+  try { files = fs.readdirSync(path.join(ROOT, '.harness', 'hosts')).filter(f => f.endsWith('.json')); } catch { return null; }
+  for (const f of files) {
+    const id = readIdentity({ dir: path.join(ROOT, '.harness'), port: Number(f.replace(/\.json$/, '')) });
+    if (!id || !Number.isInteger(id.pid)) continue;
+    let alive = false;
+    try { process.kill(id.pid, 0); alive = true; } catch (err) { alive = !!err && err.code === 'EPERM'; }
+    if (alive && !path.resolve(String(id.cwd || '')).toLowerCase().startsWith(path.resolve(tmp).toLowerCase() + path.sep)) return id;
+  }
+  return null;
+}
+
+let refused = false;
+
 async function main() {
+  const foreign = liveForeignHost();
+  if (foreign) {
+    refused = true;
+    console.log(`REFUSED: a live host (pid ${foreign.pid}, ${foreign.cwd}) is open on this checkout. The probe rewrites .harness/state/wand.json on purpose; close that window, or run the probe from another checkout.`);
+    return;
+  }
   makeWorld();
   try { fs.unlinkSync(WAND_FILE); } catch { /* none */ }
   try { fs.unlinkSync(LAYOUT_FILE); } catch { /* none */ }
@@ -248,6 +286,8 @@ async function main() {
   const typed = await waitFor(() => boxLine() === '/checkpoint', 10000, 150);
   check('2: a click leaves exactly `/checkpoint` in the box', !!typed, JSON.stringify(boxLine()));
   const flashed = await waitFor(async () => { const s = await ws(); return /typed, press Enter/.test(s.status) && s.buttons[1].flash ? s : null; }, 5000, 150);
+  const liveNow = await ws();
+  check('2 (I3): the status reaches the live region OUTSIDE the rebuilt markup', liveNow.liveText === 'typed, press Enter', JSON.stringify(liveNow.liveText));
   check('2: the button flashes "typed, press Enter" (and says nothing about running it)', !!flashed && !/ran|sent|running/i.test(flashed.status), JSON.stringify(flashed && flashed.status));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-typed.png') });
   await sleep(1500);
@@ -338,8 +378,46 @@ async function main() {
   check('6: ✕ deletes 🌙, and it persisted', !!four && !four.buttons.some(b => b.emoji === '🌙') && !!disk() && !disk().favourites.some(f => f.skill === 'bedtime'),
     JSON.stringify(disk() && disk().favourites.map(f => f.skill)));
 
-  // 7 -----------------------------------------------------------------------------
+  // 10 (6b) ----------------------------------------------------------------------------
+  // edit mode is on; the order is local-only(f5) checkpoint(f2) merged(f3) brainstorming(f4)
+  const order = async () => (await buttons()).map(b => b.id).join();
+  await view(app, 'wandFocus', { act: 'press', id: 'f2' });
+  const k1 = await view(app, 'wandKey', { act: 'press', id: 'f2', key: 'ArrowRight', alt: true });
+  const right = await waitFor(async () => (await order()) === 'f5,f3,f2,f4' ? await ws() : null, 8000);
+  check('10: Alt+Right on a focused favourite moves it one place (handled, so the page does not scroll)', !!right && k1.defaultPrevented === true, await order());
+  check('10: ...and focus is still on that favourite after the rebuild', !!right && !!right.focus && right.focus.act === 'press' && right.focus.id === 'f2', JSON.stringify(right && right.focus));
+  check('10: ...and it persisted', !!disk() && disk().favourites.map(f => f.skill).join() === 'local-only,merged,checkpoint,brainstorming', JSON.stringify(disk() && disk().favourites.map(f => f.skill)));
+  await view(app, 'wandKey', { act: 'press', id: 'f2', key: 'ArrowLeft', alt: true });
+  const left = await waitFor(async () => (await order()) === 'f5,f2,f3,f4' ? await ws() : null, 8000);
+  check('10: Alt+Left moves it back', !!left);
+  await view(app, 'wandKey', { act: 'press', id: 'f5', key: 'ArrowLeft', alt: true });
+  await sleep(500);
+  check('10: Alt+Left on the first favourite does nothing', (await order()) === 'f5,f2,f3,f4');
+  await view(app, 'wandFocus', { act: 'toggle-edit' });
   await click({ act: 'toggle-edit' });
+  const offEdit = await waitFor(async () => { const s = await ws(); return !s.edit ? s : null; }, 5000);
+  check('10: the pencil keeps focus across the rebuild it causes', !!offEdit && !!offEdit.focus && offEdit.focus.act === 'toggle-edit', JSON.stringify(offEdit && offEdit.focus));
+  await click({ act: 'toggle-edit' });
+  await waitFor(async () => (await ws()).edit, 5000);
+  await click({ act: 'add' });
+  const opened = await waitFor(async () => { const s = await ws(); return s.editor && s.focus && s.focus.field === 'emoji' ? s : null; }, 5000);
+  check('10: opening the editor puts focus in it (the emoji field)', !!opened, JSON.stringify((await ws()).focus));
+  const beforeEnter = fs.readFileSync(WAND_FILE, 'utf8');
+  await click({ act: 'pick-skill', skill: 'merged' });
+  await view(app, 'wandSetField', { field: 'query', value: 'merg' });
+  const enter = await view(app, 'wandKey', { field: 'query', key: 'Enter' });
+  await sleep(700);
+  const afterEnter = await ws();
+  check('10 (I4): Enter in the skill search box saves nothing: the editor stays open, no error, the file is untouched',
+    enter.defaultPrevented === true && !!afterEnter.editor && afterEnter.error === '' && fs.readFileSync(WAND_FILE, 'utf8') === beforeEnter && afterEnter.buttons.length === 4,
+    JSON.stringify({ editor: !!afterEnter.editor, error: afterEnter.error, n: afterEnter.buttons.length }));
+  check('10: ...and the search text is still there (the rebuild did not eat it)', !!afterEnter.editor && afterEnter.editor.query === 'merg');
+  await view(app, 'wandKey', { field: 'emoji', key: 'Escape' });
+  const closedEd = await waitFor(async () => { const s = await ws(); return !s.editor ? s : null; }, 5000);
+  check('10: Escape in an editor field cancels it', !!closedEd);
+  await click({ act: 'toggle-edit' });
+
+  // 7 -----------------------------------------------------------------------------
   const normal = await waitFor(async () => { const s = await ws(); return !s.edit && s.deletes === 0 && !s.add ? s : null; }, 5000);
   check('7: leaving edit mode takes the ✕ and + away', !!normal);
   check('7: hover shows the pre-filled argument', !!normal && /pre-fills: now/.test(normal.buttons[0].title), JSON.stringify(normal && normal.buttons[0].title));
@@ -361,6 +439,21 @@ async function main() {
   fs.writeFileSync(WAND_FILE, good);
   const back = await waitFor(async () => { const s = await ws(); return s.buttons.length === 4 ? s : null; }, 10000, 250);
   check('8: putting a valid file back brings the buttons back, with no restart (the other-host path)', !!back, JSON.stringify(await ws()).slice(0, 200));
+
+  // 11 (Miguel I2) ----------------------------------------------------------------------
+  fs.writeFileSync(WAND_FILE, '{ second corruption, the only copy');
+  const bad2 = await waitFor(async () => { const s = await ws(); return /Wand unavailable/.test(s.text) ? s : null; }, 10000, 250);
+  check('11: the unavailable panel shows the file\'s ABSOLUTE path', !!bad2 && bad2.text.includes(WAND_FILE), JSON.stringify(bad2 && bad2.text).slice(0, 260));
+  const resetBtn = !!bad2 && /Reset wand/.test(bad2.text);
+  check('11: ...and offers Reset wand', resetBtn);
+  await click({ act: 'reset' });
+  const afterReset = await waitFor(async () => { const s = await ws(); return s.buttons.length === 4 ? s : null; }, 10000, 250);
+  check('11: Reset starts from the default set', !!afterReset && afterReset.buttons.map(b => b.emoji).join(' ') === '\u{1F319} \u2705 \u{1F500} \u{1F4A1}', JSON.stringify(afterReset && afterReset.buttons.map(b => b.emoji)));
+  const bads = fs.readdirSync(STATE_DIR).filter(f => f.startsWith('wand.json.bad-') && !badsBefore.has(f));
+  check('11: ...the bad file was MOVED ASIDE to wand.json.bad-<time>, bytes intact, never deleted',
+    bads.length === 1 && fs.readFileSync(path.join(STATE_DIR, bads[0]), 'utf8') === '{ second corruption, the only copy', JSON.stringify(bads));
+  check('11: ...and the answer says where it went', !!afterReset && /wand\.json\.bad-/.test(afterReset.status) && /default set/.test(afterReset.status), JSON.stringify(afterReset && afterReset.status));
+  await command(app, { cmd: 'screenshot', file: path.join(shots, '11-reset.png') });
 
   // 9 -----------------------------------------------------------------------------
   const brainstorm = back && back.buttons.find(b => /brainstorming/.test(b.label));
@@ -384,7 +477,9 @@ main()
     killEverything();
     wandSnap.restore();
     layoutSnap.restore();
+    removeOwnBads();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
+    if (refused) process.exit(2);
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);
   });
