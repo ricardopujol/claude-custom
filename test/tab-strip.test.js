@@ -114,6 +114,26 @@ test('#31 the page has a keyframe for each look, and a steady highlight under pr
   assert.match(reduced, /\.tab\.pulse-needs[^{]*\{[^}]*(background|box-shadow)/, 'still highlighted, just not moving');
 });
 
+test('#31 (Miguel S1 S2 S3): hover still shows on a pulsing tab, the working dot honours reduced motion, one set of colours per look', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  // A running animation outranks a plain :hover background, so the hover rule stops it.
+  assert.match(html, /\.tab\.pulse-needs:hover,\s*\.tab\.pulse-done:hover\s*\{[^}]*animation:\s*none[^}]*background:/);
+  const reduced = html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduced, /\.dot\.working\s*\{[^}]*animation:\s*none/);
+  // The held colours ARE the keyframes' peak, named once per look, not copied.
+  for (const look of ['needs', 'done']) {
+    const rule = new RegExp(`\\.tab\\.pulse-${look}\\s*\\{([^}]*)\\}`).exec(html);
+    assert.ok(rule, look);
+    for (const v of ['--pulse-lo-bg', '--pulse-hi-bg', '--pulse-lo-line', '--pulse-hi-line']) {
+      assert.match(rule[1], new RegExp(`${v}:`), `${look} defines ${v}`);
+    }
+  }
+  assert.match(html, /@keyframes tab-pulse-needs\s*\{[^]*?var\(--pulse-lo-bg\)[^]*?var\(--pulse-hi-bg\)/);
+  assert.match(reduced, /background:\s*var\(--pulse-hi-bg\)/);
+  assert.match(reduced, /var\(--pulse-hi-line\)/);
+  assert.doesNotMatch(reduced, /color-mix/, 'no colour copied into the reduced-motion block');
+});
+
 test('paint: an unknown lock glyph draws nothing rather than a guess', () => {
   const doc = fakeDoc();
   paint(doc, { model: [entry({ lockGlyph: 'mystery' })] }, bridgeSpy());
