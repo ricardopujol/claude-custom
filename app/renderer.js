@@ -1131,6 +1131,35 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           resolve(JSON.stringify({ ok: true, focusable: field.offsetParent !== null, shown: [...shownModules], after }));
         }, 150);
       });
+      // Backlog #36: the socket drops and reattaches. With a dummy half-secret in
+      // the field (`a.blur` false) focus must still be in it, and what is typed
+      // next lands there, not in the session; with nothing focused (`a.blur`)
+      // the reattach gives the terminal the keyboard. insertText goes to
+      // whatever holds focus, as a keystroke does.
+      case 'reconnect': return new Promise((resolve) => {
+        const field = document.getElementById('vault-secret');
+        const before = ws;
+        const sent = [];
+        const sub = term.onData((d) => { sent.push(d); });
+        if (a.blur) { if (document.activeElement) document.activeElement.blur(); } else { field.focus(); field.value = 'dummy-'; }
+        const startedIn = document.activeElement && document.activeElement.id;
+        ws.close();
+        const t0 = Date.now();
+        const poll = setInterval(() => {
+          const up = ws !== before && ws.readyState === WebSocket.OPEN;
+          if (!up && Date.now() - t0 < 10000) return;
+          clearInterval(poll);
+          setTimeout(() => {
+            const heldId = document.activeElement && document.activeElement.id;
+            const inTerm = !!(term.element && term.element.contains(document.activeElement));
+            document.execCommand('insertText', false, 'tail');
+            setTimeout(() => {
+              sub.dispose();
+              resolve(JSON.stringify({ ok: true, reattached: up, startedIn, heldId, inTerm, value: field.value, sent: sent.map(d => JSON.stringify(d)) }));
+            }, 150);
+          }, 150);
+        }, 50);
+      });
       case 'measure': {
         // #9: does each showing panel's content reach the bottom of its zone?
         const out = {};
@@ -4055,6 +4084,13 @@ const dot = document.getElementById('dot');
 let ws = null;
 let pendingKeyDesc = null;
 
+// What holds keyboard focus now, as dockZones.focusOnOpen reads it.
+function heldFocus() {
+  const el = document.activeElement;
+  if (!el) return null;
+  return { tag: el.tagName, editable: el.isContentEditable === true, inTerm: !!(term.element && term.element.contains(el)) };
+}
+
 function connect() {
   // The token goes in the URL, which is the only channel a WebSocket
   // handshake offers. It never touches the pty.
@@ -4063,7 +4099,9 @@ function connect() {
 
   ws.onopen = () => {
     dot.classList.add('on');
-    term.focus();
+    // Every reattach lands here, not only the first open: a field the user is
+    // typing in (the vault's secret) keeps focus (backlog #36).
+    if (window.dockZones.focusOnOpen(heldFocus())) term.focus();
     sendResize();
     // A log open across a reattach is asked for again: the host's log session
     // belongs to the old socket and died with it.

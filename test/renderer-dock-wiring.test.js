@@ -75,3 +75,14 @@ test('entering focus mode gives the terminal the keyboard, never an invisible pa
   // hidden input -- typing went into it and Ctrl+B never reached the terminal.
   assert.match(fnBody('applyFocusMode'), /if \(on\) term\.focus\(\);/);
 });
+
+test('#36: the socket opening focuses the terminal only as focusOnOpen says -- never unconditionally', () => {
+  // ws.onopen runs on every reattach: an unconditional term.focus() there sent
+  // the rest of a half-typed vault secret into the session.
+  const at = JS.indexOf('ws.onopen = () => {');
+  assert.ok(at !== -1, 'ws.onopen must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n  };', at));
+  const focusCalls = [...handler.matchAll(/term\.focus\(\)/g)];
+  assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
+  assert.match(handler, /if \(window\.dockZones\.focusOnOpen\(heldFocus\(\)\)\) term\.focus\(\);/);
+});

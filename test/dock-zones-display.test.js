@@ -168,7 +168,7 @@ test('the first open, with nothing focused, still focuses the terminal', () => {
   assert.strictEqual(focusOnOpen(undefined), true);
 });
 
-test('focus already in the terminal's own textarea counts as the terminal, and a button holds nothing', () => {
+test('focus already in the terminal textarea counts as the terminal, and a button holds nothing', () => {
   assert.strictEqual(focusOnOpen({ tag: 'TEXTAREA', inTerm: true }), true);
   assert.strictEqual(focusOnOpen({ tag: 'BUTTON', inTerm: false }), true);
 });
