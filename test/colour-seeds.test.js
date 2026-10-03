@@ -148,3 +148,86 @@ test('PROPERTY M6: colour-seeds and palette-gen convert every sRGB colour to the
   for (const [r, g, b] of [[0, 0, 0], [255, 255, 255], [128, 128, 128], [255, 0, 0], [0, 255, 0], [0, 0, 255], [31, 79, 154]]) check(r, g, b);
   fc.assert(fc.property(byte, byte, byte, check), { numRuns: 2000 });
 });
+
+// --- Mortimer, release PR #101 gate (backlog #58) --------------------------------------------------------------
+
+test('only a real pixel buffer is read: an array or typed array whose length is a whole number of pixels', () => {
+  const px = [10, 20, 30, 255];
+  assert.strictEqual(dominantColours(px).length, 1, 'a plain array of one pixel');
+  assert.strictEqual(dominantColours(Uint8ClampedArray.from(px)).length, 1);
+  assert.strictEqual(dominantColours(Uint8Array.from([...px, ...px])).length, 1, 'two pixels of one colour');
+  assert.deepStrictEqual(dominantColours([...px, 1]), [], 'length 5');
+  assert.deepStrictEqual(dominantColours([...px, 1, 2, 3]), [], 'length 7');
+  assert.deepStrictEqual(dominantColours([1, 2, 3]), [], 'length 3');
+  assert.deepStrictEqual(dominantColours([]), [], 'empty');
+  assert.deepStrictEqual(dominantColours(null), []);
+  assert.deepStrictEqual(dominantColours(undefined), []);
+  assert.deepStrictEqual(dominantColours('abcd'), []);
+  assert.deepStrictEqual(dominantColours(4), []);
+  assert.deepStrictEqual(dominantColours(new ArrayBuffer(8)), [], 'a bare ArrayBuffer is not a view');
+  // an object that merely LOOKS like a pixel list is not one
+  assert.deepStrictEqual(dominantColours({ 0: 10, 1: 20, 2: 30, 3: 255, length: 4 }), []);
+});
+
+test('a share exactly at the minimum is kept; just under it is dropped', () => {
+  // 98 + 2 pixels: the small colour is exactly 2%, the default minimum
+  const r = dominantColours(pixels([[[200, 40, 40, 255], 98], [[20, 40, 200, 255], 2]]));
+  assert.deepStrictEqual(r.map((c) => c.hex), ['#c82828', '#1428c8']);
+  assert.strictEqual(r[1].share, 0.02);
+  const under = dominantColours(pixels([[[200, 40, 40, 255], 99], [[20, 40, 200, 255], 1]]));
+  assert.deepStrictEqual(under.map((c) => c.hex), ['#c82828']);
+  // an explicit minimum is honoured the same way
+  const quarter = dominantColours(pixels([[[200, 40, 40, 255], 3], [[20, 40, 200, 255], 1]]), { minShare: 0.25 });
+  assert.deepStrictEqual(quarter.map((c) => c.hex), ['#c82828', '#1428c8']);
+  const over = dominantColours(pixels([[[200, 40, 40, 255], 4], [[20, 40, 200, 255], 1]]), { minShare: 0.25 });
+  assert.deepStrictEqual(over.map((c) => c.hex), ['#c82828']);
+});
+
+test('equal shares are ordered by hex, whichever order the colours appear in the picture', () => {
+  const red = [[200, 40, 40, 255], 50];
+  const blue = [[20, 40, 200, 255], 50];
+  const green = [[40, 200, 40, 255], 50];
+  const want = ['#1428c8', '#28c828', '#c82828'];
+  for (const order of [[red, blue, green], [blue, green, red], [green, red, blue], [green, blue, red], [blue, red, green], [red, green, blue]]) {
+    const r = dominantColours(pixels(order));
+    assert.deepStrictEqual(r.map((c) => c.hex), want, order.map((o) => o[0].join()).join(' | '));
+    assert.deepStrictEqual(r.map((c) => c.share), [1 / 3, 1 / 3, 1 / 3]);
+  }
+  // and a bigger share still beats a smaller hex
+  const mixed = dominantColours(pixels([[[20, 40, 200, 255], 10], [[200, 40, 40, 255], 40]]));
+  assert.deepStrictEqual(mixed.map((c) => c.hex), ['#c82828', '#1428c8']);
+});
+
+// Three pictures with MORE distinct colours than clusters, so which colours seed the clusters (the farthest
+// from the picture's mean first, each next the farthest from every one chosen) and how k-means then moves the
+// centroids both decide the answer. The expected values are the algorithm's documented deterministic output
+// (farthest-point seeding, ten k-means passes in OKLab), measured once and pinned: a change to the mean, the
+// seeding, the tie rules or the refinement moves a share or a colour here.
+const picture = (runs) => pixels(runs.map(([r, g, b, n]) => [[r, g, b, 255], n]));
+
+test('seeding and refinement: a picture with far more colours than clusters gives these exact answers', () => {
+  const nine = picture([[116, 249, 19, 9], [37, 235, 207, 1], [59, 156, 42, 2], [240, 245, 60, 10], [249, 126, 30, 2],
+    [195, 125, 176, 8], [124, 83, 152, 6], [165, 70, 12, 2], [243, 112, 220, 7]]);
+  assert.deepStrictEqual(dominantColours(nine, { count: 1, minShare: 0 }), [{ hex: '#c66eba', share: 21 / 47 }]);
+
+  const eight = picture([[216, 0, 205, 1], [11, 177, 173, 10], [164, 49, 207, 7], [78, 190, 108, 11], [100, 158, 43, 4],
+    [26, 149, 88, 9], [53, 19, 101, 10], [140, 248, 223, 10]]);
+  assert.deepStrictEqual(dominantColours(eight, { count: 4, minShare: 0 }), [
+    { hex: '#3d984d', share: 13 / 62 }, { hex: '#4ebe6c', share: 11 / 62 },
+    { hex: '#0bb1ad', share: 10 / 62 }, { hex: '#351365', share: 10 / 62 },
+  ]);
+
+  const also = picture([[224, 186, 135, 11], [174, 194, 228, 1], [0, 121, 126, 1], [139, 58, 28, 10], [70, 216, 28, 7],
+    [100, 41, 101, 9], [6, 57, 123, 4], [128, 174, 139, 3]]);
+  assert.deepStrictEqual(dominantColours(also, { count: 2, minShare: 0.02 }), [
+    { hex: '#703455', share: 23 / 46 }, { hex: '#ceb891', share: 15 / 46 },
+  ]);
+});
+
+test('seeding and refinement do not depend on the order the pixels come in', () => {
+  const runs = [[224, 186, 135, 11], [174, 194, 228, 1], [0, 121, 126, 1], [139, 58, 28, 10], [70, 216, 28, 7],
+    [100, 41, 101, 9], [6, 57, 123, 4], [128, 174, 139, 3]];
+  const forward = dominantColours(picture(runs), { count: 2 });
+  const backward = dominantColours(picture([...runs].reverse()), { count: 2 });
+  assert.deepStrictEqual(backward, forward);
+});

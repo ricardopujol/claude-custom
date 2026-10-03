@@ -706,3 +706,540 @@ test('PROPERTY: a plain subagent\'s touches are exactly the calls since its last
     return true;
   }), { numRuns: 300 });
 });
+
+// --- Mortimer, release PR #101 gate (backlog #58): the malformed-input, offset, cap, shown-claim and timer paths -----
+
+const until = async (cond) => { for (let i = 0; i < 400 && !cond(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(cond(), 'timed out waiting'); };
+const settleT = () => new Promise(resolve => setTimeout(resolve, 250)); // real fs work finishes on the thread pool, not the immediate queue
+const realFsp = fs.promises;
+const mk = (over = {}) => JSON.stringify({
+  type: 'assistant', agentId: 'a1', timestamp: iso(T0),
+  message: { role: 'assistant', content: [read(path.join(FEAT, 'a.py'))], stop_reason: 'tool_use' }, ...over,
+}) + '\n';
+
+test('transcripts: only agent-<id>.jsonl is a transcript; near-misses beside it claim nothing', async () => {
+  const r = rig();
+  r.put('ok1', line('ok1', [read(path.join(FEAT, 'a.py'))]));
+  const sub = path.dirname(r.file('ok1'));
+  for (const [name, id] of [['agent-.jsonl', 'x1'], ['xagent-1.jsonl', 'x2'], ['agent-1.jsonl.bak', 'x3']]) {
+    fs.writeFileSync(path.join(sub, name), line(id, [read(path.join(FEAT2, 'a.py'))]));
+  }
+  await r.scanner.pass();
+  assert.deepStrictEqual(r.claims().map(c => c.agentId), ['ok1']);
+});
+
+test('fold: only an assistant record, with an object message and a safe agent id, proves anything', () => {
+  const cases = {
+    'a user record that merely mentions "assistant"': mk({ type: 'user', note: 'assistant' }),
+    'a message that is a string': mk({ message: 'assistant' }),
+    'a null message': mk({ message: null }),
+    'an unsafe agent id': mk({ agentId: '../x' }),
+    'no agent id': mk({ agentId: undefined, who: 'assistant' }),
+    'a non-object record': '"assistant"\n',
+  };
+  for (const [what, text] of Object.entries(cases)) {
+    const s = T.foldLines(T.newState(), text, ROOTS, T0, DEV);
+    assert.strictEqual(s.agentId, null, what);
+    assert.strictEqual(s.all.size, 0, what);
+    assert.strictEqual(s.current.size, 0, what);
+  }
+  const ok = T.foldLines(T.newState(), mk(), ROOTS, T0, DEV);
+  assert.strictEqual(ok.agentId, 'a1');
+  assert.strictEqual(ok.all.size, 1);
+});
+
+test('fold: a content list may hold junk, and only tool_use blocks count', () => {
+  const content = [
+    null, 5, 'Read',
+    { type: 'thinking', name: 'Read', input: { file_path: path.join(FEAT, 'x.py') } },
+    { type: 'tool_use', name: 'Read', input: { file_path: path.join(FEAT2, 'y.py') } },
+  ];
+  const s = T.foldLines(T.newState(), mk({ message: { content, stop_reason: 'tool_use' } }), ROOTS, T0, DEV);
+  assert.deepStrictEqual([...s.all.values()].map(v => v.worktree), [FEAT2]);
+});
+
+test('fold: content that is not a list is tolerated and proves nothing', () => {
+  const block = { type: 'tool_use', name: 'Read', input: { file_path: path.join(FEAT, 'x.py') } };
+  for (const content of [{}, 'x', null, 7, { 0: block, length: 1 }]) {
+    let s;
+    assert.doesNotThrow(() => { s = T.foldLines(T.newState(), mk({ message: { content, stop_reason: 'end_turn' } }), ROOTS, T0, DEV); }, JSON.stringify(content));
+    assert.strictEqual(s.all.size, 0);
+    assert.strictEqual(s.agentId, 'a1', 'the line still names its agent');
+  }
+});
+
+test('fold: a timestamp that is not a string is not a time: the file\'s mtime times the line', () => {
+  const s = T.foldLines(T.newState(), mk({ timestamp: 1700000000000 }), ROOTS, T0 + 5, DEV);
+  assert.strictEqual([...s.all.values()][0].firstAt, T0 + 5);
+  const t = T.foldLines(T.newState(), mk({ timestamp: iso(T0 + 99) }), ROOTS, T0 + 5, DEV);
+  assert.strictEqual([...t.all.values()][0].firstAt, T0 + 99);
+});
+
+test('fold: an empty branch name is no branch, and an empty meta name falls back to the agent type', async () => {
+  const s = T.foldLines(T.newState(), mk({ cwd: DEV, gitBranch: '' }), ROOTS, T0, DEV);
+  assert.strictEqual(s.branch, null);
+  const r = rig();
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]), { meta: { name: '', agentType: 'kind' } });
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1').agent, 'kind');
+});
+
+// --- listing ---------------------------------------------------------------------------------------------
+
+for (const level of ['base', 'sub']) {
+  test(`listing (${level}): only ENOENT means "no folder"; any other failure, even a bare throw, is said once and protects its claims`, async () => {
+    for (const [thrown, text] of [
+      [Object.assign(new Error('denied'), { code: 'EACCES' }), 'denied'],
+      ['boom', 'boom'],
+      [null, 'null'],
+    ]) {
+      let mode = false;
+      const fsp = {
+        open: (...a) => realFsp.open(...a),
+        stat: (...a) => realFsp.stat(...a),
+        readdir: async (p, ...rest) => {
+          const here = path.resolve(String(p));
+          const target = level === 'base' ? path.join(r.projects, projectDirName(DEV)) : path.join(r.projects, projectDirName(DEV), 's1', 'subagents');
+          if (mode && here === target) throw thrown;
+          return realFsp.readdir(p, ...rest);
+        },
+      };
+      const r = rig({ fsp });
+      r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+      await r.scanner.pass();
+      assert.ok(r.claim('a1'));
+      mode = true;
+      const out = await r.scanner.pass();
+      await r.scanner.pass();
+      assert.deepStrictEqual(out.removed, [], 'absence is not "finished"');
+      assert.ok(r.claim('a1'));
+      const target = level === 'base' ? path.join(r.projects, projectDirName(DEV)) : path.join(r.projects, projectDirName(DEV), 's1', 'subagents');
+      assert.deepStrictEqual(r.logs, [`[occupancy] ${target} can't be listed: ${text}`], String(text));
+    }
+  });
+
+  test(`listing (${level}): ENOENT is quiet, and the claim of a transcript that is simply gone is removed`, async () => {
+    let mode = false;
+    const fsp = {
+      open: (...a) => realFsp.open(...a),
+      stat: (...a) => realFsp.stat(...a),
+      readdir: async (p, ...rest) => {
+        const here = path.resolve(String(p));
+        const target = level === 'base' ? path.join(r.projects, projectDirName(DEV)) : path.join(r.projects, projectDirName(DEV), 's1', 'subagents');
+        if (mode && here === target) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+        return realFsp.readdir(p, ...rest);
+      },
+    };
+    const r = rig({ fsp });
+    r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+    await r.scanner.pass();
+    mode = true;
+    assert.deepStrictEqual((await r.scanner.pass()).removed, ['a1']);
+    assert.deepStrictEqual(r.logs, []);
+  });
+}
+
+test('listing: a plain file among the session folders is skipped without a listing attempt', async () => {
+  const fsp = {
+    open: (...a) => realFsp.open(...a),
+    stat: (...a) => realFsp.stat(...a),
+    readdir: async (p, ...rest) => {
+      if (path.resolve(String(p)).endsWith(path.join('s1.jsonl', 'subagents'))) throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+      return realFsp.readdir(p, ...rest);
+    },
+  };
+  const r = rig({ fsp });
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+  fs.writeFileSync(path.join(r.projects, projectDirName(DEV), 's1.jsonl'), line('main', [read(path.join(FEAT2, 'a.py'))]));
+  await r.scanner.pass();
+  assert.deepStrictEqual(r.logs, []);
+  assert.deepStrictEqual(r.claims().map(c => c.agentId), ['a1']);
+});
+
+test('listing: transcripts are taken in name order, whatever order the folder lists them in (the later one wins an id)', async () => {
+  const fsp = {
+    open: (...a) => realFsp.open(...a),
+    stat: (...a) => realFsp.stat(...a),
+    readdir: async (p, ...rest) => {
+      const out = await realFsp.readdir(p, ...rest);
+      return rest.length === 0 ? [...out].reverse() : out;
+    },
+  };
+  const r = rig({ fsp });
+  r.put('a', line('dup', [read(path.join(FEAT, 'a.py'))]));
+  r.put('b', line('dup', [read(path.join(FEAT2, 'a.py'))]));
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('dup').worktree, FEAT2);
+});
+
+test('listing: a transcript that vanishes between the listing and its stat is skipped, the rest still claimed', async () => {
+  const fsp = {
+    open: (...a) => realFsp.open(...a),
+    readdir: (...a) => realFsp.readdir(...a),
+    stat: async (f) => { if (String(f).includes('agent-gone')) throw Object.assign(new Error('gone'), { code: 'ENOENT' }); return realFsp.stat(f); },
+  };
+  const r = rig({ fsp });
+  r.put('gone', line('gone', [read(path.join(FEAT2, 'a.py'))]));
+  r.put('ok', line('ok', [read(path.join(FEAT, 'a.py'))]));
+  const out = await r.scanner.pass();
+  assert.deepStrictEqual(out.claimed, ['ok']);
+  assert.deepStrictEqual(r.logs, []);
+});
+
+test('a transcript that can\'t be read is said once, and the others are still claimed', async () => {
+  const fsp = {
+    stat: (...a) => realFsp.stat(...a),
+    readdir: (...a) => realFsp.readdir(...a),
+    open: async (f, m) => { if (String(f).includes('agent-bad')) throw new Error('EIO: read error'); return realFsp.open(f, m); },
+  };
+  const r = rig({ fsp });
+  r.put('bad', line('bad', [read(path.join(FEAT2, 'a.py'))]));
+  r.put('ok', line('ok', [read(path.join(FEAT, 'a.py'))]));
+  await r.scanner.pass();
+  await r.scanner.pass();
+  assert.deepStrictEqual(r.claims().map(c => c.agentId), ['ok']);
+  assert.deepStrictEqual(r.logs, [`[occupancy] ${r.file('bad')} can't be read: EIO: read error`]);
+});
+
+// --- offsets: what is read, from where, and when it is not read at all -----------------------------------
+
+test('reading: a new file is read whole in one read, an unchanged one is not opened again, an appended one reads only the new bytes', async () => {
+  const seen = { open: 0, close: 0, reads: [] };
+  const fsp = {
+    stat: (...a) => realFsp.stat(...a),
+    readdir: (...a) => realFsp.readdir(...a),
+    open: async (f, m) => {
+      seen.open += 1;
+      const fh = await realFsp.open(f, m);
+      return {
+        read: async (buf, off, len, pos) => { seen.reads.push([buf.length, off, len, pos]); return fh.read(buf, off, len, pos); },
+        close: async () => { seen.close += 1; return fh.close(); },
+      };
+    },
+  };
+  const r = rig({ fsp });
+  const l1 = line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 });
+  const l2 = line('a1', [read(path.join(FEAT, 'b.py'))], { at: T0 + 1000 });
+  r.put('a1', l1);
+  await r.scanner.pass();
+  assert.deepStrictEqual(seen.reads, [[Buffer.byteLength(l1), 0, Buffer.byteLength(l1), 0]]);
+  assert.strictEqual(seen.close, 1, 'the handle is closed');
+  await r.scanner.pass();
+  assert.strictEqual(seen.open, 1, 'an unchanged transcript is not opened again');
+  r.append('a1', l2);
+  r.clock += S.REWRITE_MS;
+  await r.scanner.pass();
+  assert.strictEqual(seen.open, 2);
+  assert.strictEqual(seen.close, 2);
+  assert.deepStrictEqual(seen.reads[1], [Buffer.byteLength(l2), 0, Buffer.byteLength(l2), Buffer.byteLength(l1)]);
+  assert.strictEqual(r.claim('a1').count, 2);
+});
+
+test('reading: an empty transcript is not opened, and a handle is closed even when its read fails', async () => {
+  let opened = 0;
+  let closed = 0;
+  let failRead = false;
+  const fsp = {
+    stat: (...a) => realFsp.stat(...a),
+    readdir: (...a) => realFsp.readdir(...a),
+    open: async (f, m) => {
+      opened += 1;
+      const fh = await realFsp.open(f, m);
+      return {
+        read: async (...a) => { if (failRead) throw new Error('EIO'); return fh.read(...a); },
+        close: async () => { closed += 1; return fh.close(); },
+      };
+    },
+  };
+  const r = rig({ fsp });
+  r.put('empty', '');
+  await r.scanner.pass();
+  assert.strictEqual(opened, 0);
+  failRead = true;
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+  await r.scanner.pass();
+  assert.strictEqual(opened, 1);
+  assert.strictEqual(closed, 1, 'closed although the read threw');
+  assert.ok(r.logs.some(l => /can't be read: EIO/.test(l)));
+});
+
+test('reading: what was read is kept across passes, and an unchanged file does not make it be read again from its tail', async () => {
+  // A tail just longer than the second line: the first line lies behind it. Only keeping the state (rather
+  // than re-reading from the tail each pass) keeps the first call in the count.
+  const l1 = line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 });
+  const l2 = line('a1', [read(path.join(FEAT, 'b.py')), text('x'.repeat(60))], { at: T0 + 1000 });
+  const r = rig({ tailBytes: Buffer.byteLength(l2) + 3 });
+  r.put('a1', l1);
+  await r.scanner.pass();
+  r.append('a1', l2);
+  r.clock += S.REWRITE_MS;
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1').count, 2);
+  assert.strictEqual(r.claim('a1').firstAt, T0);
+  r.clock += S.REWRITE_MS;
+  await r.scanner.pass();       // unchanged: it must not be treated as a replaced file
+  assert.strictEqual(r.claim('a1').count, 2);
+  assert.strictEqual(r.claim('a1').firstAt, T0);
+});
+
+test('reading: a transcript that went stale is forgotten whole: written again, only its tail is read', async () => {
+  const l1 = line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 });
+  const l2 = line('a1', [read(path.join(FEAT, 'b.py')), text('x'.repeat(60))], { at: T0 + 1000 });
+  const r = rig({ tailBytes: Buffer.byteLength(l2) + 3 });
+  r.put('a1', l1);
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1').count, 1);
+  r.clock += T.STALE_MS;
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1'), null, 'stale, so the claim is gone');
+  r.append('a1', l2);
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1').count, 1, 'only the tail: the first call is not remembered from before it went stale');
+  assert.strictEqual(r.claim('a1').firstAt, T0 + 1000);
+});
+
+test('meta: once read it is not read again: a rewritten meta does not rename or re-type a known agent', async () => {
+  const r = rig();
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]), { meta: { name: 'first', taskKind: 'in_process_teammate' } });
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1').agent, 'first');
+  fs.writeFileSync(r.file('a1').replace(/\.jsonl$/, '.meta.json'), JSON.stringify({ name: 'second' }));
+  r.clock += S.REWRITE_MS;
+  r.append('a1', done('a1', T0 + 5000));
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('a1').agent, 'first');
+  assert.ok(r.claim('a1'), 'still a teammate: an ended turn did not release it');
+});
+
+// --- the worktree list, and a pass that fails -------------------------------------------------------------
+
+test('the worktree list is refreshed only when it says it is stale, and a failing refresh is logged once', async () => {
+  const r = rig();
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+  await r.scanner.pass();
+  assert.strictEqual(r.refreshed, 0, 'a fresh list is not refreshed');
+  const bad = rig({ roots: { get: () => ROOTS, stale: () => true, refresh: async () => { throw new Error('git is gone'); } } });
+  bad.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+  await bad.scanner.pass();
+  await bad.scanner.pass();
+  assert.deepStrictEqual(bad.logs, ['[occupancy] could not refresh the worktree list; using the last one: git is gone']);
+});
+
+test('a pass that fails is logged and resolves to nothing, and the next pass runs', async () => {
+  let broken = true;
+  const r = rig({ roots: { get: () => { if (broken) throw new Error('git blew up'); return ROOTS; }, stale: () => false, refresh: async () => ROOTS } });
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+  const out = await r.scanner.pass();
+  assert.deepStrictEqual(out, { claimed: [], removed: [] });
+  assert.deepStrictEqual(r.logs, ['[occupancy] transcript pass failed: git blew up']);
+  broken = false;
+  assert.deepStrictEqual((await r.scanner.pass()).claimed, ['a1']);
+});
+
+test('a claim the writer refuses is logged with its reason and not counted as claimed', async () => {
+  for (const [answer, tail] of [[{ ok: false, error: 'disk full' }, 'disk full'], [null, ''], [undefined, ''], [{ ok: false }, '']]) {
+    const r = rig({ writer: { write: () => answer, remove() {}, forget() {} } });
+    r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+    const out = await r.scanner.pass();
+    assert.deepStrictEqual(out.claimed, []);
+    assert.deepStrictEqual(r.logs, [`[occupancy] transcript claim not written: ${tail}`], JSON.stringify(answer));
+  }
+});
+
+// --- whose claim it is: the live list ---------------------------------------------------------------------
+
+async function takeoverPasses(live, over = {}) {
+  const r = rig(over);
+  plant(r, foreign());
+  r.live = live;
+  r.put('a1', line('a1', [read(path.join(FEAT2, 'a.py'))]));
+  const first = (await r.scanner.pass()).claimed;
+  const second = (await r.scanner.pass()).claimed;
+  return { first, second, r };
+}
+
+test('shown means THIS agent id AND THIS host pid: a live claim for another agent, or another pid, does not protect it', async () => {
+  for (const [what, live] of [
+    ['another agent, same pid', [foreign({ agentId: 'other' })]],
+    ['same agent, another pid', [foreign({ hostPid: 9999 })]],
+    ['a null entry and an unrelated one', [null, foreign({ agentId: 'other', hostPid: 1 })]],
+  ]) {
+    const { first, second } = await takeoverPasses(live);
+    assert.deepStrictEqual(first, [], what);
+    assert.deepStrictEqual(second, ['a1'], `${what}: taken over after the one pass of grace`);
+  }
+});
+
+test('shown: the very claim that is on disk, live, is left alone however many passes go by, and a null in the list is tolerated', async () => {
+  for (const live of [[foreign()], [null, foreign(), undefined]]) {
+    const { first, second, r } = await takeoverPasses(live);
+    assert.deepStrictEqual(first, []);
+    assert.deepStrictEqual(second, []);
+    assert.deepStrictEqual((await r.scanner.pass()).claimed, []);
+    assert.strictEqual(r.claim('a1').hostPid, 4242);
+  }
+});
+
+test('a live list that is not a list, or whose reader throws, is read as "nobody is live"', async () => {
+  for (const liveClaims of [() => ({}), () => 'x', () => { throw new Error('reader down'); }]) {
+    const { first, second } = await takeoverPasses([], { liveClaims });
+    assert.deepStrictEqual(first, []);
+    assert.deepStrictEqual(second, ['a1']);
+  }
+});
+
+// --- the memories are bounded -----------------------------------------------------------------------------
+
+const manyIds = Array.from({ length: 501 }, (_, i) => `i${String(i).padStart(3, '0')}`);
+
+function bigRig() {
+  const disk = new Map();
+  const r = rig({
+    dir: path.resolve('/occ-scan-fake-claims'),
+    fsImpl: {
+      readFileSync: (p) => {
+        const id = path.basename(String(p), '.json');
+        if (!disk.has(id)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        return O.serializeClaim(disk.get(id));
+      },
+    },
+    writer: { write: () => ({ ok: true }), remove() {}, forget() {} },
+    liveClaims: () => [...disk.values()],
+  });
+  for (const id of manyIds) r.put(id, line(id, [read(path.join(FEAT, 'a.py'))], { at: T0 }));
+  const setFresh = (ids) => {
+    const keep = new Set(ids);
+    for (const id of manyIds) { const t = new Date(keep.has(id) ? r.clock : 0); fs.utimesSync(r.file(id), t, t); }
+  };
+  const theirsOn = (ids) => { disk.clear(); for (const id of ids) disk.set(id, foreign({ agentId: id })); };
+  return { r, setFresh, theirsOn };
+}
+
+test('what an owner let go of is remembered for the last 500 agents only; the oldest is forgotten, a re-released one is renewed', async () => {
+  const { r, setFresh, theirsOn } = bigRig();
+  const first500 = manyIds.slice(0, 500);
+  const pass = async () => (await r.scanner.pass()).claimed;
+  // 1: 500 agents whose claim files are somebody else's and live
+  setFresh(first500); theirsOn(first500);
+  assert.deepStrictEqual(await pass(), []);
+  // 2: their owners remove them all (500 released); a 501st agent shows up under another producer
+  setFresh(manyIds); theirsOn(['i500']);
+  assert.deepStrictEqual(await pass(), [], 'nothing newer than what each owner let go of');
+  // 3: i000 is claimed by somebody again
+  theirsOn(['i000', 'i500']);
+  assert.deepStrictEqual(await pass(), []);
+  // 4: and both are let go: i000 is the most recent release now, i500 the 501st, so the OLDEST (i001) falls out
+  theirsOn([]);
+  assert.deepStrictEqual(await pass(), []);
+  // 5: the oldest memory is gone, so its agent is claimed again; the 500 others are still remembered
+  assert.deepStrictEqual(await pass(), ['i001']);
+});
+
+test('the claim files seen as another producer\'s are remembered for the last 500 agents only; the oldest is forgotten, a re-seen one is renewed', async () => {
+  const { r, setFresh, theirsOn } = bigRig();
+  const first500 = manyIds.slice(0, 500);
+  const pass = async () => (await r.scanner.pass()).claimed;
+  // 1: 500 agents under somebody else's live claim files
+  setFresh(first500); theirsOn(first500);
+  assert.deepStrictEqual(await pass(), []);
+  // 2: only i000 (seen again: renewed) and a new i500 are looked at: that is 501, so the oldest, i001, falls out
+  setFresh(['i000', 'i500']); theirsOn(['i000', 'i500']);
+  assert.deepStrictEqual(await pass(), []);
+  // 3: every owner removed its file: those still remembered count as "let go of"; i001 was forgotten, so it is
+  //    an always-empty slot and is claimed by the transcript
+  setFresh(manyIds); theirsOn([]);
+  assert.deepStrictEqual(await pass(), ['i001']);
+});
+
+// --- running it: start, the tick, close -------------------------------------------------------------------
+
+function timed(over = {}) {
+  const timers = [];
+  const cleared = [];
+  const removes = [];
+  const holder = {};
+  const r = rig({
+    passMs: 5000,
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: (t) => { cleared.push(t); },
+    writer: { write: (...a) => holder.r.writer.write(...a), forget: (...a) => holder.r.writer.forget(...a), remove: (id) => { removes.push(id); return holder.r.writer.remove(id); } },
+    ...over,
+  });
+  holder.r = r;
+  return { r, timers, cleared, removes };
+}
+
+test('start runs a pass at once and arms one tick of passMs; the tick runs a pass and arms the next', async () => {
+  const { r, timers } = timed();
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 }));
+  r.scanner.start();
+  await until(() => r.claims().length > 0);
+  assert.deepStrictEqual(r.claims().map(c => c.agentId), ['a1'], 'the first pass ran with no tick');
+  assert.strictEqual(timers.length, 1);
+  assert.strictEqual(timers[0].ms, 5000);
+  r.append('a1', line('a1', [read(path.join(FEAT, 'b.py'))], { at: T0 + 1000 }));
+  r.clock += S.REWRITE_MS;
+  await timers[0].fn();
+  assert.strictEqual(r.claim('a1').count, 2, 'the tick ran a pass');
+  assert.strictEqual(timers.length, 2, 'and armed the next one');
+  assert.strictEqual(timers[1].ms, 5000);
+});
+
+test('close clears the armed tick once, releases the claims it owns once, and a closed scanner never starts or re-arms', async () => {
+  const { r, timers, cleared, removes } = timed();
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+  r.scanner.start();
+  await until(() => r.claims().length > 0);
+  assert.strictEqual(timers.length, 1);
+  r.scanner.close();
+  r.scanner.close();
+  assert.deepStrictEqual(cleared, [timers[0]], 'cleared exactly once');
+  assert.deepStrictEqual(removes, ['a1'], 'released exactly once');
+  assert.deepStrictEqual(r.claims(), []);
+  r.scanner.start();
+  await settleT();
+  assert.strictEqual(timers.length, 1, 'a closed scanner does not start');
+  assert.deepStrictEqual(r.claims(), []);
+  await timers[0].fn();       // a tick that was already running when it closed
+  assert.strictEqual(timers.length, 1, 'and does not re-arm');
+});
+
+test('close with no tick armed clears nothing', () => {
+  const { r, cleared } = timed();
+  r.scanner.close();
+  assert.deepStrictEqual(cleared, []);
+});
+
+test('the default tick is a real setTimeout of passMs, unref\'d so it never holds the process open, and close clears that very handle', async () => {
+  const realSet = global.setTimeout;
+  const made = [];
+  const cleared = [];
+  try {
+    const r = rig({ passMs: 4321, setTimer: undefined, clearTimer: (t) => cleared.push(t) });
+    global.setTimeout = (fn, ms) => { const t = { fn, ms, unrefs: 0, unref() { this.unrefs += 1; } }; made.push(t); return t; };
+    r.scanner.start();
+    assert.strictEqual(made.length, 1);
+    assert.strictEqual(made[0].ms, 4321);
+    assert.strictEqual(made[0].unrefs, 1);
+    r.scanner.close();
+    assert.deepStrictEqual(cleared, [made[0]]);
+  } finally {
+    global.setTimeout = realSet;
+  }
+  await settleT();
+});
+
+test('the default tick copes with a handle that has no unref, or no handle at all', async () => {
+  const realSet = global.setTimeout;
+  try {
+    for (const handle of [{}, null, undefined]) {
+      const r = rig({ setTimer: undefined, clearTimer: () => {} });
+      global.setTimeout = () => handle;
+      assert.doesNotThrow(() => r.scanner.start(), String(handle));
+      r.scanner.close();
+    }
+  } finally {
+    global.setTimeout = realSet;
+  }
+  await settleT();
+});
