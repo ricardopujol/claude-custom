@@ -108,3 +108,23 @@ test('REAL fs: a removal (Reset in the other window) also fires onChange', async
     h.close();
   }
 });
+
+// Reused for the occupancy folder (backlog #44 + #47): the log lines must name WHAT is being watched, or a
+// failed occupancy watch reads as a broken global picture.
+test('what: the log lines name the watched thing, defaulting to the global picture', () => {
+  const lines = (what) => {
+    const logged = [];
+    const { state, deps } = fakes();
+    watchGlobalDir('/x', () => { throw new Error('boom'); },
+      { ...deps, ...(what ? { what } : {}), log: (...a) => logged.push(a.join(' ')), watch: () => { throw new Error('ENOSPC'); } });
+    watchGlobalDir('/x', () => { throw new Error('boom'); },
+      { ...deps, ...(what ? { what } : {}), log: (...a) => logged.push(a.join(' ')) });
+    state.handlers[0]();
+    state.timers[0].fn();
+    return logged.join('\n');
+  };
+  assert.match(lines(), /global picture/);
+  const named = lines('worktree occupancy');
+  assert.match(named, /worktree occupancy/);
+  assert.doesNotMatch(named, /global picture/);
+});

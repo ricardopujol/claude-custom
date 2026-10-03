@@ -66,6 +66,17 @@ contextBridge.exposeInMainWorld('harness', {
       try { fn(); } catch (err) { console.error('[preload] lock-override listener threw', err); }
     }), () => ipcRenderer.removeAllListeners('lock-override')),
 
+  // Worktree occupancy (backlog #44 + #47). `get` answers this page's { here, launched } at first paint: the live
+  // agent claims in THIS folder (its banner and keystroke confirm) and the ones THIS session launched (its roster
+  // cards' `-> worktree` lines). `onChange` is the same payload pushed whenever it changes (replace-don't-accumulate).
+  occupancy: {
+    get: () => ipcRenderer.invoke('occupancy:get'),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('occupancy'), ipcRenderer.on('occupancy',
+      (_e, payload) => {
+        try { fn(payload); } catch (err) { console.error('[preload] occupancy listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('occupancy')),
+  },
+
   // FF4. Main raises and clears the finished-task cue, because only main knows
   // whether the window is focused -- the page cannot tell "you are looking at
   // me" from "I am merely visible". One boolean, one direction.

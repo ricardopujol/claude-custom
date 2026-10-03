@@ -34,7 +34,9 @@ function createTerminalState({ cols = 120, rows = 30, scrollback = 1000 } = {}) 
   term.loadAddon(serializer);
 
   return {
-    write: data => term.write(data),
+    // The optional callback fires once xterm has PARSED this data (writes are
+    // queued and parsed asynchronously, in order).
+    write: (data, cb) => term.write(data, cb),
     serialize: () => serializer.serialize(),
 
     // Plain text rows. serialize() carries ANSI because replay needs it, which

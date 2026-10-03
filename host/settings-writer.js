@@ -44,6 +44,14 @@ const path = require('path');
 // are rare, so the tax is negligible.
 const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
 const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage';    // completion and error signals
+// Backlog #44 + #47 (worktree occupancy): which worktree a SUBAGENT is working in is proven by its own file
+// and search tool calls, which the matchers above never saw. Opt-in (`occupancy: true`) and a SEPARATE entry,
+// so the mood engine's entry is untouched. It costs one ~23 ms hook per Read/Edit/Write/NotebookEdit/Grep/Glob
+// call: the matcher can't ask for subagent calls only, so the main session's are hooked too. host/host.js
+// consumes these events itself (host/occupancy-producer.js) and never lets them reach the mood engine or the
+// Running panel -- their PostToolUse isn't hooked, so the panel would show every Read as running forever.
+// The same tools as host/agent-occupancy.js TOUCH_TOOLS (test/settings-writer.test.js holds them together).
+const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 const HOOK_TIMEOUT_SECONDS = 5;
 
 const quote = s => `"${s}"`;
@@ -109,7 +117,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -153,6 +161,8 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook }
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
   const loadoutEntry = buildLoadoutEntry(loadoutHook);
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
+  // LAST, so PreToolUse[0] stays the mood engine's and [1] the tool belt's.
+  if (occupancy === true) settings.hooks.PreToolUse.push(entry(OCCUPANCY_MATCHER, 'PreToolUse'));
   return settings;
 }
 
@@ -230,4 +240,4 @@ function buildClaudeArgs({ settingsFile, helperExists } = {}) {
   return args;
 }
 
-module.exports = { buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };
+module.exports = { OCCUPANCY_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };

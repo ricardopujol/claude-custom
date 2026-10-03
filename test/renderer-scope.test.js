@@ -105,6 +105,8 @@ const ALLOWED_GLOBALS = new Set([
   'worktreeStatus',
   // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
   'tabModel', 'tabStatus', 'goToSession',
+  // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
+  'occupancyDisplay', 'occupancyConfirm',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
   // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)

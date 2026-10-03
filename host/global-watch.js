@@ -32,6 +32,9 @@ function watchGlobalDir(dir, onChange, {
   watch = fs.watch, mkdirSync = fs.mkdirSync, delayMs = 150, rearmMs = 1000, maxWaitMs = null, now = Date.now,
   setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; },
   clearTimer = clearTimeout, log = console.log,
+  // What is being watched, for the log lines only. Also used for the worktree occupancy folder
+  // (host/occupancy-service.js), where "global picture" would send a reader after the wrong thing.
+  what = 'global picture',
 } = {}) {
   let timer = null;
   let rearmTimer = null;
@@ -43,7 +46,7 @@ function watchGlobalDir(dir, onChange, {
     timer = null;
     burstStart = null;
     if (closed) return;
-    try { onChange(); } catch (err) { log('[host] global picture repaint failed:', err && err.message); }
+    try { onChange(); } catch (err) { log(`[host] ${what} repaint failed:`, err && err.message); }
   };
 
   // `maxWaitMs` (opt-in; the other callers keep a pure trailing debounce): a trailing-only debounce starves
@@ -71,7 +74,7 @@ function watchGlobalDir(dir, onChange, {
       // A watcher that dies later (folder removed) must not crash the host, and
       // must not be the end of following other windows.
       watcher.on('error', (err) => {
-        log('[host] global picture watcher stopped:', err && err.message);
+        log(`[host] ${what} watcher stopped:`, err && err.message);
         scheduleRearm();
       });
     }
@@ -88,7 +91,7 @@ function watchGlobalDir(dir, onChange, {
         arm();
         report();          // the folder was gone: whatever it held has changed
       } catch (err) {
-        log('[host] cannot watch the global picture folder; retrying:', err && err.message);
+        log(`[host] cannot watch the ${what} folder; retrying:`, err && err.message);
         scheduleRearm();
       }
     }, rearmMs);
@@ -97,7 +100,7 @@ function watchGlobalDir(dir, onChange, {
   try {
     arm();
   } catch (err) {
-    log('[host] cannot watch the global picture folder; other windows will not follow changes:', err && err.message);
+    log(`[host] cannot watch the ${what} folder; other windows will not follow changes:`, err && err.message);
   }
   return {
     close() {

@@ -39,25 +39,42 @@ test('a value starting with "-" passed as -Name:value reaches the script as that
 test('a background process holding stdout does not hold runScript: it settles on exit', { skip }, async () => {
   const dir = tmpDir('cc-wops-sh-');
   const script = path.join(dir, 'bg.ps1');
+  const hold = path.join(dir, 'hold.js');
+  const release = path.join(dir, 'release');
+  // The background process lives until the TEST says so (a release file), not
+  // for a fixed ~5 s: a wall-clock bound on powershell's start-up failed under
+  // full-suite load, while "the pipe was still held" is the actual claim. The
+  // 120 s cap only stops an orphan if the test dies before releasing it.
+  fs.writeFileSync(hold, [
+    "const fs = require('fs');",
+    'const t0 = Date.now();',
+    'const timer = setInterval(() => {',
+    '  if (fs.existsSync(process.argv[2]) || Date.now() - t0 > 120000) clearInterval(timer);',
+    '}, 50);',
+  ].join('\n'));
   fs.writeFileSync(script, [
     '[Console]::Out.WriteLine(\'{"ok":true}\')',
     '[Console]::Out.Flush()',
-    // Inherits this script's stdout pipe and outlives it by ~5 s.
-    'Start-Process -FilePath ping.exe -ArgumentList \'-n\',\'6\',\'127.0.0.1\' -NoNewWindow',
+    // Inherits this script's stdout pipe and outlives it until released.
+    `Start-Process -FilePath '${process.execPath}' -ArgumentList '"${hold}"','"${release}"' -NoNewWindow`,
     'exit 0',
   ].join('\r\n'));
   let closed = false;
+  let onClose;
+  const closedP = new Promise(r => { onClose = r; });
   const spawn = (...a) => {
     const child = childProcess.spawn(...a);
-    child.on('close', () => { closed = true; });
+    child.on('close', () => { closed = true; onClose(); });
     return child;
   };
-  const t0 = Date.now();
-  const r = await ops.runScript({ script, timeoutMs: 30000, graceMs: 300, spawn });
-  const took = Date.now() - t0;
-  assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\{"ok":true\}/);
-  assert.strictEqual(r.timedOut, false);
-  assert.strictEqual(closed, false, 'the pipe was still held when runScript settled (else this test proves nothing)');
-  assert.ok(took < 4500, `settled in ${took} ms, not after the background process`);
+  try {
+    const r = await ops.runScript({ script, timeoutMs: 30000, graceMs: 300, spawn });
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\{"ok":true\}/);
+    assert.strictEqual(r.timedOut, false);
+    assert.strictEqual(closed, false, 'the pipe was still held when runScript settled (else this test proves nothing)');
+  } finally {
+    fs.writeFileSync(release, '');          // let the background process end
+  }
+  await closedP;                            // and the pipe does close once it has
 });

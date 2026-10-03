@@ -136,3 +136,74 @@ test('selfStartTime is null when the query fails, and asks again next time', asy
   fail = false;
   assert.strictEqual(await self(), '5');
 });
+
+// --- a process that has EXITED but is still in the table (found by verify/probe-worktree-occupancy.js) -------------
+//
+// Windows keeps an exited process in the process table for as long as ANYONE holds a handle to it, and
+// Get-Process -Id still returns it, with its StartTime, HasExited = True. MEASURED 2026-10-03 (probe-worktree-
+// occupancy, Electron 33, Windows 11): after a host was killed, its pid and start time were still listed 45 s
+// later, so every consumer of "is pid P still the process that started at T?" read a dead host as alive. The
+// query now skips exited processes: such a pid is ABSENT ("not running"), which is what it is.
+test('the query skips a process that has exited but is still listed (HasExited)', async () => {
+  const { exec, calls } = fakeExec({ stdout: 'END\n' });
+  await startTimes([12, 34], opts({ exec }));
+  const script = calls[0].args[calls[0].args.length - 1];
+  const at = (needle) => script.indexOf(needle);
+  assert.ok(at('Where-Object { -not $_.HasExited }') > at('Get-Process -Id 12,34 '), 'filtered after Get-Process');
+  assert.ok(at('Where-Object { -not $_.HasExited }') < at('ForEach-Object'), 'and before the start time is read');
+});
+
+// The real query has a timeout of its own, and under the full suite's load powershell.exe can miss it: null,
+// "the OS couldn't be asked". That is not an answer about the process, so the REAL tests ask again (measured:
+// one null in a full run, 2026-10-03) and only judge a Map.
+async function asked(pids) {
+  for (let i = 0; i < 5; i++) {
+    const m = await startTimes(pids);
+    if (m instanceof Map) return m;
+  }
+  return null;
+}
+
+test('REAL powershell: this process is listed with a FILETIME, a pid nobody has is absent, and the filter keeps both answers apart', { skip: process.platform !== 'win32' }, async () => {
+  const bogus = 2147483000;
+  const m = await asked([process.pid, bogus]);
+  assert.ok(m instanceof Map, 'the query ran');
+  assert.match(m.get(process.pid), /^\d+$/);
+  assert.strictEqual(m.has(bogus), false);
+});
+
+test('REAL powershell: a killed process whose handle is still HELD (a corpse Windows keeps listed) is no longer listed', { skip: process.platform !== 'win32' }, async () => {
+  const { spawn } = require('child_process');
+  // The holder starts a child and keeps a .NET Process object (a handle) to it until told to stop.
+  const holder = spawn('powershell', ['-NoProfile', '-Command',
+    "$c = Start-Process -FilePath node -ArgumentList '-e','setTimeout(()=>{},60000)' -PassThru -WindowStyle Hidden; " +
+    '$c.Id; [Console]::Out.Flush(); $null = $c.Handle; [Console]::In.ReadLine() | Out-Null'],
+  { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+  let out = '';
+  holder.stdout.on('data', (d) => { out += d; });
+  try {
+    const deadline = Date.now() + 15000;
+    while (!/^\d+/.test(out.trim()) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    const pid = Number(out.trim().split(/\s+/)[0]);
+    assert.ok(Number.isInteger(pid) && pid > 0, `the child started (${out})`);
+    const alive = await asked([pid]);
+    assert.ok(alive, 'the query ran (5 tries)');
+    assert.strictEqual(alive.has(pid), true, 'alive: listed');
+    process.kill(pid, 'SIGKILL');
+    // Asked until it says so, not after a fixed sleep: under the suite's load the teardown has no fixed time
+    // (PR #96 Miguel Y5). The holder keeps its handle the whole while, so without the HasExited filter the
+    // corpse stays listed until the deadline.
+    const until = Date.now() + 15000;
+    let dead = null;
+    do {
+      dead = await asked([pid]);
+      if (dead && !dead.has(pid)) break;
+      await new Promise(r => setTimeout(r, 250));
+    } while (Date.now() < until);
+    assert.ok(dead, 'the query ran');
+    assert.strictEqual(dead.has(pid), false, 'dead: not listed');
+  } finally {
+    try { holder.stdin.write('\n'); } catch { /* gone */ }
+    try { holder.kill(); } catch { /* gone */ }
+  }
+});
