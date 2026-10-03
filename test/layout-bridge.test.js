@@ -227,3 +227,117 @@ test('a tree watcher follows the tree key and pushes on the tree channel; a chan
   listener();
   assert.deepStrictEqual(sent, [[TREE_NAMES.push, next]]);
 });
+
+// --- the preset list: the same bridge, an ARRAY under its own key (dockable panels D3) ----
+
+const { PRESET_NAMES } = require('../app/layout-bridge');
+const DOCK_PRESETS = require('../app/dock-presets');
+
+function presetSetup(store = fakeStore()) {
+  const sent = [];
+  const ipcMain = fakeIpc();
+  const sync = {};
+  registerLayoutHandlers({
+    ipcMain, store, sync, names: PRESET_NAMES, isSender: s => s === VIEW, send: (ch, v) => sent.push([ch, v]),
+  });
+  const call = (ch, ...args) => ipcMain.handlers.get(ch)({ sender: VIEW }, ...args);
+  return { ipcMain, store, sent, call, sync };
+}
+const PRESETS = [{ name: 'Reviewing', layout: TREE }, { name: 'Writing', layout: { ...TREE, hidden: ['fog'] } }];
+
+test('PRESET_NAMES is its own key and channels, none of them the layout ones, and holds a list of presets', () => {
+  assert.deepStrictEqual(PRESET_NAMES, {
+    key: 'layout-presets', get: 'layout-presets:get', set: 'layout-presets:set', push: 'layout-presets',
+    shape: 'array', maxBytes: 32 * 8192,
+  });
+  for (const other of [{ key: LAYOUT_KEY, get: GET_CHANNEL, set: SET_CHANNEL, push: PUSH_CHANNEL }, TREE_NAMES]) {
+    for (const f of ['key', 'get', 'set', 'push']) assert.notStrictEqual(PRESET_NAMES[f], other[f], f);
+  }
+  assert.ok(PRESET_NAMES.maxBytes >= DOCK_PRESETS.MAX_PRESETS * DOCK_PRESETS.MAX_PRESET_BYTES, '32 full presets fit');
+});
+
+test('the layout names keep their one-object rule and their 8192-byte cap: the shape is opt-in', () => {
+  assert.strictEqual(TREE_NAMES.shape, undefined);
+  assert.strictEqual(TREE_NAMES.maxBytes, undefined);
+});
+
+test('a set of a list stores it under the presets key, pushes it, and echoes it', async () => {
+  const { call, store, sent, sync } = presetSetup(fakeStore({ [TREE_NAMES.key]: TREE }));
+  assert.deepStrictEqual(await call(PRESET_NAMES.set, PRESETS), PRESETS);
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key], PRESETS);
+  assert.deepStrictEqual(store.data[TREE_NAMES.key], TREE, 'the tree record is untouched');
+  assert.deepStrictEqual(sent, [[PRESET_NAMES.push, PRESETS]]);
+  assert.strictEqual(sync.last, JSON.stringify(PRESETS));
+});
+
+test('an empty list is a real value: deleting the last preset is stored, not refused', async () => {
+  const { call, store } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }));
+  assert.deepStrictEqual(await call(PRESET_NAMES.set, []), []);
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key], []);
+});
+
+test('the presets channel refuses anything that is not an array, and the layout channel still refuses an array', async () => {
+  const { call, store, sent } = presetSetup();
+  for (const bad of [null, {}, 'x', 7, undefined, { name: 'a', layout: {} }]) assert.strictEqual(await call(PRESET_NAMES.set, bad), null, JSON.stringify(bad));
+  assert.ok(!(PRESET_NAMES.key in store.data));
+  assert.deepStrictEqual(sent, []);
+  const tree = treeSetup();
+  assert.strictEqual(await tree.call(TREE_NAMES.set, PRESETS), null);
+  assert.strictEqual(await tree.call(TREE_NAMES.set, []), null);
+});
+
+test('the presets cap is its own: more than 8192 bytes is fine, more than 32 x 8192 is refused', async () => {
+  const { call, store } = presetSetup();
+  const big = [{ name: 'Big', layout: { pad: 'x'.repeat(10000) } }];
+  assert.deepStrictEqual(await call(PRESET_NAMES.set, big), big);
+  const tooBig = [{ name: 'Huge', layout: { pad: 'x'.repeat(PRESET_NAMES.maxBytes) } }];
+  assert.strictEqual(await call(PRESET_NAMES.set, tooBig), null);
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key], big, 'the refused save left the stored list as it was');
+});
+
+test('a sender that is not a tab view gets nothing and changes nothing on the presets channels', async () => {
+  const { ipcMain, store, sent } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }));
+  const stranger = { sender: {} };
+  assert.strictEqual(await ipcMain.handlers.get(PRESET_NAMES.get)(stranger), null);
+  assert.strictEqual(await ipcMain.handlers.get(PRESET_NAMES.set)(stranger, []), null);
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key], PRESETS);
+  assert.deepStrictEqual(sent, []);
+});
+
+test('a get of the presets key answers ok with the list, MISSING when there is no file, and never "missing" for a damaged one', async () => {
+  assert.deepStrictEqual(await presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS })).call(PRESET_NAMES.get), { status: 'ok', layout: PRESETS });
+  assert.deepStrictEqual(await presetSetup(fakeStore({ [PRESET_NAMES.key]: [] })).call(PRESET_NAMES.get), { status: 'ok', layout: [] });
+  assert.deepStrictEqual(await presetSetup().call(PRESET_NAMES.get), { status: 'missing', layout: null });
+  for (const status of ['unreadable', 'corrupt']) {
+    const { call } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }, { [PRESET_NAMES.key]: { status, value: null } }));
+    assert.deepStrictEqual(await call(PRESET_NAMES.get), { status, layout: null }, status);
+  }
+  // ok JSON of the wrong shape (an object where the list should be) is corrupt, and the tree's answer is unchanged
+  assert.deepStrictEqual(await presetSetup(fakeStore({ [PRESET_NAMES.key]: { a: 1 } })).call(PRESET_NAMES.get), { status: 'corrupt', layout: null });
+  assert.deepStrictEqual(await treeSetup(fakeStore({ [TREE_NAMES.key]: [] })).call(TREE_NAMES.get), { status: 'corrupt', layout: null });
+});
+
+test('a presets watcher pushes a list another window wrote once, including an empty one, and says nothing for a failed read', () => {
+  const states = {};
+  const store = fakeStore({ [PRESET_NAMES.key]: PRESETS }, states);
+  const sent = [];
+  let listener = null;
+  watchLayout({
+    store, file: 'layout-presets.json', sync: {}, names: PRESET_NAMES, send: (ch, v) => sent.push([ch, v]),
+    watchFile: (_f, _o, fn) => { listener = fn; }, unwatchFile: () => {},
+  });
+  listener();
+  assert.deepStrictEqual(sent, [], 'no change');
+  store.data[PRESET_NAMES.key] = [];
+  listener();
+  listener();
+  assert.deepStrictEqual(sent, [[PRESET_NAMES.push, []]]);
+  states[PRESET_NAMES.key] = { status: 'error' };
+  store.data[PRESET_NAMES.key] = PRESETS;
+  listener();
+  assert.strictEqual(sent.length, 1);
+  store.data[PRESET_NAMES.key] = { not: 'a list' };
+  delete states[PRESET_NAMES.key];
+  listener();
+  assert.strictEqual(sent.length, 1, 'a value of the wrong shape is skipped, not pushed');
+});

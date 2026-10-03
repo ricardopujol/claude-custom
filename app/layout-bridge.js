@@ -24,17 +24,27 @@ const PUSH_CHANNEL = 'layout-global';
 // is left alone: a window on an older build may still write it, and a version-2 object read by L1's
 // normalizer would come out as the default and be saved over it.
 const TREE_NAMES = { key: 'layout-tree', get: 'layout-tree:get', set: 'layout-tree:set', push: 'layout-tree' };
+// The layout presets (dockable panels D3): the same bridge holding an ARRAY, with a cap of its own
+// (32 presets x 8192 bytes: app/dock-presets.js MAX_PRESETS x MAX_PRESET_BYTES). `shape` and `maxBytes` are
+// opt-in, so the layout names above keep their one-object rule and their 8192-byte cap.
+const PRESET_NAMES = {
+  key: 'layout-presets', get: 'layout-presets:get', set: 'layout-presets:set', push: 'layout-presets',
+  shape: 'array', maxBytes: 32 * 8192,
+};
 const DEFAULT_NAMES = { key: LAYOUT_KEY, get: GET_CHANNEL, set: SET_CHANNEL, push: PUSH_CHANNEL };
 // Seven modules in four zones is well under 1 KB; the cap only stops a bad
 // sender from bloating the store and every push.
 const MAX_LAYOUT_BYTES = 8192;
 
 const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
+// What a stored or sent value must be for these names: one plain object, or (the presets) one array.
+const validFor = names => (names && names.shape === 'array' ? Array.isArray : isPlainObject);
+const capFor = names => (names && Number.isInteger(names.maxBytes) ? names.maxBytes : MAX_LAYOUT_BYTES);
 
-function readLayout(store, key = LAYOUT_KEY) {
+function readLayout(store, key = LAYOUT_KEY, valid = isPlainObject) {
   try {
     const rec = store.read(key, null);
-    return isPlainObject(rec) ? rec : null;
+    return valid(rec) ? rec : null;
   } catch {
     return null;
   }
@@ -46,7 +56,7 @@ function readLayout(store, key = LAYOUT_KEY) {
  * else. An unreadable file (antivirus holding it, EBUSY) or a corrupt one is
  * said so, never reported as "nothing saved" (PR #82 Dexter F3, Miguel I1).
  */
-function readLayoutState(store, key = LAYOUT_KEY) {
+function readLayoutState(store, key = LAYOUT_KEY, valid = isPlainObject) {
   let st;
   try {
     st = typeof store.readState === 'function'
@@ -58,19 +68,21 @@ function readLayoutState(store, key = LAYOUT_KEY) {
   if (st.status === 'missing') return { status: 'missing', layout: null };
   if (st.status !== 'ok') return { status: st.status === 'corrupt' ? 'corrupt' : 'unreadable', layout: null };
   if (st.value === null || st.value === undefined) return { status: 'missing', layout: null };
-  return isPlainObject(st.value) ? { status: 'ok', layout: st.value } : { status: 'corrupt', layout: null };
+  // `layout` is the answer's field for the value under every names, the presets' list included.
+  return valid(st.value) ? { status: 'ok', layout: st.value } : { status: 'corrupt', layout: null };
 }
 
 function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, names = DEFAULT_NAMES }) {
   const fromView = e => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
 
-  ipcMain.handle(names.get, e => (fromView(e) ? readLayoutState(store, names.key) : null));
+  const valid = validFor(names);
+  ipcMain.handle(names.get, e => (fromView(e) ? readLayoutState(store, names.key, valid) : null));
 
   ipcMain.handle(names.set, (e, value) => {
-    if (!fromView(e) || !isPlainObject(value)) return null;
+    if (!fromView(e) || !valid(value)) return null;
     let json;
     try { json = JSON.stringify(value); } catch { return null; }
-    if (Buffer.byteLength(json, 'utf8') > MAX_LAYOUT_BYTES) return null;
+    if (Buffer.byteLength(json, 'utf8') > capFor(names)) return null;
     try {
       store.update(names.key, null, () => value);
     } catch (err) {
@@ -95,7 +107,7 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, nam
 function watchLayout({
   store, file, intervalMs = 500, watchFile = fs.watchFile, unwatchFile = fs.unwatchFile, sync = {}, send, names = DEFAULT_NAMES,
 }) {
-  const now = () => { const l = readLayout(store, names.key); return l === null ? null : JSON.stringify(l); };
+  const now = () => { const l = readLayout(store, names.key, validFor(names)); return l === null ? null : JSON.stringify(l); };
   sync.last = now();
   const listener = () => {
     if (typeof store.readState === 'function') {
@@ -113,5 +125,5 @@ function watchLayout({
 
 module.exports = {
   readLayout, readLayoutState, registerLayoutHandlers, watchLayout,
-  LAYOUT_KEY, GET_CHANNEL, SET_CHANNEL, PUSH_CHANNEL, MAX_LAYOUT_BYTES, TREE_NAMES,
+  LAYOUT_KEY, GET_CHANNEL, SET_CHANNEL, PUSH_CHANNEL, MAX_LAYOUT_BYTES, TREE_NAMES, PRESET_NAMES,
 };
