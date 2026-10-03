@@ -1321,8 +1321,12 @@ async function loadLayout() {
   if (bridge) {
     bridge.onChange((l) => {
       layoutPushes += 1;
-      globalLayout = DTm.normalize(l, MODULE_IDS);
-      if (!ownLayout) renderLayout();
+      const incoming = DTm.normalize(l, MODULE_IDS);
+      // This window's own save comes back as a push: it is already drawn, and redrawing it would queue a terminal
+      // refit for a float's move that never touched the terminal (PR #102 Miguel Y2).
+      const same = placementOf(incoming) === placementOf(globalLayout);
+      globalLayout = incoming;
+      if (!ownLayout && !same) renderLayout();
     });
     let answer = null;
     let v1Answer = null;
