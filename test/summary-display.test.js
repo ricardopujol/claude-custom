@@ -187,3 +187,13 @@ test('property: a summary with markup in its words is only ever text (the painte
     assert.ok(m === null || m.lines.every(l => typeof l === 'string'));
   }), { numRuns: 100 });
 });
+
+// Miguel I3 (PR #105): a summary read back from disk, or one from an older host, may still carry controls and bidi marks;
+// the hover card is a native tooltip, so the display strips them as well.
+test('the panel lines and the hover lines carry no control, bidi or zero-width characters', () => {
+  const dirty = { ...SUMMARY, text: 'Working on: a\u202eb\u001b[0m c\u200bd\nNext: e\u0000f' };
+  const bad = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/;
+  const panel = D.panelModel({ summary: dirty, off: null, now: NOW + 5000, openedAt: NOW, pinned: false, typed: false });
+  assert.deepStrictEqual(panel.lines, ['Working on: ab[0m cd', 'Next: ef']);
+  for (const l of D.hoverLines(dirty, NOW)) assert.doesNotMatch(l, bad);
+});

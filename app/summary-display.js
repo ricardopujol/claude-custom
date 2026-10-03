@@ -65,7 +65,9 @@ function offNote(off) {
   return `Local summary: the last try failed (${isStr(o.detail) ? o.detail : 'unknown'}). It'll try again`;
 }
 
-const linesOf = (text) => String(text).split(/\r?\n/).map(l => l.trim()).filter(l => l !== '').slice(0, MAX_LINES);
+// Controls, bidi overrides and zero-width characters never reach the page or the native tooltip (Miguel I3, PR #105).
+const INVISIBLES = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F​-‏‪-‮⁦-⁩]/g;
+const linesOf = (text) => String(text).split(/\r?\n/).map(l => l.replace(INVISIBLES, '').trim()).filter(l => l !== '').slice(0, MAX_LINES);
 
 /** Has this tab gone untouched long enough? A time that isn't known counts: nobody has typed in it this run. */
 function untouchedLongEnough(lastInputAt, now) {

@@ -10,6 +10,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
+const fs = require('fs');
+const path = require('path');
 
 const { flattenTranscript, buildPrompt, cleanReply, capMessage, MAX_CHARS, PER_MESSAGE } = require('../host/summary-text');
 
@@ -57,12 +59,51 @@ test('a skill injection that lost its isMeta flag is still recognised by its ope
   assert.deepStrictEqual(r.messages.map(m => m.text), ['go on']);
 });
 
-test('system reminders are cut out of a message, and a message that was only a reminder disappears', () => {
+test('a reminder the CLI injected (its own block, or appended on its own lines) is cut out, and a message that was only one disappears', () => {
   const r = flat([
-    user('keep this<system-reminder>\nremember the rules\n</system-reminder> and this'),
+    user('keep this\n<system-reminder>\nremember the rules\n</system-reminder>'),
     user('<system-reminder>only a reminder</system-reminder>'),
+    user([text('a text block'), text('<system-reminder>\nthe CLI added this\n</system-reminder>')]),
   ]);
-  assert.deepStrictEqual(r.messages.map(m => m.text), ['keep this and this']);
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['keep this', 'a text block']);
+});
+
+// Dexter F4 (PR #105): the person's own words about the tag are not an injected one. Matched by shape: the tag opens a
+// line and its closer ends one, so a mention in a sentence is kept whole, and an unclosed one never eats the rest.
+test('a literal <system-reminder> the person typed or quoted keeps the whole message', () => {
+  const said = 'Make the flattener drop <system-reminder> blocks, skill injections and command wrappers, then add tests.';
+  const quoted = 'wrap it as <system-reminder>...</system-reminder> like the CLI does';
+  const fenced = 'the CLI writes `<system-reminder>\nbody\n</system-reminder>` around it';
+  const r = flat([user(said), asst([text(quoted)]), user(fenced)]);
+  assert.deepStrictEqual(r.messages.map(m => m.text), [said, quoted, fenced]);
+});
+
+test('an unclosed <system-reminder> at the start of a line is not an injection (the CLI always closes it)', () => {
+  const r = flat([user('<system-reminder>\nhow do I stop this tag eating my text')]);
+  assert.strictEqual(r.messages.length, 1);
+  assert.match(r.messages[0].text, /eating my text/);
+});
+
+// Dexter F2: Claude Code appends the compaction summary as a USER line flagged isCompactSummary. The fixture's line
+// shape is copied from a real compacted transcript on this machine (content cut short).
+test('a compaction summary is the CLI\'s, not the person\'s: dropped, and neither real turn around it is lost', () => {
+  const fixture = fs.readFileSync(path.join(__dirname, 'summary-compact.fixture.jsonl'), 'utf8');
+  assert.ok(fixture.includes('"isCompactSummary":true'));
+  const r = flattenTranscript(fixture);
+  assert.ok(!/continued from a previous conversation/.test(r.transcript));
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['run the review on the slot', 'Reviewing the slot now.', 'ok, carry on', 'Carrying on with the fix.']);
+});
+
+test('a compaction summary is recognised by its words too, if the flag is ever missing', () => {
+  const r = flat([user('real question'),
+    user('This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion.\n\nSummary: ...'),
+    user('go on')]);
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['real question', 'go on']);
+});
+
+test('the person typing the same words mid-message is not a compaction summary', () => {
+  const r = flat([user('please explain: This session is being continued from a previous conversation, what does that line mean?')]);
+  assert.strictEqual(r.messages.length, 1);
 });
 
 test('command wrappers, local command output, task notifications and interrupt markers are dropped', () => {
@@ -210,8 +251,25 @@ test('cleanReply keeps 3 to 5 short plain lines and strips markdown', () => {
   assert.ok(!/[*#]|^- /m.test(out));
 });
 
+// Dexter F5: emphasis is stripped where it IS emphasis (a **bold** span), never from identifiers and globs.
+test('cleanReply leaves __init__.py and src/**/*.js alone, and still drops real bold', () => {
+  assert.strictEqual(cleanReply('Working on: fixing __init__.py imports and the src/**/*.js glob'), 'Working on: fixing __init__.py imports and the src/**/*.js glob');
+  assert.strictEqual(cleanReply('Next: edit __init__.py and src/**/*.ts'), 'Next: edit __init__.py and src/**/*.ts');
+  assert.strictEqual(cleanReply('Next: lint src/**/a.js and lib/**/b.js'), 'Next: lint src/**/a.js and lib/**/b.js', 'two globs are not one bold span');
+  assert.strictEqual(cleanReply('**Working on:** x'), 'Working on: x');
+  assert.strictEqual(cleanReply('It is **done** and **tested** now'), 'It is done and tested now');
+});
+
+// Miguel I3: a model fed web text can emit controls, bidi overrides and zero-width characters; they reach tab.title.
+test('cleanReply strips control, bidi and zero-width characters (they would reach the native tooltip)', () => {
+  const out = cleanReply('Working on: \u001b[31mred\u001b[0m text\u202e reversed\u200b zero\u0000 nul\u2066 iso\u0085\nNext: fine\u007f');
+  assert.strictEqual(out, 'Working on: [31mred[0m text reversed zero nul iso\nNext: fine');
+  assert.doesNotMatch(out, /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/);
+  assert.strictEqual(cleanReply('\u200b\u202e\u001b'), null, 'a reply of nothing but those says nothing');
+});
+
 test('cleanReply refuses a reply that says nothing: null, never an empty summary', () => {
-  for (const raw of [undefined, null, 5, {}, '', '   \n\n  ', '```\n```', '**', '- ']) assert.strictEqual(cleanReply(raw), null);
+  for (const raw of [undefined, null, 5, {}, '', '   \n\n  ', '```\n```', '**', '- ', '__', '***']) assert.strictEqual(cleanReply(raw), null);
 });
 
 test('cleanReply bounds a runaway reply: lines and characters', () => {
@@ -221,7 +279,7 @@ test('cleanReply bounds a runaway reply: lines and characters', () => {
   assert.ok(out.length <= 900);
 });
 
-test('property: cleanReply is null or a bounded, markdown-free, non-blank block', () => {
+test('property: cleanReply is null or a bounded, non-blank block with no controls, fences or bidi marks', () => {
   fc.assert(fc.property(fc.string({ maxLength: 4000 }), (raw) => {
     const out = cleanReply(raw);
     if (out === null) return;
@@ -229,6 +287,14 @@ test('property: cleanReply is null or a bounded, markdown-free, non-blank block'
     assert.ok(lines.length >= 1 && lines.length <= 5);
     assert.ok(out.length <= 900);
     for (const l of lines) { assert.ok(l.trim() !== ''); assert.ok(l.length <= 240); }
-    assert.ok(!out.includes('**') && !out.includes('```'));
+    assert.ok(!out.includes('```'));
+    assert.doesNotMatch(out, /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/);
   }), { numRuns: 300 });
+});
+
+test('property: a word wrapped in ** comes out bare, and identifiers with underscores come out unchanged', () => {
+  fc.assert(fc.property(fc.stringMatching(/^[A-Za-z][A-Za-z0-9 ]{0,30}[A-Za-z0-9]$/), fc.stringMatching(/^[a-z]{1,8}$/), (w, id) => {
+    assert.strictEqual(cleanReply('Next: **' + w + '** now'), 'Next: ' + w + ' now');
+    assert.strictEqual(cleanReply('Next: edit __' + id + '__.py'), 'Next: edit __' + id + '__.py');
+  }), { numRuns: 100 });
 });
