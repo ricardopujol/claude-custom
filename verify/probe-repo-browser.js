@@ -470,6 +470,18 @@ async function main() {
   }
   check('10: main refuses to reveal or drag any of them (the page is not trusted either)',
     Object.values(rev).every(r => r && r.ok === false && r.why) && Object.values(drg).every(r => r && r.ok === false && r.why), JSON.stringify({ rev, drg }).slice(0, 500));
+  // PR #95 Miguel M2: the drag is prepared when the pointer reaches a row and started synchronously in the gesture.
+  // Prepared, a bad path is refused up front; and a path that was never prepared (so none of these) can never start.
+  const prep = {};
+  const start = {};
+  for (const p of ['../outside/secret.txt', outsideDir + '\\secret.txt', 'jn/secret.txt', 'src', 'src/nope.js']) {
+    prep[p] = await rp(app, 'harnessDragPrepare', { path: p });
+    start[p] = await rp(app, 'harnessDragStart', { path: p });
+  }
+  check('10 (M2): main refuses to PREPARE any of them (outside, a link out, a folder, gone), and a synchronous start for any of them answers "not ready" and starts nothing',
+    Object.values(prep).every(r => r && r.ok === false && r.why) && Object.values(start).every(r => r && r.ok === false && r.why === 'not ready'), JSON.stringify({ prep, start }).slice(0, 600));
+  const okPrep = await rp(app, 'harnessDragPrepare', { path: 'README.md' });
+  check('10 (M2): a real file in the worktree PREPARES (nothing starts: preparing only checks and caches)', okPrep && okPrep.ok === true, JSON.stringify(okPrep));
 
   // 11 -----------------------------------------------------------------------------
   // The stand-in box runs in the tab's cmd.exe so the page has a `❯` box to judge, clear and read back.

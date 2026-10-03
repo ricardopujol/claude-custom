@@ -247,8 +247,8 @@ test("the shell's Type /merged path sends no Enter and no raw input anywhere", (
 
 // The repo browser and code reader (#45 / #32). Here, not beside the unit tests: those are in the mutation
 // command and these modules are mutated, so reading their source there aborts the gate's dry run.
-const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-diff', 'repo-service'];
-const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-files-panel', 'repo-reader', 'repo-browser'];
+const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-diff', 'repo-service', 'tool-calls'];
+const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-refresh', 'repo-files-panel', 'repo-reader', 'repo-browser'];
 const repoSources = () => [
   ...REPO_HOST.map(n => [`host/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'host', `${n}.js`), 'utf8')]),
   ...REPO_APP.map(n => [`app/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'app', `${n}.js`), 'utf8')]),
@@ -262,7 +262,8 @@ test('the repo browser never opens, runs or launches a repo file: no openPath, o
   // only the host modules that ask git may spawn, and only git
   for (const [file, src] of repoSources()) {
     if (['host/repo-index.js', 'host/repo-diff.js'].includes(file)) {
-      assert.deepStrictEqual([...src.matchAll(/execFile\(\s*'([^']+)'/g)].map(m => m[1]), ['git'], `${file} may run git and nothing else`);
+      const ran = [...src.matchAll(/execFile\(\s*'([^']+)'/g)].map(m => m[1]);
+      assert.ok(ran.length >= 1 && ran.every(c => c === 'git'), `${file} may run git and nothing else: ${ran.join(', ')}`);
     } else {
       assert.doesNotMatch(src, /child_process|execFile\s*\(|spawn\s*\(|exec\s*\(/, file);
     }
@@ -292,8 +293,8 @@ test('the host answers `repo` and nothing the page sends can name another worktr
 
 test('main re-runs the guard against the asking tab\'s own folder for reveal and drag, and for no other caller', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
-  for (const ch of ['tab:repoReveal', 'tab:repoDrag']) {
-    const at = main.indexOf(`ipcMain.handle('${ch}'`);
+  for (const ch of ['tab:repoReveal', 'tab:repoDrag', 'tab:repoDragPrepare', 'tab:repoDragStart']) {
+    const at = Math.max(main.indexOf(`ipcMain.handle('${ch}'`), main.indexOf(`ipcMain.on('${ch}'`));
     assert.ok(at !== -1, ch);
     const body = main.slice(at, main.indexOf('\n  });', at));
     assert.match(body, /isTabView\(e\.sender\)/, `${ch} answers only a tab view`);

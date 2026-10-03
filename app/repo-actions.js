@@ -17,13 +17,27 @@
  * and the repo's files are not the user's to run by a click). test/repo-actions.test.js hands it a shell
  * that throws on every other member, and scans this source for the calls.
  *
+ * DRAG IS TWO STEPS (PR #95 Miguel M2). webContents.startDrag must run while the drag gesture is live; a
+ * realpath and a stat awaited after `dragstart` can outlast a quick release on a slow or network disk, and the
+ * drag then silently does nothing. So the guard runs BEFORE the gesture, when the pointer first reaches a row:
+ *     prepare(root, rel)        guard + 'is a file', result cached for the asking tab's worktree (bounded, short)
+ *     dragNow(root, rel, start) SYNCHRONOUS: looks the cache up and calls start({ file, icon }) in the same tick
+ * A file that was never prepared answers 'not ready' (the page then falls back to the async `drag`, which checks
+ * first). Nothing is started for a path the guard refused: it never gets into the cache.
+ *
  * Drag takes FILES: a folder answers 'not-a-file' (the OS drag takes files, and a folder drag would
  * silently copy a tree). The OS does the copy; this only starts the drag.
  */
 const fsp = require('fs/promises');
 const { guardPath } = require('../host/repo-guard');
 
-function createRepoActions({ shell, startDrag, icon, guard = guardPath, fsApi = fsp } = {}) {
+const PREPARED_MS = 60 * 1000;
+const MAX_PREPARED = 200;
+
+function createRepoActions({ shell, startDrag, icon, guard = guardPath, fsApi = fsp, now = Date.now, maxPrepared = MAX_PREPARED } = {}) {
+  const prepared = new Map();      // `${root}\0${rel}` (lower case) -> { file, at }
+  const keyOf = (root, rel) => `${String(root).toLowerCase()}\0${String(rel).replace(/[\\]/g, '/').toLowerCase()}`;
+
   async function resolve(root, rel) {
     if (typeof rel !== 'string') return { ok: false, why: 'not a path' };
     const g = await guard(root, rel);
@@ -57,7 +71,35 @@ function createRepoActions({ shell, startDrag, icon, guard = guardPath, fsApi = 
     }
   }
 
-  return { reveal, drag };
+  async function prepare(root, rel) {
+    const r = await resolve(root, rel);
+    if (!r.ok) return r;
+    try {
+      const st = await fsApi.stat(r.at);
+      if (!st.isFile()) return { ok: false, why: 'not-a-file' };
+    } catch (err) {
+      return { ok: false, why: err && err.code === 'ENOENT' ? 'gone' : ((err && err.message) || 'unreadable') };
+    }
+    const k = keyOf(root, rel);
+    prepared.delete(k);
+    prepared.set(k, { file: r.at, at: now() });
+    while (prepared.size > maxPrepared) prepared.delete(prepared.keys().next().value);
+    return { ok: true };
+  }
+
+  // No await in here: this runs inside the drag gesture.
+  function dragNow(root, rel, start = startDrag) {
+    const hit = prepared.get(keyOf(root, rel));
+    if (!hit || now() - hit.at > PREPARED_MS) return { ok: false, why: 'not ready' };
+    try {
+      start({ file: hit.file, icon: icon() });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, why: (err && err.message) || 'could not start the drag' };
+    }
+  }
+
+  return { reveal, drag, prepare, dragNow };
 }
 
 module.exports = { createRepoActions };

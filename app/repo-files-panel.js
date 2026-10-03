@@ -238,15 +238,36 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
     openMenu(e, row.dataset.path, row.dataset.kind);
   });
 
-  // The OS drag starts in main: Electron's webContents.startDrag, after main re-runs the path guard.
-  el.tree.addEventListener('dragstart', async (e) => {
+  // The OS drag starts in main (Electron's webContents.startDrag) and must start INSIDE the gesture (PR #95 Miguel
+  // M2). So main checks the file when the pointer first reaches its row (prepare: guard + is-a-file, cached), and
+  // `dragstart` only sends a synchronous start, with no await before it. A row that was not prepared yet falls
+  // back to the checked path, which awaits (and may be too late for a quick release).
+  const preparedAt = new Map();
+  el.tree.addEventListener('mouseover', (e) => {
+    const row = e.target.closest && e.target.closest('.fr[data-path][data-kind="file"]');
+    if (!row || probing || !harness || !harness.repoDragPrepare) return;
+    const p = row.dataset.path;
+    const t = now();
+    if (t - (preparedAt.get(p) || -Infinity) < 20000) return;
+    preparedAt.set(p, t);
+    if (preparedAt.size > 500) preparedAt.delete(preparedAt.keys().next().value);
+    Promise.resolve(harness.repoDragPrepare(p)).catch(() => {});
+  });
+
+  el.tree.addEventListener('dragstart', (e) => {
     const row = e.target.closest && e.target.closest('.fr[data-path]');
     if (!row) return;
     e.preventDefault();
     if (row.dataset.kind !== 'file') return;
-    if (probing) { dragRequests.push(row.dataset.path); return; }
-    const r = harness && harness.repoDrag ? await harness.repoDrag(row.dataset.path) : { ok: false, why: 'unavailable' };
-    if (!r || r.ok !== true) say(`Could not drag it out: ${(r && r.why) || 'refused'}`);
+    const p = row.dataset.path;
+    if (probing) { dragRequests.push(p); return; }
+    let r = harness && harness.repoDragStart ? harness.repoDragStart(p) : null;       // synchronous, in the gesture
+    if (r && r.ok === true) return;
+    if (r && r.why !== 'not ready') { say(`Could not drag it out: ${r.why || 'refused'}`); return; }
+    // not prepared yet: the checked, awaiting path
+    Promise.resolve(harness && harness.repoDrag ? harness.repoDrag(p) : { ok: false, why: 'unavailable' }).then((r2) => {
+      if (!r2 || r2.ok !== true) say(`Could not drag it out: ${(r2 && r2.why) || 'refused'}`);
+    });
   });
 
   el.tree.addEventListener('keydown', (e) => {
@@ -340,6 +361,9 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
       // would open an Explorer window on the machine running it)
       case 'harnessReveal': return harness.repoReveal(a.path);
       case 'harnessDrag': return harness.repoDrag(a.path);
+      case 'harnessDragPrepare': return harness.repoDragPrepare(a.path);
+      // the synchronous start, for a path that was never prepared (so it can never start): 'not ready'
+      case 'harnessDragStart': return harness.repoDragStart(a.path);
       case 'dragStart': {
         const r = rowByPath(a.path);
         if (!r) return { ok: false, error: `no row ${a.path}` };

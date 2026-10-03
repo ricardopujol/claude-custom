@@ -891,6 +891,19 @@ function registerIpc() {
     const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
     return tab ? repoActions.reveal(tab.cwd, rel) : { ok: false, why: 'refused' };
   });
+  // Drag-out is two steps (PR #95 Miguel M2): the page asks main to PREPARE a file when the pointer reaches its
+  // row (guard + is-a-file, cached), and at `dragstart` sends a SYNCHRONOUS start that calls startDrag in the same
+  // tick, with nothing awaited between the gesture and the OS drag. `sendSync`: the reply (and any refusal)
+  // comes back in the gesture too.
+  ipcMain.handle('tab:repoDragPrepare', (e, rel) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    return tab ? repoActions.prepare(tab.cwd, rel) : { ok: false, why: 'refused' };
+  });
+  ipcMain.on('tab:repoDragStart', (e, rel) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    e.returnValue = tab ? repoActions.dragNow(tab.cwd, rel, (o) => e.sender.startDrag(o)) : { ok: false, why: 'refused' };
+  });
+  // The async fallback for a file that was not prepared yet: it checks first, then starts.
   ipcMain.handle('tab:repoDrag', (e, rel) => {
     const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
     return tab ? repoActions.drag(tab.cwd, rel, (o) => e.sender.startDrag(o)) : { ok: false, why: 'refused' };
