@@ -87,3 +87,29 @@ test('refusedText says the link was not opened, and why, in words', () => {
     'Not opened: https://user:pass@example.com/ (only plain http and https links open in the browser)');
   assert.ok(refusedText(`https://x/${'b'.repeat(500)}`).length <= 400);
 });
+
+// --- #37 terminal file links -----------------------------------------------------
+
+test('#37 fileTargetText says what a click will do, by what main decided', () => {
+  const { fileTargetText } = require('../app/link-click');
+  assert.strictEqual(fileTargetText({ action: 'open', isDir: false, name: 'mocks.html' }),
+    'Opens mocks.html in its default app');
+  assert.strictEqual(fileTargetText({ action: 'reveal', isDir: false, name: 'run.ps1' }),
+    "Shows run.ps1 in Explorer (it could run, so it isn't opened)");
+  assert.strictEqual(fileTargetText({ action: 'open', isDir: true, name: 'handoffs' }),
+    'Opens folder handoffs in Explorer');
+  for (const bad of [null, undefined, 'x', {}, { action: 'run', name: 'a' }, { action: 'open', name: '' }]) {
+    assert.strictEqual(fileTargetText(bad), null, JSON.stringify(bad));
+  }
+  assert.ok(fileTargetText({ action: 'open', isDir: false, name: 'a'.repeat(1000) }).length <= 300);
+});
+
+test('#37 fileRefusedText says why nothing opened', () => {
+  const { fileRefusedText } = require('../app/link-click');
+  assert.strictEqual(fileRefusedText('C:\a.md', 'gone'), "Not opened: C:\a.md isn't there any more");
+  assert.strictEqual(fileRefusedText('C:\a.md', 'refused'), 'Not opened: C:\a.md (not a local path this tab can open)');
+  assert.strictEqual(fileRefusedText('C:\a.md', 'No application is associated'),
+    'Not opened: C:\a.md (No application is associated)');
+  assert.strictEqual(fileRefusedText(null, undefined), 'Not opened: that file');
+  assert.ok(fileRefusedText('C:\a.md', 'x'.repeat(1000)).length <= 300);
+});

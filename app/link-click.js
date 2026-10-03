@@ -15,6 +15,9 @@
  *       can differ from where it goes, and nothing else shows the target now
  *       that the confirm() is gone (PR #81 Dexter F1, Miguel #2).
  *   refusedText(uri) -> the words when main refused to open it (Dexter F5).
+ *   fileTargetText(answer), fileRefusedText(path, why): the same two lines
+ *       for a local file path (#37): whether a click opens it or only shows
+ *       it in Explorer, and why nothing opened.
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it:
  * `linkClick`.
@@ -45,7 +48,27 @@ function refusedText(uri) {
   return `Not opened: ${shown} (only plain http and https links open in the browser)`;
 }
 
-const api = { shouldOpen, targetText, refusedText, REPEAT_MS };
+// #37: a local path. `answer` is main's ({ action, isDir, name }); the words
+// say what a click will do BEFORE it's done, above all when it won't open.
+function fileTargetText(answer) {
+  if (!answer || typeof answer !== 'object' || typeof answer.name !== 'string' || answer.name === '') return null;
+  if (answer.action === 'open') {
+    return cap(answer.isDir === true ? `Opens folder ${answer.name} in Explorer`
+      : `Opens ${answer.name} in its default app`, TEXT_MAX);
+  }
+  if (answer.action === 'reveal') return cap(`Shows ${answer.name} in Explorer (it could run, so it isn't opened)`, TEXT_MAX);
+  return null;
+}
+
+function fileRefusedText(p, why) {
+  const shown = typeof p === 'string' && p !== '' ? p : 'that file';
+  if (why === 'gone') return cap(`Not opened: ${shown} isn't there any more`, TEXT_MAX);
+  if (why === 'refused') return cap(`Not opened: ${shown} (not a local path this tab can open)`, TEXT_MAX);
+  if (typeof why === 'string' && why !== '') return cap(`Not opened: ${shown} (${why})`, TEXT_MAX);
+  return cap(`Not opened: ${shown}`, TEXT_MAX);
+}
+
+const api = { shouldOpen, targetText, refusedText, fileTargetText, fileRefusedText, REPEAT_MS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
