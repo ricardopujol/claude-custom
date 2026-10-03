@@ -586,6 +586,7 @@ function registerShortcuts(wc) {
     if (action === 'next-tab') tabShell.next();
     else if (action === 'prev-tab') tabShell.previous();
     else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
+    else if (action === 'new-branch') tabShell.openCreate();
     else if (action === 'focus-mode') setFocusMode(!focusMode);
     else if (action === 'devtools') {
       const v = selectedView();

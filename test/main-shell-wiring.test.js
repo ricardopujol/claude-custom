@@ -336,6 +336,11 @@ test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer tha
   assert.match(callText(MAIN, c.at), /typeof branch !== 'string' \|\| branch\.length > 200\) return/);
 });
 
+test('#35: Ctrl+T opens the branch form through the shell, which applies the + menu\'s rule', () => {
+  assert.match(MAIN, /action === 'new-branch'\) tabShell\.openCreate\(\)/);
+  assert.doesNotMatch(MAIN, /accelerator:/);
+});
+
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);

@@ -1502,7 +1502,6 @@ test('shortcutFor: garbage in is null, never a throw', () => {
 test('shortcutFor: Ctrl+Shift+T (either case) reopens the last closed tab, like a browser; nothing near it does', () => {
   assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true })), 'reopen-tab');
   assert.strictEqual(shortcutFor(kd('t', { control: true, shift: true })), 'reopen-tab');
-  assert.strictEqual(shortcutFor(kd('t', { control: true })), null, 'Ctrl+T is the terminal’s');
   assert.strictEqual(shortcutFor(kd('T', { control: true, shift: true, alt: true })), null);
   assert.strictEqual(shortcutFor(kd('T', { shift: true })), null);
   assert.strictEqual(shortcutFor({ ...kd('T', { control: true, shift: true }), type: 'keyUp' }), null);
@@ -1641,6 +1640,29 @@ test('PROPERTY: a poll with no dev keeps every tab, whatever git lists', async (
       const noStop = h.controls.length === 0;
       return noStop && JSON.stringify(labels(h)) === JSON.stringify(before);
     }), { numRuns: 20 });
+});
+
+test('shortcutFor: Ctrl+T (either case) opens New branch…, like a browser\'s new tab (#35)', () => {
+  assert.strictEqual(shortcutFor(kd('t', { control: true })), 'new-branch');
+  assert.strictEqual(shortcutFor(kd('T', { control: true })), 'new-branch');
+  assert.strictEqual(shortcutFor(kd('t', { control: true, alt: true })), null);
+  assert.strictEqual(shortcutFor(kd('t', {})), null, 'a plain t is typed');
+  assert.strictEqual(shortcutFor(kd('t', { shift: true })), null);
+  assert.strictEqual(shortcutFor({ ...kd('t', { control: true }), type: 'keyUp' }), null);
+});
+
+test('openCreate follows the + menu\'s greyed-out rule: no scripts, no form (#35)', async () => {
+  const h = harness();
+  await h.shell.open();
+  h.available = { create: false, setup: false, remove: false };
+  assert.strictEqual(h.shell.openCreate(), false);
+  assert.strictEqual(h.shell.snapshot().create, null);
+  h.available = { create: true, setup: true, remove: true };
+  assert.strictEqual(h.shell.openCreate(), true);
+  const single = harness({ mode: 'single' });
+  await single.shell.open();
+  assert.strictEqual(single.shell.openCreate(), false);
+  assert.strictEqual(single.shell.snapshot().create, null);
 });
 
 test('shortcutFor: Ctrl+Shift+F (either case) is focus mode; plain Ctrl+F and Alt stay the terminal\'s', () => {

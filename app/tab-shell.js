@@ -675,9 +675,13 @@ function createShell(deps) {
     return { ok: true, path: made.path };
   }
 
-  /** The strip's branch form opens (`+` -> *New branch…*). */
+  /**
+   * The strip's branch form opens (`+` -> *New branch…*, Ctrl+T). The menu's
+   * greyed-out rule (plusMenu().create) is this one: a key can't open what the
+   * menu shows disabled.
+   */
   function openCreate() {
-    if (mode !== 'tabs' || (create && create.phase === 'running')) return false;
+    if (!plusMenu().create.enabled) return false;
     create = { phase: 'input' };
     publish();
     return true;
@@ -904,6 +908,8 @@ function shortcutFor(input) {
   if (key === 'i' && input.shift) return 'devtools';
   // PR 3: reopen the last tab closed by hand, as a browser does.
   if (key === 't' && input.shift) return 'reopen-tab';
+  // #35: a new tab is a new worktree, so Ctrl+T opens the branch form.
+  if (key === 't') return 'new-branch';
   // Layout pass L1 (#1): only the terminal shows. Main's, so it works from any
   // tab view and the key never reaches the pty.
   if (key === 'f' && input.shift) return 'focus-mode';
