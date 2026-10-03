@@ -167,3 +167,27 @@ test('required options are checked, with a message that names the mistake', () =
   assert.throws(() => watchDir({ dir: 'x', onChange() {} }), /match is required/);
   assert.throws(() => watchDir(), /dir is required/);
 });
+
+test('S3: a directory that stays missing is looked for less and less often (backoff after slowAfter misses)', async () => {
+  let looks = 0;
+  const w = watchDir({ dir: path.join(tmpDir('cc-ww-'), 'never'), match: () => true, onChange() {},
+    exists: () => { looks++; return false; }, rearmMs: 10, slowAfter: 3, slowMs: 250 });
+  try {
+    await sleep(700);
+    // 1 immediate look + 3 quick retries, then one slow look every 250 ms: about 4 + 2, never the ~70 a flat 10 ms gives
+    assert.ok(looks >= 4 && looks <= 9, String(looks));
+  } finally { w.close(); }
+});
+
+test('S3: the backoff does not stop it finding the directory when it finally appears', async () => {
+  const root = tmpDir('cc-ww-');
+  const dir = path.join(root, 'late');
+  let n = 0;
+  const w = watchDir({ dir, match: () => true, onChange: () => { n++; }, debounceMs: 10, rearmMs: 10, slowAfter: 2, slowMs: 80 });
+  try {
+    await sleep(250);
+    fs.mkdirSync(dir);
+    await sleep(500);
+    assert.ok(n >= 1);
+  } finally { w.close(); }
+});

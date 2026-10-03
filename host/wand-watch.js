@@ -25,7 +25,8 @@ const fs = require('fs');
 const path = require('path');
 
 function watchDir({ dir, match, onChange, create = false, recursive = false, debounceMs = 150,
-  rearmMs = 2000, watch = fs.watch } = {}) {
+  rearmMs = 2000, watch = fs.watch, slowAfter = 30, slowMs = 30000,
+  exists = (d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } } } = {}) {
   if (!dir) throw new Error('watchDir: dir is required');
   if (typeof match !== 'function') throw new Error('watchDir: match is required');
   if (typeof onChange !== 'function') throw new Error('watchDir: onChange is required');
@@ -35,6 +36,7 @@ function watchDir({ dir, match, onChange, create = false, recursive = false, deb
   let rearm = null;
   let closed = false;
   let waited = false;     // the directory was missing at least once
+  let misses = 0;         // consecutive looks that found it missing
 
   const fire = () => {
     clearTimeout(timer);
@@ -44,10 +46,10 @@ function watchDir({ dir, match, onChange, create = false, recursive = false, deb
     }, debounceMs);
   };
 
-  const later = () => {
+  const later = (ms = rearmMs) => {
     if (closed) return;
     clearTimeout(rearm);
-    rearm = setTimeout(arm, rearmMs);
+    rearm = setTimeout(arm, ms);
   };
 
   function arm() {
@@ -55,9 +57,10 @@ function watchDir({ dir, match, onChange, create = false, recursive = false, deb
     if (create) {
       try { fs.mkdirSync(dir, { recursive: true }); } catch { /* the watch below will say */ }
     } else {
-      let there = false;
-      try { there = fs.statSync(dir).isDirectory(); } catch { /* not there yet */ }
-      if (!there) { waited = true; later(); return; }
+      // Missing: retried, but less and less often. A project with no .claude/skills is the normal case and
+      // would otherwise be stat'ed every `rearmMs` for as long as the host lives (Miguel S3).
+      if (!exists(dir)) { waited = true; misses++; later(misses > slowAfter ? slowMs : rearmMs); return; }
+      misses = 0;
     }
     const onEvent = (_event, filename) => {
       if (filename === null || filename === undefined || match(String(filename))) fire();
