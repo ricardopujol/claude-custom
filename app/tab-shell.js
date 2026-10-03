@@ -1138,7 +1138,7 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
   'occState', 'occKey', 'occClick', 'occTurn',
   // backlog #49 + #52: verify/probe-terminal-bar.js
-  'barState', 'barScroll', 'barClick', 'barClear']);
+  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

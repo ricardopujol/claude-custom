@@ -27,7 +27,8 @@ test('the page loads terminal-bar.js after the occupancy module it composes, bef
 });
 
 test('the bar exists, hidden, inside the terminal area, with the prompt on the left and the chips on the right', () => {
-  assert.match(HTML, /<div id="terminal-bar" role="status" hidden>/);
+  assert.match(HTML, /<div id="terminal-bar" role="group" aria-label="[^"]+" hidden>/, 'a group, not a live region: the prompt is not announced on every repaint (Miguel G3)');
+  assert.doesNotMatch(HTML, /id="terminal-bar" role="status"/);
   for (const id of ['bar-prompt', 'bar-prompt-text', 'bar-prompt-age', 'bar-prompt-full', 'bar-chips']) assert.match(HTML, new RegExp(`id="${id}"`), id);
   const bar = HTML.slice(HTML.indexOf('<div id="terminal-bar"'), HTML.indexOf('<div id="occupancy-confirm"'));
   assert.ok(bar.indexOf('id="bar-prompt"') < bar.indexOf('id="bar-chips"'), 'prompt left of the chips');
@@ -57,9 +58,63 @@ test('the page paints through the one pure model, and sets text, never HTML, fro
   assert.match(paint, /textContent/);
 });
 
-test('the prompt is anchored AFTER the terminal has parsed what came before it, at baseY + cursorY', () => {
-  assert.match(RENDERER, /term\.write\('', \(\) => \{[\s\S]*?terminalBar\.makeAnchor\(/);
-  assert.match(RENDERER, /baseY: buf\.baseY, cursorY: buf\.cursorY, epoch: bar\.epoch/);
+test('F6: the prompt is anchored on the line its echo was FOUND on, by its text, never on the cursor', () => {
+  assert.doesNotMatch(RENDERER, /makeAnchor\([^)]*(baseY|cursorY)/);
+  assert.match(RENDERER, /terminalBar\.echoNeedle\(p\.text\)/);
+  assert.match(RENDERER, /terminalBar\.findEcho\(bufferTexts\(from\), loc\.needle\)/);
+  assert.match(RENDERER, /terminalBar\.makeAnchor\(bar\.prompt, \{ line, epoch: bar\.epoch \}\)/);
+  // searched once the terminal has parsed what came before it, and again as output is parsed
+  assert.match(RENDERER, /term\.write\('', \(\) => \{ if \(bar\.locate === loc\) locateEcho\(\); \}\);/);
+  assert.match(RENDERER, /term\.onWriteParsed\(\(\) => \{/);
+});
+
+test('F6: until the echo is found the anchor is "locating" (no flash), and one never found within LOCATE_MS fails visible', () => {
+  assert.match(RENDERER, /const LOCATE_MS = 3000;/);
+  assert.match(RENDERER, /bar\.anchor = terminalBar\.locatingAnchor\(p, bar\.epoch\)/);
+  assert.match(RENDERER, /if \(bar\.anchor && bar\.anchor\.locating === true\) \{ bar\.anchor = null; paintBar\(\); \}/);
+  // a hello prompt (not live) is never searched for: it has no place in this buffer
+  assert.match(RENDERER, /const needle = p && live \? terminalBar\.echoNeedle\(p\.text\) : null;/);
+});
+
+test('F7: a chip keeps the bar open over the first rows, so the page tells the rule how many rows it covers', () => {
+  assert.match(RENDERER, /const coveredRows = \(bar\.bedtime !== null \|\| chip !== null\) && rowPx > 0 \? Math\.ceil\(BAR_COVER_PX \/ rowPx\) : 0;/);
+  assert.match(RENDERER, /epoch: bar\.epoch, coveredRows \}/);
+});
+
+test('Y1 + G1: a paint with nothing new writes nothing (a selection in the whole prompt survives), and text is only set when it differs', () => {
+  const paint = RENDERER.slice(RENDERER.indexOf('function paintBarNow'), RENDERER.indexOf('function paintBarNow') + 5000);
+  assert.match(paint, /const key = JSON\.stringify\(\[m, bar\.fullOpen\]\);\s*if \(key !== bar\.paintKey\) \{/);
+  assert.match(paint, /setText\(barEls\.full, m\.prompt\.full\)/);
+  assert.doesNotMatch(paint, /barEls\.(text|age|full)\.textContent =/);
+  assert.match(RENDERER, /function setText\(el, value\) \{\s*if \(el\.textContent !== value\) el\.textContent = value;/);
+});
+
+test('G3: the prompt toggle says whether it is open, and Escape inside the bar closes it without taking the terminal\'s own Escape', () => {
+  assert.match(HTML, /id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full"/);
+  assert.match(RENDERER, /barEls\.prompt\.setAttribute\('aria-expanded', String\(!!\(m\.prompt && bar\.fullOpen\)\)\)/);
+  assert.match(RENDERER, /barEls\.bar\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape' \|\| !bar\.fullOpen\) return;/);
+  assert.match(RENDERER, /setAttribute\('role', 'note'\)/);
+});
+
+test('G4: an unbroken token cannot overflow the whole-prompt view', () => {
+  assert.match(rule('#bar-prompt-full'), /overflow-wrap:\s*anywhere/);
+});
+
+test('G6: leaving or entering focus mode repaints the bar (bar-open and the banner offset follow)', () => {
+  const focus = RENDERER.slice(RENDERER.indexOf('function applyFocusMode'), RENDERER.indexOf('if (focusBridge) focusBridge.onChange(applyFocusMode)'));
+  assert.match(focus, /paintBar\(\);/);
+});
+
+test('Y3: the night chip carries its own colour pair, not one mixed from the look\'s variables', () => {
+  const r = rule('.bar-chip.bedtime');
+  assert.match(r, /background:\s*var\(--night\);/);
+  assert.match(r, /color:\s*var\(--night-text\)/);
+  assert.doesNotMatch(r, /color-mix|--chrome|--text\b/);
+  assert.match(HTML, /--night-text:\s*#/);
+});
+
+test('G1: the 30 s repaint only runs where there is something on the bar', () => {
+  assert.match(RENDERER, /setInterval\(\(\) => \{ if \(bar\.prompt \|\| bar\.bedtime !== null \|\| occupancy\.here\.length > 0\) paintBar\(\); \}, 30000\)/);
 });
 
 test('a resize, an erased scrollback (CSI 3 J) and a shrinking buffer each start a new epoch, so the prompt fails visible', () => {
@@ -90,13 +145,13 @@ test('the night is reported to the shell (the night tab) and feeds the confirm a
 });
 
 test('the probe\'s page actions for the bar exist, and a clear is the real escape sequence through xterm\'s own parser', () => {
-  for (const a of ['barState', 'barScroll', 'barClick', 'barClear']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
+  for (const a of ['barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
   assert.match(RENDERER, /case 'barClear': return new Promise\(\(resolve\) => \{\s*term\.write\('\\x1b\[3J'/);
 });
 
 test('the occupancy chip\'s Jump and the bar\'s minutes refresh share the page\'s existing paths', () => {
   assert.match(RENDERER, /jumpToFolder\(/);
-  assert.match(RENDERER, /setInterval\(\(\) => \{ paintBar\(\); \}, 30000\)|setInterval\(\(\) => paintBar\(\), 30000\)/);
+  assert.match(RENDERER, /setInterval\(/);
 });
 
 test('F4: the night is a persistent run for the confirm, and a new night forgets the last one', () => {

@@ -72,3 +72,14 @@ test('G8: the signal probe capture never runs in the repo root, never skips perm
   assert.match(SIGNAL, /permissions: \{ allow: \['ScheduleWakeup'\] \}/);
   assert.match(SIGNAL, /npm', \['root', '-g'\]/);
 });
+
+test('F6: the anchor probe runs the real CLI in a temp folder, skips no permissions, bills no key, and ends only its own pty by PID', () => {
+  const ANCHOR = read('probe-prompt-anchor.js');
+  assert.match(ANCHOR, /cwd: work/);
+  assert.doesNotMatch(ANCHOR, /dangerously-skip-permissions/);
+  assert.match(ANCHOR, /delete env\.ANTHROPIC_API_KEY/);
+  assert.match(ANCHOR, /delete env\.ELECTRON_RUN_AS_NODE/);
+  assert.match(ANCHOR, /killPidTree\(p\.pid\)/);
+  assert.match(ANCHOR, /npm', \['root', '-g'\]/);
+  assert.doesNotMatch(ANCHOR, /taskkill|Stop-Process|pkill|killall|\/IM\b/i);
+});

@@ -14,9 +14,13 @@
  *
  *   A  nothing to say: the bar is absent
  *   B  #49, the last prompt
- *      1  a prompt event is kept by the host and anchored in the buffer; while it is still on screen the bar stays absent
+ *      1  a prompt event is kept by the host; its anchor is the line its ECHO was found on (by its text, never the
+ *         cursor: the real CLI pins its input box to the bottom row, verify/probe-prompt-anchor.js); until the echo is
+ *         drawn the bar stays absent, and while it is on screen too; one never echoed fails visible after a few seconds
  *      2  enough output to scroll it off the top: the bar shows the FIRST LINE, its age, and the whole text on click
- *      3  scrolling back to it hides the bar, scrolling down shows it again
+ *      3  scrolling back to it hides the bar, scrolling down shows it again; with a chip open the bar's own rows count
+ *         (a prompt line under the bar shows the prompt part); a selection in the whole prompt survives a repaint;
+ *         Escape closes it and aria-expanded follows; a prompt cut at the cap says so
  *      4  a slash command shows as typed; a pasted image reads [image]; a subagent's prompt never counts
  *      5  FAILS VISIBLE: an erased scrollback (what /clear sends) and a window that attached later show the prompt
  *         even though it is on screen
@@ -24,7 +28,7 @@
  *      6  a bedtime ScheduleWakeup starts it: the moon chip with the next wake (the CLI's own scheduledFor) and
  *         "PRs: ?" (the temp repo has no GitHub: unknown, never 0); the dev tab turns night-blue with a moon, the
  *         other tab does not; a poll (ScheduleWakeup that doesn't name bedtime) changes nothing
- *      7  focus mode hides the bar
+ *      7  focus mode hides the bar; the night chip reads (contrast at least 4.5) under a dark AND a light look
  *      8  the first keystroke is held behind "An overnight run is going. Type anyway?"; Type releases it once
  *      9  a wake (the scheduled prompt replayed) reads "working"; the prompt it replayed is the last prompt
  *      10 the other tab, with a night AND an agent working in it: ONE bar, two chips on one row
@@ -211,6 +215,7 @@ async function main() {
   if (!devHost) return;
   await sleep(1500);   // its hook bridge binds a moment after its identity is written
   const devPid = devHost.pid;
+  const echoOf = (text) => typeInto(app, `echo ${text.split('\n')[0]}\r`);
 
   // A -----------------------------------------------------------------------------
   const first = await waitFor(() => barState(app), 15000);
@@ -219,12 +224,21 @@ async function main() {
 
   // B1 ----------------------------------------------------------------------------
   check('B1: the prompt event is delivered', submit(devPid, P1));
+  const waiting = await waitFor(async () => {
+    const b = await barState(app);
+    return b && b.prompt && b.prompt.text === P1 ? b : null;
+  }, 15000);
+  check('B1: the page holds the host\'s prompt; its echo is not drawn yet, so it is LOCATING and the bar does not flash',
+    !!waiting && waiting.anchor && waiting.anchor.locating === true && waiting.bar.hidden === true, JSON.stringify(waiting && waiting.anchor));
+  echoOf(P1);                                  // the CLI draws its echo; cmd.exe stands in with the same words
   const anchored = await waitFor(async () => {
     const b = await barState(app);
-    return b && b.prompt && b.prompt.text === P1 && b.anchor && b.anchor.seq === b.prompt.seq ? b : null;
+    return b && b.prompt && b.prompt.text === P1 && b.anchor && b.anchor.seq === b.prompt.seq && b.anchor.locating !== true ? b : null;
   }, 15000);
-  check('B1: the page holds the host\'s prompt and anchored it in the terminal buffer (baseY + cursorY)', !!anchored,
-    anchored ? JSON.stringify(anchored.anchor) : JSON.stringify(await barState(app)));
+  check('B1: the anchor is the line the echo was FOUND on, by its text (the buffer line it points at holds the words)', !!anchored && anchored.anchorText !== null
+    && anchored.anchorText.includes(P1_HEAD), anchored ? JSON.stringify([anchored.anchor, anchored.anchorText]) : JSON.stringify(await barState(app)));
+  check('B1: ...above the cursor line (the old rule, the cursor, would have pointed at the prompt line below)', !!anchored && anchored.anchor.line < anchored.buffer.baseY + anchored.buffer.cursorY,
+    anchored ? `anchor ${anchored.anchor.line} cursor ${anchored.buffer.baseY + anchored.buffer.cursorY}` : '');
   check('B1: ...and while it is still on screen the bar stays absent', !!anchored && anchored.bar.hidden === true && anchored.bar.open === false,
     anchored ? `viewportY ${anchored.buffer.viewportY} anchor line ${anchored.anchor.line}` : '');
 
@@ -264,14 +278,16 @@ async function main() {
   // B4 ----------------------------------------------------------------------------
   const lastPrompt = async (text) => waitFor(async () => {
     const b = await barState(app);
-    return b && b.prompt && b.prompt.text === text && b.anchor ? b : null;
+    return b && b.prompt && b.prompt.text === text && b.anchor && b.anchor.locating !== true ? b : null;
   }, 15000);
   submit(devPid, '/checkpoint');
+  echoOf('/checkpoint');
   await lastPrompt('/checkpoint');
   flood(app, 120);
   const slash = await waitFor(async () => { const b = await barState(app); return b && !b.bar.hidden && b.bar.prompt.text === '/checkpoint' ? b : null; }, 25000);
   check('B4: a slash command shows as typed', !!slash, JSON.stringify(slash && slash.bar.prompt));
   submit(devPid, 'look at [Image #1] and [Image #2]');
+  echoOf('look at [Image #1] and [Image #2]');
   await lastPrompt('look at [Image #1] and [Image #2]');
   flood(app, 120);
   const image = await waitFor(async () => { const b = await barState(app); return b && !b.bar.hidden && b.bar.prompt.text === 'look at [image] and [image]' ? b : null; }, 25000);
@@ -281,12 +297,26 @@ async function main() {
   const sub = await barState(app);
   check('B4: a subagent\'s prompt event never counts', !!sub && sub.prompt.text === 'look at [Image #1] and [Image #2]', JSON.stringify(sub && sub.prompt));
 
+  submit(devPid, 'words that nothing ever prints back');
+  const never = await waitFor(async () => {
+    const b = await barState(app);
+    return b && b.prompt && b.prompt.text === 'words that nothing ever prints back' && b.anchor && b.anchor.locating === true && b.bar.hidden === true ? b : null;
+  }, 3000);
+  check('B4: a prompt whose echo is not drawn: locating first (the bar settles to absent, it does not stay up for the old prompt)', !!never);
+  const gaveUp = await waitFor(async () => {
+    const b = await barState(app);
+    return b && b.prompt && b.prompt.text === 'words that nothing ever prints back' && b.anchor === null && b.bar.prompt.hidden === false ? b : null;
+  }, 12000);
+  check('B4: FAILS VISIBLE: never found within the wait, it drops the anchor and the prompt shows', !!gaveUp, JSON.stringify(gaveUp && gaveUp.anchor));
+
   // B5 ----------------------------------------------------------------------------
   submit(devPid, 'a prompt that is on screen');
+  echoOf('a prompt that is on screen');
   await lastPrompt('a prompt that is on screen');
   const onScreen = await waitFor(async () => { const b = await barState(app); return b && b.bar.hidden === true ? b : null; }, 8000);
   check('B5: a fresh prompt sits on screen: the bar is absent', !!onScreen);
   const epoch0 = onScreen ? onScreen.epoch : -1;
+  await sleep(3600);                          // past the echo search (3 s): a clear WITHIN it would simply re-find the echo
   const cleared = await view(app, 'barClear');
   const visible = await waitFor(async () => { const b = await barState(app); return b && !b.bar.hidden && b.bar.prompt.hidden === false ? b : null; }, 8000);
   check('B5: FAILS VISIBLE: an erased scrollback (/clear\'s CSI 3 J) starts a new epoch and the prompt shows although it was on screen',
@@ -335,11 +365,69 @@ async function main() {
 
   // C7 ----------------------------------------------------------------------------
   await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
-  const inFocus = await waitFor(async () => { const b = await barState(app); return b && b.bar.display === 'none' ? b : null; }, 6000);
-  check('C7: focus mode hides the bar, with the rest of the chrome', !!inFocus);
+  const inFocus = await waitFor(async () => { const b = await barState(app); return b && b.bar.display === 'none' && b.bar.open === false ? b : null; }, 6000);
+  check('C7: focus mode hides the bar, with the rest of the chrome, and bar-open follows (the banner offset)', !!inFocus,
+    JSON.stringify(inFocus ? { display: inFocus.bar.display, open: inFocus.bar.open } : await barState(app)));
   await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
   const outFocus = await waitFor(async () => { const b = await barState(app); return b && b.bar.display !== 'none' ? b : null; }, 6000);
   check('C7: ...and it is back after', !!outFocus);
+  const contrast = (rgbA, rgbB) => {
+    const lum = (s) => { const [r, g, b] = (s.match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number).map(c => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+    const [hi, lo] = [lum(rgbA), lum(rgbB)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  for (const mode of ['dark', 'light']) {
+    await view(app, 'barLook', { mode });
+    const looked = await waitFor(async () => { const b = await barState(app); const c = b && b.bar.chips.find(x => x.kind === 'bedtime'); return c ? c : null; }, 8000);
+    const ratio = looked ? contrast(looked.color, looked.background) : 0;
+    check(`C7: Y3: the night chip reads under a ${mode} look: contrast ${ratio.toFixed(1)}:1 (at least 4.5)`, ratio >= 4.5, looked ? `${looked.color} on ${looked.background}` : 'no chip');
+  }
+  await view(app, 'barLook', { mode: 'dark' });
+
+  // C7b: with the night's chip open: F7, Y1, G3, Y4 ----------------------------------------------------
+  const F7 = 'a prompt whose line the bar would cover';
+  submit(devPid, F7);
+  echoOf(F7);
+  const f7 = await lastPrompt(F7);
+  flood(app, 90);
+  const scrolled = await waitFor(async () => { const b = await barState(app); return b && b.buffer.viewportY > f7.anchor.line + 10 ? b : null; }, 25000);
+  if (f7 && scrolled) {
+    const promptPart = async (hiddenWanted) => waitFor(async () => { const b = await barState(app); return b && b.bar.prompt.hidden === hiddenWanted ? b : null; }, 6000);
+    await view(app, 'barScroll', { to: Math.max(0, f7.anchor.line - 3) });
+    const clear = await promptPart(true);
+    check('C7b: F7: three rows above the prompt line it is plainly visible below the bar: the prompt part is hidden', !!clear && clear.buffer.viewportY === Math.max(0, f7.anchor.line - 3), JSON.stringify(clear && clear.buffer));
+    await view(app, 'barScroll', { to: f7.anchor.line });
+    const under = await promptPart(false);
+    check('C7b: F7: ...scrolled so the line is on row 0 UNDER the open bar, the bar shows the prompt part (the old rule hid it)',
+      !!under && under.buffer.viewportY === f7.anchor.line && under.bar.prompt.text === F7, JSON.stringify(under && [under.buffer.viewportY, f7.anchor.line]));
+    await view(app, 'barScroll', { to: 'bottom' });
+    await waitFor(async () => { const b = await barState(app); return b && b.bar.prompt.hidden === false ? b : null; }, 6000);
+
+    await view(app, 'barClick', { target: 'prompt' });
+    const open = await waitFor(async () => { const b = await barState(app); return b && b.bar.prompt.fullHidden === false ? b : null; }, 5000);
+    check('C7b: G3: the toggle says it is open (aria-expanded true)', !!open && open.bar.prompt.expanded === 'true', open ? open.bar.prompt.expanded : 'not open');
+    await view(app, 'barSelection', { select: true });
+    const sel0 = await view(app, 'barSelection', {});
+    const here = await barState(app);
+    await view(app, 'barScroll', { to: here.buffer.viewportY - 2 });     // a scroll event: a paint with nothing new
+    await sleep(500);
+    await view(app, 'barScroll', { to: 'bottom' });
+    await sleep(500);
+    const sel1 = await view(app, 'barSelection', {});
+    check('C7b: Y1: a selection inside the whole prompt survives repaints that change nothing', !!sel0.ok && sel0.text === F7 && sel1.text === F7, JSON.stringify([sel0.text, sel1.text]));
+    await command(app, { cmd: 'key', key: 'Escape' });
+    const shutByEsc = await waitFor(async () => { const b = await barState(app); return b && b.bar.prompt.fullHidden === true ? b : null; }, 5000);
+    check('C7b: G3: Escape inside the bar closes the whole prompt, and aria-expanded follows', !!shutByEsc && shutByEsc.bar.prompt.expanded === 'false', shutByEsc ? shutByEsc.bar.prompt.expanded : 'still open');
+  } else {
+    check('C7b: F7 and Y1 could not be set up (the prompt never anchored or never scrolled)', false, JSON.stringify([!!f7, !!scrolled]));
+  }
+  const CUT = 'x'.repeat(4100);
+  submit(devPid, CUT);
+  echoOf('x'.repeat(60));
+  await sleep(1500);
+  flood(app, 90);
+  const cut = await waitFor(async () => { const b = await barState(app); return b && b.prompt && b.prompt.text.length === 4000 && b.bar.prompt.hidden === false ? b : null; }, 25000);
+  check('C7b: Y4: a prompt cut at the cap says so at the end of the whole prompt', !!cut && cut.bar.prompt.full.endsWith('…(truncated, 100 more characters)'), cut ? cut.bar.prompt.full.slice(-60) : 'no cut prompt');
 
   // C8 ----------------------------------------------------------------------------
   await view(app, 'occKey', { data: 'zq1' });

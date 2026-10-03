@@ -6,14 +6,21 @@
  *   barModel({ prompt, anchor, view, now, bedtime, occupancy, focusMode })
  *       -> { visible, prompt: { head, full, age } | null, chips: [{ kind, short, long, warn, jump? }] }
  *   scrolledAway(prompt, anchor, view)   is the prompt's place in the terminal above the top of the viewport?
- *   makeAnchor(prompt, { baseY, cursorY, epoch })   where the CLI is echoing a prompt that has just arrived
+ *   makeAnchor(prompt, { line, epoch}) / locatingAnchor(prompt, epoch)   the line the CLI's echo was FOUND on, or
+ *                                        "not drawn yet"
+ *   echoNeedle(text) / findEcho(lines, needle)   what to look for in the buffer, and where it is
  *   barVisible({ promptDue, chips, focusMode })
  *   promptModel(prompt, now) / ageLabel(at, now) / bedtimeChip(payload, now) / occupancyChip(model)
  *
  * THE SCROLLED-AWAY RULE (Ricardo's pick 1: the prompt shows only once it has scrolled off the top)
- *   When the page receives a prompt it records the xterm buffer's absolute line at that moment
- *   (`baseY + cursorY`: where the CLI is echoing it). The prompt part is due while that line is above the viewport
- *   (`viewportY > line`) and hides again when the person scrolls back to it. IT FAILS VISIBLE: a prompt that was
+ *   The prompt's place is the buffer line the CLI ECHOED it on, FOUND BY ITS TEXT (PR #99 Dexter F6). It is not the
+ *   cursor: measured with the real CLI (verify/probe-prompt-anchor.js), Claude Code pins its input box to the
+ *   bottom of the screen, so the cursor is at the bottom row both before a submit and when the hook fires, 30 lines
+ *   below a one-line echo and 24 below the first line of a five-line one. While the echo isn't drawn yet the anchor
+ *   is `locating` (not due: no flash of the bar on every submit); the page gives it a few seconds and then drops it
+ *   (no anchor: due, fails visible). The prompt part is due while that line is above the viewport, or under the rows
+ *   the bar itself covers (`viewportY + coveredRows > line`, F7: a chip keeps the bar open over the first rows),
+ *   and hides again when the person scrolls back to it. IT FAILS VISIBLE: a prompt that was
  *   never anchored (a window that attached after it was typed), an anchor from another prompt, another `epoch`
  *   (a resize reflows every line; a /clear or a shrinking buffer moves the lines), a line outside the buffer, a
  *   buffer that is full (scrollback is trimming from the top, so every absolute line has moved), or any number
@@ -38,26 +45,58 @@ const isStr = (s) => typeof s === 'string' && s !== '';
 
 // --- the scrolled-away rule ------------------------------------------------------------------------------
 
-/** Where a freshly arrived prompt is being echoed, or null when the buffer can't say. */
-function makeAnchor(prompt, { baseY, cursorY, epoch = 0 } = {}) {
-  if (!prompt || !isNum(prompt.seq) || !isNum(baseY) || !isNum(cursorY) || baseY < 0 || cursorY < 0) return null;
-  return { seq: prompt.seq, line: baseY + cursorY, epoch };
+const NEEDLE_MAX = 60;
+
+/** The buffer line a prompt's echo was found on, or null when there is no usable line. */
+function makeAnchor(prompt, { line, epoch = 0 } = {}) {
+  if (!prompt || !isNum(prompt.seq) || !isNum(line) || line < 0) return null;
+  return { seq: prompt.seq, line, epoch };
+}
+
+/** "The echo isn't drawn yet": bound to this prompt and epoch; not due while it lasts (the page bounds that). */
+function locatingAnchor(prompt, epoch = 0) {
+  if (!prompt || !isNum(prompt.seq)) return null;
+  return { seq: prompt.seq, locating: true, epoch };
 }
 
 /**
- * Is the prompt's place above the viewport? `view`: { viewportY, bufferLength, full, epoch }.
- * `full` is true once the scrollback is at its limit (lines are being trimmed from the top).
+ * What to look for in the buffer: the first non-blank line of what was TYPED (the CLI echoes it as typed, so an
+ * [Image #1] stays one), trimmed and clipped to NEEDLE_MAX characters; null when there's nothing to search by (a
+ * needle of one or two characters would match anything).
+ */
+function echoNeedle(text) {
+  if (typeof text !== 'string') return null;
+  const first = text.split(/\r?\n/).find(l => l.trim() !== '');
+  if (first === undefined) return null;
+  const chars = Array.from(first.trim());
+  if (chars.length < 3) return null;
+  return chars.slice(0, NEEDLE_MAX).join('');
+}
+
+/** The index of the LAST line holding the needle (the newest echo), or -1. Non-strings are never matched. */
+function findEcho(lines, needle) {
+  if (!Array.isArray(lines) || typeof needle !== 'string' || needle === '') return -1;
+  for (let i = lines.length - 1; i >= 0; i--) if (typeof lines[i] === 'string' && lines[i].includes(needle)) return i;
+  return -1;
+}
+
+/**
+ * Is the prompt's place above the viewport? `view`: { viewportY, bufferLength, full, epoch, coveredRows }.
+ * `full` is true once the scrollback is at its limit (lines are being trimmed from the top); `coveredRows` is how
+ * many rows from the top the bar itself hides (0 when it is closed; anything but a non-negative integer is 0).
  */
 function scrolledAway(prompt, anchor, view) {
   if (!prompt || !isNum(prompt.seq)) return false;                       // nothing to show
   const v = view && typeof view === 'object' ? view : {};
   if (!anchor || typeof anchor !== 'object' || anchor.seq !== prompt.seq) return true;
-  if (!isNum(anchor.line) || anchor.line < 0) return true;
   if (v.epoch !== anchor.epoch) return true;
+  if (anchor.locating === true) return false;                            // the echo isn't drawn yet
+  if (!isNum(anchor.line) || anchor.line < 0) return true;
   if (!isNum(v.viewportY) || !isNum(v.bufferLength)) return true;
   if (anchor.line >= v.bufferLength) return true;
   if (v.full === true) return true;
-  return v.viewportY > anchor.line;
+  const covered = Number.isInteger(v.coveredRows) && v.coveredRows > 0 ? v.coveredRows : 0;
+  return v.viewportY + covered > anchor.line;
 }
 
 // --- the prompt part -------------------------------------------------------------------------------------
@@ -75,14 +114,25 @@ function ageLabel(at, now) {
 
 const IMAGE = /\[Image #\d+\]/gi;
 
+// The head and the hover depend on the text alone, and a paint can run on every scrolled line while output streams
+// (PR #99 Miguel G1): one remembered text, so the regex, split and Array.from run once per prompt, not per paint.
+let memo = { key: null, head: '', full: '' };
+
 /** The first line, clipped, plus the whole text for the hover; pasted images read `[image]`. */
 function promptModel(prompt, now) {
   if (!prompt || !isStr(prompt.text) || prompt.text.trim() === '') return null;
-  const full = prompt.text.replace(IMAGE, '[image]').trim();
-  const first = full.split(/\r?\n/)[0];       // `full` is trimmed, so its first line is never blank
-  const chars = Array.from(first.trim());
-  const head = chars.length > PROMPT_HEAD_MAX ? chars.slice(0, PROMPT_HEAD_MAX).join('') + '…' : chars.join('');
-  return { head, full, age: ageLabel(prompt.at, now) };
+  // A cut prompt (the host's cap) says so at the end of the whole text, never silently (PR #99 Miguel Y4).
+  const cut = prompt.truncated === true;
+  const omitted = cut && Number.isInteger(prompt.omitted) && prompt.omitted > 0 ? prompt.omitted : 0;
+  const key = `${cut}|${omitted}|${prompt.text}`;
+  if (memo.key !== key) {
+    const body = prompt.text.replace(IMAGE, '[image]').trim();
+    const first = body.split(/\r?\n/)[0];       // `body` is trimmed, so its first line is never blank
+    const chars = Array.from(first.trim());
+    const marker = !cut ? '' : omitted > 0 ? `\n…(truncated, ${omitted} more character${omitted === 1 ? '' : 's'})` : '\n…(truncated)';
+    memo = { key, head: chars.length > PROMPT_HEAD_MAX ? chars.slice(0, PROMPT_HEAD_MAX).join('') + '…' : chars.join(''), full: body + marker };
+  }
+  return { head: memo.head, full: memo.full, age: ageLabel(prompt.at, now) };
 }
 
 // --- the chips -------------------------------------------------------------------------------------------
@@ -93,8 +143,14 @@ function clock(ms) {
   const d = new Date(ms);
   return Number.isNaN(d.getTime()) ? null : `${two(d.getHours())}:${two(d.getMinutes())}`;
 }
-const prsShort = (n) => (Number.isInteger(n) && n >= 0 ? `${n} PR${n === 1 ? '' : 's'}` : 'PRs: ?');
-const prsLong = (n) => (Number.isInteger(n) && n >= 0 ? `${n} PR${n === 1 ? '' : 's'} so far` : 'PRs so far: unknown');
+const isCount = (n) => Number.isInteger(n) && n >= 0;
+// `stale`: gh isn't answering now and this is the last answer; `capped`: the count hit gh's list limit (a floor)
+const prsShort = (n, { stale, capped } = {}) => (isCount(n)
+  ? `${n}${capped === true ? '+' : ''} PR${n === 1 && capped !== true ? '' : 's'}${stale === true ? ' (stale)' : ''}`
+  : 'PRs: ?');
+const prsLong = (n, { stale, capped } = {}) => (isCount(n)
+  ? `${n}${capped === true ? '+' : ''} PR${n === 1 && capped !== true ? '' : 's'} so far${capped === true ? ' (gh\'s list limit)' : ''}${stale === true ? ' (last answer; gh is not answering now)' : ''}`
+  : 'PRs so far: unknown');
 
 /** The 🌙 chip for host/night-status.js's payload, or null when there is no night. */
 function bedtimeChip(night, now) {
@@ -105,12 +161,13 @@ function bedtimeChip(night, now) {
     : wake === null ? null
       : due ? `wake due ${wake}` : `next wake ${wake}`;
   const since = clock(night.startedAt);
-  const short = ['overnight', next, prsShort(night.prs)].filter(Boolean).join(' · ');
+  const prs = { stale: night.prsStale, capped: night.prsCapped };
+  const short = ['overnight', next, prsShort(night.prs, prs)].filter(Boolean).join(' · ');
   const long = [
     since ? `overnight run since ${since}` : 'overnight run',
     next === 'working' ? 'awake now, working' : next,
     isNum(night.wakes) && night.wakes > 0 ? `${night.wakes} wake${night.wakes === 1 ? '' : 's'} so far` : null,
-    prsLong(night.prs),
+    prsLong(night.prs, prs),
   ].filter(Boolean);
   return { kind: 'bedtime', short: `🌙 ${short}`, long: long.join('\n'), warn: false };
 }
@@ -147,7 +204,10 @@ function barModel({ prompt = null, anchor = null, view = null, now, bedtime = nu
   return { visible, prompt: visible && due ? p : null, chips: visible ? chips : [] };
 }
 
-const api = { barModel, barVisible, scrolledAway, makeAnchor, promptModel, ageLabel, bedtimeChip, occupancyChip, PROMPT_HEAD_MAX };
+const api = {
+  barModel, barVisible, scrolledAway, makeAnchor, locatingAnchor, echoNeedle, findEcho, promptModel, ageLabel, bedtimeChip,
+  occupancyChip, PROMPT_HEAD_MAX, NEEDLE_MAX,
+};
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

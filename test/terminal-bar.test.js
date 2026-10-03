@@ -15,20 +15,56 @@ const prompt = (extra = {}) => ({ text: 'fix the drawer', at: NOW - 4 * MIN, seq
 const view = (extra = {}) => ({ viewportY: 100, bufferLength: 300, full: false, epoch: 0, ...extra });
 const anchorAt = (line, extra = {}) => ({ seq: 3, line, epoch: 0, ...extra });
 
-// --- makeAnchor -------------------------------------------------------------------------------------------
+// --- makeAnchor / locatingAnchor (F6: the line the CLI's echo was FOUND on) --------------------------------------
 
-test('makeAnchor: the line the CLI is echoing at is baseY + cursorY, tied to that prompt and epoch', () => {
-  assert.deepStrictEqual(T.makeAnchor(prompt(), { baseY: 40, cursorY: 7, epoch: 2 }), { seq: 3, line: 47, epoch: 2 });
-  assert.deepStrictEqual(T.makeAnchor(prompt(), { baseY: 0, cursorY: 0 }), { seq: 3, line: 0, epoch: 0 }, 'line 0 is a real line');
+test('makeAnchor: the line the echo was found on, tied to that prompt and epoch', () => {
+  assert.deepStrictEqual(T.makeAnchor(prompt(), { line: 47, epoch: 2 }), { seq: 3, line: 47, epoch: 2 });
+  assert.deepStrictEqual(T.makeAnchor(prompt(), { line: 0 }), { seq: 3, line: 0, epoch: 0 }, 'line 0 is a real line');
 });
 
-test('makeAnchor: anything the buffer can\'t say is no anchor (null), never a made-up line', () => {
-  for (const bad of [{ baseY: NaN, cursorY: 1 }, { baseY: 1, cursorY: undefined }, { baseY: null, cursorY: 1 }, { baseY: -1, cursorY: 0 },
-    { baseY: 0, cursorY: -1 }, { baseY: '3', cursorY: 1 }, {}]) {
+test('makeAnchor: a line the buffer can\'t give is no anchor (null), never a made-up one', () => {
+  for (const bad of [{ line: NaN }, { line: undefined }, { line: null }, { line: -1 }, { line: '3' }, { line: Infinity }, {}]) {
     assert.strictEqual(T.makeAnchor(prompt(), bad), null, JSON.stringify(bad));
   }
-  for (const bad of [null, undefined, {}, { seq: 'x' }, { seq: NaN }]) assert.strictEqual(T.makeAnchor(bad, { baseY: 1, cursorY: 1 }), null);
+  for (const bad of [null, undefined, {}, { seq: 'x' }, { seq: NaN }]) assert.strictEqual(T.makeAnchor(bad, { line: 1 }), null);
   assert.strictEqual(T.makeAnchor(prompt(), undefined), null);
+});
+
+test('locatingAnchor: "the echo is not drawn yet": bound to this prompt and epoch', () => {
+  assert.deepStrictEqual(T.locatingAnchor(prompt(), 4), { seq: 3, locating: true, epoch: 4 });
+  assert.strictEqual(T.locatingAnchor(null, 0), null);
+  assert.strictEqual(T.locatingAnchor({ seq: NaN }, 0), null);
+});
+
+test('echoNeedle: the first non-blank line of what was typed, trimmed and clipped; nothing usable is null', () => {
+  assert.strictEqual(T.echoNeedle("fix the drawer's hover card\nand more"), "fix the drawer's hover card");
+  assert.strictEqual(T.echoNeedle('\n  \n   second line here\nx'), 'second line here');
+  assert.strictEqual(T.echoNeedle('/checkpoint'), '/checkpoint');
+  assert.strictEqual(T.echoNeedle('look at [Image #1]'), 'look at [Image #1]', 'the CLI echoes the placeholder as typed');
+  assert.strictEqual(Array.from(T.echoNeedle('a'.repeat(200))).length, T.NEEDLE_MAX);
+  assert.strictEqual(T.echoNeedle('\u{1F319}'.repeat(100)), '\u{1F319}'.repeat(T.NEEDLE_MAX));
+  for (const none of [null, undefined, '', '   ', '\n\n', 'ab', ' a ', 5, {}]) assert.strictEqual(T.echoNeedle(none), null, JSON.stringify(none));
+});
+
+test('findEcho: the LAST line holding the needle (the newest echo), or -1', () => {
+  const lines = ['> older', '❯ fix the drawer', 'reply', '❯ fix the drawer again', 'x'];
+  assert.strictEqual(T.findEcho(lines, 'fix the drawer'), 3);
+  assert.strictEqual(T.findEcho(lines, 'fix the drawer again'), 3);
+  assert.strictEqual(T.findEcho(lines, 'older'), 0);
+  assert.strictEqual(T.findEcho(lines, 'nope'), -1);
+  assert.strictEqual(T.findEcho([], 'x'), -1);
+  assert.strictEqual(T.findEcho(lines, null), -1);
+  assert.strictEqual(T.findEcho(lines, ''), -1);
+  assert.strictEqual(T.findEcho(null, 'x'), -1);
+  assert.strictEqual(T.findEcho(['a', 5, null, 'ab'], 'a'), 3, 'non-strings are skipped, not matched');
+});
+
+test('property: findEcho returns an index whose line holds the needle and no later line does', () => {
+  fc.assert(fc.property(fc.array(fc.string({ maxLength: 12 }), { maxLength: 20 }), fc.string({ minLength: 1, maxLength: 3 }), (lines, needle) => {
+    const at = T.findEcho(lines, needle);
+    if (at === -1) return lines.every(l => !l.includes(needle));
+    return lines[at].includes(needle) && lines.slice(at + 1).every(l => !l.includes(needle));
+  }));
 });
 
 // --- scrolledAway -----------------------------------------------------------------------------------------
@@ -39,6 +75,33 @@ test('the prompt is due only once its line is above the top of the viewport', ()
   assert.strictEqual(T.scrolledAway(prompt(), anchorAt(50), view({ viewportY: 10 })), false, 'scrolled back up to it: hides again');
   assert.strictEqual(T.scrolledAway(prompt(), anchorAt(0), view({ viewportY: 1 })), true, 'line 0 is a real line too');
   assert.strictEqual(T.scrolledAway(prompt(), anchorAt(0), view({ viewportY: 0 })), false);
+});
+
+test('F6: while the echo is being located the prompt is not due (no flash of the bar on every submit)', () => {
+  const loc = { seq: 3, locating: true, epoch: 0 };
+  for (const vy of [0, 50, 4000]) assert.strictEqual(T.scrolledAway(prompt(), loc, view({ viewportY: vy })), false);
+  assert.strictEqual(T.scrolledAway(prompt(), { ...loc, seq: 2 }, view()), true, 'another prompt\'s locating anchor is no anchor');
+  assert.strictEqual(T.scrolledAway(prompt(), { ...loc, epoch: 1 }, view()), true, 'a resize while locating: fails visible');
+  assert.strictEqual(T.scrolledAway(prompt(), { ...loc, locating: 'yes' }, view({ viewportY: 5 })), true, 'only a real true is locating');
+});
+
+test('F7: with a chip open the bar covers the first rows: a prompt line under it is due', () => {
+  assert.strictEqual(T.scrolledAway(prompt(), anchorAt(50), view({ viewportY: 50, coveredRows: 2 })), true, 'row 0 is under the bar');
+  assert.strictEqual(T.scrolledAway(prompt(), anchorAt(50), view({ viewportY: 49, coveredRows: 2 })), true, 'row 1 is under the bar');
+  assert.strictEqual(T.scrolledAway(prompt(), anchorAt(50), view({ viewportY: 48, coveredRows: 2 })), false, 'row 2 is visible');
+  assert.strictEqual(T.scrolledAway(prompt(), anchorAt(50), view({ viewportY: 50, coveredRows: 0 })), false);
+  assert.strictEqual(T.scrolledAway(prompt(), anchorAt(50), view({ viewportY: 50 })), false, 'no covered rows given: none');
+  for (const bad of [-1, 1.5, NaN, '2', null, Infinity]) {
+    assert.strictEqual(T.scrolledAway(prompt(), anchorAt(50), view({ viewportY: 50, coveredRows: bad })), false, String(bad));
+  }
+});
+
+test('property (F7): covering rows can only make the prompt due sooner, never later', () => {
+  fc.assert(fc.property(arb.line, arb.vy, arb.len, fc.integer({ min: 0, max: 6 }), (line, vy, len, rows) => {
+    fc.pre(line < len);
+    const at = (c) => T.scrolledAway(prompt(), anchorAt(line), view({ viewportY: vy, bufferLength: len, coveredRows: c }));
+    return !at(0) || at(rows);
+  }));
 });
 
 test('no prompt: never due, whatever the buffer says', () => {
@@ -338,4 +401,43 @@ test('occupancyChip: only real strings reach the hover, and no lines is an empty
 test('barModel: a prompt with no showable text never opens a bar on its own', () => {
   const m = T.barModel({ prompt: { text: '   ', seq: 3, at: NOW }, anchor: null, view: view(), now: NOW });
   assert.deepStrictEqual(m, { visible: false, prompt: null, chips: [] });
+});
+
+// --- Miguel G1: the model is memoised per text; G2: a stale or capped PR count says so -------------------------
+test('G1: the same prompt text gives the same head and hover, and the age is still computed fresh', () => {
+  const p = prompt({ text: 'fix the drawer\nand the card' });
+  const a = T.promptModel(p, NOW);
+  const b = T.promptModel(p, NOW + 5 * MIN);
+  assert.strictEqual(a.head, b.head);
+  assert.strictEqual(a.full, b.full);
+  assert.strictEqual(a.age, '4 min ago');
+  assert.strictEqual(b.age, '9 min ago');
+  const c = T.promptModel(prompt({ text: 'something else' }), NOW);
+  assert.strictEqual(c.head, 'something else', 'a different text is not served from the memo');
+  assert.strictEqual(T.promptModel(p, NOW).full, 'fix the drawer\nand the card');
+});
+
+test('G2: a stale count keeps its number and says so; a capped one reads N+; unknown stays "PRs: ?"', () => {
+  const stale = T.bedtimeChip(night({ prs: 3, prsStale: true }), NOW);
+  assert.match(stale.short, /· 3 PRs \(stale\)$/);
+  assert.match(stale.long, /\n3 PRs so far \(last answer; gh is not answering now\)$/);
+  const capped = T.bedtimeChip(night({ prs: 200, prsCapped: true }), NOW);
+  assert.match(capped.short, /· 200\+ PRs$/);
+  assert.match(capped.long, /\n200\+ PRs so far \(gh\'s list limit\)$/);
+  const both = T.bedtimeChip(night({ prs: 200, prsCapped: true, prsStale: true }), NOW);
+  assert.match(both.short, /· 200\+ PRs \(stale\)$/);
+  assert.match(T.bedtimeChip(night({ prs: null, prsStale: true }), NOW).short, /· PRs: \?$/, 'no number, nothing to mark stale');
+  assert.doesNotMatch(T.bedtimeChip(night({ prs: 3, prsStale: 'yes', prsCapped: 'yes' }), NOW).short, /stale|\+/, 'only a real true');
+});
+
+test('Y4: a truncated prompt says so at the end of the full view, and the head is unchanged', () => {
+  const m = T.promptModel(prompt({ text: 'first line\nsecond', truncated: true, omitted: 12345 }), NOW);
+  assert.strictEqual(m.head, 'first line');
+  assert.strictEqual(m.full, 'first line\nsecond\n…(truncated, 12345 more characters)');
+  assert.strictEqual(T.promptModel(prompt({ text: 'first line', truncated: false, omitted: 0 }), NOW).full, 'first line');
+  assert.strictEqual(T.promptModel(prompt({ text: 'x', truncated: 'yes', omitted: 5 }), NOW).full, 'x', 'only a real true');
+  assert.strictEqual(T.promptModel(prompt({ text: 'x', truncated: true }), NOW).full, 'x\n…(truncated)', 'no count: still says so');
+  const same = prompt({ text: 'x' });
+  assert.strictEqual(T.promptModel(same, NOW).full, 'x');
+  assert.strictEqual(T.promptModel({ ...same, truncated: true, omitted: 1 }, NOW).full, 'x\n…(truncated, 1 more character)', 'the memo keys on the marker too');
 });

@@ -2211,7 +2211,7 @@ test('the probe may drive the occupancy page actions, by name only (#44 + #47)',
 
 test('the probe may drive the terminal bar page actions, by name only (#49 + #52)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['barState', 'barScroll', 'barClick', 'barClear']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  for (const a of ['barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
 // --- worktree occupancy (#44 + #47) -----------------------------------------------

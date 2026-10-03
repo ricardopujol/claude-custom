@@ -37,6 +37,7 @@
       /* Backlog #52: a session in a /bedtime night (the strip's night tab, the bar's moon chip). */
       --night: #1a2350;
       --night-edge: #7f93e0;
+      --night-text: #e8ecff;
     }
     * { box-sizing: border-box; }
     /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
@@ -623,6 +624,7 @@
       position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; z-index: 17;
       max-height: 40vh; overflow: auto; padding: 8px 10px; border-radius: 5px; white-space: pre-wrap;
       user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
+      overflow-wrap: anywhere;
     }
     #bar-chips { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
     .bar-chip {
@@ -630,7 +632,10 @@
       font: inherit; color: var(--text); white-space: nowrap;
       background: var(--panel); border: 1px solid var(--border); border-left-width: 4px;
     }
-    .bar-chip.bedtime { background: color-mix(in srgb, var(--night) 70%, var(--chrome)); border-color: color-mix(in srgb, var(--night-edge) 45%, var(--border)); border-left-color: var(--night-edge); }
+    /* The night chip carries its OWN pair, whatever the look: a solid night blue with a fixed light text (about 13:1),
+       never mixed with --chrome or --text, which a light look turns dark (PR #99 Miguel Y3; probe-terminal-bar.js
+       measures the contrast under both). Its hover keeps the look's own pair. */
+    .bar-chip.bedtime { background: var(--night); color: var(--night-text); border-color: var(--night-edge); border-left-color: var(--night-edge); }
     .bar-chip.occupancy { border-left: 4px solid var(--agent); font-variant-numeric: tabular-nums; }
     .bar-chip.occupancy.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
     button.bar-chip { cursor: pointer; }
@@ -1338,8 +1343,8 @@
         </div>
         <!-- The terminal bar (#49 + #52, with #47's occupancy banner folded in as a chip): one row, the prompt left
              once it has scrolled away, the chips right. Text only, painted from app/terminal-bar.js's model. -->
-        <div id="terminal-bar" role="status" hidden>
-          <button type="button" id="bar-prompt" hidden title="Show the whole prompt">
+        <div id="terminal-bar" role="group" aria-label="Last prompt and status" hidden>
+          <button type="button" id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full" title="Show the whole prompt (Esc closes it)">
             <span class="bar-caret">❯</span><span id="bar-prompt-text"></span><span id="bar-prompt-age"></span>
           </button>
           <div id="bar-prompt-full" hidden></div>

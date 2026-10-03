@@ -156,7 +156,13 @@ let sessionTurn = null;
 // The terminal bar (backlog #49 + #52): the host's latest main-session prompt and where the CLI echoed it in the
 // terminal buffer, the bedtime night, and the epoch that invalidates the anchor. Every decision is in
 // app/terminal-bar.js; this only holds the facts and paints what it says.
-const bar = { prompt: null, anchor: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, chipsKey: '' };
+const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, paintKey: '', chipsKey: '' };
+// How long the CLI's echo of a submitted prompt is waited for in the terminal buffer, and how many of the newest lines
+// are searched, before the prompt fails visible (PR #99 Dexter F6).
+const LOCATE_MS = 3000;
+const LOCATE_SCAN = 400;
+// The bar's own height in CSS px (top offset + row): the terminal rows it hides while a chip keeps it open (F7).
+const BAR_COVER_PX = 40;
 let wasWorking = false;
 let lastReportedTabStatus = null;
 function pend(event) {
@@ -226,7 +232,8 @@ function chipElement(c) {
   const jumps = c.kind === 'occupancy' && c.jump;
   const el = document.createElement(jumps ? 'button' : 'span');
   el.className = 'bar-chip ' + (c.kind === 'bedtime' ? 'bedtime' : 'occupancy') + (c.warn ? ' warn' : '');
-  if (jumps) { el.type = 'button'; el.dataset.root = c.jump.root; } else { el.tabIndex = 0; }
+  if (jumps) { el.type = 'button'; el.dataset.root = c.jump.root; } else { el.tabIndex = 0; el.setAttribute('role', 'note'); }
+  el.setAttribute('aria-label', c.short + (c.long ? ': ' + c.long.split('\n').join(', ') : ''));
   const short = document.createElement('span');
   short.className = 'chip-short';
   short.textContent = c.short;
@@ -251,14 +258,19 @@ function barState() {
     bar: {
       hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, transitionDuration: cs.transitionDuration, display: cs.display,
       top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
-      prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden },
+      prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden,
+        expanded: barEls.prompt.getAttribute('aria-expanded') },
       chips: [...barEls.chips.children].map(c => ({
         kind: c.classList.contains('bedtime') ? 'bedtime' : 'occupancy', warn: c.classList.contains('warn'), tag: c.tagName.toLowerCase(),
         short: c.querySelector('.chip-short').textContent, long: c.querySelector('.chip-long') ? c.querySelector('.chip-long').textContent : '',
         leftRule: getComputedStyle(c).borderLeftWidth, animation: getComputedStyle(c).animationName,
+        color: getComputedStyle(c).color, background: getComputedStyle(c).backgroundColor,
       })),
     },
     buffer: { viewportY: buf.viewportY, baseY: buf.baseY, cursorY: buf.cursorY, length: buf.length, rows: term.rows, type: buf.type },
+    // the text of the buffer line the anchor points at: the probe checks it is where the echo is
+    anchorText: bar.anchor && typeof bar.anchor.line === 'number' && buf.getLine(bar.anchor.line) ? buf.getLine(bar.anchor.line).translateToString(true) : null,
+    locating: !!bar.locate,
     epoch: bar.epoch, anchor: bar.anchor, prompt: bar.prompt, bedtime: bar.bedtime,
   };
 }
@@ -271,35 +283,49 @@ function paintBarNow() {
   bar.lastLength = buf.length;
   const chip = window.occupancyDisplay ? window.occupancyDisplay.chipModel(occupancy.here, { turn: sessionTurn, now }) : null;
   if (chip && occupancy.jumpNote) chip.lines.push(occupancy.jumpNote);
+  // A chip keeps the bar open over the terminal's first rows, so a prompt line under it is as good as scrolled away.
+  const rowPx = term.rows > 0 ? document.getElementById('term').clientHeight / term.rows : 0;
+  const coveredRows = (bar.bedtime !== null || chip !== null) && rowPx > 0 ? Math.ceil(BAR_COVER_PX / rowPx) : 0;
   const m = terminalBar.barModel({
     prompt: bar.prompt,
     anchor: bar.anchor,
     // An alternate screen (a full-screen TUI) keeps no scrollback to scroll away into, and a full scrollback is
     // trimming from the top: in both the lines are not where they were, so the prompt shows.
-    view: { viewportY: buf.viewportY, bufferLength: buf.length, full: buf.type === 'alternate' || buf.length >= term.options.scrollback + term.rows, epoch: bar.epoch },
+    view: { viewportY: buf.viewportY, bufferLength: buf.length, full: buf.type === 'alternate' || buf.length >= term.options.scrollback + term.rows, epoch: bar.epoch, coveredRows },
     now,
     bedtime: bar.bedtime,
     occupancy: chip,
     focusMode: document.body.classList.contains('focus-mode'),
   });
-  barEls.bar.hidden = !m.visible;
-  document.body.classList.toggle('bar-open', m.visible);
-  barEls.prompt.hidden = m.prompt === null;
-  if (m.prompt) {
-    barEls.text.textContent = m.prompt.head;
-    barEls.age.textContent = m.prompt.age ? '· ' + m.prompt.age : '';
-    barEls.full.textContent = m.prompt.full;
-  } else {
-    bar.fullOpen = false;
-  }
-  barEls.full.hidden = !(m.prompt && bar.fullOpen);
-  // Rebuilt only when something changed, so a hover isn't dropped by the 30 s minute refresh.
-  const key = JSON.stringify(m.chips);
-  if (key !== bar.chipsKey) {
-    bar.chipsKey = key;
-    barEls.chips.replaceChildren(...m.chips.map(chipElement));
+  if (!m.prompt) bar.fullOpen = false;
+  // Nothing changed since the last paint (a scroll event per streamed line asks for a paint each): no DOM writes at all,
+  // so a selection inside the whole-prompt view survives (PR #99 Miguel Y1, G1).
+  const key = JSON.stringify([m, bar.fullOpen]);
+  if (key !== bar.paintKey) {
+    bar.paintKey = key;
+    barEls.bar.hidden = !m.visible;
+    document.body.classList.toggle('bar-open', m.visible);
+    barEls.prompt.hidden = m.prompt === null;
+    if (m.prompt) {
+      setText(barEls.text, m.prompt.head);
+      setText(barEls.age, m.prompt.age ? '· ' + m.prompt.age : '');
+      setText(barEls.full, m.prompt.full);
+    }
+    barEls.full.hidden = !(m.prompt && bar.fullOpen);
+    barEls.prompt.setAttribute('aria-expanded', String(!!(m.prompt && bar.fullOpen)));
+    // Rebuilt only when the chips themselves changed, so a hover isn't dropped by the 30 s minute refresh.
+    const chipsKey = JSON.stringify(m.chips);
+    if (chipsKey !== bar.chipsKey) {
+      bar.chipsKey = chipsKey;
+      barEls.chips.replaceChildren(...m.chips.map(chipElement));
+    }
   }
   paintOccupancyConfirm(occupancy.confirm ? occupancy.confirm.state() : null);
+}
+
+// A write that changes nothing still replaces the text node, which collapses a selection inside it.
+function setText(el, value) {
+  if (el.textContent !== value) el.textContent = value;
 }
 
 // The confirm's words follow what is going on here: an overnight run, agents writing, or both.
@@ -337,25 +363,63 @@ function applyOccupancy(payload) {
   if (typeof renderRoster === 'function') renderRoster();
 }
 
-// The host's latest main-session prompt. A LIVE one (a control message) is anchored where the CLI is echoing it
-// once the terminal has parsed what came before it; one that arrives in `hello` (a window that attached later) has
-// no place in this buffer, so it shows (fails visible) until the next prompt is anchored.
+// The newest buffer lines from `from`, as text (what findEcho searches).
+function bufferTexts(from) {
+  const buf = term.buffer.active;
+  const out = [];
+  for (let i = from; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    out.push(line ? line.translateToString(true) : '');
+  }
+  return out;
+}
+
+// Find the line the CLI ECHOED the prompt on, by its text (PR #99 Dexter F6; measured by verify/probe-prompt-anchor.js:
+// the real CLI pins its input box to the bottom row, so the cursor is 24-30 lines BELOW the echo and tells nothing).
+// It runs once the terminal has parsed what came before the prompt event, then again as output is parsed, and keeps the
+// newest match for LOCATE_MS: the echo may not be drawn yet, and an older echo of the same words is only a stand-in.
+function locateEcho() {
+  const loc = bar.locate;
+  if (!loc) return;
+  if (!bar.prompt || bar.prompt.seq !== loc.seq) { clearTimeout(loc.timer); bar.locate = null; return; }
+  const buf = term.buffer.active;
+  const from = Math.max(0, buf.length - LOCATE_SCAN);
+  const at = terminalBar.findEcho(bufferTexts(from), loc.needle);
+  if (at < 0) return;
+  const line = from + at;
+  const a = bar.anchor;
+  if (a && a.locating !== true && a.seq === loc.seq && a.epoch === bar.epoch && a.line >= line) return;
+  bar.anchor = terminalBar.makeAnchor(bar.prompt, { line, epoch: bar.epoch });
+  paintBar();
+}
+
+// The host's latest main-session prompt. A LIVE one (a control message) is LOCATED in the terminal by its echo (above);
+// until it is found its anchor is "locating" (the bar doesn't flash), and one that is never found within LOCATE_MS (a
+// pasted block the CLI shows collapsed, a prompt it echoes differently) FAILS VISIBLE: no anchor, the prompt shows. One
+// that arrives in `hello` (a window that attached later) has no place in this buffer, so it shows until the next one.
 function applyBarPrompt(prompt, live) {
   const p = prompt && typeof prompt === 'object' && typeof prompt.text === 'string' && typeof prompt.seq === 'number' && Number.isFinite(prompt.seq) ? prompt : null;
   const changed = !bar.prompt || !p || bar.prompt.seq !== p.seq;
+  if (bar.locate) { clearTimeout(bar.locate.timer); bar.locate = null; }
   bar.prompt = p;
   bar.anchor = null;
   if (changed) bar.fullOpen = false;
-  if (p && live) {
-    term.write('', () => {
-      if (!bar.prompt || bar.prompt.seq !== p.seq) return;
-      const buf = term.buffer.active;
-      bar.anchor = terminalBar.makeAnchor(p, { baseY: buf.baseY, cursorY: buf.cursorY, epoch: bar.epoch });
-      paintBar();
-    });
+  const needle = p && live ? terminalBar.echoNeedle(p.text) : null;
+  if (p && needle) {
+    bar.anchor = terminalBar.locatingAnchor(p, bar.epoch);
+    const loc = { seq: p.seq, needle, queued: false, timer: null };
+    loc.timer = setTimeout(() => {
+      if (bar.locate !== loc) return;
+      bar.locate = null;
+      if (bar.anchor && bar.anchor.locating === true) { bar.anchor = null; paintBar(); }
+    }, LOCATE_MS);
+    bar.locate = loc;
+    term.write('', () => { if (bar.locate === loc) locateEcho(); });
   }
   paintBar();
 }
+
+
 
 function applyBedtime(payload) {
   bar.bedtime = payload && typeof payload === 'object' && typeof payload.startedAt === 'number' && Number.isFinite(payload.startedAt) ? payload : null;
@@ -383,6 +447,14 @@ document.getElementById('occupancy-type').addEventListener('click', () => occupa
 document.getElementById('occupancy-wait').addEventListener('click', () => occupancy.confirm.wait());
 // The prompt part opens the whole prompt (scrollable, selectable) and closes it again.
 barEls.prompt.addEventListener('click', () => { bar.fullOpen = !bar.fullOpen; paintBarNow(); });
+// Escape closes it again, from inside the bar only: the terminal's own Escape (interrupt) is never taken (PR #99 Miguel G3).
+barEls.bar.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !bar.fullOpen) return;
+  bar.fullOpen = false;
+  paintBarNow();
+  e.stopPropagation();
+  term.focus();
+});
 
 // Jump to the launching session's tab, or the worktree an agent is in: the Git drawer's own path.
 async function jumpToFolder(folder) {
@@ -396,7 +468,7 @@ async function jumpToFolder(folder) {
 }
 
 // The minutes on the bar (the prompt's age, "wake due") go stale between pushes.
-setInterval(() => { paintBar(); }, 30000);
+setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0) paintBar(); }, 30000);
 
 if (window.harness && window.harness.occupancy) {
   window.harness.occupancy.onChange(applyOccupancy);
@@ -546,6 +618,13 @@ fit.fit();
 // and an erased scrollback (CSI 3 J: what /clear sends) moves them, so each starts a new epoch and the anchored
 // prompt shows instead of vanishing. CSI 2 J is NOT one: it erases the screen only, and a TUI repaints with it.
 term.onScroll(() => paintBar());
+// Output arriving while a prompt is being located may be its echo (app/renderer.js locateEcho).
+term.onWriteParsed(() => {
+  const loc = bar.locate;
+  if (!loc || loc.queued) return;
+  loc.queued = true;
+  setTimeout(() => { loc.queued = false; if (bar.locate === loc) locateEcho(); }, 50);
+});
 term.onResize(() => { bar.epoch += 1; paintBar(); });
 term.parser.registerCsiHandler({ final: 'J' }, (params) => { if (params[0] === 3) { bar.epoch += 1; paintBar(); } return false; });
 
@@ -1264,6 +1343,7 @@ function applyFocusMode(on) {
   // and Ctrl+B never reached the terminal's handler (probe check 7, found
   // after check 8 left focus in #vault-secret).
   if (on) term.focus();
+  paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
@@ -1511,9 +1591,31 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'barClear': return new Promise((resolve) => {
         term.write('\x1b[3J', () => resolve(JSON.stringify({ ok: true, epoch: bar.epoch })));
       });
+      // a light or dark look, as applyTheme would set the chrome variables (the chips must read under both)
+      case 'barLook': {
+        const looks = { light: { '--bg': '#f4f1ea', '--chrome': '#ece8de', '--border': '#cfc8b8', '--text': '#1d1b16', '--dim': '#6b665a' },
+          dark: { '--bg': '#11131a', '--chrome': '#171a23', '--border': '#262b38', '--text': '#c7cede', '--dim': '#6d7689' } };
+        const look = looks[a.mode];
+        if (!look) return JSON.stringify({ ok: false, error: 'barLook needs light or dark' });
+        for (const [k, v] of Object.entries(look)) document.documentElement.style.setProperty(k, v);
+        paintBar();
+        return JSON.stringify({ ok: true });
+      }
+      // a selection in the whole-prompt view (Y1: it must survive a repaint that changes nothing)
+      case 'barSelection': {
+        if (a.select) {
+          const range = document.createRange();
+          range.selectNodeContents(barEls.full);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        return JSON.stringify({ ok: true, text: String(window.getSelection()) });
+      }
       case 'barClick': {
         const el = { prompt: barEls.prompt, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
         if (!el || el.hidden) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
+        el.focus();
         el.click();
         return JSON.stringify({ ok: true });
       }

@@ -181,7 +181,7 @@ test('a worktree page reports nothing new to the shell: the turn it already send
 // (That the driver may call them, by name only, is pinned in test/tab-shell.test.js: it loads app/tab-shell.js,
 // which Stryker mutates, and this file is not in Stryker's command.)
 test('each of the probe\'s page actions exists on the ?probe=1 page, and a probe keystroke goes through xterm\'s own input path', () => {
-  for (const a of ['occState', 'occKey', 'occClick', 'occTurn', 'barState', 'barScroll', 'barClick']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
+  for (const a of ['occState', 'occKey', 'occClick', 'occTurn', 'barState', 'barScroll', 'barClick', 'barLook']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
   assert.match(RENDERER, /term\.input\(a\.data, true\)/);
 });
 
