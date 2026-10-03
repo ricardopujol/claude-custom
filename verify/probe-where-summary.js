@@ -7,6 +7,7 @@
  *   env -u ELECTRON_RUN_AS_NODE node verify/probe-where-summary.js        (exit 0 = every check held)
  *   WHERE_SUMMARY_PROBE_SHOTS=<dir>                                       also keep the screenshots there
  *   WHERE_SUMMARY_PROBE_STOP_AFTER=B                                      stop after phase B (a quick run, about a minute)
+ *   WHERE_SUMMARY_PROBE_QUICK=1                                           skip phase A2's minute-long wait (for looping phase B)
  *
  * The unit tests pin the decisions. No unit test can see a transcript flattened by a real host, a job queued behind a
  * GPU slot shared by two hosts, a summary travel host -> websocket -> page, the panel painted in the terminal bar,
@@ -14,7 +15,9 @@
  * session id comes from a real SessionStart hook event (through the native helper, as Claude Code's hooks do), its
  * transcript is a file in a temp "projects" folder, and Ollama is verify/lib/fake-ollama.js.
  *
- *   A  nothing to say: no summary, no panel, a plain tab title
+ *   A  nothing to say: no summary, no panel
+ *   A2 Ollama is down and no summary has EVER been made (Miguel I1): the tab's hover card says "Local summary off" and
+ *      nothing else, and switching to an idle tab does NOT pop the bar up
  *   B  a transcript with new turns, after the 25 s quiet period, is summarised by the model, per tab
  *      1  both hosts ask, ONE AT A TIME (never two requests in flight: the GPU slot is shared across hosts)
  *      2  what the model was sent: the conversation only (the tool call, the tool result and the skill injection are
@@ -25,6 +28,7 @@
  *      labelled "local model · llama3.2:3b · N min ago", three lines, a single row, never animated, readable (contrast)
  *   D  the first keystroke hides it; a tab just typed in does not open it when you switch back
  *   E  the other tab (never typed in) shows ITS summary, and it closes by itself after 30 seconds
+ *   F0 Escape closes an auto-opened panel with the focus still in the terminal (Miguel S4)
  *   F  a click pins it open (past 30 s) and Escape inside the bar closes it
  *   G  Ollama stops answering: the last summary stays, DIMMED, with "Local summary off: Ollama isn't running", in the
  *      panel and on the hover card; nothing is sent to a server that isn't there
@@ -236,7 +240,9 @@ async function main() {
   // The fake Ollama answers by who is asking (the dev conversation or feat-a's), slowly enough that two jobs would overlap.
   let inFlight = 0;
   let maxInFlight = 0;
+  // Ollama starts DOWN (GET / answers 500): phase A2 needs a host that has never made a summary, with Ollama off.
   const fake = await startFakeOllama({
+    rootStatus: 500,
     generate: (body) => {
       inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
       setTimeout(() => { inFlight -= 1; }, 1200);
@@ -267,8 +273,24 @@ async function main() {
   // A -----------------------------------------------------------------------------
   const first = await waitFor(() => barState(app), 15000);
   const t0 = await stripTab(app, 'develop');
-  check('A: nothing to say: no summary, no panel, a plain tab title', !!first && first.bar.hidden === true && first.bar.summary.hidden === true
-    && first.bar.summary.cardHidden === true && !!t0 && t0.title === 'develop', JSON.stringify([first && first.bar.summary.hidden, t0 && t0.title]));
+  check('A: nothing to say: no summary, no panel', !!first && first.bar.hidden === true && first.bar.summary.hidden === true
+    && first.bar.summary.cardHidden === true && !!t0, JSON.stringify([first && first.bar.summary.hidden, t0 && t0.title]));
+
+  // A2 ----------------------------------------------------------------------------
+  if (process.env.WHERE_SUMMARY_PROBE_QUICK !== '1') {
+    const offOnly = await waitFor(async () => { const t = await stripTab(app, 'develop'); return t && t.title === `develop\n${OFF_NOTE}` ? t : null; }, 30000);
+    check('A2: Ollama is down and nothing was ever summarised: the hover card says so, alone', !!offOnly, await allTitles(app));
+    await selectTab(app, 'feat/a');
+    await selectTab(app, 'develop');
+    await sleep(2000);
+    const stillQuiet = await barState(app);
+    check('A2: ...and switching to an idle tab does NOT pop the bar up for it', !!stillQuiet && stillQuiet.bar.hidden === true && stillQuiet.bar.summary.hidden === true,
+      JSON.stringify(stillQuiet && stillQuiet.bar.summary));
+    fake.set({ rootStatus: 200 });                                    // Ollama comes up; the hosts notice within their minute
+    await sleep(62000);
+  } else {
+    fake.set({ rootStatus: 200 });
+  }
 
   // B -----------------------------------------------------------------------------
   const transcripts = {
@@ -308,6 +330,7 @@ async function main() {
     return t && t.title.includes(wanted) ? t : null;
   }, 40000);
   const devHover = await hoverOf('develop', 'keeping the drawer');
+  if (!devHover) console.log('      develop hover not seen; every tab\'s title now: ' + await allTitles(app));
   const featHover = await hoverOf('feat/a', 'feat-a probe lane');
   check('B3: the strip\'s hover card carries the dev tab\'s summary under its name, labelled as a local model',
     !!devHover && /^develop\nWhere we're at \(local model · llama3\.2:3b · (just now|\d+ min ago)\):\nWorking on: keeping the drawer's hover card open across redraws\nWhere it stands: .+\nNext: review and merge$/.test(devHover.title),
@@ -328,7 +351,7 @@ async function main() {
     check('C: ...labelled "local model · llama3.2:3b · N min ago", never as Claude\'s words', /^local model · llama3\.2:3b · (just now|\d+ min ago)$/.test(s.label), s.label);
     check('C: ...the three lines the model wrote, no note', JSON.stringify(s.lines) === JSON.stringify(DEV_REPLY.split('\n')) && s.note === null && s.dim === false, JSON.stringify(s));
     check('C: ...in the prompt part\'s place at the left: one bar row, the card under it, nothing animated', open.bar.height > 0 && open.bar.height < 60
-      && s.cardTop >= open.bar.top + open.bar.height && open.bar.prompt.hidden === true && calm(s) && s.expanded === 'false',
+      && s.cardTop >= open.bar.top + open.bar.height && open.bar.prompt.hidden === true && calm(s) && s.expanded === 'true',
     JSON.stringify({ barTop: open.bar.top, barHeight: open.bar.height, cardTop: s.cardTop, cardHeight: s.cardHeight, prompt: open.bar.prompt.hidden, anim: [s.animation, s.cardAnimation] }));
     const ratio = contrast(s.color, s.background);
     check(`C: ...readable: contrast ${ratio.toFixed(1)}:1 (at least 4.5)`, ratio >= 4.5, `${s.color} on ${s.background}`);
@@ -359,6 +382,14 @@ async function main() {
   const gone = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === true ? b : null; }, 12000, 500);
   const openFor = (Date.now() - shownAt) / 1000;
   check(`E: ...and closes by itself at 30 seconds, with no key pressed (open for ${openFor.toFixed(0)} s)`, !!gone && openFor >= 29 && openFor <= 40);
+
+  // F0 ----------------------------------------------------------------------------
+  await selectTab(app, 'develop');
+  await selectTab(app, 'feat/a');
+  const escOpen = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === false ? b : null; }, 8000);
+  await command(app, { cmd: 'key', key: 'Escape' });
+  const escClosed = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === true && b.bar.summary.expanded === 'false' ? b : null; }, 5000);
+  check('F0: Escape closes an auto-opened panel although the focus is in the terminal, not the bar', !!escOpen && !!escClosed);
 
   // F -----------------------------------------------------------------------------
   await selectTab(app, 'develop');
