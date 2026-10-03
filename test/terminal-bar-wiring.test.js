@@ -89,6 +89,11 @@ test('the night is reported to the shell (the night tab) and feeds the confirm a
   assert.match(RENDERER, /confirm\.setClaims\(confirmClaims\(\)\)/);
 });
 
+test('the probe\'s page actions for the bar exist, and a clear is the real escape sequence through xterm\'s own parser', () => {
+  for (const a of ['barState', 'barScroll', 'barClick', 'barClear']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
+  assert.match(RENDERER, /case 'barClear': return new Promise\(\(resolve\) => \{\s*term\.write\('\\x1b\[3J'/);
+});
+
 test('the occupancy chip\'s Jump and the bar\'s minutes refresh share the page\'s existing paths', () => {
   assert.match(RENDERER, /jumpToFolder\(/);
   assert.match(RENDERER, /setInterval\(\(\) => \{ paintBar\(\); \}, 30000\)|setInterval\(\(\) => paintBar\(\), 30000\)/);

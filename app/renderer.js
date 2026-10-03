@@ -249,7 +249,7 @@ function barState() {
   const cs = getComputedStyle(barEls.bar);
   return {
     bar: {
-      hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty,
+      hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, display: cs.display,
       top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
       prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden },
       chips: [...barEls.chips.children].map(c => ({
@@ -1499,6 +1499,10 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         else return JSON.stringify({ ok: false, error: 'barScroll needs top, bottom or a line number' });
         return JSON.stringify({ ok: true, viewportY: term.buffer.active.viewportY });
       }
+      // What /clear sends: the real escape through xterm's own parser, answered once it has been parsed
+      case 'barClear': return new Promise((resolve) => {
+        term.write('\x1b[3J', () => resolve(JSON.stringify({ ok: true, epoch: bar.epoch })));
+      });
       case 'barClick': {
         const el = { prompt: barEls.prompt, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
         if (!el || el.hidden) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
