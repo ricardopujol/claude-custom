@@ -175,3 +175,37 @@ test('a registry module the layout knows nothing of is not listed', () => {
   const l = T.defaultLayout(IDS.filter(id => id !== 'style'));
   assert.ok(!V.menuRows(l, TABS).some(r => r.id === 'style'));
 });
+
+// --- PR #100 review (Dexter F3, F3b): a press that moves nothing stores nothing --------------
+
+const v2 = root => ({ version: 2, root, floats: [], hidden: [], seat: {} });
+const grp = (id, ...tabs) => ({ type: 'group', id, tabs });
+
+test('F3a: a spine divider pushed against a neighbour at its minimum, or not moved, is no change at all', () => {
+  // [term | A stored at 600] in 800: the fit squeezes A to 475 and the terminal sits at its 320 minimum.
+  const l = T.normalize(v2({ type: 'split', dir: 'row', kids: [{ type: 'term' }, grp('A', 'git')], sizes: [0, 600] }), ['git']);
+  const p = plan(l, { width: 800, height: 600 });
+  const split = p.splits[0];
+  assert.deepStrictEqual(split.px, [320, 475]);
+  assert.strictEqual(V.sizesAfterDrag(l.root, split, 1, -20), null, 'widening A is impossible: the terminal has no room to give');
+  assert.strictEqual(V.sizesAfterDrag(l.root, split, 1, 0), null, 'a press that never moved');
+  // The stored 600 therefore survives: nothing is committed, and a wider window brings it back.
+  assert.deepStrictEqual(T.fit(l, NO_SEL, { width: 1200, height: 600 }).boxes.find(b => b.kind === 'group').rect.width, 600);
+  assert.ok(V.sizesAfterDrag(l.root, split, 1, 20), 'a real move still answers');
+});
+
+test('F3b: in a split too small for its minimums the divider cannot be dragged: no jump', () => {
+  // col[A, B] in 150 high with proportions 3:1: drawn [109, 36], B already under its 80 minimum.
+  const l = T.normalize(v2({ type: 'split', dir: 'col', kids: [grp('A', 'git'), grp('B', 'vault')], sizes: [3, 1] }), ['git', 'vault']);
+  const p = V.treePlan(T.normalize(v2({ type: 'split', dir: 'row', kids: [{ type: 'term' }, l.root], sizes: [0, 200] }), ['git', 'vault']), NO_SEL, TABS, { width: 800, height: 150 }, { faceSize });
+  const split = p.splits.find(s => s.dir === 'col');
+  assert.ok(split.px.some((x, i) => x < split.min[i]), 'precondition: a kid is under its minimum');
+  const node = l.root;
+  for (const delta of [-10, 0, 10, 40]) assert.strictEqual(V.sizesAfterDrag(node, split, 1, delta), null, `delta ${delta}`);
+});
+
+test('F3b: dragSizes refuses when either neighbour is already under its minimum', () => {
+  assert.strictEqual(V.dragSizes([109, 36], [80, 80], 1, -10), null);
+  assert.strictEqual(V.dragSizes([36, 109], [80, 80], 1, 10), null);
+  assert.deepStrictEqual(V.dragSizes([120, 200], [120, 120], 1, 40), [160, 160], 'at the minimum is not under it');
+});

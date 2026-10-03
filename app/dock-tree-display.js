@@ -76,13 +76,15 @@ function treePlan(layout, selection, tabs, viewport, { faceSize } = {}) {
 /**
  * The sizes of a split with the divider before kid `i` moved by `delta`: that
  * kid and the one before it trade pixels, neither goes under its minimum.
- * Null when anything is junk, so a bad drag changes nothing.
+ * Null when anything is junk, and when a neighbour is ALREADY under its minimum
+ * (a split too small for its kids' minimums): that divider can't be dragged, because
+ * storing the drawn sizes would raise the squeezed kid and jump the divider.
  */
 function dragSizes(px, min, i, delta) {
   if (!Array.isArray(px) || !Array.isArray(min) || px.length !== min.length || px.length < 2) return null;
   if (!px.every(isNumber) || !min.every(isNumber)) return null;
   if (!Number.isInteger(i) || i < 1 || i >= px.length || !isNumber(delta)) return null;
-  // A neighbour already under its minimum (a squeezed one) can't give anything, but may still take.
+  if (px[i - 1] < min[i - 1] || px[i] < min[i]) return null;
   const give = Math.max(0, px[i - 1] - min[i - 1]);
   const take = Math.max(0, px[i] - min[i]);
   const d = Math.round(Math.min(take, Math.max(-give, delta)));
@@ -105,6 +107,8 @@ function sizesAfterDrag(node, split, i, delta) {
   if (!isObject(node) || node.type !== 'split' || !isObject(split)) return null;
   const dragged = dragSizes(split.px, split.min, i, delta);
   if (!dragged) return null;
+  // Nothing moved (no delta, or a neighbour at its minimum): not a choice, so nothing to store.
+  if (dragged.every((v, k) => v === split.px[k])) return null;
   if (!hasTerm(node)) return dragged;
   return dragged.map((v, k) => {
     if (k === i - 1 || k === i || hasTerm(node.kids[k])) return v;
