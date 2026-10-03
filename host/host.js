@@ -2358,13 +2358,15 @@ wss.on('connection', (ws) => {
           refuse('no file was given');
           return;
         }
-        const r = setBackground({ source: asked, cwd: STATE_ROOT });
-        if (!r.ok) {
-          console.log('[host] style refused :', r.reason);
-          refuse(r.reason);
-          return;
-        }
-        announce();
+        // Async (Miguel M1): the copy of a large video must not stall every viewer.
+        setBackground({ source: asked, cwd: STATE_ROOT }).then((r) => {
+          if (!r.ok) {
+            console.log('[host] style refused :', r.reason);
+            refuse(r.reason);
+            return;
+          }
+          announce();
+        }).catch((err) => refuse(`could not set the background: ${err && err.message}`));
         return;
       }
       if (msg.action === 'reset-background') {

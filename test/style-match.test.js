@@ -32,12 +32,12 @@ test('matchLook saves a readable look seeded by the background, and says so', ()
   assert.ok(Math.min(gap, 360 - gap) < 15, 'the app colour is the background\'s hue');
 });
 
-test('matchLook keeps the background and the darkness, like a re-roll does', () => {
+test('matchLook keeps the background and the darkness, like a re-roll does', async () => {
   const cwd = tmpDir('cc-match-bg-');
   const src = tmpDir('cc-match-src-');
   const png = path.join(src, 'p.png');
   fs.writeFileSync(png, 'png-bytes');
-  setBackground({ source: png, cwd });
+  await setBackground({ source: png, cwd });
   setLook({ cwd, patch: { darkness: 0.8 } });
   assert.strictEqual(matchLook({ cwd, seeds: ['#2a5a8a'], rng: mulberry32(1) }).ok, true);
   assert.strictEqual(readLook(cwd).darkness, 0.8);

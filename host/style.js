@@ -346,8 +346,17 @@ function tryUnlink(fsImpl, file) {
  * once look.json is written are the .bak and the older copies removed. If
  * the look.json write fails, the new copy is removed and the .bak restored,
  * so the result is either "new background, recorded" or "exactly as before".
+ *
+ * ASYNC for the copy only (Miguel M1, PR #91): a 100MB video copied with
+ * copyFileSync froze the host -- every viewer, the terminal -- for as long as
+ * the disk took. The copy goes to a temp name unique to THIS call, and
+ * everything after it (re-reading the look, setting the old copy aside,
+ * renaming, recording) runs with no await in between, so another action that
+ * lands during the copy is seen, not overwritten.
  */
-function setBackground({ source, cwd, fsImpl = fs } = {}) {
+let copySeq = 0;
+
+async function setBackground({ source, cwd, fsImpl = fs } = {}) {
   let stat;
   try {
     stat = fsImpl.statSync(source);
@@ -361,17 +370,29 @@ function setBackground({ source, cwd, fsImpl = fs } = {}) {
   const plan = planBackgroundChoice({ source, cwd, size: stat.size, head });
   if (!plan.ok) return plan;
 
-  const state = readLookState(cwd, fsImpl);
-  const refused = refusalFor(state, cwd);
-  if (refused) return { ok: false, reason: refused };
+  // Checked before the copy too: a refused folder never costs a 100MB copy.
+  const early = refusalFor(readLookState(cwd, fsImpl), cwd);
+  if (early) return { ok: false, reason: early };
 
-  const rename = { rename: fsImpl.renameSync };
-  const temp = `${plan.dest}.tmp${process.pid}`;
-  const bak = `${plan.dest}.bak${process.pid}`;
-  let setAside = false;
+  const seq = ++copySeq;
+  const temp = `${plan.dest}.tmp${process.pid}-${seq}`;
+  const bak = `${plan.dest}.bak${process.pid}-${seq}`;
   try {
     ensureLookDir(cwd, fsImpl);
-    fsImpl.copyFileSync(source, temp);
+    await fsImpl.promises.copyFile(source, temp);
+  } catch (err) {
+    tryUnlink(fsImpl, temp);
+    return { ok: false, reason: `could not copy the file: ${err.message}` };
+  }
+
+  // From here to the return, nothing awaits.
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) { tryUnlink(fsImpl, temp); return { ok: false, reason: refused }; }
+
+  const rename = { rename: fsImpl.renameSync };
+  let setAside = false;
+  try {
     if (fsImpl.existsSync(plan.dest)) {
       renameWithRetry(plan.dest, bak, rename);
       setAside = true;
