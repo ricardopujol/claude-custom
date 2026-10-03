@@ -9,6 +9,8 @@
  *               virtual space that isn't on screen
  *       breaks  offsets in text where two rows met: extra places a path may end
  *               (app/file-path-parse.js)
+ *   rowSpan(b, y)              -> [from, to) of text that buffer row y covers, or null
+ *   linkRange(b, start, end)   -> xterm's 1-based, end-inclusive range, or null
  *
  * MEASURED, not assumed (verify/probe-file-link-rows.js, 2026-10-02): Claude
  * Code draws through Ink, which breaks rows ITSELF. xterm's isWrapped is noise
@@ -90,7 +92,32 @@ function block(getRow, y, cols, { maxRows = 8 } = {}) {
   return { text, cellAt, breaks };
 }
 
-const api = { block };
+// The text offsets [from, to) one buffer row covers in a block, or null.
+function rowSpan(b, y) {
+  if (!b || !Array.isArray(b.cellAt)) return null;
+  let from = -1, to = -1;
+  b.cellAt.forEach((c, i) => {
+    if (c && c.y === y) { if (from === -1) from = i; to = i + 1; }
+  });
+  return from === -1 ? null : [from, to];
+}
+
+// Text offsets [start, end) -> xterm's IBufferRange: 1-based, end inclusive,
+// over the first and last REAL cells (a virtual space maps to none). Null
+// when the range holds no real cell.
+function linkRange(b, start, end) {
+  if (!b || !Array.isArray(b.cellAt)) return null;
+  let a = null, z = null;
+  for (let i = Math.max(0, start); i < Math.min(end, b.cellAt.length); i++) {
+    const c = b.cellAt[i];
+    if (!c) continue;
+    if (!a) a = c;
+    z = c;
+  }
+  return a ? { start: { x: a.x + 1, y: a.y + 1 }, end: { x: z.x + 1, y: z.y + 1 } } : null;
+}
+
+const api = { block, rowSpan, linkRange };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

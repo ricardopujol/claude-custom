@@ -3,7 +3,7 @@
  * Where a local file path sits in a line of terminal text (#37). It OFFERS
  * candidates; it never decides one exists -- main does (app/file-link.js).
  *
- *   findCandidates(text, breaks = [])
+ *   findCandidates(text, breaks = [], { within: [from, to) } = {})
  *       -> [{ start, options: [{ end, path, line, col }] }]   sorted by start
  *       Each candidate is one place a path may start; its options are the
  *       places it may end, longest first. A path with spaces in prose has no
@@ -109,7 +109,10 @@ function urlSpans(text) {
 const REL_AT = /^(?:\.{1,2}[\\/])?[\w.\-]+(?:[\\/][\w.\-]+)*/;
 const ABS_AT = /^[A-Za-z]:[\\/][^\\/\s<>:"|?*`]/;
 
-function findCandidates(text, breaks = []) {
+// `within: [from, to)`: keep only candidates that touch that span of text
+// (the hovered row) BEFORE the cap, so a dense block can't push the hovered
+// row's paths past it (PR #92 Miguel I2).
+function findCandidates(text, breaks = [], { within } = {}) {
   if (typeof text !== 'string' || text === '') return [];
   const bs = Array.isArray(breaks) ? breaks.filter(b => Number.isInteger(b) && b >= 0 && b < text.length) : [];
   const urls = urlSpans(text);
@@ -133,7 +136,9 @@ function findCandidates(text, breaks = []) {
     if (m) add(b, relativeAt(text, b, m[0], bs));
   }
   out.sort((a, b) => a.start - b.start);
-  return out.slice(0, MAX_CANDIDATES);
+  const span = Array.isArray(within) && within.length === 2 && within.every(Number.isInteger) ? within : null;
+  const touching = span ? out.filter(c => c.start < span[1] && c.options[0].end > span[0]) : out;
+  return touching.slice(0, MAX_CANDIDATES);
 }
 
 function pickLinks(candidates, answers) {

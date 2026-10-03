@@ -126,3 +126,36 @@ test('PROPERTY: word-wrapped prose joins back to the words with single spaces', 
       return b.text === MARK + words.join(' ') && b.breaks.length === rows.length - 1;
     }));
 });
+
+// --- PR #92 Miguel I5: the range math, pure and tested ------------------------
+const { rowSpan, linkRange } = require('../app/terminal-rows');
+
+test('rowSpan: the text offsets one buffer row covers, virtual spaces excluded', () => {
+  const b = block(buffer(['● C:\\Reaper   ', '  Projects\\x  ']), 0, 14);
+  assert.deepStrictEqual(rowSpan(b, 0), [0, 11]);
+  assert.deepStrictEqual(rowSpan(b, 1), [12, b.text.length]);
+  assert.strictEqual(rowSpan(b, 5), null);
+  assert.strictEqual(rowSpan(null, 0), null);
+});
+
+test('linkRange: 1-based, end inclusive, across rows, skipping virtual spaces', () => {
+  const b = block(buffer(['● C:\\Reaper   ', '  Projects\\x  ']), 0, 14);
+  const start = b.text.indexOf('C:'), end = b.text.length;
+  assert.deepStrictEqual(linkRange(b, start, end), { start: { x: 3, y: 1 }, end: { x: 12, y: 2 } });
+  // a range that is only a virtual space has no cells
+  assert.strictEqual(linkRange(b, 11, 12), null);
+  assert.strictEqual(linkRange(b, 5, 5), null);
+  assert.strictEqual(linkRange(null, 0, 1), null);
+});
+
+test('PROPERTY: linkRange covers exactly the cells of its first and last real characters', () => {
+  fc.assert(fc.property(fc.stringMatching(/^[!-~]{1,120}$/), fc.integer({ min: 8, max: 40 }),
+    fc.nat(), fc.nat(), (p, cols, a, z) => {
+      const rows = inkWrap([p], cols);
+      const b = block(buffer(rows), 0, cols, { maxRows: 64 });
+      const s = 2 + (a % p.length), e = s + 1 + (z % (b.text.length - s));
+      const r = linkRange(b, s, e);
+      const first = b.cellAt[s], last = b.cellAt[e - 1];
+      return r.start.x === first.x + 1 && r.start.y === first.y + 1 && r.end.x === last.x + 1 && r.end.y === last.y + 1;
+    }));
+});

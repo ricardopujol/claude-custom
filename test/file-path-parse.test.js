@@ -174,3 +174,18 @@ test('PR #92 Miguel S6: a path that starts right at a row break is found (the ro
   // without the break, a drive glued to a word is still not a start
   assert.ok(!findCandidates(text).some(x => x.start === 12));
 });
+
+test('PR #92 Miguel I2: the cap applies AFTER keeping only what touches the hovered span', () => {
+  const B = String.fromCharCode(92);
+  const text = Array.from({ length: 34 }, (_, i) => `C:${B}d${B}f${i}.txt`).join(' ');
+  assert.strictEqual(findCandidates(text).length, 32, 'unfiltered, the last two are cut');
+  const last = text.lastIndexOf('C:');
+  const kept = findCandidates(text, [], { within: [last, text.length] });
+  assert.ok(kept.some(c => c.start === last), 'the hovered one survives');
+  assert.ok(kept.every(c => c.start < text.length && c.options[0].end > last));
+  // a candidate that starts before the span but runs into it is kept
+  const long = findCandidates('C:\\a b\\c.txt', [], { within: [6, 7] });
+  assert.strictEqual(long.length >= 1 && long[0].start, 0);
+  // a bad span is ignored, not thrown on
+  assert.strictEqual(findCandidates(text, [], { within: 'x' }).length, 32);
+});

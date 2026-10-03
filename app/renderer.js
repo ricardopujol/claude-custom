@@ -257,31 +257,31 @@ function bufferRow(y) {
 }
 term.registerLinkProvider({
   provideLinks(lineNumber, callback) {
-    if (!window.harness || typeof window.harness.checkPaths !== 'function') { callback(undefined); return; }
-    const b = terminalRows.block(bufferRow, lineNumber - 1, term.cols);
-    const cands = filePathParse.findCandidates(b.text, b.breaks);
-    if (cands.length === 0) { callback(undefined); return; }
-    Promise.resolve(window.harness.checkPaths(cands.map(c => c.options.map(o => o.path)))).then((answers) => {
-      const links = filePathParse.pickLinks(cands, answers || [])
-        .map(l => toXtermLink(b, l))
-        .filter(l => l && l.range.start.y <= lineNumber && l.range.end.y >= lineNumber);
-      callback(links.length ? links : undefined);
-    }, () => callback(undefined));
+    try {
+      if (!window.harness || typeof window.harness.checkPaths !== 'function') { callback(undefined); return; }
+      const b = terminalRows.block(bufferRow, lineNumber - 1, term.cols);
+      // Only what touches the hovered row is asked about (PR #92 Miguel I2).
+      const cands = filePathParse.findCandidates(b.text, b.breaks, { within: terminalRows.rowSpan(b, lineNumber - 1) });
+      if (cands.length === 0) { callback(undefined); return; }
+      Promise.resolve(window.harness.checkPaths(cands.map(c => c.options.map(o => o.path)))).then((answers) => {
+        const links = filePathParse.pickLinks(cands, answers || [])
+          .map(l => toXtermLink(b, l))
+          .filter(l => l && l.range.start.y <= lineNumber && l.range.end.y >= lineNumber);
+        callback(links.length ? links : undefined);
+      }, () => callback(undefined));
+    } catch (err) {
+      console.error('[file-links] provideLinks threw', err);
+      callback(undefined);
+    }
   },
 });
-// A picked link -> xterm's ILink: 1-based cells, end inclusive. Virtual spaces
-// (a row break Ink dropped) map to no cell, so the range runs over real cells.
+// A picked link -> xterm's ILink (the range math is terminalRows.linkRange,
+// tested on its own: 1-based, end inclusive, over real cells only).
 function toXtermLink(b, { start, end, answer }) {
-  let a = null, z = null;
-  for (let i = start; i < end; i++) {
-    const c = b.cellAt[i];
-    if (!c) continue;
-    if (!a) a = c;
-    z = c;
-  }
-  if (!a || !answer || typeof answer.path !== 'string') return null;
+  const range = terminalRows.linkRange(b, start, end);
+  if (!range || !answer || typeof answer.path !== 'string') return null;
   return {
-    range: { start: { x: a.x + 1, y: a.y + 1 }, end: { x: z.x + 1, y: z.y + 1 } },
+    range,
     text: b.text.slice(start, end),
     activate: (event) => openFileLink(event, answer.path),
     hover: () => showLinkTarget(linkClick.fileTargetText(answer)),

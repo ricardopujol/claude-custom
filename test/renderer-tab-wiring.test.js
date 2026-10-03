@@ -195,4 +195,9 @@ test('#37: a file-link provider asks main, and a click goes through shouldOpen t
   assert.match(body, /window\.harness\.openPath\(p\)/);
   assert.match(body, /flashLinkTarget\(linkClick\.fileRefusedText\(/);
   assert.match(strip(fnBody('toXtermLink')), /showLinkTarget\(linkClick\.fileTargetText\(/);
+  // PR #92 Miguel I2/I5: only the hovered row's candidates, and the range math is the tested one.
+  assert.match(s, /filePathParse\.findCandidates\(b\.text, b\.breaks, \{ within: terminalRows\.rowSpan\(b, lineNumber - 1\) \}\)/);
+  assert.match(strip(fnBody('toXtermLink')), /const range = terminalRows\.linkRange\(b, start, end\);/);
+  // Miguel S4: a throw on a hover answers "no links", never an unhandled error.
+  assert.match(s, /provideLinks\(lineNumber, callback\) \{\s*try \{/);
 });
