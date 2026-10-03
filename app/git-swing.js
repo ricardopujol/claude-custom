@@ -93,6 +93,26 @@ function grown(prev, next) {
   return out;
 }
 
+/**
+ * The names of the LIVE branches: a branch whose worktree tab is working (`workingFolders`, the folders
+ * of the tabs whose session reported working), or whose spend was measured to grow while that still
+ * shows (`sparksActive`). Never the other way round: quiet is not live.
+ */
+function liveSet(branches, workingFolders, grownNames, sparksActive) {
+  const out = new Set();
+  for (const b of Array.isArray(branches) ? branches : []) {
+    const working = typeof b.folder === 'string' && b.folder !== '' && !!workingFolders && workingFolders.has(b.folder);
+    const growing = sparksActive === true && !!grownNames && grownNames.has(b.name);
+    if (working || growing) out.add(b.name);
+  }
+  return out;
+}
+
+/** Who streams sparks: ONLY measured growth, and only while it shows. A working tab alone never does. */
+function sparkNames(grownNames, sparksActive) {
+  return sparksActive === true && grownNames ? new Set(grownNames) : new Set();
+}
+
 /** Are sparks streaming at `nowMs`, given when growth was last measured (null: never)? */
 function sparksOn(since, nowMs) {
   return isNum(since) && nowMs >= since && nowMs < since + SPARK_MS;
@@ -105,7 +125,7 @@ function sparkAt(i, n, nowMs) {
 }
 
 const api = {
-  start, step, angleDeg, breath, breathPhase, rotatePoint, grown, sparksOn, sparkAt,
+  start, step, angleDeg, breath, breathPhase, rotatePoint, grown, liveSet, sparkNames, sparksOn, sparkAt,
   SWING_DEG, PERIOD_S, EASE_S, RESUME_MS, BREATH, SPARK_MS,
 };
 

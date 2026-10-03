@@ -359,12 +359,48 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && shownModules.has('git')) requestGitTree();
 });
 let lastGitTree = null;
+// What the shell knows of each listed worktree's tab (Enhancement #46): [{ folder, open, started, known,
+// working, needsInput }], or null when it couldn't be asked -- unknown, never "idle".
+let lastGitTabs = null;
 function renderGitTree(tree) {
   lastGitTree = tree;
   window.gitRingsDisplay.render(document.getElementById('git-body'), tree, {
+    tabs: lastGitTabs,
     onJump: folder => window.harness.selectFolder(folder),
+    // a PR's page opens in the default browser through main's one gate for links (http/https only)
+    onOpenPr: url => window.harness.openExternal(url),
+    onCopy: async (name) => {
+      const r = await window.harness.writeClipboard(name);
+      if (!r || r.ok !== true) throw new Error((r && r.error) || 'the clipboard refused it');
+    },
+    onRunMerged: async (folder) => {
+      const r = await window.harness.runMerged(folder);
+      requestGitTabs();     // the session is busy now: the drawer should say so
+      return r;
+    },
   });
 }
+// The tabs' states move faster than the tree does (a session starts and stops working), so they're asked
+// for on their own, every couple of seconds while the panel is showing, and with every tree.
+const GIT_TABS_EVERY_MS = 2000;
+let gitTabsAsking = false;
+async function requestGitTabs() {
+  if (gitTabsAsking || !window.harness || !window.harness.tabStates) return;
+  const tree = lastGitTree;
+  if (!tree || !tree.ok) return;
+  gitTabsAsking = true;
+  try {
+    lastGitTabs = await window.harness.tabStates(tree.branches.filter(b => typeof b.folder === 'string' && b.folder).map(b => b.folder));
+  } catch {
+    lastGitTabs = null;
+  } finally {
+    gitTabsAsking = false;
+  }
+  if (lastGitTree === tree) renderGitTree(tree);
+}
+setInterval(() => {
+  if (shownModules.has('git') && document.visibilityState === 'visible') requestGitTabs();
+}, GIT_TABS_EVERY_MS);
 
 // --- the project picker ------------------------------------------------------
 // Asked for on demand for the same reason the fog is: the host reads every
@@ -1067,7 +1103,20 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           cardShown: !!document.querySelector('.git-card') && !document.querySelector('.git-card').hidden,
           cardText: (document.querySelector('.git-card') || {}).textContent || '',
           focused: document.activeElement && document.activeElement.getAttribute
-            ? (document.activeElement.getAttribute('data-name') || (document.activeElement.classList && document.activeElement.classList.contains('git-card-jump') ? 'jump' : null)) : null,
+            ? (document.activeElement.getAttribute('data-name')
+              || (document.activeElement.classList && document.activeElement.classList.contains('git-act')
+                ? (document.activeElement.dataset.act === 'jump' ? 'jump' : 'act:' + document.activeElement.dataset.act) : null)) : null,
+          // Enhancement #46: the drawer, its layout, its actions (enabled or not, and why), its answer
+          drawerShown: !!document.querySelector('.git-drawer') && !document.querySelector('.git-drawer').hidden,
+          drawerText: (document.querySelector('.git-drawer') || {}).textContent || '',
+          drawerRect: document.querySelector('.git-drawer') ? rectOf(document.querySelector('.git-drawer')) : null,
+          beside: document.getElementById('git-dial').classList.contains('beside'),
+          acts: [...document.querySelectorAll('.git-drawer .git-act')].map(b => ({ act: b.dataset.act, label: b.textContent,
+            disabled: b.getAttribute('aria-disabled') === 'true', title: b.title,
+            why: ((b.parentElement && b.parentElement.querySelector('.git-act-why')) || {}).textContent || null })),
+          reviews: [...document.querySelectorAll('.git-drawer .git-drawer-reviews > *')].map(x => x.textContent),
+          people: [...document.querySelectorAll('.git-drawer .git-drawer-who .p')].map(x => x.textContent),
+          said: (document.querySelector('.git-drawer .git-drawer-said') || {}).textContent || '',
           boldInPanel: body.querySelectorAll('b:not(.git-foot b)').length,
           hubTextShown: !!body.querySelector('.git-hub-name') && getComputedStyle(body.querySelector('.git-hub-name')).display !== 'none',
         });
@@ -1100,15 +1149,37 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         // mouseover, not mouseenter: the dial finds its spoke by delegation, and mouseenter doesn't bubble
         g.dispatchEvent(new MouseEvent(req.action === 'gitHover' ? 'mouseover' : 'click', at));
         const card = document.querySelector('.git-card');
+        const drawer = document.querySelector('.git-drawer');
+        const jumpBtn = drawer && drawer.querySelector('.git-act[data-act="jump"]');
         return JSON.stringify({ ok: true, hidden: card.hidden, text: card.textContent, card: rectOf(card),
-          panel: rectOf(document.getElementById('git-body')), jump: !!card.querySelector('.git-card-jump') });
+          panel: rectOf(document.getElementById('git-body')),
+          drawerShown: !!drawer && !drawer.hidden, drawerText: drawer ? drawer.textContent : '',
+          jump: !!jumpBtn && jumpBtn.getAttribute('aria-disabled') === 'false' });
       }
       case 'gitJump': {
-        const btn = document.querySelector('.git-card-jump');
+        const btn = document.querySelector('.git-drawer .git-act[data-act="jump"]');
         if (!btn) return JSON.stringify({ ok: false, error: 'no jump button' });
         btn.click();
         return JSON.stringify({ ok: true });
       }
+      // a drawer action, clicked as a pointer would (a disabled one does nothing, and says why beside it)
+      case 'gitAct': {
+        const btn = document.querySelector('.git-drawer .git-act[data-act="' + String(a.act) + '"]');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no action ' + a.act });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
+      // the swing's state; `pointer` puts the pointer over the dial ('in') or takes it away ('out')
+      case 'gitMotion': {
+        const dial = document.getElementById('git-dial');
+        if (a.pointer === 'in') dial.dispatchEvent(new Event('pointerenter'));
+        if (a.pointer === 'out') dial.dispatchEvent(new Event('pointerleave'));
+        return JSON.stringify({ ok: true, ...window.gitRingsDisplay.motionState(dial) });
+      }
+      // what the shell says of each worktree's tab (asked now, not at the next poll)
+      case 'gitTabs': return requestGitTabs().then(() => JSON.stringify({ ok: true, tabs: lastGitTabs }));
+      // this tab's own terminal screen: what its session's pty has shown
+      case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
       // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
       // dragged button is gone and no dragend will ever come; the drag must
       // already be over when the drop returns.
@@ -3957,6 +4028,7 @@ function handleControl(msg) {
   }
   if (msg.type === 'git-tree') {
     renderGitTree(msg);
+    requestGitTabs();
     return;
   }
   if (msg.type === 'bugvault') {
