@@ -119,6 +119,39 @@ test('sizesAfterDrag is null for a drag that is not one', () => {
   assert.strictEqual(V.sizesAfterDrag(null, { px: [200, 100], min: [160, 80] }, 1, 5), null);
 });
 
+// --- afterTreeGet: the stores' answers -> what the page does -------------------------
+
+const OK = { status: 'ok', layout: { version: 2 } };
+const MISSING = { status: 'missing', layout: null };
+
+test('afterTreeGet: a readable tree is used, whatever the L1 store says', () => {
+  assert.strictEqual(V.afterTreeGet(OK, MISSING), 'use');
+  assert.strictEqual(V.afterTreeGet(OK, { status: 'corrupt', layout: null }), 'use');
+  assert.strictEqual(V.afterTreeGet(OK, undefined), 'use');
+});
+
+test('afterTreeGet: no tree yet migrates from L1 when there is one, else from the pre-L1 settings', () => {
+  assert.strictEqual(V.afterTreeGet(MISSING, { status: 'ok', layout: { zones: {} } }), 'migrate-v1');
+  assert.strictEqual(V.afterTreeGet(MISSING, MISSING), 'migrate-legacy');
+});
+
+test('afterTreeGet: an unreadable or corrupt store, on either side, is never migrated over', () => {
+  for (const status of ['unreadable', 'corrupt']) {
+    const bad = { status, layout: null };
+    assert.strictEqual(V.afterTreeGet(bad, MISSING), 'keep', `tree ${status}`);
+    assert.strictEqual(V.afterTreeGet(bad, OK), 'keep', `tree ${status}, L1 fine`);
+    assert.strictEqual(V.afterTreeGet(MISSING, bad), 'keep', `L1 ${status}`);
+  }
+});
+
+test('afterTreeGet: junk answers keep', () => {
+  for (const junk of [null, undefined, 7, 'x', [], { status: 'ok', layout: null }, { status: 'ok', layout: [] }, {}]) {
+    assert.strictEqual(V.afterTreeGet(junk, MISSING), 'keep', JSON.stringify(junk));
+  }
+  assert.strictEqual(V.afterTreeGet(MISSING, null), 'keep', 'the L1 answer never arrived');
+  assert.strictEqual(V.afterTreeGet(MISSING, { status: 'ok', layout: null }), 'keep');
+});
+
 // --- menuRows -------------------------------------------------------------------
 
 test('menuRows lists every module in registry order, hidden ones included, with whether it is shown', () => {

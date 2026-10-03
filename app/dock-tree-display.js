@@ -122,6 +122,26 @@ function menuRows(layout, tabs) {
   return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id) }));
 }
 
+/**
+ * The stores' answers to `layout-tree:get` and `layout:get` -> what the page
+ * does. Only a MISSING tree file means "first launch: migrate and save"; an
+ * unreadable or corrupt one (antivirus holding it, EBUSY) must never be
+ * overwritten by a migration (L1's PR #82 Dexter F3): the page keeps the default
+ * it drew and saves nothing until the user changes something.
+ *   'use'            the tree is stored and readable
+ *   'migrate-v1'     no tree yet, an L1 layout is stored
+ *   'migrate-legacy' neither: read the pre-L1 per-window settings
+ *   'keep'           anything unreadable on either side
+ */
+function afterTreeGet(treeAnswer, v1Answer) {
+  if (!isObject(treeAnswer)) return 'keep';
+  if (treeAnswer.status === 'ok') return isObject(treeAnswer.layout) ? 'use' : 'keep';
+  if (treeAnswer.status !== 'missing') return 'keep';
+  if (!isObject(v1Answer)) return 'keep';
+  if (v1Answer.status === 'ok') return isObject(v1Answer.layout) ? 'migrate-v1' : 'keep';
+  return v1Answer.status === 'missing' ? 'migrate-legacy' : 'keep';
+}
+
 // --- the DOM half ---------------------------------------------------------------
 
 function setRect(el, r) {
@@ -249,7 +269,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, dragSizes, sizesAfterDrag, menuRows, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, dragSizes, sizesAfterDrag, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

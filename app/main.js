@@ -27,7 +27,7 @@ const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
-const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
+const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
@@ -1013,6 +1013,14 @@ function registerIpc() {
   watchLayout({
     store: uiStore, sync: layoutSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${LAYOUT_KEY}.json`),
+  });
+  // The split-tree layout (dockable panels D1) under its own key. The pair above stays: an older
+  // window still writes it, and it is read once to migrate into the tree, never written by this build.
+  const treeSync = {};
+  registerLayoutHandlers({ ipcMain, store: uiStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
+  watchLayout({
+    store: uiStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${TREE_NAMES.key}.json`),
   });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is

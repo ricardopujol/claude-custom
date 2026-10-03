@@ -10,7 +10,7 @@ const assert = require('node:assert');
 
 const {
   readLayout, registerLayoutHandlers, watchLayout, LAYOUT_KEY, GET_CHANNEL, SET_CHANNEL, PUSH_CHANNEL,
-  MAX_LAYOUT_BYTES,
+  MAX_LAYOUT_BYTES, TREE_NAMES,
 } = require('../app/layout-bridge');
 
 function fakeIpc() {
@@ -161,4 +161,69 @@ test('stop() stops watching', () => {
   assert.ok(w.isWatching());
   w.stop();
   assert.ok(!w.isWatching());
+});
+
+// --- the tree layout: the same bridge under its own names (dockable panels D1) ----
+
+test('TREE_NAMES is its own key and its own channels, none of them the L1 ones', () => {
+  assert.deepStrictEqual(TREE_NAMES, { key: 'layout-tree', get: 'layout-tree:get', set: 'layout-tree:set', push: 'layout-tree' });
+  assert.notStrictEqual(TREE_NAMES.key, LAYOUT_KEY);
+  assert.notStrictEqual(TREE_NAMES.get, GET_CHANNEL);
+  assert.notStrictEqual(TREE_NAMES.set, SET_CHANNEL);
+  assert.notStrictEqual(TREE_NAMES.push, PUSH_CHANNEL);
+});
+
+function treeSetup(store = fakeStore()) {
+  const sent = [];
+  const ipcMain = fakeIpc();
+  const sync = {};
+  registerLayoutHandlers({
+    ipcMain, store, sync, names: TREE_NAMES, isSender: s => s === VIEW, send: (ch, v) => sent.push([ch, v]),
+  });
+  const call = (ch, ...args) => ipcMain.handlers.get(ch)({ sender: VIEW }, ...args);
+  return { ipcMain, store, sent, call, sync };
+}
+const TREE = { version: 2, root: { type: 'term' }, floats: [], hidden: [], seat: {} };
+
+test('named for the tree, the handlers sit on the tree channels and not on the L1 ones', () => {
+  const { ipcMain } = treeSetup();
+  assert.deepStrictEqual([...ipcMain.handlers.keys()].sort(), [TREE_NAMES.get, TREE_NAMES.set].sort());
+});
+
+test('a set on the tree channel stores under the tree key, pushes on the tree channel, and never touches layout-global', async () => {
+  const { call, store, sent, sync } = treeSetup(fakeStore({ [LAYOUT_KEY]: LAYOUT }));
+  assert.deepStrictEqual(await call(TREE_NAMES.set, TREE), TREE);
+  assert.deepStrictEqual(store.data[TREE_NAMES.key], TREE);
+  assert.deepStrictEqual(store.data[LAYOUT_KEY], LAYOUT, 'the L1 record is byte-for-byte what it was');
+  assert.deepStrictEqual(sent, [[TREE_NAMES.push, TREE]]);
+  assert.strictEqual(sync.last, JSON.stringify(TREE));
+});
+
+test('a get on the tree channel reads the tree key, with the store\'s status', async () => {
+  const { call } = treeSetup(fakeStore({ [LAYOUT_KEY]: LAYOUT }));
+  assert.deepStrictEqual(await call(TREE_NAMES.get), { status: 'missing', layout: null }, 'the L1 record is not the tree');
+  const both = treeSetup(fakeStore({ [LAYOUT_KEY]: LAYOUT, [TREE_NAMES.key]: TREE }));
+  assert.deepStrictEqual(await both.call(TREE_NAMES.get), { status: 'ok', layout: TREE });
+});
+
+test('a corrupt tree file is corrupt, never missing (it must not be migrated over)', async () => {
+  const { call } = treeSetup(fakeStore({ [TREE_NAMES.key]: LAYOUT }, { [TREE_NAMES.key]: { status: 'corrupt', value: null } }));
+  assert.deepStrictEqual(await call(TREE_NAMES.get), { status: 'corrupt', layout: null });
+});
+
+test('a tree watcher follows the tree key and pushes on the tree channel; a change to layout-global says nothing to it', () => {
+  const store = fakeStore({ [TREE_NAMES.key]: TREE, [LAYOUT_KEY]: LAYOUT });
+  const sent = [];
+  let listener = null;
+  watchLayout({
+    store, file: 'layout-tree.json', sync: {}, names: TREE_NAMES, send: (ch, v) => sent.push([ch, v]),
+    watchFile: (_f, _o, fn) => { listener = fn; }, unwatchFile: () => {},
+  });
+  store.data[LAYOUT_KEY] = { version: 1, zones: { left: ['agents'] } };
+  listener();
+  assert.deepStrictEqual(sent, []);
+  const next = { ...TREE, hidden: ['fog'] };
+  store.data[TREE_NAMES.key] = next;
+  listener();
+  assert.deepStrictEqual(sent, [[TREE_NAMES.push, next]]);
 });
