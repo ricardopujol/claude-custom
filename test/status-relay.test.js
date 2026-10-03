@@ -188,7 +188,11 @@ test("no host listening: the user's status line still renders", async () => {
   // wall-clock bound here really measured, and it blew 5 s under full-suite
   // load. "Promptly" is asserted deterministically in the next test instead.
   const echo = `"${process.execPath}" -e "process.stdout.write('still here')"`;
+  const t0 = Date.now();
   const res = await runRelay(['--pipe', pipeName(), '--then', b64(echo)], DOC);
+  // A catastrophic-stall tripwire only (a relay awaiting something it shouldn't);
+  // process start-up under load is well inside it.
+  assert.ok(Date.now() - t0 < 30000, `the relay took ${Date.now() - t0} ms with no host listening`);
   assert.strictEqual(res.out, 'still here');
   assert.strictEqual(res.code, 0);
 });
