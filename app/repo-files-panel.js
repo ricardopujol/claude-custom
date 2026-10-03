@@ -103,6 +103,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
 
   // The host's `changed` push.
   function onChanged() { refresher.onChanged(); }
+  function onOverlayReady() { refresher.onOverlayReady(); }
 
   // ---- drawing ----
 
@@ -376,7 +377,7 @@ function create({ doc, requester, harness, storage, onOpen, onMention, onSaid, i
   }
 
   return {
-    show, onChanged, setSelected, probe, say,
+    show, onChanged, onOverlayReady, setSelected, probe, say,
     refresh: () => { loadDir(''); refresher.askOverlay({ urgent: true }); },
     onOverlay: (fn) => { onOverlay = fn; },
     overlay: () => state.overlay,

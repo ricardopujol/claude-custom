@@ -40,6 +40,7 @@ function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clea
   let seq = 0;
   const pending = new Map();
   const changed = [];
+  const overlayReady = [];
 
   function settle(id, reply) {
     const p = pending.get(id);
@@ -70,6 +71,11 @@ function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clea
       for (const fn of changed) { try { fn(); } catch (err) { console.error('[repo] changed listener threw', err); } }
       return true;
     }
+    // the host re-read the overlay (a tool_result landed after the file change) and it differs (PR #95 R2-1)
+    if (msg.action === 'overlay-ready' && msg.seq === undefined) {
+      for (const fn of overlayReady) { try { fn(); } catch (err) { console.error('[repo] overlay-ready listener threw', err); } }
+      return true;
+    }
     return settle(msg.seq, msg);
   }
 
@@ -83,6 +89,7 @@ function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clea
   return {
     request, onMessage, failAll,
     onChanged: (fn) => { changed.push(fn); },
+    onOverlayReady: (fn) => { overlayReady.push(fn); },
     setControls: (list) => { controls = list; },
   };
 }

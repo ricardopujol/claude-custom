@@ -36,23 +36,33 @@ const MAX_DIR = 4096;
 // One folder's reply is capped here, not only at draw time (PR #95 Miguel M6): a 50k-file folder was serialised
 // whole over the socket on every `changed`. Folders sort first, so the cap drops files from the end.
 const MAX_LIST_ENTRIES = 3000;
+// A tool_result lands about half a second AFTER the file changes (the PostToolUse hooks run first), in a
+// transcript outside the watched worktree: no event announces it. So a read that saw a recent edit with no result
+// yet re-reads after SETTLE_MS, up to MAX_SETTLES times, and pushes `overlay-ready` when the answer changed.
+const SETTLE_MS = 1500;
+const MAX_SETTLES = 6;
 const validSeq = (s) => (Number.isSafeInteger(s) || (typeof s === 'string' && s.length <= 64) ? s : undefined);
 
 function createRepoService({
   root, projectsDir, readFog: readFogFn = readFog, index = createIndex(root),
   guard = guardPath, read = readRepoFile, stat = statRepoFile, diff = diffFor, modified = gitModified,
   watch = watchRepo, announce = () => {}, listCap = MAX_LIST_ENTRIES,
+  setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; }, clearTimer = clearTimeout,
 } = {}) {
   let watcher = null;
   let loaded = null;
   let overlayInFlight = null;
   let changes = 0;           // worktree changes seen: an overlay read begun before one may not include it
+  let settleTimer = null;
+  let settles = 0;           // consecutive re-reads for unanswered edits; a worktree change or a clean read resets it
+  let lastOverlay = null;    // the last answer, as JSON, to tell whether a re-read changed anything
   let overlayAt = 0;         // the change count the in-flight overlay read began at
 
   function ensureWatching() {
     if (watcher) return;
     watcher = watch(root, async () => {
       changes += 1;
+      settles = 0;
       try {
         await index.refresh({ again: true });
         announce({ type: 'repo', action: 'changed' });
@@ -75,6 +85,24 @@ function createRepoService({
     return loaded;
   };
 
+  // `pending` recent edits had no result yet when this read ran: look again shortly (R2-1).
+  function scheduleSettle(pending, out) {
+    const now = JSON.stringify([out.files, out.dirs]);
+    lastOverlay = now;
+    if (!(pending > 0)) {
+      settles = 0;
+      return;
+    }
+    if (settleTimer !== null || settles >= MAX_SETTLES) return;
+    settles += 1;
+    settleTimer = setTimer(async () => {
+      settleTimer = null;
+      const before = lastOverlay;
+      await readOverlay();
+      if (lastOverlay !== before) announce({ type: 'repo', action: 'overlay-ready' });
+    }, SETTLE_MS);
+  }
+
   function readOverlay() {
     // PR #95 Dexter D4: an ask that comes after a change must not be answered from a read that began before
     // it (a cold read of the transcripts takes seconds): it waits for that read, then reads again.
@@ -87,10 +115,12 @@ function createRepoService({
           const st = fog.status || {};
           // the listing spells the files, so a transcript's other spelling of one is the same row
           await ensureLoaded();
-          return {
+          const out = {
             ok: true, ...rollUp(fog.files, { resolve: index.resolve }),
             status: { transcriptsFound: st.transcriptsFound, transcriptErrors: st.transcriptErrors, transcriptsMissing: st.transcriptsMissing },
           };
+          scheduleSettle(st.pendingEdits, out);
+          return out;
         } catch (err) {
           return { ok: false, error: `the overlay could not be read: ${(err && err.message) || err}` };
         } finally {
@@ -167,6 +197,7 @@ function createRepoService({
 
   function close() {
     if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
+    if (settleTimer !== null) { clearTimer(settleTimer); settleTimer = null; }
   }
 
   return { handle, close };

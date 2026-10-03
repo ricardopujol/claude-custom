@@ -49,6 +49,7 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
   panel.onOverlay((overlay) => reader.setOverlay(overlay && overlay.ok ? overlay : null));
 
   requester.onChanged(() => { panel.onChanged(); reader.onRepoChanged(); });
+  requester.onOverlayReady(() => panel.onOverlayReady());
 
   return {
     // The socket opens BEFORE the host says hello, so a tab that was showing Files at load asked once with no

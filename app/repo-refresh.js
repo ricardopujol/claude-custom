@@ -28,6 +28,7 @@ function createRefresher({ reloadTree, loadOverlay, isShown, now = Date.now,
   setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout } = {}) {
   let busy = false;
   let dirty = false;
+  let dirtyUrgent = false;
   let stale = false;
   let lastAt = -Infinity;
   let timer = null;
@@ -36,11 +37,11 @@ function createRefresher({ reloadTree, loadOverlay, isShown, now = Date.now,
     busy = true;
     lastAt = now();
     try { await loadOverlay(); } catch { /* the loader reports its own failures */ } finally { busy = false; }
-    if (dirty) { dirty = false; askOverlay(); }
+    if (dirty) { const urgent = dirtyUrgent; dirty = false; dirtyUrgent = false; askOverlay({ urgent }); }
   }
 
   function askOverlay({ urgent = false } = {}) {
-    if (busy) { dirty = true; return; }
+    if (busy) { dirty = true; dirtyUrgent = dirtyUrgent || urgent; return; }
     const wait = urgent ? 0 : OVERLAY_EVERY_MS - (now() - lastAt);
     if (wait <= 0) {
       if (timer !== null) { clearTimer(timer); timer = null; }
@@ -56,12 +57,19 @@ function createRefresher({ reloadTree, loadOverlay, isShown, now = Date.now,
     askOverlay();
   }
 
+  // The host re-read the overlay and found it changed (a tool_result landed after the file change, R2-1). Not a
+  // poll: the host KNOWS, so it reads at once, interval aside; hidden, it only marks the tab stale.
+  function onOverlayReady() {
+    if (!isShown()) { stale = true; return; }
+    askOverlay({ urgent: true });
+  }
+
   function shown() {
     if (stale) { stale = false; reloadTree(); }
     askOverlay({ urgent: true });
   }
 
-  return { onChanged, shown, askOverlay, isStale: () => stale };
+  return { onChanged, onOverlayReady, shown, askOverlay, isStale: () => stale };
 }
 
 const API = { createRefresher, OVERLAY_EVERY_MS };

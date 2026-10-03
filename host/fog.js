@@ -50,7 +50,12 @@ const TIERS = { EDITED: 'edited', READ: 'read', DARK: 'dark' };
 // Tools that name a file in `file_path`. Grep and Glob take a directory and a
 // pattern rather than a file, so they say "looked around here", not "read
 // this" -- a weaker claim than this map makes, so they are left out.
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+// The file a call is about: NotebookEdit's input says `notebook_path`, not `file_path` (PR #95 Dexter r2).
+const pathOfInput = (input) => (input && (input.file_path || input.notebook_path)) || null;
+// How recent an unanswered edit must be to be worth a re-read: the result is written about half a second after
+// the file changes; an older call with no result died mid-edit and is not chased.
+const PENDING_WINDOW_MS = 60 * 1000;
 const READ_TOOLS = new Set(['Read']);
 
 // A working day. Knowledge of a file you edited this morning is real; the same
@@ -118,7 +123,7 @@ function applyCall(name, input, at, root, touched) {
   const isEdit = EDIT_TOOLS.has(name);
   if (!isEdit && !READ_TOOLS.has(name)) return;
 
-  const filePath = input && input.file_path;
+  const filePath = pathOfInput(input);
   if (!filePath) return;
   const rel = relativeTo(root, filePath);
   if (!rel) return;
@@ -155,7 +160,7 @@ async function parseTranscript(file, root, onParse) {
   const cached = parsedCache.get(file);
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size
       && cached.root === root) {
-    return { entries: cached.entries, ok: true };
+    return { entries: cached.entries, ok: true, pending: cached.pending || [] };
   }
 
   let raw;
@@ -187,10 +192,14 @@ async function parseTranscript(file, root, onParse) {
     if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
   }
   for (const call of collector.calls()) applyCall(call.name, call.input, call.at, root, entries);
+  // unanswered edits on files of THIS worktree, kept with their times: the caller decides which are recent
+  const pending = collector.pending()
+    .filter(c => { const p = pathOfInput(c.input); return p && relativeTo(root, p); })
+    .map(c => ({ at: c.at }));
 
   if (onParse) onParse(file);
-  parsedCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, root, entries });
-  return { entries, ok: true };
+  parsedCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, root, entries, pending });
+  return { entries, ok: true, pending };
 }
 
 // Two entries for the same file from different sessions must merge, not
@@ -233,12 +242,18 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   };
 
   const touched = new Map();
+  const pendingAts = [];
   for (const file of (files || [])) {
     const parsed = await parseTranscript(file, root, onParse);
     if (!parsed.ok) status.transcriptErrors++;
     mergeInto(touched, parsed.entries);
+    if (parsed.pending) pendingAts.push(...parsed.pending.map(p => p.at));
     await yieldToLoop();
   }
+  // How many RECENT edits have no result yet (PR #95 Dexter r2 R2-1): they are not counted, and the repo
+  // browser re-reads shortly to see them answered. A call with no usable time counts as recent.
+  const nowT = now();
+  status.pendingEdits = pendingAts.filter(at => !Number.isFinite(at) || nowT - at < PENDING_WINDOW_MS).length;
 
   // Drop cache entries for transcripts that no longer exist, so a long-running
   // host does not hold parsed data for sessions Claude Code has expired.

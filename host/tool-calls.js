@@ -14,6 +14,7 @@
  *                             (result lines are the bulk of a transcript and hold file contents: only the
  *                             ones that answer a wanted call are worth a JSON.parse)
  *     addResult(entry)        record whether each answered call succeeded
+ *     pending()               the wanted calls with no result yet (PR #95 Dexter r2 R2-1)
  *     calls()                 [{ id, name, input, at, doneAt }] for calls with a successful result, in order
  *                             seen: `at` is when it was requested, `doneAt` when its result arrived (what a
  *                             call that waited at a permission prompt really ran at)
@@ -66,6 +67,11 @@ function createCollector({ wanted } = {}) {
       for (const b of content) {
         if (b && b.type === 'tool_result' && pending.has(b.tool_use_id)) outcome.set(b.tool_use_id, { ok: resultOk(b), doneAt });
       }
+    },
+    // Calls with no result YET: in flight (the result is written after the PostToolUse hooks finish, a moment
+    // after the file changes), or never answered. Never counted; the host re-reads soon to see them answered.
+    pending() {
+      return uses.filter(u => !outcome.has(u.id)).map(u => ({ ...u }));
     },
     calls() {
       return uses.filter(u => outcome.get(u.id) && outcome.get(u.id).ok === true).map(u => ({ ...u, doneAt: outcome.get(u.id).doneAt }));

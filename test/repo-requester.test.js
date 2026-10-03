@@ -152,3 +152,14 @@ test('D7: a dropped socket forgets what the old host accepted: nothing is sent u
   r.request('list', { dir: '' });
   assert.strictEqual(sent.length, 1, 'the new hello re-opens it');
 });
+
+// ---- PR #95 Dexter r2 R2-1: the host pushes `overlay-ready` when a re-read found the overlay changed ----
+
+test('R2-1: an `overlay-ready` push (no seq) goes to its own listener, not to a request and not to `changed`', () => {
+  const { r } = rig();
+  const seen = [];
+  r.onOverlayReady(() => seen.push('overlay'));
+  r.onChanged(() => seen.push('changed'));
+  assert.strictEqual(r.onMessage({ type: 'repo', action: 'overlay-ready' }), true);
+  assert.deepStrictEqual(seen, ['overlay']);
+});

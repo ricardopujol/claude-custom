@@ -112,3 +112,32 @@ test('a throwing overlay load is not a stuck busy flag: the next ask runs', asyn
   r.askOverlay({ urgent: true });
   assert.strictEqual(s.calls, 2);
 });
+
+// ---- PR #95 Dexter r2 R2-1 ----
+
+test('R2-1: the host says the overlay changed (a late tool_result): shown -> an urgent read, ignoring the 5s interval', async () => {
+  const { s, r } = rig();
+  r.askOverlay({ urgent: true }); s.gates[0](); await tick();
+  s.t += 500;                                   // well inside the interval
+  r.onOverlayReady();
+  assert.strictEqual(s.overlay, 2, 'read at once: this is not a poll, the host knows something changed');
+  assert.strictEqual(s.tree, 0, 'the tree is not re-listed for an overlay change');
+});
+
+test('R2-1: hidden -> only marked stale, caught up when shown (no work for a tab nobody sees)', async () => {
+  const { s, r } = rig({ shown: false });
+  r.onOverlayReady();
+  assert.strictEqual(s.overlay, 0);
+  assert.strictEqual(r.isStale(), true);
+  s.shown = true; r.shown();
+  assert.strictEqual(s.overlay, 1);
+});
+
+test('R2-1: an overlay-ready that arrives mid-read is not lost: one follow-up', async () => {
+  const { s, r } = rig();
+  r.askOverlay({ urgent: true });
+  r.onOverlayReady();
+  assert.strictEqual(s.overlay, 1);
+  s.gates[0](); await tick();
+  assert.strictEqual(s.overlay, 2);
+});
