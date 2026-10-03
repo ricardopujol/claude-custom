@@ -77,6 +77,9 @@ function dominantColours(rgba, { count = MAX_COLOURS, minShare = DEFAULT_MIN_SHA
   const lab = [];
   for (let i = 0; i < rgba.length; i += 4) {
     if (!(rgba[i + 3] >= OPAQUE_AT)) continue;
+    // A plain Array can hold anything; a pixel with a channel that isn't a number is no colour
+    // (Dexter D4, PR #91: one NaN made every centroid NaN and the clustering threw).
+    if (!Number.isFinite(rgba[i]) || !Number.isFinite(rgba[i + 1]) || !Number.isFinite(rgba[i + 2])) continue;
     const r = toLinear(rgba[i]);
     const g = toLinear(rgba[i + 1]);
     const b = toLinear(rgba[i + 2]);

@@ -116,3 +116,11 @@ test('PROPERTY: every dominant colour lies inside the picture\'s own colour rang
     }
   }));
 });
+
+test('D4: a pixel with a channel that is not a number is skipped, never thrown on', () => {
+  const { dominantColours } = require('../app/colour-seeds');
+  for (const bad of [[NaN, 0, 0, 255], [undefined, undefined, undefined, 255], [0, Infinity, 0, 255], ['12', 0, 0, 255]]) {
+    assert.deepStrictEqual(dominantColours(bad), [], JSON.stringify(bad));
+  }
+  assert.deepStrictEqual(dominantColours([0, 0, 0, 255, NaN, 0, 0, 255]), [{ hex: '#000000', share: 1 }]);
+});
