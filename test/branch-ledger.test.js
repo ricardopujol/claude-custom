@@ -66,9 +66,10 @@ test('the project root itself counts, as well as anything inside it', () => {
 test('first and last day, and the cwds a branch ran in', () => {
   const r = emptyRecord();
   addLines(r, lines(
-    a('1', 'feat/a', 1, 'C:\\p\\feat-a', '2026-09-21T01:00:00Z'),
-    a('2', 'feat/a', 1, 'c:\\P\\feat-a\\', '2026-09-20T01:00:00Z'),
-    a('3', 'feat/b', 1, 'C:\\p\\dev', '2026-09-22T01:00:00Z')), ROOT);
+    // midday UTC: the same calendar day in every zone from UTC-11 to UTC+11 (days are local, #38)
+    a('1', 'feat/a', 1, 'C:\\p\\feat-a', '2026-09-21T12:00:00Z'),
+    a('2', 'feat/a', 1, 'c:\\P\\feat-a\\', '2026-09-20T12:00:00Z'),
+    a('3', 'feat/b', 1, 'C:\\p\\dev', '2026-09-22T12:00:00Z')), ROOT);
   assert.deepStrictEqual(r.branches['feat/a'], { spend: 4, loose: 0, first: '2026-09-20', last: '2026-09-21', cwds: ['C:\\p\\feat-a'] });
   assert.strictEqual(r.branches['feat/b'].spend, 2);
 });

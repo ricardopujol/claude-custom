@@ -56,6 +56,21 @@ function emptyRecord() {
 const inProject = (cwd, root) => typeof cwd === 'string' && (samePath(cwd, root) || isInside(cwd, root));
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
+const two = n => String(n).padStart(2, '0');
+
+/**
+ * The LOCAL Y-M-D of a transcript line's ISO timestamp, the day git prints for the same instant
+ * (`%ad --date=short`, host/git-history.js). Not the UTC date: near midnight a branch's last day of
+ * work and its merge would land on different days and a week arc would split (backlog #38). Null
+ * for anything that isn't a date string -- absence is never a day (`new Date(null)` is 1970).
+ */
+function localDay(ts) {
+  if (typeof ts !== 'string' || !/^\d{4}-\d\d-\d\d/.test(ts)) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+}
+
 /**
  * Adds the COMPLETE lines of `text` to `rec` (mutated and returned). Whatever follows the last
  * '\n' is a line still being written: it's ignored here, and the caller reads it next time.
@@ -88,7 +103,7 @@ function addLines(rec, text, projectRoot) {
       || putOwn(rec.branches, o.gitBranch, { spend: 0, loose: 0, first: null, last: null, cwds: [] });
     if (loose) b.loose += spendOf(msg.usage);
     else b.spend += spendOf(msg.usage);
-    const day = typeof o.timestamp === 'string' && /^\d{4}-\d\d-\d\d/.test(o.timestamp) ? o.timestamp.slice(0, 10) : null;
+    const day = localDay(o.timestamp);
     if (day) {
       if (!b.first || day < b.first) b.first = day;
       if (!b.last || day > b.last) b.last = day;
@@ -342,6 +357,6 @@ async function saveLedger(file, ledger, { rename = renameWithRetryAsync } = {}) 
 }
 
 module.exports = {
-  addLines, emptyRecord, spendOf, mergeLedgers, totals,
+  addLines, localDay, emptyRecord, spendOf, mergeLedgers, totals,
   emptyLedger, updateLedger, loadLedger, saveLedger,
 };
