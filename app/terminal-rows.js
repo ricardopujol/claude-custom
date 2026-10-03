@@ -67,8 +67,8 @@ function block(getRow, y, cols, { maxRows = 8 } = {}) {
     if (!rows.has(r)) rows.set(r, r < 0 ? null : readRow(getRow, r, cols));
     return rows.get(r);
   };
-  const here = at(y);
-  if (!here || here.blank) return empty;
+  const first = at(y);
+  if (!first || first.blank) return empty;
 
   let top = y, bottom = y;
   while (top > y - maxRows && continues(at(top - 1), at(top))) top--;

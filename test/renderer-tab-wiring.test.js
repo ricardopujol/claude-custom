@@ -163,3 +163,20 @@ test('#37: the bridge asks main which paths exist, and asks it to open one', () 
   assert.match(strip(PRELOAD), /checkPaths: \(lists\) => ipcRenderer\.invoke\('tab:checkPaths', lists\)/);
   assert.match(strip(PRELOAD), /openPath: \(p\) => ipcRenderer\.invoke\('tab:openPath', p\)/);
 });
+
+test('#37: a file-link provider asks main, and a click goes through shouldOpen then openPath', () => {
+  const order = (name) => HTML.indexOf(`<script src="./${name}"></script>`);
+  for (const f of ['terminal-rows.js', 'file-path-parse.js']) {
+    assert.ok(order(f) !== -1 && order(f) < order('renderer.js'), `${f} loads before renderer.js`);
+  }
+  const s = strip(JS);
+  assert.match(s, /term\.registerLinkProvider\(/);
+  assert.match(s, /window\.harness\.checkPaths\(/);
+  assert.match(s, /terminalRows\.block\(bufferRow, /);
+  assert.match(s, /filePathParse\.pickLinks\(/);
+  const body = fnBody('openFileLink');
+  assert.match(body, /linkClick\.shouldOpen\(event, `file:\$\{p\}`, lastLinkOpened, Date\.now\(\)\)/);
+  assert.match(body, /window\.harness\.openPath\(p\)/);
+  assert.match(body, /flashLinkTarget\(linkClick\.fileRefusedText\(/);
+  assert.match(strip(fnBody('toXtermLink')), /showLinkTarget\(linkClick\.fileTargetText\(/);
+});

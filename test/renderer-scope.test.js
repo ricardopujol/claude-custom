@@ -101,6 +101,8 @@ const ALLOWED_GLOBALS = new Set([
   'tabModel', 'tabStatus', 'goToSession',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
+  // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)
+  'terminalRows', 'filePathParse',
   // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.
   'gitRings', 'gitRingsDisplay',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
