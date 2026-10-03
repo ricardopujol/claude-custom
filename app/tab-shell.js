@@ -1008,6 +1008,8 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
         return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
+      // #31: what the window's own `focus` event does, without an OS to hand over focus.
+      case 'windowFocus': return await api.windowFocus();
       case 'view':
         // Layout pass L1: one of the selected view's NAMED probe actions
         // (renderer.js window.__dockProbe), never a string of code.

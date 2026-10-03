@@ -1609,6 +1609,11 @@ test('handleProbeCommand: mark reaches the driver with a branch and an id (null 
   assert.deepStrictEqual(seen, [['develop', 'star'], ['develop', null]]);
 });
 
+test('handleProbeCommand: windowFocus is the window coming back to the front (#31 probe)', async () => {
+  const api = { windowFocus: async () => ({ ok: true, looked: true }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'windowFocus' }), api), { ok: true, looked: true });
+});
+
 test('handleProbeCommand: markMenu builds the real menu for a branch (Dexter #87 F2)', async () => {
   const api = { markMenu: async (b) => ({ ok: true, branch: b }) };
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'markMenu', branch: 'develop' }), api), { ok: true, branch: 'develop' });

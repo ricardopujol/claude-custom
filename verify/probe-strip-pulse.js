@@ -17,6 +17,10 @@
  *   3  a Notification (permission_prompt, needs you) switches it to the urgent look
  *   4  the selected tab never pulses
  *   5  selecting the pulsing tab ends the pulse, and it stays ended after selecting away
+ *   7  a tab that finished while selected, window behind, then the window comes back: leaving the tab
+ *      does not make it pulse (with a control that it does without the focus event, when the OS
+ *      window really is unfocused)
+ *   8  Ctrl+Alt+T opens New branch… in tabs mode; plain Ctrl+T (the CLI's own) does not
  *   6  under prefers-reduced-motion (a second launch with --force-prefers-reduced-motion) the same
  *      events give a steady highlight: the class is there, the animation is none, the background
  *      is not the plain strip colour and does not change between samples
@@ -240,6 +244,50 @@ async function main() {
   await sleep(1500);
   check('5: ...and it stays ended after selecting away', (await pulseOf(app, 'feat/a')) === null);
 
+  // 7 (PR #90 Dexter F1) ----------------------------------------------------------------
+  // A tab finishes while it is selected and the window is behind: leaving it later must not make
+  // it pulse, because the window coming back WAS the look. The OS may or may not hold focus for
+  // this window (it is spawned in the background), so the first round is a control: with focus
+  // really away and no focus event, leaving the tab does pulse -- which proves the scenario
+  // is real. The second round brings the window back and expects nothing.
+  const osFocus = await command(app, { cmd: 'windowFocus' });   // also settles any earlier flag
+  const watched = async (bringBack) => {
+    await sleep(4500);   // one Stop per 4 s per host
+    await command(app, { cmd: 'select', label: 'feat/a' });
+    await waitFor(async () => (tabOf(await stateOf(app), 'feat/a') || {}).selected, 5000);
+    await fireHook(aPid, 'Stop', {});
+    await sleep(2000);
+    if (bringBack) await command(app, { cmd: 'windowFocus' });
+    await sleep(500);
+    await command(app, { cmd: 'select', label: 'develop' });
+    await sleep(2000);
+    return pulseOf(app, 'feat/a');
+  };
+  if (osFocus && osFocus.osFocused === false) {
+    const without = await watched(false);
+    check('7: control: finished while selected, window behind, no focus event -> it pulses after leaving', without === 'pulse-done', String(without));
+    await command(app, { cmd: 'select', label: 'feat/a' });   // look at it, to clear
+    await command(app, { cmd: 'select', label: 'develop' });
+  } else {
+    console.log('  (the window holds OS focus in this run, so the control is skipped: the focused report clears it by itself)');
+  }
+  const back = await watched(true);
+  check('7: finished while selected, then the window comes back, then leaving the tab: no pulse', back === null, String(back));
+
+  // 8 (#35, PR #90 Dexter F2) ---------------------------------------------------------------
+  await command(app, { cmd: 'key', key: 't', modifiers: ['control'] });
+  await sleep(600);
+  const plainT = await stateOf(app);
+  check('8: plain Ctrl+T does not open the form (it is the CLI\'s key)', plainT.create === null && plainT.stripChrome.form === false,
+    JSON.stringify({ create: plainT.create, form: plainT.stripChrome.form }));
+  await command(app, { cmd: 'key', key: 't', modifiers: ['control', 'alt'] });
+  const opened = await waitFor(async () => {
+    const st = await stateOf(app);
+    return st.create && st.create.phase === 'input' && st.stripChrome.form === true ? st : null;
+  }, 8000);
+  check('8: Ctrl+Alt+T opens New branch… in tabs mode', !!opened, JSON.stringify((await stateOf(app)).create));
+  await command(app, { cmd: 'cancelCreate' });
+
   await command(app, { cmd: 'quit' });
   await waitFor(() => app.exited, 10000);
 
@@ -252,6 +300,7 @@ async function main() {
     const rest = tabOf(await stateOf(calmApp), 'feat/a');
     const plain = rest ? rest.bg : null;
     const pid = hostPidOf(again, 'feat/a');
+    await sleep(3000);   // a re-attached page needs longer to join its running host than a fresh one
     await fireHook(pid, 'Stop', {});
     const steadyDone = await pulseIs(calmApp, 'feat/a', 'pulse-done');
     check('6: finished: the class is there, the animation is none', !!steadyDone && steadyDone.anim === 'none', JSON.stringify(steadyDone));
