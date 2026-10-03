@@ -227,3 +227,22 @@ test('D8: the path is a LITERAL pathspec: [id] is a folder name, not a glob', as
   assert.match(r.text, /app\/\[id\]\/page\.tsx/);
   assert.doesNotMatch(r.text, /app\/i\/page\.tsx/, 'the glob also matched the other folder');
 });
+
+// ---- PR #95 Dexter D9 ----
+
+test('D9: a call with no usable timestamp keeps its place between its neighbours (it does not jump to 1970)', async () => {
+  const f = `${ROOT}/a.js`;
+  const noTime = (id, n) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Edit', input: { file_path: f, old_string: `o${n}`, new_string: `n${n}` } }] } });
+  const dir = projects([[edit(f, 'o1', 0, 'n1', 1), noTime('toolu_nt1', 2), edit(f, 'o3', 0, 'n3', 3)]]);
+  const r = await claudeCallsFor({ root: ROOT, rel: 'a.js', projectsDir: dir });
+  assert.deepStrictEqual(r.calls.map(c => c.oldString), ['o1', 'o2', 'o3']);
+  assert.ok(Number.isNaN(r.calls[1].at), 'its own time stays unknown, not invented');
+});
+
+test('D9: across sessions, the untimed call follows the call before it in ITS file', async () => {
+  const f = `${ROOT}/a.js`;
+  const noTime = (id, n) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Edit', input: { file_path: f, old_string: `o${n}`, new_string: `n${n}` } }] } });
+  const dir = projects([[edit(f, 'o1', 0, 'n1', 10), noTime('toolu_nt2', 2)], [edit(f, 'o5', 0, 'n5', 5)]]);
+  const r = await claudeCallsFor({ root: ROOT, rel: 'a.js', projectsDir: dir });
+  assert.deepStrictEqual(r.calls.map(c => c.oldString), ['o5', 'o1', 'o2']);
+});

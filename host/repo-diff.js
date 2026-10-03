@@ -75,14 +75,18 @@ async function claudeCallsFor({ root, rel, projectsDir } = {}) {
       } catch { /* appended live: a partial final line is normal */ }
       if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
     }
+    // A call with no usable time takes the time of the call before it in ITS file for ordering (it keeps its
+    // place; its own `at` stays unknown), PR #95 Dexter D9: `NaN || 0` used to send it to 1970, the front.
+    let lastTime = -Infinity;
     for (const call of collector.calls()) {
+      if (Number.isFinite(call.at)) lastTime = call.at;
       const c = callFrom(call, root, rel, call.at);
-      if (c) found.push(c);
+      if (c) found.push({ c, when: lastTime });
     }
     await yieldToLoop();
   }
-  // Oldest first. A call with no usable time keeps its place (the sort is stable and NaN compares as 0).
-  const order = found.map((c, i) => ({ c, i })).sort((a, b) => ((a.c.at || 0) - (b.c.at || 0)) || (a.i - b.i)).map(x => x.c);
+  // Oldest first, stable.
+  const order = found.map((x, i) => ({ ...x, i })).sort((a, b) => (a.when === b.when ? 0 : a.when < b.when ? -1 : 1) || (a.i - b.i)).map(x => x.c);
   const truncated = order.length > MAX_CALLS;
   return { ok: true, calls: truncated ? order.slice(order.length - MAX_CALLS) : order, transcripts: true, ...(truncated ? { truncated: true } : {}) };
 }
