@@ -218,3 +218,48 @@ test('PROPERTY: the tags + more always account for every agent in the hover', ()
     return true;
   }), { numRuns: 200 });
 });
+
+// --- the terminal bar's chip (backlog #49 + #52 folded #47's banner into it) ---------------------------
+
+test('chipModel: the agents\' initials, one hover line each, the warning only on the page\'s own turn, and where Jump goes', () => {
+  const c = D.chipModel([claim(), claim({ agentId: 'b', agent: 'logic-reviewer', firstAt: NOW })], { now: NOW });
+  assert.deepStrictEqual(c.tags, ['EP', 'LR']);
+  assert.strictEqual(c.more, 0);
+  assert.strictEqual(c.warn, false);
+  assert.deepStrictEqual(c.lines, ['electron-pro · from develop · 4 min', 'logic-reviewer · from develop · <1 min']);
+  assert.deepStrictEqual(c.jump, { label: 'Jump to develop', root: 'C:/p/dev' });
+});
+
+test('chipModel: two writers turns it to the warning colour and says so in the hover', () => {
+  const w = D.chipModel([claim()], { now: NOW, turn: 'turn' });
+  assert.strictEqual(w.warn, true);
+  assert.strictEqual(w.lines[w.lines.length - 1], D.OWN_WRITING);
+  for (const turn of ['idle', 'prompt', null, undefined]) {
+    const q = D.chipModel([claim()], { now: NOW, turn });
+    assert.strictEqual(q.warn, false, String(turn));
+    assert.ok(!q.lines.includes(D.OWN_WRITING));
+  }
+});
+
+test('chipModel: more agents than tags fit are counted, not dropped silently', () => {
+  const many = ['a', 'b', 'c', 'd', 'e'].map((n, i) => claim({ agentId: n, agent: `agent-${n}`, firstAt: NOW - i }));
+  const c = D.chipModel(many, { now: NOW });
+  assert.strictEqual(c.tags.length, D.TAGS_MAX);
+  assert.strictEqual(c.more, 5 - D.TAGS_MAX);
+  assert.strictEqual(c.lines.length, 5);
+});
+
+test('chipModel: nobody here is null (never an empty chip), and no launcher means no Jump', () => {
+  for (const none of [[], null, undefined, [null, 3, {}]]) assert.strictEqual(D.chipModel(none, { now: NOW }), null);
+  assert.strictEqual(D.chipModel([claim({ fromRoot: '' })], { now: NOW }).jump, null);
+});
+
+test('chipModel agrees with the banner on who is here, so the two never tell different stories', () => {
+  fc.assert(fc.property(fc.array(fc.record({ agentId: fc.constantFrom('a', 'b', 'c'), agent: fc.constantFrom('electron-pro', 'logic-reviewer', 'x'),
+    worktree: fc.constant('C:/p/feat-x'), firstAt: fc.integer({ min: 0, max: NOW }) }), { maxLength: 6 }), fc.constantFrom('turn', 'idle', null), (claims, turn) => {
+    const chip = D.chipModel(claims, { now: NOW, turn });
+    const banner = D.bannerModel(claims, { now: NOW, turn });
+    if (banner === null) return chip === null;
+    return chip !== null && chip.warn === banner.warn && JSON.stringify(chip.jump) === JSON.stringify(banner.jump) && chip.lines.length >= 1;
+  }));
+});
