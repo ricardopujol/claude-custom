@@ -84,6 +84,23 @@ function el(doc, tag, cls, text) {
   return e;
 }
 
+/**
+ * Worktree occupancy (#44 + #47, take B "hatched edge"): what app/occupancy-display.js tabOccupancy said about
+ * this tab, or null. Anything that isn't a usable object with at least one tag is "nobody is here": a
+ * malformed model draws nothing rather than a half-mark.
+ */
+function occupancyOf(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  const tags = Array.isArray(o.tags) ? o.tags.filter(nonEmpty) : [];
+  if (tags.length === 0) return null;
+  return {
+    tags,
+    more: Number.isInteger(o.more) && o.more > 0 ? o.more : 0,
+    warn: o.warn === true,
+    lines: Array.isArray(o.lines) ? o.lines.filter(nonEmpty) : [],
+  };
+}
+
 function paintTab(doc, entry, bridge) {
   const cls = ['tab'];
   if (entry.selected) cls.push('selected');
@@ -91,10 +108,15 @@ function paintTab(doc, entry, bridge) {
   if (entry.isDev) cls.push('dev');
   // #31: the model decides who pulses (never the selected tab); this only names the look.
   if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);
+  // The hatched lower edge. It NEVER animates: movement on the strip means "needs you".
+  const occ = occupancyOf(entry.occupancy);
+  if (occ) cls.push(occ.warn ? 'occupied occupied-warn' : 'occupied');
   const tab = el(doc, 'div', cls.join(' '));
   tab.dataset.key = entry.key;
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
+  // One line per agent under the name, from the model (it has the minutes and the two-writers line).
+  if (occ && occ.lines.length) tab.title = [tab.title, ...occ.lines].join('\n');
   if (entry.working) tab.appendChild(el(doc, 'span', 'dot working')).title = 'Working';
   if (entry.needsInput) tab.appendChild(el(doc, 'span', 'dot needs')).title = 'Needs your input';
   // #40: the person's own mark on the tab; its meaning on hover.
@@ -103,6 +125,11 @@ function paintTab(doc, entry, bridge) {
     tab.appendChild(el(doc, 'span', 'mark', mark.emoji)).title = nonEmpty(mark.meaning) ? mark.meaning : '';
   }
   tab.appendChild(el(doc, 'span', 'label', entry.label));
+  if (occ) {
+    const tags = tab.appendChild(el(doc, 'span', 'agent-tags'));
+    for (const t of occ.tags) tags.appendChild(el(doc, 'span', 'agent-tag', t));
+    if (occ.more > 0) tags.appendChild(el(doc, 'span', 'agent-tag', `+${occ.more}`));
+  }
   if (entry.lockGlyph && GLYPHS[entry.lockGlyph]) {
     const g = tab.appendChild(el(doc, 'span', `glyph ${entry.lockGlyph}`, GLYPHS[entry.lockGlyph]));
     g.title = GLYPH_TITLES[entry.lockGlyph];

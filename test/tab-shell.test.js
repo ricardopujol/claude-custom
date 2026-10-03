@@ -39,7 +39,7 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 
 /** A shell whose every effect is a recording fake. */
-function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks } = {}) {
+function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
@@ -155,6 +155,8 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     return typeof h.openPr === 'function' ? h.openPr(branch) : h.openPr;
   } };
   if (marks !== undefined) deps.marks = marks;
+  if (occupancy !== undefined) deps.occupancy = occupancy;
+  deps.now = () => 1_000_000_000;
   h.shell = createShell(deps);
   return h;
 }
@@ -2157,4 +2159,102 @@ test('handleProbeCommand: reduced-motion takes a real boolean (#34 probe)', asyn
 test('the probe may drive the background view actions, by name only (#34)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['bgState', 'bgStyle', 'bgMatch']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+// --- worktree occupancy (#44 + #47) -----------------------------------------------
+
+const OCC_NOW = 1_000_000_000;
+const claimIn = (name, over = {}) => ({
+  agentId: 'a1', agent: 'electron-pro', worktree: wt(name), also: [], fromBranch: 'develop', fromRoot: wt('dev'),
+  hostPid: 4242, hostStartedAt: '1', firstAt: OCC_NOW - 4 * 60000, lastAt: OCC_NOW - 1000, count: 3, ...over,
+});
+
+test('occupancy: a tab a live claim sits in carries the strip mark; every other tab carries null', async () => {
+  const h = harness({ occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  const byLabel = Object.fromEntries(h.shell.model().map(e => [e.label, e.occupancy]));
+  assert.deepStrictEqual(byLabel.develop, null);
+  assert.deepStrictEqual(byLabel['feat/b'], null);
+  assert.deepStrictEqual(byLabel['feat/a'].tags, ['EP']);
+  assert.deepStrictEqual(byLabel['feat/a'].lines, ['electron-pro · from develop · 4 min']);
+  assert.strictEqual(byLabel['feat/a'].warn, false);
+});
+
+test('occupancy: no reader, or a reader that throws, draws nothing and never breaks the strip', async () => {
+  const none = harness();
+  await none.shell.open();
+  assert.ok(none.shell.model().every(e => e.occupancy === null));
+  const bad = harness({ occupancy: { claims: () => { throw new Error('boom'); } } });
+  await bad.shell.open();
+  assert.deepStrictEqual(labels(bad), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(bad.shell.model().every(e => e.occupancy === null));
+  const junk = harness({ occupancy: { claims: () => 'not a list' } });
+  await junk.shell.open();
+  assert.ok(junk.shell.model().every(e => e.occupancy === null));
+});
+
+test("occupancy: the tab's own session reporting a turn is the two-writers warning; idle is not", async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const mark = () => h.shell.model().find(e => e.label === 'feat/a').occupancy;
+  assert.strictEqual(mark().warn, false, 'no report yet: unknown is not a warning');
+  h.shell.report(aView, { turn: 'turn' });
+  assert.strictEqual(mark().warn, true);
+  assert.ok(mark().lines.includes("this tab's own session is writing too"));
+  h.shell.report(aView, { turn: 'idle' });
+  assert.strictEqual(mark().warn, false);
+  h.shell.report(aView, { turn: 'prompt' });
+  assert.strictEqual(mark().warn, false);
+});
+
+test("occupancy: each started tab's page is pushed what is in it and what it launched, only when that changed", async () => {
+  let claims = [];
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, occupancy: { claims: () => claims } });
+  await h.shell.open();
+  await flush();
+  const sentOcc = () => h.sent.filter(([, ch]) => ch === 'occupancy');
+  assert.strictEqual(sentOcc().length, 0, 'nothing to say yet: no chatter');
+  claims = [claimIn('feat-a')];
+  h.shell.refresh();
+  const first = sentOcc();
+  assert.deepStrictEqual(first.map(([k]) => k).sort(), [key('dev'), key('feat-a')].sort());
+  const toA = first.find(([k]) => k === key('feat-a'))[2];
+  const toDev = first.find(([k]) => k === key('dev'))[2];
+  assert.deepStrictEqual(toA.here.map(c => c.agentId), ['a1']);
+  assert.deepStrictEqual(toA.launched, []);
+  assert.deepStrictEqual(toDev.here, []);
+  assert.deepStrictEqual(toDev.launched.map(c => c.agentId), ['a1'], 'the launching session is told where its agent is');
+  h.shell.refresh();
+  assert.strictEqual(sentOcc().length, first.length, 'unchanged: not sent again');
+  claims = [];
+  h.shell.refresh();
+  const cleared = sentOcc().slice(first.length);
+  assert.deepStrictEqual(cleared.map(([, , p]) => p), [{ here: [], launched: [] }, { here: [], launched: [] }]);
+});
+
+test("occupancy: a tab with no page yet is not pushed to, and occupancyFor answers a page's own question", async () => {
+  const h = harness({ running: { 7700: wt('dev') }, occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  await flush();
+  h.shell.refresh();
+  assert.ok(h.sent.every(([k, ch]) => !(ch === 'occupancy' && k === key('feat-a'))), 'feat-a has no view');
+  const devView = h.shell.tabByKey(key('dev')).view;
+  assert.deepStrictEqual(h.shell.occupancyFor(devView).launched.map(c => c.agentId), ['a1']);
+  assert.strictEqual(h.shell.occupancyFor({}), null, 'a stranger is nobody');
+});
+
+test("occupancy: a reopened tab's fresh page is pushed again even though nothing changed", async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, occupancy: { claims: () => [claimIn('feat-a')] } });
+  await h.shell.open();
+  await flush();
+  h.shell.refresh();
+  const before = h.sent.filter(([k, ch]) => ch === 'occupancy' && k === key('feat-a')).length;
+  assert.strictEqual(before, 1);
+  await h.shell.closeTab(key('feat-a'));
+  await h.shell.reopen();
+  await flush();
+  h.shell.refresh();
+  assert.strictEqual(h.sent.filter(([k, ch]) => ch === 'occupancy' && k === key('feat-a')).length, 2);
 });
