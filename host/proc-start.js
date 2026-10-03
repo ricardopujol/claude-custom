@@ -67,17 +67,23 @@ function isAlive(pid, kill = process.kill) {
   }
 }
 
-function defaultExec(file, args) {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, { encoding: 'utf8', windowsHide: true, timeout: QUERY_TIMEOUT_MS },
-      (err, stdout) => {
-        // A non-zero exit with output still carries the answer; the END
-        // sentinel, not the exit code, says whether the query ran to the end.
-        if (err && !stdout) reject(err);
-        else resolve(String(stdout || ''));
-      });
-  });
+// An exec with its own timeout. The default is the product's budget for a query
+// it must never wait long on; a caller measuring the REAL powershell.exe (a
+// test under full-suite load) passes a budget of its own instead.
+function createExec(timeoutMs = QUERY_TIMEOUT_MS) {
+  return function exec(file, args) {
+    return new Promise((resolve, reject) => {
+      execFile(file, args, { encoding: 'utf8', windowsHide: true, timeout: timeoutMs },
+        (err, stdout) => {
+          // A non-zero exit with output still carries the answer; the END
+          // sentinel, not the exit code, says whether the query ran to the end.
+          if (err && !stdout) reject(err);
+          else resolve(String(stdout || ''));
+        });
+    });
+  };
 }
+const defaultExec = createExec();
 
 /**
  * Start times as FILETIME strings (100 ns ticks since 1601, UTC), keyed by pid.
@@ -134,4 +140,4 @@ function createSelfStartTime(opts = {}) {
   };
 }
 
-module.exports = { isAlive, startTimes, createSelfStartTime, QUERY_TIMEOUT_MS, defaultExec, POWERSHELL, BOM_AT_START };
+module.exports = { isAlive, startTimes, createSelfStartTime, QUERY_TIMEOUT_MS, defaultExec, createExec, POWERSHELL, BOM_AT_START };

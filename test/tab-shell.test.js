@@ -562,6 +562,32 @@ test('F2: Retry while the first host is STILL not listening waits for it instead
   assert.strictEqual(tab.token, first.token);
 });
 
+test('Y1: a host that lands late, with ANOTHER tab asking for its port meanwhile, is still never spawned twice for its own tab', async () => {
+  // The slow-host path the serialisation property no longer generates (its
+  // wait always succeeds): wait gives up, the host lands later. The shell's
+  // `pending` is per tab, so tab B asking for the same still-empty port is
+  // handed it too (the bind arbitrates between the two hosts, PR #75 F2). What
+  // the guard owes tab A is that ITS retry waits for the host it already
+  // spawned instead of spawning another onto the port.
+  const h = harness();
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  const before = h.spawns.length;
+  await h.shell.select(key('feat-a'));                // wait gives up: pending
+  const first = h.spawns[h.spawns.length - 1];
+  await h.shell.select(key('feat-b'));                // the same empty port, offered to B
+  assert.strictEqual(h.spawns[h.spawns.length - 1].port, first.port, 'B hashes to the same port');
+  h.failWait = false;                                 // A's host comes up during A's retry wait
+  await h.shell.select(key('feat-a'));
+  const ours = h.spawns.slice(before).filter(x => x.key === key('feat-a'));
+  assert.strictEqual(ours.length, 1, 'tab A was given a second spawn for the port its first host is still coming up on');
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, first.token);
+});
+
 test('F2: a host that never comes up is forgotten after one more wait, so the next Retry can spawn', async () => {
   const h = harness();
   h.spawnRegisters = false;
@@ -1955,8 +1981,19 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
     async (n, delays) => {
       const occupied = new Map();          // port -> cwd
       const granted = [];
+      const landing = new Map();           // port -> the spawn that will occupy it
+      // NOT generated here: a wait that gives up while the host lands later. Then
+      // two tabs CAN be handed one port (pending is per tab; the host bind
+      // arbitrates, PR #75 F2), so "never both get it" is not the contract on that
+      // path. The Y1 test below covers it, and the guard it needs, on logical time.
       const names = Array.from({ length: n }, (_, i) => `t${i}`);
-      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      // Logical time: "ms" is a number of event-loop turns, not milliseconds. The
+      // property is about the ORDER the generated delays put events in, and that
+      // order is the same here with none of a real timer's dependence on load
+      // (this took 3.5 s of wall clock for 25 runs, and no more than the machine
+      // would allow).
+      const turns = (n) => new Promise(r => { let left = n; const step = () => (left-- <= 0 ? r() : setImmediate(step)); step(); });
+      const sleep = turns;
       const shell = createShell({
         mode: 'tabs', container: ROOT, log: () => {},
         git: { list: async () => porcelain([['dev', 'develop'], ...names.map(x => [x, `feat/${x}`])]), marker: noMarker },
@@ -1973,8 +2010,12 @@ test('PROPERTY: spawns are serialised -- tabs that hash to one port never both g
             return null;
           },
           probe: async (p) => (occupied.has(p) ? 'listening' : 'refused'),
-          spawn: ({ tab, port }) => { granted.push(port); setTimeout(() => occupied.set(port, tab.cwd), delays[1]); },
-          wait: async (port) => { await sleep(delays[2] + 3); return occupied.has(port); },
+          spawn: ({ tab, port }) => { granted.push(port); landing.set(port, turns(delays[1]).then(() => occupied.set(port, tab.cwd))); },
+          // The host answers once it has come up: wait is not given up on before
+          // the spawn lands. (On real timers that held only by the slack of
+          // elapsed time -- a 4 ms spawn against a 3 ms wait passed on a quiet
+          // machine and granted the port twice on a loaded one.)
+          wait: async (port) => { await sleep(delays[2] + 3); await landing.get(port); return occupied.has(port); },
           tokenFor: () => 't', tokenFile: () => 't', newToken: () => 't',
           control: async () => ({ ok: true }), identity: () => null, readToken: () => null,
         },
