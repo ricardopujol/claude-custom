@@ -83,7 +83,10 @@ test('an unreadable list is asked for again when the Window button opens the men
 });
 
 test('applying a preset takes the one placement path, so Just this tab and an identical layout work as they do for any change', () => {
-  assert.match(fnBody('applyPreset'), /commitPlacement\(p\.layout, \{ justThisTab \}\);/);
+  const body = fnBody('applyPreset');
+  assert.match(body, /commitPlacement\(r\.layout, \{ justThisTab \}\);/);
+  assert.ok(body.indexOf('presetLayout(') < body.indexOf('commitPlacement('), 'a layout this version can\'t read is judged first');
+  assert.match(fnBody('presetThumb'), /presetLayout\(layout, MODULE_IDS, DTm\.readAny\)\.ok/);
 });
 
 test('Esc backs out of an open field before it closes the menu', () => {

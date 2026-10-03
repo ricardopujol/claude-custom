@@ -239,6 +239,7 @@ const WORDS = {
   layout: 'This layout can\'t be saved as a preset.',
   unreadable: 'The saved presets couldn\'t be read, so saving is off until they can be.',
   failed: 'The presets couldn\'t be saved.',
+  version: 'This preset can\'t be read by this version.',
 };
 /** The words for a refusal reason. */
 function refusalText(reason) {
@@ -335,10 +336,21 @@ function labelFor(kind, name) {
   return Object.prototype.hasOwnProperty.call(LABELS, kind) ? LABELS[kind](String(name)) : String(name);
 }
 
+/**
+ * A preset's layout as it will be APPLIED: the version-2 tree, or the older L1 zones shape, which `readAny` (the
+ * page's dockTree.readAny) migrates. Anything else (a version this build doesn't know, a stray object) is refused:
+ * readAny would answer the DEFAULT layout for it, and applying that would silently replace the user's layout.
+ */
+function presetLayout(layout, ids, readAny) {
+  const readable = isObject(layout) && (layout.version === 2 || isObject(layout.zones));
+  if (!readable || typeof readAny !== 'function') return refuse('version');
+  try { return { ok: true, layout: readAny(layout, ids) }; } catch { return refuse('version'); }
+}
+
 const API = {
   NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, MAX_LIST_BYTES, THUMB, checkName, nameKey: keyOf, cleanPresets, describe, find,
   savePreset, renamePreset, deletePreset, applyOp,
-  thumbBoxes, afterGet, afterOp, keptText, refusalText, reduceMenu, needsRetry, labelFor,
+  thumbBoxes, afterGet, afterOp, keptText, refusalText, reduceMenu, needsRetry, labelFor, presetLayout,
 };
 
 // One namespace on the page (`window.dockPresets`), not loose globals.

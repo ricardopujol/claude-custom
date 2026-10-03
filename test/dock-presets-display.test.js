@@ -286,3 +286,31 @@ test('a save main refuses as taken becomes the replace question, naming the pres
   // a rename refused as taken stays a refusal on the rename field
   assert.strictEqual(answer({ mode: 'rename', name: 'A', text: 'b' }, { op: 'rename', name: 'A', to: 'b' }, { ok: false, reason: 'taken' }, list('A', 'B'), list('A', 'B')).mode, 'rename');
 });
+
+// --- applying a preset this version can read (PR #103 Dexter 7) -----------------------------------
+
+const readAny = (raw) => ({ read: 'any', from: raw });
+
+test('only a version-2 tree or an L1 zones layout is applied; anything else is refused, never turned into the default layout', () => {
+  assert.deepStrictEqual(P.presetLayout({ version: 2, root: {} }, ['a'], readAny), { ok: true, layout: { read: 'any', from: { version: 2, root: {} } } });
+  assert.strictEqual(P.presetLayout({ version: 1, zones: { right: ['a'] } }, ['a'], readAny).ok, true, 'the L1 shape is migrated by readAny');
+  for (const bad of [{ version: 3, root: {} }, { version: 1 }, {}, { hidden: [] }, null, 'x', [], { version: '2' }]) {
+    assert.deepStrictEqual(P.presetLayout(bad, ['a'], readAny), { ok: false, reason: 'version' }, JSON.stringify(bad));
+  }
+});
+
+test('a readAny that throws is a refusal, not a crash', () => {
+  assert.deepStrictEqual(P.presetLayout({ version: 2 }, [], () => { throw new Error('x'); }), { ok: false, reason: 'version' });
+});
+
+test('the words for a layout this version can\'t read say so', () => {
+  assert.match(P.refusalText('version'), /can't be read by this version/);
+});
+
+test('the thumbnail of a layout in the L1 shape draws the migrated tree, as applying it will place it', () => {
+  const l1 = { version: 1, zones: { left: [], right: ['vault'], bottom: [] }, size: { left: 200, right: 300 } };
+  const viaReadAny = (layout, ids, vp) => T.fit(T.readAny(layout, ids), null, vp);
+  const boxes = P.thumbBoxes(l1, IDS, viaReadAny);
+  assert.ok(boxes.length >= 2, 'a terminal and the group the L1 zone became');
+  assert.strictEqual(P.presetLayout(l1, IDS, T.readAny).ok, true);
+});

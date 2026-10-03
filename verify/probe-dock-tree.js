@@ -809,6 +809,30 @@ async function main() {
     await waitFor12(p => p.names.includes('Other'), 6000);
     await view(app, 'closeMenu');
 
+    // PR #103 Dexter 7: a preset this version can't read is never applied as the default layout, and its thumbnail says so
+    const l1Layout = { version: 1, zones: { left: ['git'], right: ['wand'], bottom: [] }, size: { left: 260, right: 300 } };
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify([...keepList, { name: 'OldL1', layout: l1Layout }, { name: 'Future', layout: { version: 3, root: { type: 'term' } } }]));
+    await openMenu();
+    const v7 = await waitFor12(p => p.menuOpen && p.names.includes('Future'), 6000);
+    const row7 = (p, n) => p.rows.find(r => r.name === n);
+    check('12: a preset in the older L1 shape is drawn as its migrated layout, and one this version doesn\'t know as a neutral "unknown" box, not as the default',
+      !!v7 && row7(v7, 'OldL1').boxes >= 2 && !row7(v7, 'OldL1').unknown && row7(v7, 'Future').unknown && row7(v7, 'Future').boxes === 0, JSON.stringify(v7 && v7.rows));
+    const before7 = (await settled(app)).s;
+    await mclick(rowSel('Future', 'apply'));
+    const refused7 = await ask();
+    await sleep(600);
+    const after7 = (await settled(app)).s;
+    check('12: applying a preset this version can\'t read changes nothing, keeps the menu open, says so, and leaves focus on that preset',
+      rectKey(after7) === rectKey(before7) && refused7.menuOpen && refused7.notes.some(n => /can't be read by this version/.test(n)) && refused7.active.preset === 'Future',
+      JSON.stringify([refused7.notes, refused7.active, keyDiff(before7, after7)]));
+    await mclick(rowSel('OldL1', 'apply'));
+    const applied7 = (await settled(app)).s;
+    check('12: applying the L1-shaped preset places its migrated layout (Git along the left edge), not the default',
+      !!groupWith(applied7, 'git') && groupWith(applied7, 'git').rect.left <= applied7.dock.left + 1, JSON.stringify(applied7.groups.map(g => [g.tabs, g.rect])).slice(0, 300));
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify(keepList));
+    await waitFor12(p => p.names.join() === 'Other', 6000);
+    await view(app, 'closeMenu');
+
     // a second tab sees the list, and a preset saved there shows here
     const tabA = await onTab('feat/a');
     const seenA = tabA && (await waitFor12(p => p.names.join() === 'Other'));
@@ -851,6 +875,17 @@ async function main() {
     fs.writeFileSync(PRESETS_FILE, JSON.stringify([{ name: 'Recovered', layout: example }]));
     const rec = await waitFor12(p => p.usable && p.names.includes('Recovered'), 8000);
     check('12: when the file becomes readable (another window wrote it) the list appears and saving is allowed again', !!rec && rec.saveOpen, JSON.stringify(rec));
+    // PR #103 Dexter 6 / Miguel I7: what this version can't show is counted, and a save leaves it in the file untouched
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify([{ name: 'Recovered', layout: example, pinned: true }, 'junk', { shape: 'later' }]));
+    const kept = await waitFor12(p => p.kept === 2, 6000);
+    check('12: presets this version can\'t show are counted in the menu ("2 presets from another version are kept")',
+      !!kept && kept.notes.some(n => /2 presets from another version are kept/.test(n)), JSON.stringify(kept && kept.notes));
+    await mclick('[data-preset-act="save-open"]');
+    await type('input[data-preset-field="save"]', 'Plus', 'Enter');
+    await waitFor12(p => p.names.includes('Plus'));
+    const fl = fileList();
+    check('12: ...and a save leaves them in the file as they were, unknown fields included, with the new preset after them',
+      Array.isArray(fl) && fl.length === 4 && fl[0].pinned === true && fl[1] === 'junk' && JSON.stringify(fl[2]) === '{"shape":"later"}' && fl[3].name === 'Plus', JSON.stringify(fl).slice(0, 300));
     await view(app, 'closeMenu');
   }
 

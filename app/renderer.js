@@ -1132,8 +1132,15 @@ function runPresetOp(req) {
 }
 
 function applyPreset(p, justThisTab) {
+  // A layout this version can't read is refused and said: dockTree.readAny alone would answer the default layout for it.
+  const r = window.dockPresets.presetLayout(p.layout, MODULE_IDS, DTm.readAny);
+  if (!r.ok) {
+    dispatchPreset({ type: 'notice', error: window.dockPresets.refusalText(r.reason), focus: { kind: 'row', name: p.name } });
+    openLayoutMenu();
+    return;
+  }
   const hadFocus = layoutMenu.contains(document.activeElement);
-  commitPlacement(p.layout, { justThisTab });
+  commitPlacement(r.layout, { justThisTab });
   closeLayoutMenu();
   if (hadFocus) document.getElementById('layout-btn').focus();      // focus doesn't drop to the page behind
 }
@@ -1193,7 +1200,9 @@ function applyMenuFocus(captured) {
 // The small picture of a layout beside its name: the boxes dockPresets.thumbBoxes fits into 44 x 28.
 function presetThumb(layout) {
   const thumb = node('span', { className: 'lm-thumb', 'aria-hidden': 'true' });
-  const fitFn = (l, ids, viewport) => DTm.fit(DTm.normalize(l, ids), null, viewport);
+  // A layout this version can't read is not drawn as the default: a neutral box says it is unknown.
+  if (!window.dockPresets.presetLayout(layout, MODULE_IDS, DTm.readAny).ok) { thumb.classList.add('unknown'); thumb.textContent = '?'; return thumb; }
+  const fitFn = (l, ids, viewport) => DTm.fit(DTm.readAny(l, ids), null, viewport);
   for (const b of window.dockPresets.thumbBoxes(layout, MODULE_IDS, fitFn)) {
     const box = node('i', { className: b.kind });
     Object.assign(box.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.w}px`, height: `${b.h}px` });
@@ -1697,7 +1706,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           ok: true, exported: typeof (window.dockPresets || {}).thumbBoxes, loaded: presetsState.loaded, usable: presetsState.usable,
           names: presetsState.list.map(p => p.name), mode: presetUi.mode, menuOpen: !layoutMenu.hidden, pushes: presetPushes,
           rows: [...layoutMenu.querySelectorAll('.lm-preset')].map(r => ({
-            name: r.dataset.preset, boxes: r.querySelectorAll('.lm-thumb i').length,
+            name: r.dataset.preset, boxes: r.querySelectorAll('.lm-thumb i').length, unknown: !!r.querySelector('.lm-thumb.unknown'),
             labels: [...r.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || b.textContent),
             focusable: [...r.querySelectorAll('button')].every(b => b.tabIndex >= 0 && !b.disabled),
           })),
