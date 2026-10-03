@@ -173,6 +173,11 @@ const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 // How many tabs closed by hand the `+` menu offers to reopen.
 const REOPEN_MAX = 10;
 
+// The Git drawer: how many folders one tabStates answer covers, and the wait between the typed
+// /merged and its Enter (the renderer's PTY_STEP_MS, for the same reason).
+const TAB_STATES_MAX = 200;
+const RUN_STEP_MS = 120;
+
 const errorText = (err) => (err && err.message) || String(err);
 
 function createShell(deps) {
@@ -181,6 +186,8 @@ function createShell(deps) {
     git, hosts, ops, views, ui, log = () => {},
     // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
     marks = null,
+    // The spaced wait between typing and Enter (*Run /merged*); injected so a test doesn't wait.
+    sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -790,6 +797,67 @@ function createShell(deps) {
     return { kind: 'select-tab' };
   }
 
+  /**
+   * What the Git drawer needs to know about the tabs of the worktrees it lists (Enhancement #46):
+   * [{ folder, open, started, known, working, needsInput }] in the order asked, `folder` as it was
+   * spelled. `known` is whether that tab's session has REPORTED yet: until it has, working and
+   * needsInput are null (unknown), never false -- an idle session and one nobody has heard from are not
+   * the same. Blank or non-string folders are dropped, and the answer is bounded.
+   */
+  function tabStates(sender, folders) {
+    if (!isTabView(sender) || !Array.isArray(folders)) return [];
+    const out = [];
+    for (const folder of folders) {
+      if (out.length >= TAB_STATES_MAX) break;
+      if (typeof folder !== 'string' || !folder) continue;
+      const key = keyOf(folder);
+      const e = model().find(x => x.key === key);
+      const t = tabByKey(key);
+      const st = t && t.status ? t.status : null;
+      out.push({
+        folder, open: !!e, started: !!e && e.started === true, known: !!e && e.started === true && !!st,
+        working: e && st ? st.working === true : null, needsInput: e && st ? st.needsInput === true : null,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * *Run /merged*, for the Git drawer (Enhancement #46): select the branch's tab and TYPE `/merged` and
+   * Enter into its session, through the host's own `input` control message -- the CLI's skill then
+   * runs the whole gate. Ricardo chose type-and-send. The drawer only enables it for an open PR whose
+   * tab is idle; this re-checks the tab (it may have started working since the drawer drew) and
+   * explains instead of typing into a busy session. The Enter is a frame of its own a step after the
+   * text: one chunk would be taken for a paste and its CR swallowed (renderer.js PTY_STEP_MS).
+   * Always answers { kind: 'sent', branch } or { kind: 'explain', text }.
+   */
+  async function runMerged(sender, folder) {
+    if (!isTabView(sender)) return { kind: 'explain', text: "That tab's window can't be found." };
+    if (typeof folder !== 'string' || !folder) return { kind: 'explain', text: 'That branch has no worktree folder.' };
+    const key = keyOf(folder);
+    const entry = model().find(e => e.key === key);
+    const tab = tabByKey(key);
+    const name = path.basename(folder);
+    if (!entry || !tab) return { kind: 'explain', text: `${name} has no tab open in this window.` };
+    if (!tab.started || !Number.isInteger(tab.port) || !tab.token) return { kind: 'explain', text: `${name}'s tab hasn't started a session yet.` };
+    if (!tab.status) return { kind: 'explain', text: `${name}'s session hasn't reported what it's doing yet.` };
+    if (tab.status.working) return { kind: 'explain', text: `${name}'s session is working: wait for it to finish.` };
+    if (tab.status.needsInput) return { kind: 'explain', text: `${name}'s session is waiting for you: answer it first.` };
+    const branch = branchOf(key);
+    await userSelect(key);
+    const send = (data) => hosts.control({ port: tab.port, token: tab.token, msg: { type: 'input', data } });
+    const typed = await send('/merged');
+    if (!typed || !typed.ok) {
+      return { kind: 'explain', text: `Couldn't type into ${name}'s session: ${(typed && typed.error) || 'no answer'}.` };
+    }
+    await sleep(RUN_STEP_MS);
+    const entered = await send('\r');
+    if (!entered || !entered.ok) {
+      return { kind: 'explain', text: `I typed /merged but couldn't press Enter in ${name}'s session (${(entered && entered.error) || 'no answer'}): it's waiting in the input box.` };
+    }
+    return { kind: 'sent', branch };
+  }
+
   /** *Go to that session*, for the blocked pane. Always answers something to say. */
   async function goTo(sender, holder) {
     if (!isTabView(sender)) return { kind: 'explain', text: "That session's window can't be found." };
@@ -853,7 +921,7 @@ function createShell(deps) {
   function destroy() { destroyed = true; }
 
   return {
-    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, menuState, override,
+    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, runMerged, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,
@@ -951,7 +1019,9 @@ const PROBE_TOKEN_MIN = 16;
 // never hand the page a string of code to run.
 const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'dragDrop', 'secretRedraw', 'reconnect', 'focusState',
   // layout pass L3: verify/probe-git-tree.js
-  'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus']);
+  'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
+  // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
+  'gitAct', 'gitMotion', 'gitTabs', 'gitScreen']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

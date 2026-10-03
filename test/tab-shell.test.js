@@ -55,6 +55,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     createResult: null, setupHold: null, setupResult: { ok: true, result: null }, onLine: null,
     removeResult: { ok: true, already: false },
     focused,            // the window's OS focus; a test flips it
+    slept: [],          // the spaced waits runMerged asked for
   };
   // A worktree appears in git's list (what new-worktree.ps1 does).
   h.addWorktree = (name, branch) => { h.listText += '\n' + porcelain([[name, branch]]); };
@@ -146,6 +147,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
       isFocused: () => h.focused,
     },
   };
+  deps.sleep = async (ms) => { h.slept.push(ms); };
   if (marks !== undefined) deps.marks = marks;
   h.shell = createShell(deps);
   return h;
@@ -897,6 +899,111 @@ test('selectFolder: no tab for that folder, a bad path, or a sender that is no t
     assert.strictEqual(typeof r.text, 'string');
   }
   assert.strictEqual(h.shell.snapshot().selectedKey, before);
+});
+
+// --- the Git drawer (Enhancement #46): what a branch's tab is doing, and *Run /merged* ---
+
+const idleStatus = { working: false, needsInput: false, finished: false, lock: null, health: null };
+
+test('tabStates: per folder, whether a tab is open, started, and what its session reported -- unknown stays unknown', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const folders = [wt('feat-a'), wt('feat-b'), wt('feat-zzz'), ''];
+  let got = h.shell.tabStates(devView, folders);
+  assert.deepStrictEqual(got[0], { folder: wt('feat-a'), open: true, started: true, known: false, working: null, needsInput: null });
+  assert.deepStrictEqual(got[1], { folder: wt('feat-b'), open: true, started: false, known: false, working: null, needsInput: null });
+  assert.deepStrictEqual(got[2], { folder: wt('feat-zzz'), open: false, started: false, known: false, working: null, needsInput: null });
+  assert.strictEqual(got.length, 3, 'a blank folder is dropped, not answered');
+  h.shell.report(aView, { working: true });
+  got = h.shell.tabStates(devView, [wt('feat-a')]);
+  assert.deepStrictEqual(got[0], { folder: wt('feat-a'), open: true, started: true, known: true, working: true, needsInput: false });
+});
+
+test('tabStates: spelled however, answered with the folder as it was asked; a stranger gets nothing; junk is ignored', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const spelled = wt('feat-a').replace(/\\/g, '/').toUpperCase();
+  assert.strictEqual(h.shell.tabStates(devView, [spelled])[0].open, true);
+  assert.strictEqual(h.shell.tabStates(devView, [spelled])[0].folder, spelled);
+  assert.deepStrictEqual(h.shell.tabStates({}, [wt('feat-a')]), []);
+  assert.deepStrictEqual(h.shell.tabStates(devView, 'nope'), []);
+  assert.deepStrictEqual(h.shell.tabStates(devView, [42, null, {}]), []);
+  assert.strictEqual(h.shell.tabStates(devView, Array(500).fill(wt('feat-a'))).length, 200, 'a bounded answer');
+});
+
+test('runMerged: selects the tab, then types /merged and, a step later, Enter -- two frames, never one chunk', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  const r = await h.shell.runMerged(devView, wt('feat-a'));
+  assert.deepStrictEqual(r, { kind: 'sent', branch: 'feat/a' });
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'), "switched to that branch's tab");
+  assert.deepStrictEqual(h.controls.map(c => [c.port, c.token, c.msg]), [
+    [7701, 'tok-7701', { type: 'input', data: '/merged' }],
+    [7701, 'tok-7701', { type: 'input', data: '\r' }],
+  ]);
+  assert.deepStrictEqual(h.slept, [120], 'the Enter comes a step after the text, or a line typed in one chunk is taken for a paste');
+});
+
+test('runMerged: a session that is working, needs you, has not reported or has not started is told, nothing is sent, nothing moves', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const before = h.shell.snapshot().selectedKey;
+  const cases = [
+    [null, /hasn't reported/, wt('feat-a')],
+    [{ working: true }, /working/, wt('feat-a')],
+    [{ needsInput: true }, /waiting for you/, wt('feat-a')],
+    [idleStatus, /hasn't started/, wt('feat-b')],       // feat-b has a tab but no session yet
+    [idleStatus, /no tab open/, wt('feat-zzz')],
+  ];
+  for (const [status, re, folder] of cases) {
+    if (status) h.shell.report(aView, status);
+    const r = await h.shell.runMerged(devView, folder);
+    assert.strictEqual(r.kind, 'explain');
+    assert.match(r.text, re);
+  }
+  assert.deepStrictEqual(h.controls, []);
+  assert.strictEqual(h.shell.snapshot().selectedKey, before);
+});
+
+test('runMerged: a stranger sender, a bad folder or a host that will not take it are explained; Enter is never sent after a failed text', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  for (const [sender, p] of [[{}, wt('feat-a')], [devView, ''], [devView, 42]]) {
+    assert.strictEqual((await h.shell.runMerged(sender, p)).kind, 'explain', String(p));
+  }
+  assert.deepStrictEqual(h.controls, []);
+  h.controlReply = () => ({ ok: false, error: 'connection refused' });
+  const r = await h.shell.runMerged(devView, wt('feat-a'));
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /connection refused/);
+  assert.strictEqual(h.controls.length, 1, 'no Enter after text that never went in');
+});
+
+test("runMerged: text typed but Enter refused says so, because a half-typed command is left in that session's box", async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  h.controlReply = (c) => (c.msg.data === '\r' ? { ok: false, error: 'timed out after 3000ms' } : { ok: true, reply: null });
+  const r = await h.shell.runMerged(devView, wt('feat-a'));
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /typed \/merged/);
+  assert.match(r.text, /timed out/);
 });
 
 // --- Go to that session ------------------------------------------------------
