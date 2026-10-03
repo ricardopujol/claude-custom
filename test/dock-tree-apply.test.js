@@ -108,6 +108,7 @@ function makeDoc() {
   const dock = mk('div', 'dock');
   const store = mk('div', 'panel-store');
   const termwrap = new El('div'); termwrap.id = 'termwrap'; dock.appendChild(termwrap);
+  const layer = new El('div'); layer.id = 'dock-floats'; dock.appendChild(layer);          // the floats' own layer (D2, PR #102 Miguel Y3)
   const overlay = new El('div'); overlay.id = 'dock-overlay'; dock.appendChild(overlay);
   const panels = {};
   for (const id of IDS) {
@@ -117,7 +118,7 @@ function makeDoc() {
     store.appendChild(p);
     panels[id] = p;
   }
-  for (const e of [dock, store, termwrap, overlay, ...Object.values(panels)]) e.moves = 0;
+  for (const e of [dock, store, termwrap, layer, overlay, ...Object.values(panels)]) e.moves = 0;
   const byId = new Map([...html.descendants()].filter(e => e.id).map(e => [e.id, e]));
   const doc = {
     documentElement: html,
@@ -128,12 +129,13 @@ function makeDoc() {
     querySelector: sel => html.querySelector(sel),
     querySelectorAll: sel => html.querySelectorAll(sel),
   };
-  return { doc, dock, store, termwrap, overlay, panels, root: html };
+  return { doc, dock, store, termwrap, layer, overlay, panels, root: html };
 }
 
 const plan = (layout, sel = NO_SEL, vp = { width: 1000, height: 600 }) => V.treePlan(layout, sel, TABS, vp, { faceSize: () => 77 });
 const groupEls = dock => dock.children.filter(e => e.classes.has('dgroup'));
 const groupEl = (dock, id) => groupEls(dock).find(e => e.dataset.group === id);
+const floatEl = (w, id) => w.layer.children.find(e => e.dataset.group === id);          // floats live in #dock-floats, not under #dock
 const tabButtons = el => el.querySelector('.zone-tabs').children;
 
 // --- tests ---------------------------------------------------------------------------
@@ -356,6 +358,127 @@ test('I4: a selection change keeps focus on the very button that has it', () => 
   b.focus();
   V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc);
   assert.strictEqual(w.doc.activeElement, b);
+});
+
+// --- floats (D2) -----------------------------------------------------------------------
+
+const floated = (ids = ['vault']) => {
+  let l = T.defaultLayout(IDS);
+  ids.forEach((id, i) => { l = T.dock(l, id, { float: { x: 100 + 40 * i, y: 80 + 40 * i } }); });
+  return l;
+};
+const SEL = (floatOrder = []) => ({ active: {}, foldAll: false, floatOrder });
+
+test('D2: a float is a group element with a float class, its rectangle, its tabs and its panel', () => {
+  const w = makeDoc();
+  const l = floated();
+  const id = l.floats[0].id;
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const el = floatEl(w, id);
+  assert.ok(el, 'the float got an element in the floats\' layer');
+  assert.ok(!groupEl(w.dock, id), 'and none directly under #dock');
+  assert.ok(el.classes.has('dfloat') && el.classes.has('dgroup') && el.classes.has('zone'));
+  assert.deepStrictEqual([el.style.left, el.style.top, el.style.width, el.style.height], ['100px', '80px', '320px', '260px']);
+  assert.deepStrictEqual([...tabButtons(el)].map(b => b.dataset.module), ['vault']);
+  assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'));
+  assert.ok(w.panels.vault.classes.has('on'));
+  assert.ok(!groupEl(w.dock, 'right').classes.has('dfloat'), 'a tree group is not a float');
+  assert.ok(!groupEl(w.dock, 'right').querySelector('.dfloat-grip'));
+});
+
+test('D2: a float has one resize grip, made once and kept across renders', () => {
+  const w = makeDoc();
+  const l = floated();
+  const id = l.floats[0].id;
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const grip = floatEl(w, id).querySelector('.dfloat-grip');
+  assert.ok(grip);
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  assert.strictEqual(floatEl(w, id).querySelectorAll('.dfloat-grip').length, 1);
+  assert.strictEqual(floatEl(w, id).querySelector('.dfloat-grip'), grip);
+});
+
+test('PR #102 Miguel S1: the resize grip is hidden from assistive tech (it is pointer-only until D4\'s keyboard work)', () => {
+  const w = makeDoc();
+  const l = floated();
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  assert.strictEqual(floatEl(w, l.floats[0].id).querySelector('.dfloat-grip').getAttribute('aria-hidden'), 'true');
+});
+
+test('PR #102 Miguel Y3: stacking is structural: floats sit in their own layer after the terminal and before the drag overlay, ranked inside it', () => {
+  const w = makeDoc();
+  const l = floated(['vault', 'git']);
+  const [a, b] = l.floats.map(f => f.id);
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const order = w.dock.children.map(e => e.id || e.className);
+  assert.ok(order.indexOf('termwrap') < order.indexOf('dock-floats') && order.indexOf('dock-floats') < order.indexOf('dock-overlay'), order.join());
+  const z = id => Number(floatEl(w, id).style.zIndex);
+  assert.ok(z(a) < z(b), 'drawn later = above');
+  V.applyBoxes(plan(l, SEL([a])), w.doc);                       // raising the first puts it on top
+  assert.ok(z(a) > z(b));
+  assert.deepStrictEqual([z(a), z(b)].sort(), [0, 1], 'the rank inside the layer: it does not grow with every raise');
+  for (let i = 0; i < 40; i++) V.applyBoxes(plan(l, SEL(i % 2 ? [a] : [b])), w.doc);
+  assert.ok(z(a) <= 1 && z(b) <= 1, 'forty raises later it is still 0 or 1, never close to the overlay\'s level');
+  assert.strictEqual(groupEl(w.dock, 'right').style.zIndex || '', '', 'a tree group has no z-index');
+});
+
+test('D2: raising a float moves nothing in the DOM (no element is recreated or reparented)', () => {
+  const w = makeDoc();
+  const l = floated(['vault', 'git']);
+  const [a] = l.floats.map(f => f.id);
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const el = floatEl(w, a);
+  const before = [el.moves, w.panels.vault.moves];
+  V.applyBoxes(plan(l, SEL([a])), w.doc);
+  assert.strictEqual(floatEl(w, a), el);
+  assert.deepStrictEqual([el.moves, w.panels.vault.moves], before, 'a re-append would reset the panel\'s scroll and drop focus from a field inside it');
+});
+
+test('D2: a float that goes (docked, hidden, or Ctrl+B) loses its element and its panel waits in the store', () => {
+  const w = makeDoc();
+  const l = floated();
+  const id = l.floats[0].id;
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  V.applyBoxes(plan(l, { active: {}, foldAll: true, floatOrder: [] }), w.doc);
+  assert.ok(!floatEl(w, id));
+  assert.strictEqual(w.panels.vault.parentNode, w.store);
+  assert.ok(!w.panels.vault.classes.has('on'));
+  V.applyBoxes(plan(l, SEL()), w.doc);                          // unfolded: back
+  assert.ok(floatEl(w, id));
+  assert.strictEqual(w.panels.vault.parentNode, floatEl(w, id).querySelector('.zone-panels'));
+});
+
+test('D2: the same panel DOM node moves from its group into a float and back (never rebuilt)', () => {
+  const w = makeDoc();
+  const home = T.defaultLayout(IDS);
+  V.applyBoxes(plan(home, { active: { right: 'vault' }, foldAll: false, floatOrder: [] }), w.doc);
+  const node = w.panels.vault;
+  const out = T.dock(home, 'vault', { float: { x: 10, y: 10 } });
+  V.applyBoxes(plan(out, SEL()), w.doc);
+  assert.strictEqual(w.panels.vault, node);
+  assert.strictEqual(node.parentNode.parentNode.dataset.group, out.floats[0].id);
+  V.applyBoxes(plan(T.dock(out, 'vault', { cell: 'right', side: 'center' }), { active: { right: 'vault' }, foldAll: false, floatOrder: [] }), w.doc);
+  assert.strictEqual(node.parentNode.parentNode.dataset.group, 'right');
+});
+
+test('D2: a name that was a float and is now a tree group (and back) changes layers: the float element goes, a plain group takes its place', () => {
+  const w = makeDoc();
+  const l = T.dock(T.defaultLayout(IDS), 'vault', { float: true });
+  const id = l.floats[0].id;
+  const asGroup = T.dock(T.dock(l, 'vault', { cell: 'right', side: 'center' }), 'git', { cell: 'right', side: 'top' });
+  const gid = T.groupOf(asGroup, 'git') && T.groupOf(asGroup, 'git') && T.groups(asGroup).find(g => g.tabs.includes('git')).id;
+  assert.strictEqual(gid, id, 'sanity: the freed name is reused by the next new group');
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  const el = floatEl(w, id);
+  assert.ok(el.classes.has('dfloat'));
+  V.applyBoxes(plan(asGroup, NO_SEL), w.doc);
+  assert.ok(!floatEl(w, id), 'no float element is left in the layer');
+  const g = groupEl(w.dock, id);
+  assert.ok(g && !g.classes.has('dfloat') && !g.querySelector('.dfloat-grip'));
+  assert.strictEqual(g.style.zIndex || '', '');
+  V.applyBoxes(plan(l, SEL()), w.doc);
+  assert.ok(!groupEl(w.dock, id) && floatEl(w, id));
+  assert.strictEqual(w.panels.vault.parentNode, floatEl(w, id).querySelector('.zone-panels'), 'the panel node followed');
 });
 
 test('I4: focus is never invented: a module that is gone, or focus held elsewhere, is left alone', () => {

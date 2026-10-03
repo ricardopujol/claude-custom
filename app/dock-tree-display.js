@@ -57,7 +57,7 @@ function treePlan(layout, selection, tabs, viewport, { faceSize } = {}) {
   });
   const drawn = boxes.map((b) => {
     if (b.kind === 'rail') return { ...b, tabs: named(b.modules) };
-    if (b.kind !== 'group') return b;
+    if (b.kind !== 'group' && b.kind !== 'float') return b;       // a float is planned exactly like a group
     const shape = shapeOf(b.rect);
     if (b.active !== null) shown.push(b.active);
     if (b.active === 'agents') {
@@ -142,6 +142,35 @@ function rebaseDrag(layout, drag) {
 }
 
 /**
+ * A float's move or resize, applied to the placement as it is NOW (the float counterpart of `rebaseDrag`).
+ * `drag` is { kind: 'move' | 'resize', id, tabs, last, viewport }: the float's id and the tabs it held at the
+ * press, where the pointer last asked it to go ({ x, y } or { w, h }) and the dock's size at the press.
+ * Returns
+ *   null              the drag is dropped: the float is gone, or the id now names a float holding other tabs
+ *                     (another window docked it and floated something else, and the name was handed out again,
+ *                     PR #102 Dexter 6), or the request is junk;
+ *   `layout` itself   the drag changed nothing visible (PR #102 Dexter 2): a press that moves nothing stores
+ *                     nothing, so a float DRAWN clamped or shrunk is not rewritten with its clamp, and a wider
+ *                     window still gives the stored rectangle back;
+ *   a new layout      otherwise. A move stores the new position and keeps the stored size; a resize stores the
+ *                     drawn position and the new size (the model's rule, app/dock-tree.js).
+ */
+function floatDragResult(layout, drag) {
+  if (!isObject(layout) || !Array.isArray(layout.floats) || !isObject(drag) || (drag.kind !== 'move' && drag.kind !== 'resize')) return null;
+  const cur = layout.floats.find(f => f.id === drag.id);
+  if (!cur || !Array.isArray(drag.tabs) || cur.tabs.length !== drag.tabs.length || !cur.tabs.every((t, i) => t === drag.tabs[i])) return null;
+  const next = drag.kind === 'move'
+    ? treeApi.moveFloat(layout, drag.id, drag.last, drag.viewport)
+    : treeApi.resizeFloat(layout, drag.id, drag.last, drag.viewport);
+  if (next === layout) return layout;
+  // Judged on what is DRAWN: if the float looks the same after as before, nothing was chosen.
+  const drawn = l => (fit(l, null, drag.viewport).boxes.find(b => b.kind === 'float' && b.id === drag.id) || {}).rect;
+  const a = drawn(layout);
+  const b = drawn(next);
+  return a && b && ['x', 'y', 'width', 'height'].every(k => a[k] === b[k]) ? layout : next;
+}
+
+/**
  * What `harness.layoutTree.set` answered: main echoes the layout back once it is written, and answers null
  * when it refused it (not a plain object, over the size cap) or the write failed. Anything but an object
  * means this window shows a layout that was not saved.
@@ -152,9 +181,11 @@ function layoutSaved(answer) { return isObject(answer); }
  * The Window menu's panel rows: every module of the layout in registry order,
  * hidden ones too. It lists hidden modules on purpose: it is the way back for
  * one, and the way out when every module is hidden and there is no tab left.
+ * A floating module is listed and shown like a docked one (PR #102 Dexter 1): the
+ * menu is how a float is hidden, and how it comes back (to its own rectangle).
  */
 function menuRows(layout, tabs) {
-  const placed = new Set([...treeApi.groups(layout).flatMap(g => g.tabs), ...layout.hidden]);
+  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden]);
   return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id) }));
 }
 
@@ -248,8 +279,8 @@ function moduleOfButton(el) {
 }
 
 /**
- * Copy a plan onto the page. `doc` holds `#dock` (with `#termwrap` and
- * `#dock-overlay` in it), the `.panel[data-panel=…]` blocks and the
+ * Copy a plan onto the page. `doc` holds `#dock` (with `#termwrap`, `#dock-floats`
+ * and `#dock-overlay` in it), the `.panel[data-panel=…]` blocks and the
  * `#panel-store` that keeps panels no group is showing.
  */
 function applyBoxes(plan, doc) {
@@ -264,22 +295,45 @@ function applyBoxes(plan, doc) {
   if (term && termwrap) setRect(termwrap, term.rect);
 
   const mk = (tag, cls) => { const el = doc.createElement(tag); el.className = cls; return el; };
-  const groupBoxes = plan.boxes.filter(b => b.kind === 'group');
-  const groupPool = syncPool(dock, ':scope > .dgroup', groupBoxes, b => b.id, (b) => {
+  // A float is a group element with a float class (D2): the same tabs, panel holder and reuse by id. Floats live in
+  // their own layer (#dock-floats: above the groups, rails and gutters, below the drag overlay, in its own stacking
+  // context), so what covers what never depends on how many of them there are (PR #102 Miguel Y3).
+  const layer = doc.getElementById('dock-floats');
+  const makeGroup = (b) => {
     const el = mk('aside', 'zone dgroup');
     el.dataset.group = b.id;
     el.append(mk('nav', 'zone-tabs'), mk('div', 'zone-panels'));
     return el;
-  }, overlay);
+  };
+  const treeBoxes = plan.boxes.filter(b => b.kind === 'group');
+  const floatBoxes = plan.boxes.filter(b => b.kind === 'float');
+  const groupBoxes = [...treeBoxes, ...floatBoxes];
+  const treePool = syncPool(dock, ':scope > .dgroup', treeBoxes, b => b.id, makeGroup, overlay);
+  const floatPool = syncPool(layer, ':scope > .dgroup', floatBoxes, b => b.id, makeGroup, null);
+  const elOfBox = b => treePool.elOf.get(b) || floatPool.elOf.get(b);
   const gutters = plan.boxes.filter(b => b.kind === 'gutter');
   const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, () => mk('div', 'dgutter'), overlay);
   const rails = plan.boxes.filter(b => b.kind === 'rail');
   const railPool = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
 
+  let floatsDrawn = 0;
   for (const b of groupBoxes) {
-    const el = groupPool.elOf.get(b);
+    const el = elOfBox(b);
     el.dataset.shape = b.shape;
     setRect(el, b.rect);
+    // Floats come in stacking order, so the draw order IS the order: its rank inside the layer (0 = lowest). The
+    // elements are never re-appended to raise one: a re-append resets the panel's scroll and drops focus from a
+    // field inside it. A tree group has no z-index.
+    const isFloat = b.kind === 'float';
+    el.classList.toggle('dfloat', isFloat);
+    el.style.zIndex = isFloat ? String(floatsDrawn++) : '';
+    const grip = el.querySelector('.dfloat-grip');
+    if (isFloat && !grip) {
+      // Pointer-only until D4's keyboard work (move and resize without a mouse): so it is no control for assistive tech.
+      const g = mk('div', 'dfloat-grip');
+      g.setAttribute('aria-hidden', 'true');
+      el.appendChild(g);
+    } else if (!isFloat && grip) grip.remove();
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
     const holder = el.querySelector('.zone-panels');
     if (b.panel !== null) {
@@ -320,7 +374,7 @@ function applyBoxes(plan, doc) {
     p.classList.toggle('on', on);
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
-  for (const el of [...groupPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
+  for (const el of [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
   // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
   // moves focus (the vault opening, the terminal after a click) is the page's own rule and runs after this.
@@ -332,7 +386,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

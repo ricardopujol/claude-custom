@@ -1024,7 +1024,9 @@ function onVaultLeft() {
 // drawing is decided by dockZones.renderEffects, which is tested: above all,
 // a redraw never moves keyboard focus unless the vault opened or closed, or
 // the user acted (PR #82 Dexter F2, Miguel B1).
-function renderLayout({ userAction = false } = {}) {
+// `refit: false` is for a redraw that cannot change the terminal's rectangle (a float's move or resize): the
+// pty is not told again and no timer is queued for it (PR #102 Miguel Y2).
+function renderLayout({ userAction = false, refit = true } = {}) {
   const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize });
   lastPlan = plan;
   window.dockTreeView.applyBoxes(plan, document);
@@ -1039,7 +1041,7 @@ function renderLayout({ userAction = false } = {}) {
   const btn = document.getElementById('layout-btn');
   if (btn) btn.classList.toggle('own', ownLayout !== null);
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  if (refit) setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
 
 // A selection change (tab click, Ctrl+B) stays in this window.
@@ -1074,11 +1076,13 @@ function saveGlobalLayout(l) {
 // change that moves nothing writes nothing: no store write, no push to every
 // window, no broadcast (PR #82 Miguel S3). `select` is the module the change
 // is about (a dropped or ticked panel): it shows in its group in THIS window.
-function commitPlacement(next, { justThisTab = false, select = null } = {}) {
+// `userAction: false` is for a change that is not a click or a key (a float's move or resize): it leaves keyboard
+// focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
+function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   if (placementOf(l) === placementOf(toOwn && ownLayout ? ownLayout : globalLayout) && (!justThisTab || ownLayout)) {
-    renderLayout({ userAction: true });
+    renderLayout({ userAction, refit });
     return;
   }
   if (select !== null) { selection = DTm.selectTab(selection, l, select); saveSelection(); }
@@ -1089,7 +1093,7 @@ function commitPlacement(next, { justThisTab = false, select = null } = {}) {
     globalLayout = l;
     saveGlobalLayout(l);
   }
-  renderLayout({ userAction: true });
+  renderLayout({ userAction, refit });
 }
 
 // Reset to global (the tab drops its own) and Make this global.
@@ -1153,13 +1157,24 @@ function showLayoutMenu(x, y) {
   layoutMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
 }
 
-// A module tab's right-click: Hide. (Move and Float arrive in D2 / D4; a tab is moved by dragging it.)
+// A module tab's right-click: Float and Hide. (A tab is moved by dragging it; Move arrives in D4.)
 function openMoveMenu(id, x, y) {
   closeLayoutMenu();
   layoutMenuFor = id;
   const label = (TABS.find(t => t.id === id) || {}).label || id;
   const check = justThisTabCheck();
   layoutMenu.appendChild(node('div', { className: 'lm-title', text: label }));
+  // A panel that is already alone in its float has nothing to float out of.
+  const own = DTm.floatOf(placementLayout(), id);
+  if (!own || own.tabs.length > 1) {
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Float', title: 'Take this panel out of its group into a window of its own over the dock',
+      on: { click: () => {
+        commitPlacement(DTm.dock(placementLayout(), id, { float: true }), { justThisTab: check.box.checked, select: id });
+        closeLayoutMenu();
+      } },
+    }));
+  }
   layoutMenu.appendChild(node('button', {
     type: 'button', text: 'Hide',
     on: { click: () => {
@@ -1275,13 +1290,16 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     if (!drag) {
       if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
       // The dock's rectangle and size are read once, here: a move event must not force a layout every time.
-      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null };
+      // A tab dragged out of a float: that float is no drop target, what is under it decides (D2).
+      const own = DTm.floatOf(placementLayout(), press.id);
+      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null };
       document.body.appendChild(drag.ghost);
       document.body.classList.add('dock-dragging');
     }
     drag.ghost.style.left = `${e.clientX + 12}px`;
     drag.ghost.style.top = `${e.clientY + 10}px`;
-    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top });
+    drag.at = { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top };
+    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude });
     drag.target = hit.target;
     // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
     const sig = JSON.stringify(hit.zones);
@@ -1294,7 +1312,10 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     // and a removed source never reports an end (L1 PR #82 Dexter F1, Miguel I2).
     end();
     if (!d) return;                                     // never moved: the click that follows selects the tab
-    if (d.target) commitPlacement(DTm.dock(placementLayout(), d.id, d.target), { select: d.id });
+    if (!d.target) return;
+    // The terminal's middle floats the panel where it was dropped: the model says where (D2).
+    const target = d.target.float === true ? { float: DTm.floatSpotAt(d.at, d.viewport) } : d.target;
+    commitPlacement(DTm.dock(placementLayout(), d.id, target), { select: d.id });
   });
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
   window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
@@ -1302,6 +1323,105 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
   }, true);
+})();
+
+// --- floating panels (dockable panels D2) -------------------------------------------
+// A float is moved by the empty part of its tab bar, resized by its corner grip and raised by pressing it
+// anywhere. Raising is this window's selection (floatOrder, localStorage): a click never writes the shared
+// layout. A move or resize is DRAWN while it goes (dragLayout, as the dividers do) and saved ONCE on release,
+// applied to the placement as it is then (PR #100 Dexter F6). Dragging a float's TAB is the tab drag above
+// (it docks that panel). What a move or resize asks for, and every clamp, is app/dock-tree.js's.
+// A press that moves nothing stores nothing (PR #102 Dexter 2): the drag starts after FLOAT_SLOP px, and a release that
+// lands where the float is already drawn is no change (dockTreeView.floatDragResult). It follows only the pointer that
+// pressed (Miguel S4), is drawn at most once per animation frame, and never asks the terminal to refit: a float
+// doesn't change the terminal's rectangle (Miguel Y2). Moving by keyboard, and a name for the grip for assistive
+// tech, are D4's: until then the bar and the grip are pointer-only.
+let floatDragDraws = 0;   // how many times a float drag redrew: the probe checks N moves in one frame draw once
+let floatDrag = null;     // { kind: 'move' | 'resize', id, tabs, start, rect, viewport, base, el, pointerId, last, started, frame }
+(function initFloats() {
+  const FLOAT_SLOP = 3;
+  const dock = document.getElementById('dock');
+
+  function finish(d) {
+    try { d.el.releasePointerCapture(d.pointerId); } catch { /* not captured, or the element is gone */ }
+    if (d.frame) cancelAnimationFrame(d.frame);
+    d.frame = 0;
+    document.body.classList.remove('dock-dragging');
+    floatDrag = null;
+  }
+  // What the drag has so far, drawn (not saved) over the placement it started from.
+  function drawDrag(d) {
+    d.frame = 0;
+    if (floatDrag !== d) return;
+    const next = window.dockTreeView.floatDragResult(d.base, d);
+    const shown = next === null || next === d.base ? null : next;
+    if (shown !== dragLayout) { dragLayout = shown; floatDragDraws += 1; renderLayout({ refit: false }); }
+  }
+  // A drag the system took away, or whose release never came, is not a choice: draw what is saved.
+  function cancelFloatDrag(e) {
+    const d = floatDrag;
+    if (!d || (e && typeof e.pointerId === 'number' && e.pointerId !== d.pointerId)) return;
+    finish(d);
+    dragLayout = null;
+    renderLayout({ refit: false });
+  }
+
+  // What moves or resizes a float: its bar's own surface (the handle and the empty part) and the grip.
+  const floatHandleOf = t => !!t && !!t.closest && !!t.closest('.dfloat') && (!!t.closest('.dfloat-grip') || (t.classList.contains('zone-tabs')));
+  // A press on those is no click on a control, so it must not blur the field that holds the keyboard (a half-typed
+  // secret in a floating Vault): the pointerdown's preventDefault doesn't stop focus moving, the mousedown's does.
+  dock.addEventListener('mousedown', (e) => {
+    if (e.button === 0 && floatHandleOf(e.target)) e.preventDefault();
+  });
+  dock.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const el = e.target.closest && e.target.closest('.dfloat');
+    if (!el) return;
+    const id = el.dataset.group;
+    const raised = DTm.raiseFloat(selection, id);
+    if (JSON.stringify(raised) !== JSON.stringify(selection)) { selection = raised; saveSelection(); renderLayout({ refit: false }); }
+    const kind = e.target.closest('.dfloat-grip') ? 'resize' : (e.target === el.querySelector('.zone-tabs') ? 'move' : null);
+    const box = lastPlan ? lastPlan.boxes.find(b => b.kind === 'float' && b.id === id) : null;
+    if (!kind || !box) return;
+    const base = placementLayout();
+    const fl = base.floats.find(f => f.id === id);
+    if (!fl) return;
+    // The viewport is read once, here: a move event must not force a layout every time. `rect` is where the float
+    // is DRAWN (the window may have clamped it), because that is what the pointer grabbed. `tabs` is what it held:
+    // the release applies only to a float that still holds them (a name can be handed out again).
+    floatDrag = { kind, id, tabs: [...fl.tabs], start: { x: e.clientX, y: e.clientY }, rect: box.rect, viewport: dockViewport(), base, el: e.target, pointerId: e.pointerId, last: null, started: false, frame: 0 };
+    try { e.target.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove', (e) => {
+    const d = floatDrag;
+    if (!d || e.pointerId !== d.pointerId) return;
+    if (e.buttons === 0) { cancelFloatDrag(e); return; }
+    const dx = e.clientX - d.start.x;
+    const dy = e.clientY - d.start.y;
+    if (!d.started) {
+      if (Math.hypot(dx, dy) < FLOAT_SLOP) return;
+      d.started = true;
+      document.body.classList.add('dock-dragging');          // no text selection while it goes
+    }
+    d.last = d.kind === 'move' ? { x: d.rect.x + dx, y: d.rect.y + dy } : { w: Math.max(1, d.rect.width + dx), h: Math.max(1, d.rect.height + dy) };
+    if (!d.frame) d.frame = requestAnimationFrame(() => drawDrag(d));
+  });
+  window.addEventListener('pointerup', (e) => {
+    const d = floatDrag;
+    if (!d || e.pointerId !== d.pointerId) return;
+    finish(d);
+    if (!d.started) return;                                  // a click: the press raised it, nothing else
+    dragLayout = null;
+    const committed = committedLayout();
+    const result = window.dockTreeView.floatDragResult(committed, d);
+    // null: the float is not the one that was grabbed any more. Same layout: nothing was chosen. Either way draw what is saved.
+    if (result === null || result === committed) renderLayout({ refit: false });
+    else commitPlacement(result, { userAction: false, refit: false });      // the one real choice, saved once
+  });
+  window.addEventListener('pointercancel', cancelFloatDrag);
+  window.addEventListener('lostpointercapture', cancelFloatDrag);   // after a normal release the drag is already over
+  window.addEventListener('blur', cancelFloatDrag);
 })();
 
 // --- focus mode (layout pass L1, #1) -----------------------------------------
@@ -1359,8 +1479,12 @@ async function loadLayout() {
   if (bridge) {
     bridge.onChange((l) => {
       layoutPushes += 1;
-      globalLayout = DTm.normalize(l, MODULE_IDS);
-      if (!ownLayout) renderLayout();
+      const incoming = DTm.normalize(l, MODULE_IDS);
+      // This window's own save comes back as a push: it is already drawn, and redrawing it would queue a terminal
+      // refit for a float's move that never touched the terminal (PR #102 Miguel Y2).
+      const same = placementOf(incoming) === placementOf(globalLayout);
+      globalLayout = incoming;
+      if (!ownLayout && !same) renderLayout();
     });
     let answer = null;
     let v1Answer = null;
@@ -1420,12 +1544,18 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'state': {
         // `focusTerm`: the keyboard goes to the terminal first, as a click on it would, so a real key reaches xterm's handler.
         if (a.focusTerm === true) term.focus();
-        const groups = [...document.querySelectorAll('#dock > .dgroup')].map(el => ({
+        const groupInfo = el => ({
           id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
           tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
           on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
           panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
           panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
+        });
+        // Floats hang over the tree, so they are listed apart: the tree's boxes tile #dock, the floats don't.
+        const groups = [...document.querySelectorAll('#dock > .dgroup:not(.dfloat)')].map(groupInfo);
+        const floats = [...document.querySelectorAll('#dock-floats > .dfloat')].map(el => ({
+          ...groupInfo(el), zIndex: Number(el.style.zIndex), display: getComputedStyle(el).display,
+          bar: rectOf(el.querySelector('.zone-tabs')), grip: rectOf(el.querySelector('.dfloat-grip')),
         }));
         // The vault's field is tagged the first time it is asked for, so a later state shows whether it is the SAME node.
         const vaultField = document.getElementById('vault-search');
@@ -1436,10 +1566,19 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
           path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),
         }));
+        // How the floats stack against everything else (PR #102 Y3): the layer's and the drag overlay's z-index, the
+        // terminal's isolation, and where the terminal's own overlays are: inside #termwrap, whose context contains them.
+        const zOf = id => Number(getComputedStyle(document.getElementById(id)).zIndex);
+        const lockEl = document.getElementById('lock-overlay');
+        const stack = {
+          layerZ: zOf('dock-floats'), overlayZ: zOf('dock-overlay'), termwrapIsolation: getComputedStyle(document.getElementById('termwrap')).isolation,
+          lockInTermwrap: !!lockEl && document.getElementById('termwrap').contains(lockEl),
+          order: [...document.getElementById('dock').children].map(e => e.id || e.className.split(' ')[0]),
+        };
         let proposed = null;
         try { proposed = fit.proposeDimensions() || null; } catch {}
         return JSON.stringify({
-          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, rails, gutters,
+          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, floats, rails, gutters, stack,
           term: { cols: term.cols, rows: term.rows }, fit: proposed, sent: lastSentResize,
           termwrap: rectOf(document.getElementById('termwrap')), dock: rectOf(document.getElementById('dock')),
           termParent: document.getElementById('termwrap').parentNode.id, pushes: layoutPushes,
@@ -1557,6 +1696,53 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
         globalLayout = DTm.normalize(a.pushed, MODULE_IDS);
         window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
+        return JSON.stringify({ ok: true });
+      }
+      // D2: a float moved by its bar's empty part (`what: 'bar'`), by its left handle (`what: 'handle'`) or resized by
+      // its grip (`what: 'grip'`) by `dx`, `dy` px, as synthetic pointer events: down, `moves` moves in ONE frame
+      // (default 2), a frame to draw them, the release. `how` instead of a release: 'nobutton' (a move with no
+      // button down), 'blur', 'jitter' (a 1 px move and back, then the release: nothing was chosen) or 'return'
+      // (dragged by `dx`, `dy`, brought back to where it started, released there), as
+      // `abortedDrag` does for the others. Reports how many times the drag drew and how many resizes reached the pty.
+      case 'floatDrag': return (async () => {
+        const el = document.querySelector(`#dock-floats > .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such float' });
+        const target = a.what === 'grip' ? el.querySelector('.dfloat-grip') : el.querySelector('.zone-tabs');
+        const r = target.getBoundingClientRect();
+        // The bar's empty part is its right end; the handle is the 18 px at its left; the grip is small, so its middle.
+        const x0 = a.what === 'grip' ? r.left + r.width / 2 : (a.what === 'handle' ? r.left + 8 : r.right - 6);
+        const y0 = r.top + r.height / 2;
+        const hit = document.elementFromPoint(x0, y0) === target;   // a real hit test: is what is under the pointer the bar (or the grip)?
+        const frame = () => new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
+        const snap = () => ({ drag: floatDrag !== null, drawn: dragLayout !== null, selecting: document.body.classList.contains('dock-dragging') });
+        const draws0 = floatDragDraws;
+        const sends0 = resizeSends;
+        const dx = a.how === 'jitter' ? 1 : a.dx;
+        const dy = a.how === 'jitter' ? 0 : a.dy;
+        target.dispatchEvent(ptr('pointerdown', x0, y0));
+        const moves = Number.isInteger(a.moves) && a.moves > 0 ? a.moves : 2;
+        for (let k = 1; k <= moves; k++) window.dispatchEvent(ptr('pointermove', x0 + dx * k / moves, y0 + dy * k / moves));
+        const back = a.how === 'jitter' || a.how === 'return';    // 'return': dragged away, then back to where it started
+        if (back) window.dispatchEvent(ptr('pointermove', x0, y0));
+        const sync = snap();                                      // before the frame: nothing is drawn yet
+        await frame();
+        const during = { ...snap(), draws: floatDragDraws - draws0 };
+        if (a.how === 'blur') window.dispatchEvent(new Event('blur'));
+        else if (a.how === 'nobutton') window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x0 + dx, clientY: y0 + dy, button: 0, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        else window.dispatchEvent(ptr('pointerup', back ? x0 : x0 + dx, back ? y0 : y0 + dy));
+        await new Promise(res => setTimeout(res, 60));            // a queued fit, if the release asked for one, has run
+        return JSON.stringify({ ok: true, hit, sync, during, after: snap(), resizes: resizeSends - sends0 });
+      })();
+      // D2: a press and release on a float's body (or, with `bar`, on its bar's empty part): it is raised.
+      case 'floatPress': {
+        const el = document.querySelector(`#dock-floats > .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such float' });
+        const target = a.bar ? el.querySelector('.zone-tabs') : el.querySelector('.zone-panels');
+        const r = target.getBoundingClientRect();
+        const x0 = a.bar ? r.right - 6 : r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        target.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointerup', x0, y0));
         return JSON.stringify({ ok: true });
       }
       // The menus, opened as a click would, so a screenshot can look at them.
@@ -1855,6 +2041,31 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           resolve(JSON.stringify({ ok: true, focusable: field.offsetParent !== null, shown: [...shownModules], after }));
         }, 150);
       });
+      // PR #102 Miguel Y4: the vault's NEW-secret field as it is now. `reveal` clicks its show/hide button as a
+      // pointer would; `type` focuses it and puts dummy text in it (never a real secret). Reports what is on screen.
+      case 'secretField': {
+        const f = document.getElementById('vault-secret');
+        if (a.reveal === true) document.getElementById('vault-mask').click();
+        if (typeof a.type === 'string') { f.focus(); f.value = a.type; }
+        return JSON.stringify({ ok: true, inputType: f.type, value: f.value, active: document.activeElement && document.activeElement.id, visible: f.offsetParent !== null });
+      }
+      // PR #102 Miguel Y4: half a secret in a FLOATING vault's field, then a raise, a move and a resize of that float,
+      // as pointer events do them. After each the field must still hold the keyboard and its text. `id`: the float.
+      case 'floatSecret': return (async () => {
+        const f = document.getElementById('vault-secret');
+        f.focus();
+        f.value = 'dummy-half';
+        const steps = [['raise', 'floatPress', { id: a.id, bar: true }], ['move', 'floatDrag', { id: a.id, what: 'bar', dx: -30, dy: -20 }],
+          ['resize', 'floatDrag', { id: a.id, what: 'grip', dx: 20, dy: 10 }], ['raise body', 'floatPress', { id: a.id }]];
+        const out = [{ step: 'start', active: document.activeElement && document.activeElement.id, value: f.value }];
+        for (const [step, action, args] of steps) {
+          const r = JSON.parse(await window.__dockProbe({ action, args }));
+          await new Promise(res => setTimeout(res, 200));
+          out.push({ step, ok: r.ok, active: document.activeElement && document.activeElement.id, value: f.value });
+        }
+        f.value = '';                                           // nothing left over for the next step
+        return JSON.stringify({ ok: true, out });
+      })();
       // Backlog #36: the socket drops and reattaches. With a dummy half-secret in
       // the field (`a.blur` false) focus must still be in it, and what is typed
       // next lands there, not in the session; with nothing focused (`a.blur`)
@@ -5428,10 +5639,12 @@ function send(data) {
 // The last size the host was sent: verify/probe-dock-tree.js compares it with
 // xterm's own and with what fits the container after every layout change.
 let lastSentResize = null;
+let resizeSends = 0;      // how many resizes reached the host: the probe checks a float's move sends none
 function sendResize() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
     lastSentResize = { cols: term.cols, rows: term.rows };
+    resizeSends += 1;
   }
 }
 

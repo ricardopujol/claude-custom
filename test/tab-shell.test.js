@@ -2210,6 +2210,11 @@ test('the probe may drive the dock tree\'s actions, by name only (dockable panel
   assert.ok(!VIEW_PROBE_ACTIONS.has('dragDrop'), 'the HTML5 strip drop is gone');
 });
 
+test('the probe may drive the floating panels\' actions, by name only (dockable panels D2)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['floatDrag', 'floatPress', 'secretField', 'floatSecret']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
 test('the probe may read and operate the wand, by name only (#51)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
