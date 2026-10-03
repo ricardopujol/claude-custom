@@ -1203,7 +1203,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         });
       }
       // The Style tab's own sends, as the drop zone would make them: a path the host copies in.
-      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}) }); break;
+      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}), ...(a.look ? { look: a.look } : {}) }); break;
       // The Match colours button, as a click would press it.
       case 'bgMatch': {
         const b = document.getElementById('style-match');
