@@ -430,3 +430,63 @@ test('updateLedger: a rewritten subagent transcript starts over, place included'
   assert.strictEqual(second.ledger.files[file].where, null);
   assert.deepStrictEqual(spendBy(second.ledger.files[file]), { develop: 3 });
 });
+
+// ---- Mutation-survivor kills (backlog #58, release PR #101) ----
+
+test('placeOf reads only tool_use blocks: a null block, a non-object and a text block that names a tool prove nothing', () => {
+  const r = emptyRecord();
+  addLines(r, lines(
+    sub('m1', 10, [null, 7, 'x', { type: 'text', name: 'Read', input: { file_path: path.join(FEAT, 'a.py') } },
+      { name: 'Read', input: { file_path: path.join(FEAT, 'a.py') } }])), ROOT, PLACES);
+  assert.deepStrictEqual(spendBy(r), { develop: 10 });
+  assert.strictEqual(r.where, null);
+  addLines(r, lines(sub('m2', 4, [null, read(path.join(FEAT, 'a.py'))])), ROOT, PLACES);
+  assert.deepStrictEqual(r.where, { root: FEAT, branch: 'feat/a' });
+});
+
+test('a subagent line with no cwd and no launching folder proves nothing and is loose, not a crash', () => {
+  const r = emptyRecord();
+  addLines(r, lines(sub('m1', 10, [read(path.join(FEAT, 'a.py'))], { cwd: undefined })), ROOT, PLACES);
+  assert.deepStrictEqual(spendBy(r), { develop: 0 });
+  assert.strictEqual(r.branches.develop.loose, 10, 'no cwd is not inside the project');
+});
+
+// sameDirName is chosen when the module LOADS (process.platform), so each arm needs its own load.
+function loadAs(platform) {
+  const key = require.resolve('../host/branch-ledger');
+  const saved = require.cache[key];
+  const desc = Object.getOwnPropertyDescriptor(process, 'platform');
+  delete require.cache[key];
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    return require(key);
+  } finally {
+    Object.defineProperty(process, 'platform', desc);
+    if (saved) require.cache[key] = saved; else delete require.cache[key];
+  }
+}
+
+// a subagent filed under `folderOf`'s encoded name: m1 goes to feat-a, m2 reads DEV's brief from elsewhere
+async function launchedFrom(mod, folderOf) {
+  const dir = tmpDir('branch-ledger-where-');
+  const subs = path.join(dir, projectDirName(folderOf), 's1', 'subagents');
+  fs.mkdirSync(subs, { recursive: true });
+  const away = 'C:\\Users\\x\\.claude\\reviews\\p';
+  fs.writeFileSync(path.join(subs, 'agent-ag1.jsonl'), lines(
+    sub('m1', 10, [read(path.join(FEAT, 'a.py'))]),
+    sub('m2', 5, [read(path.join(DEV, 'brief.md'))], { cwd: away })));
+  const { ledger } = await mod.updateLedger(mod.emptyLedger(), { projectsDir: dir, projectRoot: ROOT, worktrees: PLACES });
+  const t = mod.totals(ledger);
+  return { spend: t.develop.spend, loose: t.develop.loose };
+}
+
+test('the launching folder is matched by encoded name: exactly on Linux, in any case on Windows', async () => {
+  const linux = loadAs('linux');
+  const win = loadAs('win32');
+  // found: the call into dev is a call HOME, credited by its line (loose on develop)
+  assert.deepStrictEqual(await launchedFrom(linux, DEV), { spend: 0, loose: 5 }, 'linux, same case');
+  assert.deepStrictEqual(await launchedFrom(win, DEV), { spend: 0, loose: 5 }, 'win32, same case');
+  assert.deepStrictEqual(await launchedFrom(win, 'C:\\p\\DEV'), { spend: 0, loose: 5 }, 'win32 ignores case');
+  // not found: dev is not known to be home, so the same call is a move to the worktree called dev
+  assert.deepStrictEqual(await launchedFrom(linux, 'C:\\p\\DEV'), { spend: 5, loose: 0 }, 'linux does not');
+});

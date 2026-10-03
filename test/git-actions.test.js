@@ -186,3 +186,88 @@ test('Type /merged is named for what it does, and when enabled says the Enter is
   assert.ok(A.actionsFor(open, ctx()).filter(x => x.id !== 'type-merged').every(x => x.hint === null || x.hint === undefined));
   assert.strictEqual(by(A.actionsFor(merged, ctx()), 'type-merged').hint, null, 'a disabled one says why instead');
 });
+
+// --- Mortimer, release PR #101 gate (backlog #58): one field varied at a time against a baseline ----------------
+
+const exact = (list, id) => { const a = by(list, id); return { id: a.id, label: a.label, enabled: a.enabled, why: a.why, hint: a.hint }; };
+
+test('Jump: exactly one of place / folder wrong each refuses it, with the reason for that place', () => {
+  const base = by(A.actionsFor(open, ctx()), 'jump');
+  assert.deepStrictEqual(exact(A.actionsFor(open, ctx()), 'jump'),
+    { id: 'jump', label: 'Jump to its tab', enabled: true, why: null, hint: null });
+  assert.strictEqual(base.enabled, true);
+  const none = 'no open worktree for this branch';
+  for (const [what, b, why] of [
+    ['place: dev', { ...open, place: 'dev' }, none],
+    ['place: branch', { ...open, place: 'branch' }, none],
+    ['place: absent', { ...open, place: undefined }, none],
+    ['place: had-worktree', { ...open, place: 'had-worktree' }, 'its worktree was removed'],
+    ['folder: empty', { ...open, folder: '' }, none],
+    ['folder: a number', { ...open, folder: 7 }, none],
+    ['folder: undefined', { ...open, folder: undefined }, none],
+    ['folder: null', { ...open, folder: null }, none],
+    ['folder: empty on a removed worktree', { ...open, place: 'had-worktree', folder: '' }, 'its worktree was removed'],
+  ]) {
+    assert.deepStrictEqual(exact(A.actionsFor(b, ctx()), 'jump'),
+      { id: 'jump', label: 'Jump to its tab', enabled: false, why, hint: null }, what);
+  }
+  assert.deepStrictEqual(exact(A.actionsFor(open, ctx({ tab: { open: false } })), 'jump').why, 'its worktree has no tab in this window');
+});
+
+test('Type /merged: exactly one of place / folder wrong each refuses it with "no open worktree"', () => {
+  assert.strictEqual(by(A.actionsFor(open, ctx()), 'type-merged').enabled, true);
+  for (const [what, b] of [
+    ['place: dev', { ...open, place: 'dev' }],
+    ['place: had-worktree', { ...open, place: 'had-worktree' }],
+    ['place: absent', { ...open, place: undefined }],
+    ['folder: empty', { ...open, folder: '' }],
+    ['folder: a number', { ...open, folder: 7 }],
+    ['folder: undefined', { ...open, folder: undefined }],
+    ['folder: null', { ...open, folder: null }],
+  ]) {
+    assert.deepStrictEqual(exact(A.actionsFor(b, ctx()), 'type-merged'),
+      { id: 'type-merged', label: 'Type /merged', enabled: false, why: 'no open worktree for this branch', hint: null }, what);
+  }
+});
+
+test('Open PR: with a PR but no usable page, the reason depends on what origin is', () => {
+  const noUrl = (over, c) => exact(A.actionsFor({ ...open, ...over }, ctx(c)), 'open-pr');
+  const label = 'Open PR #91';
+  // a prUrl that is empty or not a string is no page, whatever origin is
+  assert.deepStrictEqual(noUrl({ prUrl: '' }, {}),
+    { id: 'open-pr', label, enabled: false, why: "couldn't work out this PR's page", hint: null });
+  assert.deepStrictEqual(noUrl({ prUrl: 5 }, {}),
+    { id: 'open-pr', label, enabled: false, why: "couldn't work out this PR's page", hint: null });
+  assert.deepStrictEqual(noUrl({ prUrl: undefined }, {}).why, "couldn't work out this PR's page");
+  // no github repo URL: origin is something else, or nothing
+  assert.deepStrictEqual(noUrl({ prUrl: null }, { repoUrl: null, originHost: 'gitlab.example.com' }),
+    { id: 'open-pr', label, enabled: false, why: 'origin points at gitlab.example.com, not a github.com address it can open', hint: null });
+  for (const originHost of ['', 5, null, undefined]) {
+    assert.deepStrictEqual(noUrl({ prUrl: null }, { repoUrl: null, originHost }).why,
+      'no GitHub remote ("origin") to open it on', JSON.stringify(originHost));
+  }
+  // a usable page wins over everything else
+  assert.deepStrictEqual(noUrl({}, { repoUrl: null, originHost: 'x' }),
+    { id: 'open-pr', label, enabled: true, why: null, hint: null });
+});
+
+test('Open PR with no PR: "unknown" only when gh did not answer AND the branch is unmerged', () => {
+  const why = (b, c) => exact(A.actionsFor({ ...unmerged, ...b }, ctx({ tab: null, ...c })), 'open-pr').why;
+  assert.strictEqual(why({}, { prsKnown: false }), "PR status is unknown: gh didn't answer");
+  assert.strictEqual(why({}, { prsKnown: true }), 'no PR for this branch');
+  assert.strictEqual(why({}, { prsKnown: undefined }), 'no PR for this branch');
+  for (const state of ['merged', 'deleted', 'open']) {
+    assert.strictEqual(why({ state }, { prsKnown: false }), 'no PR for this branch', state);
+  }
+});
+
+test('the labels the drawer draws are exactly these', () => {
+  const l = A.actionsFor(open, ctx());
+  assert.deepStrictEqual(l.map(a => [a.id, a.label]), [
+    ['open-pr', 'Open PR #91'], ['jump', 'Jump to its tab'], ['open-worktree', 'Open a worktree'],
+    ['type-merged', 'Type /merged'], ['copy', 'Copy name'],
+  ]);
+  assert.deepStrictEqual(exact(l, 'copy'), { id: 'copy', label: 'Copy name', enabled: true, why: null, hint: null });
+  assert.deepStrictEqual(exact(A.actionsFor(unmerged, ctx({ tab: null })), 'open-worktree'),
+    { id: 'open-worktree', label: 'Open a worktree', enabled: false, why: A.OPEN_WORKTREE_WHY, hint: null });
+});

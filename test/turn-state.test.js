@@ -126,3 +126,109 @@ test('property: the snapshot is always one of null, idle, turn, prompt', () => {
     assert.ok([null, 'idle', 'turn', 'prompt'].includes(t.snapshot()));
   }));
 });
+
+// ---- Mutation-survivor kills (backlog #58, release PR #101) ----
+
+const task = (over) => ({ id: 'a1', type: 'subagent', status: 'running', ...over });
+const stopWith = (tasks) => run([START, ev('UserPromptSubmit'), ev('Stop', { background_tasks: tasks })]);
+
+test('a background task is waited on unless its status is one of the six ended statuses', () => {
+  for (const status of ['completed', 'failed', 'killed', 'cancelled', 'stopped', 'error']) {
+    assert.strictEqual(stopWith([task({ status })]), 'idle', `${status} has ended`);
+    assert.strictEqual(stopWith([task({ status, type: undefined, agent_type: 'general' })]), 'idle', `${status} (agent_type)`);
+  }
+  for (const status of ['running', 'pending', 'weird', undefined]) {
+    assert.strictEqual(stopWith([task({ status })]), 'turn', `${String(status)} is not known to have ended`);
+  }
+});
+
+test('only a subagent-shaped task is waited on: type subagent, or a string agent_type', () => {
+  assert.strictEqual(stopWith([task({ type: undefined, agent_type: 'general' })]), 'turn');
+  assert.strictEqual(stopWith([task({ type: 'shell', agent_type: 'general' })]), 'turn');
+  assert.strictEqual(stopWith([task({ type: 'subagent', agent_type: 7 })]), 'turn');
+  assert.strictEqual(stopWith([task({ type: 'shell' })]), 'idle');
+  assert.strictEqual(stopWith([task({ type: undefined, agent_type: 7 })]), 'idle');
+  assert.strictEqual(stopWith([task({ type: undefined })]), 'idle');
+  assert.strictEqual(stopWith([null]), 'idle');
+  assert.strictEqual(stopWith([undefined, task({ status: 'completed' }), null]), 'idle');
+  assert.strictEqual(stopWith([null, task()]), 'turn');
+});
+
+test('background_tasks that is not an array is read as no tasks, and never throws', () => {
+  for (const bad of ['x', 7, { filter: () => [task()] }, null]) {
+    assert.strictEqual(stopWith(bad), 'idle', JSON.stringify(bad));
+  }
+});
+
+test('a freshly started session is at rest: a compact start (which resets nothing) is idle, not a turn or a dialog', () => {
+  assert.strictEqual(run([ev('SessionStart', { source: 'compact' })]), 'idle');
+});
+
+test('SessionEnd forgets the turn, the dialog and every agent already seen to stop', () => {
+  const compact = ev('SessionStart', { source: 'compact' });
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('SessionEnd'), compact]), 'idle');
+  assert.strictEqual(run([START, ev('Notification', { notification_type: 'permission_prompt' }), ev('SessionEnd'), compact]), 'idle');
+  // an id that stopped in the old session is not remembered in the new one
+  assert.strictEqual(run([START, ev('SubagentStop', { agent_id: 'a1' }), ev('SessionEnd'), START,
+    ev('UserPromptSubmit'), ev('Stop', { background_tasks: [task()] })]), 'turn');
+});
+
+test('a tool event proves a turn only for the MAIN session: no agent_id, an empty one or a non-string one', () => {
+  assert.strictEqual(run([START, ev('PreToolUse', { agent_id: '' })]), 'turn');
+  assert.strictEqual(run([START, ev('PreToolUse', { agent_id: 7 })]), 'turn');
+  assert.strictEqual(run([START, ev('PostToolUseFailure', { tool_name: 'Bash' })]), 'turn');
+  assert.strictEqual(run([START, ev('PostToolUse', { agent_id: 'a1' })]), 'idle');
+  assert.strictEqual(run([START, ev('PreToolUse', { agent_id: 'a1' })]), 'idle');
+  assert.strictEqual(run([START, ev('PostToolUseFailure', { agent_id: 'a1' })]), 'idle');
+  // a subagent's tool call still answers a dialog, without opening a turn
+  const asked = [START, ev('Notification', { notification_type: 'permission_prompt' })];
+  assert.strictEqual(run([...asked, ev('PreToolUse', { agent_id: 'a1' })]), 'idle');
+  assert.strictEqual(run([...asked, ev('PostToolUseFailure', {})]), 'turn');
+});
+
+test('SubagentStop remembers only a real (non-empty string) agent_id', () => {
+  const stopOnly = (payload, tasks) => run([START, ev('UserPromptSubmit'), ev('SubagentStop', payload),
+    ev('Stop', { background_tasks: tasks })]);
+  assert.strictEqual(stopOnly({ agent_id: '' }, [task({ id: '' })]), 'turn');
+  assert.strictEqual(stopOnly({}, [task({ id: undefined })]), 'turn');
+  assert.strictEqual(stopOnly({ agent_id: 7 }, [task({ id: 7 })]), 'turn');
+  assert.strictEqual(stopOnly({ agent_id: 'a1' }, [task()]), 'idle');
+});
+
+test('the ended-agent memory holds 200 ids and then forgets the oldest first', () => {
+  const stops = (n) => Array.from({ length: n }, (_, i) => ev('SubagentStop', { agent_id: `x${i}` }));
+  const after = (n, id) => run([START, ev('UserPromptSubmit'), ...stops(n),
+    ev('Stop', { background_tasks: [task({ id })] })]);
+  assert.strictEqual(after(200, 'x0'), 'idle', '200 ids all remembered');
+  assert.strictEqual(after(200, 'x199'), 'idle');
+  assert.strictEqual(after(201, 'x0'), 'turn', 'the 201st evicts the oldest');
+  assert.strictEqual(after(201, 'x1'), 'idle', 'and only the oldest');
+  assert.strictEqual(after(201, 'x200'), 'idle');
+});
+
+test('a payload that is missing or null is read as an empty one', () => {
+  const t = createTurnState();
+  assert.strictEqual(t.handle({ event: 'SessionStart' }), true);
+  assert.strictEqual(t.snapshot(), 'idle');
+  assert.strictEqual(t.handle({ event: 'UserPromptSubmit', payload: null }), true);
+  assert.strictEqual(t.handle({ event: 'Stop', payload: null }), true);
+  assert.strictEqual(t.snapshot(), 'idle');
+  assert.strictEqual(t.handle({ event: 'Stop' }), false);
+  assert.strictEqual(t.handle({ event: 5 }), false);
+  assert.strictEqual(t.handle({}), false);
+});
+
+test('every clean start (startup, resume, clear) drops an open turn, dialog and held agents; compact keeps them', () => {
+  const bg = { background_tasks: [task()] };
+  for (const source of ['startup', 'resume', 'clear']) {
+    const start = ev('SessionStart', { source });
+    assert.strictEqual(run([START, ev('UserPromptSubmit'), start]), 'idle', `${source}: turn`);
+    assert.strictEqual(run([START, ev('Notification', { notification_type: 'permission_prompt' }), start]), 'idle', `${source}: dialog`);
+    // held agents are forgotten too: a later main-session call opens a turn that idle_prompt then ends
+    assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop', bg), start, ev('PreToolUse'),
+      ev('Notification', { notification_type: 'idle_prompt' })]), 'idle', `${source}: held`);
+  }
+  const compact = ev('SessionStart', { source: 'compact' });
+  assert.strictEqual(run([START, ev('Notification', { notification_type: 'permission_prompt' }), compact]), 'prompt');
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop', bg), compact, ev('Notification', { notification_type: 'idle_prompt' })]), 'turn');
+});

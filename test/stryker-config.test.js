@@ -172,7 +172,6 @@ test('no test in the command reads a MUTATED module as text', () => {
   // improvement; adding one never is.
   const TOLERATED = new Set([
     'openrouter.test.js',        // asserts a comment in host/openrouter.js
-    'store.test.js',             // asserts the corrected header in host/store.js
     'secret-vault-lock.test.js', // asserts the B2(a) limit paragraph
   ]);
 

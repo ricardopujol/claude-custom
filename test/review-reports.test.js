@@ -190,3 +190,160 @@ test('createReader: lists the folder once per call of refresh(), not once per br
   read('feat/a');
   assert.strictEqual(lists, 2);
 });
+
+// --- Mortimer, release PR #101 gate (backlog #58) --------------------------------------------------------------
+
+test('parseName: a name or folder that is not a string, or a folder that is empty, is no report (never a throw)', () => {
+  const valid = '2026-10-02-x-dexter.md';
+  assert.notStrictEqual(R.parseName(valid, 'x'), null, 'the baseline matches');
+  // a non-string that would coerce to a matching name must not match
+  assert.strictEqual(R.parseName({ toString: () => valid }, 'x'), null);
+  assert.strictEqual(R.parseName(42, 'x'), null);
+  assert.strictEqual(R.parseName(null, 'x'), null);
+  // a non-string folder
+  assert.doesNotThrow(() => R.parseName(valid, 5));
+  assert.strictEqual(R.parseName(valid, 5), null);
+  assert.strictEqual(R.parseName(valid, null), null);
+  assert.strictEqual(R.parseName(valid, undefined), null);
+  assert.strictEqual(R.parseName(valid, { toString: () => 'x', replace: () => 'x' }), null);
+  // an empty folder name would match a name with nothing between the date and the reviewer
+  assert.strictEqual(R.parseName('2026-10-02--dexter.md', ''), null);
+});
+
+test('verdictLine: every accepted spelling gives the text, and near-misses give nothing', () => {
+  const v = (s) => R.verdictLine(s);
+  // accepted
+  assert.strictEqual(v('## Verdict: A'), 'A');
+  assert.strictEqual(v('### Verdict: A'), 'A');
+  assert.strictEqual(v('# Verdict: A'), 'A');
+  assert.strictEqual(v('##Verdict: A'), 'A', 'no space after the hashes');
+  assert.strictEqual(v('##   Verdict: A'), 'A', 'several spaces after the hashes');
+  assert.strictEqual(v('## Verdict:A'), 'A', 'no space after the colon');
+  assert.strictEqual(v('## Verdict : A'), 'A', 'a space before the colon');
+  assert.strictEqual(v('## Verdict:**A**'), 'A');
+  assert.strictEqual(v('## Verdict   A'), 'A', 'no colon at all');
+  assert.strictEqual(v('## Veredicto: A'), 'A');
+  assert.strictEqual(v('## Verdicto: A'), 'A');
+  assert.strictEqual(v('**Verdict: A**'), 'A');
+  assert.strictEqual(v('Verdict: A'), 'A');
+  assert.strictEqual(v('Veredicto: A'), 'A');
+  assert.strictEqual(v('Verdict:A'), 'A');
+  assert.strictEqual(v('Verdict : A'), 'A');
+  assert.strictEqual(v('Verdict:   A'), 'A');
+  // near-misses
+  assert.strictEqual(v('see ## Verdict: A'), null, 'a heading must start the line');
+  assert.strictEqual(v('see **Verdict: A**'), null, 'bold must start the line');
+  assert.strictEqual(v('see Verdict: A'), null, 'a bare verdict must start the line');
+  assert.strictEqual(v('#### Verdict: A'), null, 'four hashes is not a heading it reads');
+  assert.strictEqual(v('Verdict A'), null, 'a bare verdict needs its colon');
+  assert.strictEqual(v('Verdicts: A'), null);
+  assert.strictEqual(v('Veridict: A'), null);
+});
+
+test('verdictLine: a verdict that is only emphasis takes the next non-blank line, however blank the lines between are', () => {
+  assert.strictEqual(R.verdictLine('## Verdict: ** **\nCLEAN'), 'CLEAN');
+  assert.strictEqual(R.verdictLine('## Verdict\n   \n\t\nCLEAN: ship it'), 'CLEAN: ship it');
+  assert.strictEqual(R.verdictLine('## Verdict\n   \n'), null, 'only blank lines after it');
+  assert.strictEqual(R.verdictLine('## Verdict\n  **  \nCLEAN'), null, 'a line of bare emphasis is the verdict line, and it is empty');
+});
+
+test('verdictLine: the text is trimmed of its emphasis and its edges', () => {
+  assert.strictEqual(R.verdictLine('## Verdict:    DEFECTIVE   '), 'DEFECTIVE');
+  assert.strictEqual(R.verdictLine('## Verdict\n   DEFECTIVE   \n'), 'DEFECTIVE');
+  assert.strictEqual(R.verdictLine('## Verdict: **DEFECTIVE** and **bold**'), 'DEFECTIVE and bold');
+});
+
+test('verdictLine: exactly MAX_VERDICT_CHARS characters are kept whole; one more is cut with an ellipsis, trimmed at the cut', () => {
+  const n = R.MAX_VERDICT_CHARS;
+  const whole = 'a'.repeat(n);
+  assert.strictEqual(R.verdictLine(`## Verdict: ${whole}`), whole);
+  assert.strictEqual(R.verdictLine(`## Verdict: ${whole}b`), `${whole}…`);
+  const spaced = `${'a'.repeat(n - 1)} ${'b'.repeat(10)}`;
+  assert.strictEqual(R.verdictLine(`## Verdict: ${spaced}`), `${'a'.repeat(n - 1)}…`, 'the space at the cut is dropped');
+});
+
+test('latest: two files of the same reviewer, date and round keep the one listed first', () => {
+  const got = R.latest(['2026-10-02-x-dexter.md', '2026-10-02-x-dexter-r1.md'], 'x');
+  assert.deepStrictEqual(got.map(g => g.file), ['2026-10-02-x-dexter.md']);
+  const back = R.latest(['2026-10-02-x-dexter-r1.md', '2026-10-02-x-dexter.md'], 'x');
+  assert.deepStrictEqual(back.map(g => g.file), ['2026-10-02-x-dexter-r1.md']);
+});
+
+// The project name is a path component: only a plain folder name is allowed through. Both entry points ask
+// the file system NOTHING for a refused name (a fs that would answer anything proves it).
+test('a project name that is not a plain folder name is refused by read AND by createReader, before any file system call', () => {
+  for (const project of ['', '.', '..', 'a/b', 'a\\b', '/abs', 'x/', '..\\x', null, undefined, 42, {}, ['proj']]) {
+    const calls = [];
+    const fs = {
+      readdirSync: (d) => { calls.push(['readdir', d]); return ['2026-10-02-feat-a-dexter-r1.md']; },
+      readFileSync: (p) => { calls.push(['read', p]); return '## Verdict: **X**'; },
+      statSync: () => ({ mtimeMs: 1, size: 1 }),
+    };
+    assert.deepStrictEqual(R.read({ reviewsRoot: '/x', project, branch: 'feat/a', fs }), [], `read(${JSON.stringify(project)})`);
+    assert.deepStrictEqual(R.createReader({ reviewsRoot: '/x', project, fs })('feat/a'), [], `reader(${JSON.stringify(project)})`);
+    assert.deepStrictEqual(calls, [], `${JSON.stringify(project)} must not reach the file system`);
+  }
+  const ok = { readdirSync: () => ['2026-10-02-feat-a-dexter-r1.md'], readFileSync: () => '## Verdict: **X**', statSync: () => ({ mtimeMs: 1, size: 1 }) };
+  assert.strictEqual(R.read({ reviewsRoot: '/x', project: 'claude-custom', branch: 'feat/a', fs: ok }).length, 1);
+  assert.strictEqual(R.read({ reviewsRoot: '/x', project: '...', branch: 'feat/a', fs: ok }).length, 1, 'three dots is a plain name');
+  assert.strictEqual(R.createReader({ reviewsRoot: '/x', project: 'claude-custom', fs: ok })('feat/a').length, 1);
+});
+
+test('without a reviewsRoot the reports are looked for under ~/.claude/reviews/<project>', () => {
+  const os = require('os');
+  const expected = path.join(os.homedir(), '.claude', 'reviews', 'proj');
+  const asked = [];
+  const fs = { readdirSync: (d) => { asked.push(d); return []; }, readFileSync: () => '', statSync: () => ({ mtimeMs: 1, size: 1 }) };
+  R.read({ project: 'proj', branch: 'feat/a', fs });
+  R.createReader({ project: 'proj', fs })('feat/a');
+  assert.deepStrictEqual(asked, [expected, expected]);
+});
+
+test('a report is read as utf8 text', () => {
+  const encodings = [];
+  const fs = {
+    readdirSync: () => ['2026-10-02-feat-a-dexter-r1.md'],
+    readFileSync: (p, enc) => { encodings.push(enc); return '## Verdict: **X**'; },
+    statSync: () => ({ mtimeMs: 1, size: 1 }),
+  };
+  assert.strictEqual(R.read({ reviewsRoot: '/x', project: 'proj', branch: 'feat/a', fs })[0].verdict, 'X');
+  R.createReader({ reviewsRoot: '/x', project: 'proj', fs })('feat/a');
+  assert.deepStrictEqual(encodings, ['utf8', 'utf8']);
+});
+
+test('createReader: a report whose stat fails is never served from the cache, even if it was cached before', () => {
+  let reads = 0;
+  let statWorks = true;
+  const fs = {
+    readdirSync: () => ['2026-10-02-feat-a-dexter-r1.md'],
+    statSync: () => { if (!statWorks) throw new Error('EBUSY'); return { mtimeMs: 1, size: 10 }; },
+    readFileSync: () => { reads += 1; return `## Verdict: **V${reads}**`; },
+  };
+  const reader = R.createReader({ reviewsRoot: '/x', project: 'proj', fs });
+  assert.strictEqual(reader('feat/a')[0].verdict, 'V1');
+  assert.strictEqual(reader('feat/a')[0].verdict, 'V1');
+  assert.strictEqual(reads, 1);
+  statWorks = false;
+  assert.strictEqual(reader('feat/a')[0].verdict, 'V2', 'nothing says it is unchanged, so it is read again');
+  assert.strictEqual(reader('feat/a')[0].verdict, 'V3');
+});
+
+test('createReader: a size change alone, with the same time, is a changed report', () => {
+  let size = 10;
+  let reads = 0;
+  const fs = {
+    readdirSync: () => ['2026-10-02-feat-a-dexter-r1.md'],
+    statSync: () => ({ mtimeMs: 5, size }),
+    readFileSync: () => { reads += 1; return `## Verdict: **V${reads}**`; },
+  };
+  const reader = R.createReader({ reviewsRoot: '/x', project: 'proj', fs });
+  assert.strictEqual(reader('feat/a')[0].verdict, 'V1');
+  size = 11;
+  assert.strictEqual(reader('feat/a')[0].verdict, 'V2');
+});
+
+test('read: a folder that cannot be listed is no reports', () => {
+  const fs = { readdirSync: () => { throw new Error('EACCES'); }, readFileSync: () => '' };
+  assert.deepStrictEqual(R.read({ reviewsRoot: '/x', project: 'proj', branch: 'feat/a', fs }), []);
+  assert.deepStrictEqual(R.createReader({ reviewsRoot: '/x', project: 'proj', fs })('feat/a'), []);
+});
