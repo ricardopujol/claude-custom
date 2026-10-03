@@ -165,6 +165,15 @@ test('#46: no origin (or one that is not GitHub, or a git that fails) is repoUrl
   }
 });
 
+test("PR #93 Dexter F9: the answer names origin's host when it is present, even when it is not github.com", async () => {
+  const alias = await createGitTreeService(deps({ readRemote: async () => 'git@github-work:o/r.git' })).get();
+  assert.deepStrictEqual([alias.repoUrl, alias.originHost], [null, 'github-work']);
+  const gh = await createGitTreeService(deps({ readRemote: async () => 'git@github.com:o/r.git' })).get();
+  assert.strictEqual(gh.originHost, 'github.com');
+  const none = await createGitTreeService(deps({ readRemote: async () => null })).get();
+  assert.strictEqual(none.originHost, null);
+});
+
 test('#46: a branch with no PR has no PR page even with a remote', async () => {
   const history = { ...HISTORY, merges: [], lanes: [{ name: 'spike/c', remote: false, date: '2026-09-21', ahead: 1, first: 'spike: c', worktree: null }] };
   const tree = await createGitTreeService(deps({ readHistory: async () => history, readRemote: async () => 'https://github.com/o/r' })).get();

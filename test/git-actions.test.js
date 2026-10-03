@@ -161,3 +161,13 @@ test('Dexter F5: Run /merged is off for a blocked or not-yet-locked tab, and for
     assert.strictEqual(by(A.actionsFor(open, ctx({ tab: { ...idle, lock } })), 'run-merged').enabled, true, lock);
   }
 });
+
+test('Dexter F9: an origin that exists but isn\'t a github.com URL says so and names its host, never "no remote"', () => {
+  const noPage = { ...open, prUrl: null };
+  const a = by(A.actionsFor(noPage, ctx({ repoUrl: null, originHost: 'github-work' })), 'open-pr');
+  assert.strictEqual(a.enabled, false);
+  assert.match(a.why, /github-work/);
+  assert.match(a.why, /github\.com/);
+  assert.doesNotMatch(a.why, /no GitHub remote/);
+  assert.match(by(A.actionsFor(noPage, ctx({ repoUrl: null, originHost: null })), 'open-pr').why, /no GitHub remote/);
+});

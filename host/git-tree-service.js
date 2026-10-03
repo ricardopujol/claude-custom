@@ -22,7 +22,7 @@ const path = require('path');
 const { buildTree } = require('./git-tree');
 const { totals, emptyLedger } = require('./branch-ledger');
 const { lookDirState, ensureLookDir } = require('./style');
-const { repoUrl, prUrl } = require('./pr-url');
+const { repoUrl, prUrl, remoteHost } = require('./pr-url');
 
 const PR_TTL_MS = 60 * 1000;
 const LEDGER_FILE = 'branch-ledger.json';
@@ -66,8 +66,14 @@ function createGitTreeService(d) {
     return r.errors === 0;
   }
 
-  async function originRepo() {
-    try { return d.readRemote ? repoUrl(await d.readRemote(d.cwd)) : null; } catch { return null; }
+  // origin's GitHub repo, and its host whatever it is (PR #93 Dexter F9: present but unreadable is not absent)
+  async function origin() {
+    try {
+      const raw = d.readRemote ? await d.readRemote(d.cwd) : null;
+      return { repo: repoUrl(raw), host: remoteHost(raw) };
+    } catch {
+      return { repo: null, host: null };
+    }
   }
 
   function reviewsOf(name) {
@@ -77,12 +83,13 @@ function createGitTreeService(d) {
   async function compute() {
     const history = await d.readHistory(d.cwd);
     if (!history.ok) return { ok: false, error: history.error };
-    const [ledgerOk, openPrList, repo] = await Promise.all([refreshLedger().catch(() => false), openPrs(), originRepo()]);
+    const [ledgerOk, openPrList, o] = await Promise.all([refreshLedger().catch(() => false), openPrs(), origin()]);
+    const repo = o.repo;
     const tree = buildTree({ history, totals: ledger ? totals(ledger) : {}, openPrs: openPrList,
       projectRoot: d.projectRoot, current: d.currentBranch(d.cwd) });
     try { if (d.readReviews && d.readReviews.refresh) d.readReviews.refresh(); } catch { /* the reader lists again next time */ }
     const branches = tree.branches.map(b => ({ ...b, prUrl: prUrl(repo, b.pr), reviews: reviewsOf(b.name) }));
-    return { ...tree, branches, repoUrl: repo, ledgerOk };
+    return { ...tree, branches, repoUrl: repo, originHost: o.host, ledgerOk };
   }
 
   function get() {

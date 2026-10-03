@@ -40,7 +40,12 @@ function openPr(b, c) {
       : 'no PR for this branch');
   }
   if (typeof b.prUrl === 'string' && b.prUrl) return yes('open-pr', label);
-  return no('open-pr', label, c.repoUrl ? "couldn't work out this PR's page" : 'no GitHub remote ("origin") to open it on');
+  if (c.repoUrl) return no('open-pr', label, "couldn't work out this PR's page");
+  // PR #93 Dexter F9: origin is there but isn't a github.com URL (an ssh alias, GitLab, Enterprise): say so
+  if (typeof c.originHost === 'string' && c.originHost) {
+    return no('open-pr', label, `origin points at ${c.originHost}, not a github.com address it can open`);
+  }
+  return no('open-pr', label, 'no GitHub remote ("origin") to open it on');
 }
 
 function jump(b, c) {

@@ -70,3 +70,22 @@ test('property: whatever the remote spelling, the result is https://github.com/<
     assert.strictEqual(repoUrl(f(o, r)), `https://github.com/${o}/${r}`);
   }));
 });
+
+// PR #93 Dexter F9: an origin that exists but isn't a github.com URL I can read is NOT "no remote".
+test('Dexter F9: scp form with no user (github.com:o/r.git) is GitHub', () => {
+  assert.strictEqual(repoUrl('github.com:o/r.git'), 'https://github.com/o/r');
+});
+
+test('Dexter F9: remoteHost names the host of any remote, and never its credentials or path', () => {
+  const { remoteHost } = require('../host/pr-url');
+  assert.strictEqual(remoteHost('git@github-work:ricardopujol/claude-custom.git'), 'github-work');
+  assert.strictEqual(remoteHost('github.com:o/r.git'), 'github.com');
+  assert.strictEqual(remoteHost('https://user:s3cret@gitlab.example.com:8443/o/r.git'), 'gitlab.example.com');
+  assert.strictEqual(remoteHost('ssh://git@ssh.github.com:443/o/r.git'), 'ssh.github.com');
+  for (const bad of [null, '', '   ', 'C:\repos\r', '/srv/git/r.git', 'file:///srv/r.git', 'https://exa mple.com/r']) {
+    assert.strictEqual(remoteHost(bad), null, JSON.stringify(bad));
+  }
+  for (const s of ['https://user:s3cret@github-x/o/r', 'tok3n@hostx:o/r']) {
+    assert.doesNotMatch(String(remoteHost(s)), /s3cret|tok3n|user/);
+  }
+});

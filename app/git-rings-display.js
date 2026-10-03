@@ -174,7 +174,7 @@ function drawerModel(b, { tree, tab = null, hub = false } = {}) {
   return {
     title: c.title, kind: c.kind, why: c.why, whyMissing: c.whyMissing, sum: c.sum, ...barredPeople(b.people),
     reviews, noReviews: reviews.length ? null : NO_REVIEWS,
-    actions: actionsLib.actionsFor(b, { prsKnown: t.prsKnown, repoUrl: t.repoUrl || null, tab }),
+    actions: actionsLib.actionsFor(b, { prsKnown: t.prsKnown, repoUrl: t.repoUrl || null, originHost: t.originHost || null, tab }),
   };
 }
 
