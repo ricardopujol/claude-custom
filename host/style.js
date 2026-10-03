@@ -324,8 +324,20 @@ function noMatchReason(seeds, terminalForeground, generate) {
   return NO_PALETTE_REASON;
 }
 
-function matchLook({ cwd, seeds, rng, terminalForeground, fsImpl = fs, generate = generateLookFrom } = {}) {
+const NO_OWN_BACKGROUND_REASON = "there's no background of your own to match any more; kept your colours";
+const STALE_MATCH_REASON = 'the background changed while its colours were being read; kept your colours -- try again';
+
+// `setAt` names the background the renderer SAMPLED (its look.json setAt). The
+// renderer's own gate ran before it read the picture, and another window can
+// reset or replace the background in the meantime (Dexter D5, PR #91): a match
+// for a picture that is no longer the one showing is refused, never applied.
+function matchLook({ cwd, seeds, setAt, rng, terminalForeground, fsImpl = fs, generate = generateLookFrom } = {}) {
   if (!seedParts(seeds)) return { ok: false, reason: noSeedsReason() };
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) return { ok: false, reason: refused };
+  if (!state.look.background) return { ok: false, reason: NO_OWN_BACKGROUND_REASON };
+  if (typeof setAt !== 'string' || state.look.background.setAt !== setAt) return { ok: false, reason: STALE_MATCH_REASON };
   const look = generate(seeds, rng, { terminalForeground });
   if (!look) return { ok: false, reason: noMatchReason(seeds, terminalForeground, generate) };
   return setLook({ cwd, patch: look, fsImpl });
@@ -476,7 +488,7 @@ function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
 module.exports = {
   planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
   readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, MAX_VIDEO_BYTES, LOOK_DIR_NAME,
-  seedLookIfNew, rerollLook, matchLook, NO_PALETTE_REASON,
+  seedLookIfNew, rerollLook, matchLook, NO_PALETTE_REASON, NO_OWN_BACKGROUND_REASON, STALE_MATCH_REASON,
   // the branch ledger (host/git-tree-service.js) lives in the same folder, behind the same ignore,
   // and refuses a linked folder the same way
   ensureLookDir, lookDirState,

@@ -1723,6 +1723,7 @@ document.addEventListener('submit', async (e) => {
 // When project art is showing, the terminal must let it through. xterm paints
 // an opaque background by default, which would reduce the art to a border.
 let backgroundUrl = null;
+let backgroundSetAt = null;   // look.json's setAt for the person's own background, or null (Dexter D5)
 
 // Fully transparent, NOT merely translucent. The SVG already bakes in the 90%
 // black dim that makes light text readable; having the terminal darken it a
@@ -2912,6 +2913,7 @@ function clearBackgroundLayer() {
   removeBackgroundVideo();
   document.getElementById('bg').style.backgroundImage = '';
   backgroundUrl = null;
+  backgroundSetAt = null;
   document.body.classList.remove('has-bg', 'has-custom-bg');
   if (lastTheme) applyTheme(lastTheme);
 }
@@ -2930,6 +2932,7 @@ function applyBackground(filePath, { custom = false, version = '', kind = 'image
     document.getElementById('bg').style.backgroundImage = `url("${media.url}")`;
   }
   backgroundUrl = url;
+  backgroundSetAt = custom && version ? version : null;
   document.body.classList.add('has-bg');
   document.body.classList.toggle('has-custom-bg', !!custom);
 
@@ -3598,8 +3601,11 @@ function bindStyleSections() {
     match.addEventListener('click', async () => {
       match.disabled = true;
       try {
+        // Which background is being read, taken BEFORE the await: the host refuses the match if it
+        // is no longer the one showing by the time the seeds arrive (Dexter D5).
+        const setAt = backgroundSetAt;
         const seeds = colourSeeds.seedsOf(await sampleBackgroundFrame());
-        sendStyle('background', { action: 'match-colours', seeds });
+        sendStyle('background', { action: 'match-colours', seeds, setAt });
       } catch (err) {
         styleState = reduceStyle(styleState, { type: 'style', ask: 'background',
           error: `couldn't read this background's colours: ${err && err.message ? err.message : 'unknown reason'}` });

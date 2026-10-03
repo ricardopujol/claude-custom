@@ -2393,7 +2393,10 @@ wss.on('connection', (ws) => {
       if (msg.action === 'match-colours') {
         // "Match colours to this background" (#34): `seeds` are the few dominant colours the
         // renderer sampled from the picture or the video's current frame. Never the pixels.
-        const r = matchLook({ cwd: STATE_ROOT, seeds: msg.seeds, terminalForeground: theme.terminal && theme.terminal.foreground });
+        // `setAt` is the background the renderer sampled: a match for one that has since been reset or
+        // replaced (by another window) is refused in host/style.js (Dexter D5).
+        const r = matchLook({ cwd: STATE_ROOT, seeds: msg.seeds, setAt: msg.setAt,
+          terminalForeground: theme.terminal && theme.terminal.foreground });
         if (!r.ok) {
           refuse(r.reason);
           return;

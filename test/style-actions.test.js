@@ -48,11 +48,25 @@ test('the "Random colours" button is drawn and sends reroll-look', () => {
 test('the "Match colours to this background" button is drawn, gated, and sends match-colours with only seeds (#34)', () => {
   assert.match(RENDERER, /<button type="button" id="style-match"\$\{v\.canMatch \? '' : ' disabled'\}[^>]*>Match colours to this background<\/button>/);
   assert.match(RENDERER,
-    /getElementById\('style-match'\)[\s\S]{0,400}sendStyle\('background', \{ action: 'match-colours', seeds \}\)/);
+    /getElementById\('style-match'\)[\s\S]{0,700}sendStyle\('background', \{ action: 'match-colours', seeds, setAt \}\)/);
   assert.ok(sentActions().has('match-colours'));
   // the pixels never leave the page: only colourSeeds' hex list is sent
   assert.match(RENDERER, /const seeds = colourSeeds\.seedsOf\(/);
   assert.doesNotMatch(RENDERER, /getImageData[^;]*\bsendStyle/);
+});
+
+test('D5: Match colours says which background it sampled, taken before the frame is read', () => {
+  const click = RENDERER.slice(RENDERER.indexOf("getElementById('style-match')"));
+  const taken = click.indexOf('const setAt = backgroundSetAt;');
+  const read = click.indexOf('await sampleBackgroundFrame()');
+  assert.ok(taken > 0 && read > taken, 'setAt is captured before the await, not after');
+  assert.match(RENDERER, /backgroundSetAt = custom && version \? version : null;/);
+  assert.match(RENDERER, /backgroundUrl = null;\s+backgroundSetAt = null;/);
+});
+
+test('D5: the host hands the sampled background to matchLook', () => {
+  const HOST = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  assert.match(HOST, /matchLook\(\{ cwd: STATE_ROOT, seeds: msg\.seeds, setAt: msg\.setAt,/);
 });
 
 test('the Background section takes video files and says so (#34)', () => {
