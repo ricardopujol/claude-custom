@@ -65,7 +65,7 @@ const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
-        CONTROL_TYPES } = require('./control');
+        CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
@@ -1904,8 +1904,10 @@ refreshAgentStats().then((stats) => {
 // client asks next.
 currentCatalogue().catch(() => {});
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   clients.add(ws);
+  // A one-shot control client (raise, stop) never gets what is held for the next WINDOW (PR #93 Dexter F8)
+  const oneShot = isControlClient(req && req.url);
   ws.openedAt = Date.now();
   console.log(`[host] client attached (${clients.size} total)`);
 
@@ -2041,7 +2043,7 @@ wss.on('connection', (ws) => {
   // A milestone reached while nothing was attached is delivered now rather than
   // lost: the pty outlives the window by design, so the crossing can easily
   // happen with no observer.
-  if (pendingMilestone && ws.readyState === ws.OPEN) {
+  if (!oneShot && pendingMilestone && ws.readyState === ws.OPEN) {
     try {
       ws.send(JSON.stringify(pendingMilestone));
       // Cleared only on a SUCCESSFUL send. Clearing outside the try discarded
@@ -2054,7 +2056,7 @@ wss.on('connection', (ws) => {
   // A quota threshold crossed while nothing was attached, delivered now for the
   // same reason: "you are at 95% of your 5-hour window" is worth more late than
   // never, and the pty runs on whether a window is open or not.
-  if (pendingQuotaWarning && ws.readyState === ws.OPEN) {
+  if (!oneShot && pendingQuotaWarning && ws.readyState === ws.OPEN) {
     try {
       ws.send(JSON.stringify(pendingQuotaWarning));
       pendingQuotaWarning = null;      // cleared only on a SUCCESSFUL send

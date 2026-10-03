@@ -226,3 +226,22 @@ test('stop-if-idle: resolves with the holder\'s verdict, sent only to a host tha
     assert.deepStrictEqual(frames, []);
   });
 });
+
+test('PR #93 Dexter F8: a control client says role=control on its URL, so the host keeps what it holds for a window', async () => {
+  let url = null;
+  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0, verifyClient: ({ req }, done) => { url = req.url; done(true); } });
+  await new Promise(r => wss.on('listening', r));
+  wss.on('connection', (ws) => {
+    ws.send(JSON.stringify(HELLO));
+    ws.on('message', () => ws.send(JSON.stringify({ type: 'raised', windows: 1 })));
+  });
+  try {
+    await sendControl({ port: wss.address().port, token: TOKEN, msg: { type: 'raise' }, timeoutMs: SHORT, WebSocket: require('ws') });
+    const q = new URL(url, 'ws://127.0.0.1').searchParams;
+    assert.strictEqual(q.get('role'), 'control');
+    assert.strictEqual(q.get('token'), TOKEN);
+  } finally {
+    for (const c of wss.clients) c.terminate();
+    await new Promise(r => wss.close(r));
+  }
+});
