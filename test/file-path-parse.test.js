@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { findCandidates, pickLinks, MAX_PATH_LENGTH } = require('../app/file-path-parse');
+const { findCandidates, pickLinks, MAX_PATH_LENGTH, MAX_OPTIONS } = require('../app/file-path-parse');
 
 const paths = (text, breaks) => findCandidates(text, breaks).map(c => c.options.map(o => o.path));
 const first = (text) => findCandidates(text)[0].options[0];
@@ -89,7 +89,7 @@ test('a bare drive is not a path', () => {
 
 test('caps: no path over MAX_PATH_LENGTH, no more than 8 options, no more than 32 candidates', () => {
   assert.deepStrictEqual(paths(`C:\\${'a'.repeat(MAX_PATH_LENGTH + 10)}.txt`), []);
-  assert.ok(findCandidates(`C:\\${'a '.repeat(50)}`)[0].options.length <= 8);
+  assert.ok(findCandidates(`C:\\${'a '.repeat(50)}`)[0].options.length <= MAX_OPTIONS);
   assert.ok(findCandidates('C:\\a.txt '.repeat(100)).length <= 32);
 });
 
@@ -139,7 +139,7 @@ test('PROPERTY: options lie in the text (or add one space at a glued break), shr
   fc.assert(fc.property(fc.string({ maxLength: 200 }), fc.array(fc.nat(200), { maxLength: 4 }), (text, breaks) => {
     let lastStart = -1;
     for (const c of findCandidates(text, breaks)) {
-      if (c.start < lastStart || c.options.length === 0 || c.options.length > 8) return false;
+      if (c.start < lastStart || c.options.length === 0 || c.options.length > MAX_OPTIONS) return false;
       lastStart = c.start;
       let prevLen = Infinity;
       const seen = new Set();

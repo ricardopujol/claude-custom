@@ -29,8 +29,9 @@
  * check alone would send Windows credentials to that server), device paths
  * (\\?\, \\.\), rooted (\x) and drive-relative (C:x) paths, alternate data
  * streams (a ':' past the drive), NUL, and names ending in a dot or space.
- * A path whose LAST component is a symlink to a UNC target is refused after
- * one lstat, before anything follows it (PR #92 Dexter F3). Not covered: a
+ * A path whose LAST component is a symlink chain reaching a UNC target is
+ * refused, hop by hop through lstat + readlink, before anything follows it
+ * (PR #92 Dexter F3, r2 N2). Not covered: a
  * symlink or junction in an EARLIER component pointing at a share -- planting
  * one needs write access to the disk and the right to make links, and
  * checking every component would cost an lstat each per hover.
@@ -92,6 +93,7 @@ function actionFor({ given, real, isDir }) {
 const TIMEOUT_MS = 1500, SLOW_MS = 15000, CACHE_MS = 2000, CACHE_MAX = 500;
 const TIMED_OUT = Symbol('timed out');
 const REFUSED = Symbol('refused');
+const MAX_HOPS = 8;
 
 // A link target that reaches a server: \\server\share, //server/share,
 // \\?\UNC\server\share, UNC\server. (\\?\C:\x is a local device path.)
@@ -119,16 +121,22 @@ async function inspect(abs, fsApi, { state = DEFAULT_STATE, now = Date.now, time
   const slow = () => { state.slow.set(drive, now() + SLOW_MS); return TIMED_OUT; };
   // lstat does NOT follow a link; stat would, and following one to
   // \\attacker\share sends Windows credentials there (PR #92 Dexter F3).
+  // Hop by hop: a local link to a remote link is just as remote (Dexter r2
+  // N2). A chain longer than MAX_HOPS (or a loop) is refused.
   if (typeof fsApi.lstat === 'function') {
-    let lst;
-    try { lst = await withTimeout(fsApi.lstat(abs), timeoutMs); } catch { return null; }
-    if (lst === TIMED_OUT) return slow();
-    if (lst.isSymbolicLink()) {
-      if (typeof fsApi.readlink !== 'function') return REFUSED;
+    let cur = abs;
+    for (let hop = 0; ; hop++) {
+      let lst;
+      try { lst = await withTimeout(fsApi.lstat(cur), timeoutMs); } catch { return hop === 0 ? null : REFUSED; }
+      if (lst === TIMED_OUT) return slow();
+      if (!lst.isSymbolicLink()) break;
+      if (hop >= MAX_HOPS || typeof fsApi.readlink !== 'function') return REFUSED;
       let target;
-      try { target = await withTimeout(fsApi.readlink(abs), timeoutMs); } catch { return REFUSED; }
+      try { target = await withTimeout(fsApi.readlink(cur), timeoutMs); } catch { return REFUSED; }
       if (target === TIMED_OUT) return slow();
       if (remoteTarget(target)) return REFUSED;
+      const t = String(target).replace(/^\\\\\?\\(?=[A-Za-z]:\\)/, '');
+      cur = path.win32.resolve(path.win32.dirname(cur), t);
     }
   }
   let st;

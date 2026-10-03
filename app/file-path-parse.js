@@ -27,7 +27,9 @@
  */
 (function (root) {
 
-const MAX_PATH_LENGTH = 1024, MAX_OPTIONS = 8, MAX_CANDIDATES = 32;
+// 16 endings: a folder followed by a list of file names can have 8 endings with
+// an extension ahead of its real one (PR #92 Dexter r2 N1).
+const MAX_PATH_LENGTH = 1024, MAX_OPTIONS = 16, MAX_CANDIDATES = 32;
 // Not in a Windows name: < > : " | ? * and control chars; ` too (legal, but
 // it's how markdown quotes a path).
 const STOP = /[<>:"|?*`\u0000-\u001f\u007f]/;
@@ -70,8 +72,18 @@ function keepOrder(a, b) {
 function toOptions(text, start, ends, runEnd, glued = []) {
   const seen = new Set();
   const all = [];
+  // A path keeps one separator style; prose after `C:\x\a.md` that names
+  // `src/b.js` is not part of it (Dexter r2 N1).
+  const mixed = (p) => {
+    const sp = p.indexOf(' ');
+    if (sp === -1) return false;
+    const own = /[\\/]/.exec(p.slice(2));
+    const other = own && own[0] === '\\' ? '/' : '\\';
+    return !!own && p.slice(sp).includes(other);
+  };
   const add = (e, p, pinned = false) => {
     if (p.length < 4 && /^[A-Za-z]:[\\/]/.test(p)) return;       // a bare drive
+    if (mixed(p)) return;
     if (e <= start || p.length > MAX_PATH_LENGTH || seen.has(p)) return;
     seen.add(p);
     all.push({ e, path: p, pinned });
@@ -165,7 +177,10 @@ function findCandidates(text, breaks = [], { within } = {}) {
   // Two rows that met with nothing between glue the second row's path onto
   // the first row's last word, where no start would be seen (Miguel S6).
   for (const b of bs) if (ABS_AT.test(text.slice(b, b + 4))) absolute(b);
-  const inAbsolute = (i) => runs.some(([s, e]) => i > s && i < e);
+  // Inside means inside the path itself: the run's text up to the break has no
+  // space in its last segment. A run that went on into prose (spaces after the
+  // file name) doesn't swallow a glued relative path there (Dexter r2 N3).
+  const inAbsolute = (i) => runs.some(([s, e]) => i > s && i < e && !lastSegment(text.slice(s, i)).includes(' '));
   for (const m of text.matchAll(REL_TOKEN)) {
     if (!inUrl(m.index)) add(m.index, relativeAt(text, m.index, m[0], bs));
   }

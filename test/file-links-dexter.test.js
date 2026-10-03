@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { findCandidates } = require('../app/file-path-parse');
+const { findCandidates, MAX_OPTIONS } = require('../app/file-path-parse');
 const { safePath, actionFor, check, open, newState } = require('../app/file-link');
 
 const CWD = 'C:\\Users\\ricar\\VibeCode\\claude-custom\\feat-terminal-file-links';
@@ -25,7 +25,49 @@ const recordingShell = (calls) => ({
 test('F1: a path followed by a long sentence keeps its real ending', () => {
   const o = optionsOf('I updated C:\\proj\\notes.md so the parser now handles every edge case we found today')[0];
   assert.ok(o.includes('C:\\proj\\notes.md'), JSON.stringify(o));
-  assert.ok(o.length <= 8);
+  assert.ok(o.length <= MAX_OPTIONS);
+});
+
+// --- round 2 (Dexter r2, 2026-10-02): N1-N3 ----------------------------------------
+
+test('N1: a folder followed by many dotted words keeps its real ending', () => {
+  const o = optionsOf('C:\\proj\\dist holds main.js, main.css, index.html, app.js, vendor.js, logo.png, robots.txt and favicon.ico')[0];
+  assert.ok(o.includes('C:\\proj\\dist'), JSON.stringify(o));
+});
+
+test('N1: prose with forward-slash paths after a backslash path does not crowd it out', () => {
+  const words = 'abcdefgh'.split('').map(c => `src/${c}.js`).join(' ');
+  const o = optionsOf(`C:\\proj\\notes.md mirrors ${words}`)[0];
+  assert.ok(o.includes('C:\\proj\\notes.md'), JSON.stringify(o));
+  assert.ok(!o.some(p => p.includes(' ') && p.includes('/')), 'no ending mixes the two separators across a space');
+});
+
+test('N3: a glued relative path after an absolute path in the same block is still found', () => {
+  const text = 'I changed C:\\proj\\README.md and the parser inapp\\file-path-parse.js too';
+  const b = text.indexOf('app\\file');
+  assert.ok(findCandidates(text, [b]).some(c => c.start === b
+    && c.options.some(o => o.path === 'app\\file-path-parse.js')));
+});
+
+test('N2: a chain of symlinks is followed hop by hop; a remote hop anywhere is refused', async () => {
+  const links = { 'docs\\notes.md': '..\\.cache\\n.md', '.cache\\n.md': '\\\\attacker\\share\\n.md' };
+  const linkOf = (p) => Object.keys(links).find(k => p.endsWith(k));
+  const seen = [];
+  const fsx = {
+    lstat: async (p) => { seen.push('lstat'); return { isSymbolicLink: () => !!linkOf(p) }; },
+    readlink: async (p) => links[linkOf(p)],
+    stat: async () => { seen.push('stat'); return fileStat; },
+    realpath: async (p) => { seen.push('realpath'); return p; },
+  };
+  assert.deepStrictEqual(await check([['docs\\notes.md']], CWD, fsx, { state: newState() }), [null]);
+  assert.ok(!seen.includes('stat') && !seen.includes('realpath'), JSON.stringify(seen));
+  // a local two-hop chain is followed
+  links['.cache\\n.md'] = 'C:\\real\\n.md';
+  const [a] = await check([['docs\\notes.md']], CWD, fsx, { state: newState() });
+  assert.strictEqual(a && a.action, 'open');
+  // a loop is refused, not followed forever
+  links['.cache\\n.md'] = '..\\docs\\notes.md';
+  assert.deepStrictEqual(await check([['docs\\notes.md']], CWD, fsx, { state: newState() }), [null]);
 });
 
 test('F1 PROPERTY: an absolute file path followed by any prose is always offered', () => {
@@ -82,7 +124,8 @@ test('F3: a final symlink that points at a UNC path is refused before anything f
 test('F3: a symlink to a local target is followed as before', async () => {
   for (const target of ['C:\\real\\notes.md', '\\\\?\\C:\\real\\notes.md', '..\\real\\notes.md']) {
     const fsx = {
-      lstat: async () => ({ isSymbolicLink: () => true }),
+      // only the link itself is a link; where it points is a plain file
+      lstat: async (p) => ({ isSymbolicLink: () => p.includes('\\docs\\') }),
       readlink: async () => target,
       stat: async () => fileStat,
       realpath: async () => 'C:\\real\\notes.md',
