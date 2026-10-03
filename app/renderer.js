@@ -618,13 +618,6 @@ fit.fit();
 // and an erased scrollback (CSI 3 J: what /clear sends) moves them, so each starts a new epoch and the anchored
 // prompt shows instead of vanishing. CSI 2 J is NOT one: it erases the screen only, and a TUI repaints with it.
 term.onScroll(() => paintBar());
-// Output arriving while a prompt is being located may be its echo (app/renderer.js locateEcho).
-term.onWriteParsed(() => {
-  const loc = bar.locate;
-  if (!loc || loc.queued) return;
-  loc.queued = true;
-  setTimeout(() => { loc.queued = false; if (bar.locate === loc) locateEcho(); }, 50);
-});
 term.onResize(() => { bar.epoch += 1; paintBar(); });
 term.parser.registerCsiHandler({ final: 'J' }, (params) => { if (params[0] === 3) { bar.epoch += 1; paintBar(); } return false; });
 
@@ -3717,6 +3710,15 @@ let vimSeen = false;
 // "vim on, Esc, first click" still read 'ready'. Once latched it costs nothing.
 term.onWriteParsed(() => {
   if (!vimSeen && vimInsertShown(screenLines())) vimSeen = true;
+});
+// The terminal bar's echo search (#49) hooks the same event AFTER the vim latch above: the latch's own test
+// (renderer-top-bar.test.js) reads the first onWriteParsed, which must stay the latch's.
+// Output arriving while a prompt is being located may be its echo (app/renderer.js locateEcho).
+term.onWriteParsed(() => {
+  const loc = bar.locate;
+  if (!loc || loc.queued) return;
+  loc.queued = true;
+  setTimeout(() => { loc.queued = false; if (bar.locate === loc) locateEcho(); }, 50);
 });
 const NOTICE_MS = 12000;
 

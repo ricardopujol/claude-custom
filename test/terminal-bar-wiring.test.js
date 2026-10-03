@@ -65,7 +65,9 @@ test('F6: the prompt is anchored on the line its echo was FOUND on, by its text,
   assert.match(RENDERER, /terminalBar\.makeAnchor\(bar\.prompt, \{ line, epoch: bar\.epoch \}\)/);
   // searched once the terminal has parsed what came before it, and again as output is parsed
   assert.match(RENDERER, /term\.write\('', \(\) => \{ if \(bar\.locate === loc\) locateEcho\(\); \}\);/);
-  assert.match(RENDERER, /term\.onWriteParsed\(\(\) => \{/);
+  assert.match(RENDERER, /term\.onWriteParsed\(\(\) => \{\s*const loc = bar\.locate;/);
+  // the vim latch's handler (renderer-top-bar.test.js) stays the FIRST onWriteParsed in the file
+  assert.ok(RENDERER.indexOf('term.onWriteParsed(() => {\r\n  if (!vimSeen') < RENDERER.indexOf('term.onWriteParsed(() => {\r\n  const loc = bar.locate;') || RENDERER.indexOf('term.onWriteParsed(() => {\n  if (!vimSeen') < RENDERER.indexOf('term.onWriteParsed(() => {\n  const loc = bar.locate;'));
 });
 
 test('F6: until the echo is found the anchor is "locating" (no flash), and one never found within LOCATE_MS fails visible', () => {
