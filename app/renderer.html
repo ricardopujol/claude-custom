@@ -169,17 +169,46 @@
       background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px;
       color: var(--text); pointer-events: none; }
     .git-card[hidden] { display: none; }
-    .git-card.pinned { pointer-events: auto; border-color: var(--accent); }
     .git-card-top { display: flex; gap: 8px; align-items: baseline; }
     .git-card-name { font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; flex: 1; }
     .git-card-kind, .git-card-sum { color: var(--dim); font-size: 10.5px; }
     .git-card-why.none { color: var(--dim); font-style: italic; }
     .git-card-who { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; font-variant-numeric: tabular-nums; }
     .git-card-who .n { color: var(--dim); text-align: right; }
-    .git-card-jump { justify-self: start; background: var(--accent); color: var(--on-accent, var(--bg));
-      border: 0; border-radius: 4px; padding: 3px 9px; font: inherit; cursor: pointer; }
-    .git-card-said:empty { display: none; }
-    .git-card-said { color: var(--bad); font-size: 10.5px; }
+    /* --- the drawer (Enhancement #46): beside the dial in a wide zone, under it in a narrow one --- */
+    .git-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+    #git-dial.beside .git-stage { flex-direction: row; }
+    .git-drawer { flex: 0 0 auto; box-sizing: border-box; overflow: auto; max-height: 55%; padding: 8px 10px; display: grid; gap: 6px;
+      align-content: start; background: var(--chrome); border: 1px solid var(--accent); border-radius: 6px;
+      font-size: 11.5px; color: var(--text); }
+    #git-dial.beside .git-drawer { width: 270px; max-height: none; }
+    .git-drawer[hidden] { display: none; }
+    .git-drawer:focus-visible { outline: 1px solid var(--accent); }
+    .git-drawer-who { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: center; font-variant-numeric: tabular-nums; }
+    .git-drawer-who .n { color: var(--dim); text-align: right; }
+    .git-drawer-who .more { grid-column: 1 / -1; color: var(--dim); }
+    .git-drawer-who .bar { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+    .git-drawer-who .bar.none { background: transparent; border: 1px dashed var(--border); }
+    .git-drawer-who .bar i { display: block; height: 100%; background: var(--accent); }
+    .git-drawer-reviews { display: grid; grid-template-columns: auto 1fr; gap: 1px 8px; font-size: 10.5px; }
+    .git-drawer-reviews .p { color: var(--dim); }
+    .git-drawer-reviews .none, .git-drawer-reviews .v.none { color: var(--dim); font-style: italic; }
+    .git-drawer-reviews > .none { grid-column: 1 / -1; }
+    .git-acts { display: grid; gap: 4px; }
+    .git-act-row { display: grid; gap: 1px; }
+    .git-act { justify-self: start; background: var(--accent); color: var(--on-accent, var(--bg)); border: 0; border-radius: 4px;
+      padding: 3px 9px; font: inherit; cursor: pointer; }
+    .git-act:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+    /* disabled but still reachable: a keyboard user finds the button and reads why */
+    .git-act[aria-disabled="true"] { background: transparent; color: var(--dim); border: 1px dashed var(--border); cursor: not-allowed; }
+    .git-act-why { color: var(--dim); font-size: 10px; }
+    .git-said:empty { display: none; }
+    .git-said { flex: 0 0 auto; color: var(--text); font-size: 10.5px; padding-top: 4px; }
+    /* live: a working tab, or measured growth. Its own look; sparks stream only for measured growth */
+    .git-spoke.live { color: var(--text); opacity: 1; }
+    .git-spoke.live .git-stem { filter: drop-shadow(0 0 2px currentColor); }
+    .git-spark { fill: currentColor; pointer-events: none; }
+    .git-label.live { color: var(--text); }
     .git-foot { flex: 0 0 auto; border-top: 1px solid var(--border); padding-top: 4px; font-size: 10.5px; color: var(--dim);
       font-variant-numeric: tabular-nums; }
     .git-foot b { color: var(--text); font-weight: 600; }
@@ -688,7 +717,13 @@
     .zone[data-shape="wide"] .panel.on > #model-list,
     .zone[data-shape="wide"] .panel.on > #fog-list,
     .zone[data-shape="wide"] .panel.on > #projects-list,
+    /* the Git dial takes the whole wide zone, so its drawer can sit beside it (#46) */
+    .zone[data-shape="wide"] .panel.on > #git-dial,
     .zone[data-shape="wide"] .panel.on > #style-sections { flex: 1 1 auto; min-width: 280px; max-width: none; }
+    /* ...and the zone's full HEIGHT: a wide panel lays its children out flex-start, so without a definite
+       height the svg's height:100% fell back to its aspect ratio -- a dial 3x the zone, clipped, with its
+       text hidden as "narrow" (window probe 3b, PR #93) */
+    .zone[data-shape="wide"] .panel.on > #git-dial { align-self: stretch; height: 100%; overflow: hidden; }
     /* Agents in a row: the roster flows as a grid of cards, not one tall list. */
     .zone[data-shape="wide"] #agents {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -1411,6 +1446,8 @@
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>
   <script src="./git-rings.js"></script>
+  <script src="./git-swing.js"></script>
+  <script src="./git-actions.js"></script>
   <script src="./git-rings-display.js"></script>
   <script src="./renderer.js"></script>
 </body>

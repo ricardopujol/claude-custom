@@ -127,7 +127,13 @@ test('the preload exposes exactly the tab bridge on the tab:* channels, replace-
   assert.match(p, /goToSession: \(holder\) => ipcRenderer\.invoke\('tab:goTo', holder\)/);
   // the Git panel's *Jump to its tab* (documentation/PLAN_GIT_TREE.md Task 10)
   assert.match(p, /selectFolder: \(folder\) => ipcRenderer\.invoke\('tab:selectFolder', folder\)/);
+  // the Git drawer's tab states and *Type /merged* (Enhancement #46)
+  assert.match(p, /tabStates: \(folders\) => ipcRenderer\.invoke\('tab:states', folders\)/);
+  assert.match(p, /typeMerged: \(folder, branch\) => ipcRenderer\.invoke\('tab:typeMerged', folder, branch\)/);
   assert.match(p, /raise: \(\) => ipcRenderer\.send\('tab:raise'\)/);
+  // PR #93 Dexter F3: main asks THIS page to type a command into its own box, and hears back
+  assert.match(p, /onTypeCommand: \(fn\) => \(ipcRenderer\.removeAllListeners\('type-command'\)/);
+  assert.match(p, /typed: \(reply\) => ipcRenderer\.send\('tab:typed', reply\)/);
   assert.match(p, /onTabSelected: \(fn\) => \(ipcRenderer\.removeAllListeners\('tab-selected'\)/);
   assert.match(p, /onLockOverride: \(fn\) => \(ipcRenderer\.removeAllListeners\('lock-override'\)/);
 });
@@ -173,6 +179,45 @@ test('renderer.html loads link-click.js before renderer.js', () => {
 
 test('the bridge asks main to open a link, and hears whether it did', () => {
   assert.match(strip(PRELOAD), /openExternal: \(url\) => ipcRenderer\.invoke\('tab:openExternal', url\)/);
+});
+
+// --- PR #93 Dexter F3 / Miguel I2: Type /merged types through the target page, the top bar's way ------------
+
+test('a command main asks this page to type goes through typeCommand, and its answer goes back to main', () => {
+  assert.match(JS, /window\.harness\.onTypeCommand\(/);
+  const body = fnBody('typeCommand');
+  assert.match(body, /planTyping\(\{/, 'the screen is judged first: a dialog, a multi-line draft or no box gets nothing typed');
+  assert.match(body, /typeAndCheck\(/);
+});
+
+test('typeAndCheck clears the line, types, and reads the box back: one copy for the top bar and Type /merged', () => {
+  const body = fnBody('typeAndCheck');
+  assert.match(body, /commandTyped\(screenLines\(\), command/);
+  assert.match(body, /typingKeys\(command, enterInsert\)/);
+  assert.match(fnBody('typePlanned'), /typeAndCheck\(/, 'the top bar types the same way');
+  assert.match(fnBody('requestSwitch'), /typePlanned\(/, 'the top bar types the same way');
+  assert.doesNotMatch(fnBody('requestSwitch'), /input\('\\x15'\)/, 'no second copy of the key sequence');
+});
+
+// --- PR #93 Dexter R2-1: Type /merged never presses Enter ------------------------------------------------
+
+test('the Type /merged path in the page types and reads back, and contains no Enter at all', () => {
+  const page = fnBody('typeCommand');
+  const typing = fnBody('typeAndCheck');
+  const handler = JS.slice(JS.indexOf('window.harness.onTypeCommand('), JS.indexOf('});', JS.indexOf('window.harness.onTypeCommand(')));
+  for (const [name, body] of [['typeCommand', page], ['typeAndCheck', typing], ['the onTypeCommand handler', handler]]) {
+    // the source text of a CR in any spelling (the file's own CRLF line ends are real CRs, not this)
+    assert.doesNotMatch(body, /\\r|\\x0d|\\u000d|\\015|typePlanned\(/i, `${name} must never press Enter`);
+  }
+  assert.match(page, /typeAndCheck\(/);
+  assert.match(page, /term\.focus\(\)/, "the terminal is focused, so the person's Enter lands there");
+  assert.match(typing, /commandTyped\(screenLines\(\), command/, 'the box is still read back');
+});
+
+test("only the top bar's own switch presses Enter, after typeAndCheck's read-back", () => {
+  const enter = fnBody('typePlanned');
+  assert.match(enter, /typeAndCheck\(enterInsert, command, \(r\) => \{\s*if \(r\.ok\) input\('\\r'\);/);
+  assert.match(fnBody('requestSwitch'), /typePlanned\(/);
 });
 
 test('#37: the bridge asks main which paths exist, and asks it to open one', () => {

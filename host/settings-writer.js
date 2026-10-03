@@ -144,6 +144,10 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook }
       // Attention: the turn finished. Deliberately NOT SubagentStop, which
       // fires constantly mid-task.
       Stop: [entry('', 'Stop')],
+      // A main-session turn opened (PR #93 Dexter F1): the subagent roster can't see a turn that calls
+      // no agent, and the Git drawer's Type /merged must not type into one (host/turn-state.js). Once
+      // per prompt. The helper prints nothing and always exits 0, so it never adds to or blocks a prompt.
+      UserPromptSubmit: [entry('', 'UserPromptSubmit')],
     },
   };
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);

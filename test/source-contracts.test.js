@@ -215,3 +215,31 @@ test('tab-strip.html loads only its own script', () => {
   const html = read('app/tab-strip.html');
   assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
 });
+
+// PR #93 Miguel I5 (here, not in probe-seams.test.js: that file is in the mutation command, and reading a
+// mutated module as text aborts Stryker's dry run).
+
+test('the git-panel probe seams are read in ONE place: no other host or app file reads their variables directly', () => {
+  const { SEAMS } = require('../host/probe-seams');
+  const root = path.join(__dirname, '..');
+  for (const dir of ['host', 'app']) {
+    for (const f of fs.readdirSync(path.join(root, dir)).filter(n => n.endsWith('.js') && n !== 'probe-seams.js')) {
+      const src = fs.readFileSync(path.join(root, dir, f), 'utf8');
+      for (const k of SEAMS) assert.ok(!src.includes(k), `${dir}/${f} reads ${k}: go through host/probe-seams.js`);
+    }
+  }
+});
+
+// PR #93 Dexter R2-1 (Ricardo's decision): no hook can say a turn is really over, so Type /merged TYPES and
+// the person presses Enter. Here, not in tab-shell.test.js: that file is in the mutation command, and
+// tab-shell.js is mutated.
+test("the shell's Type /merged path sends no Enter and no raw input anywhere", () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  for (const fn of ['async function typeMerged(', 'function askToType(', 'function typed(']) {
+    const a = src.indexOf(fn);
+    assert.ok(a !== -1, fn);
+    const body = src.slice(a, src.indexOf('\n  }\n', a));
+    assert.doesNotMatch(body, /\\r|\\x0d|\\u000d|hosts\.control|type: 'input'/, `${fn} must not press Enter`);
+  }
+  assert.match(src, /askToType\(tab, '\/merged'\)/);
+});

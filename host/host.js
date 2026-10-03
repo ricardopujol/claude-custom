@@ -40,9 +40,11 @@ const { createProcessesBroadcast } = require('./processes-broadcast');
 const { projectDirName } = require('./project-dir');
 const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
-const { readHistory } = require('./git-history');
+const { readHistory, readOrigin } = require('./git-history');
 const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
-const { readOpenPrs } = require('./open-prs');
+const { readOpenPrs, parseOpenPrs } = require('./open-prs');
+const { readSeams, announce, fixtureReader } = require('./probe-seams');
+const { createReader: createReviewReader } = require('./review-reports');
 const { createGitTreeService, ledgerFileFor } = require('./git-tree-service');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
@@ -63,11 +65,12 @@ const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
-        CONTROL_TYPES } = require('./control');
+        CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
+const { createTurnState } = require('./turn-state');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
@@ -388,10 +391,20 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
+// Three probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
+// gh, and the transcripts and the review reports come from the probe's own folders. Logged when set.
+const seams = readSeams(process.env);
+announce(seams, (line) => console.log(line));
 const gitTree = createGitTreeService({
-  cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: defaultProjectsDir(),
+  cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: seams.projectsDir || defaultProjectsDir(),
   ledgerFile: () => ledgerFileFor(STATE_ROOT),
-  readHistory, loadLedger, updateLedger, saveLedger, readOpenPrs, currentBranch, now: Date.now,
+  readHistory, loadLedger, updateLedger, saveLedger, currentBranch, now: Date.now,
+  readOpenPrs: seams.openPrsFixture
+    ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
+    : readOpenPrs,
+  // The drawer (Enhancement #46): origin's URL for *Open PR*, and ~/.claude/reviews/<project>/ verdicts.
+  readRemote: readOrigin,
+  readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
@@ -444,6 +457,10 @@ const attention = createAttention({
   agents: () => mood.stack(),
 });
 attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
+// Is a main-session turn running, or a dialog open? Measured from the CLI's hooks only (PR #93 Dexter F1/F2):
+// the Git drawer's Type /merged types into this session, and the subagent roster can't see a turn with no
+// agent in it. null until SessionStart: a host without hooks never claims idle.
+const turnState = createTurnState();
 
 // Provider is fixed at spawn: the pty environment cannot change under a running
 // process, so switching backend means a new session rather than a hot swap.
@@ -1177,6 +1194,7 @@ if (helperExists) {
       }));
     }
     attention.handle(ev);
+    if (turnState.handle(ev)) broadcastControl({ type: 'turn', turn: turnState.snapshot() });
     mood.handle(ev);
     // A backstop ending a call means that call's own close never arrived --
     // logged, because a lost event nobody can see is how PostToolUseFailure
@@ -1886,9 +1904,11 @@ refreshAgentStats().then((stats) => {
 // client asks next.
 currentCatalogue().catch(() => {});
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   clients.add(ws);
   ws.openedAt = Date.now();
+  // A one-shot control client (raise, stop) never gets what is held for the next WINDOW (PR #93 Dexter F8)
+  const oneShot = isControlClient(req && req.url);
   console.log(`[host] client attached (${clients.size} total)`);
 
   // Dexter, logic review 2026-09-15: a malformed WEBSOCKET frame (invalid
@@ -1937,6 +1957,8 @@ wss.on('connection', (ws) => {
     style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
+    // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
+    turn: turnState.snapshot(),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
@@ -2021,7 +2043,7 @@ wss.on('connection', (ws) => {
   // A milestone reached while nothing was attached is delivered now rather than
   // lost: the pty outlives the window by design, so the crossing can easily
   // happen with no observer.
-  if (pendingMilestone && ws.readyState === ws.OPEN) {
+  if (!oneShot && pendingMilestone && ws.readyState === ws.OPEN) {
     try {
       ws.send(JSON.stringify(pendingMilestone));
       // Cleared only on a SUCCESSFUL send. Clearing outside the try discarded
@@ -2034,7 +2056,7 @@ wss.on('connection', (ws) => {
   // A quota threshold crossed while nothing was attached, delivered now for the
   // same reason: "you are at 95% of your 5-hour window" is worth more late than
   // never, and the pty runs on whether a window is open or not.
-  if (pendingQuotaWarning && ws.readyState === ws.OPEN) {
+  if (!oneShot && pendingQuotaWarning && ws.readyState === ws.OPEN) {
     try {
       ws.send(JSON.stringify(pendingQuotaWarning));
       pendingQuotaWarning = null;      // cleared only on a SUCCESSFUL send

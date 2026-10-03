@@ -2,8 +2,8 @@
 /**
  * What one tab's renderer tells the shell about itself (PR 2, worktree tabs).
  *
- *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health }, { healthMarker })
- *       -> { working, needsInput, finished, lock, health }
+ *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health, turn }, { healthMarker })
+ *       -> { working, needsInput, finished, lock, health, turn }
  *   afterSelected(status)   the shell's `tab-selected` event clears needsInput
  *   pendingAfter(p, event)  the page's { urgent, finished } after an event (#31)
  *   sameStatus(a, b)        strict field-by-field equality, so the renderer
@@ -15,7 +15,9 @@
  * TEXT (`↓3` / `+12`) or null.
  *
  * Absence is never a confident value: an unknown or missing lock is `null`,
- * never `'held'`; no health marker is `null`.
+ * never `'held'`; no health marker is `null`. `turn` is the HOST's measure of the main session
+ * (host/turn-state.js: 'idle' | 'turn' | 'prompt'), or null when it hasn't said -- never a guessed idle.
+ * A look clears needsInput (attention), never `turn` (PR #93 Dexter F2: a dialog stays open after a glance).
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it:
  * `tabStatus`.
@@ -23,6 +25,7 @@
 (function (root) {
 
 const LOCK_STATES = ['held', 'unlocked', 'blocked', 'override', 'pending'];
+const TURNS = ['idle', 'turn', 'prompt'];
 
 function tabStatus(inputs, { healthMarker } = {}) {
   const i = inputs || {};
@@ -39,6 +42,7 @@ function tabStatus(inputs, { healthMarker } = {}) {
     finished: i.pendingFinished === true,
     lock: LOCK_STATES.includes(lockState) ? lockState : null,
     health,
+    turn: TURNS.includes(i.turn) ? i.turn : null,
   };
 }
 
@@ -73,10 +77,11 @@ function sameStatus(a, b) {
     a.needsInput === b.needsInput &&
     a.finished === b.finished &&
     a.lock === b.lock &&
-    a.health === b.health;
+    a.health === b.health &&
+    a.turn === b.turn;
 }
 
-const api = { tabStatus, afterSelected, sameStatus, pendingAfter };
+const api = { tabStatus, afterSelected, sameStatus, pendingAfter, TURNS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

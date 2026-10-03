@@ -199,7 +199,18 @@ function leftAsWindow(openedAt, closedAt) {
   return closedAt - openedAt >= ONE_SHOT_MAX_MS;
 }
 
+/**
+ * Is this connection a one-shot control client (host/host-client.js: raise, stop), by its URL's role=control?
+ * A window never says it. What the host holds for "the next window" (a milestone, a quota warning) must not
+ * be handed to one of these, which ignores it and closes (PR #93 Dexter F8).
+ */
+function isControlClient(url) {
+  if (typeof url !== 'string' || !url) return false;
+  try { return new URL(url, 'ws://127.0.0.1').searchParams.get('role') === 'control'; } catch { return false; }
+}
+
 module.exports = {
+  isControlClient,
   raiseTargets, idleStopVerdict, leftAsWindow, WINDOW_GONE_GRACE_MS, ONE_SHOT_MAX_MS,
   validAgentLogRequest, MAX_AGENT_NAME,
   validResizeDims, parseControlFrame, handleFrame,

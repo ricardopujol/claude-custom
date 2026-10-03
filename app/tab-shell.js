@@ -118,6 +118,10 @@ const noWindowText = (h) => `That session is in another claude-custom (pid ${h.p
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
 /** What a renderer may say about itself, cut down to the five known fields. */
+// The drawer's rule for "is this session at rest?" -- one copy, so the re-check here agrees with it.
+const { sessionBusyWhy } = require('./git-actions');
+const busyWhy = (status) => sessionBusyWhy(status);
+
 function sanitizeStatus(s) {
   const o = s && typeof s === 'object' ? s : {};
   return {
@@ -126,6 +130,7 @@ function sanitizeStatus(s) {
     finished: o.finished === true,
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
+    turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
   };
 }
 
@@ -173,6 +178,13 @@ const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 // How many tabs closed by hand the `+` menu offers to reopen.
 const REOPEN_MAX = 10;
 
+// The Git drawer: how many folders one tabStates answer covers, and how long Type /merged waits for the
+// target page to say it typed (its spaced keys and read-back take under a second).
+const TAB_STATES_MAX = 200;
+const TYPE_ANSWER_MS = 5000;
+// The branches /merged never runs on: it merges a lane INTO these
+const INTEGRATION = ['develop', 'main', 'master'];
+
 const errorText = (err) => (err && err.message) || String(err);
 
 function createShell(deps) {
@@ -181,6 +193,11 @@ function createShell(deps) {
     git, hosts, ops, views, ui, log = () => {},
     // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
     marks = null,
+    // How long Type /merged waits for the target page's answer; injected so a test doesn't wait.
+    sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+    // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
+    // (gh can't say). Absent: never confirmed, so never typed.
+    prs = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -205,6 +222,10 @@ function createShell(deps) {
   const setups = new Map();            // key -> { running, line, error, log }  (Contract E)
   const createdWarnings = new Map();   // key -> Contract A's optional warning
   let selectWhenListed = null;         // a tab to select as soon as a poll lists it
+  // Type /merged: the type-command requests waiting for their page's answer, by id
+  const typing = new Map();
+  let typingSeq = 0;
+  const typingMerged = new Set();     // the tabs a Type /merged is typing into right now
   let closedByHand = [];               // [{ key, path, branch }], most recent first
 
   const keyOf = normPath;
@@ -790,6 +811,113 @@ function createShell(deps) {
     return { kind: 'select-tab' };
   }
 
+  /**
+   * What the Git drawer needs to know about the tabs of the worktrees it lists (Enhancement #46):
+   * [{ folder, open, started, known, working, needsInput }] in the order asked, `folder` as it was
+   * spelled. `known` is whether that tab's session has REPORTED yet: until it has, working and
+   * needsInput are null (unknown), never false -- an idle session and one nobody has heard from are not
+   * the same. Blank or non-string folders are dropped, and the answer is bounded.
+   */
+  function tabStates(sender, folders) {
+    if (!isTabView(sender) || !Array.isArray(folders)) return [];
+    const out = [];
+    for (const folder of folders) {
+      if (out.length >= TAB_STATES_MAX) break;
+      if (typeof folder !== 'string' || !folder) continue;
+      const key = keyOf(folder);
+      const e = model().find(x => x.key === key);
+      const t = tabByKey(key);
+      const st = t && t.status ? t.status : null;
+      out.push({
+        folder, open: !!e, started: !!e && e.started === true, known: !!e && e.started === true && !!st,
+        working: e && st ? st.working === true : null, needsInput: e && st ? st.needsInput === true : null,
+        // the host's measure of the main session (host/turn-state.js), and the session lock
+        turn: e && st ? st.turn : null, lock: e && st ? st.lock : null,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * The target page's answer to a `type-command` (main.js `tab:typed`). Only the page that was asked,
+   * for a request still waiting, counts.
+   */
+  function typed(sender, reply) {
+    const tab = tabForSender(sender);
+    if (!tab || !reply || typeof reply !== 'object') return false;
+    const w = typing.get(reply.id);
+    if (!w || w.key !== tab.key) return false;
+    typing.delete(reply.id);
+    w.resolve({
+      ok: reply.ok === true,
+      reason: typeof reply.reason === 'string' && reply.reason ? reply.reason : null,
+      box: typeof reply.box === 'string' ? reply.box : '',
+    });
+    return true;
+  }
+
+  /** Asks `tab`'s own page to type `command` into its box; its answer, or null if none came in time. */
+  function askToType(tab, command) {
+    const id = ++typingSeq;
+    const reply = new Promise(resolve => typing.set(id, { key: tab.key, resolve }));
+    views.send(tab, 'type-command', { id, command });
+    return Promise.race([reply, sleep(TYPE_ANSWER_MS).then(() => null)]).then((r) => { typing.delete(id); return r; });
+  }
+
+  /**
+   * *Type /merged*, for the Git drawer (Enhancement #46): select the branch's tab and have ITS OWN PAGE
+   * type `/merged` into its box. NEVER Enter: the person presses it (Ricardo, PR #93 Dexter R2-1). No
+   * hook can say a turn is really over -- another Stop hook can block the first Stop, and the turn goes on
+   * with tools nothing here sees -- so an automatic Enter could queue /merged into a working session.
+   * The drawer only enables it for an open PR whose tab is at rest; this re-checks the tab
+   * (it may have started a turn since the drawer drew) with the drawer's own rule, and explains instead
+   * of typing into a busy session. The page types the top bar's way (PR #93 Dexter F3 / Miguel I2): it
+   * judges its own screen (nothing into a dialog or a multi-line draft), clears a single-line draft
+   * first, enters vim INSERT if needed, and answers ok only once the box reads back exactly `/merged`.
+   * Always answers { kind: 'typed', branch, cleared } or { kind: 'explain', text }.
+   */
+  async function typeMerged(sender, folder, wanted) {
+    if (!isTabView(sender)) return { kind: 'explain', text: "That tab's window can't be found." };
+    if (typeof folder !== 'string' || !folder) return { kind: 'explain', text: 'That branch has no worktree folder.' };
+    if (typeof wanted !== 'string' || !wanted) return { kind: 'explain', text: 'Type /merged needs to know which branch it is for.' };
+    // PR #93 Miguel I3: never on an integration branch, whatever the renderer asked
+    if (INTEGRATION.includes(wanted)) return { kind: 'explain', text: `/merged merges a lane: never on ${wanted}.` };
+    const key = keyOf(folder);
+    const entry = model().find(e => e.key === key);
+    const tab = tabByKey(key);
+    const name = path.basename(folder);
+    if (!entry || !tab) return { kind: 'explain', text: `${name} has no tab open in this window.` };
+    if (!tab.started || !Number.isInteger(tab.port) || !tab.token) return { kind: 'explain', text: `${name}'s tab hasn't started a session yet.` };
+    if (!tab.status) return { kind: 'explain', text: `${name}'s session hasn't reported what it's doing yet.` };
+    // PR #93 Dexter F6: the drawer names a BRANCH; the worktree may have switched since it drew
+    const on = branchOf(key);
+    if (on !== wanted) return { kind: 'explain', text: `${name} is on ${on || 'no branch'} now, not ${wanted}: refresh the Git panel.` };
+    const why = busyWhy(tab.status);
+    if (why) return { kind: 'explain', text: `${name}'s session ${why}.` };
+    // One at a time per tab (PR #93 Dexter F4 / Miguel I1): a double click or a held Enter passes every
+    // check above twice before the session's turn opens, and the keys would interleave into /merged/merged.
+    if (typingMerged.has(key)) return { kind: 'explain', text: `Already sending /merged to ${name}'s session.` };
+    typingMerged.add(key);
+    try {
+      // PR #93 Miguel I3: main confirms the open PR itself (gh, in that worktree), never on the renderer's word
+      let open = null;
+      try { open = prs && typeof prs.openFor === 'function' ? await prs.openFor(folder, wanted) : null; } catch { open = null; }
+      if (open === false) return { kind: 'explain', text: `${wanted} has no open PR: /merged has nothing to merge.` };
+      if (open !== true) return { kind: 'explain', text: `Couldn't confirm with gh that ${wanted} has an open PR, so nothing was typed.` };
+      // gh took a moment: the session may have started a turn meanwhile
+      const still = tab.status ? busyWhy(tab.status) : "hasn't reported what it's doing";
+      if (still) return { kind: 'explain', text: `${name}'s session ${still}.` };
+      const branch = wanted;
+      await userSelect(key);
+      const r = await askToType(tab, '/merged');
+      if (!r) return { kind: 'explain', text: `Couldn't confirm /merged reached ${name}'s session: its page didn't answer.` };
+      if (!r.ok) return { kind: 'explain', text: `Didn't send /merged to ${name}'s session: ${r.reason || 'its page refused'}.` };
+      return { kind: 'typed', branch, cleared: r.box !== '' };
+    } finally {
+      typingMerged.delete(key);
+    }
+  }
+
   /** *Go to that session*, for the blocked pane. Always answers something to say. */
   async function goTo(sender, holder) {
     if (!isTabView(sender)) return { kind: 'explain', text: "That session's window can't be found." };
@@ -853,7 +981,7 @@ function createShell(deps) {
   function destroy() { destroyed = true; }
 
   return {
-    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, menuState, override,
+    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,
@@ -952,6 +1080,10 @@ const PROBE_TOKEN_MIN = 16;
 const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'dragDrop', 'secretRedraw', 'reconnect', 'focusState',
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
+  // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
+  'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
+  // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
+  'gitTermInput',
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch']);
 

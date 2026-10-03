@@ -150,6 +150,9 @@ document.getElementById('lock-go-to').addEventListener('click', async () => {
 // health. tab-status.js decides; this only sends it when it changed.
 // What waits for a look (#31): an urgent need, a finished turn. tab-status.js decides the transitions.
 let tabPending = { urgent: false, finished: false };
+// The host's measure of the MAIN session from the CLI's hooks (host/turn-state.js): 'idle' | 'turn' |
+// 'prompt', or null -- not said yet, an older host, or the socket is down. Unknown is not idle (PR #93 F1/F2).
+let sessionTurn = null;
 let wasWorking = false;
 let lastReportedTabStatus = null;
 function pend(event) {
@@ -167,6 +170,7 @@ function reportTabStatus() {
     pendingFinished: tabPending.finished,
     lock: tabLock,
     health: tabHealth,
+    turn: sessionTurn,
   }, { healthMarker: worktreeStatus.healthMarker });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
@@ -418,12 +422,48 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && shownModules.has('git')) requestGitTree();
 });
 let lastGitTree = null;
+// What the shell knows of each listed worktree's tab (Enhancement #46): [{ folder, open, started, known,
+// working, needsInput }], or null when it couldn't be asked -- unknown, never "idle".
+let lastGitTabs = null;
 function renderGitTree(tree) {
   lastGitTree = tree;
   window.gitRingsDisplay.render(document.getElementById('git-body'), tree, {
+    tabs: lastGitTabs,
     onJump: folder => window.harness.selectFolder(folder),
+    // a PR's page opens in the default browser through main's one gate for links (http/https only)
+    onOpenPr: url => window.harness.openExternal(url),
+    onCopy: async (name) => {
+      const r = await window.harness.writeClipboard(name);
+      if (!r || r.ok !== true) throw new Error((r && r.error) || 'the clipboard refused it');
+    },
+    onTypeMerged: async (folder, branch) => {
+      const r = await window.harness.typeMerged(folder, branch);
+      requestGitTabs();     // the session is busy now: the drawer should say so
+      return r;
+    },
   });
 }
+// The tabs' states move faster than the tree does (a session starts and stops working), so they're asked
+// for on their own, every couple of seconds while the panel is showing, and with every tree.
+const GIT_TABS_EVERY_MS = 2000;
+let gitTabsAsking = false;
+async function requestGitTabs() {
+  if (gitTabsAsking || !window.harness || !window.harness.tabStates) return;
+  const tree = lastGitTree;
+  if (!tree || !tree.ok) return;
+  gitTabsAsking = true;
+  try {
+    lastGitTabs = await window.harness.tabStates(tree.branches.filter(b => typeof b.folder === 'string' && b.folder).map(b => b.folder));
+  } catch {
+    lastGitTabs = null;
+  } finally {
+    gitTabsAsking = false;
+  }
+  if (lastGitTree === tree) renderGitTree(tree);
+}
+setInterval(() => {
+  if (shownModules.has('git') && document.visibilityState === 'visible') requestGitTabs();
+}, GIT_TABS_EVERY_MS);
 
 // --- the project picker ------------------------------------------------------
 // Asked for on demand for the same reason the fog is: the host reads every
@@ -1126,7 +1166,22 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           cardShown: !!document.querySelector('.git-card') && !document.querySelector('.git-card').hidden,
           cardText: (document.querySelector('.git-card') || {}).textContent || '',
           focused: document.activeElement && document.activeElement.getAttribute
-            ? (document.activeElement.getAttribute('data-name') || (document.activeElement.classList && document.activeElement.classList.contains('git-card-jump') ? 'jump' : null)) : null,
+            ? (document.activeElement.getAttribute('data-name')
+              || (document.activeElement.classList && document.activeElement.classList.contains('git-act')
+                ? (document.activeElement.dataset.act === 'jump' ? 'jump' : 'act:' + document.activeElement.dataset.act) : null)) : null,
+          // Enhancement #46: the drawer, its layout, its actions (enabled or not, and why), its answer
+          drawerShown: !!document.querySelector('.git-drawer') && !document.querySelector('.git-drawer').hidden,
+          drawerText: (document.querySelector('.git-drawer') || {}).textContent || '',
+          drawerRect: document.querySelector('.git-drawer') ? rectOf(document.querySelector('.git-drawer')) : null,
+          beside: document.getElementById('git-dial').classList.contains('beside'),
+          acts: [...document.querySelectorAll('.git-drawer .git-act')].map(b => ({ act: b.dataset.act, label: b.textContent,
+            disabled: b.getAttribute('aria-disabled') === 'true', title: b.title, described: b.getAttribute('aria-describedby'),
+            why: ((b.parentElement && b.parentElement.querySelector('.git-act-why')) || {}).textContent || null })),
+          reviews: [...document.querySelectorAll('.git-drawer .git-drawer-reviews > *')].map(x => x.textContent),
+          people: [...document.querySelectorAll('.git-drawer .git-drawer-who .p')].map(x => x.textContent),
+          said: (document.querySelector('#git-body .git-said') || {}).textContent || '',
+          saidNodes: document.querySelectorAll('#git-body [role="status"]').length,
+          sparkEls: body.querySelectorAll('.git-spark').length,
           boldInPanel: body.querySelectorAll('b:not(.git-foot b)').length,
           hubTextShown: !!body.querySelector('.git-hub-name') && getComputedStyle(body.querySelector('.git-hub-name')).display !== 'none',
         });
@@ -1159,13 +1214,44 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         // mouseover, not mouseenter: the dial finds its spoke by delegation, and mouseenter doesn't bubble
         g.dispatchEvent(new MouseEvent(req.action === 'gitHover' ? 'mouseover' : 'click', at));
         const card = document.querySelector('.git-card');
+        const drawer = document.querySelector('.git-drawer');
+        const jumpBtn = drawer && drawer.querySelector('.git-act[data-act="jump"]');
         return JSON.stringify({ ok: true, hidden: card.hidden, text: card.textContent, card: rectOf(card),
-          panel: rectOf(document.getElementById('git-body')), jump: !!card.querySelector('.git-card-jump') });
+          panel: rectOf(document.getElementById('git-body')),
+          drawerShown: !!drawer && !drawer.hidden, drawerText: drawer ? drawer.textContent : '',
+          jump: !!jumpBtn && jumpBtn.getAttribute('aria-disabled') === 'false' });
       }
       case 'gitJump': {
-        const btn = document.querySelector('.git-card-jump');
+        const btn = document.querySelector('.git-drawer .git-act[data-act="jump"]');
         if (!btn) return JSON.stringify({ ok: false, error: 'no jump button' });
         btn.click();
+        return JSON.stringify({ ok: true });
+      }
+      // a drawer action, clicked as a pointer would (a disabled one does nothing, and says why beside it)
+      case 'gitAct': {
+        const btn = document.querySelector('.git-drawer .git-act[data-act="' + String(a.act) + '"]');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no action ' + a.act });
+        // `times`: a double click (or a held Enter's repeats), back to back in one task (PR #93 F4)
+        const times = Number.isInteger(a.times) && a.times > 1 && a.times <= 3 ? a.times : 1;
+        for (let i = 0; i < times; i++) btn.click();
+        return JSON.stringify({ ok: true });
+      }
+      // the swing's state; `pointer` puts the pointer over the dial ('in') or takes it away ('out')
+      case 'gitMotion': {
+        const dial = document.getElementById('git-dial');
+        if (a.pointer === 'in') dial.dispatchEvent(new Event('pointerenter'));
+        if (a.pointer === 'out') dial.dispatchEvent(new Event('pointerleave'));
+        return JSON.stringify({ ok: true, ...window.gitRingsDisplay.motionState(dial) });
+      }
+      // what the shell says of each worktree's tab (asked now, not at the next poll)
+      case 'gitTabs': return requestGitTabs().then(() => JSON.stringify({ ok: true, tabs: lastGitTabs }));
+      // this tab's own terminal screen: what its session's pty has shown
+      case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
+      // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
+      // CLI box with it). Bounded, and only ever this tab's own socket.
+      case 'gitTermInput': {
+        if (typeof a.data !== 'string' || !a.data || a.data.length > 2000) return JSON.stringify({ ok: false, error: 'gitTermInput needs text' });
+        send(JSON.stringify({ type: 'input', data: a.data }));
         return JSON.stringify({ ok: true });
       }
       // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
@@ -3293,33 +3379,79 @@ function requestSwitch(kind, raw) {
     schedulePendingTimeout(kind, request);
   }
   renderTopBar();
-  const input = data => send(JSON.stringify({ type: 'input', data }));
-  // Ctrl-E first: Ctrl-U deletes only back to the CURSOR (measured, Dexter r2
-  // N1). With the cursor at Home it deleted nothing, and the command was
-  // typed in front of the draft -- `/model sonnetrefactor the parser`.
-  // vim NORMAL: `i` first, or every key after it is a motion (Dexter r2 N2).
-  const lead = plan.enterInsert ? 1 : 0;
-  if (lead) input('i');
-  setTimeout(() => input('\x05'), PTY_STEP_MS * lead);
-  setTimeout(() => input('\x15'), PTY_STEP_MS * (lead + 1));
-  setTimeout(() => input(plan.command), PTY_STEP_MS * (lead + 2));
-  // Read the box back before Enter (Miguel r2): the screen was judged before
-  // four spaced writes, and a dialog opening meanwhile, or anything glued to
-  // the command, would take the CR. Not exactly the command: clear it instead.
-  setTimeout(() => {
-    if (commandTyped(screenLines(), plan.command, { vim: vimSeen })) { input('\r'); return; }
-    input('\x05');
-    setTimeout(() => input('\x15'), PTY_STEP_MS);
-    // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
-    if (plan.enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
+  typePlanned(plan.enterInsert, plan.command, (r) => {
+    if (r.ok) return;
     // Only THIS request: a newer one for the same value may already have run
     // (Dexter #51 F5).
     const pending = kind === 'model' ? pendingModel : pendingEffort;
     if (request && pending === request) setPending(kind, null);
-    setTopBarNotice(kind, switchNotice({ kind, result: 'refused',
-      notice: `didn't send ${plan.command}: the input line changed before Enter` }));
+    setTopBarNotice(kind, switchNotice({ kind, result: 'refused', notice: `didn't send ${plan.command}: ${r.reason}` }));
     renderTopBar();
-  }, PTY_STEP_MS * (lead + 5));
+  });
+}
+
+/**
+ * Types `command` into this tab's live box, then reads the box back: `done({ ok: true })` only if it holds
+ * exactly `❯ <command>`, else it clears what was typed and `done({ ok: false, reason })`. It NEVER presses
+ * Enter. ONE copy, for the top bar's switches and the Git drawer's Type /merged (PR #93 Dexter F3 / Miguel
+ * I2). The keys are app/top-bar-display.js's typingKeys: Ctrl-E first (Ctrl-U deletes only back to the
+ * CURSOR, Dexter r2 N1), Ctrl-U (a draft is cleared, never submitted with the command; the CLI's Ctrl+Y gets
+ * it back), `i` first in vim NORMAL (Dexter r2 N2). Spaced PTY_STEP_MS apart, or a line is taken for a paste.
+ */
+function typeAndCheck(enterInsert, command, done) {
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  const keys = typingKeys(command, enterInsert);
+  keys.forEach((k, i) => setTimeout(() => input(k), PTY_STEP_MS * i));
+  // Read the box back (Miguel r2): the screen was judged before the spaced writes, and a dialog opening
+  // meanwhile, or anything glued to the command, would otherwise stand. Not exactly the command: clear it.
+  setTimeout(() => {
+    if (commandTyped(screenLines(), command, { vim: vimSeen })) { done({ ok: true }); return; }
+    input('\x05');
+    setTimeout(() => input('\x15'), PTY_STEP_MS);
+    // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
+    if (enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
+    done({ ok: false, reason: 'the input line changed before it could be confirmed' });
+  }, PTY_STEP_MS * (keys.length + 2));
+}
+
+/**
+ * The top bar's switch: typeAndCheck, then Enter -- right after the read-back, in the same task, and only
+ * when it read back exactly the command. The ONLY place this page presses Enter for a command it typed:
+ * the Git drawer's Type /merged leaves the Enter to the person (PR #93 Dexter R2-1).
+ */
+function typePlanned(enterInsert, command, done) {
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  typeAndCheck(enterInsert, command, (r) => {
+    if (r.ok) input('\r');
+    done(r.ok ? r : { ok: false, reason: 'the input line changed before Enter' });
+  });
+}
+
+/**
+ * Main asks this page to type a command into its own box: the Git drawer's Type /merged, PR #93 Dexter
+ * F3. The screen is judged here, where it is, the top bar's way, and the terminal takes the focus so the
+ * person's Enter lands in it. It types and reads back, and NEVER presses Enter (Dexter R2-1: no hook can
+ * say the turn is really over, so that step is the person's). `done({ ok, box })`, `box` being what the
+ * box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
+ */
+function typeCommand(command, done) {
+  term.focus();
+  const lines = screenLines();
+  if (vimInsertShown(lines)) vimSeen = true;
+  const plan = planTyping({
+    command,
+    screen: inputState(lines, { vim: vimSeen }),
+    connected: !!ws && ws.readyState === WebSocket.OPEN,
+  });
+  if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
+  const box = boxText(lines);
+  typeAndCheck(plan.enterInsert, command, r => done(r.ok ? { ok: true, box: box || '' } : r));
+}
+if (window.harness && window.harness.onTypeCommand) {
+  window.harness.onTypeCommand((ask) => {
+    const id = ask && ask.id;
+    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }));
+  });
 }
 
 // BACKLOG E #5, #3. The Claude choices, redrawn with a star per choice and
@@ -4039,6 +4171,7 @@ function handleControl(msg) {
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
+    sessionTurn = msg.turn === undefined ? null : msg.turn;
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
@@ -4204,6 +4337,11 @@ function handleControl(msg) {
     renderHealth(msg.health);
     return;
   }
+  if (msg.type === 'turn') {
+    sessionTurn = msg.turn === undefined ? null : msg.turn;
+    reportTabStatus();
+    return;
+  }
   if (msg.type === 'cooldowns') {
     renderCooldowns(msg.cooldowns);
     return;
@@ -4214,6 +4352,7 @@ function handleControl(msg) {
   }
   if (msg.type === 'git-tree') {
     renderGitTree(msg);
+    requestGitTabs();
     return;
   }
   if (msg.type === 'bugvault') {
@@ -4430,6 +4569,8 @@ function connect() {
 
   ws.onclose = () => {
     dot.classList.remove('on');
+    // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
+    if (sessionTurn !== null) { sessionTurn = null; reportTabStatus(); }
     // Detach is normal, not fatal — the host keeps the session alive, so just
     // keep trying to reattach.
     setTimeout(connect, 1000);

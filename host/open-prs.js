@@ -47,4 +47,16 @@ async function readOpenPrs(cwd, { run = defaultRun } = {}) {
   }
 }
 
-module.exports = { parseOpenPrs, readOpenPrs, GH_ARGS };
+/**
+ * Has `branch` an open PR, asked in `cwd`? true / false, or null when gh can't say. Type /merged's own
+ * re-check in main (PR #93 Miguel I3), so the renderer's word is never enough to type into a session.
+ */
+async function openPrFor(cwd, branch, { read = readOpenPrs } = {}) {
+  if (typeof branch !== 'string' || !branch) return false;
+  let map;
+  try { map = await read(cwd); } catch { return null; }
+  if (!(map instanceof Map)) return null;
+  return map.has(branch);
+}
+
+module.exports = { parseOpenPrs, readOpenPrs, openPrFor, GH_ARGS };

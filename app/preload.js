@@ -26,7 +26,20 @@ contextBridge.exposeInMainWorld('harness', {
   goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
   //   selectFolder a worktree folder -> { kind, text? }: the Git panel's *Jump to its tab*
   selectFolder: (folder) => ipcRenderer.invoke('tab:selectFolder', folder),
+  //   tabStates   worktree folders -> [{ folder, open, started, known, working, needsInput }]: the Git drawer's
+  //               view of those tabs' sessions (null working / needsInput: that session hasn't reported)
+  //   typeMerged   a worktree folder and the branch the drawer shows -> { kind, text?, branch?, cleared? }:
+  //               switch to its tab, and its page types /merged and Enter (main re-checks all of it)
+  tabStates: (folders) => ipcRenderer.invoke('tab:states', folders),
+  typeMerged: (folder, branch) => ipcRenderer.invoke('tab:typeMerged', folder, branch),
   raise: () => ipcRenderer.send('tab:raise'),
+  //   onTypeCommand main -> page { id, command }: type it into THIS tab's box, the top bar's way (PR #93 F3)
+  //   typed         page -> main { id, ok, reason?, box? }: what came of it
+  onTypeCommand: (fn) => (ipcRenderer.removeAllListeners('type-command'), ipcRenderer.on('type-command',
+    (_e, ask) => {
+      try { fn(ask); } catch (err) { console.error('[preload] type-command listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('type-command')),
+  typed: (reply) => ipcRenderer.send('tab:typed', reply),
   // A link clicked in the terminal (fix/terminal-links). Main opens it in the
   // default browser if, and only if, it is plain http(s), and answers whether
   // it did, so the page can say when it didn't.

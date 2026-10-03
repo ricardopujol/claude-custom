@@ -135,4 +135,4 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   return emitter;
 }
 
-module.exports = { createAttention, DEFAULT_DEBOUNCE_MS };
+module.exports = { createAttention, DEFAULT_DEBOUNCE_MS, NEEDS_INPUT };

@@ -1,0 +1,55 @@
+'use strict';
+/**
+ * The Git panel's probe seams (verify/probe-git-tree.js): environment variables that point it at a probe's
+ * own data instead of gh and ~/.claude. UNSET IN REAL USE.
+ *
+ *   CLAUDE_CUSTOM_OPEN_PRS_FIXTURE   a file of `gh pr list` JSON stands in for gh (no network, no account)
+ *   CLAUDE_CUSTOM_GIT_PROJECTS_DIR   the transcripts come from here, not ~/.claude/projects
+ *   CLAUDE_CUSTOM_REVIEWS_DIR        the review reports come from here, not ~/.claude/reviews
+ *
+ * They're read by the production host and main, so a seam that leaks in (a shell that exported one) must be
+ * visible: announce() logs one line naming every active seam, and a fixture that can't be read or isn't gh's
+ * JSON says so once, instead of reading as "gh is down" (PR #93 Miguel I5).
+ */
+
+const nodeFs = require('fs');
+
+const SEAMS = ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR'];
+
+const val = (env, k) => (env && typeof env[k] === 'string' && env[k] !== '' ? env[k] : null);
+
+function readSeams(env) {
+  return {
+    openPrsFixture: val(env, SEAMS[0]),
+    projectsDir: val(env, SEAMS[1]),
+    reviewsDir: val(env, SEAMS[2]),
+    active: SEAMS.filter(k => val(env, k) !== null),
+  };
+}
+
+/** Logs one line when any seam is set; answers whether it did. */
+function announce(seams, log) {
+  if (!seams || !seams.active.length) return false;
+  log(`[seams] probe seams active: ${seams.active.join(', ')} -- the Git panel reads the probe's data, not gh / ~/.claude`);
+  return true;
+}
+
+/** An async reader of the open-PRs fixture: parse()'s answer, or null (unknown) -- said once, not silently. */
+function fixtureReader(file, { parse, log, readFile = nodeFs.readFileSync } = {}) {
+  let said = false;
+  const once = (line) => { if (!said) { said = true; log(line); } };
+  return async () => {
+    let text;
+    try {
+      text = readFile(file, 'utf8');
+    } catch (err) {
+      once(`[seams] can't read the open-PRs fixture ${file}: ${(err && err.message) || err}`);
+      return null;
+    }
+    const parsed = parse(text);
+    if (parsed === null || parsed === undefined) once(`[seams] the open-PRs fixture ${file} is not gh pr list JSON`);
+    return parsed === undefined ? null : parsed;
+  };
+}
+
+module.exports = { readSeams, announce, fixtureReader, SEAMS };

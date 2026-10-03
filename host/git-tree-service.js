@@ -9,6 +9,9 @@
  *     read), and saved only when something new was read. One that can't be read right now is NOT
  *     replaced: it's asked for again next time (PR #84 Dexter F6).
  *   - gh is asked at most once a minute (it's the network), alongside the ledger, not after it.
+ *   - The drawer's data (Enhancement #46) rides along: the GitHub repo of `origin` (and each branch's PR
+ *     page), and each branch's review verdicts. Both are optional extras: a remote or a review
+ *     reader that fails is "none", never a failed tree.
  *   - Nothing here throws to the caller: a failure is `{ ok: false, error }`, so the panel never
  *     waits forever (the `fog` lesson, host/host.js). A ledger failure still draws the tree from
  *     what was saved before, with `ledgerOk: false`.
@@ -19,6 +22,7 @@ const path = require('path');
 const { buildTree } = require('./git-tree');
 const { totals, emptyLedger } = require('./branch-ledger');
 const { lookDirState, ensureLookDir } = require('./style');
+const { repoUrl, prUrl, remoteHost } = require('./pr-url');
 
 const PR_TTL_MS = 60 * 1000;
 const LEDGER_FILE = 'branch-ledger.json';
@@ -62,13 +66,30 @@ function createGitTreeService(d) {
     return r.errors === 0;
   }
 
+  // origin's GitHub repo, and its host whatever it is (PR #93 Dexter F9: present but unreadable is not absent)
+  async function origin() {
+    try {
+      const raw = d.readRemote ? await d.readRemote(d.cwd) : null;
+      return { repo: repoUrl(raw), host: remoteHost(raw) };
+    } catch {
+      return { repo: null, host: null };
+    }
+  }
+
+  function reviewsOf(name) {
+    try { return d.readReviews ? d.readReviews(name) || [] : []; } catch { return []; }
+  }
+
   async function compute() {
     const history = await d.readHistory(d.cwd);
     if (!history.ok) return { ok: false, error: history.error };
-    const [ledgerOk, openPrList] = await Promise.all([refreshLedger().catch(() => false), openPrs()]);
+    const [ledgerOk, openPrList, o] = await Promise.all([refreshLedger().catch(() => false), openPrs(), origin()]);
+    const repo = o.repo;
     const tree = buildTree({ history, totals: ledger ? totals(ledger) : {}, openPrs: openPrList,
       projectRoot: d.projectRoot, current: d.currentBranch(d.cwd) });
-    return { ...tree, ledgerOk };
+    try { if (d.readReviews && d.readReviews.refresh) d.readReviews.refresh(); } catch { /* the reader lists again next time */ }
+    const branches = tree.branches.map(b => ({ ...b, prUrl: prUrl(repo, b.pr), reviews: reviewsOf(b.name) }));
+    return { ...tree, branches, repoUrl: repo, originHost: o.host, ledgerOk };
   }
 
   function get() {

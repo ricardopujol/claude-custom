@@ -349,15 +349,53 @@ function planSwitch({ kind, raw, current, screen, connected } = {}) {
   } else {
     return { ok: false, notice: 'nothing to switch' };
   }
-  if (!connected) return { ok: false, notice: `didn't send /${kind} ${value}: not connected to the session` };
+  const command = `/${kind} ${value}`;
+  const typing = planTyping({ command, screen, connected });
+  if (!typing.ok) return { ok: false, notice: `didn't send ${command}: ${typing.reason}` };
+  const alreadyRunning = kind === 'model' ? modelMatches(current, value) : effortMatches(current, value);
+  return { ok: true, value, command, alreadyRunning, enterInsert: typing.enterInsert };
+}
+
+/**
+ * The keys typed before a command, in order: Ctrl-E (to the end: Ctrl-U deletes only back to the cursor,
+ * Dexter r2 N1), Ctrl-U (clears a single-line draft without submitting it; the CLI's Ctrl+Y gets it back),
+ * then the command. vim NORMAL gets `i` first, or every key after it is a motion (Dexter r2 N2). The
+ * caller spaces them PTY_STEP_MS apart: typed as one chunk, a line is taken for a paste.
+ */
+function typingKeys(command, enterInsert) {
+  return [...(enterInsert ? ['i'] : []), '\x05', '\x15', command];
+}
+
+// One line of a slash command: a CR or any control key in it would submit or edit something else.
+const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f]*)?$/;
+
+/**
+ * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
+ * Dexter F3 / Miguel I2). `screen` is inputState()'s answer. ->
+ *   { ok: true, enterInsert, keys }   type `keys`, then read the box back (commandTyped) before the CR
+ *   { ok: false, reason }             type nothing
+ * A dialog, a draft over several lines or no box on screen gets nothing: the keys would land in the dialog,
+ * or the rest of the draft would be submitted with the command.
+ */
+function planTyping({ command, screen, connected } = {}) {
+  if (typeof command !== 'string' || !SLASH_COMMAND.test(command)) return { ok: false, reason: 'not a single-line slash command' };
+  if (!connected) return { ok: false, reason: 'not connected to the session' };
   // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
   // text. MEASURED (verify/probe-vim-mode.js): `i` there is a mode switch.
   const enterInsert = screen === 'vim-normal';
-  if (screen !== 'ready' && !enterInsert) {
-    return { ok: false, notice: `didn't send /${kind} ${value}: ${SCREEN_REFUSALS[screen] || SCREEN_REFUSALS.unknown}` };
-  }
-  const alreadyRunning = kind === 'model' ? modelMatches(current, value) : effortMatches(current, value);
-  return { ok: true, value, command: `/${kind} ${value}`, alreadyRunning, enterInsert };
+  if (screen !== 'ready' && !enterInsert) return { ok: false, reason: SCREEN_REFUSALS[screen] || SCREEN_REFUSALS.unknown };
+  return { ok: true, enterInsert, keys: typingKeys(command, enterInsert) };
+}
+
+/**
+ * What the live single-line box holds after the `❯`: '' when empty, else a draft OR the CLI's dim
+ * placeholder (plain text can't tell them apart), null when there is no box. Only used to say a box
+ * that wasn't empty was cleared.
+ */
+function boxText(lines) {
+  const live = liveBox(lines);
+  if (!live || !live.box || !live.box.length || live.box[0].charAt(0) !== '❯') return null;
+  return live.box[0].slice(1).trim();
 }
 
 /**
@@ -411,7 +449,7 @@ if (typeof module !== 'undefined' && module.exports) {
     modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
-    vimInsertShown, commandTyped, menuPlacement,
+    vimInsertShown, commandTyped, menuPlacement, planTyping, typingKeys, boxText,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -432,6 +470,9 @@ if (typeof module !== 'undefined' && module.exports) {
   root.vimInsertShown = vimInsertShown;
   root.commandTyped = commandTyped;
   root.menuPlacement = menuPlacement;
+  root.planTyping = planTyping;
+  root.typingKeys = typingKeys;
+  root.boxText = boxText;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -312,3 +312,24 @@ test('leftAsWindow: a connection that lasted is a window leaving; a one-shot con
   assert.strictEqual(leftAsWindow(1000, 1000 + 120), false, 'host/host-client.js lives for one frame');
   assert.strictEqual(leftAsWindow(null, 5000), true, 'unknown opening time errs toward "a window left"');
 });
+
+// PR #93 Dexter F8: a one-shot control client (host/host-client.js: raise, stop) says so on its URL, so a
+// milestone or quota warning held for "the next window" isn't handed to it and lost.
+test('isControlClient: only a URL that says role=control; a window (no role) is never one', () => {
+  const { isControlClient } = require('../host/control');
+  assert.strictEqual(isControlClient('/?token=abc&role=control'), true);
+  assert.strictEqual(isControlClient('/?role=control&token=abc'), true);
+  for (const url of ['/?token=abc', '/?token=abc&role=window', '/', '', null, undefined, '/?token=a%26role%3Dcontrol']) {
+    assert.strictEqual(isControlClient(url), false, String(url));
+  }
+});
+
+test('Dexter F8: host.js holds the milestone and the quota warning for a WINDOW, never a control client', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const host = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  assert.match(host, /wss\.on\('connection', \(ws, req\) => \{/);
+  assert.match(host, /const oneShot = isControlClient\(req && req\.url\);/);
+  assert.match(host, /if \(!oneShot && pendingMilestone && ws\.readyState === ws\.OPEN\)/);
+  assert.match(host, /if \(!oneShot && pendingQuotaWarning && ws\.readyState === ws\.OPEN\)/);
+});

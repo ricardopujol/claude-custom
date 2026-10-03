@@ -70,7 +70,8 @@ function sendControl({ port, token, msg, timeoutMs = DEFAULT_TIMEOUT_MS, WebSock
     };
 
     try {
-      ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`);
+      // role=control: the host keeps what it holds for a window (a milestone) for a window (PR #93 Dexter F8)
+      ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}&role=control`);
     } catch (err) {
       return finish({ ok: false, error: `socket error: ${err && err.message}` });
     }
