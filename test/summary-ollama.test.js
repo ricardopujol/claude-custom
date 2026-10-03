@@ -13,7 +13,7 @@ const assert = require('node:assert');
 const net = require('net');
 
 const { startFakeOllama, DEFAULT_REPLY } = require('../verify/lib/fake-ollama');
-const { createOllamaClient, DEFAULT_MODEL, NUM_CTX, KEEP_ALIVE, GENERATE_TIMEOUT_MS } = require('../host/summary-ollama');
+const { createOllamaClient, MAX_BODY_BYTES, DEFAULT_MODEL, NUM_CTX, KEEP_ALIVE, GENERATE_TIMEOUT_MS } = require('../host/summary-ollama');
 const { STALE_MS } = require('../host/summary-slot');
 
 async function withFake(opts, fn, clientOpts = {}) {
@@ -220,4 +220,43 @@ test('the client talks to its base URL and nothing else, and never pulls a model
     await c.summarize('p');
     for (const r of fake.requests) assert.ok(['/', '/api/tags', '/api/generate'].includes(r.path), r.path);
   });
+});
+
+// --- Miguel I2 (PR #105): the size of what Ollama (or whatever is on the port) sends back is capped ------------------
+
+test('a reply that declares itself over 1 MB is refused unread, as a bad reply, and not retried', async () => {
+  await withFake({ generate: () => ({ raw: 'x'.repeat(2 * 1024 * 1024) }) }, async (fake, c) => {
+    assert.deepStrictEqual(await c.summarize('p'), { ok: false, reason: 'bad-reply' });
+    assert.strictEqual(fake.count('POST', '/api/generate'), 1);
+  });
+});
+
+test('a streamed reply with no length is cut off at 1 MB: the client hangs up and does not buffer it all', async () => {
+  await withFake({ generate: () => ({ streamBytes: 200 * 1024 * 1024 }) }, async (fake, c) => {
+    const r = await c.summarize('p');
+    assert.deepStrictEqual(r, { ok: false, reason: 'bad-reply' });
+    await new Promise(res => setTimeout(res, 100));
+    assert.strictEqual(fake.stats.streamFinished, false, 'the server was cut off before it finished 200 MB');
+  }, { generateTimeoutMs: 5000 });
+});
+
+test('a reply just inside the cap still reads', async () => {
+  const body = JSON.stringify({ response: 'Working on: a', pad: 'p'.repeat(MAX_BODY_BYTES - 200) });
+  await withFake({ generate: () => ({ raw: body }) }, async (fake, c) => {
+    assert.strictEqual((await c.summarize('p')).ok, true);
+  }, { generateTimeoutMs: 5000 });
+});
+
+test('/api/tags over the cap is a bad reply, never "the model is installed"', async () => {
+  await withFake({ tagsBody: JSON.stringify({ models: [{ name: 'llama3.2:3b' }], pad: 'x'.repeat(2 * 1024 * 1024) }) }, async (fake, c) => {
+    assert.deepStrictEqual(await c.hasModel(), { ok: false, reason: 'bad-reply' });
+  });
+});
+
+test('the health check never reads a body', async () => {
+  await withFake({ rootStatus: 200 }, async (fake, c) => {
+    assert.deepStrictEqual(await c.health(), { ok: true });
+  });
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'summary-ollama.js'), 'utf8');
+  assert.match(src, /twice\('\/', \{ timeoutMs: healthMs, skipBody: true \}\)/);
 });

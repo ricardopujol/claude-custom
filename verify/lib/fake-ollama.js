@@ -16,7 +16,7 @@
  *   tagsHangFirst   same for GET /api/tags                  (0)
  *   models          names GET /api/tags lists               (['llama3.2:3b'])
  *   tagsBody        a raw string to answer /api/tags with instead of the list
- *   generate        (body, n) => ({ status?, json?, raw?, delayMs?, hang? }) for POST /api/generate; n counts from 1
+ *   generate        (body, n) => ({ status?, json?, raw?, streamBytes?, delayMs?, hang? }) for POST /api/generate; n counts from 1
  *                   default: a three-line summary
  *
  * A "hang" never answers: the client's timeout has to be what ends it. close() destroys every open socket, so
@@ -31,6 +31,7 @@ async function startFakeOllama(initial = {}) {
   const cfg = { rootStatus: 200, rootHangFirst: 0, tagsHangFirst: 0, models: ['llama3.2:3b'], tagsBody: null, generate: null, ...initial };
   const requests = [];
   const sockets = new Set();
+  const stats = { streamFinished: false };
   let rootCalls = 0;
   let tagsCalls = 0;
   let generateCalls = 0;
@@ -44,6 +45,23 @@ async function startFakeOllama(initial = {}) {
       if (text) { try { body = JSON.parse(text); } catch { body = text; } }
       const path = req.url.split('?')[0];
       requests.push({ method: req.method, path, body, at: Date.now() });
+      // `streamBytes`: write that many bytes in 64 KB pieces with no content-length, honouring backpressure, and stop when
+      // the client hangs up; `stats.streamFinished` says whether it ever got to the end.
+      const stream = (total) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        const piece = Buffer.alloc(64 * 1024, 120);
+        let sent = 0;
+        const pump = () => {
+          while (sent < total) {
+            if (res.destroyed || res.writableEnded) return;
+            sent += piece.length;
+            if (!res.write(piece)) { res.once('drain', pump); return; }
+          }
+          stats.streamFinished = true;
+          res.end();
+        };
+        pump();
+      };
       const send = (status, payload, raw) => {
         res.writeHead(status, { 'content-type': raw !== undefined ? 'text/plain' : 'application/json' });
         res.end(raw !== undefined ? raw : JSON.stringify(payload));
@@ -63,7 +81,10 @@ async function startFakeOllama(initial = {}) {
         generateCalls += 1;
         const r = typeof cfg.generate === 'function' ? cfg.generate(body, generateCalls) : { json: { response: DEFAULT_REPLY, done: true } };
         if (r.hang) return;
-        const go = () => (r.raw !== undefined ? send(r.status || 200, null, r.raw) : send(r.status || 200, r.json));
+        const go = () => {
+          if (r.streamBytes) return stream(r.streamBytes);
+          return r.raw !== undefined ? send(r.status || 200, null, r.raw) : send(r.status || 200, r.json);
+        };
         if (r.delayMs) setTimeout(go, r.delayMs); else go();
         return;
       }
@@ -78,6 +99,7 @@ async function startFakeOllama(initial = {}) {
     port,
     url: `http://127.0.0.1:${port}`,
     requests,
+    stats,
     set: (next) => Object.assign(cfg, next),
     count: (method, path) => requests.filter(r => r.method === method && r.path === path).length,
     close: () => new Promise((resolve) => {

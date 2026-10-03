@@ -32,6 +32,9 @@ const KEEP_ALIVE = '5m';
 const HEALTH_TIMEOUT_MS = 3_000;
 const TAGS_TIMEOUT_MS = 5_000;
 const GENERATE_TIMEOUT_MS = 40_000;
+// A real reply is about 1 KB (stream:false, num_predict 200) and /api/tags a few KB. Whatever is listening on the port
+// can send more, for as long as the timeout lets it: nothing over this is read (Miguel I2, PR #105).
+const MAX_BODY_BYTES = 1024 * 1024;
 
 const usable = (n, fallback) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : fallback);
 const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
@@ -46,7 +49,7 @@ function createOllamaClient({
   const generateMs = usable(generateTimeoutMs, GENERATE_TIMEOUT_MS);
 
   /** One HTTP exchange, bounded in time end to end (the body read included). */
-  async function request(path, { method = 'GET', json, timeoutMs }) {
+  async function request(path, { method = 'GET', json, timeoutMs, skipBody = false }) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
@@ -56,8 +59,28 @@ function createOllamaClient({
         body: json === undefined ? undefined : JSON.stringify(json),
         signal: ctl.signal,
       });
-      const text = await res.text();
-      return { ok: true, status: res.status, text };
+      // GET / needs only the status: its body is not read at all.
+      if (skipBody) { try { await res.body.cancel(); } catch { /* nothing to cancel */ } return { ok: true, status: res.status, text: '' }; }
+      const declared = Number(res.headers.get('content-length'));
+      if (res.headers.get('content-length') !== null && Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+        try { await res.body.cancel(); } catch { /* nothing to cancel */ }
+        return { ok: true, status: res.status, text: '', tooBig: true };
+      }
+      const reader = res.body.getReader();
+      const chunks = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_BODY_BYTES) {
+          try { await reader.cancel(); } catch { /* nothing to cancel */ }
+          ctl.abort();
+          return { ok: true, status: res.status, text: '', tooBig: true };
+        }
+        chunks.push(value);
+      }
+      return { ok: true, status: res.status, text: Buffer.concat(chunks.map(c => Buffer.from(c))).toString('utf8') };
     } catch {
       return { ok: false, reason: ctl.signal.aborted ? 'timeout' : 'network' };
     } finally {
@@ -72,13 +95,14 @@ function createOllamaClient({
   }
 
   async function health() {
-    const r = await twice('/', { timeoutMs: healthMs });
+    const r = await twice('/', { timeoutMs: healthMs, skipBody: true });
     return r.ok && r.status === 200 ? { ok: true } : { ok: false, reason: 'unreachable' };
   }
 
   async function hasModel() {
     const r = await twice('/api/tags', { timeoutMs: tagsMs });
     if (!r.ok || r.status !== 200) return { ok: false, reason: 'unreachable' };
+    if (r.tooBig) return { ok: false, reason: 'bad-reply' };
     let parsed;
     try { parsed = JSON.parse(r.text); } catch { return { ok: false, reason: 'bad-reply' }; }
     if (!isObject(parsed) || !Array.isArray(parsed.models)) return { ok: false, reason: 'bad-reply' };
@@ -104,6 +128,7 @@ function createOllamaClient({
     if (!r.ok) return { ok: false, reason: r.reason === 'timeout' ? 'timeout' : 'unreachable' };
     if (r.status === 404) return { ok: false, reason: 'model-missing' };
     if (r.status < 200 || r.status > 299) return { ok: false, reason: 'http', status: r.status };
+    if (r.tooBig) return { ok: false, reason: 'bad-reply' };
     let parsed;
     try { parsed = JSON.parse(r.text); } catch { return { ok: false, reason: 'bad-reply' }; }
     const text = isObject(parsed) && typeof parsed.response === 'string' ? cleanReply(parsed.response) : null;
@@ -114,4 +139,4 @@ function createOllamaClient({
   return { health, hasModel, check, summarize };
 }
 
-module.exports = { createOllamaClient, DEFAULT_URL, DEFAULT_MODEL, NUM_CTX, KEEP_ALIVE, GENERATE_TIMEOUT_MS };
+module.exports = { createOllamaClient, MAX_BODY_BYTES, DEFAULT_URL, DEFAULT_MODEL, NUM_CTX, KEEP_ALIVE, GENERATE_TIMEOUT_MS };
