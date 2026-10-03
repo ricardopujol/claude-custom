@@ -49,13 +49,20 @@ test('the pid and port reach the script as plain integers, and nothing else does
 // unloadable Get-NetTCPConnection throws ObjectNotFound too -- the same
 // category as "no rows" -- and must read as "couldn't tell", never as 0.
 const onWindows = process.platform === 'win32';
+// These run the REAL powershell.exe. Its start-up and Get-NetTCPConnection take
+// 1-6 s under full-suite load, past the product's 5 s query budget, and the
+// product (rightly) reads a timeout as null, "couldn't tell". The product's
+// budget is not what is under test, so the real call gets a budget of its own;
+// every assertion below is unchanged.
+const { createExec } = require('../host/proc-start');
+const realExec = createExec(120000);
 
 test('real shell: a cmdlet that is not there is "couldn\'t tell" (null), never 0', { skip: !onWindows }, async () => {
-  assert.strictEqual(await windowCount(4242, 7999, { cmdlet: 'Get-NetTCPConnectionX' }), null);
+  assert.strictEqual(await windowCount(4242, 7999, { cmdlet: 'Get-NetTCPConnectionX', exec: realExec }), null);
 });
 
 test('real shell: a port with no connections is 0', { skip: !onWindows }, async () => {
-  assert.strictEqual(await windowCount(process.pid, 1, {}), 0);
+  assert.strictEqual(await windowCount(process.pid, 1, { exec: realExec }), 0);
 });
 
 test('the cmdlet name is only ever a plain identifier', async () => {
@@ -124,10 +131,10 @@ test('real shell: windowCounts sees a real established connection, and 0 where t
   await new Promise(r => client.on('connect', r));
   try {
     // Keyed by pid: a host listens on one port, so one target per pid.
-    const live = await windowCounts([{ pid: process.pid, port }]);
+    const live = await windowCounts([{ pid: process.pid, port }], { exec: realExec });
     assert.ok(live, 'the query ran');
     assert.strictEqual(live.get(process.pid), 1);
-    const none = await windowCounts([{ pid: process.pid, port: 1 }]);
+    const none = await windowCounts([{ pid: process.pid, port: 1 }], { exec: realExec });
     assert.ok(none, 'the query ran');
     assert.strictEqual(none.get(process.pid), 0);
   } finally {
