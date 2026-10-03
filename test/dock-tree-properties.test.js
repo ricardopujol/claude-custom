@@ -333,6 +333,18 @@ test('P9 (PR #100 F1): dropping a lone panel on any target either returns the sa
   }), RUNS);
 });
 
+test('P13 (PR #102 Dexter 3): floating a panel with no spot never lands on an existing float while fewer than 8 exist', () => {
+  fc.assert(fc.property(rawArb, opsArb, idOrJunk, (raw, ops, id) => {
+    const l = run(T.normalize(raw, IDS), ops);
+    fc.pre(l.floats.length < 8);
+    const next = T.dock(l, id, { float: true });
+    fc.pre(next !== l && next.floats.length > 0);
+    const made = next.floats[next.floats.length - 1];
+    fc.pre(made.tabs.length === 1 && made.tabs[0] === id);
+    for (const f of l.floats) if (f.tabs.some(t => t !== id)) assert.ok(!(f.x === made.x && f.y === made.y), `${made.id} sits exactly on ${f.id} at ${f.x}, ${f.y}`);
+  }), RUNS);
+});
+
 test('P12 (PR #102 Dexter 1): the Window menu has one row per known module, whatever mix of docked, floating and hidden', () => {
   const V = require('../app/dock-tree-display');
   const TABS = IDS.map(id => ({ id, label: id, title: id }));

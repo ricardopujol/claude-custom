@@ -314,12 +314,15 @@ function dock(layout, id, target) {
 }
 
 // Where a new float goes: the spot asked for (any part of it may be missing or junk), else a cascade
-// position, so floats made one after another never stack exactly.
+// position, so floats made one after another never stack exactly. The cascade steps until it finds a spot no
+// float holds (not "one more than the count": a float docked back leaves a gap the count would step over
+// onto a float that is still there, PR #102 Dexter 3); only when all 8 are taken does it reuse one.
 function spotFor(layout, spot) {
-  const n = layout.floats.length % 8;
-  const at = CASCADE * (2 + n);
   const s = isObject(spot) ? spot : {};
-  return floatRect({ x: isNum(s.x) ? s.x : at, y: isNum(s.y) ? s.y : at, w: s.w, h: s.h });
+  const at = n => floatRect({ x: isNum(s.x) ? s.x : CASCADE * (2 + n), y: isNum(s.y) ? s.y : CASCADE * (2 + n), w: s.w, h: s.h });
+  const free = n => { const r = at(n); return !layout.floats.some(f => f.x === r.x && f.y === r.y); };
+  for (let n = 0; n < 8; n += 1) if (free(n)) return at(n);
+  return at(layout.floats.length % 8);
 }
 
 /**

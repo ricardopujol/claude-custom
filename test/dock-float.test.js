@@ -152,6 +152,20 @@ test('{ float: true } floats at a cascade spot; each new float is offset so they
   assert.equal(new Set(spots).size, 3, spots.join(' '));
 });
 
+test('a new float takes the first cascade spot no float holds, even after one was docked back (PR #102 Dexter 3)', () => {
+  let l = T.defaultLayout(IDS);
+  l = T.dock(l, 'agents', { float: true });
+  l = T.dock(l, 'vault', { float: true });
+  assert.deepEqual([T.floatOf(l, 'agents').x, T.floatOf(l, 'vault').x], [48, 72]);
+  l = T.dock(l, 'agents', { cell: 'right', side: 'center' });            // one float left, at 72
+  l = T.dock(l, 'git', { float: true });
+  const at = id => `${T.floatOf(l, id).x},${T.floatOf(l, id).y}`;
+  assert.equal(at('git'), '48,48', 'the free spot, not the one derived from the count');
+  assert.notEqual(at('git'), at('vault'));
+  l = T.dock(l, 'fog', { float: true });
+  assert.equal(at('fog'), '96,96', 'next free one');
+});
+
 test('a hidden module can float too, and leaves hidden and its seat', () => {
   const l = T.dock(T.hide(base(), 'vault'), 'vault', { float: { x: 5, y: 5 } });
   assert.ok(T.floatOf(l, 'vault'));
