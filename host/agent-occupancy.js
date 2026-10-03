@@ -3,6 +3,9 @@
  * Which worktree is an agent working in? (backlog #44 + #47, documentation/DESIGN_WORKTREE_OCCUPANCY.md)
  *
  *   claimFrom(event, roots, ownRoot) -> { agentId, agent, worktree } | null
+ *   touchOf(tool, input, roots, ownRoot) -> worktree | null    the same test for one tool call, without an
+ *                                       event: what a transcript's tool_use block proves
+ *                                       (host/occupancy-transcripts.js, host/branch-ledger.js)
  *   latest(touches)                  -> { worktree, also, touch } | null
  *   buildClaim / serializeClaim / parseClaim / claimFileName   the claim FILE (see below)
  *
@@ -15,8 +18,11 @@
  *     This is NOT shell parsing: it only looks for the handful of roots `git worktree list` returned
  *     (fog.js's "never extract paths from Bash" rule is about arbitrary paths, which this never does).
  *     The longest root that is NOT the launching session's own wins.
- *   - Nothing else: not the Agent prompt, not Grep or Glob, not a relative path (it would resolve against
- *     the host, not the agent), not an event without an `agent_id` (the main session's own call).
+ *   - Grep / Glob: `tool_input.path`, the folder or file searched, when it is given and absolute. Inside a
+ *     known root, or the root's own folder (a search names the folder itself). With no path they search the
+ *     agent's cwd, which proves nothing.
+ *   - Nothing else: not the Agent prompt, not a relative path (it would resolve against the host, not the
+ *     agent), not an event without an `agent_id` (the main session's own call).
  *   - The launching session's own folder never counts.
  *
  * The agent_id becomes a FILE NAME (`<agent_id>.json`) and comes from somebody else's process: only
@@ -32,6 +38,9 @@ const { normPath, samePath, isInside } = require('./project-layout');
 const { filetimeToMs } = require('./background-hosts');
 
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit']);
+const SEARCH_TOOLS = new Set(['Grep', 'Glob']);
+// Every tool whose PreToolUse the occupancy matcher asks for (host/settings-writer.js OCCUPANCY_MATCHER).
+const TOUCH_TOOLS = new Set([...FILE_TOOLS, ...SEARCH_TOOLS]);
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const ALSO_MAX = 8;
 const WIN = process.platform === 'win32';
@@ -93,11 +102,14 @@ function mentions(command, spelling) {
   }
 }
 
-function worktreeOfPath(file, roots, ownRoot) {
+// `orRoot`: the root's own folder counts too. True for a search (its subject is a folder), false for a file
+// tool (a folder is not a file).
+function worktreeOfPath(file, roots, ownRoot, orRoot = false) {
   if (!isStr(file) || !path.isAbsolute(file)) return null;
   let best = null;
   for (const r of roots) {
-    if (isInside(file, r.norm) && (best === null || r.norm.length > best.norm.length)) best = r;
+    const within = isInside(file, r.norm) || (orRoot && samePath(file, r.norm));
+    if (within && (best === null || r.norm.length > best.norm.length)) best = r;
   }
   if (best === null || samePath(best.raw, ownRoot)) return null;
   return best.raw;
@@ -116,6 +128,20 @@ function worktreeOfCommand(command, roots, ownRoot) {
 }
 
 /**
+ * The worktree one tool call proves its caller is working in, or null. `tool` and `input` are a hook
+ * payload's `tool_name` / `tool_input`, or a transcript tool_use block's `name` / `input` (the same shapes).
+ */
+function touchOf(tool, input, roots, ownRoot) {
+  if (!input || typeof input !== 'object') return null;
+  const known = cleanRoots(roots);
+  if (known.length === 0) return null;
+  if (tool === 'Bash') return worktreeOfCommand(input.command, known, ownRoot);
+  if (SEARCH_TOOLS.has(tool)) return worktreeOfPath(input.path, known, ownRoot, true);
+  if (FILE_TOOLS.has(tool)) return worktreeOfPath(tool === 'NotebookEdit' ? input.notebook_path : input.file_path, known, ownRoot);
+  return null;
+}
+
+/**
  * The claim one hook event makes, or null. `event` is `{ event, payload }` as the hook bridge delivers it;
  * `roots` the absolute worktree folders `git worktree list` gave; `ownRoot` the launching session's folder.
  */
@@ -125,17 +151,7 @@ function claimFrom(event, roots, ownRoot) {
   if (!p || typeof p !== 'object') return null;
   const agentId = safeAgentId(p.agent_id);
   if (agentId === null) return null;
-  const input = p.tool_input && typeof p.tool_input === 'object' ? p.tool_input : null;
-  if (input === null) return null;
-  const known = cleanRoots(roots);
-  if (known.length === 0) return null;
-
-  let worktree = null;
-  if (FILE_TOOLS.has(p.tool_name)) {
-    worktree = worktreeOfPath(p.tool_name === 'NotebookEdit' ? input.notebook_path : input.file_path, known, ownRoot);
-  } else if (p.tool_name === 'Bash') {
-    worktree = worktreeOfCommand(input.command, known, ownRoot);
-  }
+  const worktree = touchOf(p.tool_name, p.tool_input, roots, ownRoot);
   if (worktree === null) return null;
   return { agentId, agent: isStr(p.agent_type) ? p.agent_type : null, worktree };
 }
@@ -230,5 +246,6 @@ function parseClaim(text) {
 }
 
 module.exports = {
-  claimFrom, latest, buildClaim, serializeClaim, parseClaim, claimFileName, safeAgentId, ALSO_MAX, FILE_TOOLS,
+  claimFrom, touchOf, latest, buildClaim, serializeClaim, parseClaim, claimFileName, safeAgentId, ALSO_MAX,
+  TOUCH_TOOLS,
 };

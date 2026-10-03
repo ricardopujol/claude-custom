@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { buildHarnessSettings, writeHarnessSettings } = require('../host/settings-writer');
+const { buildHarnessSettings, writeHarnessSettings, OCCUPANCY_MATCHER } = require('../host/settings-writer');
 
 const HELPER = 'C:/tools/claude-custom-hook.exe';
 const PIPE = '\\\\.\\pipe\\claude-custom-abc123';
@@ -404,7 +404,10 @@ test('occupancy adds a PreToolUse entry for the file tools, LAST, and only when 
   assert.strictEqual(plain.hooks.PreToolUse.length, 1, 'default output is unchanged');
   const s = buildHarnessSettings({ ...opts, occupancy: true });
   const last = s.hooks.PreToolUse[s.hooks.PreToolUse.length - 1];
-  assert.strictEqual(last.matcher, 'Read|Edit|Write|NotebookEdit');
+  assert.strictEqual(last.matcher, 'Read|Edit|Write|NotebookEdit|Grep|Glob');
+  // the matcher and host/agent-occupancy.js agree on which tools are a touch (a tool in one and not the other
+  // is either a hook nobody reads or a rule no event ever reaches)
+  assert.deepStrictEqual(last.matcher.split('|').sort(), [...require('../host/agent-occupancy').TOUCH_TOOLS].sort());
   assert.strictEqual(JSON.stringify(s.hooks.PreToolUse[0]), JSON.stringify(plain.hooks.PreToolUse[0]),
     'the first entry still belongs to the mood engine');
   assert.strictEqual(last.hooks[0].command, plain.hooks.PreToolUse[0].hooks[0].command,
@@ -416,7 +419,7 @@ test('the occupancy entry goes AFTER the tool belt entry, so PreToolUse[1] is st
   const s = buildHarnessSettings({ ...opts, loadoutHook, occupancy: true });
   assert.strictEqual(s.hooks.PreToolUse.length, 3);
   assert.strictEqual(s.hooks.PreToolUse[1].matcher, 'Agent|Task');
-  assert.strictEqual(s.hooks.PreToolUse[2].matcher, 'Read|Edit|Write|NotebookEdit');
+  assert.strictEqual(s.hooks.PreToolUse[2].matcher, OCCUPANCY_MATCHER);
 });
 
 test('occupancy changes only PreToolUse: no other event grows a file-tool matcher', () => {

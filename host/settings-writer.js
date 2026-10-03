@@ -45,12 +45,13 @@ const path = require('path');
 const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
 const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage';    // completion and error signals
 // Backlog #44 + #47 (worktree occupancy): which worktree a SUBAGENT is working in is proven by its own file
-// tool calls, which the matchers above never saw. Opt-in (`occupancy: true`) and a SEPARATE entry, so the
-// mood engine's entry is untouched. It costs one ~23 ms hook per Read/Edit/Write/NotebookEdit call: the
-// matcher can't ask for subagent calls only, so the main session's are hooked too. host/host.js consumes
-// these events itself (host/occupancy-producer.js) and never lets them reach the mood engine or the Running
-// panel -- their PostToolUse isn't hooked, so the panel would show every Read as running forever.
-const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit';
+// and search tool calls, which the matchers above never saw. Opt-in (`occupancy: true`) and a SEPARATE entry,
+// so the mood engine's entry is untouched. It costs one ~23 ms hook per Read/Edit/Write/NotebookEdit/Grep/Glob
+// call: the matcher can't ask for subagent calls only, so the main session's are hooked too. host/host.js
+// consumes these events itself (host/occupancy-producer.js) and never lets them reach the mood engine or the
+// Running panel -- their PostToolUse isn't hooked, so the panel would show every Read as running forever.
+// The same tools as host/agent-occupancy.js TOUCH_TOOLS (test/settings-writer.test.js holds them together).
+const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 const HOOK_TIMEOUT_SECONDS = 5;
 
 const quote = s => `"${s}"`;

@@ -56,6 +56,27 @@ test('a path claims at most one root, and it is the longest root containing it',
   }), { numRuns: 400 });
 });
 
+test('a search path (Grep, Glob) claims the longest root that contains it OR is it, and never the own root', () => {
+  const preSearch = (tool, p) => ({ event: 'PreToolUse', payload: { tool_name: tool, tool_input: { pattern: 'x', path: p }, agent_id: AGENT } });
+  // the searched path is a root itself (no tail) about as often as something under one
+  const tailOrNone = fc.oneof(fc.constant([]), rel);
+  fc.assert(fc.property(roots, root, tailOrNone, fc.integer({ min: 0, max: 5 }), fc.constantFrom('Grep', 'Glob'), (rs, own, tail, pick, tool) => {
+    const searched = path.join(rs[pick % rs.length], ...tail);
+    const c = O.claimFrom(preSearch(tool, searched), rs, own);
+    const holding = rs.filter(r => isInside(searched, r) || samePath(searched, r));
+    assert.ok(holding.length > 0, 'the generator always searches in or at a root');
+    const longest = Math.max(...holding.map(r => normPath(r).length));
+    const winner = holding.find(r => normPath(r).length === longest);
+    if (samePath(winner, own)) return c === null;
+    assert.ok(c !== null, `${searched} is in or at ${winner}`);
+    assert.ok(samePath(c.worktree, winner));
+    assert.ok(rs.includes(c.worktree), 'named as one of the roots given');
+    // the same answer without an event
+    assert.ok(samePath(O.touchOf(tool, { pattern: 'x', path: searched }, rs, own), winner));
+    return true;
+  }), { numRuns: 400 });
+});
+
 test('the own root never claims, whatever the path or the other roots', () => {
   fc.assert(fc.property(roots, rel, (rs, tail) => {
     for (const own of rs) {

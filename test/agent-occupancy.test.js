@@ -79,10 +79,61 @@ test('an agent_id that is not a safe file name never claims (it becomes <id>.jso
   assert.ok(claim(pre('Edit', edit, { agent_id: 'a_B-9' })));
 });
 
-test('a tool that is not Read/Edit/Write/NotebookEdit/Bash claims nothing', () => {
-  assert.strictEqual(claim(pre('Grep', { file_path: path.join(FEAT, 'a.js'), pattern: 'x' })), null);
+test('a tool that is not a file tool, a search tool or Bash claims nothing', () => {
+  assert.strictEqual(claim(pre('WebFetch', { file_path: path.join(FEAT, 'a.js'), path: FEAT, url: 'x' })), null);
   assert.strictEqual(claim(pre('Agent', { prompt: `work in ${FEAT}`, subagent_type: 'x' })), null,
     'the Agent prompt is never parsed');
+});
+
+// --- Grep and Glob (Ricardo, 2026-10-03: a search in a worktree is a touch too) --------------------
+// Measured on the live personal-agent teammates: `path` is the folder or file searched, absolute when given.
+
+for (const tool of ['Grep', 'Glob']) {
+  test(`${tool} claims through tool_input.path, a folder or a file inside the worktree`, () => {
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: path.join(FEAT, 'src') })).worktree, FEAT);
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: path.join(FEAT, 'src', 'a.py') })).worktree, FEAT);
+  });
+
+  test(`${tool}: the worktree's own folder as the path claims it (a search names the folder itself)`, () => {
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: FEAT })).worktree, FEAT);
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: FEAT + path.sep })).worktree, FEAT);
+    // ...and the longest root still wins: the nested worktree's own folder is the nested worktree
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: NESTED })).worktree, NESTED);
+  });
+
+  test(`${tool} with no path, a relative one, or one in the launching folder proves nothing`, () => {
+    assert.strictEqual(claim(pre(tool, { pattern: 'x' })), null, 'no path: the agent\'s own cwd');
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: 'src' })), null);
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: 5 })), null);
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: DEV })), null, 'the own root itself');
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: path.join(DEV, 'app') })), null);
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: path.resolve('/elsewhere') })), null);
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', path: FEAT + '-old' })), null, 'a longer folder name');
+  });
+
+  test(`${tool} never reads file_path, and a file tool never reads path`, () => {
+    assert.strictEqual(claim(pre(tool, { pattern: 'x', file_path: path.join(FEAT, 'a.js') })), null);
+    assert.strictEqual(claim(pre('Read', { path: path.join(FEAT, 'a.js') })), null);
+  });
+}
+
+test('a file tool whose file_path is the worktree folder itself proves nothing (a folder is not a file)', () => {
+  assert.strictEqual(claim(pre('Read', { file_path: FEAT })), null);
+});
+
+test('touchOf is the same test without an event: the worktree one tool call proves, or null', () => {
+  assert.strictEqual(O.touchOf('Edit', { file_path: path.join(FEAT, 'a.js') }, ROOTS, DEV), FEAT);
+  assert.strictEqual(O.touchOf('Grep', { pattern: 'x', path: FEAT }, ROOTS, DEV), FEAT);
+  assert.strictEqual(O.touchOf('Bash', { command: `cd ${FEAT} && ls` }, ROOTS, DEV), FEAT);
+  assert.strictEqual(O.touchOf('Edit', { file_path: path.join(DEV, 'a.js') }, ROOTS, DEV), null);
+  for (const junk of [[null, null], ['Edit', null], ['Edit', 'x'], [5, {}], ['Bash', { command: 5 }]]) {
+    assert.strictEqual(O.touchOf(junk[0], junk[1], ROOTS, DEV), null);
+  }
+  assert.strictEqual(O.touchOf('Edit', { file_path: path.join(FEAT, 'a.js') }, null, DEV), null);
+});
+
+test('TOUCH_TOOLS is what the occupancy matcher hooks: the file tools and the search tools', () => {
+  assert.deepStrictEqual([...O.TOUCH_TOOLS].sort(), ['Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']);
 });
 
 test('an agent with no agent_type is still a claim, with a null name', () => {

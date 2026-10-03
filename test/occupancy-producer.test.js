@@ -208,8 +208,18 @@ test('the touch book is bounded: the oldest agents are forgotten, the newest kep
   assert.strictEqual(r.writes[r.writes.length - 1].count, 1, 'the oldest started over');
 });
 
-test('isOccupancyOnly: the file-tool PreToolUse the new matcher brings, and nothing else', () => {
-  for (const tool of ['Read', 'Edit', 'Write', 'NotebookEdit']) {
+test('a Grep in another worktree claims it, and one that names no worktree can still cost one stale-list retry', async () => {
+  const r = rig();
+  r.p.handle(ev('PreToolUse', { tool_name: 'Grep', tool_input: { pattern: 'x', path: FEAT }, agent_id: 'ag1', agent_type: 'electron-pro' }));
+  assert.strictEqual(r.writes[0].worktree, FEAT);
+  r.stale = true;
+  r.p.handle(ev('PreToolUse', { tool_name: 'Glob', tool_input: { pattern: '*', path: path.join(BASE, 'unlisted') }, agent_id: 'ag1' }));
+  await flush();
+  assert.strictEqual(r.refreshed, 1, 'a search is a tool that could claim');
+});
+
+test('isOccupancyOnly: the file-tool and search-tool PreToolUse the occupancy matcher brings, and nothing else', () => {
+  for (const tool of ['Read', 'Edit', 'Write', 'NotebookEdit', 'Grep', 'Glob']) {
     assert.strictEqual(isOccupancyOnly(ev('PreToolUse', { tool_name: tool })), true, tool);
   }
   assert.strictEqual(isOccupancyOnly(ev('PreToolUse', { tool_name: 'Bash' })), false);

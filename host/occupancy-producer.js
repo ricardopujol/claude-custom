@@ -6,8 +6,8 @@
  *
  *   createOccupancyProducer({ writer, roots, ownRoot, fromBranch, hostPid, hostStartedAt, nameOf, now, log })
  *     .handle(event)          -- never throws
- *   isOccupancyOnly(event)    -- the PreToolUse for Read/Edit/Write/NotebookEdit that the occupancy matcher
- *                                (host/settings-writer.js) brings. host.js hands these to the producer and to
+ *   isOccupancyOnly(event)    -- the PreToolUse for Read/Edit/Write/NotebookEdit/Grep/Glob that the occupancy
+ *                                matcher (host/settings-writer.js) brings. host.js hands these to the producer and to
  *                                NOTHING else: their PostToolUse isn't hooked, so the Running panel
  *                                (host/processes.js) would show every Read as running forever.
  *
@@ -22,7 +22,7 @@
  * The touch book is bounded (AGENTS_MAX agents, TOUCHES_MAX worktrees each), oldest forgotten first.
  */
 
-const { claimFrom, buildClaim, safeAgentId, FILE_TOOLS } = require('./agent-occupancy');
+const { claimFrom, buildClaim, safeAgentId, TOUCH_TOOLS } = require('./agent-occupancy');
 const { normPath } = require('./project-layout');
 
 const AGENTS_MAX = 100;
@@ -30,14 +30,14 @@ const TOUCHES_MAX = 16;
 
 function isOccupancyOnly(event) {
   return !!event && typeof event === 'object' && event.event === 'PreToolUse'
-    && !!event.payload && typeof event.payload === 'object' && FILE_TOOLS.has(event.payload.tool_name);
+    && !!event.payload && typeof event.payload === 'object' && TOUCH_TOOLS.has(event.payload.tool_name);
 }
 
 // An event that could be an agent working somewhere: worth a git call if the list of worktrees is stale.
 function couldClaim(event) {
   const p = event.payload;
   return event.event === 'PreToolUse' && !!p && typeof p === 'object' && safeAgentId(p.agent_id) !== null
-    && (FILE_TOOLS.has(p.tool_name) || p.tool_name === 'Bash');
+    && (TOUCH_TOOLS.has(p.tool_name) || p.tool_name === 'Bash');
 }
 
 function createOccupancyProducer({
