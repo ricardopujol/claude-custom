@@ -62,10 +62,11 @@ const two = n => String(n).padStart(2, '0');
  * The LOCAL Y-M-D of a transcript line's ISO timestamp, the day git prints for the same instant
  * (`%ad --date=short-local`, host/git-history.js). Not the UTC date: near midnight a branch's last day of
  * work and its merge would land on different days and a week arc would split (backlog #38). Null
- * for anything that isn't a date string -- absence is never a day (`new Date(null)` is 1970).
+ * for anything that isn't a date-and-time string (a bare `2026-09-21` parses as UTC midnight, a
+ * different local day west of UTC) -- absence is never a day (`new Date(null)` is 1970).
  */
 function localDay(ts) {
-  if (typeof ts !== 'string' || !/^\d{4}-\d\d-\d\d/.test(ts)) return null;
+  if (typeof ts !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(ts)) return null;
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return null;
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
@@ -103,6 +104,9 @@ function addLines(rec, text, projectRoot) {
       || putOwn(rec.branches, o.gitBranch, { spend: 0, loose: 0, first: null, last: null, cwds: [] });
     if (loose) b.loose += spendOf(msg.usage);
     else b.spend += spendOf(msg.usage);
+    // Lines read before the local-day change keep the UTC day they were stored with: the ledger
+    // VERSION isn't bumped, because a full re-read would drop the tokens of transcripts Claude Code
+    // has already deleted. Only lines read from now on get local days (PR #88 F2).
     const day = localDay(o.timestamp);
     if (day) {
       if (!b.first || day < b.first) b.first = day;

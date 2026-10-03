@@ -9,7 +9,6 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
-const fc = require('fast-check');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 
@@ -64,21 +63,35 @@ test('no timestamp, or one that is not a date: no day, never a made-up one', () 
     JSON.stringify({ gitBranch: 'feat/a', cwd: 'C:\\p\\dev', timestamp: null, message: { id: 'b', usage: { input_tokens: 1 } } }),
     JSON.stringify({ gitBranch: 'feat/a', cwd: 'C:\\p\\dev', timestamp: 0, message: { id: 'c', usage: { input_tokens: 1 } } }),
     JSON.stringify({ gitBranch: 'feat/a', cwd: 'C:\\p\\dev', timestamp: '2026-13-45T99:99:99Z', message: { id: 'd', usage: { input_tokens: 1 } } }),
+    // a bare date parses as UTC midnight: a different local day west of UTC (Dexter, PR #88 F3)
+    JSON.stringify({ gitBranch: 'feat/a', cwd: 'C:\\p\\dev', timestamp: '2026-09-21', message: { id: 'e', usage: { input_tokens: 1 } } }),
   ].join('\n') + '\n', ROOT);
-  assert.strictEqual(r.branches['feat/a'].spend, 4);
+  assert.strictEqual(r.branches['feat/a'].spend, 5);
   assert.strictEqual(r.branches['feat/a'].first, null);
   assert.strictEqual(r.branches['feat/a'].last, null);
 });
 
-test('property: the ledger day of an instant is the local date git would print for it', () => {
-  // git: `%ad --date=short` is the author date in the local zone as Y-M-D; sv-SE prints the same shape
-  const gitDay = ms => new Date(ms).toLocaleDateString('sv-SE');
-  fc.assert(fc.property(
-    fc.integer({ min: Date.UTC(2020, 0, 1), max: Date.UTC(2035, 0, 1) }),
-    ms => {
-      const r = emptyRecord();
-      addLines(r, line('m', new Date(ms).toISOString()) + '\n', ROOT);
-      const b = r.branches['feat/a'];
-      return b.first === gitDay(ms) && b.last === gitDay(ms);
-    }));
+test('property: the ledger day of an instant is the local date git would print for it, in each zone', () => {
+  // git's `short-local` is the viewer's local date as Y-M-D; sv-SE prints the same shape. The oracle
+  // runs INSIDE a pinned zone (one east, one west of UTC) so it can tell local from UTC; in the
+  // machine's own zone alone a UTC-keyed ledger would pass whenever that zone is UTC.
+  const script = `
+    const fc = require(${JSON.stringify(require.resolve('fast-check'))});
+    const { addLines, emptyRecord } = require(${JSON.stringify(path.resolve(__dirname, '../host/branch-ledger'))});
+    const gitDay = ms => new Date(ms).toLocaleDateString('sv-SE');
+    fc.assert(fc.property(
+      fc.integer({ min: Date.UTC(2020, 0, 1), max: Date.UTC(2035, 0, 1) }),
+      ms => {
+        const r = emptyRecord();
+        const line = JSON.stringify({ type: 'assistant', gitBranch: 'feat/a', cwd: 'C:/p/dev', timestamp: new Date(ms).toISOString(),
+          message: { id: 'm', usage: { input_tokens: 1, output_tokens: 0, cache_creation_input_tokens: 0 } } });
+        addLines(r, line + String.fromCharCode(10), 'C:/p');
+        const b = r.branches['feat/a'];
+        return b.first === gitDay(ms) && b.last === gitDay(ms);
+      }));`;
+  for (const tz of ['Pacific/Auckland', 'America/Los_Angeles']) {
+    const env = { ...process.env, TZ: tz };
+    delete env.ELECTRON_RUN_AS_NODE;
+    execFileSync(process.execPath, ['-e', script], { env, encoding: 'utf8' });
+  }
 });
