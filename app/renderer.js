@@ -2922,6 +2922,9 @@ function applyBackground(filePath, { custom = false, version = '', kind = 'image
   if (!filePath) return;
   const url = bgMedia.fileUrl(filePath, version);
   const media = bgMedia.mediaFor({ kind, url });
+  // mediaFor answers null for a background it can't describe; keep what is showing rather than
+  // throw halfway through the swap (Miguel M5, PR #91).
+  if (!media) return;
   if (media.tag === 'video' && url === failedBgUrl) return;     // already known not to play
   failedBgUrl = null;
   if (media.tag === 'video') {

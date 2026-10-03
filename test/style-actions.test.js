@@ -62,6 +62,15 @@ test('M3: the Match button is re-enabled whatever happens to the request, even w
   assert.match(RENDERER, /function sendStyle\(section, payload\) \{\s*try \{ ws\.send\([^\n]*\} catch \{/, 'sendStyle swallows a dead socket -- which is why the finally is needed');
 });
 
+test('M5: applyBackground checks that mediaFor described the background before it reads .tag', () => {
+  const body = RENDERER.slice(RENDERER.indexOf('function applyBackground('));
+  const guard = body.indexOf('if (!media) return;');
+  const firstUse = body.indexOf('media.tag');
+  assert.ok(guard > 0 && guard < firstUse, 'the null check comes before the first media.tag');
+  // and mediaFor really can answer null
+  assert.strictEqual(require('../app/bg-media-display').mediaFor({ kind: 'video', url: '' }), null);
+});
+
 test('D5: Match colours says which background it sampled, taken before the frame is read', () => {
   const click = RENDERER.slice(RENDERER.indexOf("getElementById('style-match')"));
   const taken = click.indexOf('const setAt = backgroundSetAt;');
