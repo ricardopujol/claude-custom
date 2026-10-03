@@ -28,8 +28,12 @@
  *      branch; Open PR follows origin (disabled with no remote, enabled once one is added)
  *   9  live sparks only for MEASURED growth: a first measurement is quiet, a refresh that found new tokens
  *      streams sparks on that branch alone, and they stop
- *  10  Run /merged on an open PR whose tab is open and idle switches to that tab and the session receives
- *      `/merged` and then Enter (cmd.exe stands in for claude, so nothing bills)
+ *  10  Run /merged on an open PR whose session is at rest switches to that tab and its own page types
+ *      `/merged` and Enter. A stand-in CLI box (verify/lib/fake-claude-box.js) runs in feat-b's cmd.exe, and
+ *      the CLI's hook events go down feat-b's host pipe, so nothing bills. PR #93 review cases: a main-session
+ *      turn with no subagent disables it (Dexter F1); an open dialog still disables it after the tab is
+ *      looked at (F2); a draft in the box is cleared and /merged alone is submitted (F3); a double click
+ *      types it once (F4)
  *
  * The Open PR button itself is NOT clicked here: it would open a real browser. Its URL is built and
  * checked by test/pr-url.test.js, and the link gate by test/external-link.test.js.
@@ -153,6 +157,15 @@ function command(app, cmd, timeoutMs = 30000) {
   });
 }
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
+
+// What the native hook helper does: one JSON line down the host's named pipe (as verify/probe-strip-pulse.js).
+function fireHook(pid, event, payload) {
+  return new Promise((resolve) => {
+    const sock = net.connect(`\\\\.\\pipe\\claude-custom-${pid}`);
+    sock.on('connect', () => sock.end(JSON.stringify({ event, payload }) + '\n', () => resolve(true)));
+    sock.on('error', () => resolve(false));
+  });
+}
 
 const seenPids = new Set();
 // Every host of this run: any whose folder is inside the probe's temp folder. Not just dev and
@@ -329,6 +342,13 @@ async function main() {
   const p6 = await view(app, 'gitState');
   check('5: Escape from the Jump button unpins and goes back to its spoke', p6.pinned === null && p6.focused === 'feat/b',
     `pinned ${p6.pinned}, focused ${p6.focused}`);
+  // Miguel I4: the 2 s tab-state poll redraws the panel; the hover card under the pointer must survive it
+  await view(app, 'gitHover', { name: 'feat/a' });
+  const hv0 = await view(app, 'gitState');
+  await view(app, 'gitRerender', { changed: true });
+  const hv1 = await view(app, 'gitState');
+  check('5 (Miguel I4): a redraw keeps the hover card under the pointer', hv0.cardShown && /feat\/a/.test(hv0.cardText) && hv1.cardShown && /feat\/a/.test(hv1.cardText)
+    && hv1.renders > hv0.renders, JSON.stringify({ before: hv0.cardText.slice(0, 40), after: hv1.cardShown, text: hv1.cardText.slice(0, 40) }));
 
   // 6 -----------------------------------------------------------------------------
   // The Settle swing (#46). Before the jump below: a tab that isn't selected has no visible page to animate.
@@ -357,6 +377,8 @@ async function main() {
   const h2 = await mo();
   check('6: pinned, the dial has settled: the angle is unchanged across samples, the clock held',
     h1.held && h1.speed === 0 && h2.clock === h1.clock && h2.angle === h1.angle, `${h1.angle} / ${h2.angle}, clock ${h1.clock} / ${h2.clock}`);
+  check('6 (Miguel S1): pinned, the spokes stop breathing too: no spoke changes length under a click',
+    Object.keys(h1.parts).length > 0 && Object.keys(h1.parts).every(n => h2.parts[n] && h2.parts[n].f === h1.parts[n].f), JSON.stringify({ h1: h1.parts, h2: h2.parts }).slice(0, 400));
   await view(app, 'gitPin', { name: 'feat/a' });          // the same spoke again: unpinned
   await sleep(1000);
   const w1 = await mo();
@@ -472,8 +494,8 @@ async function main() {
   check('8 unmerged: no PR to open, no tab to jump to, Open a worktree needs agent-creator, Run /merged needs an open PR',
     /no PR/.test(actOf(us, 'open-pr').why || '') && actOf(us, 'jump').disabled && actOf(us, 'open-worktree').why === 'needs agent-creator to attach an existing branch'
     && /no open PR/.test(actOf(us, 'run-merged').why || '') && !actOf(us, 'copy').disabled, JSON.stringify(us.acts));
-  check('8: every disabled action says why: beside it and as its title',
-    [bs, ms, us].every(s => s.acts.filter(a => a.disabled).every(a => a.why && a.why === a.title)), JSON.stringify(us.acts));
+  check('8: every disabled action says why: beside it, as its description, and not again as a title (Miguel S2)',
+    [bs, ms, us].every(s => s.acts.filter(a => a.disabled).every(a => a.why && !a.title && a.described)), JSON.stringify(us.acts));
   const before8 = (await command(app, { cmd: 'state' })).selectedKey;
   await view(app, 'gitAct', { act: 'run-merged' });
   await sleep(500);
@@ -532,42 +554,82 @@ async function main() {
   }, 15000);
 
   // 10 ----------------------------------------------------------------------------
-  // Run /merged: the feat-b tab now has a session. Back on the dev tab, its drawer should see that tab
-  // open and idle, and the button should switch to it and type /merged + Enter into its session.
+  // Run /merged (PR #93 review). feat-b's tab now has a session: cmd.exe. A stand-in CLI box
+  // (verify/lib/fake-claude-box.js) runs inside it, so the target page has a `❯` box to judge, clear and read
+  // back; the probe sends the CLI's hook events down feat-b's host pipe, as the native helper would.
+  const boxCtl = path.join(tmp, 'box-ctl.json');
+  const boxLog = path.join(tmp, 'box-submitted.log');
+  const submitted = () => { try { return fs.readFileSync(boxLog, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; } };
+  const stNow = await command(app, { cmd: 'state' });
+  const bHost = ((stNow && stNow.hosts) || []).find(x => /feat-b$/i.test(x.key || ''));
+  const bPid = bHost && Number.isInteger(bHost.pid) ? bHost.pid : null;
+  check('10: feat-b\'s host is up (its hook pipe is named by its pid)', !!bPid, JSON.stringify(stNow && stNow.hosts));
+  // still on feat-b's tab (the jump): start the box in its cmd.exe
+  await waitFor(async () => { const r = await view(app, 'gitScreen'); return r && />\s*$/m.test(r.text || '') ? r : null; }, 15000, 300);
+  await view(app, 'gitTermInput', { data: `node "${path.join(ROOT, 'verify', 'lib', 'fake-claude-box.js')}" "${boxCtl}" "${boxLog}"\r` });
+  const boxUp = await waitFor(async () => { const r = await view(app, 'gitScreen'); return r && /❯/.test(r.text) && /fake claude box/.test(r.text) ? r : null; }, 15000, 300);
+  check('10: the stand-in CLI box is drawn in feat-b\'s tab', !!boxUp, JSON.stringify(await view(app, 'gitScreen')).slice(0, 400));
+  const hook = (event, payload = {}) => fireHook(bPid, event, payload);
+  check('10: a hook line reached feat-b\'s host', await hook('SessionStart', { source: 'startup', session_id: 'probe-b' }));
   await command(app, { cmd: 'select', label: 'develop' });
-  const tabsKnown = await waitFor(async () => {
-    const t = await view(app, 'gitTabs');
-    const b = t && t.tabs && t.tabs.find(x => /feat-b$/i.test(x.folder));
-    return b && b.open && b.started && b.known ? b : null;
-  }, 30000, 500);
-  check('10: the dev tab sees feat-b\'s tab: open, started, and its session has reported', !!tabsKnown, JSON.stringify((await view(app, 'gitTabs')).tabs));
-  const rs = await waitFor(async () => {
+  const tabOfB = async () => { const t = await view(app, 'gitTabs'); return t && t.tabs ? t.tabs.find(x => /feat-b$/i.test(x.folder)) : null; };
+  const runWhy = async () => {
+    await view(app, 'gitTabs');
     const s0 = await gs();
     if (s0.pinned !== 'feat/b') await view(app, 'gitPin', { name: 'feat/b' });
-    const s = await gs();
-    return s.pinned === 'feat/b' && !actOf(s, 'run-merged').disabled ? s : null;
-  }, 15000, 500);
-  check('10: an open PR whose tab is open and idle: Run /merged is enabled', !!rs, JSON.stringify((await gs()).acts));
-  if (rs) {
-    await view(app, 'gitAct', { act: 'run-merged' });
-    const switched = await waitFor(async () => {
-      const s = await command(app, { cmd: 'state' });
-      return s && /feat-b$/i.test(s.selectedKey || '') ? s.selectedKey : null;
-    }, 10000);
-    check('10: it switched to that branch\'s tab', !!switched, String(switched));
-    // cmd.exe stands in for claude: it echoes what was typed, and a submitted line is followed by a fresh prompt
-    const typed = await waitFor(async () => {
-      const r = await view(app, 'gitScreen');
-      const lines = r && r.text ? r.text.split('\n') : [];
-      const i = lines.findIndex(l => /\/merged/.test(l));
-      const prompt = i >= 0 && lines.slice(i + 1).some(l => /^[A-Za-z]:\\.*>\s*$/.test(l.trim()));
-      return i >= 0 && prompt ? lines.slice(Math.max(0, i - 1), i + 3).join(' | ') : null;
-    }, 20000, 500);
-    check('10: that session received /merged and then Enter (the line was submitted: a fresh prompt follows)', !!typed, typed || JSON.stringify(await view(app, 'gitScreen')).slice(0, 500));
-    await command(app, { cmd: 'select', label: 'develop' });
-    const said = await waitFor(async () => { const s = await gs(); return /Sent \/merged to feat\/b/.test(s.said) ? s.said : null; }, 8000);
-    check('10: the drawer says what it did', !!said, String((await gs()).said));
-  }
+    const a = actOf(await gs(), 'run-merged');
+    return a.disabled ? (a.why || 'disabled') : 'enabled';
+  };
+  const runIs = (re) => waitFor(async () => { const w = await runWhy(); return re.test(w) ? w : null; }, 15000, 400);
+  const restB = await waitFor(async () => { const b = await tabOfB(); return b && b.known && b.turn === 'idle' && b.lock ? b : null; }, 20000, 500);
+  check('10: the dev tab sees feat-b\'s tab open and started, and its host says the session is at rest', !!restB, JSON.stringify(await tabOfB()));
+  check('10: an open PR whose session is at rest: Run /merged is enabled', !!(await runIs(/^enabled$/)), await runWhy());
+
+  // Dexter F1: a main-session turn that calls no agent
+  await hook('UserPromptSubmit', { prompt: 'address the findings' });
+  const f1 = await runIs(/working/);
+  const b1 = await tabOfB();
+  check('10 (Dexter F1): a main-session turn with no subagent at all disables it ("working"); the roster says nothing works',
+    !!f1 && b1 && b1.turn === 'turn' && b1.working === false, JSON.stringify({ why: await runWhy(), tab: b1 }));
+  await hook('Stop', {});
+  check('10 (Dexter F1): ...and the turn ending enables it again', !!(await runIs(/^enabled$/)), await runWhy());
+
+  // Dexter F2: a dialog open, and the tab then looked at
+  await hook('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
+  check('10 (Dexter F2): a permission prompt open disables it ("waiting for you")', !!(await runIs(/waiting for you/)), await runWhy());
+  await command(app, { cmd: 'select', label: 'feat/b' });
+  await command(app, { cmd: 'windowFocus' });
+  await sleep(800);
+  await command(app, { cmd: 'select', label: 'develop' });
+  const b2 = await waitFor(async () => { const b = await tabOfB(); return b && b.needsInput === false ? b : null; }, 8000, 300);
+  const why2 = await runWhy();
+  check('10 (Dexter F2): looked at ("needs you" cleared), the open dialog still disables it',
+    !!b2 && b2.turn === 'prompt' && /waiting for you/.test(why2), JSON.stringify({ tab: b2 || await tabOfB(), why: why2 }));
+  await hook('Stop', {});
+  check('10 (Dexter F2): ...and the session moving on enables it again', !!(await runIs(/^enabled$/)), await runWhy());
+
+  // Dexter F3: a half-typed draft in the box
+  fs.writeFileSync(boxCtl, JSON.stringify({ draft: 'also bump the version' }));
+  await sleep(600);
+  await view(app, 'gitAct', { act: 'run-merged' });
+  const sent1 = await waitFor(async () => (submitted().length >= 1 ? submitted() : null), 15000, 300);
+  check('10 (Dexter F3): the draft was cleared and /merged ALONE was submitted, never "also bump the version/merged"',
+    JSON.stringify(sent1) === JSON.stringify(['/merged']), JSON.stringify(submitted()));
+  const sw = (await command(app, { cmd: 'state' })).selectedKey;
+  check('10: it switched to that branch\'s tab to type', /feat-b$/i.test(sw || ''), String(sw));
+  await command(app, { cmd: 'select', label: 'develop' });
+  const said = await waitFor(async () => { const s = await gs(); return /Sent \/merged to feat\/b/.test(s.said) ? s : null; }, 8000);
+  check('10: the drawer says what it did, and that a box that wasn\'t empty was cleared (Ctrl+Y brings a draft back)',
+    !!said && /Ctrl\+Y/.test(said.said), String((await gs()).said));
+  check('10 (Miguel S2): one status node in the panel, however often the drawer was rebuilt', !!said && said.saidNodes === 1, String(said && said.saidNodes));
+
+  // Dexter F4 / Miguel I1: a double click
+  await runIs(/^enabled$/);
+  await view(app, 'gitAct', { act: 'run-merged', times: 2 });
+  await waitFor(async () => (submitted().length >= 2 ? true : null), 15000, 300);
+  await sleep(2500);
+  check('10 (Dexter F4): a double click types /merged once', JSON.stringify(submitted()) === JSON.stringify(['/merged', '/merged']), JSON.stringify(submitted()));
+  await command(app, { cmd: 'select', label: 'develop' });
 
   await command(app, { cmd: 'quit' });
   await waitFor(() => app.exited, 10000);

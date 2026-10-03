@@ -1116,7 +1116,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           drawerRect: document.querySelector('.git-drawer') ? rectOf(document.querySelector('.git-drawer')) : null,
           beside: document.getElementById('git-dial').classList.contains('beside'),
           acts: [...document.querySelectorAll('.git-drawer .git-act')].map(b => ({ act: b.dataset.act, label: b.textContent,
-            disabled: b.getAttribute('aria-disabled') === 'true', title: b.title,
+            disabled: b.getAttribute('aria-disabled') === 'true', title: b.title, described: b.getAttribute('aria-describedby'),
             why: ((b.parentElement && b.parentElement.querySelector('.git-act-why')) || {}).textContent || null })),
           reviews: [...document.querySelectorAll('.git-drawer .git-drawer-reviews > *')].map(x => x.textContent),
           people: [...document.querySelectorAll('.git-drawer .git-drawer-who .p')].map(x => x.textContent),
@@ -1172,7 +1172,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitAct': {
         const btn = document.querySelector('.git-drawer .git-act[data-act="' + String(a.act) + '"]');
         if (!btn) return JSON.stringify({ ok: false, error: 'no action ' + a.act });
-        btn.click();
+        // `times`: a double click (or a held Enter's repeats), back to back in one task (PR #93 F4)
+        const times = Number.isInteger(a.times) && a.times > 1 && a.times <= 3 ? a.times : 1;
+        for (let i = 0; i < times; i++) btn.click();
         return JSON.stringify({ ok: true });
       }
       // the swing's state; `pointer` puts the pointer over the dial ('in') or takes it away ('out')
@@ -1186,6 +1188,13 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitTabs': return requestGitTabs().then(() => JSON.stringify({ ok: true, tabs: lastGitTabs }));
       // this tab's own terminal screen: what its session's pty has shown
       case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
+      // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
+      // CLI box with it). Bounded, and only ever this tab's own socket.
+      case 'gitTermInput': {
+        if (typeof a.data !== 'string' || !a.data || a.data.length > 2000) return JSON.stringify({ ok: false, error: 'gitTermInput needs text' });
+        send(JSON.stringify({ type: 'input', data: a.data }));
+        return JSON.stringify({ ok: true });
+      }
       // PR #82 Dexter F1: a real drop. The move redraws the tab bar, so the
       // dragged button is gone and no dragend will ever come; the drag must
       // already be over when the drop returns.

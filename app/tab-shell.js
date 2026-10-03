@@ -1079,7 +1079,9 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
-  'gitAct', 'gitMotion', 'gitTabs', 'gitScreen']);
+  'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
+  // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
+  'gitTermInput']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

@@ -600,8 +600,9 @@ function wire(dial) {
     if (!g || st.pinned !== null) return;
     const key = keyOfEl(g);
     const card = dial.querySelector('.git-card');
-    if (st.hover === key && card && !card.hidden) {
-      // the same spoke: only place it again -- the panel may have moved zones since (window probe 3b)
+    if (st.hover === key && card && !card.hidden && card.dataset.key === key) {
+      // the same spoke, its card already up: only place it again -- the panel may have moved zones since
+      // (window probe 3b). Only if the card shows THIS spoke: a focus may have put another one up meanwhile.
       placeCard(dial, card, e.clientX, e.clientY);
       return;
     }
@@ -622,7 +623,8 @@ function wire(dial) {
   });
   dial.addEventListener('focusin', e => {
     const g = spokeAt(dial, e.target);
-    if (!g || st.pinned !== null) return;
+    // a redraw putting the focus back is not the person moving it: the card stays what it was (Miguel I4)
+    if (!g || st.pinned !== null || st.restoringFocus) return;
     const [x, y] = centerOf(g);
     show(dial, keyOfEl(g), x, y);
   });
@@ -842,6 +844,20 @@ function render(rootEl, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs = nu
     if (g) openDrawer(dial, st.pinned);
     else st.pinned = null;
   }
+  st.restoringFocus = true;
+  try {
+    if (focusedAct) {
+      const btn = dial.querySelector(`.git-act[data-act="${focusedAct}"]`);
+      if (btn) btn.focus();
+      else if (st.pinned !== null) { const g = elementFor(dial, st.pinned); if (g) g.focus({ preventScroll: true }); }
+    } else if (focusedKey !== null) {
+      const g = elementFor(dial, focusedKey);
+      if (g) g.focus({ preventScroll: true });
+    }
+  } finally {
+    st.restoringFocus = false;
+  }
+  // the hover card, after the focus: the pointer is still over the spoke it was showing
   if (cardWas && st.pinned === null && st.hover === cardWas.key && (cardWas.key === HUB || st.byName.has(cardWas.key))) {
     const card = dial.querySelector('.git-card');
     if (card && fillCard(dial, card, cardWas.key)) {
@@ -849,14 +865,6 @@ function render(rootEl, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs = nu
       card.style.left = cardWas.left;
       card.style.top = cardWas.top;
     }
-  }
-  if (focusedAct) {
-    const btn = dial.querySelector(`.git-act[data-act="${focusedAct}"]`);
-    if (btn) btn.focus();
-    else if (st.pinned !== null) { const g = elementFor(dial, st.pinned); if (g) g.focus({ preventScroll: true }); }
-  } else if (focusedKey !== null) {
-    const g = elementFor(dial, focusedKey);
-    if (g) g.focus({ preventScroll: true });
   }
 
   // the drawing is new: put the swing and the breath on it now, then keep them going
