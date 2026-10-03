@@ -14,7 +14,7 @@ const path = require('path');
 
 const { tmpDir } = require('./tmp-dir');
 const { createStore } = require('../host/store');
-const { createWandControl, onceLogger, STORE_KEY } = require('../host/wand-control');
+const { createWandControl, STORE_KEY } = require('../host/wand-control');
 const wand = require('../host/wand');
 
 const SKILLS = { skills: [
@@ -303,9 +303,42 @@ test('createWandControl needs a store, and says so', () => {
   assert.throws(() => createWandControl({ store: {} }), /readSkills is required/);
 });
 
-test('onceLogger: each distinct line is logged once, so a debounced rescan does not repeat itself', () => {
+// --- Dexter D1: the control turns unread sources into skillsError ---------------------------------
+
+test('D1: when discovery could not look at something, skillsError says so and nothing may be called missing', () => {
+  const store = createStore({ dir: tmpDir('cc-wc-') });
+  const control = createWandControl({ store, readSkills: () => ({ skills: [], skipped: [], unread: [{ file: 'C:/h/.claude/skills', reason: 'could not read (EPERM)' }, { file: 'x', reason: 'could not read (EBUSY)' }] }) });
+  const p = control.payload();
+  assert.match(p.skillsError, /skills/);
+  assert.match(p.skillsError, /EPERM/);
+  assert.match(p.skillsError, /1 more/);
+  const none = createWandControl({ store, readSkills: () => ({ skills: [], skipped: [], unread: [] }) });
+  assert.strictEqual(none.payload().skillsError, null);
+});
+
+// --- Miguel S4: a skill that is fixed and breaks again is logged again ------------------------------
+
+test('S4: a skipped skill is logged once per breakage: fixed, then broken again, it is logged again', () => {
   const lines = [];
-  const log = onceLogger(l => lines.push(l));
-  log('a'); log('a'); log('b'); log('a');
-  assert.deepStrictEqual(lines, ['a', 'b']);
+  let skipped = [{ file: 'a/SKILL.md', reason: 'SKILL.md has no name in its frontmatter' }];
+  const store = createStore({ dir: tmpDir('cc-wc-') });
+  const control = createWandControl({ store, log: l => lines.push(l), readSkills: () => ({ skills: [], skipped, unread: [] }) });
+  control.payload();
+  control.handle({ type: 'wand-skills' });
+  assert.strictEqual(lines.length, 1, 'the same breakage is not repeated by a rescan');
+  skipped = [];
+  control.handle({ type: 'wand-skills' });
+  skipped = [{ file: 'a/SKILL.md', reason: 'SKILL.md has no name in its frontmatter' }];
+  control.handle({ type: 'wand-skills' });
+  assert.strictEqual(lines.length, 2, 'broken again: said again');
+  assert.match(lines[0], /\[wand\] skipped a\/SKILL\.md/);
+});
+
+test('S4: unread sources are logged too, once per breakage', () => {
+  const lines = [];
+  const store = createStore({ dir: tmpDir('cc-wc-') });
+  const control = createWandControl({ store, log: l => lines.push(l), readSkills: () => ({ skills: [], skipped: [], unread: [{ file: 'p', reason: 'could not read (EPERM)' }] }) });
+  control.payload(); control.handle({ type: 'wand-skills' });
+  assert.strictEqual(lines.length, 1);
+  assert.match(lines[0], /could not read p/);
 });

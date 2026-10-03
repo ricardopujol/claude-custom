@@ -79,6 +79,15 @@ const capDescription = (d) => {
 
 function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } = {}) {
   const skipped = [];
+  // Places that EXIST but could not be looked at (EPERM, EBUSY, a damaged plugin list). Absent is not unread:
+  // ENOENT / ENOTDIR mean there is nothing there. The caller must never read an unread place as "no such
+  // skill" (Dexter D1): wand-control turns any of these into skillsError, and the panel dims nothing.
+  const unread = [];
+  const gone = (err) => !!err && (err.code === 'ENOENT' || err.code === 'ENOTDIR');
+  const noteUnread = (file, err) => {
+    if (gone(err)) return;
+    unread.push({ file, reason: `could not read (${(err && (err.code || err.message)) || 'unknown'})` });
+  };
   const found = new Map();      // invocation name -> skill; later sources replace earlier
 
   const skip = (file, reason) => {
@@ -86,18 +95,18 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
     log(`[wand] skipped ${file}: ${reason}`);
   };
 
-  const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+  const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch (err) { noteUnread(p, err); return false; } };
 
   function scan(skillsDir, source, prefix) {
     let entries;
-    try { entries = fs.readdirSync(skillsDir); } catch { return; }       // no folder: nothing to list
+    try { entries = fs.readdirSync(skillsDir); } catch (err) { noteUnread(skillsDir, err); return; }   // no folder: nothing to list
     for (const entry of entries) {
       const dir = path.join(skillsDir, entry);
       const file = path.join(dir, 'SKILL.md');
       if (!isDir(dir)) continue;
       let text;
       try { text = fs.readFileSync(file, 'utf8'); } catch (err) {
-        if (err && err.code !== 'ENOENT') skip(file, `could not read SKILL.md (${err.code || err.message})`);
+        noteUnread(file, err);
         continue;
       }
       const fm = parseFrontmatter(text);
@@ -113,12 +122,13 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
 
     const registry = path.join(claudeHome, 'plugins', 'installed_plugins.json');
     let text = null;
-    try { text = fs.readFileSync(registry, 'utf8'); } catch { /* no plugins installed */ }
+    try { text = fs.readFileSync(registry, 'utf8'); } catch (err) { noteUnread(registry, err); /* ENOENT: no plugins installed */ }
     if (text !== null) {
       let plugins = null;
       try { plugins = JSON.parse(text).plugins; } catch { /* reported below */ }
       if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) {
         log(`[wand] could not read ${registry}: not a plugin list; plugin skills are not listed`);
+        unread.push({ file: registry, reason: 'could not read (not a plugin list)' });
       } else {
         const seen = new Set();
         for (const key of Object.keys(plugins)) {
@@ -137,7 +147,7 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
   if (isStr(projectDir) && projectDir) scan(path.join(projectDir, '.claude', 'skills'), 'project', null);
 
   const skills = [...found.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return { skills, skipped };
+  return { skills, skipped, unread };
 }
 
 module.exports = { parseFrontmatter, discoverSkills, SKILL_NAME, DESCRIPTION_CAP };

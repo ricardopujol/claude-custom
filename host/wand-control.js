@@ -42,17 +42,8 @@ const WAND_TYPES = Object.freeze(['wand-add', 'wand-update', 'wand-delete', 'wan
 
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
-/** A logger that says each distinct line once: a debounced rescan finds the same skipped file again. */
-function onceLogger(log) {
-  const seen = new Set();
-  return (line) => {
-    if (seen.has(line)) return;
-    seen.add(line);
-    log(line);
-  };
-}
 
-function createWandControl({ store, readSkills } = {}) {
+function createWandControl({ store, readSkills, log = () => {} } = {}) {
   if (!store) throw new Error('createWandControl: store is required');
   if (typeof readSkills !== 'function') throw new Error('createWandControl: readSkills is required');
 
@@ -81,11 +72,25 @@ function createWandControl({ store, readSkills } = {}) {
   let skills = null;
   let skillsError = null;
   let toldSkills = '';
+  // What is broken RIGHT NOW, logged once per breakage: a line is forgotten when it stops being true, so a
+  // skill that is fixed and breaks again is said again (Miguel S4).
+  let logged = new Set();
+  function logScan(r) {
+    const now = new Set();
+    const say = (line) => { now.add(line); if (!logged.has(line)) log(line); };
+    for (const s of Array.isArray(r && r.skipped) ? r.skipped : []) say(`[wand] skipped ${s.file}: ${s.reason}`);
+    for (const u of Array.isArray(r && r.unread) ? r.unread : []) say(`[wand] could not read ${u.file}: ${u.reason}`);
+    logged = now;
+  }
   function scan() {
     try {
       const r = readSkills();
       skills = Array.isArray(r && r.skills) ? r.skills : [];
-      skillsError = null;
+      logScan(r);
+      // A source that exists but could not be read is NOT "no such skill": say so, and the panel dims nothing.
+      const unread = Array.isArray(r && r.unread) ? r.unread : [];
+      skillsError = unread.length === 0 ? null
+        : `${unread[0].file}: ${unread[0].reason}${unread.length > 1 ? ` (and ${unread.length - 1} more)` : ''}`;
     } catch (err) {
       skills = [];
       skillsError = err && err.message ? err.message : 'unknown error';
@@ -186,4 +191,4 @@ function createWandControl({ store, readSkills } = {}) {
   return { payload, handle, changed, skillsChanged, handles };
 }
 
-module.exports = { createWandControl, onceLogger, STORE_KEY, WAND_TYPES };
+module.exports = { createWandControl, STORE_KEY, WAND_TYPES };

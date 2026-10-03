@@ -141,8 +141,8 @@ test('discovery: a project skill of the same name beats the user skill; the user
 test('discovery: a missing skills folder, plugin file or project is simply empty, not an error', () => {
   const home = tree({ 'unrelated.txt': 'x' });
   assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: path.join(home, 'nope') }),
-    { skills: [], skipped: [] });
-  assert.deepStrictEqual(discoverSkills({}), { skills: [], skipped: [] });
+    { skills: [], skipped: [], unread: [] });
+  assert.deepStrictEqual(discoverSkills({}), { skills: [], skipped: [], unread: [] });
 });
 
 test('discovery: a damaged installed_plugins.json is logged once and the other sources still list', () => {
@@ -161,7 +161,7 @@ test('discovery: a plugin whose install path is gone is skipped quietly', () => 
   const home = tree({
     'plugins/installed_plugins.json': JSON.stringify({ version: 2, plugins: { 'gone@m': [{ installPath: path.join(os.tmpdir(), 'wand-no-such-plugin-dir') }] } }),
   });
-  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: null }), { skills: [], skipped: [] });
+  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: null }), { skills: [], skipped: [], unread: [] });
 });
 
 test('discovery: a plugin install listed twice (two scopes) lists its skills once', () => {
@@ -193,4 +193,49 @@ test('discovery: a description is trimmed and capped, and a missing one is "" (s
   const bare = skills.find(s => s.name === 'bare');
   assert.ok(long.description.length <= 400 && long.description.endsWith('…'), String(long.description.length));
   assert.strictEqual(bare.description, '');
+});
+
+// --- Dexter D1: "could not look" is not "no such skill" --------------------------------------------
+
+const code = (c) => Object.assign(new Error(c), { code: c });
+const realFs = require('fs');
+const faulty = (fail) => new Proxy(realFs, { get: (t, k) => (typeof t[k] === 'function' ? (...a) => { const e = fail(String(k), a); if (e) throw e; return t[k](...a); } : t[k]) });
+
+test('D1: a skills folder that exists but cannot be listed (EPERM) is UNREAD, never just absent', () => {
+  const home = tree({ 'skills/bedtime/SKILL.md': skill('bedtime', 'x') });
+  const fs2 = faulty((fn, a) => (fn === 'readdirSync' && String(a[0]).endsWith('skills') ? code('EPERM') : null));
+  const r = discoverSkills({ claudeHome: home, projectDir: null, fs: fs2 });
+  assert.strictEqual(r.unread.length, 1);
+  assert.match(r.unread[0].reason, /EPERM/);
+  assert.match(r.unread[0].file, /skills/);
+});
+
+test('D1: a SKILL.md that cannot be read (EBUSY) is unread, and the others still list', () => {
+  const home = tree({ 'skills/a/SKILL.md': skill('a', 'x'), 'skills/b/SKILL.md': skill('b', 'y') });
+  const fs2 = faulty((fn, a) => (fn === 'readFileSync' && /[\\/]a[\\/]SKILL\.md$/.test(String(a[0])) ? code('EBUSY') : null));
+  const r = discoverSkills({ claudeHome: home, projectDir: null, fs: fs2 });
+  assert.deepStrictEqual(r.skills.map(s => s.name), ['b']);
+  assert.strictEqual(r.unread.length, 1);
+  assert.match(r.unread[0].reason, /EBUSY/);
+});
+
+test('D1: a skill folder whose stat fails (not ENOENT) is unread; ENOENT and ENOTDIR are simply absent', () => {
+  const home = tree({ 'skills/a/SKILL.md': skill('a', 'x') });
+  const bad = faulty((fn, a) => (fn === 'statSync' && /[\\/]a$/.test(String(a[0])) ? code('EACCES') : null));
+  assert.strictEqual(discoverSkills({ claudeHome: home, projectDir: null, fs: bad }).unread.length, 1);
+  const gone = faulty((fn, a) => (fn === 'readdirSync' && String(a[0]).endsWith('skills') ? code('ENOENT') : null));
+  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: null, fs: gone }).unread, []);
+  const notdir = faulty((fn, a) => (fn === 'readdirSync' && String(a[0]).endsWith('skills') ? code('ENOTDIR') : null));
+  assert.deepStrictEqual(discoverSkills({ claudeHome: home, projectDir: null, fs: notdir }).unread, []);
+});
+
+test('D1: a damaged or unreadable installed_plugins.json is unread, so plugin favourites are not dimmed', () => {
+  const damaged = tree({ 'plugins/installed_plugins.json': '{ nope' });
+  assert.strictEqual(discoverSkills({ claudeHome: damaged, projectDir: null }).unread.length, 1);
+  const home = tree({ 'plugins/installed_plugins.json': '{}' });
+  const fs2 = faulty((fn, a) => (fn === 'readFileSync' && String(a[0]).endsWith('installed_plugins.json') ? code('EBUSY') : null));
+  const r = discoverSkills({ claudeHome: home, projectDir: null, fs: fs2 });
+  assert.match(r.unread[0].reason, /EBUSY/);
+  // a missing registry is just "no plugins"
+  assert.deepStrictEqual(discoverSkills({ claudeHome: tree({ x: '' }), projectDir: null }).unread, []);
 });

@@ -64,7 +64,7 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
-const { createWandControl, onceLogger } = require('./wand-control');
+const { createWandControl } = require('./wand-control');
 const { discoverSkills } = require('./wand-skills');
 const { watchDir } = require('./wand-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
@@ -425,8 +425,9 @@ watchLoadout({
 // list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam
 // (host/probe-seams.js), unset in real use.
 const CLAUDE_HOME = seams.claudeHome || path.join(os.homedir(), '.claude');
-const skillLog = onceLogger((line) => console.log(line));
-const wandControl = createWandControl({ store, readSkills: () => discoverSkills({ claudeHome: CLAUDE_HOME, projectDir: CWD, log: skillLog }) });
+// The control logs what is broken once per breakage (a debounced rescan finds the same file again).
+const wandControl = createWandControl({ store, log: (line) => console.log(line),
+  readSkills: () => discoverSkills({ claudeHome: CLAUDE_HOME, projectDir: CWD }) });
 // The wand watches the state file (another host's edit) and the skill directories (a skill added while the
 // harness runs). Both frames are QUIET, so neither touches a refusal on screen. The CLI's directories are
 // watched, never created: only the state dir is ours.
