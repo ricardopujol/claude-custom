@@ -97,3 +97,28 @@ test('property: the kept text is always a prefix of what was typed, never longer
     return snap !== null && s.startsWith(snap.text) && snap.text.length <= PROMPT_MAX && snap.text.trim() !== '';
   }));
 });
+
+// --- found by mutation testing (a throwaway Stryker run over the new modules) ---------------------------------
+test('an empty agent_id is not a subagent: the main session\'s prompt still counts', () => {
+  const k = createPromptKeeper({ now: clock() });
+  assert.strictEqual(k.handle(submit('mine', { agent_id: '' })), true);
+  assert.strictEqual(k.snapshot().text, 'mine');
+});
+
+test('the cap keeps exactly PROMPT_MAX characters, and only a pair cut IN HALF at the end loses one', () => {
+  const k = createPromptKeeper({ now: clock() });
+  k.handle(submit('a'.repeat(PROMPT_MAX - 1) + '\u{1F319}' + 'tail'));
+  assert.strictEqual(k.snapshot().text, 'a'.repeat(PROMPT_MAX - 1), 'the moon straddles the cap: cut before it, not mid-pair');
+  k.handle(submit('a'.repeat(10) + '\u{1F319}' + 'b'.repeat(PROMPT_MAX)));
+  assert.strictEqual(k.snapshot().text.length, PROMPT_MAX, 'a whole pair inside the cap is kept; nothing else is dropped');
+  assert.ok(k.snapshot().text.includes('\u{1F319}'));
+});
+
+test('handle answers false for every event it does not act on, and for junk', () => {
+  const k = createPromptKeeper({ now: clock() });
+  k.handle(submit('x'));
+  for (const e of [ev('Stop'), ev('PreToolUse', { tool_name: 'Bash' }), ev('Notification'), ev('SubagentStop', { agent_id: 'a' }), { event: 5 }, { event: undefined }]) {
+    assert.strictEqual(k.handle(e), false, JSON.stringify(e));
+  }
+  assert.strictEqual(k.snapshot().text, 'x', 'none of them touched it');
+});

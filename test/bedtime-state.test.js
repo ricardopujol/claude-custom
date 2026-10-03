@@ -357,3 +357,127 @@ test('isBedtimeOnly: the ScheduleWakeup Pre / Post events the bedtime matcher br
   assert.strictEqual(isBedtimeOnly(ev('PreToolUse', {})), false);
   for (const junk of [null, undefined, {}, 3, { event: 'PreToolUse' }]) assert.strictEqual(isBedtimeOnly(junk), false);
 });
+
+// --- found by mutation testing -------------------------------------------------------------------------------
+test('scheduledFor is believed from "now" to the longest delay plus the runtime\'s slack, both ends inclusive', () => {
+  const edge = (sf) => { const r = rig(); r.sched(PROMPT, 1200); r.posted(PROMPT, 1200, sf); return r.view().nextWakeAt; };
+  assert.strictEqual(edge(T0), T0, 'exactly now is believed');
+  assert.strictEqual(edge(T0 - 1), T0 + 1200_000, 'a moment ago is not');
+  assert.strictEqual(edge(T0 + 3600_000 + 120_000), T0 + 3600_000 + 120_000, 'the longest delay plus 120 s is believed');
+  assert.strictEqual(edge(T0 + 3600_000 + 120_001), T0 + 1200_000, 'one ms further is not');
+  assert.strictEqual(edge(Infinity), T0 + 1200_000);
+});
+
+test('only the RESULT carries scheduledFor: a Pre event that happens to hold one is not believed', () => {
+  const r = rig();
+  r.send('PreToolUse', { tool_name: 'ScheduleWakeup', tool_input: { delaySeconds: 1200, prompt: PROMPT }, tool_response: { scheduledFor: T0 + 600_000 } });
+  assert.strictEqual(r.view().nextWakeAt, T0 + 1200_000);
+});
+
+test('a ScheduleWakeup that failed (PostToolUseFailure) schedules nothing and starts nothing', () => {
+  const r = rig();
+  r.send('PostToolUseFailure', { tool_name: 'ScheduleWakeup', tool_input: { delaySeconds: 60, prompt: PROMPT } });
+  assert.strictEqual(r.view(), null);
+  r.sched(PROMPT, 1800);
+  const before = r.view().nextWakeAt;
+  r.send('PostToolUseFailure', { tool_name: 'ScheduleWakeup', tool_input: { delaySeconds: 60, prompt: PROMPT } });
+  assert.strictEqual(r.view().nextWakeAt, before, 'the failed call moved nothing');
+});
+
+test('only ScheduleWakeup schedules or stops: another tool with the same input shape does neither', () => {
+  const r = rig();
+  r.send('PreToolUse', { tool_name: 'Agent', tool_input: { delaySeconds: 60, prompt: PROMPT } });
+  assert.strictEqual(r.view(), null, 'an Agent prompt that names bedtime starts no night');
+  r.sched(PROMPT, 1800);
+  r.send('PreToolUse', { tool_name: 'Bash', tool_input: { stop: true } });
+  r.send('PostToolUse', { tool_name: 'Bash', tool_input: { stop: true } });
+  assert.ok(r.view() !== null, 'a Bash call with stop in its input is not the loop stopping');
+});
+
+test('any main-session tool call, a poll included, wakes a sleeping night (a turn is open); with no night it does nothing', () => {
+  for (const call of [
+    () => ({ event: 'PreToolUse', payload: { tool_name: 'Bash', tool_input: { command: 'ls' } } }),
+    () => ({ event: 'PostToolUse', payload: { tool_name: 'Read', tool_input: {} } }),
+    () => ({ event: 'PreToolUse', payload: { tool_name: 'ScheduleWakeup', tool_input: { delaySeconds: 90, prompt: 'poll the tests' } } }),
+    () => ({ event: 'PreToolUse', payload: { tool_name: 'ScheduleWakeup', tool_input: { prompt: PROMPT } } }),
+  ]) {
+    const r = rig();
+    r.sched(PROMPT, 1800); r.send('Stop');
+    assert.strictEqual(r.view().awake, false);
+    r.at(T0 + MIN);
+    r.b.handle(call());
+    assert.strictEqual(r.view().awake, true);
+    assert.strictEqual(r.b.snapshot().idleSince, null);
+    assert.strictEqual(rig().b.handle(call()), false, 'no night: nothing to wake');
+  }
+});
+
+test('a prompt reworded into a different sentence that names bedtime is still a wake', () => {
+  const r = rig();
+  r.sched(PROMPT, 60); r.send('Stop');
+  r.at(T0 + 2 * MIN);
+  r.send('UserPromptSubmit', { prompt: 'Continue the /bedtime autonomous run' });
+  assert.strictEqual(r.view().wakes, 1);
+});
+
+test('a prompt that does not say bedtime and is not the scheduled one is not a wake; one with no text never throws', () => {
+  const r = rig();
+  r.sched(PROMPT, 60); r.send('Stop');
+  r.at(T0 + 2 * MIN);
+  assert.doesNotThrow(() => r.send('UserPromptSubmit', {}));
+  assert.doesNotThrow(() => r.send('UserPromptSubmit', { prompt: 42 }));
+  r.send('UserPromptSubmit', { prompt: 'what time is it' });
+  assert.strictEqual(r.view().wakes, 0);
+  assert.strictEqual(r.view().awake, true);
+});
+
+test('only Stop puts the night to sleep: other events leave an awake session awake', () => {
+  for (const [event, payload] of [['Notification', { notification_type: 'idle_prompt' }], ['SubagentStop', {}], ['PreCompact', {}], ['Whatever', {}]]) {
+    const r = rig();
+    r.sched(PROMPT, 1800);
+    r.send(event, payload);
+    assert.strictEqual(r.view().awake, true, event);
+  }
+});
+
+test('Stop with a wake already scheduled leaves nothing to time out; with none scheduled it starts the clock', () => {
+  const a = rig();
+  a.sched(PROMPT, 1800); a.send('Stop');
+  assert.strictEqual(a.b.snapshot().idleSince, null);
+  const b = rig();
+  b.sched(PROMPT, 60); b.send('Stop');
+  b.at(T0 + 2 * MIN);
+  b.send('UserPromptSubmit', { prompt: PROMPT });
+  b.at(T0 + 9 * MIN);
+  b.send('Stop');
+  assert.strictEqual(b.b.snapshot().idleSince, T0 + 9 * MIN);
+});
+
+test('snapshot is null with no night, a COPY with one, and never aliases the machine\'s own state', () => {
+  const r = rig();
+  assert.strictEqual(r.b.snapshot(), null);
+  r.sched(PROMPT, 1800);
+  const s = r.b.snapshot();
+  assert.strictEqual(s.startedAt, T0);
+  assert.strictEqual(s.prompt, PROMPT);
+  s.startedAt = 1;
+  assert.strictEqual(r.b.snapshot().startedAt, T0);
+});
+
+test('a night is dropped only AFTER twelve hours, not at twelve', () => {
+  const r = rig();
+  r.sched(PROMPT, 1800); r.send('Stop');
+  r.at(T0 + MAX_NIGHT_MS);
+  r.send('UserPromptSubmit', { prompt: PROMPT });
+  assert.strictEqual(r.view().wakes, 1, 'a wake at exactly twelve hours still counts');
+  r.at(T0 + MAX_NIGHT_MS + 1);
+  r.send('UserPromptSubmit', { prompt: PROMPT });
+  assert.strictEqual(r.view(), null, 'one ms later it has been dropped');
+});
+
+test('a null startedAt or a junk payload never makes a view: view reads only what a real night holds', () => {
+  const r = rig();
+  r.sched(PROMPT, 1800);
+  const v = r.view();
+  assert.deepStrictEqual(Object.keys(v).sort(), ['awake', 'lastWakeAt', 'nextWakeAt', 'startedAt', 'wakes']);
+});

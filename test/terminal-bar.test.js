@@ -297,3 +297,45 @@ test('property: the prompt part is present only when the bar is visible', () => 
     return m.prompt === null || m.visible === true;
   }));
 });
+
+// --- found by mutation testing -------------------------------------------------------------------------------
+test('a line below the buffer\'s start is not a place, even for a viewport that is somehow above it', () => {
+  assert.strictEqual(T.scrolledAway(prompt(), anchorAt(-1), view({ viewportY: -5 })), true);
+});
+
+test('promptModel: surrounding whitespace never reaches the head or the hover', () => {
+  assert.deepStrictEqual(T.promptModel(prompt({ text: '  hello  ' }), NOW), { head: 'hello', full: 'hello', age: '4 min ago' });
+  assert.strictEqual(T.promptModel(prompt({ text: 'abc   \nsecond' }), NOW).head, 'abc', 'trailing blanks on the first line');
+  assert.strictEqual(T.promptModel(prompt({ text: '   \nsecond' }), NOW).head, 'second', 'a blank first line is skipped');
+});
+
+test('bedtimeChip: the hover says how many PRs, in the singular too, and a real zero as a zero', () => {
+  assert.match(T.bedtimeChip(night({ prs: 0 }), NOW).long, /\n0 PRs so far$/);
+  assert.match(T.bedtimeChip(night({ prs: 1 }), NOW).long, /\n1 PR so far$/);
+  assert.match(T.bedtimeChip(night({ prs: 12 }), NOW).long, /\n12 PRs so far$/);
+});
+
+test('bedtimeChip: a start time no clock can show still leaves the chip, with the plain heading', () => {
+  const c = T.bedtimeChip(night({ startedAt: 8.64e15 + 1 }), NOW);
+  assert.strictEqual(c.long.split('\n')[0], 'overnight run');
+});
+
+test('occupancyChip: +n only for a real positive integer count', () => {
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: [], more: 0 }).short, 'EP');
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: [] }).short, 'EP');
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: [], more: -1 }).short, 'EP');
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: [], more: 2.5 }).short, 'EP');
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: [], more: '3' }).short, 'EP');
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: [], more: 1 }).short, 'EP +1');
+});
+
+test('occupancyChip: only real strings reach the hover, and no lines is an empty hover', () => {
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: ['a', null, 5, '', 'b'] }).long, 'a\nb');
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'] }).long, '');
+  assert.strictEqual(T.occupancyChip({ tags: ['EP'], lines: 'a' }).long, '');
+});
+
+test('barModel: a prompt with no showable text never opens a bar on its own', () => {
+  const m = T.barModel({ prompt: { text: '   ', seq: 3, at: NOW }, anchor: null, view: view(), now: NOW });
+  assert.deepStrictEqual(m, { visible: false, prompt: null, chips: [] });
+});

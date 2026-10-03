@@ -147,3 +147,11 @@ test('property: the payload is null or has a count that is null or a non-negativ
     return p !== null && (p.prs === null || (Number.isInteger(p.prs) && p.prs >= 0));
   }));
 });
+
+test('a real zero is a zero: gh said no PRs yet, and the chip may say so', async () => {
+  const r = rig({ prs: async () => 0 });
+  r.sched();
+  await settle();
+  assert.strictEqual(r.n.payload().prs, 0);
+  assert.strictEqual(r.sent[r.sent.length - 1].prs, 0);
+});

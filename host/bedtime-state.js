@@ -103,7 +103,7 @@ function createBedtime({ now = Date.now } = {}) {
     if (night === null) return;
     if (event === 'UserPromptSubmit') {
       const text = typeof p.prompt === 'string' ? p.prompt : '';
-      const isWake = text !== '' && (collapse(text) === collapse(night.prompt) || mentionsBedtime(text));
+      const isWake = collapse(text) === collapse(night.prompt) || mentionsBedtime(text);
       night.awake = true;
       night.idleSince = null;
       if (isWake) { night.wakes += 1; night.lastWakeAt = at; night.nextWakeAt = null; }

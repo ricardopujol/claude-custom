@@ -79,7 +79,7 @@ const IMAGE = /\[Image #\d+\]/gi;
 function promptModel(prompt, now) {
   if (!prompt || !isStr(prompt.text) || prompt.text.trim() === '') return null;
   const full = prompt.text.replace(IMAGE, '[image]').trim();
-  const first = full.split(/\r?\n/).find(l => l.trim() !== '') || full;
+  const first = full.split(/\r?\n/)[0];       // `full` is trimmed, so its first line is never blank
   const chars = Array.from(first.trim());
   const head = chars.length > PROMPT_HEAD_MAX ? chars.slice(0, PROMPT_HEAD_MAX).join('') + '…' : chars.join('');
   return { head, full, age: ageLabel(prompt.at, now) };
