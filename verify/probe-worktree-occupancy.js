@@ -7,7 +7,7 @@
  *   OCCUPANCY_PROBE_SHOTS=<dir>                                              also keep the screenshots there
  *
  * The unit tests pin the pieces. No unit test can see the strip page paint a hatched edge, the page draw its
- * banner, xterm's own input path meet the confirm, or a launching host's claim file be read back by a window
+ * bar chip, xterm's own input path meet the confirm, or a launching host's claim file be read back by a window
  * that proves it alive. This runs the whole chain: a real tabs window over a temp git project (develop,
  * feat/a), the DEV host as the launching session, and real hook events delivered to its pipe through the
  * native helper -- exactly what Claude Code's hooks do.
@@ -20,14 +20,15 @@
  *      the other tabs have neither; the hover names the agent, its launcher and the minutes
  *   4  the hub: the launching session's roster card for that agent says `-> feat-a`; a click on it selects
  *      feat/a's tab
- *   5  the worktree's window: the banner names the agent and where it came from, with Jump to develop
+ *   5  the worktree's window: the terminal bar's occupancy chip (#47's banner folded into it, PR for #49 + #52)
+ *      carries the agent's initials, and its hover names the agent, where it came from and Jump to develop
  *   6  the confirm: the first keystroke is HELD (xterm onData), *Type* releases it into the session and the
  *      run is not asked again; a second agent is a new run; *Wait* drops its key
- *   7  two writers: the page's own turn turns the edge, the banner and the confirm to the warn colour
- *   8  SubagentStop deletes the claims and clears the strip, the banner and the card line
+ *   7  two writers: the page's own turn turns the edge, the chip and the confirm to the warn colour
+ *   8  SubagentStop deletes the claims and clears the strip, the bar and the card line
  *   9  liveness: a claim file for THIS process (alive) is shown only with its exact start time -- not with no
  *      start time, not with the wrong one (a reused pid); a malformed file is skipped
- *  10  killing the launching host (its own PID, never by name) clears the strip and the banner on their own,
+ *  10  killing the launching host (its own PID, never by name) clears the strip and the bar on their own,
  *      and the reader leaves its claim file where it is
  *
  * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and
@@ -268,19 +269,22 @@ async function main() {
   }
 
   // 5 -----------------------------------------------------------------------------
+  const chipOf = (o) => (o && o.ok ? o.bar.bar.chips.find(c => c.kind === 'occupancy') || null : null);
   const banner = await waitFor(async () => {
     const o = await occState(app);
-    return o && o.ok && !o.banner.hidden ? o : null;
+    return chipOf(o) ? o : null;
   }, 20000);
-  check('5: feat/a\'s window shows the banner, naming the agent and where it came from',
-    !!banner && /electron-pro \(from develop\) is working in this folder/.test(banner.banner.text), banner ? JSON.stringify(banner.banner) : 'no banner');
-  if (banner) {
-    check('5: ...with Jump to develop, a left rule, no animation, and no warning', banner.banner.jump === 'Jump to develop'
-      && parseFloat(banner.banner.leftRule) >= 3 && banner.banner.animation === 'none' && banner.banner.warn === false && banner.confirm.hidden === true,
-      JSON.stringify(banner));
+  const chip = chipOf(banner);
+  check('5: feat/a\'s window shows ONE bar with the agent\'s chip (the old banner is gone), initials EP, and the hover says who and from where',
+    !!chip && banner.bar.bar.hidden === false && chip.short === 'EP' && /electron-pro . from develop/.test(chip.long), chip ? JSON.stringify(chip) : 'no chip');
+  if (chip) {
+    check('5: ...with Jump to develop (the chip is the button), a left rule, no animation, and no warning', chip.tag === 'button' && /Jump to develop/.test(chip.long)
+      && parseFloat(chip.leftRule) >= 3 && chip.animation === 'none' && chip.warn === false && banner.confirm.hidden === true
+      && banner.bar.bar.animation === 'none' && banner.bar.bar.prompt.hidden === true,
+      JSON.stringify(banner.bar.bar));
   }
   await sleep(400);
-  await shoot(app, '2-banner');
+  await shoot(app, '2-chip');
 
   // 6 -----------------------------------------------------------------------------
   await view(app, 'occKey', { data: 'zq1' });
@@ -305,9 +309,10 @@ async function main() {
   hook(devPid, 'PreToolUse', editIn(featA, 'probeagent02', 'logic-reviewer'));
   const two = await waitFor(async () => {
     const o = await occState(app);
-    return o && o.ok && /\+1 logic-reviewer/.test(o.banner.more) ? o : null;
+    const c = chipOf(o);
+    return c && c.short === 'EP LR' && /logic-reviewer/.test(c.long) ? o : null;
   }, 15000);
-  check('6: a second agent shows as +1 on the banner', !!two, two ? two.banner.more : 'no second agent');
+  check('6: a second agent joins the chip (EP LR) and its hover', !!two, two ? JSON.stringify(chipOf(two)) : 'no second agent');
   const tabTwo = await stripTab(app, 'feat/a');
   check('6: ...and as a second tag on the tab', !!tabTwo && JSON.stringify(tabTwo.tags) === '["EP","LR"]', JSON.stringify(tabTwo && tabTwo.tags));
   await view(app, 'occKey', { data: 'wq9' });
@@ -328,9 +333,11 @@ async function main() {
     const t = await stripTab(app, 'feat/a');
     return t && t.warn ? t : null;
   }, 15000);
-  const warnBanner = await occState(app);
+  // the bar's paint is coalesced on a short timer, so it is awaited rather than read at once
+  const warnBanner = await waitFor(async () => { const o = await occState(app); const c = chipOf(o); return c && c.warn ? o : null; }, 8000) || await occState(app);
   check('7: the tab\'s own session mid-turn turns the edge to the warning', !!warned && /writing too/.test(warned.title), warned ? warned.title : 'no warn');
-  check('7: ...and the banner', warnBanner.ok && warnBanner.banner.warn === true && /own session is writing too/.test(warnBanner.banner.note), JSON.stringify(warnBanner.banner));
+  const warnChip = chipOf(warnBanner);
+  check('7: ...and the chip', !!warnChip && warnChip.warn === true && /own session is writing too/.test(warnChip.long), JSON.stringify(warnChip));
   await view(app, 'occKey', { data: 'x' });
   await sleep(300);
   const warnConfirm = await occState(app);
@@ -352,9 +359,9 @@ async function main() {
   const cleared = await waitFor(async () => {
     const t = await stripTab(app, 'feat/a');
     const o = await occState(app);
-    return t && !t.occupied && o && o.ok && o.banner.hidden ? true : null;
+    return t && !t.occupied && o && o.ok && o.bar.bar.hidden && o.bar.bar.chips.length === 0 ? true : null;
   }, 15000);
-  check('8: ...and the strip and the banner clear', !!cleared);
+  check('8: ...and the strip and the bar clear', !!cleared);
 
   // 9 -----------------------------------------------------------------------------
   const own = process.pid;
@@ -387,15 +394,15 @@ async function main() {
   const dark = await waitFor(async () => {
     const t = await stripTab(app, 'feat/a');
     const o = await occState(app);
-    return t && !t.occupied && o && o.ok && o.banner.hidden ? true : null;
+    return t && !t.occupied && o && o.ok && o.bar.bar.hidden ? true : null;
   }, 45000);
   let darkDetail = '';
   if (!dark) {
     const t = await stripTab(app, 'feat/a');
     const o = await occState(app);
-    darkDetail = `strip ${JSON.stringify(t)} banner ${JSON.stringify(o && o.banner)} startTimes lists it: ${(await startTimes([killing])).has(killing)}; Get-Process says: ${spawnSync('powershell', ['-NoProfile', '-Command', `Get-Process -Id ${killing} -ErrorAction SilentlyContinue | ForEach-Object { 'HasExited=' + $_.HasExited }`], { encoding: 'utf8', windowsHide: true }).stdout.trim() || 'no such process'}`;
+    darkDetail = `strip ${JSON.stringify(t)} bar ${JSON.stringify(o && o.bar && o.bar.bar)} startTimes lists it: ${(await startTimes([killing])).has(killing)}; Get-Process says: ${spawnSync('powershell', ['-NoProfile', '-Command', `Get-Process -Id ${killing} -ErrorAction SilentlyContinue | ForEach-Object { 'HasExited=' + $_.HasExited }`], { encoding: 'utf8', windowsHide: true }).stdout.trim() || 'no such process'}`;
   }
-  check('10: killing the launching host clears the strip and the banner on their own', !!dark, darkDetail);
+  check('10: killing the launching host clears the strip and the bar on their own', !!dark, darkDetail);
   check('10: ...and the reader leaves the dead claim\'s file where it is', fs.existsSync(path.join(OCC_DIR, 'probeagent03.json')));
   await shoot(app, '5-after-kill');
 

@@ -118,7 +118,7 @@ const noWindowText = (h) => `That session is in another claude-custom (pid ${h.p
 
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
-/** What a renderer may say about itself, cut down to the five known fields. */
+/** What a renderer may say about itself, cut down to the seven known fields. */
 // The drawer's rule for "is this session at rest?" -- one copy, so the re-check here agrees with it.
 const { sessionBusyWhy } = require('./git-actions');
 const busyWhy = (status) => sessionBusyWhy(status);
@@ -132,6 +132,7 @@ function sanitizeStatus(s) {
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
     turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
+    night: o.night === true,
   };
 }
 
@@ -1139,7 +1140,9 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
-  'occState', 'occKey', 'occClick', 'occTurn']);
+  'occState', 'occKey', 'occClick', 'occTurn',
+  // backlog #49 + #52: verify/probe-terminal-bar.js
+  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

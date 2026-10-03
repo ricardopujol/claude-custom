@@ -111,6 +111,8 @@ const ALLOWED_GLOBALS = new Set([
   'tabModel', 'tabStatus', 'goToSession',
   // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
   'occupancyDisplay', 'occupancyConfirm',
+  // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
+  'terminalBar',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
   // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)

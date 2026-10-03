@@ -153,6 +153,16 @@ let tabPending = { urgent: false, finished: false };
 // The host's measure of the MAIN session from the CLI's hooks (host/turn-state.js): 'idle' | 'turn' |
 // 'prompt', or null -- not said yet, an older host, or the socket is down. Unknown is not idle (PR #93 F1/F2).
 let sessionTurn = null;
+// The terminal bar (backlog #49 + #52): the host's latest main-session prompt and where the CLI echoed it in the
+// terminal buffer, the bedtime night, and the epoch that invalidates the anchor. Every decision is in
+// app/terminal-bar.js; this only holds the facts and paints what it says.
+const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, paintKey: '', chipsKey: '' };
+// How long the CLI's echo of a submitted prompt is waited for in the terminal buffer, and how many of the newest lines
+// are searched, before the prompt fails visible (PR #99 Dexter F6).
+const LOCATE_MS = 3000;
+const LOCATE_SCAN = 400;
+// The bar's own height in CSS px (top offset + row): the terminal rows it hides while a chip keeps it open (F7).
+const BAR_COVER_PX = 40;
 let wasWorking = false;
 let lastReportedTabStatus = null;
 function pend(event) {
@@ -171,6 +181,7 @@ function reportTabStatus() {
     lock: tabLock,
     health: tabHealth,
     turn: sessionTurn,
+    night: bar.bedtime !== null,
   }, { healthMarker: worktreeStatus.healthMarker });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
@@ -190,43 +201,156 @@ document.getElementById('terminal-banner-dismiss').addEventListener('click', () 
   el.hidden = true;
 });
 
-// --- worktree occupancy (backlog #44 + #47) ----------------------------------------
-// What main pushes (app/occupancy-display.js viewPayload): `here` is the live agent claims in THIS folder (the
-// banner, and the first-keystroke confirm), `launched` the ones THIS session launched (the roster cards'
-// `-> worktree` lines). Every decision is in app/occupancy-display.js and app/occupancy-confirm.js; this only
-// paints what they return, and sends what the confirm releases. Nothing here makes anything read-only.
+// --- worktree occupancy and the terminal bar (backlog #44 + #47, #49, #52) --------------
+// What main pushes (app/occupancy-display.js viewPayload): `here` is the live agent claims in THIS folder (the bar's
+// occupancy chip, and the first-keystroke confirm), `launched` the ones THIS session launched (the roster cards'
+// `-> worktree` lines). #47's banner is retired into the bar: ONE row over the terminal, the last prompt on the left
+// once it has scrolled away (#49), the status chips on the right -- a moon for a /bedtime night (#52) and the agents'
+// initials for occupancy. Every decision is in app/terminal-bar.js, app/occupancy-display.js and
+// app/occupancy-confirm.js; this only paints what they return, and sends what the confirm releases. Nothing here
+// makes anything read-only, and nothing animates.
 const occupancy = { here: [], launched: [], confirm: null, jumpNote: '' };
-const occupancyEls = {
-  banner: document.getElementById('occupancy-banner'),
-  text: document.getElementById('occupancy-banner-text'),
-  since: document.getElementById('occupancy-banner-since'),
-  more: document.getElementById('occupancy-banner-more'),
-  note: document.getElementById('occupancy-banner-note'),
-  jump: document.getElementById('occupancy-jump'),
-  confirm: document.getElementById('occupancy-confirm'),
+const occupancyEls = { confirm: document.getElementById('occupancy-confirm'), confirmText: document.getElementById('occupancy-confirm-text') };
+const barEls = {
+  bar: document.getElementById('terminal-bar'),
+  prompt: document.getElementById('bar-prompt'),
+  text: document.getElementById('bar-prompt-text'),
+  age: document.getElementById('bar-prompt-age'),
+  full: document.getElementById('bar-prompt-full'),
+  chips: document.getElementById('bar-chips'),
 };
 
-function paintOccupancyBanner() {
-  const m = window.occupancyDisplay
-    ? window.occupancyDisplay.bannerModel(occupancy.here, { turn: sessionTurn, now: Date.now() }) : null;
-  occupancyEls.banner.hidden = m === null;
-  document.body.classList.toggle('occupied', m !== null);
-  occupancyEls.banner.classList.toggle('warn', !!m && m.warn);
-  occupancyEls.confirm.classList.toggle('warn', !!m && m.warn);
-  if (m === null) return;
-  occupancyEls.text.textContent = m.text;
-  occupancyEls.since.textContent = m.since ? '· ' + m.since : '';
-  occupancyEls.more.textContent = m.more;
-  occupancyEls.note.textContent = occupancy.jumpNote || m.note;
-  occupancyEls.jump.hidden = m.jump === null;
-  if (m.jump) {
-    occupancyEls.jump.textContent = m.jump.label;
-    occupancyEls.jump.dataset.root = m.jump.root;
+// The bar's own place in time: coalesced, so a burst of scrolling paints once. A timer, not requestAnimationFrame:
+// a tab that isn't showing gets no animation frames, and its bar still has to be right when it comes back.
+function paintBar() {
+  if (bar.queued) return;
+  bar.queued = true;
+  setTimeout(() => { bar.queued = false; paintBarNow(); }, 16);
+}
+
+function chipElement(c) {
+  const jumps = c.kind === 'occupancy' && c.jump;
+  const el = document.createElement(jumps ? 'button' : 'span');
+  el.className = 'bar-chip ' + (c.kind === 'bedtime' ? 'bedtime' : 'occupancy') + (c.warn ? ' warn' : '');
+  if (jumps) { el.type = 'button'; el.dataset.root = c.jump.root; } else { el.tabIndex = 0; el.setAttribute('role', 'note'); }
+  el.setAttribute('aria-label', c.short + (c.long ? ': ' + c.long.split('\n').join(', ') : ''));
+  const short = document.createElement('span');
+  short.className = 'chip-short';
+  short.textContent = c.short;
+  el.appendChild(short);
+  const lines = c.long ? c.long.split('\n') : [];
+  if (jumps) lines.push(c.jump.label);
+  if (lines.length) {
+    const long = document.createElement('span');
+    long.className = 'chip-long';
+    long.textContent = lines.join('\n');
+    el.appendChild(long);
   }
+  if (jumps) el.addEventListener('click', () => jumpToFolder(c.jump.root));
+  return el;
+}
+
+// What the probe reads back (verify/probe-terminal-bar.js): the bar as painted, and the buffer it was painted from.
+function barState() {
+  const buf = term.buffer.active;
+  const cs = getComputedStyle(barEls.bar);
+  return {
+    bar: {
+      hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, transitionDuration: cs.transitionDuration, display: cs.display,
+      top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
+      prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden,
+        expanded: barEls.prompt.getAttribute('aria-expanded') },
+      chips: [...barEls.chips.children].map(c => ({
+        kind: c.classList.contains('bedtime') ? 'bedtime' : 'occupancy', warn: c.classList.contains('warn'), tag: c.tagName.toLowerCase(),
+        short: c.querySelector('.chip-short').textContent, long: c.querySelector('.chip-long') ? c.querySelector('.chip-long').textContent : '',
+        leftRule: getComputedStyle(c).borderLeftWidth, animation: getComputedStyle(c).animationName,
+        color: getComputedStyle(c).color, background: getComputedStyle(c).backgroundColor,
+      })),
+    },
+    buffer: { viewportY: buf.viewportY, baseY: buf.baseY, cursorY: buf.cursorY, length: buf.length, rows: term.rows, type: buf.type },
+    // the text of the buffer line the anchor points at: the probe checks it is where the echo is
+    anchorText: bar.anchor && typeof bar.anchor.line === 'number' && buf.getLine(bar.anchor.line) ? buf.getLine(bar.anchor.line).translateToString(true) : null,
+    locating: !!bar.locate,
+    epoch: bar.epoch, anchor: bar.anchor, prompt: bar.prompt, bedtime: bar.bedtime,
+  };
+}
+
+function paintBarNow() {
+  const now = Date.now();
+  const buf = term.buffer.active;
+  // A buffer that shrank was cleared: every absolute line moved, so the anchor is no longer a place (fails visible).
+  if (buf.length < bar.lastLength) bar.epoch += 1;
+  bar.lastLength = buf.length;
+  const chip = window.occupancyDisplay ? window.occupancyDisplay.chipModel(occupancy.here, { turn: sessionTurn, now }) : null;
+  if (chip && occupancy.jumpNote) chip.lines.push(occupancy.jumpNote);
+  // A chip keeps the bar open over the terminal's first rows, so a prompt line under it is as good as scrolled away.
+  const rowPx = term.rows > 0 ? document.getElementById('term').clientHeight / term.rows : 0;
+  const coveredRows = (bar.bedtime !== null || chip !== null) && rowPx > 0 ? Math.ceil(BAR_COVER_PX / rowPx) : 0;
+  const m = terminalBar.barModel({
+    prompt: bar.prompt,
+    anchor: bar.anchor,
+    // An alternate screen (a full-screen TUI) keeps no scrollback to scroll away into, and a full scrollback is
+    // trimming from the top: in both the lines are not where they were, so the prompt shows.
+    view: { viewportY: buf.viewportY, bufferLength: buf.length, full: buf.type === 'alternate' || buf.length >= term.options.scrollback + term.rows, epoch: bar.epoch, coveredRows },
+    now,
+    bedtime: bar.bedtime,
+    occupancy: chip,
+    focusMode: document.body.classList.contains('focus-mode'),
+  });
+  if (!m.prompt) bar.fullOpen = false;
+  // Nothing changed since the last paint (a scroll event per streamed line asks for a paint each): no DOM writes at all,
+  // so a selection inside the whole-prompt view survives (PR #99 Miguel Y1, G1).
+  const key = JSON.stringify([m, bar.fullOpen]);
+  if (key !== bar.paintKey) {
+    bar.paintKey = key;
+    barEls.bar.hidden = !m.visible;
+    document.body.classList.toggle('bar-open', m.visible);
+    barEls.prompt.hidden = m.prompt === null;
+    if (m.prompt) {
+      setText(barEls.text, m.prompt.head);
+      setText(barEls.age, m.prompt.age ? '· ' + m.prompt.age : '');
+      setText(barEls.full, m.prompt.full);
+    }
+    barEls.full.hidden = !(m.prompt && bar.fullOpen);
+    barEls.prompt.setAttribute('aria-expanded', String(!!(m.prompt && bar.fullOpen)));
+    // Rebuilt only when the chips themselves changed, so a hover isn't dropped by the 30 s minute refresh.
+    const chipsKey = JSON.stringify(m.chips);
+    if (chipsKey !== bar.chipsKey) {
+      bar.chipsKey = chipsKey;
+      barEls.chips.replaceChildren(...m.chips.map(chipElement));
+    }
+  }
+  paintOccupancyConfirm(occupancy.confirm ? occupancy.confirm.state() : null);
+}
+
+// A write that changes nothing still replaces the text node, which collapses a selection inside it.
+function setText(el, value) {
+  if (el.textContent !== value) el.textContent = value;
+}
+
+// The confirm's words follow what is going on here: an overnight run, agents writing, or both.
+function confirmQuestion() {
+  const parts = [];
+  if (bar.bedtime !== null) parts.push('An overnight run is going.');
+  if (occupancy.here.length > 0 || parts.length === 0) parts.push('An agent is writing here.');
+  return parts.join(' ') + ' Type anyway?';
+}
+
+// A bedtime night is a run of its own for the confirm (a new night asks again, one that ends releases what was held).
+// `persist`: the night is ONE run for its whole life, so a socket drop or an overdue verdict that takes its claim away
+// for a moment doesn't make it a new run (PR #99 Dexter F4); a different night is a different id.
+function nightClaim() {
+  return bar.bedtime !== null ? { agentId: 'bedtime:' + bar.bedtime.startedAt, persist: true } : null;
+}
+function confirmClaims() {
+  const night = nightClaim();
+  return night ? [...occupancy.here, night] : occupancy.here;
 }
 
 function paintOccupancyConfirm(state) {
   occupancyEls.confirm.hidden = !(state && state.asking);
+  occupancyEls.confirm.classList.toggle('warn', occupancy.here.length > 0 && sessionTurn === 'turn');
+  occupancyEls.confirmText.textContent = confirmQuestion();
 }
 
 function applyOccupancy(payload) {
@@ -234,9 +358,80 @@ function applyOccupancy(payload) {
   occupancy.here = Array.isArray(p.here) ? p.here : [];
   occupancy.launched = Array.isArray(p.launched) ? p.launched : [];
   occupancy.jumpNote = '';
-  if (occupancy.confirm) occupancy.confirm.setClaims(occupancy.here);
-  paintOccupancyBanner();
+  if (occupancy.confirm) occupancy.confirm.setClaims(confirmClaims());
+  paintBar();
   if (typeof renderRoster === 'function') renderRoster();
+}
+
+// The newest buffer lines from `from`, as text (what findEcho searches).
+function bufferTexts(from) {
+  const buf = term.buffer.active;
+  const out = [];
+  for (let i = from; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    out.push(line ? line.translateToString(true) : '');
+  }
+  return out;
+}
+
+// Find the line the CLI ECHOED the prompt on, by its text (PR #99 Dexter F6; measured by verify/probe-prompt-anchor.js:
+// the real CLI pins its input box to the bottom row, so the cursor is 24-30 lines BELOW the echo and tells nothing).
+// It runs once the terminal has parsed what came before the prompt event, then again as output is parsed, and keeps the
+// newest match for LOCATE_MS: the echo may not be drawn yet, and an older echo of the same words is only a stand-in.
+function locateEcho() {
+  const loc = bar.locate;
+  if (!loc) return;
+  if (!bar.prompt || bar.prompt.seq !== loc.seq) { clearTimeout(loc.timer); bar.locate = null; return; }
+  const buf = term.buffer.active;
+  const from = Math.max(0, buf.length - LOCATE_SCAN);
+  const at = terminalBar.findEcho(bufferTexts(from), loc.needle);
+  if (at < 0) return;
+  const line = from + at;
+  const a = bar.anchor;
+  if (a && a.locating !== true && a.seq === loc.seq && a.epoch === bar.epoch && a.line >= line) return;
+  bar.anchor = terminalBar.makeAnchor(bar.prompt, { line, epoch: bar.epoch });
+  paintBar();
+}
+
+// The host's latest main-session prompt. A LIVE one (a control message) is LOCATED in the terminal by its echo (above);
+// until it is found its anchor is "locating" (the bar doesn't flash), and one that is never found within LOCATE_MS (a
+// pasted block the CLI shows collapsed, a prompt it echoes differently) FAILS VISIBLE: no anchor, the prompt shows. One
+// that arrives in `hello` (a window that attached later) has no place in this buffer, so it shows until the next one.
+function applyBarPrompt(prompt, live) {
+  const p = prompt && typeof prompt === 'object' && typeof prompt.text === 'string' && typeof prompt.seq === 'number' && Number.isFinite(prompt.seq) ? prompt : null;
+  const changed = !bar.prompt || !p || bar.prompt.seq !== p.seq;
+  if (bar.locate) { clearTimeout(bar.locate.timer); bar.locate = null; }
+  bar.prompt = p;
+  bar.anchor = null;
+  if (changed) bar.fullOpen = false;
+  const needle = p && live ? terminalBar.echoNeedle(p.text) : null;
+  if (p && needle) {
+    bar.anchor = terminalBar.locatingAnchor(p, bar.epoch);
+    const loc = { seq: p.seq, needle, queued: false, timer: null };
+    loc.timer = setTimeout(() => {
+      if (bar.locate !== loc) return;
+      bar.locate = null;
+      if (bar.anchor && bar.anchor.locating === true) { bar.anchor = null; paintBar(); }
+    }, LOCATE_MS);
+    bar.locate = loc;
+    term.write('', () => { if (bar.locate === loc) locateEcho(); });
+  }
+  paintBar();
+}
+
+
+
+function applyBedtime(payload) {
+  bar.bedtime = payload && typeof payload === 'object' && typeof payload.startedAt === 'number' && Number.isFinite(payload.startedAt) ? payload : null;
+  // A new night forgets the last one's answer (its id is never seen again); the same night returning keeps it.
+  if (bar.bedtime !== null) {
+    const key = 'bedtime:' + bar.bedtime.startedAt;
+    if (bar.nightKey && bar.nightKey !== key && occupancy.confirm) occupancy.confirm.forget(bar.nightKey);
+    bar.nightKey = key;
+  }
+  if (occupancy.confirm) occupancy.confirm.setClaims(confirmClaims());
+  paintBar();
+  reportTabStatus();
 }
 
 // The person's own typing: through the confirm when there is one. A raw `send` stays for everything the program
@@ -250,6 +445,16 @@ if (window.occupancyConfirm) {
 }
 document.getElementById('occupancy-type').addEventListener('click', () => occupancy.confirm.type());
 document.getElementById('occupancy-wait').addEventListener('click', () => occupancy.confirm.wait());
+// The prompt part opens the whole prompt (scrollable, selectable) and closes it again.
+barEls.prompt.addEventListener('click', () => { bar.fullOpen = !bar.fullOpen; paintBarNow(); });
+// Escape closes it again, from inside the bar only: the terminal's own Escape (interrupt) is never taken (PR #99 Miguel G3).
+barEls.bar.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !bar.fullOpen) return;
+  bar.fullOpen = false;
+  paintBarNow();
+  e.stopPropagation();
+  term.focus();
+});
 
 // Jump to the launching session's tab, or the worktree an agent is in: the Git drawer's own path.
 async function jumpToFolder(folder) {
@@ -258,13 +463,12 @@ async function jumpToFolder(folder) {
   try { r = await window.harness.selectFolder(folder); } catch { r = null; }
   if (r && r.kind === 'explain' && r.text) {
     occupancy.jumpNote = r.text;
-    paintOccupancyBanner();
+    paintBar();
   }
 }
-occupancyEls.jump.addEventListener('click', () => jumpToFolder(occupancyEls.jump.dataset.root));
 
-// The minutes on the banner go stale between pushes.
-setInterval(() => { if (!occupancyEls.banner.hidden) paintOccupancyBanner(); }, 30000);
+// The minutes on the bar (the prompt's age, "wake due") go stale between pushes.
+setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0) paintBar(); }, 30000);
 
 if (window.harness && window.harness.occupancy) {
   window.harness.occupancy.onChange(applyOccupancy);
@@ -409,6 +613,13 @@ try {
 }
 
 fit.fit();
+
+// The terminal bar's view of the buffer (#49). The prompt part follows the viewport; a resize reflows every line
+// and an erased scrollback (CSI 3 J: what /clear sends) moves them, so each starts a new epoch and the anchored
+// prompt shows instead of vanishing. CSI 2 J is NOT one: it erases the screen only, and a TUI repaints with it.
+term.onScroll(() => paintBar());
+term.onResize(() => { bar.epoch += 1; paintBar(); });
+term.parser.registerCsiHandler({ final: 'J' }, (params) => { if (params[0] === 3) { bar.epoch += 1; paintBar(); } return false; });
 
 // --- diagnostics ------------------------------------------------------------
 const CHECKS = [
@@ -1165,6 +1376,7 @@ function applyFocusMode(on) {
   // and Ctrl+B never reached the terminal's handler (probe check 7, found
   // after check 8 left focus in #vault-secret).
   if (on) term.focus();
+  paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
@@ -1530,12 +1742,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // one of the page's occupancy controls; and the session's turn, as the host's `turn` message would set it.
       case 'occState': return JSON.stringify({
         ok: true,
-        banner: {
-          hidden: occupancyEls.banner.hidden, text: occupancyEls.text.textContent, since: occupancyEls.since.textContent,
-          more: occupancyEls.more.textContent, note: occupancyEls.note.textContent,
-          warn: occupancyEls.banner.classList.contains('warn'), jump: occupancyEls.jump.hidden ? null : occupancyEls.jump.textContent,
-          leftRule: getComputedStyle(occupancyEls.banner).borderLeftWidth, animation: getComputedStyle(occupancyEls.banner).animationName,
-        },
+        bar: barState(),
         confirm: {
           hidden: occupancyEls.confirm.hidden, warn: occupancyEls.confirm.classList.contains('warn'),
           text: document.getElementById('occupancy-confirm-text').textContent,
@@ -1549,7 +1756,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true });
       case 'occClick': {
         const el = { type: occupancyEls.confirm.querySelector('#occupancy-type'), wait: occupancyEls.confirm.querySelector('#occupancy-wait'),
-          jump: occupancyEls.jump, where: document.querySelector('.agent-where') }[a.target];
+          jump: barEls.chips.querySelector('button.bar-chip'), where: document.querySelector('.agent-where') }[a.target];
         const hiddenAnswer = (a.target === 'type' || a.target === 'wait') && occupancyEls.confirm.hidden;
         if (!el || el.hidden || hiddenAnswer) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
         el.click();
@@ -1557,9 +1764,51 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       }
       case 'occTurn':
         sessionTurn = ['idle', 'turn', 'prompt'].includes(a.turn) ? a.turn : null;
-        paintOccupancyBanner();
+        paintBar();
         reportTabStatus();
         return JSON.stringify({ ok: true, turn: sessionTurn });
+      // backlog #49 + #52 (verify/probe-terminal-bar.js): the bar as painted and the buffer it reads; a scroll of the
+      // terminal (which goes through xterm's own onScroll, as a wheel does); a click on the prompt part or a chip.
+      case 'barState': return JSON.stringify({ ok: true, ...barState() });
+      case 'barScroll': {
+        if (a.to === 'top') term.scrollToTop();
+        else if (a.to === 'bottom') term.scrollToBottom();
+        else if (Number.isInteger(a.to) && a.to >= 0 && a.to < 1e6) term.scrollToLine(a.to);
+        else return JSON.stringify({ ok: false, error: 'barScroll needs top, bottom or a line number' });
+        return JSON.stringify({ ok: true, viewportY: term.buffer.active.viewportY });
+      }
+      // What /clear sends: the real escape through xterm's own parser, answered once it has been parsed
+      case 'barClear': return new Promise((resolve) => {
+        term.write('\x1b[3J', () => resolve(JSON.stringify({ ok: true, epoch: bar.epoch })));
+      });
+      // a light or dark look, as applyTheme would set the chrome variables (the chips must read under both)
+      case 'barLook': {
+        const looks = { light: { '--bg': '#f4f1ea', '--chrome': '#ece8de', '--border': '#cfc8b8', '--text': '#1d1b16', '--dim': '#6b665a' },
+          dark: { '--bg': '#11131a', '--chrome': '#171a23', '--border': '#262b38', '--text': '#c7cede', '--dim': '#6d7689' } };
+        const look = looks[a.mode];
+        if (!look) return JSON.stringify({ ok: false, error: 'barLook needs light or dark' });
+        for (const [k, v] of Object.entries(look)) document.documentElement.style.setProperty(k, v);
+        paintBar();
+        return JSON.stringify({ ok: true });
+      }
+      // a selection in the whole-prompt view (Y1: it must survive a repaint that changes nothing)
+      case 'barSelection': {
+        if (a.select) {
+          const range = document.createRange();
+          range.selectNodeContents(barEls.full);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        return JSON.stringify({ ok: true, text: String(window.getSelection()) });
+      }
+      case 'barClick': {
+        const el = { prompt: barEls.prompt, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
+        if (!el || el.hidden) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
+        el.focus();
+        el.click();
+        return JSON.stringify({ ok: true });
+      }
       // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
       // CLI box with it). Bounded, and only ever this tab's own socket.
       case 'gitTermInput': {
@@ -3680,6 +3929,15 @@ let vimSeen = false;
 term.onWriteParsed(() => {
   if (!vimSeen && vimInsertShown(screenLines())) vimSeen = true;
 });
+// The terminal bar's echo search (#49) hooks the same event AFTER the vim latch above: the latch's own test
+// (renderer-top-bar.test.js) reads the first onWriteParsed, which must stay the latch's.
+// Output arriving while a prompt is being located may be its echo (app/renderer.js locateEcho).
+term.onWriteParsed(() => {
+  const loc = bar.locate;
+  if (!loc || loc.queued) return;
+  loc.queued = true;
+  setTimeout(() => { loc.queued = false; if (bar.locate === loc) locateEcho(); }, 50);
+});
 const NOTICE_MS = 12000;
 
 const currentModel = () => liveModel || sessionModelFallback;
@@ -4776,7 +5034,11 @@ function handleControl(msg) {
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
     sessionTurn = msg.turn === undefined ? null : msg.turn;
-    paintOccupancyBanner();
+    // The terminal bar: the latest prompt (no place in this buffer: it shows) and the bedtime night; both absent
+    // from an older host, which is "none", never a stale one.
+    applyBarPrompt(msg.prompt, false);
+    applyBedtime(msg.bedtime);
+    paintBar();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
@@ -4951,8 +5213,16 @@ function handleControl(msg) {
   }
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
-    paintOccupancyBanner();
+    paintBar();
     reportTabStatus();
+    return;
+  }
+  if (msg.type === 'prompt') {
+    applyBarPrompt(msg.prompt, true);
+    return;
+  }
+  if (msg.type === 'bedtime') {
+    applyBedtime(msg.bedtime);
     return;
   }
   if (msg.type === 'cooldowns') {
@@ -5184,7 +5454,9 @@ function connect() {
     dot.classList.remove('on');
     cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
-    if (sessionTurn !== null) { sessionTurn = null; paintOccupancyBanner(); reportTabStatus(); }
+    if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
+    if (bar.bedtime !== null) applyBedtime(null);
     // Detach is normal, not fatal — the host keeps the session alive, so just
     // keep trying to reattach.
     setTimeout(connect, 1000);

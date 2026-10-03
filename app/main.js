@@ -1190,11 +1190,12 @@ function startProbeDriver(port) {
           "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
-      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js).
+      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
+      // moon, background, animation -- verify/probe-terminal-bar.js).
       let stripOccupancy = null;
       try {
         stripOccupancy = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height, night: t.classList.contains('night'), moon: !!t.querySelector('.moon'), bg: getComputedStyle(t).backgroundColor, anim: getComputedStyle(t).animationName })))"));
       } catch (err) { stripOccupancy = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;

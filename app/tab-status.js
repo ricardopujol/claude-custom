@@ -2,8 +2,8 @@
 /**
  * What one tab's renderer tells the shell about itself (PR 2, worktree tabs).
  *
- *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health, turn }, { healthMarker })
- *       -> { working, needsInput, finished, lock, health, turn }
+ *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health, turn, night }, { healthMarker })
+ *       -> { working, needsInput, finished, lock, health, turn, night }
  *   afterSelected(status)   the shell's `tab-selected` event clears needsInput
  *   pendingAfter(p, event)  the page's { urgent, finished } after an event (#31)
  *   sameStatus(a, b)        strict field-by-field equality, so the renderer
@@ -18,6 +18,8 @@
  * never `'held'`; no health marker is `null`. `turn` is the HOST's measure of the main session
  * (host/turn-state.js: 'idle' | 'turn' | 'prompt'), or null when it hasn't said -- never a guessed idle.
  * A look clears needsInput (attention), never `turn` (PR #93 Dexter F2: a dialog stays open after a glance).
+ * `night` is the host's word that a /bedtime night is on (host/bedtime-state.js, backlog #52): only a real `true`.
+ * It is the run's, not something waiting for you, so a look never clears it.
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it:
  * `tabStatus`.
@@ -43,6 +45,7 @@ function tabStatus(inputs, { healthMarker } = {}) {
     lock: LOCK_STATES.includes(lockState) ? lockState : null,
     health,
     turn: TURNS.includes(i.turn) ? i.turn : null,
+    night: i.night === true,
   };
 }
 
@@ -78,7 +81,8 @@ function sameStatus(a, b) {
     a.finished === b.finished &&
     a.lock === b.lock &&
     a.health === b.health &&
-    a.turn === b.turn;
+    a.turn === b.turn &&
+    a.night === b.night;
 }
 
 const api = { tabStatus, afterSelected, sameStatus, pendingAfter, TURNS };
