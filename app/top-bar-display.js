@@ -367,7 +367,7 @@ function typingKeys(command, enterInsert) {
 }
 
 // One line of a slash command: a CR or any control key in it would submit or edit something else.
-const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f]*)?$/;
+const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
 
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
