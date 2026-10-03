@@ -303,7 +303,7 @@ async function main() {
   // The Files tab replaced the Map: same module id, new label. Put it where its screenshot reads well.
   await view(app, 'move', { id: 'fog', target: 'left' });
   const vs = await view(app, 'state');
-  check('1: the module is in the dock, in the left zone we moved it to', vs.zones.left.tabs.includes('fog'), JSON.stringify(vs.zones.left.tabs));
+  check('1: the module is in a dock group (moved to the left edge)', vs.groups.some(g => g.tabs.includes('fog')), JSON.stringify(vs.groups.map(g => g.tabs)));
   const label = await waitFor(async () => {
     const tabs = await view(app, 'openMenu', { which: 'layout' });
     await view(app, 'closeMenu');
@@ -324,7 +324,7 @@ async function main() {
   const hostile = rowOf(first, HOSTILE);
   check('1: a file named like markup is drawn as text, exactly (no entity decoded, no element made)',
     !!hostile && hostile.text === HOSTILE, JSON.stringify(hostile && hostile.text));
-  check('1: the Files module is labelled Files', (await view(app, 'state')).zones.left.tabs.includes('fog')
+  check('1: the Files module is labelled Files', (await view(app, 'state')).groups.some(g => g.tabs.includes('fog'))
     && await waitFor(async () => (await command(app, { cmd: 'screenshot', file: path.join(shots, '1-tree.png') })) && true, 5000) !== null);
 
   // 2 ------------------------------------------------------------------------------
