@@ -815,6 +815,53 @@ async function main() {
         Math.abs(moved5.left - (f5.rect.left - 40)) <= 1 && Math.abs(moved5.top - (f5.rect.top - 25)) <= 1 && Math.abs(moved5.width - f5.rect.width) <= 1, JSON.stringify([f5.rect, moved5]));
     }
 
+    // PR #102 Miguel Y4, S3: the Vault in a float. Half a secret survives a raise, a move and a resize with the keyboard
+    // still in its field; and every way the float leaves view puts a revealed secret back out of sight.
+    {
+      const fid = flOf((await settled(app)).s, 'vault').id;
+      await view(app, 'select', { id: 'vault' });
+      const up = (await settled(app)).s;
+      check('12: the Vault is the showing tab of its float', up.shown.includes('vault') && flOf(up, 'vault').on.includes('vault'), JSON.stringify(up.shown));
+      const fsec = await view(app, 'floatSecret', { id: fid });
+      check('12: half a secret typed in a floating Vault\'s field stays in it, with the keyboard, through a raise, a move, a resize and a body press',
+        fsec.ok && fsec.out.every(o => o.active === 'vault-secret' && o.value === 'dummy-half'), JSON.stringify(fsec.out));
+      restRect = flOf((await settled(app)).s, 'vault').rect;
+      const revealed = async () => (await view(app, 'secretField', { reveal: true })).inputType === 'text';
+      const hidden = async () => (await view(app, 'secretField', {})).inputType === 'password';
+
+      check('12: Reveal shows the floating Vault\'s new secret in the clear', await revealed());
+      await view(app, 'foldAll');
+      await settled(app);
+      check('12: ...Ctrl+B takes the float out of view and the revealed secret goes back to dots', await hidden());
+      await view(app, 'foldAll');
+      await view(app, 'select', { id: 'vault' });
+      await settled(app);
+
+      await revealed();
+      await view(app, 'hide', { id: 'vault' });
+      await settled(app);
+      check('12: ...hiding the floating Vault from the menu does the same', await hidden());
+      await view(app, 'show', { id: 'vault' });
+      await view(app, 'select', { id: 'vault' });
+      await settled(app);
+
+      await revealed();
+      await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+      await waitFor(async () => { const v = await viewState(app); return v.focus ? v : null; }, 4000);
+      check('12: ...and so does focus mode', await hidden());
+      await command(app, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });
+      await waitFor(async () => { const v = await viewState(app); return !v.focus ? v : null; }, 4000);
+
+      await view(app, 'select', { id: 'vault' });
+      await revealed();
+      await view(app, 'select', { id: 'git' });                 // another tab of its float comes to the front
+      await settled(app);
+      check('12: ...and so does bringing another tab of its float to the front', await hidden());
+      await view(app, 'select', { id: 'vault' });
+      await settled(app);
+      restRect = flOf((await settled(app)).s, 'vault').rect;
+    }
+
     // Ctrl+B and focus mode hide floats; unfolding brings them back
     await view(app, 'foldAll');
     const foldedF = (await settled(app)).s;

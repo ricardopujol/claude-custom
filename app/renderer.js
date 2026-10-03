@@ -1209,6 +1209,13 @@ let floatDrag = null;     // { kind: 'move' | 'resize', id, tabs, start, rect, v
     renderLayout({ refit: false });
   }
 
+  // What moves or resizes a float: its bar's own surface (the handle and the empty part) and the grip.
+  const floatHandleOf = t => !!t && !!t.closest && !!t.closest('.dfloat') && (!!t.closest('.dfloat-grip') || (t.classList.contains('zone-tabs')));
+  // A press on those is no click on a control, so it must not blur the field that holds the keyboard (a half-typed
+  // secret in a floating Vault): the pointerdown's preventDefault doesn't stop focus moving, the mousedown's does.
+  dock.addEventListener('mousedown', (e) => {
+    if (e.button === 0 && floatHandleOf(e.target)) e.preventDefault();
+  });
   dock.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     const el = e.target.closest && e.target.closest('.dfloat');
@@ -1830,6 +1837,31 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           resolve(JSON.stringify({ ok: true, focusable: field.offsetParent !== null, shown: [...shownModules], after }));
         }, 150);
       });
+      // PR #102 Miguel Y4: the vault's NEW-secret field as it is now. `reveal` clicks its show/hide button as a
+      // pointer would; `type` focuses it and puts dummy text in it (never a real secret). Reports what is on screen.
+      case 'secretField': {
+        const f = document.getElementById('vault-secret');
+        if (a.reveal === true) document.getElementById('vault-mask').click();
+        if (typeof a.type === 'string') { f.focus(); f.value = a.type; }
+        return JSON.stringify({ ok: true, inputType: f.type, value: f.value, active: document.activeElement && document.activeElement.id, visible: f.offsetParent !== null });
+      }
+      // PR #102 Miguel Y4: half a secret in a FLOATING vault's field, then a raise, a move and a resize of that float,
+      // as pointer events do them. After each the field must still hold the keyboard and its text. `id`: the float.
+      case 'floatSecret': return (async () => {
+        const f = document.getElementById('vault-secret');
+        f.focus();
+        f.value = 'dummy-half';
+        const steps = [['raise', 'floatPress', { id: a.id, bar: true }], ['move', 'floatDrag', { id: a.id, what: 'bar', dx: -30, dy: -20 }],
+          ['resize', 'floatDrag', { id: a.id, what: 'grip', dx: 20, dy: 10 }], ['raise body', 'floatPress', { id: a.id }]];
+        const out = [{ step: 'start', active: document.activeElement && document.activeElement.id, value: f.value }];
+        for (const [step, action, args] of steps) {
+          const r = JSON.parse(await window.__dockProbe({ action, args }));
+          await new Promise(res => setTimeout(res, 200));
+          out.push({ step, ok: r.ok, active: document.activeElement && document.activeElement.id, value: f.value });
+        }
+        f.value = '';                                           // nothing left over for the next step
+        return JSON.stringify({ ok: true, out });
+      })();
       // Backlog #36: the socket drops and reattaches. With a dummy half-secret in
       // the field (`a.blur` false) focus must still be in it, and what is typed
       // next lands there, not in the session; with nothing focused (`a.blur`)

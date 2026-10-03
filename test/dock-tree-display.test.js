@@ -370,3 +370,37 @@ test('floatDragResult: junk is a dropped drag, never a throw', () => {
   }
   assert.strictEqual(V.floatDragResult(null, fdDrag({})), null);
 });
+
+// --- PR #102 Miguel Y4, S3: a floating Vault leaves view like any other, and moving a float never disturbs it ---
+
+const { renderEffects } = require('../app/dock-zones-display');
+const VAULT_FLOAT_VP = { width: 1000, height: 700 };
+const vaultFloating = () => T.dock(T.defaultLayout(IDS), 'vault', { float: { x: 100, y: 80 } });
+const shownIn = (l, sel = NO_SEL) => new Set(plan(l, VAULT_FLOAT_VP, sel).shown);
+const floatIdOf = l => T.floatOf(l, 'vault').id;
+
+test('Y4: a floating Vault is on screen, and every way of taking it out of view is a "vault left" (so revealed secrets go back out of sight)', () => {
+  const l = vaultFloating();
+  const before = shownIn(l);
+  assert.ok(before.has('vault'));
+  const left = (after) => renderEffects(before, after, { userAction: true }).vaultLeft;
+  assert.strictEqual(left(shownIn(l, { ...NO_SEL, foldAll: true })), true, 'Ctrl+B draws no float');
+  assert.strictEqual(left(shownIn(T.hide(l, 'vault'))), true, 'hidden from the Window menu');
+  assert.strictEqual(left(shownIn(T.dock(l, 'vault', { cell: 'right', side: 'center' }), { active: { right: 'agents' }, foldAll: false })), true, 'docked into a group where another tab is showing');
+  const withGit = T.dock(l, 'git', { cell: floatIdOf(l), side: 'center' });
+  assert.ok(shownIn(withGit, { active: { [floatIdOf(withGit)]: 'vault' }, foldAll: false }).has('vault'));
+  assert.strictEqual(renderEffects(shownIn(withGit, { active: { [floatIdOf(withGit)]: 'vault' }, foldAll: false }), shownIn(withGit, { active: { [floatIdOf(withGit)]: 'git' }, foldAll: false })).vaultLeft, true, 'another tab of its float comes to the front');
+});
+
+test('Y4: raising, moving or resizing a float keeps the Vault on screen and moves no keyboard focus', () => {
+  const l = vaultFloating();
+  const id = floatIdOf(l);
+  const before = shownIn(l);
+  const moved = V.floatDragResult(l, { kind: 'move', id, tabs: ['vault'], last: { x: 300, y: 200 }, viewport: VAULT_FLOAT_VP });
+  const resized = V.floatDragResult(l, { kind: 'resize', id, tabs: ['vault'], last: { w: 400, h: 300 }, viewport: VAULT_FLOAT_VP });
+  for (const after of [shownIn(moved), shownIn(resized), shownIn(l, T.raiseFloat(NO_SEL, id))]) {
+    assert.deepStrictEqual([...after], [...before]);
+    const fx = renderEffects(before, after, { userAction: false });
+    assert.deepStrictEqual([fx.vaultLeft, fx.focus, fx.newlyShown], [false, null, []]);
+  }
+});

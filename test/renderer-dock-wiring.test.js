@@ -188,6 +188,11 @@ test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows 
   assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ fit\.fit\(\); sendResize\(\); \} catch \{\} \}, 0\);/);
 });
 
+test('PR #102 Miguel Y4: pressing a float\'s bar or grip does not take keyboard focus out of a field inside it (the press cancels the mousedown default)', () => {
+  assert.match(JS, /dock\.addEventListener\('mousedown', \(e\) => \{\r?\n\s+if \(e\.button === 0 && floatHandleOf\(e\.target\)\) e\.preventDefault\(\);/);
+  assert.match(JS, /const floatHandleOf = t => /);
+});
+
 test('PR #102 Miguel Y3: the floats\' layer sits between the terminal and the drag overlay, passes clicks through, and the terminal\'s own overlays are contained', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
   const at = s => html.indexOf(s);
