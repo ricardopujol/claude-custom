@@ -79,7 +79,7 @@ const CONTRACT = {
       // --capture (2.1.288, haiku): a ScheduleWakeup call is { delaySeconds, reason, prompt, noop }, or { stop: true }
       // alone, and carries no agent_id on the main session's call.
       'tool_input.delaySeconds': {
-        used: 'bedtime-state.js, the next wake when PostToolUse never arrived (call time + the delay)',
+        used: 'bedtime-state.js, the clamped fallback for a running night\'s next wake when the result carries no believable scheduledFor',
         onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
       },
       ...COMMON_FIELDS,

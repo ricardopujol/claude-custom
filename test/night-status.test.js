@@ -28,7 +28,12 @@ function rig({ prs = async () => 2 } = {}) {
     n, asked, sent,
     at(ms) { t = ms; return api; },
     send(event, payload = {}) { return n.handle({ event, payload }); },
-    sched(delay = 1800) { return api.send('PreToolUse', { tool_name: 'ScheduleWakeup', tool_input: { delaySeconds: delay, reason: 'r', prompt: PROMPT } }); },
+    // a whole successful call: the Pre, then the Post with the CLI's scheduledFor (a night starts on the Post)
+    sched(delay = 1800) {
+      const input = { delaySeconds: delay, reason: 'r', prompt: PROMPT };
+      api.send('PreToolUse', { tool_name: 'ScheduleWakeup', tool_input: input });
+      return api.send('PostToolUse', { tool_name: 'ScheduleWakeup', tool_input: input, tool_response: { scheduledFor: t + delay * 1000 } });
+    },
   };
   return api;
 }
