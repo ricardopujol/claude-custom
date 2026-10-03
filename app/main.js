@@ -1232,9 +1232,17 @@ function startProbeDriver(port) {
       const sel = selectedView();
       if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
       const dbg = sel.webContents.debugger;
-      if (!dbg.isAttached()) dbg.attach('1.3');
-      await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: on ? 'reduce' : 'no-preference' }] });
-      return { ok: true, on };
+      if (on) {
+        if (!dbg.isAttached()) dbg.attach('1.3');
+        await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+        return { ok: true, on };
+      }
+      // Off: clear the emulation and let go of the view (Miguel M8, PR #91) -- an attached debugger
+      // left behind holds the page in a state no real window is in, and blocks DevTools on it.
+      if (dbg.isAttached()) {
+        try { await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [] }); } finally { dbg.detach(); }
+      }
+      return { ok: true, on, attached: dbg.isAttached() };
     },
     async quit() {
       setTimeout(() => app.exit(0), 200);

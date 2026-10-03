@@ -502,3 +502,12 @@ test('the Mark rows are checkboxes: a radio group gets a default tick from Elect
 test('a Mark row does what its model row says: the ticked one clears (Dexter #87 r2)', () => {
   assert.match(MAIN, /click: \(\) => chooseMark\(branch, r\.choose\) \}\)\),/);
 });
+
+test('M8 (PR #91): the probe reduced-motion switch clears its emulation and detaches the debugger when turned off', () => {
+  const at = MAIN.indexOf('async reducedMotion(on)');
+  assert.ok(at > 0);
+  const body = MAIN.slice(at, MAIN.indexOf('async quit()', at));
+  assert.match(body, /if \(on\) \{[\s\S]*?dbg\.attach\('1\.3'\)/, 'attaches only to turn it on');
+  assert.match(body, /setEmulatedMedia', \{ features: \[\] \}/, 'clears the emulated media');
+  assert.match(body, /finally \{ dbg\.detach\(\); \}/, 'detaches even when clearing fails');
+});

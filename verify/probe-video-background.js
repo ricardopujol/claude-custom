@@ -361,7 +361,8 @@ async function main() {
   const still2 = await bgState(app);
   check('4: ...and it never plays while the setting is on', still2.video.paused && still2.video.currentTime === 0);
   check('4: ...and the Style tab says why it is still (Miguel M2)', /reduced motion/.test(still2.paused || ''), JSON.stringify(still2.paused));
-  await command(app, { cmd: 'reduced-motion', on: false });
+  const rmOff = await command(app, { cmd: 'reduced-motion', on: false });
+  check('4: turned off, the emulation is cleared and the debugger let go (Miguel M8)', rmOff.ok === true && rmOff.attached === false, JSON.stringify(rmOff));
   check('4: with the setting off it plays again', await waitFor(() => moves(app), 10000, 150) === true);
   check('4: ...and the note is gone', (await bgState(app)).paused === null);
 
