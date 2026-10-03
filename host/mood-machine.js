@@ -94,6 +94,19 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
 // foreground -> { status: "completed", agentId, ... }, when the agent is done.
 const isAsyncLaunch = r => !!r && typeof r === 'object' && (r.isAsync === true || r.status === 'async_launched');
 const isCompleted = r => !!r && typeof r === 'object' && r.status === 'completed';
+// A NAMED TEAMMATE (Agent with `name`) answers differently again, measured
+// 2026-10-03 from a real session: { status: "teammate_spawned", agent_id:
+// "<name>@<team>", agent_type, name, ... } -- snake_case, and no
+// run_in_background in its input. It runs on after the spawn returns, so it is
+// background work exactly like an async launch.
+const isTeammateSpawn = r => !!r && typeof r === 'object' && r.status === 'teammate_spawned';
+// The id a spawn's result names: `agentId` for the async/foreground results,
+// `agent_id` for a teammate's.
+const resultAgentId = r => {
+  if (!r || typeof r !== 'object') return null;
+  for (const v of [r.agentId, r.agent_id]) if (typeof v === 'string' && v) return v;
+  return null;
+};
 
 // How many ended identities are remembered. A late echo arrives within
 // seconds; this is hundreds of spawns of headroom, not a history.
@@ -348,11 +361,12 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       return;
     }
     const r = p.tool_response;
-    if (r && typeof r === 'object' && r.agentId) {
+    const named = resultAgentId(r);
+    if (named) {
       saysWho = true;
-      if (!adopt(inv, r.agentId)) return;
+      if (!adopt(inv, named)) return;
     }
-    if (isAsyncLaunch(r)) { inv.background = true; return; }
+    if (isAsyncLaunch(r) || isTeammateSpawn(r)) { inv.background = true; return; }
     if (isCompleted(r)) finish(inv);
   }
 
@@ -619,7 +633,14 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     const gone = new Set();
     for (let k = invs.length - 1; k >= 0; k--) {
       const inv = invs[k];
-      const stale = t - inv.startedAt > maxInvocationMs || t - inv.lastActivity > stallMs;
+      // The age cap is for a run NOTHING refreshes but its own spawner's
+      // chain. A background run is its own root: refresh() stops at its edge,
+      // so only its OWN events keep it alive, and the stall clock is already
+      // the right question -- the cap reaped a healthy multi-hour run (a
+      // mutation gate) at 45 minutes. Only once the CLI labels its calls: an
+      // older one has refreshAll() touching everything, so there the cap stays.
+      const capped = !(inv.background && saysWho) && t - inv.startedAt > maxInvocationMs;
+      const stale = capped || t - inv.lastActivity > stallMs;
       if (stale && !fgChildren(inv).some(c => !gone.has(c))) gone.add(inv);
     }
     // A reaped run was cut off, so it sleeps at once -- not whenever the idle
