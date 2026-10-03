@@ -463,3 +463,81 @@ test('paint: a mark without an emoji draws nothing', () => {
   paint(doc, { model: [entry({ mark: { id: 'x', emoji: '', meaning: 'm' } }), entry({ key: 'b', mark: 'W' })] }, bridgeSpy());
   for (const t of doc.byId.tabs.children) assert.strictEqual(child(t, 'mark'), undefined);
 });
+
+// --- worktree occupancy (#44 + #47, take B "hatched edge") ---------------------------------------
+
+const OCC = (o = {}) => ({ tags: ['EP'], more: 0, warn: false, lines: ['electron-pro · from develop · 4 min'], count: 1, ...o });
+const classesOf = (t) => t.className.split(' ');
+
+test("occupancy paint: an occupied tab gets the hatched-edge class and its agents' initials right of the label", () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ key: 'a', occupancy: OCC({ tags: ['EP', 'LR'] }) }), entry({ key: 'b' }), entry({ key: 'c', occupancy: null })] }, bridgeSpy());
+  const [occupied, plain, none] = doc.byId.tabs.children;
+  assert.ok(classesOf(occupied).includes('occupied'));
+  assert.ok(!classesOf(occupied).includes('occupied-warn'));
+  const tags = child(occupied, 'agent-tags');
+  assert.deepStrictEqual(tags.children.map(t => t.textContent), ['EP', 'LR']);
+  assert.ok(tags.children.every(t => t.className === 'agent-tag'));
+  assert.strictEqual(occupied.children.indexOf(tags), occupied.children.indexOf(child(occupied, 'label')) + 1);
+  for (const t of [plain, none]) {
+    assert.ok(!classesOf(t).includes('occupied'));
+    assert.strictEqual(child(t, 'agent-tags'), undefined);
+  }
+});
+
+test('occupancy paint: two writers is its own class, set by the model and by nothing else', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ occupancy: OCC({ warn: true }) }), entry({ key: 'b', occupancy: OCC({ warn: 'yes' }) })] }, bridgeSpy());
+  const [warn, odd] = doc.byId.tabs.children;
+  assert.ok(classesOf(warn).includes('occupied-warn'));
+  assert.ok(!classesOf(odd).includes('occupied-warn'), 'only a real true');
+});
+
+test('occupancy paint: agents beyond the tags are a +N, and the hover lists every agent under the branch name', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ occupancy: OCC({ tags: ['A', 'B', 'C'], more: 2, lines: ['one', 'two', 'three', 'four', 'five'], count: 5 }) })] }, bridgeSpy());
+  const [tab] = doc.byId.tabs.children;
+  const tags = child(tab, 'agent-tags');
+  assert.deepStrictEqual(tags.children.map(t => t.textContent), ['A', 'B', 'C', '+2']);
+  assert.strictEqual(tab.title, 'feat/a\none\ntwo\nthree\nfour\nfive');
+});
+
+test('occupancy paint: the hover keeps a phase text first, then the agents', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ phaseText: 'Merged, and kept.', occupancy: OCC() })] }, bridgeSpy());
+  assert.strictEqual(doc.byId.tabs.children[0].title, 'feat/a: Merged, and kept.\nelectron-pro · from develop · 4 min');
+});
+
+test("occupancy paint: a malformed occupancy draws nothing and never throws (a model is somebody's data)", () => {
+  const doc = fakeDoc();
+  const bad = [5, 'x', [], {}, { tags: 'EP' }, { tags: [5, null], lines: 'x' }, { tags: [], lines: [] }];
+  assert.doesNotThrow(() => paint(doc, { model: bad.map((o, i) => entry({ key: `k${i}`, occupancy: o })) }, bridgeSpy()));
+  for (const t of doc.byId.tabs.children) {
+    assert.ok(!classesOf(t).includes('occupied'), t.className);
+    assert.strictEqual(child(t, 'agent-tags'), undefined);
+  }
+});
+
+test("occupancy paint: initials go in with textContent (a name is somebody else's string)", () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ occupancy: OCC({ tags: ['<b>'] }) })] }, bridgeSpy());
+  assert.strictEqual(child(doc.byId.tabs.children[0], 'agent-tags').children[0].textContent, '<b>');
+});
+
+test('occupancy page: the hatched edge is stripes in the agent colour, the warning in the warn colour, and it NEVER animates', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  const rule = (selector) => {
+    const at = html.indexOf(selector + ' {');
+    if (at === -1) return null;
+    return html.slice(at, html.indexOf('}', at));
+  };
+  const edge = rule('.tab.occupied::after');
+  assert.ok(edge, 'the edge rule');
+  assert.match(edge, /repeating-linear-gradient\([^;]*var\(--agent\)/);
+  assert.doesNotMatch(edge, /animation|transition/);
+  assert.match(rule('.tab.occupied-warn::after'), /var\(--warn\)/);
+  assert.match(html, /--agent:\s*#/);
+  assert.match(html, /--warn:\s*#/);
+  assert.doesNotMatch(rule('.agent-tag') || '', /animation/);
+  assert.match(rule('.tab'), /position:\s*relative/);
+});

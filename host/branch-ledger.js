@@ -11,6 +11,19 @@
  * Every assistant line carries `gitBranch`, `cwd` and `message.usage`, so attribution is per line:
  * a session that switched branches splits its spend correctly.
  *
+ * A SUBAGENT'S LINES SAY WHERE ITS PARENT IS, NOT WHERE IT WORKS. Measured 2026-10-03 (personal-agent
+ * session 3c8efad6, six teammates each in its own sibling worktree): every line of every subagent
+ * transcript carries the launching session's cwd and gitBranch. Only the tool calls name the real
+ * worktree. So a subagent's record keeps `where`, the last worktree one of its calls proved
+ * (host/agent-occupancy.js touchOf, the occupancy claim's own test), and its spend goes to that
+ * worktree's branch. Until a call proves one, a line is credited by its own gitBranch, as before.
+ * A call into the LAUNCHING folder is a call home: it clears `where`, and the lines after it are
+ * credited by the line again (PR #96 Dexter F3: one Read in feat-x followed by forty edits at home
+ * credited all forty to feat/x). So a lane that updates its brief in dev costs develop that message.
+ * The launching folder is where the transcript is FILED (<projects>\<encoded worktree>\), not the
+ * cwd on a line: measured on the same session, the cwd follows a `cd` in Bash, and a call back into
+ * dev from elsewhere would read as a move to a worktree called dev.
+ *
  * BRANCH NAMES ARE DATA, NOT KEYS OF OURS (PR #84 Miguel B2 / Dexter F12): a branch may be called
  * `__proto__`, `constructor` or `toString`. Maps keyed by a branch name are only ever read with
  * getOwn and written with putOwn -- a plain `o[name] = v` on `__proto__` would replace the object's
@@ -24,6 +37,7 @@ const { projectDirName } = require('./project-dir');
 const { transcriptFiles, readMeta } = require('./transcripts');
 const { readFingerprint, prefixIntact, READ_CHUNK } = require('./usage');
 const { renameWithRetryAsync } = require('./atomic-write');
+const { touchOf } = require('./agent-occupancy');
 
 const VERSION = 1;
 // A single unterminated "line" past this can't be a real usage record (host/usage.js MAX_CARRY):
@@ -48,13 +62,17 @@ function spendOf(u) {
   return num(u.input_tokens) + num(u.output_tokens) + num(u.cache_creation_input_tokens);
 }
 
-/** `at` is when this record was last checked against its file (mergeLedgers). */
+/**
+ * `at` is when this record was last checked against its file (mergeLedgers). `where` is a subagent's
+ * proven worktree, `{ root, branch }`, or null (see the header); it is resume state, like `lastId`.
+ */
 function emptyRecord() {
-  return { offset: 0, fp: null, at: null, lastId: null, subagent: false, agentType: null, branches: {} };
+  return { offset: 0, fp: null, at: null, lastId: null, subagent: false, agentType: null, where: null, branches: {} };
 }
 
 const inProject = (cwd, root) => typeof cwd === 'string' && (samePath(cwd, root) || isInside(cwd, root));
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
+const sameDirName = process.platform === 'win32' ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
 
 const two = n => String(n).padStart(2, '0');
 
@@ -72,11 +90,48 @@ function localDay(ts) {
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 }
 
+const isStr = s => typeof s === 'string' && s !== '';
+
+// "The agent is back in the launching folder": not a place of its own, the absence of one.
+const HOME = Object.freeze({ home: true });
+
+/**
+ * Where the calls on one transcript line put the agent: `{ root, branch }` (another worktree), HOME (the
+ * launching folder), or null (they prove nothing). The LAST call that proves something speaks. `home`
+ * is the launching folder. A call that names both it and another worktree is a call into the other
+ * one. A worktree with no branch (a detached HEAD) proves nothing the ledger can use: its spend has
+ * no branch to go to.
+ */
+function placeOf(content, home, places) {
+  if (!Array.isArray(content) || !isStr(home)) return null;
+  let found = null;
+  const roots = places.map(p => p.root);
+  for (const b of content) {
+    if (!b || typeof b !== 'object' || b.type !== 'tool_use') continue;
+    const away = touchOf(b.name, b.input, roots, home);
+    if (away !== null) {
+      const place = places.find(p => samePath(p.root, away));
+      if (place && isStr(place.branch)) found = { root: place.root, branch: place.branch };
+      continue;
+    }
+    // No other worktree. The same test with no folder left out (and the launching folder among the roots,
+    // which it isn't when the session wasn't launched in a worktree): what it finds now can only be home.
+    if (touchOf(b.name, b.input, [...roots, home], null) !== null) found = HOME;
+  }
+  return found;
+}
+
 /**
  * Adds the COMPLETE lines of `text` to `rec` (mutated and returned). Whatever follows the last
  * '\n' is a line still being written: it's ignored here, and the caller reads it next time.
+ *
+ * `places` is given for a SUBAGENT's transcript only: the project's worktrees as `[{ root, branch }]`.
+ * With it, a line is credited to `rec.where` once a call has proven one (see the header). `home` is
+ * the launching folder, the one the transcript is filed under; when no listed worktree is, the line's
+ * own cwd stands in for it.
  */
-function addLines(rec, text, projectRoot) {
+function addLines(rec, text, projectRoot, places, home) {
+  const redirect = Array.isArray(places);
   const parts = text.split('\n');
   parts.pop();
   for (const line of parts) {
@@ -89,19 +144,34 @@ function addLines(rec, text, projectRoot) {
     }
     const msg = o && o.message;
     if (!msg || !msg.usage || typeof o.gitBranch !== 'string' || !o.gitBranch) continue;
-    // Outside the root is LOOSE, not dropped: an old-layout worktree beside the repo
-    // (claude-custom-ptf: 113,090 tokens of feat/process-tracker-failure) or a session that cd'd
-    // out writes such lines, and so would another project whose folder shares the prefix. Only the
-    // model can tell those apart (it counts loose spend for branch names this repo's git knows).
-    const loose = !inProject(o.cwd, projectRoot);
     // ONE MESSAGE IS ONE USAGE (host/usage.js:117): its content blocks repeat the same figure on
     // consecutive lines. Measured over all 381 claude-custom transcripts: 20,484 repeats, all
     // adjacent (G1), so the previous id is the whole resume state. A line with no id always counts.
     const id = typeof msg.id === 'string' && msg.id ? msg.id : null;
-    if (id && id === rec.lastId) continue;
+    const repeat = id !== null && id === rec.lastId;
+    // The calls are read on EVERY line, repeats included, and BEFORE the line is credited: a line
+    // that carries both its usage and its call is that worktree's work. When the call is a later
+    // line of the message (a text or thinking block came first and took the count), that one message
+    // stays where the agent was: one message of lag per move. The alternative is reading ahead in a
+    // file that is still being written.
+    if (redirect) {
+      const moved = placeOf(msg.content, isStr(home) ? home : o.cwd, places);
+      if (moved === HOME) rec.where = null;
+      else if (moved !== null) rec.where = moved;
+    }
+    if (repeat) continue;
     rec.lastId = id;
-    const b = getOwn(rec.branches, o.gitBranch)
-      || putOwn(rec.branches, o.gitBranch, { spend: 0, loose: 0, first: null, last: null, cwds: [] });
+    // (a ledger on disk is somebody else's file: a `where` that isn't one is no place)
+    const at = redirect && rec.where && isStr(rec.where.branch) && isStr(rec.where.root) ? rec.where : null;
+    const branch = at ? at.branch : o.gitBranch;
+    const cwd = at ? at.root : o.cwd;
+    // Outside the root is LOOSE, not dropped: an old-layout worktree beside the repo
+    // (claude-custom-ptf: 113,090 tokens of feat/process-tracker-failure) or a session that cd'd
+    // out writes such lines, and so would another project whose folder shares the prefix. Only the
+    // model can tell those apart (it counts loose spend for branch names this repo's git knows).
+    const loose = !inProject(cwd, projectRoot);
+    const b = getOwn(rec.branches, branch)
+      || putOwn(rec.branches, branch, { spend: 0, loose: 0, first: null, last: null, cwds: [] });
     if (loose) b.loose += spendOf(msg.usage);
     else b.spend += spendOf(msg.usage);
     // Lines read before the local-day change keep the UTC day they were stored with: the ledger
@@ -113,7 +183,7 @@ function addLines(rec, text, projectRoot) {
       if (!b.last || day > b.last) b.last = day;
     }
     // only a real path: a line with no cwd would otherwise add `undefined` on every line (Dexter F14)
-    if (typeof o.cwd === 'string' && !b.cwds.some(c => samePath(c, o.cwd))) b.cwds.push(o.cwd);
+    if (typeof cwd === 'string' && !b.cwds.some(c => samePath(c, cwd))) b.cwds.push(cwd);
   }
   return rec;
 }
@@ -195,8 +265,9 @@ function cloneRecord(r) {
  * is never touched, so a read that fails halfway leaves the ledger exactly as it was and the retry
  * counts every line once (PR #84 Dexter F8 / Miguel I1). Resumes on a line boundary; a prefix that
  * no longer matches (rewritten) or a file shorter than what was read (truncated) starts over from 0.
+ * `places` and `home` are passed for a subagent's transcript only (addLines).
  */
-async function readNew(file, prev, projectRoot, open) {
+async function readNew(file, prev, projectRoot, open, places, home) {
   const fh = await open(file, 'r');
   try {
     const { size } = await fh.stat();
@@ -235,7 +306,7 @@ async function readNew(file, prev, projectRoot, open) {
       }
       const nl = data.lastIndexOf(NL);
       if (nl >= 0) {
-        addLines(rec, data.subarray(0, nl + 1).toString('utf8'), projectRoot);
+        addLines(rec, data.subarray(0, nl + 1).toString('utf8'), projectRoot, places, home);
         consumed += nl + 1;
         carry = Buffer.from(data.subarray(nl + 1));
       } else {
@@ -263,10 +334,17 @@ async function readNew(file, prev, projectRoot, open) {
  * A project folder is any whose encoded name starts with the project root's; whether a LINE belongs
  * is then decided by its own cwd (G2). Records of files no longer on disk are kept (G3).
  *
- * opts: { projectsDir, projectRoot, now = Date.now, open = fsp.open }
+ * `worktrees` is the project's worktrees, `[{ root, branch }]`, for crediting a subagent's spend to
+ * the worktree its calls point at (the header). THREE answers, kept apart:
+ *   a list      subagent transcripts are redirected
+ *   null        the list was asked for and could not be had: subagent transcripts are NOT READ this
+ *               time (one error) -- a line credited to the parent's branch is credited for good
+ *   undefined   the caller never asked: everything is read by its own lines, as before
+ *
+ * opts: { projectsDir, projectRoot, worktrees, now = Date.now, open = fsp.open }
  * -> { ledger, read: bytes read, errors: folders or files that couldn't be read }
  */
-async function updateLedger(ledger, { projectsDir, projectRoot, now = Date.now, open = fsp.open }) {
+async function updateLedger(ledger, { projectsDir, projectRoot, worktrees, now = Date.now, open = fsp.open }) {
   const out = ledger && ledger.files ? ledger : emptyLedger();
   let read = 0;
   let errors = 0;
@@ -277,12 +355,18 @@ async function updateLedger(ledger, { projectsDir, projectRoot, now = Date.now, 
     return { ledger: out, read, errors: 1 };
   }
   const prefix = projectDirName(projectRoot);
+  let waiting = false;
   for (const d of dirs) {
     if (!d.isDirectory() || !d.name.startsWith(prefix)) continue;
+    // the worktree this folder's sessions were launched from: the one whose encoded name the folder carries
+    // (on Windows in any case: the folder is named after the cwd as it was typed, git lists it as it is on disk)
+    const launcher = Array.isArray(worktrees) ? worktrees.find(w => w && sameDirName(projectDirName(w.root), d.name)) : null;
+    const home = launcher ? launcher.root : null;
     const { files, errors: listErrors } = await transcriptFiles(path.join(projectsDir, d.name));
     if (files === null) { errors++; continue; }
     errors += listErrors;
     for (const entry of files) {
+      if (entry.subagent && worktrees === null) { waiting = true; continue; }
       const prev = getOwn(out.files, entry.file) || emptyRecord();
       if (entry.subagent && !prev.subagent) {
         // A meta that exists but can't be read (locked, half-written) is asked for again next
@@ -294,7 +378,9 @@ async function updateLedger(ledger, { projectsDir, projectRoot, now = Date.now, 
         } else errors++;
       }
       try {
-        const r = await readNew(entry.file, prev, projectRoot, open);
+        // which FILE it is decides (a subagents\ transcript), not its meta: one whose meta can't be
+        // read yet is a subagent's all the same
+        const r = await readNew(entry.file, prev, projectRoot, open, entry.subagent ? worktrees : undefined, home);
         // only ever goes up: a wall clock stepping back must not let an older record win the
         // merge again (PR #84 Dexter round 2)
         r.rec.at = Math.max(now(), num(prev.at) + 1);
@@ -305,6 +391,8 @@ async function updateLedger(ledger, { projectsDir, projectRoot, now = Date.now, 
       }
     }
   }
+  // ONE error, however many files wait: the tree says its ledger is incomplete (ledgerOk false)
+  if (waiting) errors++;
   return { ledger: out, read, errors };
 }
 

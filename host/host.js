@@ -88,6 +88,12 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
+// Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
+// as claim files the other windows read. See host/occupancy-producer.js.
+const { createOccupancyProducer, isOccupancyOnly, teammateFromMeta, withoutFileText } = require('./occupancy-producer');
+const { createClaimWriter, occupancyDir, sweepDead } = require('./occupancy-store');
+const { judge: judgeClaims } = require('./occupancy-live');
+const { createRootsProvider } = require('./worktree-roots');
 const { readLock } = require('./lock-breaker');
 // The one-shot client for ANOTHER host's controls; `sendControl` below is ours to our windows.
 const { sendControl: sendHostControl } = require('./host-client');
@@ -336,6 +342,8 @@ async function currentFog() {
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
   pipeName: PIPE_NAME,
+  // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
+  occupancy: true,
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
@@ -1135,8 +1143,32 @@ function seatPayload(seats) {
 // point the whole module has run.
 const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
 
+// Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
+// worktree, and deletes it when the agent stops (or this host exits). Every window reads them.
+const occupancyWriter = createClaimWriter({ stateRoot: STATE_ROOT, log: (...a) => console.log(...a) });
+const occupancy = createOccupancyProducer({
+  writer: occupancyWriter,
+  roots: createRootsProvider({ cwd: CWD, log: (...a) => console.log(...a) }),
+  ownRoot: CWD,
+  fromBranch: () => currentBranch(CWD),
+  hostPid: process.pid,
+  hostStartedAt: () => (lockOwner && typeof lockOwner.processStartedAt === 'string' ? lockOwner.processStartedAt : null),
+  nameOf: (agentId) => {
+    const inv = mood.invocations().find(i => i.agentId === agentId);
+    return inv ? inv.name : null;
+  },
+  // A teammate's SubagentStop ends a turn, not the agent: its claim is kept while it idles.
+  isTeammate: teammateFromMeta,
+  log: (...a) => console.log(...a),
+});
+process.on('exit', () => { occupancyWriter.removeAll(); });
+
 let hookBridge = null;
 if (helperExists) {
+  // Claims left by a host that died: this is the producer that deletes them (a reader never does).
+  sweepDead(occupancyDir(STATE_ROOT), { judge: (claims) => judgeClaims(claims, startTimes), log: (...a) => console.log(...a) })
+    .then((r) => { if (r.removed.length) console.log(`[occupancy] swept ${r.removed.length} dead claim(s)`); })
+    .catch(() => { /* a sweep never blocks a host */ });
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
   hookBridge.on('event', (ev) => {
     // The statusLine document, forwarded by host/status-relay.js on every
@@ -1152,6 +1184,14 @@ if (helperExists) {
       if (status.effort !== undefined) setEffort(status.effort);
       return;
     }
+    // Worktree occupancy sees every hook event; the file-tool PreToolUse that only IT asked for goes no
+    // further: their PostToolUse isn't hooked, so the Running panel would show every Read as running forever.
+    // (Under hook debug their payload is printed here: they never reach the `[hook:full]` line below. Without
+    // the text a Write or an Edit carries: this fires for every file an agent writes, a .env included, and
+    // the probe that reads it only wants who touched which path.)
+    if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
+    occupancy.handle(ev);
+    if (isOccupancyOnly(ev)) return;
     // The context was just replaced (/clear) or summarised (compaction): the
     // last fill is no longer true, whether or not the CLI re-fires the
     // statusLine right after. Unknown until a document says otherwise.
@@ -1656,6 +1696,7 @@ mood.on('change', ({ agent, state }) => {
 const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
+  occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
   // own a clock of its own -- and on both falling edges: a sweep that removed
   // the last row, and a party that shrank with nothing left running.
