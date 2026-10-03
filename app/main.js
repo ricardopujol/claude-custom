@@ -410,6 +410,7 @@ function createWindow() {
     sendFocus();
     win.flashFrame(false);
     setCue(false);            // looked at: the cue has done its job
+    tabShell.looked();        // ...and so has the selected tab's pulse (#31)
     focusSelected();
   });
   win.on('blur', () => { focused = false; sendFocus(); });

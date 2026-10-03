@@ -728,6 +728,20 @@ function createShell(deps) {
     return { create: { enabled: why === null, why }, reopen: mode === 'tabs' ? reopenable() : [] };
   }
 
+  /**
+   * The window came back to the front: the selected tab is looked at now, so
+   * whatever it was holding for you (a finished turn, an urgent need) is seen. A
+   * look is selected AND focused, whichever arrives last (PR #90 Dexter F1).
+   */
+  function looked() {
+    const tab = tabByKey(selectedKey);
+    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished)) return false;
+    tab.status = tabStatusLib.afterSelected(tab.status);
+    if (tab.view) views.send(tab, 'tab-selected');
+    publish();
+    return true;
+  }
+
   /** A renderer's own status. Kept as-is except: you're looking at it. */
   function report(sender, status) {
     const tab = tabForSender(sender);
@@ -840,7 +854,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, menuState, override,
-    createWorktree, openCreate, cancelCreate, plusMenu, reopen,
+    createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,
     // #40: something the model reads changed outside the shell (a tab's mark).

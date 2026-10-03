@@ -357,6 +357,12 @@ test('#35 (Dexter F3): Ctrl+Alt+T on a form that is already open hands the keybo
   assert.match(body, /getElementById\('create-branch'\)\.focus\(\)/);
 });
 
+test('#31 (Dexter F1): the window regaining focus is a look at the selected tab', () => {
+  const at = MAIN.indexOf("win.on('focus'");
+  const body = MAIN.slice(at, at + 400);
+  assert.match(body, /tabShell.looked()/);
+});
+
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);

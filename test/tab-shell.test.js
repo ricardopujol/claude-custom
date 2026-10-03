@@ -828,6 +828,35 @@ test('#31: finished from the tab you are looking at (window focused) never pulse
   assert.strictEqual(h2.shell.model().find(x => x.isDev).pulse, null);
 });
 
+test('#31 (Dexter F1): a tab you watched finish does not pulse once you leave it -- a look is selected + focused, whichever comes last', async () => {
+  for (const flag of ['finished', 'needsInput']) {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, focused: false });
+    await h.shell.open();
+    await flush();
+    await h.shell.select(key('feat-a'));
+    h.shell.report(h.shell.tabByKey(key('feat-a')).view, { [flag]: true });
+    const sentBefore = h.sent.filter(([, ch]) => ch === 'tab-selected').length;
+    h.focused = true;             // the window comes back; Ricardo reads the tab
+    assert.strictEqual(h.shell.looked(), true, flag);
+    assert.ok(h.sent.filter(([, ch]) => ch === 'tab-selected').length > sentBefore, 'the page is told, so it clears its own flag');
+    await h.shell.select(key('dev'));
+    const a = h.shell.model().find(x => x.label === 'feat/a');
+    assert.strictEqual(a.pulse, null, flag);
+    assert.strictEqual(a.needsInput, false, flag);
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')).status[flag], false, flag);
+  }
+});
+
+test('#31: looked() touches only the selected tab, and says false when there was nothing to clear', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.looked(), false, 'no status yet');
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { finished: true });
+  assert.strictEqual(h.shell.looked(), false, 'dev is the selected one and has nothing pending');
+  assert.strictEqual(h.shell.model().find(x => x.label === 'feat/a').pulse, 'done', 'the unselected tab keeps its pulse');
+});
+
 test('a raise and an attention click select the sender\'s tab and bring the window forward', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
