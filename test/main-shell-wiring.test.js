@@ -448,8 +448,36 @@ test('D1: the tree layout is a second registration under TREE_NAMES, with its ow
   assert.match(watch, /names: TREE_NAMES/);
   assert.match(watch, /sync: treeSync/);
   assert.match(watch, /`\$\{TREE_NAMES\.key\}\.json`/);
-  assert.strictEqual(MAIN.split('registerLayoutHandlers({').length - 1, 2, 'the L1 pair stays, for older windows and the one migration read');
-  assert.strictEqual(MAIN.split('watchLayout({').length - 1, 2);
+  assert.strictEqual(MAIN.split('registerLayoutHandlers({').length - 1, 3, 'the L1 pair stays, for older windows and the one migration read; D3 adds the presets as the third');
+  assert.strictEqual(MAIN.split('watchLayout({').length - 1, 3);
+});
+
+test('D3: the preset list is a third registration under PRESET_NAMES, with its own sync and its own store file', () => {
+  assert.match(MAIN, /const \{ PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
+  const first = MAIN.indexOf('registerLayoutHandlers({');
+  const third = MAIN.indexOf('registerLayoutHandlers({', MAIN.indexOf('registerLayoutHandlers({', first + 1) + 1);
+  assert.ok(third !== -1, 'a third registerLayoutHandlers call');
+  const reg = callText(MAIN, third);
+  assert.match(reg, /names: PRESET_NAMES/);
+  assert.match(reg, /sync: presetSync/);
+  assert.match(reg, /store: uiStore/);
+  assert.match(reg, /isSender: isTabView/);
+  assert.match(reg, /send: pushToViews/);
+  const w1 = MAIN.indexOf('watchLayout({');
+  const watch = callText(MAIN, MAIN.indexOf('watchLayout({', MAIN.indexOf('watchLayout({', w1 + 1) + 1));
+  assert.match(watch, /names: PRESET_NAMES/);
+  assert.match(watch, /sync: presetSync/);
+  assert.match(watch, /store: uiStore/);
+  assert.match(watch, /send: pushToViews/);
+  assert.match(watch, /`\$\{PRESET_NAMES\.key\}\.json`/);
+});
+
+test('D3: the preload exposes layoutPresets with one listener at a time, on its own channels', () => {
+  const PRELOAD = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'));
+  assert.match(PRELOAD, /layoutPresets: \{/);
+  assert.match(PRELOAD, /get: \(\) => ipcRenderer\.invoke\('layout-presets:get'\)/);
+  assert.match(PRELOAD, /set: \(list\) => ipcRenderer\.invoke\('layout-presets:set', list\)/);
+  assert.match(PRELOAD, /ipcRenderer\.removeAllListeners\('layout-presets'\), ipcRenderer\.on\('layout-presets'/);
 });
 
 test('D1: the preload exposes layoutTree with one listener at a time, on its own channels', () => {

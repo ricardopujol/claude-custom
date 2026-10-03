@@ -28,6 +28,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES } = require('./layout-bridge');
+const { PRESET_NAMES } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
@@ -1036,6 +1037,13 @@ function registerIpc() {
   watchLayout({
     store: uiStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${TREE_NAMES.key}.json`),
+  });
+  // The layout presets (dockable panels D3): a list, install-wide, under its own key. Same bridge, an array.
+  const presetSync = {};
+  registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToViews });
+  watchLayout({
+    store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${PRESET_NAMES.key}.json`),
   });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
