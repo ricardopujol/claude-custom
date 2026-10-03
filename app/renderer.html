@@ -34,6 +34,10 @@
          session is writing too (--warn). The same two colours as the strip's hatched edge. */
       --agent: #6aa5d8;
       --warn: #e6c34a;
+      /* Backlog #52: a session in a /bedtime night (the strip's night tab, the bar's moon chip). */
+      --night: #1a2350;
+      --night-edge: #7f93e0;
+      --night-text: #e8ecff;
     }
     * { box-sizing: border-box; }
     /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
@@ -217,33 +221,65 @@
       font-variant-numeric: tabular-nums; }
     .git-foot b { color: var(--text); font-weight: 600; }
     .git-foot-row { display: flex; justify-content: space-between; gap: 8px; }
-    /* --- fog of war -------------------------------------------------------
-       A dark map. Brightness carries the signal, so the rows are deliberately
-       plain: no borders, no chrome competing with the one variable that means
-       something. */
-    #fog-body { padding: 8px 10px; gap: 8px; }
+    /* --- the Files tab (#45) -------------------------------------------------
+       This worktree's files, with what Claude touched marked on them: edited rows
+       bright with a count, read rows fainter, folders rolling their files up.
+       (.fog-sum and .fog-warn stay: the Bug vault's summary line uses them.) */
+    #fog-body { padding: 8px 10px; gap: 6px; }
     .fog-sum { font-size: 11px; color: var(--dim); line-height: 1.5; flex: 0 0 auto; }
     .fog-sum b { color: var(--text); font-variant-numeric: tabular-nums; }
     .fog-sum .dark-count { color: var(--accent); }
     .fog-sum .fog-warn { color: var(--bad); }
-    .fog-more { font-size: 10.5px; color: var(--dim); padding: 4px 0; }
-    #fog-list { flex: 1; overflow-y: auto; font-family: ui-monospace, Consolas, monospace; }
-    .fog-row {
-      display: flex; align-items: baseline; gap: 6px;
-      font-size: 11px; padding: 1px 0; white-space: nowrap;
-    }
-    /* direction:rtl puts the ellipsis on the LEFT, so a long path keeps its
-       filename -- the part worth reading. The text itself must be isolated in
-       a <bdi>, or a path starting with a dot renders as "harness/x.png." with
-       the leading dot flipped to the end. */
-    .fog-row .name { overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-    .fog-row .name bdi { direction: ltr; }
-    .fog-row .n { margin-left: auto; font-size: 9.5px; opacity: .5; }
-    /* Never touched. Dimmer than anything explored, and the only row with no
-       brightness of its own -- which is what "unexplored" has to look like. */
-    .fog-row.dark .name { color: color-mix(in srgb, var(--dim) 55%, var(--bg)); }
-    .fog-row.edited .name { color: var(--ok); }
-    .fog-row.read .name { color: var(--text); }
+    #files-note.fog-warn { color: var(--bad); }
+    #files-bar { flex: 0 0 auto; }
+    #files-said { flex: 0 0 auto; font-size: 10.5px; color: var(--accent); line-height: 1.4; }
+    #files-said:empty { display: none; }
+    #files-tree { flex: 1; min-height: 0; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+    .fr { display: flex; align-items: baseline; gap: 4px; padding: 1px 6px; white-space: nowrap; cursor: default; border-radius: 3px; }
+    .fr[data-path] { cursor: pointer; }
+    .fr:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .fr:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+    .fr.sel { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+    .fr .chev { flex: 0 0 10px; width: 10px; color: var(--dim); }
+    .fr .nm { overflow: hidden; text-overflow: ellipsis; }
+    .fr .bd { margin-left: auto; padding-left: 8px; font-size: 10px; color: var(--ok); font-variant-numeric: tabular-nums; }
+    .fr.none .nm { color: var(--text); opacity: .85; }
+    .fr.read .nm { color: color-mix(in srgb, var(--ok) 45%, var(--dim)); }
+    .fr.edited .nm { color: var(--ok); }
+    .fr.loading, .fr.more, .files-empty { color: var(--dim); font-style: italic; }
+    .files-empty { padding: 6px; line-height: 1.5; }
+    .files-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 150px; padding: 3px;
+      background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+    .files-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 4px 9px;
+      border-radius: 4px; font: inherit; font-size: 11.5px; cursor: pointer; }
+    .files-menu button:hover, .files-menu button:focus-visible { background: var(--bg); color: var(--accent); outline: none; }
+    /* --- the code reader (#32): a split beside the terminal -------------------- */
+    /* The reader and its divider sit in #dock, absolutely positioned over the strip app/repo-reader.js layout() frees
+       at the right of #termwrap's rectangle (the dock tree places #termwrap; see app/dock-tree-display.js). */
+    #reader-split { position: absolute; z-index: 30; cursor: col-resize; background: var(--border); touch-action: none; }
+    #reader-split:hover, #reader-split:focus-visible, body.reader-resizing #reader-split { background: var(--accent); outline: none; }
+    #reader-split[hidden], #reader[hidden] { display: none; }
+    body.reader-resizing { user-select: none; cursor: col-resize; }
+    #reader { position: absolute; z-index: 30; box-sizing: border-box; display: flex; flex-direction: column; min-width: 240px; min-height: 0; background: var(--bg); }
+    body.focus-mode #reader, body.focus-mode #reader-split { display: none; }
+    #reader-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 8px; font-size: 11px;
+      background: var(--chrome); border-bottom: 1px solid var(--border); }
+    #reader-path { flex: 1 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
+    #reader-meta { order: 9; flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10.5px; }
+    #reader-meta:empty { display: none; }
+    #reader-head button, #reader-bar button, #reader-note button { background: transparent; color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap; }
+    #reader-head button:hover, #reader-bar button:hover, #reader-note button:hover { border-color: var(--accent); color: var(--accent); }
+    #reader-head button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent, var(--bg)); border-color: var(--accent); }
+    #reader-head button[hidden], #reader-bar button[hidden], #reader-note button[hidden], #reader-bar[hidden], #reader-note[hidden], #reader-body[hidden] { display: none; }
+    #reader-close { border: none !important; font-size: 13px !important; padding: 0 4px !important; }
+    #reader-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px;
+      background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); border-bottom: 1px solid var(--accent); }
+    #reader-bar-text { flex: 1; }
+    #reader-body { flex: 1; min-height: 0; overflow: hidden; }
+    #reader-body .cm-editor { height: 100%; }
+    .reader-plain { margin: 0; padding: 8px 10px; height: 100%; overflow: auto; box-sizing: border-box; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text); white-space: pre; }
+    #reader-note { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px; font-size: 12px; line-height: 1.5; color: var(--dim); }
     #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
     #vault-list .none, #vault-list .err { color: var(--dim); font-size: 11px; line-height: 1.5; }
     #vault-list .err { color: var(--bad); }
@@ -602,36 +638,62 @@
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
 
-    /* Worktree occupancy (#44 + #47, take B): a chrome bar over the terminal while an agent is working in this
-       folder, with a coloured left rule; the first-keystroke confirm sits over the input with the same rule.
-       Neither animates: movement means "needs you". */
-    #occupancy-banner {
+    /* The terminal bar (#49 last prompt + #52 bedtime, with #47's occupancy banner folded in as a chip;
+       documentation/DESIGN_TERMINAL_BAR.md): ONE row over the terminal, the prompt on the left once it has scrolled
+       away, the status chips on the right. Absent when there is nothing to say. It never animates (movement means
+       "needs you"), focus mode hides it with the rest of the chrome, and it is part of the terminal, not a dock panel. */
+    #terminal-bar {
       position: absolute; top: 6px; left: 10px; right: 10px; z-index: 16;
-      display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      display: flex; align-items: center; gap: 12px; padding: 5px 10px; border-radius: 5px;
       font-size: 12px; line-height: 1.4; color: var(--text);
-      background: color-mix(in srgb, var(--agent) 12%, var(--chrome));
-      border: 1px solid color-mix(in srgb, var(--agent) 40%, var(--border));
-      border-left: 4px solid var(--agent);
+      background: color-mix(in srgb, var(--chrome) 94%, transparent);
+      border: 1px solid var(--border);
     }
-    #occupancy-banner.warn {
-      background: color-mix(in srgb, var(--warn) 14%, var(--chrome));
-      border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
-      border-left-color: var(--warn);
+    #terminal-bar[hidden], #occupancy-confirm[hidden], #bar-prompt[hidden], #bar-prompt-full[hidden] { display: none; }
+    body.focus-mode #terminal-bar { display: none; }
+    #bar-prompt {
+      flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
+      background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
     }
-    #occupancy-banner[hidden], #occupancy-confirm[hidden] { display: none; }
-    #occupancy-banner-text { font-weight: 600; }
-    #occupancy-banner-since, #occupancy-banner-more, #occupancy-banner-note { color: var(--dim); }
-    #occupancy-banner.warn #occupancy-banner-note { color: var(--warn); }
-    #occupancy-banner .spacer { flex: 1; }
-    #occupancy-jump, #occupancy-confirm button {
+    #bar-prompt .bar-caret { color: var(--accent); flex: 0 0 auto; }
+    #bar-prompt-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #bar-prompt-age { flex: 0 0 auto; color: var(--dim); white-space: nowrap; }
+    #bar-prompt-full {
+      position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; z-index: 17;
+      max-height: 40vh; overflow: auto; padding: 8px 10px; border-radius: 5px; white-space: pre-wrap;
+      user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    #bar-chips { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+    .bar-chip {
+      position: relative; display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; cursor: default;
+      font: inherit; color: var(--text); white-space: nowrap;
+      background: var(--panel); border: 1px solid var(--border); border-left-width: 4px;
+    }
+    /* The night chip carries its OWN pair, whatever the look: a solid night blue with a fixed light text (about 13:1),
+       never mixed with --chrome or --text, which a light look turns dark (PR #99 Miguel Y3; probe-terminal-bar.js
+       measures the contrast under both). Its hover keeps the look's own pair. */
+    .bar-chip.bedtime { background: var(--night); color: var(--night-text); border-color: var(--night-edge); border-left-color: var(--night-edge); }
+    .bar-chip.occupancy { border-left: 4px solid var(--agent); font-variant-numeric: tabular-nums; }
+    .bar-chip.occupancy.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    button.bar-chip { cursor: pointer; }
+    button.bar-chip:hover { border-color: var(--agent); }
+    /* hover or focus expands a chip: the detail lines under it, right-aligned to the bar */
+    .bar-chip .chip-long {
+      display: none; position: absolute; top: 100%; right: 0; margin-top: 4px; z-index: 17; min-width: max-content;
+      padding: 6px 10px; border-radius: 5px; white-space: pre; text-align: left; font-weight: 400;
+      background: var(--chrome); border: 1px solid var(--border); color: var(--text);
+    }
+    .bar-chip:hover .chip-long, .bar-chip:focus-visible .chip-long { display: block; }
+    .bar-chip.occupancy.warn .chip-long { border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    #occupancy-confirm button {
       padding: 3px 10px; border-radius: 4px; cursor: pointer; font: inherit;
       background: var(--panel); color: var(--text); border: 1px solid var(--border);
     }
-    #occupancy-jump:hover, #occupancy-confirm button:hover { border-color: var(--agent); }
+    #occupancy-confirm button:hover { border-color: var(--agent); }
     #occupancy-confirm kbd { font: inherit; font-size: 0.85em; color: var(--dim); margin-left: 4px; }
-    #occupancy-jump[hidden] { display: none; }
-    /* the terminal-banner (other live sessions) sits just under it while both show */
-    body.occupied #terminal-banner { top: 46px; }
+    /* the terminal-banner (other live sessions) sits just under the bar while it shows */
+    body.bar-open #terminal-banner { top: 46px; }
     #occupancy-confirm {
       position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 18;
       display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 5px;
@@ -693,11 +755,11 @@
        by dock-tree-display.js, so it takes nothing from .zone's flex sizing. It stays a .zone so every
        rule below that styles a zone's tabs and panels (has-bg, focus mode, the wide shape) still applies. */
     .dgroup { position: absolute; box-sizing: border-box; overflow: hidden; }
-    /* The floats' layer (D2, PR #102 Y3): a stacking context of its own at 10, above the gutters (5) and the groups,
+    /* The floats' layer (D2, PR #102 Y3): a stacking context of its own at 35, above the gutters (5), the groups and the code reader (30),
        below #dock-overlay (40). Inside it, dock-tree-display.js gives each float its rank (0, 1, 2...) as its z-index, so
        the order is the layer's own and cannot reach the overlay however many floats there are. The layer itself takes no
        pointer, so the groups under its empty part keep theirs. */
-    #dock-floats { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
+    #dock-floats { position: absolute; inset: 0; z-index: 35; pointer-events: none; }
     /* A floating panel (D2): a group that hangs over the dock. Its bar moves it, so its tabs keep their own width and
        the bar's empty part is the handle; the grip in the corner resizes it. Focus mode hides it like any zone. */
     /* The frame along its bottom edge (PR #102 S2): padding the bar's colour, so the resize grip sits in it and not over
@@ -798,7 +860,7 @@
        at all and stopped 638 px short of the bottom (L1's verify/probe-dock-zones.js, since replaced by probe-dock-tree.js). */
     #projects-body { padding: 8px 10px; gap: 8px; }
     #projects-list { flex: 1; min-height: 0; overflow-y: auto; }
-    #vault-list, #fog-list, #model-list, #agents { min-height: 0; }
+    #vault-list, #files-tree, #model-list, #agents { min-height: 0; }
 
     /* The WIDE shape (top/bottom zones): a panel's sections sit side by side,
        each its own scrolling column, the main list the widest. The tab bar
@@ -812,7 +874,7 @@
     .zone[data-shape="wide"] .panel.on > #vault-list,
     .zone[data-shape="wide"] .panel.on > #bugvault-list,
     .zone[data-shape="wide"] .panel.on > #model-list,
-    .zone[data-shape="wide"] .panel.on > #fog-list,
+    .zone[data-shape="wide"] .panel.on > #files-tree,
     .zone[data-shape="wide"] .panel.on > #projects-list,
     /* the Git dial takes the whole wide zone, so its drawer can sit beside it (#46) */
     .zone[data-shape="wide"] .panel.on > #git-dial,
@@ -1410,17 +1472,17 @@
           <span id="terminal-banner-text"></span>
           <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
         </div>
-        <!-- Worktree occupancy (#44 + #47): an agent launched from another session is working in this folder.
-             Text only (app/occupancy-display.js bannerModel); clears when the agent stops or its host dies. -->
-        <div id="occupancy-banner" role="status" hidden>
-          <span id="occupancy-banner-text"></span>
-          <span id="occupancy-banner-since"></span>
-          <span id="occupancy-banner-more"></span>
-          <span id="occupancy-banner-note"></span>
-          <span class="spacer"></span>
-          <button type="button" id="occupancy-jump" hidden></button>
+        <!-- The terminal bar (#49 + #52, with #47's occupancy banner folded in as a chip): one row, the prompt left
+             once it has scrolled away, the chips right. Text only, painted from app/terminal-bar.js's model. -->
+        <div id="terminal-bar" role="group" aria-label="Last prompt and status" hidden>
+          <button type="button" id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full" title="Show the whole prompt (Esc closes it)">
+            <span class="bar-caret">❯</span><span id="bar-prompt-text"></span><span id="bar-prompt-age"></span>
+          </button>
+          <div id="bar-prompt-full" hidden></div>
+          <div id="bar-chips"></div>
         </div>
-        <!-- The first keystroke typed while an agent is writing here is held behind this (app/occupancy-confirm.js). -->
+        <!-- The first keystroke typed while an agent is writing here, or an overnight run is going, is held behind
+             this (app/occupancy-confirm.js). -->
         <div id="occupancy-confirm" role="alertdialog" aria-labelledby="occupancy-confirm-text" hidden>
           <span id="occupancy-confirm-text">An agent is writing here. Type anyway?</span>
           <button type="button" id="occupancy-type">Type <kbd>Enter</kbd></button>
@@ -1442,7 +1504,23 @@
           </div>
         </div>
       </div>
-      <!-- Floating panels (D2): their own layer, above the groups, rails and gutters and below the drag overlay. -->
+      <!-- The code reader (#32): a file opened from the Files tab, beside the terminal. Hidden until a file is
+           opened; app/repo-reader.js owns it. The divider is draggable and keyboard-adjustable. -->
+      <div id="reader-split" role="separator" aria-orientation="vertical" aria-label="Resize the file reader" tabindex="0" hidden></div>
+      <section id="reader" aria-label="File reader" hidden>
+        <header id="reader-head">
+          <span id="reader-path"></span>
+          <button type="button" id="reader-diff" title="What Claude changed in this file" aria-pressed="false" hidden>Diff</button>
+          <button type="button" id="reader-mention" title="Type @this-file (or the selected lines) into the prompt; you press Enter">@ in prompt</button>
+          <button type="button" id="reader-reveal" title="Show this file in Explorer">Show in Explorer</button>
+          <button type="button" id="reader-close" title="Close (Esc)" aria-label="Close the reader">&times;</button>
+          <span id="reader-meta" role="status"></span>
+        </header>
+        <div id="reader-bar" role="status" hidden><span id="reader-bar-text"></span><button type="button" id="reader-reload">Reload</button></div>
+        <div id="reader-body"></div>
+        <div id="reader-note" role="status" hidden><span id="reader-note-text"></span><button type="button" id="reader-note-reveal" hidden>Show in Explorer</button></div>
+      </section>
+      <!-- Floating panels (D2): their own layer, above the groups, rails, gutters and the reader, below the drag overlay. -->
       <div id="dock-floats"></div>
       <div id="dock-overlay"></div>
       </div>
@@ -1555,9 +1633,13 @@
           </div>
           <div id="model-list"><div class="none">loading the catalogue…</div></div>
         </div>
+        <!-- The Files tab (#45). Module id stays `fog`: saved layouts and the dock tests name it. Drawn by
+             app/repo-files-panel.js; every name in the tree is set with textContent. -->
         <div class="panel" data-panel="fog" id="fog-body">
-          <div id="fog-summary" class="fog-sum">reading the map…</div>
-          <div id="fog-list"></div>
+          <div id="files-note" class="fog-sum">reading the files…</div>
+          <div id="files-bar"><label class="check" title="Show only the files Claude has read or edited"><input type="checkbox" id="files-only" /> Only what Claude touched</label></div>
+          <div id="files-said" role="status"></div>
+          <div id="files-tree" role="tree" aria-label="Files in this worktree"></div>
         </div>
         <div class="panel" data-panel="git" id="git-body">
           <div id="git-status">reading the history…</div>
@@ -1624,6 +1706,7 @@
   <script src="./tab-status.js"></script>
   <script src="./occupancy-display.js"></script>
   <script src="./occupancy-confirm.js"></script>
+  <script src="./terminal-bar.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>
@@ -1631,6 +1714,14 @@
   <script src="./git-swing.js"></script>
   <script src="./git-actions.js"></script>
   <script src="./git-rings-display.js"></script>
+  <script src="./repo-language.js"></script>
+  <script src="./repo-mention.js"></script>
+  <script src="./repo-tree-display.js"></script>
+  <script src="./repo-requester.js"></script>
+  <script src="./repo-refresh.js"></script>
+  <script src="./repo-files-panel.js"></script>
+  <script src="./repo-reader.js"></script>
+  <script src="./repo-browser.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

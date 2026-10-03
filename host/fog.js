@@ -39,6 +39,8 @@ const { projectDirName } = require('./project-dir');
 // counted every subagent's file reads while the token counter beside it
 // counted none of their tokens.
 const { transcriptFiles } = require('./transcripts');
+// An Edit / Write counts only if its tool_result says it happened (PR #95 Dexter D1).
+const { createCollector } = require('./tool-calls');
 
 // DARK is the tier that matters. A map of only what you have already seen is a
 // history, not a map -- the unexplored regions are the entire signal, so they
@@ -48,7 +50,12 @@ const TIERS = { EDITED: 'edited', READ: 'read', DARK: 'dark' };
 // Tools that name a file in `file_path`. Grep and Glob take a directory and a
 // pattern rather than a file, so they say "looked around here", not "read
 // this" -- a weaker claim than this map makes, so they are left out.
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+// The file a call is about: NotebookEdit's input says `notebook_path`, not `file_path` (PR #95 Dexter r2).
+const pathOfInput = (input) => (input && (input.file_path || input.notebook_path)) || null;
+// How recent an unanswered edit must be to be worth a re-read: the result is written about half a second after
+// the file changes; an older call with no result died mid-edit and is not chased.
+const PENDING_WINDOW_MS = 60 * 1000;
 const READ_TOOLS = new Set(['Read']);
 
 // A working day. Knowledge of a file you edited this morning is real; the same
@@ -111,28 +118,35 @@ function relativeTo(root, file) {
 // cache alone is not enough and the read also yields.
 const parsedCache = new Map();
 
-function extract(entry, root, touched) {
+// One call (a Read block, or an Edit / Write that was answered successfully) onto the map.
+function applyCall(name, input, at, root, touched) {
+  const isEdit = EDIT_TOOLS.has(name);
+  if (!isEdit && !READ_TOOLS.has(name)) return;
+
+  const filePath = pathOfInput(input);
+  if (!filePath) return;
+  const rel = relativeTo(root, filePath);
+  if (!rel) return;
+
+  const seen = touched.get(rel) || { path: rel, tier: TIERS.READ, lastTouched: 0, touches: 0, edits: 0 };
+  seen.touches += 1;
+  // `edits` is the repo browser's `●N` (#45): Claude's Edit / Write calls alone. `touches` counts reads too.
+  if (isEdit) seen.edits += 1;
+  // EDITED wins permanently. Reading a file after editing it does not make
+  // you know it less, so the tier must not follow whichever came last.
+  if (isEdit) seen.tier = TIERS.EDITED;
+  if (Number.isFinite(at)) seen.lastTouched = Math.max(seen.lastTouched, at);
+  touched.set(rel, seen);
+}
+
+// Reads need no result: opening a file is knowing it whether or not the tool answered. Edits and writes are
+// collected and applied only once their results say they happened.
+function extractReads(entry, root, touched) {
   const content = entry && entry.message && entry.message.content;
   if (!Array.isArray(content)) return;
   const at = Date.parse(entry.timestamp);
-
   for (const block of content) {
-    if (!block || block.type !== 'tool_use') continue;
-    const isEdit = EDIT_TOOLS.has(block.name);
-    if (!isEdit && !READ_TOOLS.has(block.name)) continue;
-
-    const filePath = block.input && block.input.file_path;
-    if (!filePath) continue;
-    const rel = relativeTo(root, filePath);
-    if (!rel) continue;
-
-    const seen = touched.get(rel) || { path: rel, tier: TIERS.READ, lastTouched: 0, touches: 0 };
-    seen.touches += 1;
-    // EDITED wins permanently. Reading a file after editing it does not make
-    // you know it less, so the tier must not follow whichever came last.
-    if (isEdit) seen.tier = TIERS.EDITED;
-    if (Number.isFinite(at)) seen.lastTouched = Math.max(seen.lastTouched, at);
-    touched.set(rel, seen);
+    if (block && block.type === 'tool_use' && READ_TOOLS.has(block.name)) applyCall(block.name, block.input, at, root, touched);
   }
 }
 
@@ -146,7 +160,7 @@ async function parseTranscript(file, root, onParse) {
   const cached = parsedCache.get(file);
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size
       && cached.root === root) {
-    return { entries: cached.entries, ok: true };
+    return { entries: cached.entries, ok: true, pending: cached.pending || [] };
   }
 
   let raw;
@@ -159,21 +173,33 @@ async function parseTranscript(file, root, onParse) {
   }
 
   const entries = new Map();
+  const collector = createCollector({ wanted: name => EDIT_TOOLS.has(name) });
   const lines = raw.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
-    if (trimmed && trimmed.indexOf('tool_use') !== -1) {
+    if (trimmed) {
       try {
-        extract(JSON.parse(trimmed), root, entries);
+        // `"tool_use"` quoted: a result line says `"tool_use_id"` and is not a call.
+        if (collector.wantsResultLine(trimmed)) collector.addResult(JSON.parse(trimmed));
+        else if (trimmed.indexOf('"tool_use"') !== -1) {
+          const entry = JSON.parse(trimmed);
+          extractReads(entry, root, entries);
+          collector.addUse(entry);
+        }
       } catch { /* appended live: a partial final line is normal */ }
     }
     // Yield, so the pty and the hook bridge are not queued behind this.
     if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
   }
+  for (const call of collector.calls()) applyCall(call.name, call.input, call.at, root, entries);
+  // unanswered edits on files of THIS worktree, kept with their times: the caller decides which are recent
+  const pending = collector.pending()
+    .filter(c => { const p = pathOfInput(c.input); return p && relativeTo(root, p); })
+    .map(c => ({ at: c.at }));
 
   if (onParse) onParse(file);
-  parsedCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, root, entries });
-  return { entries, ok: true };
+  parsedCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, root, entries, pending });
+  return { entries, ok: true, pending };
 }
 
 // Two entries for the same file from different sessions must merge, not
@@ -186,6 +212,7 @@ function mergeInto(target, entries) {
       continue;
     }
     seen.touches += entry.touches;
+    seen.edits += entry.edits;
     if (entry.tier === TIERS.EDITED) seen.tier = TIERS.EDITED;
     seen.lastTouched = Math.max(seen.lastTouched, entry.lastTouched);
   }
@@ -215,12 +242,18 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   };
 
   const touched = new Map();
+  const pendingAts = [];
   for (const file of (files || [])) {
     const parsed = await parseTranscript(file, root, onParse);
     if (!parsed.ok) status.transcriptErrors++;
     mergeInto(touched, parsed.entries);
+    if (parsed.pending) pendingAts.push(...parsed.pending.map(p => p.at));
     await yieldToLoop();
   }
+  // How many RECENT edits have no result yet (PR #95 Dexter r2 R2-1): they are not counted, and the repo
+  // browser re-reads shortly to see them answered. A call with no usable time counts as recent.
+  const nowT = now();
+  status.pendingEdits = pendingAts.filter(at => !Number.isFinite(at) || nowT - at < PENDING_WINDOW_MS).length;
 
   // Drop cache entries for transcripts that no longer exist, so a long-running
   // host does not hold parsed data for sessions Claude Code has expired.
@@ -244,7 +277,7 @@ async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = 
   const trackedSet = new Set((Array.isArray(tracked) ? tracked : []).map(normalize));
   for (const rel of trackedSet) {
     if (touched.has(rel)) continue;
-    out.push({ path: rel, tier: TIERS.DARK, lastTouched: 0, touches: 0, brightness: 0 });
+    out.push({ path: rel, tier: TIERS.DARK, lastTouched: 0, touches: 0, edits: 0, brightness: 0 });
   }
 
   // Coverage measured against the PROJECT, not against everything touched.

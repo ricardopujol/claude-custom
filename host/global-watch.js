@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 
 function watchGlobalDir(dir, onChange, {
-  watch = fs.watch, mkdirSync = fs.mkdirSync, delayMs = 150, rearmMs = 1000,
+  watch = fs.watch, mkdirSync = fs.mkdirSync, delayMs = 150, rearmMs = 1000, maxWaitMs = null, now = Date.now,
   setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; },
   clearTimer = clearTimeout, log = console.log,
   // What is being watched, for the log lines only. Also used for the worktree occupancy folder
@@ -42,14 +42,25 @@ function watchGlobalDir(dir, onChange, {
   let closed = false;
   const folder = path.basename(dir);
 
+  const fire = () => {
+    timer = null;
+    burstStart = null;
+    if (closed) return;
+    try { onChange(); } catch (err) { log(`[host] ${what} repaint failed:`, err && err.message); }
+  };
+
+  // `maxWaitMs` (opt-in; the other callers keep a pure trailing debounce): a trailing-only debounce starves
+  // under a steady stream of events, because each one re-arms the timer and the quiet moment never comes
+  // (PR #95 Dexter D6). With a max wait, a burst that has run that long fires anyway, and the next burst
+  // starts its own clock.
+  let burstStart = null;
   const report = () => {
     if (closed) return;
-    if (timer !== null) clearTimer(timer);
-    timer = setTimer(() => {
-      timer = null;
-      if (closed) return;
-      try { onChange(); } catch (err) { log(`[host] ${what} repaint failed:`, err && err.message); }
-    }, delayMs);
+    const t = now();
+    if (burstStart === null) burstStart = t;
+    if (timer !== null) { clearTimer(timer); timer = null; }
+    if (maxWaitMs !== null && t - burstStart >= maxWaitMs) { fire(); return; }
+    timer = setTimer(fire, delayMs);
   };
 
   function arm() {

@@ -366,6 +366,10 @@ function typingKeys(command, enterInsert) {
   return [...(enterInsert ? ['i'] : []), '\x05', '\x15', command];
 }
 
+// One `@path`, optionally `#L40` or `#L40-60` (the reader's "@ in prompt", #32): no space, so the CLI reads
+// it as ONE mention; no `#` in the path, so the suffix is unambiguous.
+const AT_MENTION = /^@[^\x00-\x20\x7f#]+(?:#L[1-9]\d{0,8}(?:-[1-9]\d{0,8})?)?$/;
+
 // One line of a slash command: a CR or any control key in it would submit or edit something else.
 const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
 
@@ -377,8 +381,12 @@ const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
  * A dialog, a draft over several lines or no box on screen gets nothing: the keys would land in the dialog,
  * or the rest of the draft would be submitted with the command.
  */
-function planTyping({ command, screen, connected } = {}) {
-  if (typeof command !== 'string' || !SLASH_COMMAND.test(command)) return { ok: false, reason: 'not a single-line slash command' };
+function planTyping({ command, screen, connected, kind } = {}) {
+  const mention = kind === 'mention';
+  const shape = mention ? AT_MENTION : SLASH_COMMAND;
+  if (typeof command !== 'string' || !shape.test(command)) {
+    return { ok: false, reason: mention ? 'not a single-line @ mention' : 'not a single-line slash command' };
+  }
   if (!connected) return { ok: false, reason: 'not connected to the session' };
   // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
   // text. MEASURED (verify/probe-vim-mode.js): `i` there is a mode switch.

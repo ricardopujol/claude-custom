@@ -6,6 +6,8 @@
  *
  *   tabOccupancy(claims, key, { keyOf, turn, now })  the strip's mark for one tab, or null
  *   bannerModel(here, { turn, now })                 the banner over a worktree's terminal, or null
+ *   chipModel(here, { turn, now })                   the same facts as the terminal bar's chip (the banner
+ *                                                    retired into it, backlog #49 + #52), or null
  *   cardLine(claims, agentName)                      the hub card's `-> worktree` line, or null
  *   viewPayload(claims, key, { keyOf })              what main pushes to one tab's page
  *   initials(name) / minutesLabel(firstAt, now)
@@ -111,6 +113,26 @@ function bannerModel(here, { turn, now } = {}) {
   };
 }
 
+/**
+ * The terminal bar's occupancy chip (documentation/DESIGN_TERMINAL_BAR.md): the agents' initials, one hover line
+ * each (plus the two-writers line), the warning colour and where Jump goes. Built from the SAME pure pieces as the
+ * strip's mark and the banner (distinctAgents, lineFor, bannerModel's jump), so the three never disagree.
+ */
+function chipModel(here, { turn, now } = {}) {
+  const mine = distinctAgents(here);
+  if (mine.length === 0) return null;
+  const warn = turn === 'turn';
+  const lines = mine.map(c => lineFor(c, now));
+  if (warn) lines.push(OWN_WRITING);
+  return {
+    tags: mine.slice(0, TAGS_MAX).map(c => initials(c.agent)),
+    more: Math.max(0, mine.length - TAGS_MAX),
+    warn,
+    lines,
+    jump: bannerModel(here, { turn, now }).jump,
+  };
+}
+
 // A windows-folder comparison good enough for "the same worktree twice" on a card, where the page has no
 // project-layout: slashes, trailing separators and case folded away.
 const fold = p => String(p).replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase();
@@ -158,7 +180,7 @@ function viewPayload(claims, key, { keyOf = identity } = {}) {
   };
 }
 
-const api = { initials, minutesLabel, tabOccupancy, bannerModel, cardLine, viewPayload, TAGS_MAX, OWN_WRITING };
+const api = { initials, minutesLabel, tabOccupancy, bannerModel, chipModel, cardLine, viewPayload, TAGS_MAX, OWN_WRITING };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

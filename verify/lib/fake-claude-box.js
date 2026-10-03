@@ -17,13 +17,15 @@
 const fs = require('fs');
 
 const [ctl, log] = process.argv.slice(2);
-const RULE = '─'.repeat(60);
+// As wide as the terminal (the CLI's rules fill the row): a fixed 60 wrapped into two rows once the code
+// reader narrowed the terminal, and the page then judged the box a dialog (verify/probe-repo-browser.js).
+const rule = () => '─'.repeat(Math.max(10, (process.stdout.columns || 61) - 1));
 let line = '';
 let lastCtl = '';
 const history = [];
 
 function draw() {
-  const rows = [...history.slice(-6), RULE, `❯ ${line}`, RULE, '  fake claude box (verify/probe-git-tree.js)'];
+  const rows = [...history.slice(-6), rule(), `❯ ${line}`, rule(), '  fake claude box'];
   process.stdout.write(`\x1b[2J\x1b[H${rows.join('\r\n')}`);
   if (log) fs.writeFileSync(`${log}.line`, JSON.stringify(line));
 }
@@ -58,4 +60,5 @@ setInterval(() => {
   } catch { /* half-written: the next read gets it */ }
 }, 100);
 
+if (process.stdout.on) process.stdout.on('resize', draw);
 draw();
