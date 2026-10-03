@@ -664,10 +664,14 @@ async function main() {
     const vId = fv2.id;
     const before12 = await viewState(app);
     const rv = flOf(before12, 'vault').rect;
-    await view(app, 'floatDrag', { id: vId, what: 'bar', dx: 90, dy: 60 });
+    const moveRes = await view(app, 'floatDrag', { id: vId, what: 'bar', dx: 90, dy: 60, moves: 8 });
     await sleep(1300);
     s = (await settled(app)).s;
     const mv = flOf(s, 'vault').rect;
+    check('12: eight pointer moves in one frame draw once, and nothing is drawn before the frame (PR #102 Miguel Y2)',
+      moveRes.ok && moveRes.sync.drawn === false && moveRes.during.draws === 1 && moveRes.during.drawn === true, JSON.stringify(moveRes));
+    check('12: ...a float\'s move never reaches the pty as a resize, and text selection is off while it goes and back on after (Miguel Y2, S4)',
+      moveRes.resizes === 0 && moveRes.during.selecting === true && moveRes.after.selecting === false, JSON.stringify(moveRes));
     check('12: dragging a float by its bar moves it by exactly the drag', Math.abs(mv.left - rv.left - 90) <= 1 && Math.abs(mv.top - rv.top - 60) <= 1 && Math.abs(mv.width - rv.width) <= 1,
       JSON.stringify([rv, mv]));
     check('12: ...and the store is written once for the whole drag', s.pushes === before12.pushes + 1, `pushes ${before12.pushes} -> ${s.pushes}`);
@@ -686,6 +690,19 @@ async function main() {
       Math.abs(rs.width - wantW) <= 1 && Math.abs(rs.height - wantH) <= 1 && rs.width > mv.width + 1 && rs.height > mv.height + 1 && Math.abs(rs.left - mv.left) <= 1 && Math.abs(rs.top - mv.top) <= 1, JSON.stringify([mv, rs, wantW, wantH]));
     check('12: ...with one store write', s.pushes === before13.pushes + 1, `pushes ${before13.pushes} -> ${s.pushes}`);
     check('12: ...and the panel inside the float fills it', flOf(s, 'vault').panelRects.every(p => p.right <= flOf(s, 'vault').rect.right + 1 && p.bottom <= flOf(s, 'vault').rect.bottom + 1));
+
+    // a press that moves nothing stores nothing (PR #102 Dexter 2)
+    {
+      const layoutNow = JSON.stringify((await viewState(app)).layout);
+      const pushesNow = (await viewState(app)).pushes;
+      for (const what of ['bar', 'grip']) {
+        const r = await view(app, 'floatDrag', { id: vId, what, how: 'jitter' });
+        await sleep(600);
+        const st = await viewState(app);
+        check(`12: a 1 px wobble on the ${what} and back stores nothing: the layout is byte-identical and the store untouched`,
+          r.ok && !r.during.drawn && !r.after.drag && JSON.stringify(st.layout) === layoutNow && st.pushes === pushesNow, JSON.stringify([r, st.pushes, pushesNow]));
+      }
+    }
 
     // aborted float drags change nothing
     {
@@ -753,6 +770,17 @@ async function main() {
     check('12: a float is drawn whole inside a squeezed dock', !!sqRect && insideDock(sqF, sqRect), sqRect && JSON.stringify([sqRect.rect, sqF.dock]));
     check('12: ...the stored layout is not changed by the squeeze, and the terminal keeps its minimum',
       JSON.stringify(sqF.layout.floats) === storedBefore && sqF.termwrap.width >= 319 && sqF.termwrap.height >= 159, `${sqF.termwrap.width}x${sqF.termwrap.height}`);
+    // PR #102 Dexter 2: a float drawn clamped is not rewritten by a drag that ends where it began (or by a click)
+    {
+      const pushesSq = sqF.pushes;
+      for (const what of ['bar', 'grip']) {
+        const r = await view(app, 'floatDrag', { id: flOf(sqF, 'vault').id, what, dx: 30, dy: 20, how: 'return' });
+        await sleep(600);
+        const st = await viewState(app);
+        check(`12: squeezed, a ${what} drag that returns to where it began leaves the stored float and the store untouched`,
+          r.ok && JSON.stringify(st.layout.floats) === storedBefore && st.pushes === pushesSq, JSON.stringify([r.after, st.pushes, pushesSq]));
+      }
+    }
     await view(app, 'squeeze', {});
     const wideAgainF = (await settled(app)).s;
     const backRect = flOf(wideAgainF, 'vault').rect;

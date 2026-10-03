@@ -118,7 +118,7 @@ test('PR #100 Dexter F6 / F3: a divider release is applied to the placement as i
 
 test('PR #100 Miguel I2: both drags take pointer capture, and end themselves on a move with no button, a lost capture and a blur', () => {
   assert.strictEqual([...JS.matchAll(/\.setPointerCapture\(e\.pointerId\)/g)].length, 3, 'the tab drag, the divider drag and the float drag (D2)');
-  assert.strictEqual([...JS.matchAll(/if \(e\.buttons === 0\) \{ (end|cancelDividerDrag|cancelFloatDrag)\(\); return; \}/g)].length, 3);
+  assert.strictEqual([...JS.matchAll(/if \(e\.buttons === 0\) \{ (end|cancelDividerDrag|cancelFloatDrag)\((e)?\); return; \}/g)].length, 3);
   assert.match(JS, /window\.addEventListener\('lostpointercapture', cancelFloatDrag\);/);
   assert.match(JS, /window\.addEventListener\('blur', cancelFloatDrag\);/);
   assert.match(JS, /window\.addEventListener\('pointercancel', cancelFloatDrag\);/);
@@ -158,10 +158,11 @@ test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its star
 });
 
 test('D2: a float move or resize is drawn while it goes and saved once on release, on the placement as it is NOW; a press only raises, in the selection', () => {
-  const up = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\r?\n\s+if \(!floatDrag\) return;/);
+  const up = JS.search(/window\.addEventListener\('pointerup', \(e\) => \{\r?\n\s+const d = floatDrag;/);
   assert.ok(up !== -1, 'the float drag\'s pointerup handler must be findable');
   const release = JS.slice(up, JS.indexOf('\n  });', up));
-  assert.match(release, /commitPlacement\(apply\(committedLayout\(\), d\)\)/, 'applied to what is saved now, never the pointerdown snapshot');
+  assert.match(release, /floatDragResult\(committed, d\)/, 'applied to what is saved now, never the pointerdown snapshot');
+  assert.match(release, /commitPlacement\(result, \{ userAction: false, refit: false \}\)/, 'saved once, and keyboard focus is not moved (PR #102 Miguel S3)');
   assert.doesNotMatch(release, /d\.base/);
   const down = JS.search(/dock\.addEventListener\('pointerdown', \(e\) => \{\r?\n\s+if \(e\.button !== 0\) return;\r?\n\s+const el = e\.target\.closest && e\.target\.closest\('\.dfloat'\)/);
   assert.ok(down !== -1, 'the float press handler must be findable');
@@ -169,10 +170,22 @@ test('D2: a float move or resize is drawn while it goes and saved once on releas
   assert.match(press, /DTm\.raiseFloat\(selection, id\)/);
   assert.match(press, /saveSelection\(\)/, 'raising is this window\'s selection');
   assert.doesNotMatch(press, /commitPlacement|saveGlobalLayout|sendOverride/, 'a press never writes the shared layout');
-  assert.match(JS, /if \(!floatDrag\) return;\r?\n\s+if \(e\.buttons === 0\)/, 'the move handler ends a drag whose release never came');
+  assert.match(JS, /if \(e\.buttons === 0\) \{ cancelFloatDrag\(e\); return; \}/, 'the move handler ends a drag whose release never came');
   // The tab drag excludes the float its panel is dragged out of, and a drop on the terminal's middle asks the model where.
   assert.match(JS, /DTm\.floatOf\(placementLayout\(\), press\.id\)/);
   assert.match(JS, /d\.target\.float === true \? \{ float: DTm\.floatSpotAt\(d\.at, d\.viewport\) \} : d\.target/);
+});
+
+test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows its own pointer, remembers the tabs it grabbed, and draws once per frame without a terminal refit', () => {
+  assert.match(JS, /Math\.hypot\(dx, dy\) < FLOAT_SLOP\) return;/, 'a click on the bar raises and nothing else');
+  assert.match(JS, /tabs: \[\.\.\.fl\.tabs\]/, 'what the float held at the press (a recycled id is not the same float)');
+  assert.match(JS, /e\.pointerId !== d\.pointerId\) return;/, 'another pointer neither steers nor ends the drag');
+  assert.match(JS, /function finish\(d\) \{[\s\S]{0,300}classList\.remove\('dock-dragging'\)/, 'no text selection while it goes, and it ends with the drag');
+  assert.match(JS, /d\.started = true;\r?\n\s+document\.body\.classList\.add\('dock-dragging'\)/);
+  assert.match(JS, /if \(!d\.frame\) d\.frame = requestAnimationFrame\(\(\) => drawDrag\(d\)\);/, 'one draw per animation frame');
+  assert.match(JS, /renderLayout\(\{ refit: false \}\)/, 'a float move does not change the terminal\'s rectangle');
+  assert.match(JS, /function renderLayout\(\{ userAction = false, refit = true \} = \{\}\)/);
+  assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ fit\.fit\(\); sendResize\(\); \} catch \{\} \}, 0\);/);
 });
 
 test('PR #100 Miguel S3: every save of the global layout goes through one helper that says so when the store refuses it', () => {

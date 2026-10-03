@@ -142,6 +142,35 @@ function rebaseDrag(layout, drag) {
 }
 
 /**
+ * A float's move or resize, applied to the placement as it is NOW (the float counterpart of `rebaseDrag`).
+ * `drag` is { kind: 'move' | 'resize', id, tabs, last, viewport }: the float's id and the tabs it held at the
+ * press, where the pointer last asked it to go ({ x, y } or { w, h }) and the dock's size at the press.
+ * Returns
+ *   null              the drag is dropped: the float is gone, or the id now names a float holding other tabs
+ *                     (another window docked it and floated something else, and the name was handed out again,
+ *                     PR #102 Dexter 6), or the request is junk;
+ *   `layout` itself   the drag changed nothing visible (PR #102 Dexter 2): a press that moves nothing stores
+ *                     nothing, so a float DRAWN clamped or shrunk is not rewritten with its clamp, and a wider
+ *                     window still gives the stored rectangle back;
+ *   a new layout      otherwise. A move stores the new position and keeps the stored size; a resize stores the
+ *                     drawn position and the new size (the model's rule, app/dock-tree.js).
+ */
+function floatDragResult(layout, drag) {
+  if (!isObject(layout) || !Array.isArray(layout.floats) || !isObject(drag) || (drag.kind !== 'move' && drag.kind !== 'resize')) return null;
+  const cur = layout.floats.find(f => f.id === drag.id);
+  if (!cur || !Array.isArray(drag.tabs) || cur.tabs.length !== drag.tabs.length || !cur.tabs.every((t, i) => t === drag.tabs[i])) return null;
+  const next = drag.kind === 'move'
+    ? treeApi.moveFloat(layout, drag.id, drag.last, drag.viewport)
+    : treeApi.resizeFloat(layout, drag.id, drag.last, drag.viewport);
+  if (next === layout) return layout;
+  // Judged on what is DRAWN: if the float looks the same after as before, nothing was chosen.
+  const drawn = l => (fit(l, null, drag.viewport).boxes.find(b => b.kind === 'float' && b.id === drag.id) || {}).rect;
+  const a = drawn(layout);
+  const b = drawn(next);
+  return a && b && ['x', 'y', 'width', 'height'].every(k => a[k] === b[k]) ? layout : next;
+}
+
+/**
  * What `harness.layoutTree.set` answered: main echoes the layout back once it is written, and answers null
  * when it refused it (not a plain object, over the size cap) or the write failed. Anything but an object
  * means this window shows a layout that was not saved.
@@ -346,7 +375,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

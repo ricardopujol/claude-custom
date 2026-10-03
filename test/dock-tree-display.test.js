@@ -322,3 +322,51 @@ test('S3: layoutSaved is true only for the layout main echoes back; null (refuse
   assert.strictEqual(V.layoutSaved({ version: 2, root: { type: 'term' } }), true);
   for (const bad of [null, undefined, 0, 'x', [], true]) assert.strictEqual(V.layoutSaved(bad), false, JSON.stringify(bad));
 });
+
+// --- PR #102 Dexter 2 and 6: what a float's release stores -----------------------------------------
+
+const fdLayout = (floats) => T.normalize({ ...v2({ type: 'split', dir: 'row', kids: [{ type: 'term' }, grp('a', 'agents')], sizes: [0, 200] }), floats }, ['agents', 'git', 'fog']);
+const fdFloat = (over = {}) => ({ id: 'f', tabs: ['git'], x: 48, y: 48, w: 320, h: 260, ...over });
+const fdDrag = (over) => ({ kind: 'move', id: 'f', tabs: ['git'], last: { x: 0, y: 0 }, viewport: { width: 1000, height: 700 }, ...over });
+
+test('Dexter 2: a resize release that asks for exactly the drawn size stores nothing, even when the float is drawn shrunk', () => {
+  const l = fdLayout([fdFloat()]);                                               // 320 x 260, drawn 200 x 150 in this window
+  const vp = { width: 200, height: 150 };
+  assert.strictEqual(V.floatDragResult(l, fdDrag({ kind: 'resize', last: { w: 200, h: 150 }, viewport: vp })), l);
+});
+
+test('Dexter 2: a move release that lands where the float is already drawn stores nothing: clamped at the edge, or pushed against it', () => {
+  const l = fdLayout([fdFloat({ x: 1500 })]);                                    // stored at 1500, drawn at 680 in 1000 px
+  assert.strictEqual(V.floatDragResult(l, fdDrag({ last: { x: 680, y: 48 } })), l);
+  assert.strictEqual(V.floatDragResult(l, fdDrag({ last: { x: 720, y: 48 } })), l, 'pushed further against the edge: still where it is drawn');
+});
+
+test('Dexter 2: a real move of a clamped float stores the new position and KEEPS the stored size', () => {
+  const l = fdLayout([fdFloat({ x: 1500 })]);
+  const next = V.floatDragResult(l, fdDrag({ last: { x: 600, y: 80 } }));
+  assert.deepStrictEqual([next.floats[0].x, next.floats[0].y, next.floats[0].w, next.floats[0].h], [600, 80, 320, 260]);
+});
+
+test('Dexter 2: a real resize of a clamped float stores the DRAWN position and the new size (P11)', () => {
+  const l = fdLayout([fdFloat({ x: 900, y: 50 })]);                              // drawn at x 680
+  const next = V.floatDragResult(l, fdDrag({ kind: 'resize', last: { w: 300, h: 260 } }));
+  assert.deepStrictEqual([next.floats[0].x, next.floats[0].y, next.floats[0].w, next.floats[0].h], [680, 50, 300, 260]);
+});
+
+test('Dexter 6: a release applies only to a float that still holds what it held at the press', () => {
+  const l = fdLayout([fdFloat({ id: 'g2', tabs: ['fog'] })]);
+  const drag = fdDrag({ id: 'g2', tabs: ['git'], last: { x: 300, y: 300 } });
+  assert.strictEqual(V.floatDragResult(l, drag), null, 'the id was reused by another float: the drag is dropped');
+  assert.strictEqual(V.floatDragResult(l, fdDrag({ id: 'gone', tabs: ['git'], last: { x: 300, y: 300 } })), null, 'the float is gone');
+  assert.strictEqual(V.floatDragResult(fdLayout([fdFloat({ tabs: ['git', 'fog'] })]), fdDrag({ last: { x: 300, y: 300 } })), null, 'it gained a tab meanwhile');
+  const same = V.floatDragResult(fdLayout([fdFloat()]), fdDrag({ last: { x: 300, y: 300 } }));
+  assert.deepStrictEqual([same.floats[0].x, same.floats[0].y], [300, 300]);
+});
+
+test('floatDragResult: junk is a dropped drag, never a throw', () => {
+  const l = fdLayout([fdFloat()]);
+  for (const junk of [null, undefined, 7, {}, { kind: 'zoom', id: 'f', tabs: ['git'], last: { x: 1, y: 1 }, viewport: { width: 9, height: 9 } }]) {
+    assert.strictEqual(V.floatDragResult(l, junk), null, JSON.stringify(junk));
+  }
+  assert.strictEqual(V.floatDragResult(null, fdDrag({})), null);
+});
