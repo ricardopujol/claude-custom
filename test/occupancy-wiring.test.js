@@ -140,3 +140,20 @@ test('the roster card draws the where-line from the claims this tab launched', (
 test('a worktree page reports nothing new to the shell: the turn it already sends is what the two-writers warning reads', () => {
   assert.match(RENDERER, /turn: sessionTurn,/);
 });
+
+// --- the probe's own hooks (verify/probe-worktree-occupancy.js) -----------------------------------
+
+test('the probe driver may drive the occupancy page actions, by name only', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+test('each of them exists on the ?probe=1 page, and a probe keystroke goes through xterm\'s own input path', () => {
+  for (const a of ['occState', 'occKey', 'occClick', 'occTurn']) assert.match(RENDERER, new RegExp(`case '${a}'`), a);
+  assert.match(RENDERER, /term\.input\(a\.data, true\)/);
+});
+
+test('the driver\'s state reads the strip\'s occupancy as painted', () => {
+  assert.match(MAIN, /stripOccupancy/);
+  assert.match(MAIN, /classList\.contains\('occupied'\)/);
+});

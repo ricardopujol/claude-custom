@@ -1328,6 +1328,41 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitTabs': return requestGitTabs().then(() => JSON.stringify({ ok: true, tabs: lastGitTabs }));
       // this tab's own terminal screen: what its session's pty has shown
       case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
+      // backlog #44 + #47 (verify/probe-worktree-occupancy.js): the banner, the confirm and the card lines as
+      // painted; a keystroke through xterm's own input path (term.input fires onData as typing does); a click on
+      // one of the page's occupancy controls; and the session's turn, as the host's `turn` message would set it.
+      case 'occState': return JSON.stringify({
+        ok: true,
+        banner: {
+          hidden: occupancyEls.banner.hidden, text: occupancyEls.text.textContent, since: occupancyEls.since.textContent,
+          more: occupancyEls.more.textContent, note: occupancyEls.note.textContent,
+          warn: occupancyEls.banner.classList.contains('warn'), jump: occupancyEls.jump.hidden ? null : occupancyEls.jump.textContent,
+          leftRule: getComputedStyle(occupancyEls.banner).borderLeftWidth, animation: getComputedStyle(occupancyEls.banner).animationName,
+        },
+        confirm: {
+          hidden: occupancyEls.confirm.hidden, warn: occupancyEls.confirm.classList.contains('warn'),
+          text: document.getElementById('occupancy-confirm-text').textContent,
+        },
+        here: occupancy.here.length, launched: occupancy.launched.length,
+        where: [...document.querySelectorAll('.agent-where')].map(b => ({ agent: b.closest('.agent').dataset.agent, text: b.textContent, title: b.title })),
+      });
+      case 'occKey':
+        if (typeof a.data !== 'string' || !a.data || a.data.length > 200) return JSON.stringify({ ok: false, error: 'occKey needs text' });
+        term.input(a.data, true);
+        return JSON.stringify({ ok: true });
+      case 'occClick': {
+        const el = { type: occupancyEls.confirm.querySelector('#occupancy-type'), wait: occupancyEls.confirm.querySelector('#occupancy-wait'),
+          jump: occupancyEls.jump, where: document.querySelector('.agent-where') }[a.target];
+        const hiddenAnswer = (a.target === 'type' || a.target === 'wait') && occupancyEls.confirm.hidden;
+        if (!el || el.hidden || hiddenAnswer) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
+        el.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'occTurn':
+        sessionTurn = ['idle', 'turn', 'prompt'].includes(a.turn) ? a.turn : null;
+        paintOccupancyBanner();
+        reportTabStatus();
+        return JSON.stringify({ ok: true, turn: sessionTurn });
       // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
       // CLI box with it). Bounded, and only ever this tab's own socket.
       case 'gitTermInput': {

@@ -1175,6 +1175,13 @@ function startProbeDriver(port) {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
           "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
+      // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
+      // hover -- read back from the DOM (verify/probe-worktree-occupancy.js).
+      let stripOccupancy = null;
+      try {
+        stripOccupancy = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, occupied: t.classList.contains('occupied'), warn: t.classList.contains('occupied-warn'), tags: [...t.querySelectorAll('.agent-tag')].map(x => x.textContent), title: t.title, edge: getComputedStyle(t, '::after').backgroundImage, edgeAnimation: getComputedStyle(t, '::after').animationName, edgeHeight: getComputedStyle(t, '::after').height })))"));
+      } catch (err) { stripOccupancy = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
       try {
@@ -1203,7 +1210,7 @@ function startProbeDriver(port) {
       const windowFrame = { bounds: win.getBounds(), content: win.getContentBounds(), dom: windowChromeDom };
       const snap = tabShell.snapshot();
       return {
-        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripChrome, viewDom, noMenuBar, windowFrame,
+        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen,
       };
     },
