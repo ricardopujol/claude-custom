@@ -463,6 +463,187 @@ test('a selection naming a module that moved to another group is ignored by the 
   assert.equal(T.activeOf(l, { active: { right: 'git' } }, 'right'), 'agents');
 });
 
+// --- fit -----------------------------------------------------------------------
+
+const NO_SEL = { active: {}, foldAll: false };
+const kindOf = (f, kind) => f.boxes.filter(b => b.kind === kind);
+const rectOf = (f, id) => (id === 'term' ? kindOf(f, 'term')[0] : f.boxes.find(b => b.kind === 'group' && b.id === id)).rect;
+const R = (x, y, width, height) => ({ x, y, width, height });
+const area = r => r.width * r.height;
+const overlap = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+  && area(a) > 0 && area(b) > 0;
+
+// Boxes that must tile the viewport exactly: no overlap and every pixel covered.
+function assertTiles(f, w, h) {
+  const rects = f.boxes.map(b => b.rect);
+  rects.forEach((r, i) => rects.slice(i + 1).forEach(s => assert.ok(!overlap(r, s), `${JSON.stringify(r)} overlaps ${JSON.stringify(s)}`)));
+  assert.equal(rects.reduce((s, r) => s + area(r), 0), w * h, 'the boxes cover the viewport');
+}
+
+test('fit: the default in 1000 x 600 is the terminal, a gutter and the group at its 180', () => {
+  const f = T.fit(T.defaultLayout(IDS), NO_SEL, { width: 1000, height: 600 });
+  assert.deepEqual(rectOf(f, 'term'), R(0, 0, 815, 600));
+  assert.deepEqual(kindOf(f, 'gutter'), [{ kind: 'gutter', path: [], i: 1, dir: 'row', rect: R(815, 0, 5, 600) }]);
+  assert.deepEqual(kindOf(f, 'group'), [{ kind: 'group', id: 'right', tabs: IDS, active: 'agents', rect: R(820, 0, 180, 600) }]);
+  assert.deepEqual(f.splits, [{ path: [], dir: 'row', px: [815, 180], min: [320, 120] }]);
+});
+
+test('fit: a group shows this window\'s choice', () => {
+  const f = T.fit(T.defaultLayout(IDS), { active: { right: 'git' } }, { width: 1000, height: 600 });
+  assert.equal(kindOf(f, 'group')[0].active, 'git');
+});
+
+test('fit: the example in 1200 x 700 tiles the window with gutters, panels at their pixels', () => {
+  const f = T.fit(example(), NO_SEL, { width: 1200, height: 700 });
+  assert.deepEqual(rectOf(f, 'term'), R(0, 0, 955, 545));
+  assert.deepEqual(rectOf(f, 'a'), R(0, 550, 475, 150));
+  assert.deepEqual(rectOf(f, 'b'), R(480, 550, 475, 150));
+  assert.deepEqual(rectOf(f, 'c'), R(960, 0, 240, 230));
+  assert.deepEqual(rectOf(f, 'd'), R(960, 235, 240, 230));
+  assert.deepEqual(rectOf(f, 'e'), R(960, 470, 240, 230));
+  assert.deepEqual(kindOf(f, 'gutter').map(x => [x.path, x.i, x.dir, x.rect]), [
+    [[0], 1, 'col', R(0, 545, 955, 5)],
+    [[0, 1], 1, 'row', R(475, 550, 5, 150)],
+    [[], 1, 'row', R(955, 0, 5, 700)],
+    [[1], 1, 'col', R(960, 230, 240, 5)],
+    [[1], 2, 'col', R(960, 465, 240, 5)],
+  ]);
+  assertTiles(f, 1200, 700);
+});
+
+test('fit: widening the window gives the extra to the terminal; panels keep their pixels', () => {
+  const f = T.fit(example(), NO_SEL, { width: 1600, height: 900 });
+  assert.equal(rectOf(f, 'term').width, 1600 - 5 - 240);
+  assert.equal(rectOf(f, 'c').width, 240);
+  assert.equal(rectOf(f, 'a').height, 150);
+  assert.equal(rectOf(f, 'term').height, 900 - 5 - 150);
+  assertTiles(f, 1600, 900);
+});
+
+test('fit: shrinking shares what is left in proportion to how far above its minimum each asked', () => {
+  // 495 usable (500 less the gutter): the terminal needs 320, the right column's minimum is 120, the 55 spare px go to it.
+  const f = T.fit(example(), NO_SEL, { width: 500, height: 700 });
+  assert.equal(rectOf(f, 'c').width, 175);
+  assert.equal(rectOf(f, 'term').width, 320);
+  assertTiles(f, 500, 700);
+});
+
+test('fit: 445 wide is the last width where the column stays open, at its minimum', () => {
+  const f = T.fit(example(), NO_SEL, { width: 445, height: 700 });
+  assert.equal(rectOf(f, 'c').width, 120);
+  assert.equal(rectOf(f, 'term').width, 320);
+  assert.equal(kindOf(f, 'rail').length, 0);
+});
+
+test('fit: 440 wide folds the column to a rail of 28 and the terminal keeps 320', () => {
+  const f = T.fit(example(), NO_SEL, { width: 440, height: 700 });
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], rect: R(412, 0, 28, 700) }]);
+  assert.equal(rectOf(f, 'term').width, 412);
+  assert.equal(kindOf(f, 'group').length, 2);
+  assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [412, 28], min: [320, 28] });
+  assertTiles(f, 440, 700);
+});
+
+test('fit: 330 wide has no rail at all, the terminal has the whole width', () => {
+  const f = T.fit(example(), NO_SEL, { width: 330, height: 700 });
+  assert.equal(kindOf(f, 'rail').length, 0);
+  assert.equal(rectOf(f, 'term').width, 330);
+  assert.equal(kindOf(f, 'gutter').filter(x => x.path.length === 0).length, 0);
+  assertTiles(f, 330, 700);
+});
+
+const threeAcross = () => T.normalize(v2(row([g('l1', 'agents'), g('l2', 'vault'), term, g('r', ...IDS.slice(2))], [150, 150, 0, 150])), IDS);
+
+test('fit: two fixed kids on one axis, the one farther from the terminal folds first', () => {
+  // All open needs 785; at 690 folding the outer left one is enough.
+  const f = T.fit(threeAcross(), NO_SEL, { width: 690, height: 400 });
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['agents'], rect: R(0, 0, 28, 400) }]);
+  assert.deepEqual(rectOf(f, 'l2'), R(28, 0, 150, 400));
+  assert.deepEqual(rectOf(f, 'term'), R(183, 0, 352, 400));
+  assert.deepEqual(rectOf(f, 'r'), R(540, 0, 150, 400));
+  assertTiles(f, 690, 400);
+});
+
+test('fit: two fixed kids at the same distance, the later one folds first', () => {
+  const both = T.normalize(v2(row([g('l', 'agents'), term, g('r', ...IDS.slice(1))], [200, 0, 200])), IDS);
+  const f = T.fit(both, NO_SEL, { width: 560, height: 400 });
+  assert.deepEqual(kindOf(f, 'rail').map(r => r.modules), [IDS.slice(1)]);
+  assert.deepEqual(rectOf(f, 'l'), R(0, 0, 200, 400));
+  assert.deepEqual(rectOf(f, 'term'), R(205, 0, 327, 400));
+  assertTiles(f, 560, 400);
+});
+
+test('fit: 444 wide folds, 445 does not (the boundary is the terminal\'s 320 plus a gutter plus 120)', () => {
+  assert.equal(kindOf(T.fit(example(), NO_SEL, { width: 444, height: 700 }), 'rail').length, 1);
+  assert.equal(kindOf(T.fit(example(), NO_SEL, { width: 445, height: 700 }), 'rail').length, 0);
+});
+
+test('fit: when even the rails leave the terminal too little, the farthest rail goes first', () => {
+  // Three rails of 28 leave 296 in 380; two leave 324.
+  const f = T.fit(threeAcross(), { active: {}, foldAll: true }, { width: 380, height: 400 });
+  assert.deepEqual(kindOf(f, 'rail').map(r => [r.modules, r.rect]), [
+    [['vault'], R(0, 0, 28, 400)],
+    [IDS.slice(2), R(352, 0, 28, 400)],
+  ]);
+  assert.deepEqual(rectOf(f, 'term'), R(28, 0, 324, 400));
+  assertTiles(f, 380, 400);
+});
+
+test('fit: foldAll folds every fixed kid whatever the window size', () => {
+  const f = T.fit(example(), { active: {}, foldAll: true }, { width: 1200, height: 700 });
+  assert.equal(kindOf(f, 'group').length, 0);
+  assert.deepEqual(kindOf(f, 'rail').map(r => [r.dir, r.modules, r.rect]), [
+    ['h', ['agents', 'vault'], R(0, 670, 1172, 30)],
+    ['v', ['git', 'fog', 'bugvault'], R(1172, 0, 28, 700)],
+  ]);
+  assert.deepEqual(rectOf(f, 'term'), R(0, 0, 1172, 670));
+  assert.equal(kindOf(f, 'gutter').length, 0);
+  assertTiles(f, 1200, 700);
+});
+
+test('fit: a column of equal proportions shares the height with gutters between', () => {
+  const l = T.normalize(v2(row([term, col([g('a', 'agents'), g('b', 'vault'), g('c', ...IDS.slice(2))], [1, 1, 1])], [0, 180])), IDS);
+  const f = T.fit(l, NO_SEL, { width: 800, height: 610 });
+  assert.deepEqual([rectOf(f, 'a'), rectOf(f, 'b'), rectOf(f, 'c')], [R(620, 0, 180, 200), R(620, 205, 180, 200), R(620, 410, 180, 200)]);
+  assert.equal(kindOf(f, 'gutter').filter(x => x.dir === 'col').length, 2);
+});
+
+test('fit: in a column of proportions a kid under its minimum is raised, the big one pays', () => {
+  const l = T.normalize(v2(row([term, col([g('a', 'agents'), g('b', 'vault'), g('c', ...IDS.slice(2))], [10, 1, 1])], [0, 180])), IDS);
+  const f = T.fit(l, NO_SEL, { width: 800, height: 600 });
+  assert.deepEqual([rectOf(f, 'a').height, rectOf(f, 'b').height, rectOf(f, 'c').height], [430, 80, 80]);
+  assert.deepEqual(f.splits.find(s => s.path.length === 1), { path: [1], dir: 'col', px: [430, 80, 80], min: [80, 80, 80] });
+});
+
+test('fit: pixels that do not divide go to the biggest remainders and the column still adds up', () => {
+  const l = T.normalize(v2(row([term, col([g('a', 'agents'), g('b', 'vault'), g('c', ...IDS.slice(2))], [1, 1, 1])], [0, 180])), IDS);
+  const f = T.fit(l, NO_SEL, { width: 800, height: 600 });
+  assert.deepEqual([197, 197, 196], [rectOf(f, 'a').height, rectOf(f, 'b').height, rectOf(f, 'c').height]);
+});
+
+test('fit: a junk viewport gives zero-or-positive integers and no NaN', () => {
+  for (const vp of [null, undefined, 7, {}, { width: '9' }, { width: -5, height: NaN }, { width: Infinity, height: 3.7 }, { width: 100.9, height: 50.2 }]) {
+    const f = T.fit(example(), NO_SEL, vp);
+    for (const b of f.boxes) {
+      for (const v of Object.values(b.rect)) assert.ok(Number.isInteger(v) && v >= 0, `${JSON.stringify(vp)} ${JSON.stringify(b)}`);
+    }
+  }
+});
+
+test('fit: a tiny window still puts every box inside it and tiles it', () => {
+  for (const [w, h] of [[0, 0], [10, 10], [100, 50], [320, 160], [319, 159]]) {
+    const f = T.fit(example(), NO_SEL, { width: w, height: h });
+    f.boxes.forEach(b => assert.ok(b.rect.x + b.rect.width <= w && b.rect.y + b.rect.height <= h, `${w}x${h} ${JSON.stringify(b)}`));
+  }
+});
+
+test('fit never changes the layout or the selection and reads a junk selection', () => {
+  const l = deepFreeze(example());
+  const sel = deepFreeze({ active: { a: 'vault' }, foldAll: false });
+  assert.doesNotThrow(() => T.fit(l, sel, { width: 700, height: 500 }));
+  assert.doesNotThrow(() => T.fit(l, 'junk', { width: 700, height: 500 }));
+});
+
 // --- migration from L1 --------------------------------------------------------
 
 const DL = require('../app/dock-layout');

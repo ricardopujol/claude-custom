@@ -377,10 +377,165 @@ function activeOf(layout, sel, group) {
   return typeof want === 'string' && gr.tabs.includes(want) ? want : gr.tabs[0];
 }
 
+// --- fit -----------------------------------------------------------------------
+//
+// A layout plus a window size becomes a flat list of integer rectangles; nothing
+// else decides geometry. The stored layout is never changed by fitting, so a
+// wider window brings everything back.
+
+const dim = v => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+
+/**
+ * Whole pixels from fractional shares that add up to `total`: each share is
+ * floored (the epsilon keeps 79.9999999 from landing under a minimum of 80),
+ * then the pixels left over go to the largest fractions, earlier kids first.
+ */
+function wholePixels(shares, total) {
+  const floors = shares.map(x => Math.floor(x + 1e-9));
+  let left = total - floors.reduce((a, b) => a + b, 0);
+  const order = shares.map((x, i) => i).sort((a, b) => (shares[b] - floors[b]) - (shares[a] - floors[a]) || a - b);
+  for (let k = 0; left > 0 && order.length; k = (k + 1) % order.length, left -= 1) floors[order[k]] += 1;
+  return floors;
+}
+
+// The pixels of a split with no terminal in it: sizes are proportions, a kid under its minimum is raised.
+function plainLengths(n, length) {
+  const m = n.kids.length;
+  const gutter = length >= GUTTER * (m - 1) ? GUTTER : 0;                    // a window too small for them has none
+  const avail = length - gutter * (m - 1);
+  const mins = n.kids.map(k => along(k, n.dir));
+  const total = n.sizes.reduce((a, b) => a + b, 0);
+  let w = n.sizes.map(s => (total > 0 ? avail * s / total : avail / m));
+  if (mins.reduce((a, b) => a + b, 0) <= avail && w.some((x, i) => x < mins[i])) {
+    // The ones under their minimum take it; the others pay, in proportion to their slack. That never
+    // takes anyone under their own minimum, because the slack covers the deficit whenever the minimums fit.
+    const under = w.map((x, i) => x < mins[i]);
+    const deficit = w.reduce((s, x, i) => s + (under[i] ? mins[i] - x : 0), 0);
+    const slack = w.reduce((s, x, i) => s + (under[i] ? 0 : x - mins[i]), 0);
+    w = w.map((x, i) => (under[i] ? mins[i] : x - deficit * (x - mins[i]) / slack));
+  }
+  const len = wholePixels(w, avail);
+  return { len, state: len.map(() => 'open'), gutter: len.map((_, i) => (i > 0 ? gutter : 0)) };
+}
+
+/*
+ * The pixels of a SPINE split (the terminal is somewhere below one kid; the
+ * others are fixed). Fixed kids keep what the user dragged, and the spine kid
+ * takes the rest. When that leaves the spine kid under its minimum:
+ *   a. every fixed kid gets what it asked (at least its minimum) -- if the spine kid fits;
+ *   b. else each gets its minimum plus a share of what is spare, in proportion to
+ *      how far above its minimum it asked (L1's corrected arithmetic);
+ *   c. else FOLD, farthest from the spine first (ties: the later one): a folded kid is
+ *      a rail, with no gutter, and a/b are tried again for the kids still open;
+ *   d. all folded and the rails still leave the terminal less than its own minimum: drop
+ *      the rails, farthest first.
+ * `foldAll` (Ctrl+B) starts at c with everything folded.
+ */
+function spineLengths(n, length, foldAll) {
+  const { dir, kids } = n;
+  const s = kids.findIndex(hasTerm);
+  const termMin = dir === 'row' ? TERM_MIN.width : TERM_MIN.height;
+  const rail = dir === 'row' ? RAIL.side : RAIL.wide;
+  const need = along(kids[s], dir);
+  const mins = kids.map(k => along(k, dir));
+  const ask = i => Math.max(mins[i], Math.round(n.sizes[i]));
+  const fixed = kids.map((_, i) => i).filter(i => i !== s);
+  const order = [...fixed].sort((a, b) => Math.abs(b - s) - Math.abs(a - s) || b - a);
+
+  const done = (folded, dropped, sizes) => {
+    const len = kids.map(() => 0);
+    const state = kids.map(() => 'open');
+    for (const i of order.slice(0, folded)) {
+      state[i] = dropped.has(i) ? 'gone' : 'rail';
+      len[i] = dropped.has(i) ? 0 : rail;
+    }
+    let used = 0;
+    for (const i of fixed) {
+      if (state[i] === 'open') len[i] = sizes[i];
+      used += len[i];
+    }
+    const open = fixed.filter(i => state[i] === 'open');
+    len[s] = length - used - GUTTER * open.length;
+    return { len, state, gutter: kids.map((_, i) => (i > 0 && (i <= s ? state[i - 1] === 'open' : state[i] === 'open') ? GUTTER : 0)) };
+  };
+
+  // The last pass (k = every kid folded) always returns, so the loop has no other way out.
+  for (let k = foldAll ? order.length : 0; ; k += 1) {
+    const open = order.slice(k);
+    const avail = length - GUTTER * open.length - rail * k;
+    if (k === order.length) {
+      // c ends and d begins: everything is a rail; the terminal needs only its own minimum now.
+      if (avail >= termMin) return done(k, new Set(), {});
+      let kept = k;
+      while (kept > 0 && length - rail * kept < termMin) kept -= 1;
+      return done(k, new Set(order.slice(0, k - kept)), {});
+    }
+    const want = {};
+    open.forEach((i) => { want[i] = ask(i); });
+    const sumWant = open.reduce((a, i) => a + want[i], 0);
+    if (avail - sumWant >= need) return done(k, new Set(), want);
+    const sumMin = open.reduce((a, i) => a + mins[i], 0);
+    if (avail - sumMin >= need) {
+      const spare = avail - need - sumMin;
+      const above = sumWant - sumMin;
+      const sizes = {};
+      open.forEach((i) => { sizes[i] = mins[i] + Math.floor((want[i] - mins[i]) / above * spare); });
+      return done(k, new Set(), sizes);
+    }
+  }
+}
+
+const modulesUnder = n => groups({ root: n }).flatMap(gr => gr.tabs);
+
+function place(n, rect, path, ctx) {
+  if (n.type === 'term') { ctx.boxes.push({ kind: 'term', rect }); return; }
+  if (n.type === 'group') {
+    ctx.boxes.push({ kind: 'group', id: n.id, tabs: [...n.tabs], active: activeOf(ctx.layout, ctx.sel, n), rect });
+    return;
+  }
+  const isRow = n.dir === 'row';
+  const length = isRow ? rect.width : rect.height;
+  const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll) : plainLengths(n, length);
+  ctx.splits.push({
+    path, dir: n.dir, px: len,
+    // A rail is as small as it gets, so a divider drag can't ask it for less.
+    min: n.kids.map((k, i) => (state[i] === 'open' ? along(k, n.dir) : len[i])),
+  });
+  let pos = isRow ? rect.x : rect.y;
+  n.kids.forEach((k, i) => {
+    if (gutter[i] > 0) {
+      ctx.boxes.push({
+        kind: 'gutter', path, i, dir: n.dir,
+        rect: isRow ? { x: pos, y: rect.y, width: gutter[i], height: rect.height } : { x: rect.x, y: pos, width: rect.width, height: gutter[i] },
+      });
+      pos += gutter[i];
+    }
+    const r = isRow ? { x: pos, y: rect.y, width: len[i], height: rect.height } : { x: rect.x, y: pos, width: rect.width, height: len[i] };
+    pos += len[i];
+    if (state[i] === 'gone') return;
+    if (state[i] === 'rail') ctx.boxes.push({ kind: 'rail', dir: isRow ? 'v' : 'h', modules: modulesUnder(k), rect: r });
+    else place(k, r, [...path, i], ctx);
+  });
+}
+
+/**
+ * @param layout    a normalized layout
+ * @param selection this window's choices (anything: it is cleaned)
+ * @param viewport  { width, height } of the area the tree fills
+ * @returns { boxes, splits } boxes: term / group / gutter / rail, each with an integer rect;
+ *          splits: what a divider drag needs -- per split, the rendered size and the minimum of each kid.
+ */
+function fit(layout, selection, viewport) {
+  const vp = isObject(viewport) ? viewport : {};
+  const ctx = { layout, sel: cleanSelection(selection), boxes: [], splits: [] };
+  place(layout.root, { x: 0, y: 0, width: dim(vp.width), height: dim(vp.height) }, [], ctx);
+  return { boxes: ctx.boxes, splits: ctx.splits };
+}
+
 const API = {
   VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, dock, hide, show, minSize, setSplitSizes,
-  cleanSelection, selectTab, toggleFoldAll, activeOf,
+  cleanSelection, selectTab, toggleFoldAll, activeOf, fit,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.
