@@ -31,7 +31,9 @@ const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
 const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
-const { generateLook, noLookReason, DEFAULT_TERMINAL_FG } = require('./palette-gen');
+const {
+  generateLook, generateLookFrom, noLookReason, noSeedsReason, seedParts, DEFAULT_TERMINAL_FG,
+} = require('./palette-gen');
 const {
   MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, SNIFF_BYTES, kindOfExt, maxBytesFor, signatureMatches,
 } = require('./background-media');
@@ -298,6 +300,23 @@ function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
   return setLook({ cwd, patch: look, fsImpl });
 }
 
+/**
+ * "Match colours to this background" (#34): a look seeded by the colours the
+ * renderer sampled from the picture or the video's current frame -- `seeds`, a
+ * few #rrggbb strings; the host never sees the picture. Same refusals as a
+ * re-roll (it's a setLook), plus two of its own: nothing usable was sent, or no
+ * palette from these colours passes the contrast gates. Both leave the look,
+ * background and darkness exactly as they were.
+ */
+const NO_PALETTE_REASON = 'No readable palette in this background; kept your colours';
+
+function matchLook({ cwd, seeds, rng, terminalForeground, fsImpl = fs } = {}) {
+  if (!seedParts(seeds)) return { ok: false, reason: noSeedsReason() };
+  const look = generateLookFrom(seeds, rng, { terminalForeground });
+  if (!look) return { ok: false, reason: NO_PALETTE_REASON };
+  return setLook({ cwd, patch: look, fsImpl });
+}
+
 // The first bytes of a file, or null when they can't be read -- which a video
 // treats as a refusal. Only the head is read: a 100MB clip is never loaded.
 function readHead(fsImpl, file) {
@@ -422,7 +441,7 @@ function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
 module.exports = {
   planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
   readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, MAX_VIDEO_BYTES, LOOK_DIR_NAME,
-  seedLookIfNew, rerollLook,
+  seedLookIfNew, rerollLook, matchLook, NO_PALETTE_REASON,
   // the branch ledger (host/git-tree-service.js) lives in the same folder, behind the same ignore,
   // and refuses a linked folder the same way
   ensureLookDir, lookDirState,

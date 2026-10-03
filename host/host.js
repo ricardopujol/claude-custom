@@ -49,7 +49,7 @@ const { normalizeCatalogue } = require('./models');
 const { createCatalogueCache } = require('./catalogue-cache');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
-const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook } = require('./style');
+const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook, matchLook } = require('./style');
 const { hasClaudeHistory } = require('./recent');
 const { projectRoots } = require('./project-roots');
 const { applyLook } = require('./look');
@@ -492,7 +492,7 @@ try {
 function currentStyle() {
   const r = resolveStyle(STATE_ROOT, background.path);
   return {
-    background: r.background, source: r.source, setAt: r.setAt, look: r.look,
+    background: r.background, source: r.source, kind: r.kind, setAt: r.setAt, look: r.look,
     theme: applyLook(theme, r.look),
   };
 }
@@ -1934,7 +1934,7 @@ wss.on('connection', (ws) => {
     theme: styleResolved.theme,
     hooks: helperExists,
     background: styleResolved.background,
-    style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
+    style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
@@ -2381,6 +2381,17 @@ wss.on('connection', (ws) => {
         // The Style tab's "Random colours": host/style.js generates and saves,
         // with the same refusals set-look has.
         const r = rerollLook({ cwd: STATE_ROOT, terminalForeground: theme.terminal && theme.terminal.foreground });
+        if (!r.ok) {
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'match-colours') {
+        // "Match colours to this background" (#34): `seeds` are the few dominant colours the
+        // renderer sampled from the picture or the video's current frame. Never the pixels.
+        const r = matchLook({ cwd: STATE_ROOT, seeds: msg.seeds, terminalForeground: theme.terminal && theme.terminal.foreground });
         if (!r.ok) {
           refuse(r.reason);
           return;
