@@ -98,7 +98,7 @@ test('diffFor: calls exist and git FAILS: Claude\'s calls are shown, not an erro
 
 test('gitModified: git diff --quiet exits 1 for a modified file, 0 for a clean one', async () => {
   let seen;
-  const mk = (code) => (f, a, o, cb) => { seen = a; cb(code === 0 ? null : Object.assign(new Error('x'), { code })); };
+  const mk = (code) => (f, a, o, cb) => { seen = seen || a; cb(code === 0 ? null : Object.assign(new Error('x'), { code }), '', ''); };
   assert.strictEqual(await gitModified('C:\\r', 'a.js', { execFile: mk(1) }), true);
   assert.strictEqual(await gitModified('C:\\r', 'a.js', { execFile: mk(0) }), false);
   assert.ok(seen.includes('--quiet') && seen.includes('--no-ext-diff') && seen.includes('--no-textconv'));
@@ -110,4 +110,60 @@ test('gitModified: any other failure is "can\'t tell" (null), never false', asyn
   assert.strictEqual(await gitModified('C:\\r', 'a.js', { execFile: bad }), null);
   const enoent = (f, a, o, cb) => cb(Object.assign(new Error('x'), { code: 'ENOENT' }));
   assert.strictEqual(await gitModified('C:\\r', 'a.js', { execFile: enoent }), null);
+});
+
+// ---- PR #95 Dexter r2 R2-1: an UNTRACKED file Claude wrote is diffable (git diff HEAD ignores it) ----
+
+const { execFileSync } = require('child_process');
+const { gitUntrackedDiff } = require('../host/repo-diff');
+
+function untrackedRepo() {
+  const root = tmpDir('cc-untracked-');
+  const git = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e.invalid', ...a], { cwd: root, stdio: 'pipe', windowsHide: true });
+  git('init', '-q');
+  fs.writeFileSync(path.join(root, '.gitignore'), '*.log\n');
+  fs.writeFileSync(path.join(root, 'tracked.js'), 'one\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  fs.writeFileSync(path.join(root, 'brand-new.js'), 'line one\nline two\n');
+  fs.writeFileSync(path.join(root, 'noise.log'), 'ignored\n');
+  return root;
+}
+
+test('R2-1: gitModified is true for an untracked, non-ignored file (so the Diff toggle appears), false for clean and ignored ones', async () => {
+  const root = untrackedRepo();
+  assert.strictEqual(await gitModified(root, 'brand-new.js'), true);
+  assert.strictEqual(await gitModified(root, 'tracked.js'), false);
+  assert.strictEqual(await gitModified(root, 'noise.log'), false);
+  fs.writeFileSync(path.join(root, 'tracked.js'), 'two\n');
+  assert.strictEqual(await gitModified(root, 'tracked.js'), true);
+});
+
+test('R2-1: an untracked file\'s diff is its whole content as added', async () => {
+  const root = untrackedRepo();
+  const r = await gitUntrackedDiff(root, 'brand-new.js');
+  assert.strictEqual(r.ok, true);
+  assert.match(r.text, /^\+line one$/m);
+  assert.match(r.text, /^\+line two$/m);
+  assert.match(r.text, /new file mode/);
+  assert.deepStrictEqual(await gitUntrackedDiff(root, 'tracked.js'), { ok: true, text: '' }, 'a tracked file is not "untracked"');
+  assert.deepStrictEqual(await gitUntrackedDiff(root, 'noise.log'), { ok: true, text: '' }, 'neither is an ignored one');
+});
+
+test('R2-1: diffFor with no Claude calls shows an untracked file as added (source git); a clean file shows nothing', async () => {
+  const root = untrackedRepo();
+  const empty = tmpDir('cc-nocalls-');
+  const r = await diffFor({ root, rel: 'brand-new.js', projectsDir: empty });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.source, 'git');
+  assert.match(r.text, /^\+line one$/m);
+  const clean = await diffFor({ root, rel: 'tracked.js', projectsDir: empty });
+  assert.strictEqual(clean.source, null);
+});
+
+test('R2-1: the untracked diff runs no diff drivers and reads the path literally', async () => {
+  let argvs = [];
+  const exec = (f, a, o, cb) => { argvs.push(a); cb(null, argvs.length === 1 ? 'x.js\n' : '', ''); };
+  await gitUntrackedDiff('C:\r', '[id].js', { execFile: exec });
+  assert.ok(argvs[0].includes(':(literal)[id].js'));
+  assert.ok(argvs[1].includes('--no-ext-diff') && argvs[1].includes('--no-textconv') && argvs[1].includes('--no-index'));
 });

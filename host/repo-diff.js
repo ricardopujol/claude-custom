@@ -203,9 +203,51 @@ function gitModified(root, rel, { execFile = childProcess.execFile } = {}) {
     try {
       execFile('git', ['-C', root, '-c', 'core.quotePath=false', 'diff', '--quiet', '--no-ext-diff', '--no-textconv', 'HEAD', '--', `:(literal)${rel}`],
         { timeout: 8000, windowsHide: true },
-        (err) => resolve(!err ? false : err.code === 1 ? true : null));
+        (err) => {
+          if (err) { resolve(err.code === 1 ? true : null); return; }
+          // `git diff HEAD` says nothing about a file git has never seen. A new untracked (not ignored) file Claude
+          // just wrote is diffable: the listing shows it, so the Diff does too (PR #95 Dexter r2 R2-1).
+          isUntracked(root, rel, execFile).then(u => resolve(u === null ? null : u));
+        });
     } catch {
       resolve(null);
+    }
+  });
+}
+
+// Is this an untracked, non-ignored file (what `git ls-files --others --exclude-standard` lists)? null: can't say.
+function isUntracked(root, rel, execFile = childProcess.execFile) {
+  return new Promise((resolve) => {
+    try {
+      execFile('git', ['-C', root, '-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '--', `:(literal)${rel}`],
+        { encoding: 'utf8', timeout: 8000, windowsHide: true },
+        (err, stdout) => resolve(err ? null : String(stdout || '').trim() !== ''));
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+// git on Windows wants NUL here: '/dev/null' is read as a directory and answers nothing.
+const NOTHING = process.platform === 'win32' ? 'NUL' : '/dev/null';
+
+// An untracked file's diff: its whole content as added (`git diff --no-index` against nothing, which exits 1 when
+// the files differ). A tracked or ignored file answers an empty text.
+async function gitUntrackedDiff(root, rel, { execFile = childProcess.execFile } = {}) {
+  const u = await isUntracked(root, rel, execFile);
+  if (u === null) return { ok: false, error: 'git could not say whether the file is untracked' };
+  if (!u) return { ok: true, text: '' };
+  return new Promise((resolve) => {
+    try {
+      execFile('git', ['-C', root, '-c', 'core.quotePath=false', 'diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', NOTHING, rel],
+        { encoding: 'utf8', timeout: 8000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+        (err, stdout) => {
+          if (err && err.code !== 1) { resolve({ ok: false, error: `git diff failed: ${err.message}` }); return; }
+          const text = String(stdout || '');
+          resolve({ ok: true, text: text.length > MAX_GIT_CHARS ? `${text.slice(0, MAX_GIT_CHARS)}\n… diff cut at ${MAX_GIT_CHARS / 1024} KB` : text });
+        });
+    } catch (err) {
+      resolve({ ok: false, error: `git diff failed: ${err && err.message}` });
     }
   });
 }
@@ -219,7 +261,11 @@ async function diffFor({ root, rel, projectsDir, execFile, fileMtimeMs } = {}) {
     return { ok: true, ...r, count: found.calls.length, ...(found.truncated ? { truncated: true } : {}) };
   }
   if (!git.ok) return { ok: false, error: git.error };
+  if (git.text === '') {
+    const fresh = await gitUntrackedDiff(root, rel, execFile ? { execFile } : undefined);
+    if (fresh.ok && fresh.text !== '') return { ok: true, ...pickDiff({ calls: [], gitText: fresh.text }), count: 0 };
+  }
   return { ok: true, ...pickDiff({ calls: [], gitText: git.text }), count: 0 };
 }
 
-module.exports = { claudeCallsFor, renderCalls, pickDiff, gitDiffHead, gitModified, diffFor, SLACK_MS, MAX_CALLS, MAX_WRITE_LINES, MAX_STRING, MAX_GIT_CHARS };
+module.exports = { claudeCallsFor, renderCalls, pickDiff, gitDiffHead, gitModified, gitUntrackedDiff, diffFor, SLACK_MS, MAX_CALLS, MAX_WRITE_LINES, MAX_STRING, MAX_GIT_CHARS };
