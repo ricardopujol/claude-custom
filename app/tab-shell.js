@@ -220,6 +220,7 @@ function createShell(deps) {
   // Run /merged: the type-command requests waiting for their page's answer, by id
   const typing = new Map();
   let typingSeq = 0;
+  const runningMerged = new Set();     // the tabs a Run /merged is typing into right now
   let closedByHand = [];               // [{ key, path, branch }], most recent first
 
   const keyOf = normPath;
@@ -880,12 +881,20 @@ function createShell(deps) {
     if (!tab.status) return { kind: 'explain', text: `${name}'s session hasn't reported what it's doing yet.` };
     const why = busyWhy(tab.status);
     if (why) return { kind: 'explain', text: `${name}'s session ${why}.` };
-    const branch = branchOf(key);
-    await userSelect(key);
-    const r = await askToType(tab, '/merged');
-    if (!r) return { kind: 'explain', text: `Couldn't confirm /merged reached ${name}'s session: its page didn't answer.` };
-    if (!r.ok) return { kind: 'explain', text: `Didn't send /merged to ${name}'s session: ${r.reason || 'its page refused'}.` };
-    return { kind: 'sent', branch, cleared: r.box !== '' };
+    // One at a time per tab (PR #93 Dexter F4 / Miguel I1): a double click or a held Enter passes every
+    // check above twice before the session's turn opens, and the keys would interleave into /merged/merged.
+    if (runningMerged.has(key)) return { kind: 'explain', text: `Already sending /merged to ${name}'s session.` };
+    runningMerged.add(key);
+    try {
+      const branch = branchOf(key);
+      await userSelect(key);
+      const r = await askToType(tab, '/merged');
+      if (!r) return { kind: 'explain', text: `Couldn't confirm /merged reached ${name}'s session: its page didn't answer.` };
+      if (!r.ok) return { kind: 'explain', text: `Didn't send /merged to ${name}'s session: ${r.reason || 'its page refused'}.` };
+      return { kind: 'sent', branch, cleared: r.box !== '' };
+    } finally {
+      runningMerged.delete(key);
+    }
   }
 
   /** *Go to that session*, for the blocked pane. Always answers something to say. */

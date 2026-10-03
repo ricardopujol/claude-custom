@@ -236,7 +236,9 @@ function stateOf(dial) {
       grown: new Set(), grownAt: null,
       // motion
       swing: swing.start(), angle: 0, held: false, reduced: false, pointerIn: false, parts: [], floaters: [], rot: null,
-      scheduled: false, lastApply: -Infinity, mq: null, sparksShown: new Set(), liveShown: new Set() };
+      scheduled: false, lastApply: -Infinity, mq: null, sparksShown: new Set(), liveShown: new Set(),
+      // the actions waiting on their answer: a second press does nothing until the first answers (PR #93 F4)
+      busy: new Set() };
   }
   return dial.gitState;
 }
@@ -421,6 +423,13 @@ async function act(dial, id) {
   const a = m && m.actions.find(x => x.id === id);
   if (!a || !a.enabled) return;
   const b = key === HUB ? null : st.byName.get(key);
+  // A double click or a held Enter on the button fires again before the first answer: ignored here, and
+  // refused by the shell too (app/tab-shell.js runMerged, the authoritative guard).
+  const busyKey = `${key}\u0000${id}`;
+  if (st.busy.has(busyKey)) return;
+  st.busy.add(busyKey);
+  const btn = dial.querySelector(`.git-act[data-act="${id}"]`);
+  if (btn) btn.setAttribute('aria-busy', 'true');
   try {
     if (id === 'jump') {
       if (!b || !b.folder || !st.onJump) return;
@@ -448,6 +457,10 @@ async function act(dial, id) {
     }
   } catch (err) {
     say(dial, key, `Couldn't do that: ${errText(err)}`);
+  } finally {
+    st.busy.delete(busyKey);
+    const now = dial.querySelector(`.git-act[data-act="${id}"]`);
+    if (now) now.removeAttribute('aria-busy');
   }
 }
 

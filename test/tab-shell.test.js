@@ -1093,6 +1093,25 @@ test('runMerged: a stranger sender or a bad folder is explained and nothing is t
   assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
 });
 
+test('PR #93 Dexter F4 / Miguel I1: a double click or a held Enter types /merged once; the second is told', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, { ok: true, box: '' });
+  const [a, b] = await Promise.all([
+    h.shell.runMerged(devView, wt('feat-a'), 'feat/a'),
+    h.shell.runMerged(devView, wt('feat-a'), 'feat/a'),
+  ]);
+  assert.strictEqual(h.sent.filter(([, ch]) => ch === 'type-command').length, 1, 'never /merged/merged');
+  assert.deepStrictEqual([a.kind, b.kind].sort(), ['explain', 'sent']);
+  assert.match((a.kind === 'explain' ? a : b).text, /already sending/i);
+  // once it has answered, the guard is gone (the session's own turn is what disables it next)
+  const c = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(c.kind, 'sent');
+});
+
 // --- Go to that session ------------------------------------------------------
 
 test('goTo: a tab in THIS window is selected', async () => {
