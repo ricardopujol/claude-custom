@@ -78,12 +78,12 @@ function zonesAt(boxes, viewport, point, { tabBar = TAB_BAR } = {}) {
   const vp = viewport && typeof viewport === 'object' ? viewport : {};
   const width = dim(vp.width);
   const height = dim(vp.height);
-  const bar = isNumber(tabBar) && tabBar >= 0 ? tabBar : TAB_BAR;
+  const barPx = isNumber(tabBar) && tabBar >= 0 ? tabBar : TAB_BAR;
   const p = point && isNumber(point.x) && isNumber(point.y) ? point : null;
   const zones = rimZones(width, height);
   if (p && contains({ x: 0, y: 0, width, height }, p)) {
     const under = (Array.isArray(boxes) ? boxes : []).find(b => isCell(b) && contains(b.rect, p));
-    if (under) zones.push(...cellZones(under, bar));
+    if (under) zones.push(...cellZones(under, barPx));
   }
   // The rim comes first in the list, so it wins over a cell's band.
   const hot = p ? zones.find(z => contains(z.rect, p)) : null;

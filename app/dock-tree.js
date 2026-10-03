@@ -98,10 +98,10 @@ function clean(n, st, depth) {
 }
 
 const SEAT_SIDES = new Set(SIDES);
-function cleanSeat(raw, hidden) {
+function cleanSeat(raw, hiddenIds) {
   const seat = {};
   if (!isObject(raw)) return seat;
-  for (const id of hidden) {
+  for (const id of hiddenIds) {
     const s = raw[id];
     const nameOrNull = v => v === null || typeof v === 'string';
     if (isObject(s) && nameOrNull(s.group) && nameOrNull(s.beside) && SEAT_SIDES.has(s.side)) {
@@ -134,7 +134,7 @@ function normalize(raw, ids) {
     else r = { type: 'split', dir: 'row', kids: [TERM(), r], sizes: [0, DEFAULT_SIZE.row] };
   }
 
-  const hidden = (Array.isArray(raw.hidden) ? raw.hidden : []).filter(id => st.claim(id));
+  const hiddenIds = (Array.isArray(raw.hidden) ? raw.hidden : []).filter(id => st.claim(id));
   const missing = [...known].filter(id => !placed.has(id));
   if (missing.length) {
     let first = null;
@@ -143,7 +143,7 @@ function normalize(raw, ids) {
     else r = { type: 'split', dir: 'row', kids: [r, { type: 'group', id: freshId(st.ids), tabs: missing }], sizes: [0, DEFAULT_SIZE.row] };
   }
 
-  return { version: VERSION, root: r, floats: [], hidden, seat: cleanSeat(raw.seat, hidden) };
+  return { version: VERSION, root: r, floats: [], hidden: hiddenIds, seat: cleanSeat(raw.seat, hiddenIds) };
 }
 
 // Only a plain object of string -> string survives; nothing else a window stored is trusted.
@@ -446,7 +446,7 @@ function spineLengths(n, length, foldAll) {
   const fixed = kids.map((_, i) => i).filter(i => i !== s);
   const order = [...fixed].sort((a, b) => Math.abs(b - s) - Math.abs(a - s) || b - a);
 
-  const done = (folded, dropped, sizes) => {
+  const settle = (folded, dropped, sizes) => {
     const len = kids.map(() => 0);
     const state = kids.map(() => 'open');
     for (const i of order.slice(0, folded)) {
@@ -469,22 +469,22 @@ function spineLengths(n, length, foldAll) {
     const avail = length - GUTTER * open.length - rail * k;
     if (k === order.length) {
       // c ends and d begins: everything is a rail; the terminal needs only its own minimum now.
-      if (avail >= termMin) return done(k, new Set(), {});
+      if (avail >= termMin) return settle(k, new Set(), {});
       let kept = k;
       while (kept > 0 && length - rail * kept < termMin) kept -= 1;
-      return done(k, new Set(order.slice(0, k - kept)), {});
+      return settle(k, new Set(order.slice(0, k - kept)), {});
     }
     const want = {};
     open.forEach((i) => { want[i] = ask(i); });
     const sumWant = open.reduce((a, i) => a + want[i], 0);
-    if (avail - sumWant >= need) return done(k, new Set(), want);
+    if (avail - sumWant >= need) return settle(k, new Set(), want);
     const sumMin = open.reduce((a, i) => a + mins[i], 0);
     if (avail - sumMin >= need) {
       const spare = avail - need - sumMin;
       const above = sumWant - sumMin;
       const sizes = {};
       open.forEach((i) => { sizes[i] = mins[i] + Math.floor((want[i] - mins[i]) / above * spare); });
-      return done(k, new Set(), sizes);
+      return settle(k, new Set(), sizes);
     }
   }
 }
