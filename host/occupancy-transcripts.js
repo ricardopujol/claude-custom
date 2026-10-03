@@ -42,13 +42,21 @@
  *   - ONE PRODUCER PER AGENT. A claim file that names another producer is left alone while readers show it
  *     as live, and for one pass after that (a claim a host wrote a moment ago isn't judged yet); only then
  *     is it taken over. This producer removes only files that still name it.
- *   - ABSENCE IS NOT "FINISHED": when a folder can't be listed, nothing is removed that pass.
+ *   - AN EMPTY SLOT IS NOT "UNOWNED" WHEN ITS OWNER EMPTIED IT. Another producer deleting its own file is
+ *     the precise "this agent is done here" (SubagentStop, a teammate's idle expiry, SessionEnd, the host's
+ *     exit), and the transcript stays fresh for minutes after it. So an agent whose claim file was
+ *     another producer's on the last look, and is gone now, is not claimed again until one of its calls
+ *     proves a touch NEWER than the ones that claim was made of (PR #96 Dexter F1).
+ *   - ABSENCE IS NOT "FINISHED", FOLDER BY FOLDER: a claim whose transcript sits under a folder that
+ *     couldn't be listed this pass is kept; every other claim is judged as usual (Dexter F6).
+ *   - Only a real start time (a FILETIME, host/proc-start.js) is this producer's proof (Miguel S2).
  */
 
 const fs = require('fs');
 const path = require('path');
 const { touchOf, buildClaim, parseClaim, safeAgentId, claimFileName } = require('./agent-occupancy');
-const { normPath, samePath } = require('./project-layout');
+const { normPath, samePath, isInside } = require('./project-layout');
+const { filetimeToMs } = require('./background-hosts');
 const { projectDirName } = require('./project-dir');
 const { readMeta, SUBAGENTS } = require('./transcripts');
 
@@ -57,11 +65,13 @@ const TAIL_BYTES = 1024 * 1024;
 const PASS_MS = 15_000;
 const TOUCHES_MAX = 16;
 const GRACE_PASSES = 2;
+const RELEASED_MAX = 500;
 const TEAMMATE = 'in_process_teammate';
 const NL = 10;
 const AGENT_FILE = /^agent-.+\.jsonl$/;
 
 const isStr = s => typeof s === 'string' && s !== '';
+const isStartTime = s => typeof s === 'string' && filetimeToMs(s) !== null;
 const errText = err => (err && err.message) || String(err);
 
 // --- the pure part ----------------------------------------------------------------------------------------
@@ -147,6 +157,9 @@ function createTranscriptScanner({
   const states = new Map();        // transcript file -> state
   const mine = new Set();          // agent ids whose claim file this producer wrote and still answers for
   const grace = new Map();         // agent id -> passes a claim file of another, not-live producer was seen
+  const source = new Map();        // agent id -> the transcript this producer's claim for it was read from
+  const theirs = new Set();        // agent ids whose claim file was another producer's on the last look
+  const released = new Map();      // agent id -> the newest touch (ms) its owner's removed claim was made of
   const logged = new Set();
   let running = null;
   let closed = false;
@@ -155,12 +168,12 @@ function createTranscriptScanner({
   const logOnce = (key, ...args) => { if (!logged.has(key)) { logged.add(key); log(...args); } };
 
   // The fresh agent transcripts under every worktree's project folder, each with the root it is filed under
-  // (its launching folder). `complete` is false when a folder that exists could not be listed: its
-  // transcripts may be there, unseen. Two roots whose names encode alike (`feat-a`, `feat.a`) share one
+  // (its launching folder). `failed` is every folder that exists and could not be listed: its transcripts
+  // may be there, unseen. Two roots whose names encode alike (`feat-a`, `feat.a`) share one
   // folder: the first one git lists is taken as the launcher, the same one on every pass.
   async function listFresh(known) {
     const files = [];
-    let complete = true;
+    const failed = [];
     const seen = new Set();
     for (const root of known) {
       const name = projectDirName(root);
@@ -171,7 +184,7 @@ function createTranscriptScanner({
       try {
         sessions = await fsp.readdir(base, { withFileTypes: true });
       } catch (err) {
-        if (!err || err.code !== 'ENOENT') { complete = false; logOnce(`list|${base}`, `[occupancy] ${base} can't be listed:`, errText(err)); }
+        if (!err || err.code !== 'ENOENT') { failed.push(base); logOnce(`list|${base}`, `[occupancy] ${base} can't be listed:`, errText(err)); }
         continue;
       }
       for (const s of sessions) {
@@ -182,7 +195,7 @@ function createTranscriptScanner({
           names = await fsp.readdir(sub);
         } catch (err) {
           // ENOENT only is "no agents": every other errno means they may be there and we could not look.
-          if (!err || err.code !== 'ENOENT') { complete = false; logOnce(`list|${sub}`, `[occupancy] ${sub} can't be listed:`, errText(err)); }
+          if (!err || err.code !== 'ENOENT') { failed.push(sub); logOnce(`list|${sub}`, `[occupancy] ${sub} can't be listed:`, errText(err)); }
           continue;
         }
         for (const f of names.sort()) {
@@ -194,7 +207,7 @@ function createTranscriptScanner({
         }
       }
     }
-    return { files, complete };
+    return { files, failed };
   }
 
   async function readMetaOnce(file, state) {
@@ -255,6 +268,8 @@ function createTranscriptScanner({
     }
     const known = roots.get();
     const listing = await listFresh(known);
+    // a transcript under a folder that couldn't be listed: unseen this pass, which says nothing about it
+    const unseen = file => listing.failed.some(d => isInside(file, d));
 
     const wanted = new Map();        // agent id -> the claim record its transcript makes
     const fresh = new Set();
@@ -274,40 +289,54 @@ function createTranscriptScanner({
         agentId: state.agentId, agent: state.name, fromBranch: state.branch, fromRoot: f.root,
         hostPid: ownPid, hostStartedAt: started, touches: touchesOf(state),
       });
-      if (rec !== null) wanted.set(state.agentId, rec);
+      if (rec !== null) { wanted.set(state.agentId, rec); source.set(state.agentId, f.file); }
     }
     // A transcript that went stale is forgotten: if it is written again, its tail is read anew.
-    if (listing.complete) for (const file of [...states.keys()]) if (!fresh.has(file)) states.delete(file);
+    for (const file of [...states.keys()]) if (!fresh.has(file) && !unseen(file)) states.delete(file);
 
-    if (typeof started === 'string') {
+    if (isStartTime(started)) {
       let live = [];
       try { const l = liveClaims(); live = Array.isArray(l) ? l : []; } catch { live = []; }
       for (const [id, rec] of wanted) {
         const disk = onDisk(id);
+        if (disk === null && theirs.delete(id)) {
+          // its owner removed it: remember what that claim was made of
+          released.delete(id);
+          released.set(id, rec.lastAt);
+          while (released.size > RELEASED_MAX) released.delete(released.keys().next().value);
+        }
         if (foreign(disk)) {
+          theirs.delete(id);
+          theirs.add(id);
+          while (theirs.size > RELEASED_MAX) theirs.delete(theirs.keys().next().value);
           const shown = live.some(c => c && c.agentId === id && c.hostPid === disk.hostPid);
           const seen = shown ? 0 : (grace.get(id) || 0) + 1;
           // left to it (if this producer wrote that file earlier, the removal below and close() see whose
           // it is now, and leave it)
           if (shown || seen < GRACE_PASSES) { grace.set(id, seen); continue; }
           writer.forget(id);       // taking it over: whatever this writer last wrote there is not what is there
+          theirs.delete(id);
         }
         grace.delete(id);
+        if (released.has(id)) {
+          if (rec.lastAt <= released.get(id)) continue;      // nothing newer than what its owner let go of
+          released.delete(id);
+        }
         const w = writer.write(rec);
         if (w && w.ok) { mine.add(id); out.claimed.push(id); } else log('[occupancy] transcript claim not written:', w && w.error);
       }
     }
     for (const id of [...grace.keys()]) if (!wanted.has(id)) grace.delete(id);
 
-    if (listing.complete) {
-      for (const id of [...mine]) {
-        if (wanted.has(id)) continue;
-        mine.delete(id);
-        if (foreign(onDisk(id))) continue;          // somebody else's file now: theirs to remove
-        writer.remove(id);
-        out.removed.push(id);
-      }
+    for (const id of [...mine]) {
+      if (wanted.has(id)) continue;
+      if (unseen(source.get(id) || '')) continue;       // absence is not "finished"
+      mine.delete(id);
+      if (foreign(onDisk(id))) continue;                // somebody else's file now: theirs to remove
+      writer.remove(id);
+      out.removed.push(id);
     }
+    for (const id of [...source.keys()]) if (!mine.has(id) && !wanted.has(id)) source.delete(id);
     return out;
   }
 

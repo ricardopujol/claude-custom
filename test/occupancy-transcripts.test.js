@@ -453,6 +453,115 @@ test('...and so is an agent this producer took over, when yet another producer c
   assert.strictEqual(r.claim('a1').hostPid, 5555, 'one pass of grace for the newcomer');
 });
 
+// --- PR #96 review: Dexter F1. An EMPTY slot is not "unowned" when its owner emptied it. -----------------
+// The hook producer deleting its own file (SubagentStop, a teammate's idle expiry, SessionEnd, the host's
+// exit) is the precise "this agent is done here". The transcript is still fresh for minutes afterwards, and
+// bringing the claim back from it would show an agent that is gone, and ask the confirm all over again.
+
+test('a claim its owner REMOVED is not brought back from the transcript, pass after pass', async () => {
+  const r = rig();
+  plant(r, foreign());
+  r.live = [foreign()];
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 }) + done('a1', T0 + 1000), { meta: MATE });
+  await r.scanner.pass();                                  // the host's claim: left to it
+  fs.unlinkSync(path.join(r.dir, 'a1.json'));              // SessionEnd: the host removes it
+  r.live = [];
+  assert.deepStrictEqual((await r.scanner.pass()).claimed, []);
+  r.append('a1', line('a1', [text('still talking, touching nothing')], { at: r.clock, stop: 'end_turn' }));
+  assert.deepStrictEqual((await r.scanner.pass()).claimed, []);
+  assert.strictEqual(r.claim('a1'), null);
+});
+
+test('...until the agent proves it is there again: a touch NEWER than the ones its owner let go of', async () => {
+  const r = rig();
+  plant(r, foreign());
+  r.live = [foreign()];
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 }), { meta: MATE });
+  await r.scanner.pass();
+  fs.unlinkSync(path.join(r.dir, 'a1.json'));
+  r.live = [];
+  await r.scanner.pass();
+  r.append('a1', line('a1', [read(path.join(FEAT, 'b.py'))], { at: T0 + 5000 }));
+  assert.deepStrictEqual((await r.scanner.pass()).claimed, ['a1']);
+  assert.strictEqual(r.claim('a1').hostPid, OWN_PID);
+});
+
+test('...and going quiet does not wipe that memory: woken later with no new touch, it is still not claimed', async () => {
+  const r = rig();
+  plant(r, foreign());
+  r.live = [foreign()];
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 }), { meta: MATE });
+  await r.scanner.pass();
+  fs.unlinkSync(path.join(r.dir, 'a1.json'));              // the host expired the idle teammate's claim
+  r.live = [];
+  await r.scanner.pass();
+  r.clock += T.STALE_MS + 60_000;                          // the transcript goes stale and is forgotten
+  await r.scanner.pass();
+  r.append('a1', line('a1', [text('woken, thinking')], { at: r.clock, stop: null }));
+  assert.deepStrictEqual((await r.scanner.pass()).claimed, [], 'its old touch is the one its owner let go of');
+});
+
+test('a file this producer TOOK OVER is its own from then on: removing it for staleness is not "its owner let go of it"', async () => {
+  const r = rig();
+  plant(r, foreign());                                     // a producer that died: never live
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 }), { meta: MATE });
+  await r.scanner.pass();
+  await r.scanner.pass();                                  // taken over
+  assert.strictEqual(r.claim('a1').hostPid, OWN_PID);
+  r.clock += T.STALE_MS;
+  assert.deepStrictEqual((await r.scanner.pass()).removed, ['a1']);
+  r.append('a1', line('a1', [text('woken')], { at: r.clock, stop: null }));
+  assert.deepStrictEqual((await r.scanner.pass()).claimed, ['a1'], 'by the mtime rule, as for any teammate of an unhosted session');
+});
+
+test('a slot that was ALWAYS empty is unowned: the transcript claims it (a session no host of this build runs)', async () => {
+  const r = rig();
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]), { meta: MATE });
+  assert.deepStrictEqual((await r.scanner.pass()).claimed, ['a1']);
+});
+
+// --- PR #96 review: Dexter F6. A folder that can't be listed protects ITS agents, not everybody's. -------
+
+test('one unlistable folder does not stop the scanner from removing a claim whose own transcript says it finished', async () => {
+  const real = fs.promises;
+  const blocked = path.join(projectDirName(FEAT), 's9', 'subagents');
+  const fsp = {
+    open: (...a) => real.open(...a),
+    stat: (...a) => real.stat(...a),
+    readdir: async (p, ...rest) => {
+      if (path.resolve(String(p)).endsWith(blocked)) { const e = new Error('denied'); e.code = 'EACCES'; throw e; }
+      return real.readdir(p, ...rest);
+    },
+  };
+  const r = rig({ fsp });
+  // under FEAT's project folder: a session whose subagents folder can never be listed
+  fs.mkdirSync(path.join(r.projects, blocked), { recursive: true });
+  // under DEV's: a plain subagent that claims FEAT, then finishes
+  r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))], { at: T0 }), { meta: PLAIN });
+  await r.scanner.pass();
+  assert.ok(r.claim('a1'));
+  r.append('a1', done('a1', T0 + 2000));
+  const out = await r.scanner.pass();
+  assert.deepStrictEqual(out.removed, ['a1']);
+  assert.strictEqual(r.claim('a1'), null);
+  // ...and a transcript that goes stale under the listable folder is removed too
+  r.put('a2', line('a2', [read(path.join(FEAT, 'a.py'))]), { meta: MATE });
+  await r.scanner.pass();
+  r.clock += T.STALE_MS;
+  assert.deepStrictEqual((await r.scanner.pass()).removed, ['a2']);
+});
+
+// --- PR #96 review: Miguel S2 -----------------------------------------------------------------------------
+
+test('only a real start time is a proof: with anything else this producer writes nothing', async () => {
+  for (const started of ['?', '', 'soon', 5, undefined]) {
+    const r = rig({ ownStartedAt: async () => started });
+    r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
+    assert.deepStrictEqual((await r.scanner.pass()).claimed, [], JSON.stringify(started));
+    assert.deepStrictEqual(r.claims(), []);
+  }
+});
+
 test('close removes every claim this producer still owns', async () => {
   const r = rig();
   r.put('a1', line('a1', [read(path.join(FEAT, 'a.py'))]));
