@@ -60,6 +60,15 @@ test('the signal probe\'s real capture is opt-in, never bills a key, and ends on
 test('the signal probe\'s default mode is the free replay, and the fixture is written atomically (never opened with w first)', () => {
   const main = SIGNAL.slice(SIGNAL.lastIndexOf("if (process.argv.includes('--capture'))"));
   assert.match(main, /else \{\s*replay\(\);/);
-  assert.match(SIGNAL, /fs\.renameSync\(tmp, FIXTURE\)/);
+  assert.match(SIGNAL, /fs\.renameSync\(tmpFile, FIXTURE\)/);
   assert.doesNotMatch(SIGNAL, /writeFileSync\(FIXTURE/);
+});
+
+test('G8: the signal probe capture never runs in the repo root, never skips permissions, and finds claude without a hard-coded path', () => {
+  assert.doesNotMatch(SIGNAL, /dangerously-skip-permissions/);
+  assert.doesNotMatch(SIGNAL, /process\.env\.APPDATA/);
+  assert.match(SIGNAL, /cwd: work/);
+  assert.doesNotMatch(SIGNAL, /cwd: ROOT/);
+  assert.match(SIGNAL, /permissions: \{ allow: \['ScheduleWakeup'\] \}/);
+  assert.match(SIGNAL, /npm', \['root', '-g'\]/);
 });
