@@ -1,9 +1,10 @@
 'use strict';
 /**
  * renderer.js's layout-presets wiring (BACKLOG #53, dockable panels D3). The rules live in the pure, tested
- * app/dock-presets.js; this pins that the page uses them where a mistake would cost the user's presets: every
- * write goes through one function that refuses while the stored list couldn't be read, the confirmations are
- * rows in the menu rather than dialogs, and Esc backs out of a field before it closes the menu.
+ * app/dock-presets.js (its reducer and its answers are tested there as behaviour); this pins only the few decisions
+ * a refactor could silently reverse: the page changes the list only by sending main an op, never computes it, asks
+ * again for an unreadable list, goes through the reducer, applies through presetLayout, the confirmations are rows
+ * rather than dialogs, and Esc backs out of a field before it closes the menu.
  * verify/probe-dock-tree.js measures the same paths in a real window.
  *
  * Repo-scanning, so deliberately NOT in Stryker's command.
