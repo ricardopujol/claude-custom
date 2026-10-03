@@ -160,7 +160,7 @@ const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0,
 // The where-are-we summary (backlog #39 job 1): the host's local-model summary of this session, why there is none, when
 // the panel was opened (a switch to a tab untouched for 10 minutes), whether it is pinned, whether a key was struck
 // since it opened, and the last real keystroke. Every decision is in app/summary-display.js.
-const sum = { summary: null, off: null, openedAt: null, pinned: false, typed: false, lastInputAt: null, timer: null };
+const sum = { summary: null, off: null, openedAt: null, pinned: false, typed: false, lastInputAt: null, timer: null, session: null };
 // How long the CLI's echo of a submitted prompt is waited for in the terminal buffer, and how many of the newest lines
 // are searched, before the prompt fails visible (PR #99 Dexter F6).
 const LOCATE_MS = 3000;
@@ -187,6 +187,8 @@ function reportTabStatus() {
     turn: sessionTurn,
     night: bar.bedtime !== null,
     summary: sum.summary ? { ...sum.summary, note: summaryDisplay.offNote(sum.off) } : null,
+    // with no summary yet, why (Ollama off) rides on the hover card alone: the bar does not pop up for it
+    summaryNote: sum.summary ? null : summaryDisplay.offNote(sum.off),
   }, { healthMarker: worktreeStatus.healthMarker });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
@@ -339,7 +341,8 @@ function paintBarNow() {
       barEls.summary.classList.toggle('dim', m.summary.dim);
       barEls.summaryCard.classList.toggle('dim', m.summary.dim);
     }
-    barEls.summary.setAttribute('aria-expanded', String(!!(m.summary && m.summary.pinned)));
+    // "expanded" is the card showing, whether the person pinned it or a switch opened it
+    barEls.summary.setAttribute('aria-expanded', String(!!m.summary));
     barEls.prompt.hidden = m.prompt === null;
     if (m.prompt) {
       setText(barEls.text, m.prompt.head);
@@ -484,16 +487,7 @@ document.getElementById('occupancy-wait').addEventListener('click', () => occupa
 barEls.prompt.addEventListener('click', () => { bar.fullOpen = !bar.fullOpen; paintBarNow(); });
 // Escape closes it again, from inside the bar only: the terminal's own Escape (interrupt) is never taken (PR #99 Miguel G3).
 barEls.bar.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  if (bar.summaryShown) {
-    sum.openedAt = null;
-    sum.pinned = false;
-    paintBarNow();
-    e.stopPropagation();
-    term.focus();
-    return;
-  }
-  if (!bar.fullOpen) return;
+  if (e.key !== 'Escape' || !bar.fullOpen) return;
   bar.fullOpen = false;
   paintBarNow();
   e.stopPropagation();
@@ -522,6 +516,9 @@ function applySummary(p, opening) {
   const o = p && typeof p === 'object' ? p : {};
   sum.summary = o.summary && typeof o.summary === 'object' ? o.summary : null;
   sum.off = o.off && typeof o.off === 'object' ? o.off : null;
+  // The pin and the open panel belong to the summary they were made for: /clear (it goes away) or another session's
+  // summary releases them, so a later push never surfaces a pinned panel under your hands (Dexter F7).
+  Object.assign(sum, summaryDisplay.afterPush(sum, sum.summary));
   // Only a window that has just attached opens it: a live push of a newer summary never pops it up under your hands.
   if (opening && !document.hidden) summaryOpenIfIdle();
   paintBar();
@@ -533,7 +530,7 @@ function summaryOpenIfIdle() {
   if (!window.summaryDisplay) return;
   const now = Date.now();
   const last = summaryDisplay.lastTouchedAt(sum.lastInputAt, bar.prompt && bar.prompt.at);
-  if (!summaryDisplay.openOnSelect({ summary: sum.summary, off: sum.off, lastInputAt: last, now })) return;
+  if (!summaryDisplay.openOnSelect({ summary: sum.summary, lastInputAt: last, now })) return;
   sum.openedAt = now;
   sum.typed = false;
   clearTimeout(sum.timer);
@@ -551,6 +548,16 @@ barEls.summary.addEventListener('click', () => {
   paintBarNow();
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) summaryOpenIfIdle(); });
+// Escape closes it wherever the focus is, not only inside the bar (Miguel S4). Captured, and taken only while the panel is
+// showing: the first Escape closes the panel, the next one is the terminal's own (an interrupt) as ever.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !bar.summaryShown) return;
+  sum.openedAt = null;
+  sum.pinned = false;
+  paintBarNow();
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
 // --- end of the where-are-we summary ---
 
 if (window.harness && window.harness.occupancy) {

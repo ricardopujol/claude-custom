@@ -27,7 +27,7 @@ test('the design constants: 10 minutes untouched, 30 seconds open', () => {
 
 test('ageLabel is the bar\'s own ("4 min ago"), and an unknown time says nothing', () => {
   assert.strictEqual(D.labelOf(SUMMARY, NOW), 'local model · llama3.2:3b · 4 min ago');
-  assert.strictEqual(D.labelOf({ ...SUMMARY, at: NOW + 5 * MIN }, NOW), 'local model · llama3.2:3b', 'a clock skew says no age, not a negative one');
+  assert.strictEqual(D.labelOf({ ...SUMMARY, at: NOW + 5 * MIN }, NOW), 'local model · llama3.2:3b · time unknown', 'a clock that ran backwards says so, never a silently missing third part (Miguel S2)');
 });
 
 test('a stale summary says it has not been refreshed', () => {
@@ -77,7 +77,8 @@ test('openOnSelect: only with something to say AND a tab untouched for 10 minute
   assert.strictEqual(D.openOnSelect({ summary: SUMMARY, off: null, lastInputAt: NOW - 11 * MIN, now: NOW }), true);
   assert.strictEqual(D.openOnSelect({ summary: SUMMARY, off: null, lastInputAt: NOW - 9 * MIN, now: NOW }), false);
   assert.strictEqual(D.openOnSelect({ summary: null, off: null, lastInputAt: NOW - 99 * MIN, now: NOW }), false);
-  assert.strictEqual(D.openOnSelect({ summary: null, off: OFF_DOWN, lastInputAt: NOW - 99 * MIN, now: NOW }), true, 'Ollama off with nothing to show is still said');
+  assert.strictEqual(D.openOnSelect({ summary: null, off: OFF_DOWN, lastInputAt: NOW - 99 * MIN, now: NOW }), false, 'Ollama off and no summary ever made: the hover card says so, the bar does not pop up (Miguel I1)');
+  assert.strictEqual(D.openOnSelect({ summary: SUMMARY, off: OFF_DOWN, lastInputAt: NOW - 99 * MIN, now: NOW }), true, 'but a summary that exists opens, with the note beside it');
   assert.strictEqual(D.openOnSelect({ summary: SUMMARY, off: null, lastInputAt: null, now: NOW }), true, 'a tab nobody has typed in this run');
   assert.strictEqual(D.openOnSelect({}), false);
   assert.strictEqual(D.openOnSelect(), false);
@@ -132,12 +133,9 @@ test('panelModel: Ollama off keeps the last summary, dimmed, with the note besid
   assert.strictEqual(m.lines.length, 3);
 });
 
-test('panelModel: Ollama off and no summary yet is the note alone, never an empty panel', () => {
-  const m = D.panelModel(open({ summary: null, off: OFF_DOWN }));
-  assert.deepStrictEqual(m.lines, []);
-  assert.strictEqual(m.note, "Local summary off: Ollama isn't running");
-  assert.strictEqual(m.label, 'local model · llama3.2:3b');
-  assert.strictEqual(m.dim, true);
+test('panelModel: Ollama off and no summary ever made is no panel at all, pinned or not (Miguel I1)', () => {
+  assert.strictEqual(D.panelModel(open({ summary: null, off: OFF_DOWN })), null);
+  assert.strictEqual(D.panelModel(open({ summary: null, off: OFF_DOWN, pinned: true })), null);
 });
 
 test('panelModel: at most five lines, blank lines dropped', () => {
@@ -161,7 +159,7 @@ test('property: the panel is open exactly when there is something to say AND (pi
     fc.boolean(), fc.boolean(), fc.option(t, { nil: null }), t, fc.boolean(), fc.boolean(),
     (hasSummary, hasOff, openedAt, now, pinned, typed) => {
       const m = D.panelModel({ summary: hasSummary ? { ...SUMMARY, at: 5 } : null, off: hasOff ? OFF_DOWN : null, now, openedAt, pinned, typed });
-      const content = hasSummary || hasOff;
+      const content = hasSummary;
       const within = openedAt !== null && !typed && now >= openedAt && now - openedAt < D.SHOW_MS;
       assert.strictEqual(m !== null, content && (pinned || within));
       if (m !== null) {
@@ -196,4 +194,39 @@ test('the panel lines and the hover lines carry no control, bidi or zero-width c
   const panel = D.panelModel({ summary: dirty, off: null, now: NOW + 5000, openedAt: NOW, pinned: false, typed: false });
   assert.deepStrictEqual(panel.lines, ['Working on: ab[0m cd', 'Next: ef']);
   for (const l of D.hoverLines(dirty, NOW)) assert.doesNotMatch(l, bad);
+});
+
+// Miguel I1: with no summary the note lives on the hover card only.
+test('hoverLines: no summary but a note (Ollama off, nothing ever summarised) is the note alone', () => {
+  assert.deepStrictEqual(D.hoverLines(null, NOW, "Local summary off: Ollama isn't running"), ["Local summary off: Ollama isn't running"]);
+  assert.deepStrictEqual(D.hoverLines(null, NOW, ''), []);
+  assert.deepStrictEqual(D.hoverLines(null, NOW, 5), []);
+  assert.deepStrictEqual(D.hoverLines(SUMMARY, NOW, 'ignored: a summary carries its own note').length, 4, 'with a summary the third argument is not used');
+});
+
+// Dexter F7: a pin whose content went away is released, so a later push cannot surface it under the person's hands.
+const OPEN = { openedAt: NOW, pinned: true, typed: true, session: 's1' };
+
+test('afterPush: the summary going away (/clear) releases the pin and the open panel', () => {
+  assert.deepStrictEqual(D.afterPush(OPEN, null), { openedAt: null, pinned: false, typed: false, session: null });
+  assert.deepStrictEqual(D.afterPush(OPEN, { text: '', at: 1, model: 'm' }), { openedAt: null, pinned: false, typed: false, session: null });
+});
+
+test('afterPush: a summary of ANOTHER session (a /resume straight into one that has a stored summary) releases it too', () => {
+  assert.deepStrictEqual(D.afterPush(OPEN, { ...SUMMARY, session: 's2' }), { openedAt: null, pinned: false, typed: false, session: 's2' });
+});
+
+test('afterPush: a newer summary of the SAME session keeps the pin and the panel as they are', () => {
+  assert.deepStrictEqual(D.afterPush(OPEN, { ...SUMMARY, session: 's1', at: NOW + 1 }), OPEN);
+});
+
+test('afterPush: a first summary just records its session and changes nothing else', () => {
+  const idle = { openedAt: null, pinned: false, typed: false, session: null };
+  assert.deepStrictEqual(D.afterPush(idle, { ...SUMMARY, session: 's1' }), { ...idle, session: 's1' });
+});
+
+test('afterPush: a pin released by /clear does not come back when the new session\'s summary arrives', () => {
+  const cleared = D.afterPush(OPEN, null);
+  const next = D.afterPush(cleared, { ...SUMMARY, session: 's2' });
+  assert.strictEqual(D.panelModel({ summary: SUMMARY, off: null, now: NOW + 5000, ...next }), null);
 });

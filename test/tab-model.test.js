@@ -286,3 +286,11 @@ test('summary follows the status: a usable one is carried, none is null', () => 
   assert.strictEqual(strip([DEV], {})[0].summary, null);
   assert.strictEqual(strip([DEV], { [k]: { started: false, status: null } })[0].summary, null);
 });
+
+test('summaryNote follows the status: a string is carried, anything else is null', () => {
+  const k = keyOf(DEV.path);
+  const [dev] = strip([DEV], { [k]: { started: true, status: { summaryNote: 'Local summary off' } } });
+  assert.strictEqual(dev.summaryNote, 'Local summary off');
+  assert.strictEqual(strip([DEV], { [k]: { started: true, status: { summaryNote: 5 } } })[0].summaryNote, null);
+  assert.strictEqual(strip([DEV], {})[0].summaryNote, null);
+});

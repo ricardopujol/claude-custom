@@ -94,7 +94,7 @@ test('Y1 + G1: a paint with nothing new writes nothing (a selection in the whole
 test('G3: the prompt toggle says whether it is open, and Escape inside the bar closes it without taking the terminal\'s own Escape', () => {
   assert.match(HTML, /id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full"/);
   assert.match(RENDERER, /barEls\.prompt\.setAttribute\('aria-expanded', String\(!!\(m\.prompt && bar\.fullOpen\)\)\)/);
-  assert.match(RENDERER, /barEls\.bar\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape'\) return;[\s\S]*?if \(!bar\.fullOpen\) return;/);
+  assert.match(RENDERER, /barEls\.bar\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape' \|\| !bar\.fullOpen\) return;/);
   assert.match(RENDERER, /setAttribute\('role', 'note'\)/);
 });
 

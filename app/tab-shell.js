@@ -135,6 +135,7 @@ function sanitizeStatus(s) {
     turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
     night: o.night === true,
     summary: tabStatusLib.cleanSummary(o.summary),
+    summaryNote: typeof o.summaryNote === 'string' && o.summaryNote !== '' && o.summaryNote.length <= 300 ? o.summaryNote : null,
   };
 }
 
@@ -307,7 +308,7 @@ function createShell(deps) {
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
         occupancy: occupancyDisplay.tabOccupancy(claims, e.key, { keyOf, turn: t && t.status ? t.status.turn : null, now: at }),
         // Backlog #39: the hover card's lines for this tab's local-model summary ([] when it has none).
-        summaryLines: summaryDisplay.hoverLines(e.summary, at),
+        summaryLines: summaryDisplay.hoverLines(e.summary, at, e.summaryNote),
       };
     });
   }

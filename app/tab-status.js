@@ -68,6 +68,8 @@ function tabStatus(inputs, { healthMarker } = {}) {
     turn: TURNS.includes(i.turn) ? i.turn : null,
     night: i.night === true,
     summary: cleanSummary(i.summary),
+    // why there is no summary (Ollama off), for the hover card; the page sends it only while there is none
+    summaryNote: str(i.summaryNote, SUMMARY_NOTE_MAX),
   };
 }
 
@@ -105,7 +107,8 @@ function sameStatus(a, b) {
     a.health === b.health &&
     a.turn === b.turn &&
     a.night === b.night &&
-    sameSummary(a.summary === undefined ? null : a.summary, b.summary === undefined ? null : b.summary);
+    sameSummary(a.summary === undefined ? null : a.summary, b.summary === undefined ? null : b.summary) &&
+    (a.summaryNote === undefined ? null : a.summaryNote) === (b.summaryNote === undefined ? null : b.summaryNote);
 }
 
 const api = { tabStatus, afterSelected, sameStatus, pendingAfter, cleanSummary, TURNS };

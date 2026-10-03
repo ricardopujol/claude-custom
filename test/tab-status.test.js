@@ -68,8 +68,8 @@ test('without an injected healthMarker, health is null rather than a throw', () 
 });
 
 test('no inputs at all is a quiet status', () => {
-  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null });
-  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null });
+  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
+  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
 });
 
 // Backlog #52: the host's word that a /bedtime night is on (host/bedtime-state.js), for the strip's night tab.
@@ -169,4 +169,12 @@ test('sameStatus: a new summary is a change, the same one is not (so the strip h
 
 test('summary survives a look: afterSelected only clears the pending flags', () => {
   assert.deepStrictEqual(afterSelected(ts({ summary: SUM })).summary, SUM);
+});
+
+// Miguel I1: with no summary yet, why there is none rides on its own field for the hover card.
+test('summaryNote: a non-empty string only, else null; and a change is a change', () => {
+  assert.strictEqual(ts({ summaryNote: "Local summary off: Ollama isn't running" }).summaryNote, "Local summary off: Ollama isn't running");
+  for (const bad of [undefined, null, '', 5, {}, 'x'.repeat(301)]) assert.strictEqual(ts({ summaryNote: bad }).summaryNote, null, JSON.stringify(bad));
+  assert.strictEqual(sameStatus(ts({}), ts({ summaryNote: 'x' })), false);
+  assert.strictEqual(sameStatus(ts({ summaryNote: 'x' }), ts({ summaryNote: 'x' })), true);
 });

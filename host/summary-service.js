@@ -127,7 +127,8 @@ function createSummaryService({
     const sid = sidNow();
     const rec = sid ? store.get(sid) : null;
     return {
-      summary: rec ? { text: rec.text, model: rec.model, at: rec.at, turnsSeen: rec.turnsSeen, stale: rec.stale === true } : null,
+      // `session` lets a page tell a newer summary of the same session from another session's (Dexter F7)
+      summary: rec ? { text: rec.text, model: rec.model, at: rec.at, turnsSeen: rec.turnsSeen, stale: rec.stale === true, session: sid } : null,
       off: off ? { ...off } : null,
     };
   }

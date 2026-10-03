@@ -119,7 +119,7 @@ test('the summary is stored, labelled with its model and time, and broadcast', a
   const at = r.clock.t;
   assert.deepStrictEqual(last(r), {
     type: 'summary',
-    summary: { text: 'Working on: the drawer\nWhere it stands: reading it\nNext: fix it', model: 'llama3.2:3b', at, turnsSeen: 2, stale: false },
+    summary: { text: 'Working on: the drawer\nWhere it stands: reading it\nNext: fix it', model: 'llama3.2:3b', at, turnsSeen: 2, stale: false, session: SID },
     off: null,
   });
   assert.deepStrictEqual(r.svc.snapshot(), { summary: last(r).summary, off: null });

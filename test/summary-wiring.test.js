@@ -51,7 +51,7 @@ test('the page paints from summaryDisplay.panelModel through the bar\'s own mode
 
 test('aria-expanded follows the panel closing too (a hidden panel is never left "true")', () => {
   const paint = RENDERER.slice(RENDERER.indexOf('function paintBarNow'), RENDERER.indexOf('function paintBarNow') + 5500);
-  assert.match(paint, /\r?\n    barEls\.summary\.setAttribute\('aria-expanded', String\(!!\(m\.summary && m\.summary\.pinned\)\)\);\r?\n/, 'outside the if (m.summary) block');
+  assert.match(paint, /\r?\n    barEls\.summary\.setAttribute\('aria-expanded', String\(!!m\.summary\)\);\r?\n/, 'outside the if (m.summary) block, and it means "the card is showing" (Miguel S3)');
 });
 
 test('the control message and hello both feed it, and hello (a window that attached) can open it', () => {
@@ -70,7 +70,7 @@ test('it opens on switching to a tab (selected or shown), and a live push of a n
 
 test('"untouched" is the newest of the last real keystroke and the host\'s last prompt', () => {
   assert.match(RENDERER, /summaryDisplay\.lastTouchedAt\(sum\.lastInputAt, bar\.prompt && bar\.prompt\.at\)/);
-  assert.match(RENDERER, /summaryDisplay\.openOnSelect\(\{ summary: sum\.summary, off: sum\.off, lastInputAt: last, now \}\)/);
+  assert.match(RENDERER, /summaryDisplay\.openOnSelect\(\{ summary: sum\.summary, lastInputAt: last, now \}\)/, 'a summary opens it; Ollama off alone does not (Miguel I1)');
 });
 
 test('a keystroke hides it, from onKey (a focus or mouse report arriving through onData is not typing)', () => {
@@ -81,11 +81,9 @@ test('a keystroke hides it, from onKey (a focus or mouse report arriving through
   assert.doesNotMatch(RENDERER.slice(RENDERER.indexOf('term.onData((data) =>'), RENDERER.indexOf('term.onData((data) =>') + 300), /summaryTyped/);
 });
 
-test('a click pins it open (and unpins it), and Escape inside the bar closes it, without taking the terminal\'s Escape', () => {
-  assert.match(RENDERER, /barEls\.summary\.addEventListener\('click'/);
-  const esc = RENDERER.slice(RENDERER.indexOf("barEls.bar.addEventListener('keydown'"), RENDERER.indexOf("barEls.bar.addEventListener('keydown'") + 700);
-  assert.match(esc, /sum\.openedAt = null/);
-  assert.match(esc, /sum\.pinned = false/);
+test('a click pins it open (and a second click closes it)', () => {
+  const click = RENDERER.slice(RENDERER.indexOf("barEls.summary.addEventListener('click'"), RENDERER.indexOf("barEls.summary.addEventListener('click'") + 300);
+  assert.match(click, /if \(sum\.pinned\) \{ sum\.pinned = false; sum\.openedAt = null; \} else \{ sum\.pinned = true; \}/);
 });
 
 test('the tab status carries the summary (and why it may be out of date) to the strip\'s hover card', () => {
@@ -96,4 +94,26 @@ test('the page never types the summary into the session', () => {
   const block = RENDERER.slice(RENDERER.indexOf('// --- the where-are-we summary'), RENDERER.indexOf('// --- end of the where-are-we summary ---'));
   assert.ok(block.length > 500, 'the block exists');
   assert.doesNotMatch(block, /\bsend\(|userInput\(|term\.paste|term\.write\(/);
+});
+
+// Miguel S4 / Dexter F7 / Miguel I1 (PR #105)
+test('Escape closes the panel wherever the focus is: a captured document listener, taken only while the panel shows', () => {
+  const at = RENDERER.indexOf("document.addEventListener('keydown', (e) => {\r\n  if (e.key !== 'Escape' || !bar.summaryShown) return;");
+  const alt = RENDERER.indexOf("document.addEventListener('keydown', (e) => {\n  if (e.key !== 'Escape' || !bar.summaryShown) return;");
+  const from = at !== -1 ? at : alt;
+  assert.ok(from !== -1, 'the listener exists');
+  const body = RENDERER.slice(from, from + 500);
+  assert.match(body, /sum\.openedAt = null;/);
+  assert.match(body, /sum\.pinned = false;/);
+  assert.match(body, /\}, true\);/, 'captured, so xterm does not see the Escape that closed the panel');
+});
+
+test('a push releases a pin whose summary went away or is another session\'s', () => {
+  const apply = RENDERER.slice(RENDERER.indexOf('function applySummary'), RENDERER.indexOf('function applySummary') + 1200);
+  assert.match(apply, /Object\.assign\(sum, summaryDisplay\.afterPush\(sum, sum\.summary\)\)/);
+  assert.ok(apply.indexOf('afterPush') < apply.indexOf('summaryOpenIfIdle()'), 'before anything can open it');
+});
+
+test('with no summary the note goes to the hover card only, in its own status field', () => {
+  assert.match(RENDERER, /summaryNote: sum\.summary \? null : summaryDisplay\.offNote\(sum\.off\),/);
 });

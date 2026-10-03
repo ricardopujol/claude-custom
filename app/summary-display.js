@@ -51,7 +51,8 @@ const hasContent = (summary, off) => validSummary(summary) !== null || validOff(
 function labelOf(summary, now) {
   const s = validSummary(summary);
   if (!s) return 'local model';
-  const age = bar.ageLabel(s.at, now);
+  // a clock that ran backwards has no age: say so, so the third part is never silently missing (Miguel S2)
+  const age = bar.ageLabel(s.at, now) || 'time unknown';
   return ['local model', s.model, age, s.stale === true ? 'not refreshed yet' : null].filter(Boolean).join(' · ');
 }
 
@@ -66,7 +67,7 @@ function offNote(off) {
 }
 
 // Controls, bidi overrides and zero-width characters never reach the page or the native tooltip (Miguel I3, PR #105).
-const INVISIBLES = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F​-‏‪-‮⁦-⁩]/g;
+const INVISIBLES = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
 const linesOf = (text) => String(text).split(/\r?\n/).map(l => l.replace(INVISIBLES, '').trim()).filter(l => l !== '').slice(0, MAX_LINES);
 
 /** Has this tab gone untouched long enough? A time that isn't known counts: nobody has typed in it this run. */
@@ -83,35 +84,54 @@ function lastTouchedAt(...times) {
   return best;
 }
 
-function openOnSelect({ summary, off, lastInputAt, now } = {}) {
-  return hasContent(summary, off) && untouchedLongEnough(lastInputAt, now);
+// Only a summary opens the panel (Miguel I1, PR #105). Ollama off with no summary ever made is said on the tab's hover
+// card; popping the bar up for it on every idle-tab switch would nag someone who never wanted the feature.
+function openOnSelect({ summary, lastInputAt, now } = {}) {
+  return validSummary(summary) !== null && untouchedLongEnough(lastInputAt, now);
 }
 
 function panelModel({ summary, off, now, openedAt, pinned, typed } = {}) {
   const s = validSummary(summary);
   const o = validOff(off);
-  if (!s && !o) return null;
+  if (!s) return null;
   const pin = pinned === true;
   const within = isNum(openedAt) && isNum(now) && typed !== true && now >= openedAt && now - openedAt < SHOW_MS;
   if (!pin && !within) return null;
   return {
-    label: s ? labelOf(s, now) : labelOf(null, now) + (o && isStr(o.model) ? ' · ' + o.model : ''),
-    lines: s ? linesOf(s.text) : [],
+    label: labelOf(s, now),
+    lines: linesOf(s.text),
     note: offNote(o),
-    dim: (s !== null && s.stale === true) || o !== null,
+    dim: s.stale === true || o !== null,
     pinned: pin,
   };
 }
 
-/** The tab strip's hover lines for a tab's summary (`summary.note`: why it may be out of date), or [] when it has none. */
-function hoverLines(summary, now) {
+/**
+ * The tab strip's hover lines for a tab's summary (`summary.note`: why it may be out of date). With no summary, `note`
+ * (why there is none: Ollama off) is the whole card; nothing at all when neither exists.
+ */
+function hoverLines(summary, now, note) {
   const s = validSummary(summary);
-  if (!s) return [];
-  const note = isStr(summary.note) ? [summary.note] : [];
-  return [`Where we're at (${labelOf(s, now)}):`, ...linesOf(s.text), ...note];
+  if (!s) return isStr(note) ? [note] : [];
+  const own = isStr(summary.note) ? [summary.note] : [];
+  return [`Where we're at (${labelOf(s, now)}):`, ...linesOf(s.text), ...own];
 }
 
-const api = { panelModel, openOnSelect, untouchedLongEnough, lastTouchedAt, labelOf, offNote, hoverLines, hasContent, UNTOUCHED_MS, SHOW_MS };
+/**
+ * What the page holds about the panel after the host pushed `summary` (Dexter F7, PR #105): the pin, the open time and the
+ * typed flag belong to the summary they were made for. When it goes away (/clear) or is another session's, they are
+ * released, so a later push can never surface a pinned panel under the person's hands. -> { openedAt, pinned, typed, session }
+ */
+function afterPush(state, summary) {
+  const st = state && typeof state === 'object' ? state : {};
+  const s = validSummary(summary);
+  const session = s && isStr(s.session) ? s.session : null;
+  if (!s) return { openedAt: null, pinned: false, typed: false, session: null };
+  if (isStr(st.session) && session !== st.session) return { openedAt: null, pinned: false, typed: false, session };
+  return { openedAt: isNum(st.openedAt) ? st.openedAt : null, pinned: st.pinned === true, typed: st.typed === true, session: isStr(st.session) ? st.session : session };
+}
+
+const api = { afterPush, panelModel, openOnSelect, untouchedLongEnough, lastTouchedAt, labelOf, offNote, hoverLines, hasContent, UNTOUCHED_MS, SHOW_MS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
