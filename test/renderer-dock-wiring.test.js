@@ -115,3 +115,18 @@ test('PR #100 Dexter F6 / F3: a divider release is applied to the placement as i
   assert.doesNotMatch(handler, /commitPlacement\(l\)|d\.base/, 'the stale snapshot is never what is committed');
   assert.match(JS, /function committedLayout\(\) \{ return ownLayout \|\| globalLayout; \}/, 'what is saved, without the drawn-only drag layout');
 });
+
+test('PR #100 Miguel I2: both drags take pointer capture, and end themselves on a move with no button, a lost capture and a blur', () => {
+  assert.strictEqual([...JS.matchAll(/\.setPointerCapture\(e\.pointerId\)/g)].length, 2, 'the tab drag and the divider drag');
+  assert.strictEqual([...JS.matchAll(/if \(e\.buttons === 0\) \{ (end|cancelDividerDrag)\(\); return; \}/g)].length, 2);
+  assert.match(JS, /window\.addEventListener\('lostpointercapture', \(\) => \{ cancelTabDrag\(\); \}\);/);
+  assert.match(JS, /window\.addEventListener\('blur', \(\) => \{ cancelTabDrag\(\); \}\);/);
+  assert.match(JS, /window\.addEventListener\('lostpointercapture', cancelDividerDrag\);/);
+  assert.match(JS, /window\.addEventListener\('blur', cancelDividerDrag\);/);
+  // A cancelled divider drag clears the drawn layout and redraws.
+  const at = JS.indexOf('function cancelDividerDrag()');
+  assert.ok(at !== -1);
+  const body = JS.slice(at, JS.indexOf('\n  }', at));
+  assert.match(body, /dragLayout = null;/);
+  assert.match(body, /renderLayout\(\);/);
+});

@@ -183,7 +183,7 @@ function setRect(el, r) {
 /**
  * Keep one element per key under `dock`: made once, moved on every render,
  * removed when its key is gone. A gutter being dragged keeps its element (and
- * its pointer capture) because its key doesn't change. Returns the element of
+ * the pointer capture app/renderer.js took on it) because its key doesn't change. Returns the element of
  * each item and the stale ones; the plan's own boxes are never written to.
  */
 function syncPool(dock, selector, items, keyOf, make, before) {

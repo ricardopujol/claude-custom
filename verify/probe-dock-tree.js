@@ -514,6 +514,30 @@ async function main() {
   await view(app, 'layout', { layout: example });
   cur = (await settled(app)).s;
 
+  // 6b ----------------------------------------------------------------------------
+  // PR #100 Miguel I2: a drag whose release never comes (Alt-Tab, an OS dialog) ends itself and changes nothing.
+  {
+    const layoutNow = JSON.stringify((await viewState(app)).layout);
+    const pushesNow = (await viewState(app)).pushes;
+    const barNow = (await viewState(app)).gutters.find(g2 => g2.dir === 'row');
+    const cases = [
+      ['a tab drag, then a move with no button down', { kind: 'tab', id: 'vault', how: 'nobutton' }],
+      ['a tab drag, then the window loses focus', { kind: 'tab', id: 'vault', how: 'blur' }],
+      ['a divider drag, then a move with no button down', { kind: 'gutter', path: barNow && barNow.path, i: barNow && barNow.i, delta: 40, how: 'nobutton' }],
+      ['a divider drag, then the window loses focus', { kind: 'gutter', path: barNow && barNow.path, i: barNow && barNow.i, delta: 40, how: 'blur' }],
+    ];
+    for (const [label, args] of cases) {
+      const r = await view(app, 'abortedDrag', args);
+      const lit = args.kind === 'tab' ? r.during && r.during.dragging && r.during.zones > 0 : r.during && r.during.divider && r.during.drawn;
+      const over = r.after && !r.after.dragging && r.after.zones === 0 && !r.after.ghost && !r.after.divider && !r.after.drawn;
+      await sleep(800);
+      const st = await viewState(app);
+      check(`6: ${label}: the drag ends, and nothing is changed or saved (PR #100 I2)`,
+        r.ok && !!lit && !!over && JSON.stringify(st.layout) === layoutNow && st.pushes === pushesNow && tiles((await settled(app)).s).length === 0,
+        JSON.stringify(r));
+    }
+  }
+
   // 8 -----------------------------------------------------------------------------
   // one panel out and back: its group, in its place
   const gitTabsBefore = groupWith(cur, 'bugvault').tabs;

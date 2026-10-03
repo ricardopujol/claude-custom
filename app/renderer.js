@@ -1070,7 +1070,7 @@ let cancelTabDrag = () => {};      // the socket closing ends a drag too
 (function initTabDrag() {
   const dock = document.getElementById('dock');
   const overlay = document.getElementById('dock-overlay');
-  let press = null;                // { id, label, x, y }: the button is down, not yet dragged
+  let press = null;                // { id, label, x, y, el, pointerId }: the button is down, not yet dragged
   let drag = null;                 // { id, ghost, target }
 
   const pointInDock = (e) => { const r = dock.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
@@ -1083,6 +1083,7 @@ let cancelTabDrag = () => {};      // the socket closing ends a drag too
     }
   }
   function end() {
+    if (press) { try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ } }
     press = null;
     if (drag) drag.ghost.remove();
     drag = null;
@@ -1095,10 +1096,14 @@ let cancelTabDrag = () => {};      // the socket closing ends a drag too
     if (e.button !== 0) return;
     const b = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
     if (!b) return;
-    press = { id: b.dataset.module, label: b.textContent, x: e.clientX, y: e.clientY };
+    press = { id: b.dataset.module, label: b.textContent, x: e.clientX, y: e.clientY, el: b, pointerId: e.pointerId };
+    // Capture keeps the moves and the release coming to this page when the pointer leaves the window; if the
+    // release is lost anyway (Alt-Tab, an OS dialog), the three guards below end the drag (PR #100 Miguel I2).
+    try { b.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
   });
   window.addEventListener('pointermove', (e) => {
     if (!press) return;
+    if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
     if (!drag) {
       if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
       drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null };
@@ -1121,6 +1126,8 @@ let cancelTabDrag = () => {};      // the socket closing ends a drag too
     if (d.target) commitPlacement(DTm.dock(placementLayout(), d.id, d.target), { select: d.id });
   });
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
+  window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
+  window.addEventListener('blur', () => { cancelTabDrag(); });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
   }, true);
@@ -1339,6 +1346,27 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
         window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
         return JSON.stringify({ ok: true });
+      }
+      // PR #100 Miguel I2: a drag whose release never comes (no pointerup is sent). `kind` is 'tab' (`id`) or
+      // 'gutter' (`path`, `i`, `delta`); `how` is 'nobutton' (a move arrives with no button down) or 'blur'.
+      case 'abortedDrag': {
+        const gut = a.kind === 'gutter';
+        const el = gut
+          ? [...document.querySelectorAll('#dock > .dgutter')].find(e2 => e2.dataset.path === String(a.path) && Number(e2.dataset.i) === a.i)
+          : document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        const r = el.getBoundingClientRect();
+        const x0 = r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        const step = gut ? (el.dataset.dir === 'row' ? [a.delta, 0] : [0, a.delta]) : [30, 30];
+        const snap = () => ({ ...overlayState(), divider: dividerDrag !== null, drawn: dragLayout !== null });
+        el.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + step[0] / 2, y0 + step[1] / 2));
+        window.dispatchEvent(ptr('pointermove', x0 + step[0], y0 + step[1]));
+        const during = snap();
+        if (a.how === 'blur') window.dispatchEvent(new Event('blur'));
+        else window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x0 + step[0], clientY: y0 + step[1], button: 0, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        return JSON.stringify({ ok: true, during, after: snap() });
       }
       // PR #100 Dexter F6: a divider is pressed and moved, ANOTHER window's layout arrives (`pushed`, the same
       // path as the main-process push), then the divider is released.
@@ -3507,12 +3535,25 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
     const split = splitAt(path);
     const n = nodeAt(base, path);
     if (!split || !n) return;
-    dividerDrag = { path, i: Number(g.dataset.i), dir: g.dataset.dir, start: g.dataset.dir === 'row' ? e.clientX : e.clientY, base, split, node: n, gutter: g };
+    dividerDrag = { path, i: Number(g.dataset.i), dir: g.dataset.dir, start: g.dataset.dir === 'row' ? e.clientX : e.clientY, base, split, node: n, gutter: g, pointerId: e.pointerId };
     g.classList.add('dragging');
+    // As the tab drag does (PR #100 Miguel I2): capture, and a drag that lost its release ends itself.
+    try { g.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
     e.preventDefault();
   });
+  // A drag the system took away, or whose release never came, is not a choice: drop it and draw what is saved.
+  function cancelDividerDrag() {
+    if (!dividerDrag) return;
+    const d = dividerDrag;
+    d.gutter.classList.remove('dragging');
+    try { d.gutter.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
+    dividerDrag = null;
+    dragLayout = null;
+    renderLayout();
+  }
   window.addEventListener('pointermove', (e) => {
     if (!dividerDrag) return;
+    if (e.buttons === 0) { cancelDividerDrag(); return; }
     const d = dividerDrag;
     const delta = (d.dir === 'row' ? e.clientX : e.clientY) - d.start;
     const sizes = window.dockTreeView.sizesAfterDrag(d.node, d.split, d.i, delta);
@@ -3529,6 +3570,7 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
     if (!dividerDrag) return;
     const d = dividerDrag;
     d.gutter.classList.remove('dragging');
+    try { d.gutter.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
     dividerDrag = null;
     const moved = dragLayout !== null;
     dragLayout = null;
@@ -3539,14 +3581,9 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
     if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), d.path, rebased));     // the one real choice, saved once
     else renderLayout();
   });
-  // A drag the system took away is not a choice: the layout goes back to what it was.
-  window.addEventListener('pointercancel', () => {
-    if (!dividerDrag) return;
-    dividerDrag.gutter.classList.remove('dragging');
-    dividerDrag = null;
-    dragLayout = null;
-    renderLayout();
-  });
+  window.addEventListener('pointercancel', cancelDividerDrag);
+  window.addEventListener('lostpointercapture', cancelDividerDrag);   // after a normal release the drag is already over
+  window.addEventListener('blur', cancelDividerDrag);
 })();
 
 // The window changing size re-fits the zones, never saving: the stored sizes
