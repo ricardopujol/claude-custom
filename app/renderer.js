@@ -150,6 +150,9 @@ document.getElementById('lock-go-to').addEventListener('click', async () => {
 // health. tab-status.js decides; this only sends it when it changed.
 // What waits for a look (#31): an urgent need, a finished turn. tab-status.js decides the transitions.
 let tabPending = { urgent: false, finished: false };
+// The host's measure of the MAIN session from the CLI's hooks (host/turn-state.js): 'idle' | 'turn' |
+// 'prompt', or null -- not said yet, an older host, or the socket is down. Unknown is not idle (PR #93 F1/F2).
+let sessionTurn = null;
 let wasWorking = false;
 let lastReportedTabStatus = null;
 function pend(event) {
@@ -167,6 +170,7 @@ function reportTabStatus() {
     pendingFinished: tabPending.finished,
     lock: tabLock,
     health: tabHealth,
+    turn: sessionTurn,
   }, { healthMarker: worktreeStatus.healthMarker });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
@@ -3854,6 +3858,7 @@ function handleControl(msg) {
     renderParty(msg.party);
     roster.clear();
     for (const r of msg.roster || []) roster.set(r.agent, r);
+    sessionTurn = msg.turn === undefined ? null : msg.turn;
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
@@ -4017,6 +4022,11 @@ function handleControl(msg) {
   }
   if (msg.type === 'health') {
     renderHealth(msg.health);
+    return;
+  }
+  if (msg.type === 'turn') {
+    sessionTurn = msg.turn === undefined ? null : msg.turn;
+    reportTabStatus();
     return;
   }
   if (msg.type === 'cooldowns') {
@@ -4246,6 +4256,8 @@ function connect() {
 
   ws.onclose = () => {
     dot.classList.remove('on');
+    // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
+    if (sessionTurn !== null) { sessionTurn = null; reportTabStatus(); }
     // Detach is normal, not fatal — the host keeps the session alive, so just
     // keep trying to reattach.
     setTimeout(connect, 1000);

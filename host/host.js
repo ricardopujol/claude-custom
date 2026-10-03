@@ -69,6 +69,7 @@ const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
+const { createTurnState } = require('./turn-state');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
@@ -456,6 +457,10 @@ const attention = createAttention({
   agents: () => mood.stack(),
 });
 attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
+// Is a main-session turn running, or a dialog open? Measured from the CLI's hooks only (PR #93 Dexter F1/F2):
+// the Git drawer's Run /merged types into this session, and the subagent roster can't see a turn with no
+// agent in it. null until SessionStart: a host without hooks never claims idle.
+const turnState = createTurnState();
 
 // Provider is fixed at spawn: the pty environment cannot change under a running
 // process, so switching backend means a new session rather than a hot swap.
@@ -1189,6 +1194,7 @@ if (helperExists) {
       }));
     }
     attention.handle(ev);
+    if (turnState.handle(ev)) broadcastControl({ type: 'turn', turn: turnState.snapshot() });
     mood.handle(ev);
     // A backstop ending a call means that call's own close never arrived --
     // logged, because a lost event nobody can see is how PostToolUseFailure
@@ -1949,6 +1955,8 @@ wss.on('connection', (ws) => {
     style: { source: styleResolved.source, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
+    // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
+    turn: turnState.snapshot(),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),

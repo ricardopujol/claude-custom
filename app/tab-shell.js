@@ -118,6 +118,10 @@ const noWindowText = (h) => `That session is in another claude-custom (pid ${h.p
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
 /** What a renderer may say about itself, cut down to the five known fields. */
+// The drawer's rule for "is this session at rest?" -- one copy, so the re-check here agrees with it.
+const { sessionBusyWhy } = require('./git-actions');
+const busyWhy = (status) => sessionBusyWhy(status);
+
 function sanitizeStatus(s) {
   const o = s && typeof s === 'object' ? s : {};
   return {
@@ -126,6 +130,7 @@ function sanitizeStatus(s) {
     finished: o.finished === true,
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
+    turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
   };
 }
 
@@ -817,6 +822,8 @@ function createShell(deps) {
       out.push({
         folder, open: !!e, started: !!e && e.started === true, known: !!e && e.started === true && !!st,
         working: e && st ? st.working === true : null, needsInput: e && st ? st.needsInput === true : null,
+        // the host's measure of the main session (host/turn-state.js), and the session lock
+        turn: e && st ? st.turn : null, lock: e && st ? st.lock : null,
       });
     }
     return out;
@@ -841,8 +848,8 @@ function createShell(deps) {
     if (!entry || !tab) return { kind: 'explain', text: `${name} has no tab open in this window.` };
     if (!tab.started || !Number.isInteger(tab.port) || !tab.token) return { kind: 'explain', text: `${name}'s tab hasn't started a session yet.` };
     if (!tab.status) return { kind: 'explain', text: `${name}'s session hasn't reported what it's doing yet.` };
-    if (tab.status.working) return { kind: 'explain', text: `${name}'s session is working: wait for it to finish.` };
-    if (tab.status.needsInput) return { kind: 'explain', text: `${name}'s session is waiting for you: answer it first.` };
+    const why = busyWhy(tab.status);
+    if (why) return { kind: 'explain', text: `${name}'s session ${why}.` };
     const branch = branchOf(key);
     await userSelect(key);
     const send = (data) => hosts.control({ port: tab.port, token: tab.token, msg: { type: 'input', data } });

@@ -68,14 +68,26 @@ test('without an injected healthMarker, health is null rather than a throw', () 
 });
 
 test('no inputs at all is a quiet status', () => {
-  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null });
-  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null });
+  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
+  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
+});
+
+// PR #93 Dexter F1/F2: the host's own word on the MAIN session, from the CLI's hooks (host/turn-state.js).
+test("turn is the host's idle / turn / prompt, or null when it hasn't said: never a guessed idle", () => {
+  for (const t of ['idle', 'turn', 'prompt']) assert.strictEqual(ts({ turn: t }).turn, t);
+  for (const bad of [undefined, null, 'busy', '', 1, true, {}]) assert.strictEqual(ts({ turn: bad }).turn, null);
+});
+
+test('Dexter F2: a look clears "needs you" but never the turn: an open dialog is still open after a glance', () => {
+  const s = ts({ pendingUrgent: true, turn: 'prompt' });
+  assert.strictEqual(afterSelected(s).needsInput, false);
+  assert.strictEqual(afterSelected(s).turn, 'prompt');
 });
 
 test('sameStatus: field by field, and null handling', () => {
-  const base = { working: true, needsInput: false, finished: false, lock: 'held', health: '↓3' };
+  const base = { working: true, needsInput: false, finished: false, lock: 'held', health: '↓3', turn: 'turn' };
   assert.strictEqual(sameStatus(base, { ...base }), true);
-  for (const [k, v] of [['working', false], ['needsInput', true], ['finished', true], ['lock', null], ['health', null]]) {
+  for (const [k, v] of [['working', false], ['needsInput', true], ['finished', true], ['lock', null], ['health', null], ['turn', 'idle']]) {
     assert.strictEqual(sameStatus(base, { ...base, [k]: v }), false, k);
   }
   assert.strictEqual(sameStatus(null, null), true);

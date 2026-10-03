@@ -7,7 +7,10 @@
  * `branch` is a model entry (host/git-tree.js: state, pr, prUrl, place, folder). `tab` is what the shell
  * knows of the branch's worktree tab: `null` (not known), `{ open: false }`, `{ open: true, started }`,
  * `{ open: true, started: true, known: false }` (no report yet), or `{ ..., known: true, working,
- * needsInput }`. Every action is enabled or DISABLED WITH A REASON, and nothing is dropped from the list:
+ * needsInput, turn, lock }`. `turn` is the host's measure of the MAIN session from the CLI's own hooks
+ * (host/turn-state.js): 'idle', 'turn', 'prompt', or null. PR #93 Dexter F1 / F2: `working` is the
+ * subagent roster (blind to a main-session turn) and `needsInput` clears on a glance, so neither alone
+ * may say a session is at rest; only `turn === 'idle'` does. Every action is enabled or DISABLED WITH A REASON, and nothing is dropped from the list:
  * the drawer draws the reason beside it. Unknown is never "fine": a session that hasn't reported its
  * state, or one whose tab can't be read, is not idle, so *Run /merged* stays off.
  *
@@ -55,6 +58,17 @@ function openWorktree(b) {
   return no('open-worktree', label, OPEN_WORKTREE_WHY);
 }
 
+/**
+ * Why a session can't be typed into, or null when it is at rest (shared with app/tab-shell.js, whose
+ * re-check must agree). Working first: that is the first thing to wait for.
+ */
+function sessionBusyWhy(t) {
+  if (t.working !== false || t.turn === 'turn') return 'is working: wait for it to finish';
+  if (t.needsInput !== false || t.turn === 'prompt') return 'is waiting for you: answer it first';
+  if (t.turn !== 'idle') return "hasn't said whether a turn is running: can't tell whether it's at rest";
+  return null;
+}
+
 function runMerged(b, c) {
   const label = 'Run /merged';
   if (b.state === 'merged') return no('run-merged', label, 'this branch is already merged');
@@ -68,8 +82,8 @@ function runMerged(b, c) {
   if (t.open !== true) return no('run-merged', label, 'its worktree has no tab in this window');
   if (t.started !== true) return no('run-merged', label, "its tab hasn't started a session yet");
   if (t.known !== true) return no('run-merged', label, "its session hasn't reported what it's doing yet");
-  if (t.working !== false) return no('run-merged', label, 'its session is working: wait for it to finish');
-  if (t.needsInput !== false) return no('run-merged', label, 'its session is waiting for you: answer it first');
+  const busy = sessionBusyWhy(t);
+  if (busy) return no('run-merged', label, `its session ${busy}`);
   return yes('run-merged', label);
 }
 
@@ -86,7 +100,7 @@ function firstFocus(actions) {
   return (j || on[0] || {}).id || null;
 }
 
-const api = { actionsFor, firstFocus, OPEN_WORKTREE_WHY };
+const api = { actionsFor, firstFocus, sessionBusyWhy, OPEN_WORKTREE_WHY };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

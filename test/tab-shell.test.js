@@ -212,14 +212,14 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
   assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
-test('sanitizeStatus keeps five fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null });
+test('sanitizeStatus keeps six fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null });
+    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', extra: 1 }),
+    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3' }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3' });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt' }),
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt' });
 });
 
 // --- open: criterion 1, X5, criterion 8 --------------------------------------
@@ -903,7 +903,7 @@ test('selectFolder: no tab for that folder, a bad path, or a sender that is no t
 
 // --- the Git drawer (Enhancement #46): what a branch's tab is doing, and *Run /merged* ---
 
-const idleStatus = { working: false, needsInput: false, finished: false, lock: null, health: null };
+const idleStatus = { working: false, needsInput: false, finished: false, lock: 'held', health: null, turn: 'idle' };
 
 test('tabStates: per folder, whether a tab is open, started, and what its session reported -- unknown stays unknown', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
@@ -913,13 +913,63 @@ test('tabStates: per folder, whether a tab is open, started, and what its sessio
   const aView = h.shell.tabByKey(key('feat-a')).view;
   const folders = [wt('feat-a'), wt('feat-b'), wt('feat-zzz'), ''];
   let got = h.shell.tabStates(devView, folders);
-  assert.deepStrictEqual(got[0], { folder: wt('feat-a'), open: true, started: true, known: false, working: null, needsInput: null });
-  assert.deepStrictEqual(got[1], { folder: wt('feat-b'), open: true, started: false, known: false, working: null, needsInput: null });
-  assert.deepStrictEqual(got[2], { folder: wt('feat-zzz'), open: false, started: false, known: false, working: null, needsInput: null });
+  const none = { working: null, needsInput: null, turn: null, lock: null };
+  assert.deepStrictEqual(got[0], { folder: wt('feat-a'), open: true, started: true, known: false, ...none });
+  assert.deepStrictEqual(got[1], { folder: wt('feat-b'), open: true, started: false, known: false, ...none });
+  assert.deepStrictEqual(got[2], { folder: wt('feat-zzz'), open: false, started: false, known: false, ...none });
   assert.strictEqual(got.length, 3, 'a blank folder is dropped, not answered');
   h.shell.report(aView, { working: true });
   got = h.shell.tabStates(devView, [wt('feat-a')]);
-  assert.deepStrictEqual(got[0], { folder: wt('feat-a'), open: true, started: true, known: true, working: true, needsInput: false });
+  assert.deepStrictEqual(got[0], { folder: wt('feat-a'), open: true, started: true, known: true, working: true, needsInput: false, turn: null, lock: null });
+  h.shell.report(aView, { working: false, turn: 'prompt', lock: 'held' });
+  got = h.shell.tabStates(devView, [wt('feat-a')]);
+  assert.deepStrictEqual([got[0].turn, got[0].lock], ['prompt', 'held'], "the host's turn and the lock reach the drawer");
+});
+
+// PR #93 Dexter F1 / F2: Run /merged's re-check reads the host's measure of the MAIN session.
+test('Dexter F1: a main-session turn with an empty roster is working: nothing is typed, nothing moves', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const before = h.shell.snapshot().selectedKey;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...idleStatus, working: false, turn: 'turn' });
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /working/);
+  assert.deepStrictEqual(h.controls, []);
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
+  assert.strictEqual(h.shell.snapshot().selectedKey, before);
+});
+
+test('Dexter F2: a dialog open in a tab that was looked at is still waiting for you', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  h.shell.report(aView, { ...idleStatus, needsInput: true, turn: 'prompt' });
+  await h.shell.select(key('feat-a'));
+  h.shell.looked();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).status.needsInput, false, 'the look cleared "needs you"');
+  await h.shell.select(key('dev'));
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /waiting for you/);
+  assert.deepStrictEqual(h.controls, []);
+  assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'type-command'), []);
+});
+
+test('a session whose host has not said whether a turn is running is not idle: nothing is typed', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...idleStatus, turn: null });
+  const r = await h.shell.runMerged(devView, wt('feat-a'), 'feat/a');
+  assert.strictEqual(r.kind, 'explain');
+  assert.match(r.text, /can't tell whether/);
+  assert.deepStrictEqual(h.controls, []);
 });
 
 test('tabStates: spelled however, answered with the folder as it was asked; a stranger gets nothing; junk is ignored', async () => {

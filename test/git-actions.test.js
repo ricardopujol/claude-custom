@@ -14,7 +14,7 @@ const A = require('../app/git-actions');
 const open = { name: 'feat/b', state: 'open', pr: 91, prUrl: 'https://github.com/o/r/pull/91', place: 'worktree', folder: 'C:/p/feat-b' };
 const merged = { name: 'feat/a', state: 'merged', pr: 5, prUrl: 'https://github.com/o/r/pull/5', place: 'had-worktree', folder: null };
 const unmerged = { name: 'spike/c', state: 'unmerged', pr: null, prUrl: null, place: 'dev', folder: null };
-const idle = { open: true, started: true, known: true, working: false, needsInput: false };
+const idle = { open: true, started: true, known: true, working: false, needsInput: false, turn: 'idle' };
 const ctx = (over = {}) => ({ prsKnown: true, repoUrl: 'https://github.com/o/r', tab: idle, ...over });
 const by = (list, id) => list.find(a => a.id === id);
 
@@ -78,6 +78,28 @@ test('Run /merged: only for an open PR whose tab is open and idle; every other c
   assert.match(why(open, ctx({ tab: { ...idle, working: true } })), /working/);
   assert.match(why(open, ctx({ tab: { ...idle, needsInput: true } })), /waiting for you/);
   assert.match(why(open, ctx({ tab: null })), /can't tell/);
+});
+
+// PR #93 Dexter F1 / F2: the gate reads the host's measure of the MAIN session, not the subagent roster
+// and not "looked at yet".
+test('Dexter F1: a main-session turn with no subagent is working, though the roster says nothing is', () => {
+  const a = by(A.actionsFor(open, ctx({ tab: { ...idle, working: false, turn: 'turn' } })), 'run-merged');
+  assert.strictEqual(a.enabled, false);
+  assert.match(a.why, /working/);
+});
+
+test('Dexter F2: an open dialog the tab was already looked at is still waiting for you', () => {
+  const a = by(A.actionsFor(open, ctx({ tab: { ...idle, needsInput: false, turn: 'prompt' } })), 'run-merged');
+  assert.strictEqual(a.enabled, false);
+  assert.match(a.why, /waiting for you/);
+});
+
+test('a session whose host has not said whether a turn is running is not idle', () => {
+  for (const turn of [null, undefined, 'weird']) {
+    const a = by(A.actionsFor(open, ctx({ tab: { ...idle, turn } })), 'run-merged');
+    assert.strictEqual(a.enabled, false, String(turn));
+    assert.match(a.why, /can't tell whether/);
+  }
 });
 
 test('Run /merged: a working tab that also needs input is told as working (the first thing to wait for)', () => {

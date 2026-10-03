@@ -84,8 +84,17 @@ test('hooks only the events the harness actually consumes', () => {
   assert.deepStrictEqual(
     Object.keys(s.hooks).sort(),
     ['Notification', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'SessionEnd', 'SessionStart',
-     'Stop', 'SubagentStop']
+     'Stop', 'SubagentStop', 'UserPromptSubmit']
   );
+});
+
+test('UserPromptSubmit is hooked, every prompt, so the host knows a main-session turn opened (PR #93 Dexter F1)', () => {
+  // The subagent roster can't see a turn that calls no agent: Run /merged typed into one. The helper prints
+  // nothing and always exits 0 (helper/hook-helper.cs), so the hook can never add to or block a prompt.
+  const s = buildHarnessSettings(opts);
+  assert.ok(Array.isArray(s.hooks.UserPromptSubmit) && s.hooks.UserPromptSubmit.length === 1);
+  assert.strictEqual(s.hooks.UserPromptSubmit[0].matcher, '');
+  assert.match(s.hooks.UserPromptSubmit[0].hooks[0].command, /--event UserPromptSubmit$/);
 });
 
 test('PostToolUseFailure is hooked with exactly the PostToolUse matcher', () => {
