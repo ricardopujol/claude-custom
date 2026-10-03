@@ -96,8 +96,13 @@ test('only an URGENT attention message marks the tab as needing input', () => {
   assert.match(branch('attention'), /msg\.urgent === true/);
 });
 
-test('being selected clears the pending flag and re-reports', () => {
-  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ tabPendingUrgent = false; reportTabStatus\(\); \}\)/);
+test('being selected clears both pending flags and re-reports', () => {
+  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ tabPendingUrgent = false; tabPendingFinished = false; reportTabStatus\(\); \}\)/);
+});
+
+test('#31: a non-urgent attention message (the session finished) marks the tab finished, and the status carries it', () => {
+  assert.match(branch('attention'), /else \{ tabPendingFinished = true; reportTabStatus\(\); \}/);
+  assert.match(fnBody('reportTabStatus'), /pendingFinished: tabPendingFinished/);
 });
 
 test('the shell\'s override menu item clicks the Open anyway button: one switch, not two', () => {

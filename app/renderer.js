@@ -149,6 +149,7 @@ document.getElementById('lock-go-to').addEventListener('click', async () => {
 // What this tab tells the shell about itself (PR 2): working, needs input, lock,
 // health. tab-status.js decides; this only sends it when it changed.
 let tabPendingUrgent = false;
+let tabPendingFinished = false;   // #31: the session finished and nobody has looked yet
 let lastReportedTabStatus = null;
 function reportTabStatus() {
   if (!(window.harness && window.harness.tabStatus && window.tabStatus)) return;
@@ -156,6 +157,7 @@ function reportTabStatus() {
   const status = window.tabStatus.tabStatus({
     mainMood: anyWorking ? 'working' : null,
     pendingUrgent: tabPendingUrgent,
+    pendingFinished: tabPendingFinished,
     lock: tabLock,
     health: tabHealth,
   }, { healthMarker: worktreeStatus.healthMarker });
@@ -165,7 +167,7 @@ function reportTabStatus() {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { tabPendingUrgent = false; reportTabStatus(); });
+  window.harness.onTabSelected(() => { tabPendingUrgent = false; tabPendingFinished = false; reportTabStatus(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.
@@ -3865,8 +3867,9 @@ function handleControl(msg) {
     // case the feature was built for: watching the terminal while a long task
     // runs and wanting to be told when it ends.
     const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
-    // An urgent message is waiting for you until this tab is looked at.
+    // An urgent message is waiting for you until this tab is looked at; so is a finished one (#31).
     if (msg.urgent === true) { tabPendingUrgent = true; reportTabStatus(); }
+    else { tabPendingFinished = true; reportTabStatus(); }
 
     if (window.harness && window.harness.attention) {
       // Preferred path: main raises it, so it needs no page permission and can

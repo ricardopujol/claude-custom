@@ -209,14 +209,14 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
   assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
-test('sanitizeStatus keeps four fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, lock: null, health: null });
+test('sanitizeStatus keeps five fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: 'yes', needsInput: 1, lock: '', health: '', extra: 1 }),
-    { working: false, needsInput: false, lock: null, health: null });
+    sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', extra: 1 }),
+    { working: false, needsInput: false, finished: false, lock: null, health: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, lock: 'blocked', health: '↓3' }),
-    { working: true, needsInput: true, lock: 'blocked', health: '↓3' });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3' }),
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3' });
 });
 
 // --- open: criterion 1, X5, criterion 8 --------------------------------------
@@ -790,6 +790,41 @@ test('needsInput from the tab you are looking at (window focused) does not light
   await flush();
   h2.shell.report(h2.shell.tabByKey(key('dev')).view, { needsInput: true });
   assert.strictEqual(h2.shell.model().find(x => x.isDev).needsInput, true, 'window in the background: the strip shows it');
+});
+
+test('#31: a tab that finished pulses while unselected, and the pulse ends when it is selected', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const pulseOf = () => h.shell.model().find(x => x.label === 'feat/a').pulse;
+  assert.strictEqual(pulseOf(), null);
+  h.shell.report(aView, { finished: true });
+  assert.strictEqual(pulseOf(), 'done');
+  h.shell.report(aView, { finished: true, needsInput: true });
+  assert.strictEqual(pulseOf(), 'needs', 'the urgent look outranks the calm one');
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(pulseOf(), null);
+  const status = h.shell.tabByKey(key('feat-a')).status;
+  assert.strictEqual(status.finished, false, 'the shell also forgets it, so deselecting does not bring it back');
+  await h.shell.select(key('dev'));
+  assert.strictEqual(pulseOf(), null);
+});
+
+test('#31: finished from the tab you are looking at (window focused) never pulses', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  h.shell.report(h.shell.tabByKey(key('dev')).view, { finished: true });
+  assert.strictEqual(h.shell.model().find(x => x.isDev).pulse, null);
+  assert.strictEqual(h.shell.tabByKey(key('dev')).status.finished, false);
+  assert.ok(h.sent.some(([k, ch]) => k === key('dev') && ch === 'tab-selected'), 'the page is told, so it clears its own flag');
+  // Window in the background: still selected, so still no pulse (it is the tab on screen).
+  const h2 = harness({ running: { 7700: wt('dev') }, focused: false });
+  await h2.shell.open();
+  await flush();
+  h2.shell.report(h2.shell.tabByKey(key('dev')).view, { finished: true });
+  assert.strictEqual(h2.shell.model().find(x => x.isDev).pulse, null);
 });
 
 test('a raise and an attention click select the sender\'s tab and bring the window forward', async () => {

@@ -28,12 +28,21 @@ test('needsInput is exactly pendingUrgent === true', () => {
   }
 });
 
-test('afterSelected clears needsInput and leaves the rest', () => {
-  const s = ts({ mainMood: 'working', pendingUrgent: true, lock: { state: 'held' }, health: { kind: 'tab', behindDevelop: 2 } });
+test('finished is exactly pendingFinished === true (#31)', () => {
+  assert.strictEqual(ts({ pendingFinished: true }).finished, true);
+  for (const v of [false, undefined, null, 1, 'true']) {
+    assert.strictEqual(ts({ pendingFinished: v }).finished, false);
+  }
+});
+
+test('afterSelected clears needsInput and finished, and leaves the rest', () => {
+  const s = ts({ mainMood: 'working', pendingUrgent: true, pendingFinished: true, lock: { state: 'held' }, health: { kind: 'tab', behindDevelop: 2 } });
   assert.strictEqual(s.needsInput, true);
+  assert.strictEqual(s.finished, true);
   const cleared = afterSelected(s);
-  assert.deepStrictEqual(cleared, { ...s, needsInput: false });
+  assert.deepStrictEqual(cleared, { ...s, needsInput: false, finished: false });
   assert.strictEqual(s.needsInput, true, 'does not mutate');
+  assert.strictEqual(s.finished, true, 'does not mutate');
 });
 
 test('lock is the message state when known, else null (never held)', () => {
@@ -58,14 +67,14 @@ test('without an injected healthMarker, health is null rather than a throw', () 
 });
 
 test('no inputs at all is a quiet status', () => {
-  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, lock: null, health: null });
-  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, lock: null, health: null });
+  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null });
+  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null });
 });
 
 test('sameStatus: field by field, and null handling', () => {
-  const base = { working: true, needsInput: false, lock: 'held', health: '↓3' };
+  const base = { working: true, needsInput: false, finished: false, lock: 'held', health: '↓3' };
   assert.strictEqual(sameStatus(base, { ...base }), true);
-  for (const [k, v] of [['working', false], ['needsInput', true], ['lock', null], ['health', null]]) {
+  for (const [k, v] of [['working', false], ['needsInput', true], ['finished', true], ['lock', null], ['health', null]]) {
     assert.strictEqual(sameStatus(base, { ...base, [k]: v }), false, k);
   }
   assert.strictEqual(sameStatus(null, null), true);

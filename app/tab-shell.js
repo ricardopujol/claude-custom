@@ -117,12 +117,13 @@ const noWindowText = (h) => `That session is in another claude-custom (pid ${h.p
 
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
-/** What a renderer may say about itself, cut down to the four known fields. */
+/** What a renderer may say about itself, cut down to the five known fields. */
 function sanitizeStatus(s) {
   const o = s && typeof s === 'object' ? s : {};
   return {
     working: o.working === true,
     needsInput: o.needsInput === true,
+    finished: o.finished === true,
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
   };
@@ -732,7 +733,7 @@ function createShell(deps) {
     const tab = tabForSender(sender);
     if (!tab) return false;
     let next = sanitizeStatus(status);
-    if (next.needsInput && tab.key === selectedKey && ui.isFocused()) {
+    if ((next.needsInput || next.finished) && tab.key === selectedKey && ui.isFocused()) {
       next = tabStatusLib.afterSelected(next);
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
