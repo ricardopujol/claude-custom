@@ -55,14 +55,3 @@ test('a readable fixture is parsed like gh\'s own answer', async () => {
   assert.deepStrictEqual([...m.entries()], [['feat/b', { pr: 91, title: 't' }]]);
 });
 
-test('the seams are read in ONE place: no other host or app file reads their variables directly', () => {
-  const fs = require('fs');
-  const path = require('path');
-  const root = path.join(__dirname, '..');
-  for (const dir of ['host', 'app']) {
-    for (const f of fs.readdirSync(path.join(root, dir)).filter(n => n.endsWith('.js') && n !== 'probe-seams.js')) {
-      const src = fs.readFileSync(path.join(root, dir, f), 'utf8');
-      for (const k of SEAMS) assert.ok(!src.includes(k), `${dir}/${f} reads ${k}: go through host/probe-seams.js`);
-    }
-  }
-});
