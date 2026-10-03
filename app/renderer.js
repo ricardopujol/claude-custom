@@ -1345,12 +1345,18 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'state': {
         // `focusTerm`: the keyboard goes to the terminal first, as a click on it would, so a real key reaches xterm's handler.
         if (a.focusTerm === true) term.focus();
-        const groups = [...document.querySelectorAll('#dock > .dgroup')].map(el => ({
+        const groupInfo = el => ({
           id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
           tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
           on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
           panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
           panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
+        });
+        // Floats hang over the tree, so they are listed apart: the tree's boxes tile #dock, the floats don't.
+        const groups = [...document.querySelectorAll('#dock > .dgroup:not(.dfloat)')].map(groupInfo);
+        const floats = [...document.querySelectorAll('#dock > .dfloat')].map(el => ({
+          ...groupInfo(el), zIndex: Number(el.style.zIndex), display: getComputedStyle(el).display,
+          bar: rectOf(el.querySelector('.zone-tabs')), grip: rectOf(el.querySelector('.dfloat-grip')),
         }));
         // The vault's field is tagged the first time it is asked for, so a later state shows whether it is the SAME node.
         const vaultField = document.getElementById('vault-search');
@@ -1364,7 +1370,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         let proposed = null;
         try { proposed = fit.proposeDimensions() || null; } catch {}
         return JSON.stringify({
-          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, rails, gutters,
+          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, floats, rails, gutters,
           term: { cols: term.cols, rows: term.rows }, fit: proposed, sent: lastSentResize,
           termwrap: rectOf(document.getElementById('termwrap')), dock: rectOf(document.getElementById('dock')),
           termParent: document.getElementById('termwrap').parentNode.id, pushes: layoutPushes,
@@ -1482,6 +1488,39 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         window.dispatchEvent(ptr('pointermove', x0 + dx, y0 + dy));
         globalLayout = DTm.normalize(a.pushed, MODULE_IDS);
         window.dispatchEvent(ptr('pointerup', x0 + dx, y0 + dy));
+        return JSON.stringify({ ok: true });
+      }
+      // D2: a float moved by its bar (`what: 'bar'`) or resized by its grip (`what: 'grip'`) by `dx`, `dy` px, as
+      // synthetic pointer events: down on the bar's empty part (or the grip), two moves, the release. `how` instead
+      // of a release: 'nobutton' (a move with no button down) or 'blur', as `abortedDrag` does for the others.
+      case 'floatDrag': {
+        const el = document.querySelector(`#dock > .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such float' });
+        const target = a.what === 'grip' ? el.querySelector('.dfloat-grip') : el.querySelector('.zone-tabs');
+        const r = target.getBoundingClientRect();
+        // The bar's empty part is its right end (the tabs keep their own width in a float); the grip is small, so its middle.
+        const x0 = a.what === 'grip' ? r.left + r.width / 2 : r.right - 6;
+        const y0 = r.top + r.height / 2;
+        const snap = () => ({ drag: floatDrag !== null, drawn: dragLayout !== null });
+        target.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointermove', x0 + a.dx / 2, y0 + a.dy / 2));
+        window.dispatchEvent(ptr('pointermove', x0 + a.dx, y0 + a.dy));
+        const during = snap();
+        if (a.how === 'blur') window.dispatchEvent(new Event('blur'));
+        else if (a.how === 'nobutton') window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x0 + a.dx, clientY: y0 + a.dy, button: 0, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        else window.dispatchEvent(ptr('pointerup', x0 + a.dx, y0 + a.dy));
+        return JSON.stringify({ ok: true, during, after: snap() });
+      }
+      // D2: a press and release on a float's body (or, with `bar`, on its bar's empty part): it is raised.
+      case 'floatPress': {
+        const el = document.querySelector(`#dock > .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such float' });
+        const target = a.bar ? el.querySelector('.zone-tabs') : el.querySelector('.zone-panels');
+        const r = target.getBoundingClientRect();
+        const x0 = a.bar ? r.right - 6 : r.left + r.width / 2;
+        const y0 = r.top + r.height / 2;
+        target.dispatchEvent(ptr('pointerdown', x0, y0));
+        window.dispatchEvent(ptr('pointerup', x0, y0));
         return JSON.stringify({ ok: true });
       }
       // The menus, opened as a click would, so a screenshot can look at them.
