@@ -85,6 +85,35 @@ test('paint: dots, glyph and health appear only when the model says so', () => {
   assert.strictEqual(child(busy, 'health').textContent, '↓3');
 });
 
+test('#31 paint: a tab pulses only as the model says (needs / done), never on a guess', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [
+    entry({ key: 'plain' }),
+    entry({ key: 'n', pulse: 'needs' }),
+    entry({ key: 'd', pulse: 'done' }),
+    entry({ key: 'odd', pulse: 'sparkle' }),
+    entry({ key: 'sel', selected: true, pulse: null }),
+  ] }, bridgeSpy());
+  const cls = doc.byId.tabs.children.map(t => t.className.split(' '));
+  assert.ok(!cls[0].some(c => c.startsWith('pulse-')));
+  assert.ok(cls[1].includes('pulse-needs') && !cls[1].includes('pulse-done'));
+  assert.ok(cls[2].includes('pulse-done') && !cls[2].includes('pulse-needs'));
+  assert.ok(!cls[3].some(c => c.startsWith('pulse-')), 'an unknown pulse draws nothing');
+  assert.ok(!cls[4].some(c => c.startsWith('pulse-')));
+});
+
+test('#31 the page has a keyframe for each look, and a steady highlight under prefers-reduced-motion', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.match(html, /\.tab\.pulse-needs\s*\{[^}]*animation:[^}]*tab-pulse-needs/);
+  assert.match(html, /\.tab\.pulse-done\s*\{[^}]*animation:[^}]*tab-pulse-done/);
+  assert.match(html, /@keyframes tab-pulse-needs/);
+  assert.match(html, /@keyframes tab-pulse-done/);
+  const reduced = html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduced, /\.tab\.pulse-needs[^{]*\{[^}]*animation:\s*none/);
+  assert.match(reduced, /\.tab\.pulse-done[^{]*\{[^}]*animation:\s*none/);
+  assert.match(reduced, /\.tab\.pulse-needs[^{]*\{[^}]*(background|box-shadow)/, 'still highlighted, just not moving');
+});
+
 test('paint: an unknown lock glyph draws nothing rather than a guess', () => {
   const doc = fakeDoc();
   paint(doc, { model: [entry({ lockGlyph: 'mystery' })] }, bridgeSpy());

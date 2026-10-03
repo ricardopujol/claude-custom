@@ -71,6 +71,25 @@
     #create-cancel { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
     #create-cancel:hover { color: var(--text); }
     @keyframes pulse { 50% { opacity: 0.35; } }
+    /* #31: an UNSELECTED tab whose session needs you (urgent: the accent, quick)
+       or finished (calm: green, slow). The model never marks the selected tab,
+       and selecting one ends it. */
+    .tab.pulse-needs { animation: tab-pulse-needs 1.1s ease-in-out infinite; }
+    .tab.pulse-done { animation: tab-pulse-done 2.4s ease-in-out infinite; }
+    @keyframes tab-pulse-needs {
+      0%, 100% { background: color-mix(in srgb, var(--accent) 10%, var(--chrome)); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 40%, transparent); }
+      50% { background: color-mix(in srgb, var(--accent) 45%, var(--chrome)); box-shadow: inset 0 -2px 0 var(--accent); }
+    }
+    @keyframes tab-pulse-done {
+      0%, 100% { background: var(--chrome); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ok) 25%, transparent); }
+      50% { background: color-mix(in srgb, var(--ok) 20%, var(--chrome)); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ok) 70%, transparent); }
+    }
+    /* Reduced motion: the same call for a look, held still. */
+    @media (prefers-reduced-motion: reduce) {
+      .tab.pulse-needs, .tab.pulse-done { animation: none; }
+      .tab.pulse-needs { background: color-mix(in srgb, var(--accent) 35%, var(--chrome)); box-shadow: inset 0 -2px 0 var(--accent); }
+      .tab.pulse-done { background: color-mix(in srgb, var(--ok) 20%, var(--chrome)); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ok) 70%, transparent); }
+    }
     /* Visible only while the selected tab has no page of its own (starting,
        failed, or no worktrees yet); the tab's view covers it otherwise. */
     #pane { position: absolute; top: 34px; left: 0; right: 0; bottom: 0;
