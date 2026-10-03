@@ -59,7 +59,62 @@ function cleanPresets(raw) {
   return out;
 }
 
-const API = { NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, checkName, cleanPresets };
+// Where `name` sits in a clean list, ignoring case and padding; -1 when it isn't there or isn't a string.
+function indexOf(list, name) {
+  if (typeof name !== 'string') return -1;
+  const want = keyOf(name.trim());
+  return list.findIndex(p => keyOf(p.name) === want);
+}
+
+/** The preset called `name` (ignoring case), or null. */
+function find(list, name) {
+  const clean = cleanPresets(list);
+  const at = indexOf(clean, name);
+  return at < 0 ? null : clean[at];
+}
+
+const refuse = reason => ({ ok: false, reason });
+
+/**
+ * Save `layout` under `name`. A name the list already has (ignoring case) is refused as `taken` unless
+ * `replace` is true, which replaces in place and takes the newly typed name. Order of refusals: name, layout,
+ * taken, full -- the first one the user can fix.
+ */
+function savePreset(list, name, layout, { replace = false } = {}) {
+  const clean = cleanPresets(list);
+  const nm = checkName(name);
+  if (nm === null) return refuse('name');
+  const copy = copyLayout(layout);
+  if (copy === null) return refuse('layout');
+  const at = indexOf(clean, nm);
+  if (at >= 0) {
+    if (!replace) return refuse('taken');
+    return { ok: true, list: clean.map((p, i) => (i === at ? { name: nm, layout: copy } : p)) };
+  }
+  if (clean.length >= MAX_PRESETS) return refuse('full');
+  return { ok: true, list: [...clean, { name: nm, layout: copy }] };
+}
+
+/** Rename `from` to `to`. Another case of its own name is fine; a name another preset has is `taken`. */
+function renamePreset(list, from, to) {
+  const clean = cleanPresets(list);
+  const at = indexOf(clean, from);
+  if (at < 0) return refuse('missing');
+  const nm = checkName(to);
+  if (nm === null) return refuse('name');
+  const other = indexOf(clean, nm);
+  if (other >= 0 && other !== at) return refuse('taken');
+  return { ok: true, list: clean.map((p, i) => (i === at ? { name: nm, layout: p.layout } : p)) };
+}
+
+function deletePreset(list, name) {
+  const clean = cleanPresets(list);
+  const at = indexOf(clean, name);
+  if (at < 0) return refuse('missing');
+  return { ok: true, list: clean.filter((_, i) => i !== at) };
+}
+
+const API = { NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, checkName, cleanPresets, find, savePreset, renamePreset, deletePreset };
 
 // One namespace on the page (`window.dockPresets`), not loose globals.
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

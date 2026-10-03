@@ -46,3 +46,37 @@ test('P2: cleanPresets is idempotent', () => {
     assert.deepStrictEqual(P.cleanPresets(once), once);
   }), RUNS);
 });
+
+const opArb = fc.oneof(
+  fc.record({ op: fc.constant('save'), name: nameArb, layout: layoutArb, replace: fc.boolean() }),
+  fc.record({ op: fc.constant('rename'), from: nameArb, to: nameArb }),
+  fc.record({ op: fc.constant('delete'), name: nameArb }),
+);
+function run(list, o) {
+  if (o.op === 'save') return P.savePreset(list, o.name, o.layout, { replace: o.replace });
+  if (o.op === 'rename') return P.renamePreset(list, o.from, o.to);
+  return P.deletePreset(list, o.name);
+}
+
+test('P3: after ANY sequence of operations from ANY start, names are unique, the list is within 32, nothing throws', () => {
+  fc.assert(fc.property(rawArb, fc.array(opArb, { maxLength: 80 }), (raw, ops) => {
+    let list = P.cleanPresets(raw);
+    for (const o of ops) {
+      const before = JSON.stringify(list);
+      const r = run(list, o);
+      assert.strictEqual(JSON.stringify(list), before, 'an operation never changes the list it was given');
+      if (r.ok) { uniqueAndBounded(r.list); list = r.list; }
+      else assert.ok(['name', 'taken', 'full', 'missing', 'layout'].includes(r.reason), String(r.reason));
+    }
+  }), RUNS);
+});
+
+test('P4: whatever a save accepts can be found again by the name it was saved under, with the layout it was saved with', () => {
+  fc.assert(fc.property(rawArb, nameArb, layoutArb, (raw, name, layout) => {
+    const r = P.savePreset(P.cleanPresets(raw), name, layout, { replace: true });
+    if (!r.ok) return;
+    const got = P.find(r.list, name);
+    assert.ok(got, 'a saved preset can be found by the name it was saved under');
+    assert.deepStrictEqual(got.layout, JSON.parse(JSON.stringify(layout)));
+  }), RUNS);
+});
