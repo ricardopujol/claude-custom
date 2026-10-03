@@ -68,7 +68,7 @@ test('a background process holding stdout does not hold runScript: it settles on
     return child;
   };
   try {
-    const r = await ops.runScript({ script, timeoutMs: 120000, graceMs: 300, spawn });
+    const r = await ops.runScript({ script, timeoutMs: 30000, graceMs: 300, spawn });
     assert.strictEqual(r.code, 0, r.stderr);
     assert.match(r.stdout, /\{"ok":true\}/);
     assert.strictEqual(r.timedOut, false);
