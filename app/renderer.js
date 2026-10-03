@@ -963,6 +963,7 @@ let layoutMenuFor = null;               // 'menu' | a module id (right-click) | 
 // (the name field), 'replace' (asking to replace `name`), 'rename' (`name`'s field) or 'delete' (asking about `name`).
 let presetUi = { mode: 'idle' };
 let presetsState = { loaded: false, usable: false, list: [] };   // the stored list, as main last said
+let presetPushes = 0;                    // lists pushed to this window by main: the probe counts the store writes with it
 
 function closeLayoutMenu() {
   if (layoutMenu.hidden) return false;
@@ -1108,7 +1109,8 @@ function runPresetOp(result) {
     openLayoutMenu();
     return;
   }
-  writePresets(result.list, () => { presetUi = { mode: 'idle' }; openLayoutMenu(); });
+  // The write is asynchronous: a menu closed meanwhile stays closed.
+  writePresets(result.list, () => { presetUi = { mode: 'idle' }; if (layoutMenuFor === 'menu') openLayoutMenu(); });
 }
 
 function applyPreset(p, justThisTab) {
@@ -1207,7 +1209,8 @@ function appendPresetSection(check) {
       label: 'Name for this layout', value: presetUi.text || '', action: 'save', commitText: 'Save',
       onCommit: (text) => {
         const r = window.dockPresets.savePreset(presetsState.list, text, committedLayout());
-        if (!r.ok && r.reason === 'taken') { presetUi = { mode: 'replace', name: window.dockPresets.checkName(text), text }; openLayoutMenu(); return; }
+        // The name is taken: ask once, naming the preset that would go (its own spelling is kept).
+        if (!r.ok && r.reason === 'taken') { presetUi = { mode: 'replace', name: window.dockPresets.find(presetsState.list, text).name, text }; openLayoutMenu(); return; }
         runPresetOp(r);
       },
     })) layoutMenu.appendChild(el);
@@ -1228,6 +1231,7 @@ async function loadPresets() {
   const bridge = window.harness && window.harness.layoutPresets;
   if (!bridge) return;
   bridge.onChange((list) => {
+    presetPushes += 1;
     presetsState = { loaded: true, usable: true, list: window.dockPresets.cleanPresets(list) };
     refreshPresetMenu();
   });
@@ -1595,7 +1599,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'presets':
         return JSON.stringify({
           ok: true, exported: typeof (window.dockPresets || {}).thumbBoxes, loaded: presetsState.loaded, usable: presetsState.usable,
-          names: presetsState.list.map(p => p.name), mode: presetUi.mode, menuOpen: !layoutMenu.hidden,
+          names: presetsState.list.map(p => p.name), mode: presetUi.mode, menuOpen: !layoutMenu.hidden, pushes: presetPushes,
           rows: [...layoutMenu.querySelectorAll('.lm-preset')].map(r => ({
             name: r.dataset.preset, boxes: r.querySelectorAll('.lm-thumb i').length,
             labels: [...r.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || b.textContent),

@@ -28,6 +28,11 @@
  *   9  a small window: rails appear, the terminal keeps 320 x 160; widening brings the boxes back
  *  10  Ctrl+B folds everything to rails and back; focus mode in and out
  *  11  Just this tab: tab A has its own layout, tab B the global one; reattaching keeps A's
+ *  12  layout presets (D3), through the Window menu's own buttons and fields: save shows the name with a
+ *      thumbnail and writes the presets file once; apply brings the boxes back (an identical one writes
+ *      nothing); the same name asks to replace; rename (and a refusal); Esc closes a field, then the menu;
+ *      delete asks, then removes; a second tab sees the list; an unreadable layout-presets.json is left
+ *      untouched, shown as "couldn't read", saving is off, and it recovers when the file becomes readable
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and
  * every CLAUDE_CUSTOM_* variable are deleted before the window is launched; registry, portraits,
@@ -47,6 +52,7 @@ const HARNESS_DIR = path.join(ROOT, '.harness');
 const STATE_DIR = path.join(HARNESS_DIR, 'state');
 const V1_FILE = path.join(STATE_DIR, 'layout-global.json');
 const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
+const PRESETS_FILE = path.join(STATE_DIR, 'layout-presets.json');          // dockable panels D3
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
@@ -103,8 +109,9 @@ const freePort = () => new Promise((resolve, reject) => {
 // run without the second deleting what the first put back (PR #100 Miguel I1).
 const v1Snap = snapshotFile(V1_FILE);
 const treeSnap = snapshotFile(TREE_FILE);
+const presetsSnap = snapshotFile(PRESETS_FILE);
 // Refused runs touched nothing, so they put nothing back (a live host may be watching the very file).
-function restoreLayouts() { if (refused) return; v1Snap.restore(); treeSnap.restore(); }
+function restoreLayouts() { if (refused) return; v1Snap.restore(); treeSnap.restore(); presetsSnap.restore(); }
 const readBytes = (f) => { try { return fs.readFileSync(f); } catch { return null; } };
 
 // --- the app ----------------------------------------------------------------------------
@@ -308,7 +315,7 @@ async function main() {
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
   git(dev, 'worktree', 'add', '-q', featA, '-b', 'feat/a');
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  for (const f of [V1_FILE, TREE_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
+  for (const f of [V1_FILE, TREE_FILE, PRESETS_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
 
   // 2: an L1 layout, saved by an older build: Vault showing on the right at 240, Agents along the bottom.
   const v1 = {
@@ -635,6 +642,172 @@ async function main() {
   check('11: feat/a\'s own layout survives the window closing and reattaching (the host kept it)', !!kept);
   d = await onTab('develop');
   check('11: ...and develop is still on the global layout', !!d && !d.own);
+
+  // 12 (dockable panels D3: layout presets) ----------------------------------------------------
+  // The Window menu's Presets section, driven through its own buttons and fields. A write is counted by the
+  // pushes the page receives from main (one per `layout-presets:set`), as check 7 counts the layout's.
+  {
+    const ask = () => view(app, 'presets');
+    const mclick = (selector) => view(app, 'menuClick', { selector });
+    const type = (selector, text, key) => view(app, 'menuType', { selector, text, key });
+    const openMenu = () => view(app, 'openMenu', { which: 'layout' });
+    const rowSel = (name, act) => `.lm-preset[data-preset="${name}"] [data-preset-act="${act}"]`;
+    const waitFor12 = (pred, ms = 5000) => waitFor(async () => { const p = await ask(); return p && p.ok && pred(p) ? p : null; }, ms, 100);
+    const fileList = () => { try { return JSON.parse(fs.readFileSync(PRESETS_FILE, 'utf8')); } catch { return null; } };
+    const fileNames = () => { const l = fileList(); return Array.isArray(l) ? l.map(p => p.name).join(',') : null; };
+    const layoutPushes12 = async () => (await viewState(app)).pushes;
+    // One operation, one write: the page is pushed exactly one list, and the watcher doesn't push it a second time.
+    const wroteOnce = async (before, label) => {
+      await sleep(1200);
+      const p = await ask();
+      check(`12: ${label}: the presets file is written once (one push, none echoed by the watcher)`, p.pushes === before + 1, `pushes ${before} -> ${p.pushes}`);
+    };
+
+    await view(app, 'layout', { layout: example });
+    const base12 = (await settled(app)).s;
+    const exampleKey = rectKey(base12);
+    const p0 = await ask();
+    check('12: dockPresets.thumbBoxes is a function in the real window; with no presets file the list is loaded, usable and empty',
+      p0.exported === 'function' && p0.loaded && p0.usable && p0.names.length === 0, JSON.stringify(p0));
+    check('12: ...and merely starting wrote no presets file', !fs.existsSync(PRESETS_FILE));
+
+    // save
+    await openMenu();
+    const m0 = await ask();
+    check('12: the Window menu has a Presets section with a Save this layout button', m0.menuOpen && m0.saveOpen, JSON.stringify(m0));
+    await mclick('[data-preset-act="save-open"]');
+    const field = await ask();
+    check('12: Save this layout opens a name field inside the menu', field.mode === 'save' && field.fields.some(f => f.action === 'save'), JSON.stringify(field));
+    await type('input[data-preset-field="save"]', 'Reviewing', 'Enter');
+    const saved = await waitFor12(p => p.names.includes('Reviewing') && p.rows.length === 1);
+    check('12: saving lists the name with a thumbnail and rename / delete buttons that have accessible names',
+      !!saved && saved.rows[0].name === 'Reviewing' && saved.rows[0].boxes >= 3
+        && saved.rows[0].labels.includes('Rename Reviewing') && saved.rows[0].labels.includes('Delete Reviewing') && saved.rows[0].focusable,
+      JSON.stringify(saved && saved.rows));
+    const f1 = fileList();
+    check('12: ...the file holds that one preset: its name and exactly the placement that was on screen',
+      Array.isArray(f1) && f1.length === 1 && f1[0].name === 'Reviewing' && JSON.stringify(f1[0].layout) === JSON.stringify(example), JSON.stringify(f1).slice(0, 300));
+    await wroteOnce(p0.pushes, 'save');
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '12-presets-menu.png') });
+    await view(app, 'closeMenu');
+
+    // apply
+    await view(app, 'hide', { id: 'fog' });
+    const changed = (await settled(app)).s;
+    check('12: (setup) the layout was changed after the preset was saved', rectKey(changed) !== exampleKey);
+    await sleep(1200);
+    const lp0 = await layoutPushes12();
+    await openMenu();
+    await mclick(rowSel('Reviewing', 'apply'));
+    const applied = (await settled(app)).s;
+    check('12: applying the preset brings the saved boxes back', rectKey(applied) === exampleKey && JSON.stringify(applied.layout) === JSON.stringify(example), keyDiff(base12, applied));
+    check('12: ...and closes the menu', !(await ask()).menuOpen);
+    await sleep(1200);
+    const lp1 = await layoutPushes12();
+    check('12: ...saving the layout once, through the one placement path', lp1 === lp0 + 1, `layout pushes ${lp0} -> ${lp1}`);
+    await openMenu();
+    await mclick(rowSel('Reviewing', 'apply'));
+    await sleep(1200);
+    check('12: applying a preset identical to the current layout changes nothing and writes nothing', (await layoutPushes12()) === lp1 && (await ask()).pushes === saved.pushes);
+
+    // save under the same name: asks, then replaces in place
+    await view(app, 'hide', { id: 'fog' });
+    await sleep(1200);
+    const pr0 = await ask();
+    await openMenu();
+    await mclick('[data-preset-act="save-open"]');
+    await type('input[data-preset-field="save"]', 'reviewing', 'Enter');
+    const asked = await ask();
+    check('12: saving under a name that exists (any case) asks to replace it, naming it, and writes nothing yet',
+      asked.mode === 'replace' && asked.asking.some(t => t.includes('Replace \'Reviewing\'?')) && asked.pushes === pr0.pushes && JSON.stringify(fileList()) === JSON.stringify(f1),
+      JSON.stringify([asked.mode, asked.asking, asked.pushes, pr0.pushes]));
+    await mclick('[data-preset-act="replace-confirm"]');
+    await waitFor12(p => p.pushes === pr0.pushes + 1 && p.mode === 'idle');
+    const f2 = fileList();
+    check('12: confirming replaces it in place: still one preset, its own name, the new layout (Map hidden)',
+      Array.isArray(f2) && f2.length === 1 && f2[0].name === 'Reviewing' && f2[0].layout.hidden.includes('fog'), JSON.stringify(f2).slice(0, 300));
+    await wroteOnce(pr0.pushes, 'replace');
+    await view(app, 'closeMenu');
+
+    // rename, including a refusal
+    await view(app, 'layout', { layout: example });
+    await openMenu();
+    await mclick('[data-preset-act="save-open"]');
+    await type('input[data-preset-field="save"]', 'Other', 'Enter');
+    await waitFor12(p => p.names.includes('Other'));
+    await sleep(1200);
+    const pr1 = await ask();
+    await mclick(rowSel('Reviewing', 'rename'));
+    const rf = await ask();
+    check('12: rename opens a field holding the current name', rf.mode === 'rename' && rf.fields.some(f => f.action === 'rename' && f.value === 'Reviewing'), JSON.stringify(rf.fields));
+    await type('input[data-preset-field="rename"]', 'other', 'Enter');
+    const refused = await ask();
+    check('12: renaming to a name another preset has is refused in the menu, and writes nothing',
+      refused.mode === 'rename' && refused.notes.some(n => /already exists/.test(n)) && refused.pushes === pr1.pushes && fileNames() === 'Reviewing,Other',
+      JSON.stringify([refused.mode, refused.notes, fileNames()]));
+    const layoutOfFirst = JSON.stringify(fileList()[0].layout);
+    await type('input[data-preset-field="rename"]', 'Writing', 'Enter');
+    await waitFor12(p => p.names.includes('Writing'));
+    check('12: renaming changes the name in place, keeps the order and the layout, and writes the file once',
+      fileNames() === 'Writing,Other' && JSON.stringify(fileList()[0].layout) === layoutOfFirst, fileNames());
+    await wroteOnce(pr1.pushes, 'rename');
+
+    // Esc: a field first, then the menu
+    await mclick(rowSel('Writing', 'rename'));
+    await type('input[data-preset-field="rename"]', undefined, 'Escape');
+    const e1 = await ask();
+    check('12: Esc closes an open field and leaves the menu open, the preset unchanged', e1.mode === 'idle' && e1.menuOpen && e1.fields.length === 0 && fileNames() === 'Writing,Other', JSON.stringify([e1.mode, e1.menuOpen]));
+
+    // delete asks first
+    await mclick(rowSel('Writing', 'delete'));
+    const del1 = await ask();
+    check('12: delete asks "Delete \'Writing\'?" first, and nothing is removed yet',
+      del1.mode === 'delete' && del1.asking.some(t => t.includes('Delete \'Writing\'?')) && fileNames() === 'Writing,Other', JSON.stringify([del1.mode, del1.asking]));
+    await type('.lm-title', undefined, 'Escape');
+    const e2 = await ask();
+    check('12: Esc backs out of the question: both presets stay, the menu stays open', e2.mode === 'idle' && e2.menuOpen && e2.names.length === 2, JSON.stringify([e2.mode, e2.names]));
+    await type('.lm-title', undefined, 'Escape');
+    check('12: ...and Esc again closes the menu', !(await ask()).menuOpen);
+    const pr2 = await ask();
+    await openMenu();
+    await mclick(rowSel('Writing', 'delete'));
+    await mclick('[data-preset-act="delete-confirm"]');
+    await waitFor12(p => !p.names.includes('Writing'));
+    check('12: confirming deletes it and only it', fileNames() === 'Other', fileNames());
+    await wroteOnce(pr2.pushes, 'delete');
+    await view(app, 'closeMenu');
+
+    // a second tab sees the list, and a preset saved there shows here
+    const tabA = await onTab('feat/a');
+    const seenA = tabA && (await waitFor12(p => p.names.join() === 'Other'));
+    check('12: a second tab sees the saved list', !!seenA, seenA ? '' : JSON.stringify(await ask()));
+    await openMenu();
+    await mclick('[data-preset-act="save-open"]');
+    await type('input[data-preset-field="save"]', 'FromA', 'Enter');
+    await waitFor12(p => p.names.includes('FromA'));
+    await view(app, 'closeMenu');
+    const back = await onTab('develop');
+    const seenD = back && (await waitFor12(p => p.names.includes('FromA')));
+    check('12: ...and a preset saved in that tab shows in the first (main pushes the list to every tab)', !!seenD, seenD ? '' : JSON.stringify(await ask()));
+
+    // an unreadable file is "couldn't read": never overwritten, saving off, and it recovers when readable
+    await quitApp(app);
+    const junkPresets = '[ { this is not a list';
+    fs.writeFileSync(PRESETS_FILE, junkPresets);
+    ({ app, ready } = await launchReady(container));
+    if (!ready) { check('12: the window came up on an unreadable layout-presets.json', false, app.out.slice(-600)); return; }
+    await settled(app);
+    await openMenu();
+    const un = await waitFor12(p => p.loaded);
+    check('12: an unreadable presets file reads as "couldn\'t read", not as no presets: no rows, no Save button, a note says so',
+      !!un && !un.usable && un.rows.length === 0 && !un.saveOpen && un.notes.some(n => /couldn't be read/.test(n)), JSON.stringify(un));
+    await sleep(1500);
+    check('12: ...and the file is left exactly as it was', readBytes(PRESETS_FILE).toString() === junkPresets);
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify([{ name: 'Recovered', layout: example }]));
+    const rec = await waitFor12(p => p.usable && p.names.includes('Recovered'), 8000);
+    check('12: when the file becomes readable (another window wrote it) the list appears and saving is allowed again', !!rec && rec.saveOpen, JSON.stringify(rec));
+    await view(app, 'closeMenu');
+  }
 
   await quitApp(app);
 }
