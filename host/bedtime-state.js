@@ -27,10 +27,23 @@
  * scheduled prompt replayed (a late wake after the PC slept) wakes it. Nothing is pending after a Stop with
  * nothing scheduled, so that one is gone for good.
  *
- * THE 12 h CAP ENDS THE RUN (F5). It also latches: a loop that is still scheduling after the cap starts no new
- * night, because its prompts vary every call and carry no run identity to tell a continuation from a new run.
- * The latch clears on `stop: true`, SessionEnd and a fresh SessionStart; a bedtime ScheduleWakeup after that is a
- * new night.
+ * THE 12 h CAP ENDS THE RUN (F5). It latches ONLY a run that was still alive when it hit the cap (awake, or asleep
+ * with its wake not yet overdue): a night the grace verdict had already ended (idle, overdue) is dropped as that, and
+ * a dormant one that nobody revived is dropped at its own limit; neither feeds the latch (PR #99 Dexter r2 F1). The latch
+ * then suppresses only THAT run's own loop: its prompts vary every call and carry no run identity, so a call counts as
+ * its continuation while it arrives within one wake cycle (the longest delay + the CLI's slack + the grace, 77 min) of the
+ * capped run's last sign of life; a later call, or one after a quiet gap, is a new run and clears the latch. The latch
+ * also clears on `stop: true`, SessionEnd and a fresh SessionStart.
+ *
+ * A TURN THAT ENDS WITHOUT A STOP (an interrupt; a usage-limit StopFailure, which is not hooked) is put to sleep by the
+ * CLI's own `idle_prompt` Notification (host/turn-state.js reads it the same way). Nothing else is measurable: a
+ * session that dies with neither signal stays awake until the 12 h cap, which now drops it WITHOUT latching only if
+ * it had already ended; a genuinely stuck-awake run is the one case the latch cannot tell from a live loop.
+ *
+ * KNOWN LIMIT of the start rule: no token rule on free text separates a bedtime run from a poll that names it
+ * (`check whether the bedtime overnight run's PRs are green`, `Bedtime PR check: is #99 merged?`). A `/loop ...` prompt is
+ * rejected outright (no real bedtime run is /loop-wrapped: 0 of 161). Closing the rest needs a run identity the skill
+ * writes into its prompt and a person never would.
  *
  * A subagent's events (they carry `agent_id`) never count. Overdue is only judged while the session is ASLEEP: a
  * woken turn that runs for hours, or the person typing ahead of a queued wake, is a live session.
@@ -48,6 +61,8 @@ const MIN_DELAY_S = 60;
 const MAX_DELAY_S = 3600;
 // scheduledFor is believed when it lies between now and the longest delay plus the runtime's rounding slack
 const SLACK_MS = 120_000;
+// A call after a capped run counts as that run's continuation within one wake cycle of its last sign of life
+const CONTINUATION_MS = MAX_DELAY_S * 1000 + SLACK_MS + OVERDUE_MS;
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure']);
 const isMain = (p) => !(typeof p.agent_id === 'string' && p.agent_id !== '');
@@ -63,6 +78,7 @@ const collapse = (s) => s.replace(/\s+/g, ' ').trim();
  */
 function isBedtimeLoopPrompt(prompt) {
   if (typeof prompt !== 'string') return false;
+  if (/^\s*\/loop\b/i.test(prompt)) return false;          // a /loop wrapper is somebody's poll about the run, not the run
   return /(^|[\s("'])\/bedtime(?![\w-])/i.test(prompt)
     || /^\s*bedtime(?![\w-])/i.test(prompt)
     || /\bbedtime (?:overnight|autonomous|protocol) run\b/i.test(prompt);
@@ -85,9 +101,9 @@ function believableScheduledFor(v, at) {
 }
 
 function createBedtime({ now = Date.now } = {}) {
-  // { startedAt, prompt, nextWakeAt, awake, idleSince, wakes, lastWakeAt, dormant }
+  // { startedAt, prompt, nextWakeAt, awake, idleSince, wakes, lastWakeAt, dormant, lastActivity }
   let night = null;
-  let capped = false;     // the 12 h cap ended a run: no new night until stop / SessionEnd / SessionStart
+  let capped = null;      // { prompt, lastSeen }: a run that was ALIVE at 12 h; its own loop starts no new night
 
   // The clock's verdict on a night that is asleep: overdue, or a Stop with nothing scheduled that stayed that way.
   function asleepPastGrace(n, at) {
@@ -99,9 +115,14 @@ function createBedtime({ now = Date.now } = {}) {
   // Called before every event: an end the clock already reached becomes STATE, so no later event can undo it.
   function latchEnd(at) {
     if (night === null) return;
-    if (at - night.startedAt > MAX_NIGHT_MS) { night = null; capped = true; return; }
-    if (night.dormant || !asleepPastGrace(night, at)) return;
-    if (night.nextWakeAt !== null) night.dormant = true; else night = null;
+    // the grace verdict first: a night that already ended that way ended THEN, whatever the cap says now
+    if (!night.dormant && asleepPastGrace(night, at)) {
+      if (night.nextWakeAt !== null) night.dormant = true; else { night = null; return; }
+    }
+    if (at - night.startedAt > MAX_NIGHT_MS) {
+      if (!night.dormant) capped = { prompt: night.prompt, lastSeen: night.lastActivity };
+      night = null;
+    }
   }
 
   const running = () => night !== null && !night.dormant;
@@ -114,11 +135,14 @@ function createBedtime({ now = Date.now } = {}) {
 
   function schedule(event, p, at) {
     const input = isObj(p.tool_input) ? p.tool_input : {};
-    if (input.stop === true) { night = null; capped = false; return; }
+    if (input.stop === true) { night = null; capped = null; return; }
     const delay = input.delaySeconds;
     if (!isBedtimeLoopPrompt(input.prompt) || typeof delay !== 'number' || !Number.isFinite(delay)) { applyTool(); return; }
     if (event !== 'PostToolUse') { applyTool(); return; }          // the call's intent: nothing is scheduled yet
-    if (capped) return;                                            // a capped run's loop never starts a new night
+    if (capped !== null) {
+      if (at - capped.lastSeen <= CONTINUATION_MS) { capped.lastSeen = at; capped.prompt = input.prompt; return; }   // its own loop
+      capped = null;                                               // no continuation: a new run
+    }
     const said = isObj(p.tool_response) ? p.tool_response.scheduledFor : undefined;
     const believed = believableScheduledFor(said, at);
     if (running()) {
@@ -127,17 +151,21 @@ function createBedtime({ now = Date.now } = {}) {
       night.awake = true;
       night.idleSince = null;
     } else if (believed) {
-      night = { startedAt: at, prompt: input.prompt, nextWakeAt: said, awake: true, idleSince: null, wakes: 0, lastWakeAt: null, dormant: false };
+      night = { startedAt: at, prompt: input.prompt, nextWakeAt: said, awake: true, idleSince: null, wakes: 0, lastWakeAt: null, dormant: false, lastActivity: at };
     }
   }
 
   function apply(event, p, at) {
-    if (event === 'SessionEnd' || (event === 'SessionStart' && p.source !== 'compact')) { night = null; capped = false; return; }
+    if (event === 'SessionEnd' || (event === 'SessionStart' && p.source !== 'compact')) { night = null; capped = null; return; }
     if (TOOL_EVENTS.has(event)) {
       if (p.tool_name === 'ScheduleWakeup' && event !== 'PostToolUseFailure') schedule(event, p, at); else applyTool();
       return;
     }
-    if (night === null) return;
+    if (night === null) {
+      // a capped run's replayed wake proves its loop is still going
+      if (event === 'UserPromptSubmit' && capped !== null && typeof p.prompt === 'string' && collapse(p.prompt) === collapse(capped.prompt)) capped.lastSeen = at;
+      return;
+    }
     if (event === 'UserPromptSubmit') {
       const text = typeof p.prompt === 'string' ? p.prompt : '';
       const isWake = night.nextWakeAt !== null && collapse(text) === collapse(night.prompt);
@@ -150,7 +178,8 @@ function createBedtime({ now = Date.now } = {}) {
       if (isWake) { night.wakes += 1; night.lastWakeAt = at; night.nextWakeAt = null; }
       return;
     }
-    if (event === 'Stop' && running()) {
+    const idle = event === 'Notification' && p.notification_type === 'idle_prompt' && running() && night.awake;
+    if ((event === 'Stop' && running()) || idle) {
       night.awake = false;
       night.idleSince = night.nextWakeAt === null ? at : null;
     }
@@ -163,6 +192,7 @@ function createBedtime({ now = Date.now } = {}) {
     const at = now();
     const before = JSON.stringify([night, capped]);
     latchEnd(at);
+    if (night !== null && !night.dormant) night.lastActivity = at;
     apply(ev.event, p, at);
     return JSON.stringify([night, capped]) !== before;
   }

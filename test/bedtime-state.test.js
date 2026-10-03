@@ -57,13 +57,14 @@ function rig(start = T0) {
 
 test('isBedtimeLoopPrompt: the /bedtime token, the word leading the prompt, or the skill\'s own phrase', () => {
   for (const yes of ['/bedtime overnight run', 'bedtime — overnight run. Task 1 done', 'Continue the /bedtime autonomous run for X', 'Continue the bedtime overnight run on Genghis Khan',
-    'Continue the bedtime protocol run on X', '  /Bedtime  ', 'BEDTIME', '/loop 5m /bedtime now', '("/bedtime x")', 'resume the bedtime autonomous run']) {
+    'Continue the bedtime protocol run on X', '  /Bedtime  ', 'BEDTIME', '("/bedtime x")', 'resume the bedtime autonomous run']) {
     assert.strictEqual(isBedtimeLoopPrompt(yes), true, yes);
   }
 });
 
 test('isBedtimeLoopPrompt: a poll that merely says bedtime is not a night (PR #99 Dexter F2)', () => {
-  for (const no of ['/loop 5m run the bedtime-state tests', 'check whether the bedtime PR merged', '/loop 10m poll whether the bedtime PR merged',
+  for (const no of ['/loop 10m check whether the /bedtime run opened its PRs', '/loop 5m /bedtime now', '  /LOOP 1h /bedtime overnight run',
+    '/loop 5m run the bedtime-state tests', 'check whether the bedtime PR merged', '/loop 10m poll whether the bedtime PR merged',
     'is the bedtime run finished?', 'bedtimes story', 'overbedtime', 'a/bedtime-state', 'run /bedtime-state tests', '<<autonomous-loop-dynamic>>',
     'Check on the background test run', '', null, undefined, 5, {}]) {
     assert.strictEqual(isBedtimeLoopPrompt(no), false, String(no));
@@ -423,11 +424,110 @@ test('F5: the latch clears on stop, on SessionEnd and on a fresh SessionStart: t
 test('F5: a compaction does not clear the cap latch', () => {
   const r = rig();
   r.sched(PROMPT, 1800);
+  r.at(T0 + MAX_NIGHT_MS - 10 * MIN);
+  r.sched(PROMPT, 1800);                                     // the loop is alive up to the cap
   r.at(T0 + MAX_NIGHT_MS + MIN);
   r.send('Stop');
   r.send('SessionStart', { source: 'compact' });
   r.sched(PROMPT, 1800);
   assert.strictEqual(r.view(), null);
+});
+
+// --- Dexter r2 F1: the cap latch is only for a run that was still alive at 12 h ------------------------------------
+const DAY = 24 * HOUR;
+const PROMPT2 = '/bedtime overnight run (claude-custom), the second night.';
+
+test('r2 F1: idle 00:30, typed 11:05, then a /bedtime run at 23:00 the next day IS a night (the idle end is not a cap)', () => {
+  const r = rig(at(23));
+  r.sched(PROMPT, 3600);
+  r.at(at(23, 1)); r.send('Stop');
+  r.at(at(23) + HOUR + 1000); r.send('UserPromptSubmit', { prompt: PROMPT });      // the wake, 00:00:01
+  r.at(at(23) + 90 * MIN); r.send('Stop');                                          // 00:30: nothing scheduled
+  r.at(at(23) + 12 * HOUR + 5 * MIN);                                               // 11:05, 12 h 05 min after the start
+  r.send('UserPromptSubmit', { prompt: 'good morning' });
+  assert.strictEqual(r.b.snapshot(), null, 'dropped as an idle end');
+  r.at(at(23) + DAY);
+  r.sched(PROMPT2, 3600);
+  assert.ok(r.view() !== null, 'the next evening\'s run shows');
+  assert.strictEqual(r.view().startedAt, at(23) + DAY);
+});
+
+test('r2 F1: a dormant night (a wake that never came) that nobody revives ends at its own limit, never feeding the latch', () => {
+  const r = rig(at(23));
+  r.sched(PROMPT, 3600); r.send('Stop');
+  r.at(at(23) + 9 * HOUR); r.send('UserPromptSubmit', { prompt: 'status?' });       // dormant from here
+  r.at(at(23) + 12 * HOUR + 5 * MIN); r.send('UserPromptSubmit', { prompt: 'any event' });
+  assert.strictEqual(r.b.snapshot(), null, 'cleared at its limit');
+  r.at(at(23) + DAY);
+  r.sched(PROMPT2, 3600);
+  assert.strictEqual(r.view().startedAt, at(23) + DAY);
+});
+
+test('r2 F1: a run that was still alive at 12 h latches, but only against ITS OWN loop: a later real run is not suppressed', () => {
+  const r = rig(at(22));
+  r.sched(PROMPT, 3600);
+  r.at(at(22) + 12 * HOUR - 10 * MIN);
+  r.sched(PROMPT, 3600);                                                            // alive right up to the cap
+  r.at(at(22) + 12 * HOUR + MIN);                                                   // still awake at the cap
+  r.send('UserPromptSubmit', { prompt: 'x' });
+  r.sched(PROMPT, 3600);                                                            // its loop keeps scheduling
+  assert.strictEqual(r.view(), null, 'the continuation of the capped run starts no night');
+  r.at(at(22) + 12 * HOUR + 50 * MIN);
+  r.sched(PROMPT, 3600);
+  assert.strictEqual(r.view(), null, 'still its loop (within one wake cycle of its last call)');
+  r.at(at(22) + 12 * HOUR + 50 * MIN + 2 * HOUR);                                    // the loop went quiet for two hours
+  r.sched(PROMPT2, 3600);
+  assert.ok(r.view() !== null, 'a call that is no continuation (the loop was silent past one cycle) is a new run');
+  assert.strictEqual(r.view().startedAt, at(22) + 12 * HOUR + 50 * MIN + 2 * HOUR);
+});
+
+test('r2 F1: a capped run\'s replayed wakes keep its latch alive (they prove the loop is still going)', () => {
+  const r = rig(at(22));
+  r.sched(PROMPT, 3600);
+  r.at(at(22) + 12 * HOUR + MIN);
+  r.send('UserPromptSubmit', { prompt: 'x' });                                      // latch set
+  for (let k = 1; k <= 4; k++) {
+    r.at(at(22) + 12 * HOUR + MIN + k * 50 * MIN);
+    r.send('UserPromptSubmit', { prompt: PROMPT });                                 // replayed each cycle
+    r.sched(PROMPT, 3000);
+  }
+  assert.strictEqual(r.view(), null, 'three hours on, the same loop is still suppressed');
+});
+
+test('r2 F1: a turn that ends without a Stop (an interrupt, a usage limit) still sleeps the night on the CLI\'s idle_prompt', () => {
+  const r = rig(at(23));
+  r.sched(PROMPT, 3600);
+  r.send('Notification', { notification_type: 'idle_prompt' });
+  assert.strictEqual(r.view().awake, false);
+  assert.strictEqual(r.b.snapshot().idleSince, null, 'a wake is still scheduled');
+  const q = rig(at(23));
+  q.sched(PROMPT, 3600); q.send('Stop');
+  q.at(at(23) + HOUR + 1000); q.send('UserPromptSubmit', { prompt: PROMPT });       // woke; the turn then dies
+  q.at(at(23) + 2 * HOUR); q.send('Notification', { notification_type: 'idle_prompt' });
+  assert.strictEqual(q.b.snapshot().idleSince, at(23) + 2 * HOUR, 'nothing scheduled: the clock starts');
+  assert.strictEqual(q.view(at(23) + 2 * HOUR + OVERDUE_MS + 1), null, 'over 15 min later, not held awake to the 12 h cap');
+});
+
+test('r2 F1: other notifications (a permission prompt) do not sleep the night; a subagent\'s idle_prompt never counts', () => {
+  const r = rig(at(23));
+  r.sched(PROMPT, 3600);
+  r.send('Notification', { notification_type: 'permission_prompt' });
+  r.send('Notification', {});
+  r.send('Notification', { notification_type: 'idle_prompt', agent_id: 'a1' });
+  assert.strictEqual(r.view().awake, true);
+});
+
+test('r2 F1 property: after any history and a quiet gap past 12 h, a successful bedtime ScheduleWakeup starts a night, unless the capped run\'s own loop was still scheduling', () => {
+  fc.assert(fc.property(seq, fc.integer({ min: 13 * HOUR, max: 40 * HOUR }), (events, gap) => {
+    let t = T0;
+    const b = createBedtime({ now: () => t });
+    for (const e of events) { t += e.dt; feed(b, e, t); }
+    const last = t;
+    t = last + gap + MAX_NIGHT_MS;                                                    // quiet for longer than any cap or grace
+    feed(b, { k: 'sched', prompt: PROMPT2, delay: 3600 }, t);
+    const v = b.view(t);
+    return v !== null && v.startedAt === t;
+  }));
 });
 
 test('handle reports a change exactly when the state moved, and is total on junk', () => {
@@ -482,7 +582,7 @@ test('any main-session tool call, a poll included, wakes a sleeping night (a tur
 });
 
 test('only Stop puts the night to sleep: other events leave an awake session awake', () => {
-  for (const [event, payload] of [['Notification', { notification_type: 'idle_prompt' }], ['SubagentStop', {}], ['PreCompact', {}], ['Whatever', {}]]) {
+  for (const [event, payload] of [['Notification', { notification_type: 'permission_prompt' }], ['SubagentStop', {}], ['PreCompact', {}], ['Whatever', {}]]) {
     const r = rig();
     r.sched(PROMPT, 1800);
     r.send(event, payload);
