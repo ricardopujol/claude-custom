@@ -212,6 +212,18 @@ test('PR #102 Miguel Y1: a float\'s bar reserves a fixed move handle at its left
   assert.match(/\.dfloat \.zone-tabs button \{([^}]*)\}/.exec(html)[1], /flex: 0 1 auto/, 'tabs may shrink');
 });
 
+test('PR #102 Miguel S2: the grip lives in a frame along the float\'s bottom edge, so it never covers the end of the panel\'s scrollbar', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const frame = /\.dfloat \{([^}]*)\}/.exec(html)[1];
+  const grip = /\.dfloat-grip \{([^}]*)\}/.exec(html)[1];
+  const pad = Number((/padding-bottom: (\d+)px/.exec(frame) || [])[1]);
+  const gripH = Number((/height: (\d+)px/.exec(grip) || [])[1]);
+  assert.ok(pad >= 4 && pad <= 10, `a thin frame, ${pad} px`);
+  assert.ok(gripH <= pad, `the grip (${gripH} px) fits inside the frame (${pad} px)`);
+  assert.match(grip, /right: 0; bottom: 0/, 'in the frame\'s right corner');
+  assert.match(frame, /background: var\(--chrome\)/, 'the bar\'s colour');
+});
+
 test('PR #100 Miguel S3: every save of the global layout goes through one helper that says so when the store refuses it', () => {
   // Only the helper talks to the store; the four places that save call it.
   assert.strictEqual([...JS.matchAll(/\bbridge\.set\(/g)].length, 1, 'only inside saveGlobalLayout');

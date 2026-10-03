@@ -700,8 +700,10 @@
     #dock-floats { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
     /* A floating panel (D2): a group that hangs over the dock. Its bar moves it, so its tabs keep their own width and
        the bar's empty part is the handle; the grip in the corner resizes it. Focus mode hides it like any zone. */
+    /* The frame along its bottom edge (PR #102 S2): padding the bar's colour, so the resize grip sits in it and not over
+       the end of the panel's scrollbar or a control in the panel's corner. */
     .dfloat {
-      pointer-events: auto;
+      pointer-events: auto; padding-bottom: 8px; background: var(--chrome);
       border: 1px solid var(--border); border-radius: 4px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
     }
@@ -715,9 +717,9 @@
     }
     .dfloat .zone-tabs button { flex: 0 1 auto; padding: 8px 10px; cursor: pointer; }
     .dfloat-grip {
-      position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; z-index: 2;
+      position: absolute; right: 0; bottom: 0; width: 22px; height: 8px; z-index: 2;
       cursor: nwse-resize; -webkit-app-region: no-drag;
-      background: linear-gradient(135deg, transparent 0 50%, var(--dim) 50% 58%, transparent 58% 70%, var(--dim) 70% 78%, transparent 78%);
+      background: repeating-linear-gradient(135deg, transparent 0 2px, var(--dim) 2px 3px);
       opacity: .7;
     }
     .dfloat-grip:hover { opacity: 1; }

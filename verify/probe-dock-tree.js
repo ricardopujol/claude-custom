@@ -696,7 +696,12 @@ async function main() {
     check('12: dragging the corner grip resizes the float by the drag (stopping at the window\'s edge), its top left corner staying put',
       Math.abs(rs.width - wantW) <= 1 && Math.abs(rs.height - wantH) <= 1 && rs.width > mv.width + 1 && rs.height > mv.height + 1 && Math.abs(rs.left - mv.left) <= 1 && Math.abs(rs.top - mv.top) <= 1, JSON.stringify([mv, rs, wantW, wantH]));
     check('12: ...with one store write', s.pushes === before13.pushes + 1, `pushes ${before13.pushes} -> ${s.pushes}`);
-    check('12: ...and the panel inside the float fills it', flOf(s, 'vault').panelRects.every(p => p.right <= flOf(s, 'vault').rect.right + 1 && p.bottom <= flOf(s, 'vault').rect.bottom + 1));
+    {
+      const fl = flOf(s, 'vault');
+      check('12: ...the grip sits in the frame under the panel, so it covers no part of the panel (PR #102 Miguel S2)',
+        fl.panelRects.length > 0 && fl.grip.top >= Math.max(...fl.panelRects.map(p => p.bottom)) - 1 && fl.grip.bottom <= fl.rect.bottom + 1, JSON.stringify([fl.grip, fl.panelRects]));
+    }
+    check('12: ...and the panel inside the float fills it',flOf(s, 'vault').panelRects.every(p => p.right <= flOf(s, 'vault').rect.right + 1 && p.bottom <= flOf(s, 'vault').rect.bottom + 1));
 
     // a press that moves nothing stores nothing (PR #102 Dexter 2)
     {
