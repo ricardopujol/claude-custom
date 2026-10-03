@@ -138,3 +138,17 @@ test('hostNote says what to do, only when the host is the problem', () => {
   assert.match(hostNote(null), /restart/i);
   assert.match(hostNote(undefined), /waiting/i);
 });
+
+// ---- PR #95 Dexter D7 ----
+
+test('D7: a dropped socket forgets what the old host accepted: nothing is sent until the NEW hello', async () => {
+  const { r, sent } = rig();
+  r.setControls(['repo']);
+  r.failAll('the connection dropped');
+  const pending = r.request('list', { dir: '' });
+  assert.strictEqual(sent.length, 0, 'no repo frame on the old host authority');   // asserted BEFORE awaiting: a sent frame never resolves here
+  assert.match((await pending).error, /waiting/i);
+  r.setControls(['repo']);
+  r.request('list', { dir: '' });
+  assert.strictEqual(sent.length, 1, 'the new hello re-opens it');
+});

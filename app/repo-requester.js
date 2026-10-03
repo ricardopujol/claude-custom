@@ -73,7 +73,10 @@ function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clea
     return settle(msg.seq, msg);
   }
 
+  // A dropped socket also forgets what its host accepted (PR #95 Dexter D7): the next socket may reach another
+  // host, an older one that would type a `repo` frame into its pty. Nothing is sent until ITS hello.
   function failAll(reason) {
+    controls = undefined;
     for (const id of [...pending.keys()]) settle(id, { type: 'repo', ok: false, error: String(reason) });
   }
 
