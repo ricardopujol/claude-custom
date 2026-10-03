@@ -49,6 +49,16 @@ function mentionsBedtime(prompt) {
   return typeof prompt === 'string' && /\bbedtime\b/i.test(prompt);
 }
 
+/**
+ * A ScheduleWakeup's PreToolUse / PostToolUse: the events only the bedtime matcher asked for. The host feeds them
+ * to the night and goes no further: the mood engine would read the tool as work, and the Running panel would show
+ * a ScheduleWakeup as a process (its Post is hooked, but it is not a command that runs).
+ */
+function isBedtimeOnly(ev) {
+  return !!ev && typeof ev === 'object' && (ev.event === 'PreToolUse' || ev.event === 'PostToolUse')
+    && isObj(ev.payload) && ev.payload.tool_name === 'ScheduleWakeup';
+}
+
 const clampDelay = (s) => Math.min(MAX_DELAY_S, Math.max(MIN_DELAY_S, s));
 
 function believableScheduledFor(v, at) {
@@ -128,4 +138,4 @@ function createBedtime({ now = Date.now } = {}) {
   return { handle, view, snapshot: () => (night === null ? null : { ...night }) };
 }
 
-module.exports = { createBedtime, mentionsBedtime, OVERDUE_MS, MAX_NIGHT_MS };
+module.exports = { createBedtime, mentionsBedtime, isBedtimeOnly, OVERDUE_MS, MAX_NIGHT_MS };

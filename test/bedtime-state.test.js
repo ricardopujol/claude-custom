@@ -345,3 +345,15 @@ test('property: subagent events never move the snapshot', () => {
     return JSON.stringify(b.snapshot()) === before && t >= T0;
   }));
 });
+
+test('isBedtimeOnly: the ScheduleWakeup Pre / Post events the bedtime matcher brings, and nothing else', () => {
+  const { isBedtimeOnly } = B;
+  const ev = (event, payload) => ({ event, payload });
+  assert.strictEqual(isBedtimeOnly(ev('PreToolUse', { tool_name: 'ScheduleWakeup' })), true);
+  assert.strictEqual(isBedtimeOnly(ev('PostToolUse', { tool_name: 'ScheduleWakeup' })), true);
+  assert.strictEqual(isBedtimeOnly(ev('PreToolUse', { tool_name: 'Bash' })), false);
+  assert.strictEqual(isBedtimeOnly(ev('PreToolUse', { tool_name: 'Agent' })), false);
+  assert.strictEqual(isBedtimeOnly(ev('Stop', { tool_name: 'ScheduleWakeup' })), false);
+  assert.strictEqual(isBedtimeOnly(ev('PreToolUse', {})), false);
+  for (const junk of [null, undefined, {}, 3, { event: 'PreToolUse' }]) assert.strictEqual(isBedtimeOnly(junk), false);
+});

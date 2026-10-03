@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { buildHarnessSettings, writeHarnessSettings, OCCUPANCY_MATCHER } = require('../host/settings-writer');
+const { buildHarnessSettings, writeHarnessSettings, OCCUPANCY_MATCHER, BEDTIME_MATCHER } = require('../host/settings-writer');
 
 const HELPER = 'C:/tools/claude-custom-hook.exe';
 const PIPE = '\\\\.\\pipe\\claude-custom-abc123';
@@ -433,4 +433,34 @@ test('only a real true opts in (a truthy string is not a yes)', () => {
   for (const v of ['yes', 1, {}, [], 'false']) {
     assert.strictEqual(buildHarnessSettings({ ...opts, occupancy: v }).hooks.PreToolUse.length, 1, String(v));
   }
+});
+
+// Backlog #52 (bedtime): the night is read from the loop's own ScheduleWakeup calls, which no matcher above saw.
+// Opt-in and SEPARATE entries (Pre for the call, Post for the CLI's `scheduledFor`), so the mood engine's are untouched.
+test('bedtime adds a ScheduleWakeup entry to PreToolUse AND PostToolUse, after the others, and only when asked', () => {
+  const plain = buildHarnessSettings(opts);
+  assert.strictEqual(plain.hooks.PreToolUse.length, 1);
+  assert.strictEqual(plain.hooks.PostToolUse.length, 1);
+  const s = buildHarnessSettings({ ...opts, bedtime: true });
+  assert.strictEqual(s.hooks.PreToolUse.length, 2);
+  assert.strictEqual(s.hooks.PostToolUse.length, 2);
+  for (const event of ['PreToolUse', 'PostToolUse']) {
+    const last = s.hooks[event][s.hooks[event].length - 1];
+    assert.strictEqual(last.matcher, BEDTIME_MATCHER);
+    assert.strictEqual(last.hooks[0].command, plain.hooks[event][0].hooks[0].command.replace(/--event \w+$/, `--event ${event}`));
+    assert.strictEqual(JSON.stringify(s.hooks[event][0]), JSON.stringify(plain.hooks[event][0]), `${event}[0] still belongs to the mood engine`);
+  }
+  assert.strictEqual(BEDTIME_MATCHER, 'ScheduleWakeup');
+});
+
+test('bedtime changes only PreToolUse and PostToolUse, and composes with occupancy and the tool belt in a fixed order', () => {
+  const plain = buildHarnessSettings(opts);
+  const s = buildHarnessSettings({ ...opts, bedtime: true });
+  for (const event of Object.keys(plain.hooks)) {
+    if (event === 'PreToolUse' || event === 'PostToolUse') continue;
+    assert.strictEqual(JSON.stringify(s.hooks[event]), JSON.stringify(plain.hooks[event]), event);
+  }
+  const loadoutHook = { nodePath: 'node', scriptPath: 'C:/x/loadout-hook.js', stateDir: 'C:/x/state' };
+  const all = buildHarnessSettings({ ...opts, loadoutHook, occupancy: true, bedtime: true });
+  assert.deepStrictEqual(all.hooks.PreToolUse.map(e => e.matcher), ['Agent|Task|Bash', 'Agent|Task', OCCUPANCY_MATCHER, BEDTIME_MATCHER]);
 });
