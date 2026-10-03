@@ -40,7 +40,7 @@ test('gh missing, failing or timing out is null', async () => {
   assert.strictEqual(await readOpenPrs('C:/p', { run: async () => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); } }), null);
 });
 
-// PR #93 Miguel I3: main's own re-check before Run /merged types anything.
+// PR #93 Miguel I3: main's own re-check before Type /merged types anything.
 test('openPrFor: true for a branch with an open PR, false for one without, null when gh can not say', async () => {
   const { openPrFor } = require('../host/open-prs');
   const read = async () => new Map([['feat/b', { pr: 91, title: 't' }]]);

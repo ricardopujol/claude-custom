@@ -826,11 +826,11 @@ function registerIpc() {
   ipcMain.handle('tab:selectFolder', (e, folder) => (isTabView(e.sender)
     ? tabShell.selectFolder(e.sender, folder)
     : { kind: 'explain', text: "That tab's window can't be found." }));
-  // The Git drawer (Enhancement #46): what the tabs of its worktrees are doing, and *Run /merged*, which
+  // The Git drawer (Enhancement #46): what the tabs of its worktrees are doing, and *Type /merged*, which
   // switches to that branch's tab and types `/merged` + Enter into its session.
   ipcMain.handle('tab:states', (e, folders) => (isTabView(e.sender) ? tabShell.tabStates(e.sender, folders) : []));
-  ipcMain.handle('tab:runMerged', (e, folder, branch) => (isTabView(e.sender)
-    ? tabShell.runMerged(e.sender, folder, branch)
+  ipcMain.handle('tab:typeMerged', (e, folder, branch) => (isTabView(e.sender)
+    ? tabShell.typeMerged(e.sender, folder, branch)
     : { kind: 'explain', text: "That tab's window can't be found." }));
   // The target page's answer to a `type-command` (PR #93 Dexter F3): it typed into its own box, or why not.
   ipcMain.on('tab:typed', (e, reply) => {
@@ -1297,7 +1297,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
-    // Run /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
+    // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
     prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
     // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.

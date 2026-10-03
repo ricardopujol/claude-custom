@@ -70,9 +70,9 @@ test('hello reads the live model', () => {
 });
 
 test('a switch is planned before anything is typed, and typed only through send() (Miguel #2)', () => {
-  // The keys are typed by typePlanned, one copy shared with the Git drawer's Run /merged (PR #93 Dexter F3).
+  // The keys are typed by typePlanned, one copy shared with the Git drawer's Type /merged (PR #93 Dexter F3).
   const body = fnBody('requestSwitch');
-  const typing = fnBody('typePlanned');
+  const typing = fnBody('typePlanned') + fnBody('typeAndCheck');
   assert.match(body, /planSwitch\(/);
   assert.match(body, /inputState\(lines, /, 'the input box must be checked (Dexter #4)');
   assert.ok(body.indexOf('if (!plan.ok)') !== -1 && body.indexOf('if (!plan.ok)') < body.indexOf('typePlanned('),
@@ -100,7 +100,7 @@ test('the cursor goes to end-of-line BEFORE Ctrl-U (Dexter r2 N1)', () => {
   // Home it deleted nothing, and a `sonnet` click submitted
   // `/model sonnetrefactor the parser`. Ctrl-E first clears the whole line.
   // The order lives in typingKeys (app/top-bar-display.js), typed in order by typePlanned.
-  assert.match(fnBody('typePlanned'), /keys\.forEach\(\(k, i\) => setTimeout\(\(\) => input\(k\), PTY_STEP_MS \* i\)\)/);
+  assert.match(fnBody('typeAndCheck'), /keys\.forEach\(\(k, i\) => setTimeout\(\(\) => input\(k\), PTY_STEP_MS \* i\)\)/);
   for (const vim of [false, true]) {
     const keys = typingKeys('/model sonnet', vim);
     const end = keys.indexOf('\x05');
@@ -178,11 +178,14 @@ test('vim mode is latched from the screen and passed to every screen judgement',
 });
 
 test('the CR is sent only after the box reads back exactly the command', () => {
-  const body = fnBody('typePlanned');
-  const check = body.indexOf('commandTyped(');
-  const cr = body.indexOf("input('\\r')");
-  assert.ok(check !== -1, 'a read-back before Enter');
-  assert.ok(cr > check, 'Enter comes after the read-back');
+  // typeAndCheck reads back and answers ok only on an exact match; typePlanned presses Enter only on that ok
+  const check = fnBody('typeAndCheck');
+  assert.match(check, /if \(commandTyped\(screenLines\(\), command, \{ vim: vimSeen \}\)\) \{ done\(\{ ok: true \}\); return; \}/,
+    'a read-back before Enter');
+  assert.doesNotMatch(check, /input\('\\r'\)/, 'the read-back itself never presses Enter');
+  const enter = fnBody('typePlanned');
+  assert.ok(enter.indexOf('typeAndCheck(') !== -1 && enter.indexOf("if (r.ok) input('\\r')") > enter.indexOf('typeAndCheck('),
+    'Enter comes after the read-back, and only when it matched');
 });
 
 test('a truth clears a TIMEOUT notice it has made stale (Dexter r2 N5)', () => {
@@ -207,7 +210,7 @@ test('a refused read-back clears only ITS OWN pending request (Dexter #51 F5)', 
 });
 
 test('a refused read-back puts vim back in NORMAL if it left it (Miguel #51 3)', () => {
-  const body = fnBody('typePlanned');
+  const body = fnBody('typeAndCheck');
   const refusal = body.slice(body.indexOf('commandTyped('));
   assert.match(refusal, /if \(enterInsert\)[^\n]*input\('\\x1b'\)/);
   assert.match(fnBody('requestSwitch'), /typePlanned\(plan\.enterInsert, plan\.command,/);

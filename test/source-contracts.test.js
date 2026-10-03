@@ -229,3 +229,17 @@ test('the git-panel probe seams are read in ONE place: no other host or app file
     }
   }
 });
+
+// PR #93 Dexter R2-1 (Ricardo's decision): no hook can say a turn is really over, so Type /merged TYPES and
+// the person presses Enter. Here, not in tab-shell.test.js: that file is in the mutation command, and
+// tab-shell.js is mutated.
+test("the shell's Type /merged path sends no Enter and no raw input anywhere", () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  for (const fn of ['async function typeMerged(', 'function askToType(', 'function typed(']) {
+    const a = src.indexOf(fn);
+    assert.ok(a !== -1, fn);
+    const body = src.slice(a, src.indexOf('\n  }\n', a));
+    assert.doesNotMatch(body, /\\r|\\x0d|\\u000d|hosts\.control|type: 'input'/, `${fn} must not press Enter`);
+  }
+  assert.match(src, /askToType\(tab, '\/merged'\)/);
+});

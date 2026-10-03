@@ -24,7 +24,7 @@ test('the drawer says what the card says, plus reviews and the five actions', ()
   assert.strictEqual(d.why, 'Dock zones, panels that fill');
   assert.match(d.sum, /1\.2M tokens · 12 commits/);
   assert.deepStrictEqual(d.reviews, [{ who: 'Dexter', round: 2, text: 'CLEAN', none: false }]);
-  assert.deepStrictEqual(d.actions.map(a => [a.id, a.enabled]), [['open-pr', true], ['jump', true], ['open-worktree', false], ['run-merged', true], ['copy', true]]);
+  assert.deepStrictEqual(d.actions.map(a => [a.id, a.enabled]), [['open-pr', true], ['jump', true], ['open-worktree', false], ['type-merged', true], ['copy', true]]);
 });
 
 test("the drawer's people are the top four with bars by tokens (the biggest is full width), then +N more", () => {
@@ -52,9 +52,9 @@ test('reviews: the latest round per reviewer with its verdict; a report with no 
   assert.strictEqual(drawerModel(openB({ reviews: [] }), { tree: tree0, tab: TAB_IDLE }).noReviews, 'no review reports yet');
 });
 
-test('the drawer never invents a tab: no tab info means Run /merged stays off, and Jump is still tried', () => {
+test('the drawer never invents a tab: no tab info means Type /merged stays off, and Jump is still tried', () => {
   const d = drawerModel(openB(), { tree: tree0, tab: null });
-  assert.strictEqual(d.actions.find(a => a.id === 'run-merged').enabled, false);
+  assert.strictEqual(d.actions.find(a => a.id === 'type-merged').enabled, false);
   assert.strictEqual(d.actions.find(a => a.id === 'jump').enabled, true);
 });
 

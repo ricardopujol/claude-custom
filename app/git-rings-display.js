@@ -3,7 +3,7 @@
  * The Git panel (documentation/DESIGN_GIT_TREE.md, PLAN_GIT_TREE.md Task 10; "Enhancement #46"): the Rings
  * dial from app/git-rings.js, its hover card, and the drawer a click (or an arrow key) opens.
  *
- *   render(root, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs, now })
+ *   render(root, tree, { onJump, onOpenPr, onCopy, onTypeMerged, tabs, now })
  *                                     draws `tree` (the host's `git-tree` answer) into the panel
  *   cardModel(branch, { current, prsKnown })   what a spoke's hover card says
  *   drawerModel(branch, { tree, tab, hub })    what the drawer says: the card, who worked on it with bars,
@@ -229,7 +229,7 @@ function stateOf(dial) {
     dial.gitState = { key: null, tree: null, byName: new Map(), pinned: null, hover: null,
       said: null, wired: 0, renders: 0,
       // handlers for the drawer's actions (renderer.js): each answers a Promise
-      onJump: null, onOpenPr: null, onCopy: null, onRunMerged: null,
+      onJump: null, onOpenPr: null, onCopy: null, onTypeMerged: null,
       // what the shell knows of each worktree's tab, by the folder as the tree spells it
       tabs: new Map(), tabsKnown: false,
       // measured growth: the names whose spend grew in the last refresh that found any, and when
@@ -358,6 +358,12 @@ function fillDrawer(dial, key) {
     const btn = el(doc, 'button', { type: 'button', class: `git-act ${a.id}`, 'data-act': a.id,
       'aria-disabled': a.enabled ? 'false' : 'true' }, row);
     btn.textContent = a.label;
+    if (a.enabled && a.hint) {
+      // an enabled action that leaves the last step to the person says so, beside it
+      const hint = el(doc, 'span', { class: 'git-act-why hint', id: `git-act-hint-${a.id}` }, row);
+      hint.textContent = a.hint;
+      btn.setAttribute('aria-describedby', hint.id);
+    }
     if (!a.enabled) {
       // Every disabled action says why, where it can be seen and heard: beside it, and as its description.
       // Not also as a title, which a screen reader announces a second time (PR #93 Miguel S2).
@@ -435,7 +441,7 @@ async function act(dial, id) {
   if (!a || !a.enabled) return;
   const b = key === HUB ? null : st.byName.get(key);
   // A double click or a held Enter on the button fires again before the first answer: ignored here, and
-  // refused by the shell too (app/tab-shell.js runMerged, the authoritative guard).
+  // refused by the shell too (app/tab-shell.js typeMerged, the authoritative guard).
   const busyKey = `${key}\u0000${id}`;
   if (st.busy.has(busyKey)) return;
   st.busy.add(busyKey);
@@ -456,12 +462,13 @@ async function act(dial, id) {
       if (!st.onCopy) return say(dial, key, "Can't copy from here.");
       await st.onCopy(name);
       say(dial, key, `Copied ${name}.`);
-    } else if (id === 'run-merged') {
-      if (!b || !b.folder || !st.onRunMerged) return;
-      const r = await st.onRunMerged(b.folder, b.name);
+    } else if (id === 'type-merged') {
+      if (!b || !b.folder || !st.onTypeMerged) return;
+      const r = await st.onTypeMerged(b.folder, b.name);
       // A box that wasn't empty was cleared first (a draft, or the CLI's placeholder: the text can't tell)
-      if (r && r.kind === 'sent') {
-        say(dial, key, `Sent /merged to ${r.branch || b.name}'s session.`
+      // Typed, never sent: the Enter is the person's (PR #93 Dexter R2-1)
+      if (r && r.kind === 'typed') {
+        say(dial, key, `Typed /merged in ${r.branch || b.name}'s tab: press Enter there to run it.`
           + (r.cleared ? " Its input box wasn't empty: if that was a draft, Ctrl+Y in that tab brings it back." : ''));
       }
       else say(dial, key, (r && r.text) || "Couldn't run /merged.");
@@ -675,11 +682,11 @@ function wire(dial) {
 
 /**
  * Draws `tree` into the panel. `rootEl` holds #git-status and #git-dial. deps: onJump(folder),
- * onOpenPr(url) -> Promise<boolean>, onCopy(name), onRunMerged(folder) -> Promise<{ kind, text?, branch? }>;
+ * onOpenPr(url) -> Promise<boolean>, onCopy(name), onTypeMerged(folder) -> Promise<{ kind, text?, branch? }>;
  * `tabs` is the shell's [{ folder, open, started, known, working, needsInput }] or null (not known);
  * `now` is the wall clock. An answer identical to the last one draws nothing (Dexter F1, Miguel Y1).
  */
-function render(rootEl, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs = null, now = Date.now() } = {}) {
+function render(rootEl, tree, { onJump, onOpenPr, onCopy, onTypeMerged, tabs = null, now = Date.now() } = {}) {
   const doc = rootEl.ownerDocument;
   const status = rootEl.querySelector('#git-status');
   const dial = rootEl.querySelector('#git-dial');
@@ -687,7 +694,7 @@ function render(rootEl, tree, { onJump, onOpenPr, onCopy, onRunMerged, tabs = nu
   st.onJump = onJump || null;
   st.onOpenPr = onOpenPr || null;
   st.onCopy = onCopy || null;
-  st.onRunMerged = onRunMerged || null;
+  st.onTypeMerged = onTypeMerged || null;
   // the panel's one status node, made once (syncSaid says why)
   if (!st.saidEl || !st.saidEl.isConnected) {
     st.saidEl = rootEl.querySelector('.git-said') || el(doc, 'div', { class: 'git-said', role: 'status', 'aria-live': 'polite' }, rootEl);

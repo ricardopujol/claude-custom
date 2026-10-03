@@ -19,13 +19,13 @@ const ctx = (over = {}) => ({ prsKnown: true, repoUrl: 'https://github.com/o/r',
 const by = (list, id) => list.find(a => a.id === id);
 
 test('five actions, always, in this order', () => {
-  assert.deepStrictEqual(A.actionsFor(open, ctx()).map(a => a.id), ['open-pr', 'jump', 'open-worktree', 'run-merged', 'copy']);
-  assert.deepStrictEqual(A.actionsFor(unmerged, ctx({ tab: null })).map(a => a.id), ['open-pr', 'jump', 'open-worktree', 'run-merged', 'copy']);
+  assert.deepStrictEqual(A.actionsFor(open, ctx()).map(a => a.id), ['open-pr', 'jump', 'open-worktree', 'type-merged', 'copy']);
+  assert.deepStrictEqual(A.actionsFor(unmerged, ctx({ tab: null })).map(a => a.id), ['open-pr', 'jump', 'open-worktree', 'type-merged', 'copy']);
 });
 
 test('an open PR whose tab is open and idle can do everything but open a worktree', () => {
   const l = A.actionsFor(open, ctx());
-  for (const id of ['open-pr', 'jump', 'run-merged', 'copy']) assert.deepStrictEqual([id, by(l, id).enabled, by(l, id).why], [id, true, null]);
+  for (const id of ['open-pr', 'jump', 'type-merged', 'copy']) assert.deepStrictEqual([id, by(l, id).enabled, by(l, id).why], [id, true, null]);
   assert.strictEqual(by(l, 'open-pr').label, 'Open PR #91');
 });
 
@@ -65,8 +65,8 @@ test('Jump: a tab whose state could not be read is still tried: main explains if
   assert.strictEqual(by(A.actionsFor(open, ctx({ tab: null })), 'jump').enabled, true);
 });
 
-test('Run /merged: only for an open PR whose tab is open and idle; every other case says why', () => {
-  const why = (b, c) => { const a = by(A.actionsFor(b, c), 'run-merged'); assert.strictEqual(a.enabled, false); return a.why; };
+test('Type /merged: only for an open PR whose tab is open and idle; every other case says why', () => {
+  const why = (b, c) => { const a = by(A.actionsFor(b, c), 'type-merged'); assert.strictEqual(a.enabled, false); return a.why; };
   assert.match(why(merged, ctx({ tab: null })), /already merged/);
   assert.match(why(unmerged, ctx({ tab: null })), /no open PR/);
   assert.match(why({ ...unmerged, state: 'deleted' }, ctx({ tab: null })), /gone/);
@@ -83,27 +83,27 @@ test('Run /merged: only for an open PR whose tab is open and idle; every other c
 // PR #93 Dexter F1 / F2: the gate reads the host's measure of the MAIN session, not the subagent roster
 // and not "looked at yet".
 test('Dexter F1: a main-session turn with no subagent is working, though the roster says nothing is', () => {
-  const a = by(A.actionsFor(open, ctx({ tab: { ...idle, working: false, turn: 'turn' } })), 'run-merged');
+  const a = by(A.actionsFor(open, ctx({ tab: { ...idle, working: false, turn: 'turn' } })), 'type-merged');
   assert.strictEqual(a.enabled, false);
   assert.match(a.why, /working/);
 });
 
 test('Dexter F2: an open dialog the tab was already looked at is still waiting for you', () => {
-  const a = by(A.actionsFor(open, ctx({ tab: { ...idle, needsInput: false, turn: 'prompt' } })), 'run-merged');
+  const a = by(A.actionsFor(open, ctx({ tab: { ...idle, needsInput: false, turn: 'prompt' } })), 'type-merged');
   assert.strictEqual(a.enabled, false);
   assert.match(a.why, /waiting for you/);
 });
 
 test('a session whose host has not said whether a turn is running is not idle', () => {
   for (const turn of [null, undefined, 'weird']) {
-    const a = by(A.actionsFor(open, ctx({ tab: { ...idle, turn } })), 'run-merged');
+    const a = by(A.actionsFor(open, ctx({ tab: { ...idle, turn } })), 'type-merged');
     assert.strictEqual(a.enabled, false, String(turn));
     assert.match(a.why, /can't tell whether/);
   }
 });
 
-test('Run /merged: a working tab that also needs input is told as working (the first thing to wait for)', () => {
-  assert.match(by(A.actionsFor(open, ctx({ tab: { ...idle, working: true, needsInput: true } })), 'run-merged').why, /working/);
+test('Type /merged: a working tab that also needs input is told as working (the first thing to wait for)', () => {
+  assert.match(by(A.actionsFor(open, ctx({ tab: { ...idle, working: true, needsInput: true } })), 'type-merged').why, /working/);
 });
 
 test('Copy name is always enabled', () => {
@@ -130,14 +130,14 @@ test('property: an enabled action has no reason, a disabled one always has one',
     }));
 });
 
-test('property: Run /merged is enabled only when every condition holds', () => {
+test('property: Type /merged is enabled only when every condition holds', () => {
   const state = fc.constantFrom('merged', 'open', 'unmerged', 'deleted');
   const place = fc.constantFrom('worktree', 'had-worktree', 'dev');
   const tab = fc.oneof(fc.constant(null), fc.constant({ open: false }), fc.record({
     open: fc.constant(true), started: fc.boolean(), known: fc.boolean(), working: fc.boolean(), needsInput: fc.boolean() }));
   fc.assert(fc.property(state, place, fc.boolean(), tab, (st, pl, hasFolder, t) => {
     const b = { name: 'n', state: st, place: pl, pr: 3, prUrl: null, folder: hasFolder ? 'C:/x' : null };
-    const a = by(A.actionsFor(b, { prsKnown: true, repoUrl: null, tab: t }), 'run-merged');
+    const a = by(A.actionsFor(b, { prsKnown: true, repoUrl: null, tab: t }), 'type-merged');
     const should = st === 'open' && pl === 'worktree' && hasFolder && !!t && t.open === true && t.started === true
       && t.known === true && t.working === false && t.needsInput === false;
     assert.strictEqual(a.enabled, should);
@@ -151,14 +151,14 @@ test('which action does the drawer put the keyboard on first: the first enabled 
 });
 
 // PR #93 Dexter F5: a tab whose worktree is held by another session has no terminal: nothing would be typed.
-test('Dexter F5: Run /merged is off for a blocked or not-yet-locked tab, and for one whose lock is unknown', () => {
+test('Dexter F5: Type /merged is off for a blocked or not-yet-locked tab, and for one whose lock is unknown', () => {
   for (const [lock, re] of [['blocked', /another session holds/], ['pending', /hasn't taken/], [null, /can't tell whether it holds/]]) {
-    const a = by(A.actionsFor(open, ctx({ tab: { ...idle, lock } })), 'run-merged');
+    const a = by(A.actionsFor(open, ctx({ tab: { ...idle, lock } })), 'type-merged');
     assert.strictEqual(a.enabled, false, String(lock));
     assert.match(a.why, re);
   }
   for (const lock of ['held', 'unlocked', 'override']) {
-    assert.strictEqual(by(A.actionsFor(open, ctx({ tab: { ...idle, lock } })), 'run-merged').enabled, true, lock);
+    assert.strictEqual(by(A.actionsFor(open, ctx({ tab: { ...idle, lock } })), 'type-merged').enabled, true, lock);
   }
 });
 
@@ -170,4 +170,14 @@ test('Dexter F9: an origin that exists but isn\'t a github.com URL says so and n
   assert.match(a.why, /github\.com/);
   assert.doesNotMatch(a.why, /no GitHub remote/);
   assert.match(by(A.actionsFor(noPage, ctx({ repoUrl: null, originHost: null })), 'open-pr').why, /no GitHub remote/);
+});
+
+// PR #93 Dexter R2-1 (Ricardo's decision): the action TYPES /merged; the person presses Enter. It says so.
+test('Type /merged is named for what it does, and when enabled says the Enter is yours', () => {
+  const a = by(A.actionsFor(open, ctx()), 'type-merged');
+  assert.strictEqual(a.label, 'Type /merged');
+  assert.strictEqual(a.enabled, true);
+  assert.strictEqual(a.hint, 'press Enter in its tab to run it');
+  assert.ok(A.actionsFor(open, ctx()).filter(x => x.id !== 'type-merged').every(x => x.hint === null || x.hint === undefined));
+  assert.strictEqual(by(A.actionsFor(merged, ctx()), 'type-merged').hint, null, 'a disabled one says why instead');
 });

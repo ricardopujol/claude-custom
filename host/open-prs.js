@@ -48,7 +48,7 @@ async function readOpenPrs(cwd, { run = defaultRun } = {}) {
 }
 
 /**
- * Has `branch` an open PR, asked in `cwd`? true / false, or null when gh can't say. Run /merged's own
+ * Has `branch` an open PR, asked in `cwd`? true / false, or null when gh can't say. Type /merged's own
  * re-check in main (PR #93 Miguel I3), so the renderer's word is never enough to type into a session.
  */
 async function openPrFor(cwd, branch, { read = readOpenPrs } = {}) {

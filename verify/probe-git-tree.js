@@ -28,12 +28,13 @@
  *      branch; Open PR follows origin (disabled with no remote, enabled once one is added)
  *   9  live sparks only for MEASURED growth: a first measurement is quiet, a refresh that found new tokens
  *      streams sparks on that branch alone, and they stop
- *  10  Run /merged on an open PR whose session is at rest switches to that tab and its own page types
- *      `/merged` and Enter. A stand-in CLI box (verify/lib/fake-claude-box.js) runs in feat-b's cmd.exe, and
- *      the CLI's hook events go down feat-b's host pipe, so nothing bills. PR #93 review cases: a main-session
- *      turn with no subagent disables it (Dexter F1); an open dialog still disables it after the tab is
- *      looked at (F2); a draft in the box is cleared and /merged alone is submitted (F3); a double click
- *      types it once (F4)
+ *  10  Type /merged on an open PR whose session is at rest switches to that tab and its own page types
+ *      `/merged` into its box, and NEVER Enter: the person presses it (PR #93 Dexter R2-1). A stand-in CLI box
+ *      (verify/lib/fake-claude-box.js) runs in feat-b's cmd.exe, and the CLI's hook events go down feat-b's
+ *      host pipe, so nothing bills. PR #93 review cases: a main-session turn with no subagent disables it
+ *      (Dexter F1); an open dialog still disables it after the tab is looked at (F2); a draft in the box is
+ *      cleared and the box then holds /merged alone, with nothing submitted (F3, R2-1); a double click types
+ *      it once (F4)
  *
  * The Open PR button itself is NOT clicked here: it would open a real browser. Its URL is built and
  * checked by test/pr-url.test.js, and the link gate by test/external-link.test.js.
@@ -295,7 +296,12 @@ async function main() {
   await view(app, 'move', { id: 'git', target: 'bottom' });
   const wide = await waitFor(async () => {
     const s = await view(app, 'gitState');
-    return s && s.ok && s.spokes.length === 4 && s.svg && s.svg.width > 300 ? s : null;
+    if (!(s && s.ok && s.spokes.length === 4 && s.svg && s.svg.width > 300)) return null;
+    // settled: the same svg box twice, 300 ms apart. The first frame wider than 300px can be mid-layout,
+    // before the zone's height holds it (seen twice: "narrow true, scale 3.25", then 0.19 a moment later).
+    await sleep(300);
+    const t = await view(app, 'gitState');
+    return t && t.svg && JSON.stringify(t.svg) === JSON.stringify(s.svg) ? t : null;
   }, 8000);
   const vs = await view(app, 'state');
   check('3b: moved to the bottom zone, the dial is redrawn there', !!wide, wide ? '' : JSON.stringify({ git: await view(app, 'gitState'), bottom: vs.zones && vs.zones.bottom, shown: vs.shown }).slice(0, 700));
@@ -483,21 +489,21 @@ async function main() {
   check('8 open PR: Open PR #91 is disabled with no remote, and says so; Jump works; Copy works',
     actOf(bs, 'open-pr').label === 'Open PR #91' && actOf(bs, 'open-pr').disabled && /remote/.test(actOf(bs, 'open-pr').why || '')
     && !actOf(bs, 'jump').disabled && !actOf(bs, 'copy').disabled, shape(bs));
-  check('8 open PR: Run /merged is off until its tab has a session ("hasn\'t started"); Open a worktree says it is already open',
-    actOf(bs, 'run-merged').disabled && /hasn't started/.test(actOf(bs, 'run-merged').why || '')
+  check('8 open PR: Type /merged is off until its tab has a session ("hasn\'t started"); Open a worktree says it is already open',
+    actOf(bs, 'type-merged').disabled && /hasn't started/.test(actOf(bs, 'type-merged').why || '')
     && actOf(bs, 'open-worktree').disabled && /already open/.test(actOf(bs, 'open-worktree').why || ''), JSON.stringify(bs.acts));
   const ms = await pinOnly('feat/a');
-  check('8 merged: Open PR #1 (no remote), no Jump (no open worktree), Open a worktree and Run /merged say it is merged',
+  check('8 merged: Open PR #1 (no remote), no Jump (no open worktree), Open a worktree and Type /merged say it is merged',
     actOf(ms, 'open-pr').label === 'Open PR #1' && /remote/.test(actOf(ms, 'open-pr').why || '') && /no open worktree/.test(actOf(ms, 'jump').why || '')
-    && /merged/.test(actOf(ms, 'open-worktree').why || '') && /already merged/.test(actOf(ms, 'run-merged').why || '') && !actOf(ms, 'copy').disabled, JSON.stringify(ms.acts));
+    && /merged/.test(actOf(ms, 'open-worktree').why || '') && /already merged/.test(actOf(ms, 'type-merged').why || '') && !actOf(ms, 'copy').disabled, JSON.stringify(ms.acts));
   const us = await pinOnly('spike/c');
-  check('8 unmerged: no PR to open, no tab to jump to, Open a worktree needs agent-creator, Run /merged needs an open PR',
+  check('8 unmerged: no PR to open, no tab to jump to, Open a worktree needs agent-creator, Type /merged needs an open PR',
     /no PR/.test(actOf(us, 'open-pr').why || '') && actOf(us, 'jump').disabled && actOf(us, 'open-worktree').why === 'needs agent-creator to attach an existing branch'
-    && /no open PR/.test(actOf(us, 'run-merged').why || '') && !actOf(us, 'copy').disabled, JSON.stringify(us.acts));
+    && /no open PR/.test(actOf(us, 'type-merged').why || '') && !actOf(us, 'copy').disabled, JSON.stringify(us.acts));
   check('8: every disabled action says why: beside it, as its description, and not again as a title (Miguel S2)',
     [bs, ms, us].every(s => s.acts.filter(a => a.disabled).every(a => a.why && !a.title && a.described)), JSON.stringify(us.acts));
   const before8 = (await command(app, { cmd: 'state' })).selectedKey;
-  await view(app, 'gitAct', { act: 'run-merged' });
+  await view(app, 'gitAct', { act: 'type-merged' });
   await sleep(500);
   const afterOff = await gs();
   check('8: a disabled action does nothing when it is clicked', afterOff.said === '' && (await command(app, { cmd: 'state' })).selectedKey === before8, `said "${afterOff.said}"`);
@@ -554,11 +560,12 @@ async function main() {
   }, 15000);
 
   // 10 ----------------------------------------------------------------------------
-  // Run /merged (PR #93 review). feat-b's tab now has a session: cmd.exe. A stand-in CLI box
+  // Type /merged (PR #93 review). feat-b's tab now has a session: cmd.exe. A stand-in CLI box
   // (verify/lib/fake-claude-box.js) runs inside it, so the target page has a `❯` box to judge, clear and read
   // back; the probe sends the CLI's hook events down feat-b's host pipe, as the native helper would.
   const boxCtl = path.join(tmp, 'box-ctl.json');
   const boxLog = path.join(tmp, 'box-submitted.log');
+  const boxLine = () => { try { return JSON.parse(fs.readFileSync(`${boxLog}.line`, 'utf8')); } catch { return null; } };
   const submitted = () => { try { return fs.readFileSync(boxLog, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; } };
   const stNow = await command(app, { cmd: 'state' });
   const bHost = ((stNow && stNow.hosts) || []).find(x => /feat-b$/i.test(x.key || ''));
@@ -577,13 +584,15 @@ async function main() {
     await view(app, 'gitTabs');
     const s0 = await gs();
     if (s0.pinned !== 'feat/b') await view(app, 'gitPin', { name: 'feat/b' });
-    const a = actOf(await gs(), 'run-merged');
+    const a = actOf(await gs(), 'type-merged');
     return a.disabled ? (a.why || 'disabled') : 'enabled';
   };
   const runIs = (re) => waitFor(async () => { const w = await runWhy(); return re.test(w) ? w : null; }, 15000, 400);
   const restB = await waitFor(async () => { const b = await tabOfB(); return b && b.known && b.turn === 'idle' && b.lock ? b : null; }, 20000, 500);
   check('10: the dev tab sees feat-b\'s tab open and started, and its host says the session is at rest', !!restB, JSON.stringify(await tabOfB()));
-  check('10: an open PR whose session is at rest: Run /merged is enabled', !!(await runIs(/^enabled$/)), await runWhy());
+  check('10: an open PR whose session is at rest: Type /merged is enabled', !!(await runIs(/^enabled$/)), await runWhy());
+  const tm = actOf(await gs(), 'type-merged');
+  check('10 (Dexter R2-1): it is named for what it does and says the Enter is yours', tm.label === 'Type /merged' && tm.why === 'press Enter in its tab to run it' && !!tm.described, JSON.stringify(tm));
 
   // Dexter F1: a main-session turn that calls no agent
   await hook('UserPromptSubmit', { prompt: 'address the findings' });
@@ -608,27 +617,32 @@ async function main() {
   await hook('Stop', {});
   check('10 (Dexter F2): ...and the session moving on enables it again', !!(await runIs(/^enabled$/)), await runWhy());
 
-  // Dexter F3: a half-typed draft in the box
+  // Dexter F3 + R2-1: a half-typed draft in the box. The action TYPES /merged; the person presses Enter.
   fs.writeFileSync(boxCtl, JSON.stringify({ draft: 'also bump the version' }));
-  await sleep(600);
-  await view(app, 'gitAct', { act: 'run-merged' });
-  const sent1 = await waitFor(async () => (submitted().length >= 1 ? submitted() : null), 15000, 300);
-  check('10 (Dexter F3): the draft was cleared and /merged ALONE was submitted, never "also bump the version/merged"',
-    JSON.stringify(sent1) === JSON.stringify(['/merged']), JSON.stringify(submitted()));
+  await waitFor(async () => (boxLine() === 'also bump the version' ? true : null), 5000, 200);
+  await view(app, 'gitAct', { act: 'type-merged' });
+  await waitFor(async () => (boxLine() === '/merged' ? true : null), 15000, 300);
+  await sleep(1500);     // well past the read-back: an Enter would have landed by now
+  check('10 (Dexter F3): the draft was cleared and the box holds /merged alone, never "also bump the version/merged"',
+    boxLine() === '/merged', JSON.stringify(boxLine()));
+  check("10 (Dexter R2-1): nothing was submitted: the Enter is the person's", submitted().length === 0, JSON.stringify(submitted()));
   const sw = (await command(app, { cmd: 'state' })).selectedKey;
   check('10: it switched to that branch\'s tab to type', /feat-b$/i.test(sw || ''), String(sw));
   await command(app, { cmd: 'select', label: 'develop' });
-  const said = await waitFor(async () => { const s = await gs(); return /Sent \/merged to feat\/b/.test(s.said) ? s : null; }, 8000);
-  check('10: the drawer says what it did, and that a box that wasn\'t empty was cleared (Ctrl+Y brings a draft back)',
-    !!said && /Ctrl\+Y/.test(said.said), String((await gs()).said));
+  const said = await waitFor(async () => { const s = await gs(); return /Typed \/merged in feat\/b's tab: press Enter there to run it/.test(s.said) ? s : null; }, 8000);
+  check('10: the drawer says it TYPED /merged and the Enter is yours, and that a box that wasn\'t empty was cleared (Ctrl+Y)',
+    !!said && /Ctrl\+Y/.test(said.said) && !/Sent/.test(said.said), String((await gs()).said));
   check('10 (Miguel S2): one status node in the panel, however often the drawer was rebuilt', !!said && said.saidNodes === 1, String(said && said.saidNodes));
 
-  // Dexter F4 / Miguel I1: a double click
+  // Dexter F4 / Miguel I1: a double click, on an empty box
+  fs.writeFileSync(boxCtl, JSON.stringify({ draft: '' }));
+  await waitFor(async () => (boxLine() === '' ? true : null), 5000, 200);
   await runIs(/^enabled$/);
-  await view(app, 'gitAct', { act: 'run-merged', times: 2 });
-  await waitFor(async () => (submitted().length >= 2 ? true : null), 15000, 300);
+  await view(app, 'gitAct', { act: 'type-merged', times: 2 });
+  await waitFor(async () => (boxLine() === '/merged' ? true : null), 15000, 300);
   await sleep(2500);
-  check('10 (Dexter F4): a double click types /merged once', JSON.stringify(submitted()) === JSON.stringify(['/merged', '/merged']), JSON.stringify(submitted()));
+  check('10 (Dexter F4): a double click types /merged once (never /merged/merged), and still submits nothing',
+    boxLine() === '/merged' && submitted().length === 0, JSON.stringify({ box: boxLine(), submitted: submitted() }));
   await command(app, { cmd: 'select', label: 'develop' });
 
   await command(app, { cmd: 'quit' });

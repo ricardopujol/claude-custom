@@ -89,7 +89,7 @@ test('hooks only the events the harness actually consumes', () => {
 });
 
 test('UserPromptSubmit is hooked, every prompt, so the host knows a main-session turn opened (PR #93 Dexter F1)', () => {
-  // The subagent roster can't see a turn that calls no agent: Run /merged typed into one. The helper prints
+  // The subagent roster can't see a turn that calls no agent: Type /merged typed into one. The helper prints
   // nothing and always exits 0 (helper/hook-helper.cs), so the hook can never add to or block a prompt.
   const s = buildHarnessSettings(opts);
   assert.ok(Array.isArray(s.hooks.UserPromptSubmit) && s.hooks.UserPromptSubmit.length === 1);

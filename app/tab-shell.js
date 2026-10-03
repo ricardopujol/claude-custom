@@ -178,7 +178,7 @@ const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 // How many tabs closed by hand the `+` menu offers to reopen.
 const REOPEN_MAX = 10;
 
-// The Git drawer: how many folders one tabStates answer covers, and how long Run /merged waits for the
+// The Git drawer: how many folders one tabStates answer covers, and how long Type /merged waits for the
 // target page to say it typed (its spaced keys and read-back take under a second).
 const TAB_STATES_MAX = 200;
 const TYPE_ANSWER_MS = 5000;
@@ -193,9 +193,9 @@ function createShell(deps) {
     git, hosts, ops, views, ui, log = () => {},
     // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
     marks = null,
-    // How long Run /merged waits for the target page's answer; injected so a test doesn't wait.
+    // How long Type /merged waits for the target page's answer; injected so a test doesn't wait.
     sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
-    // Run /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
+    // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
     // (gh can't say). Absent: never confirmed, so never typed.
     prs = null,
   } = deps;
@@ -222,10 +222,10 @@ function createShell(deps) {
   const setups = new Map();            // key -> { running, line, error, log }  (Contract E)
   const createdWarnings = new Map();   // key -> Contract A's optional warning
   let selectWhenListed = null;         // a tab to select as soon as a poll lists it
-  // Run /merged: the type-command requests waiting for their page's answer, by id
+  // Type /merged: the type-command requests waiting for their page's answer, by id
   const typing = new Map();
   let typingSeq = 0;
-  const runningMerged = new Set();     // the tabs a Run /merged is typing into right now
+  const typingMerged = new Set();     // the tabs a Type /merged is typing into right now
   let closedByHand = [];               // [{ key, path, branch }], most recent first
 
   const keyOf = normPath;
@@ -865,19 +865,21 @@ function createShell(deps) {
   }
 
   /**
-   * *Run /merged*, for the Git drawer (Enhancement #46): select the branch's tab and have ITS OWN PAGE
-   * type `/merged` and Enter into its session -- the CLI's skill then runs the whole gate. Ricardo chose
-   * type-and-send. The drawer only enables it for an open PR whose tab is at rest; this re-checks the tab
+   * *Type /merged*, for the Git drawer (Enhancement #46): select the branch's tab and have ITS OWN PAGE
+   * type `/merged` into its box. NEVER Enter: the person presses it (Ricardo, PR #93 Dexter R2-1). No
+   * hook can say a turn is really over -- another Stop hook can block the first Stop, and the turn goes on
+   * with tools nothing here sees -- so an automatic Enter could queue /merged into a working session.
+   * The drawer only enables it for an open PR whose tab is at rest; this re-checks the tab
    * (it may have started a turn since the drawer drew) with the drawer's own rule, and explains instead
    * of typing into a busy session. The page types the top bar's way (PR #93 Dexter F3 / Miguel I2): it
    * judges its own screen (nothing into a dialog or a multi-line draft), clears a single-line draft
-   * first, enters vim INSERT if needed, and presses Enter only once the box reads back exactly `/merged`.
-   * Always answers { kind: 'sent', branch, cleared } or { kind: 'explain', text }.
+   * first, enters vim INSERT if needed, and answers ok only once the box reads back exactly `/merged`.
+   * Always answers { kind: 'typed', branch, cleared } or { kind: 'explain', text }.
    */
-  async function runMerged(sender, folder, wanted) {
+  async function typeMerged(sender, folder, wanted) {
     if (!isTabView(sender)) return { kind: 'explain', text: "That tab's window can't be found." };
     if (typeof folder !== 'string' || !folder) return { kind: 'explain', text: 'That branch has no worktree folder.' };
-    if (typeof wanted !== 'string' || !wanted) return { kind: 'explain', text: 'Run /merged needs to know which branch it is for.' };
+    if (typeof wanted !== 'string' || !wanted) return { kind: 'explain', text: 'Type /merged needs to know which branch it is for.' };
     // PR #93 Miguel I3: never on an integration branch, whatever the renderer asked
     if (INTEGRATION.includes(wanted)) return { kind: 'explain', text: `/merged merges a lane: never on ${wanted}.` };
     const key = keyOf(folder);
@@ -894,8 +896,8 @@ function createShell(deps) {
     if (why) return { kind: 'explain', text: `${name}'s session ${why}.` };
     // One at a time per tab (PR #93 Dexter F4 / Miguel I1): a double click or a held Enter passes every
     // check above twice before the session's turn opens, and the keys would interleave into /merged/merged.
-    if (runningMerged.has(key)) return { kind: 'explain', text: `Already sending /merged to ${name}'s session.` };
-    runningMerged.add(key);
+    if (typingMerged.has(key)) return { kind: 'explain', text: `Already sending /merged to ${name}'s session.` };
+    typingMerged.add(key);
     try {
       // PR #93 Miguel I3: main confirms the open PR itself (gh, in that worktree), never on the renderer's word
       let open = null;
@@ -910,9 +912,9 @@ function createShell(deps) {
       const r = await askToType(tab, '/merged');
       if (!r) return { kind: 'explain', text: `Couldn't confirm /merged reached ${name}'s session: its page didn't answer.` };
       if (!r.ok) return { kind: 'explain', text: `Didn't send /merged to ${name}'s session: ${r.reason || 'its page refused'}.` };
-      return { kind: 'sent', branch, cleared: r.box !== '' };
+      return { kind: 'typed', branch, cleared: r.box !== '' };
     } finally {
-      runningMerged.delete(key);
+      typingMerged.delete(key);
     }
   }
 
@@ -979,7 +981,7 @@ function createShell(deps) {
   function destroy() { destroyed = true; }
 
   return {
-    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, runMerged, typed, menuState, override,
+    open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf,

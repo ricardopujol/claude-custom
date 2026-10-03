@@ -458,7 +458,7 @@ const attention = createAttention({
 });
 attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
 // Is a main-session turn running, or a dialog open? Measured from the CLI's hooks only (PR #93 Dexter F1/F2):
-// the Git drawer's Run /merged types into this session, and the subagent roster can't see a turn with no
+// the Git drawer's Type /merged types into this session, and the subagent roster can't see a turn with no
 // agent in it. null until SessionStart: a host without hooks never claims idle.
 const turnState = createTurnState();
 

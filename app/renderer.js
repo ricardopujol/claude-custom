@@ -377,8 +377,8 @@ function renderGitTree(tree) {
       const r = await window.harness.writeClipboard(name);
       if (!r || r.ok !== true) throw new Error((r && r.error) || 'the clipboard refused it');
     },
-    onRunMerged: async (folder, branch) => {
-      const r = await window.harness.runMerged(folder, branch);
+    onTypeMerged: async (folder, branch) => {
+      const r = await window.harness.typeMerged(folder, branch);
       requestGitTabs();     // the session is busy now: the drawer should say so
       return r;
     },
@@ -3185,36 +3185,51 @@ function requestSwitch(kind, raw) {
 }
 
 /**
- * Types `command` into this tab's live box and presses Enter only if the box then reads back exactly
- * `❯ <command>`. ONE copy, for the top bar's switches and the Git drawer's Run /merged (PR #93 Dexter F3 /
- * Miguel I2). `done({ ok })` or `done({ ok: false, reason })`. The keys are app/top-bar-display.js's
- * typingKeys: Ctrl-E first (Ctrl-U deletes only back to the CURSOR, Dexter r2 N1), Ctrl-U (a draft is
- * cleared, never submitted with the command; the CLI's Ctrl+Y gets it back), `i` first in vim NORMAL
- * (Dexter r2 N2). Spaced PTY_STEP_MS apart, or a line is taken for a paste and its CR swallowed.
+ * Types `command` into this tab's live box, then reads the box back: `done({ ok: true })` only if it holds
+ * exactly `❯ <command>`, else it clears what was typed and `done({ ok: false, reason })`. It NEVER presses
+ * Enter. ONE copy, for the top bar's switches and the Git drawer's Type /merged (PR #93 Dexter F3 / Miguel
+ * I2). The keys are app/top-bar-display.js's typingKeys: Ctrl-E first (Ctrl-U deletes only back to the
+ * CURSOR, Dexter r2 N1), Ctrl-U (a draft is cleared, never submitted with the command; the CLI's Ctrl+Y gets
+ * it back), `i` first in vim NORMAL (Dexter r2 N2). Spaced PTY_STEP_MS apart, or a line is taken for a paste.
  */
-function typePlanned(enterInsert, command, done) {
+function typeAndCheck(enterInsert, command, done) {
   const input = data => send(JSON.stringify({ type: 'input', data }));
   const keys = typingKeys(command, enterInsert);
   keys.forEach((k, i) => setTimeout(() => input(k), PTY_STEP_MS * i));
-  // Read the box back before Enter (Miguel r2): the screen was judged before
-  // the spaced writes, and a dialog opening meanwhile, or anything glued to
-  // the command, would take the CR. Not exactly the command: clear it instead.
+  // Read the box back (Miguel r2): the screen was judged before the spaced writes, and a dialog opening
+  // meanwhile, or anything glued to the command, would otherwise stand. Not exactly the command: clear it.
   setTimeout(() => {
-    if (commandTyped(screenLines(), command, { vim: vimSeen })) { input('\r'); done({ ok: true }); return; }
+    if (commandTyped(screenLines(), command, { vim: vimSeen })) { done({ ok: true }); return; }
     input('\x05');
     setTimeout(() => input('\x15'), PTY_STEP_MS);
     // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
     if (enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
-    done({ ok: false, reason: 'the input line changed before Enter' });
+    done({ ok: false, reason: 'the input line changed before it could be confirmed' });
   }, PTY_STEP_MS * (keys.length + 2));
 }
 
 /**
- * Main asks this page to type a command into its own session: the Git drawer's Run /merged, PR #93
- * Dexter F3. The screen is judged here, where it is, the top bar's way. `done({ ok, box })`, `box` being
- * what the box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
+ * The top bar's switch: typeAndCheck, then Enter -- right after the read-back, in the same task, and only
+ * when it read back exactly the command. The ONLY place this page presses Enter for a command it typed:
+ * the Git drawer's Type /merged leaves the Enter to the person (PR #93 Dexter R2-1).
+ */
+function typePlanned(enterInsert, command, done) {
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  typeAndCheck(enterInsert, command, (r) => {
+    if (r.ok) input('\r');
+    done(r.ok ? r : { ok: false, reason: 'the input line changed before Enter' });
+  });
+}
+
+/**
+ * Main asks this page to type a command into its own box: the Git drawer's Type /merged, PR #93 Dexter
+ * F3. The screen is judged here, where it is, the top bar's way, and the terminal takes the focus so the
+ * person's Enter lands in it. It types and reads back, and NEVER presses Enter (Dexter R2-1: no hook can
+ * say the turn is really over, so that step is the person's). `done({ ok, box })`, `box` being what the
+ * box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
  */
 function typeCommand(command, done) {
+  term.focus();
   const lines = screenLines();
   if (vimInsertShown(lines)) vimSeen = true;
   const plan = planTyping({
@@ -3224,7 +3239,7 @@ function typeCommand(command, done) {
   });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
   const box = boxText(lines);
-  typePlanned(plan.enterInsert, command, r => done(r.ok ? { ok: true, box: box || '' } : r));
+  typeAndCheck(plan.enterInsert, command, r => done(r.ok ? { ok: true, box: box || '' } : r));
 }
 if (window.harness && window.harness.onTypeCommand) {
   window.harness.onTypeCommand((ask) => {

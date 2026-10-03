@@ -12,12 +12,13 @@
  * subagent roster (blind to a main-session turn) and `needsInput` clears on a glance, so neither alone
  * may say a session is at rest; only `turn === 'idle'` does. Every action is enabled or DISABLED WITH A REASON, and nothing is dropped from the list:
  * the drawer draws the reason beside it. Unknown is never "fine": a session that hasn't reported its
- * state, or one whose tab can't be read, is not idle, so *Run /merged* stays off.
+ * state, or one whose tab can't be read, is not idle, so *Type /merged* stays off.
  *
  *   open-pr         the PR's GitHub page (origin's URL)
  *   jump            select the branch's open worktree tab
  *   open-worktree   an existing branch gets a worktree: DISABLED until agent-creator can attach one
- *   run-merged      type /merged and Enter into that tab's session: an open PR, a tab that is open and idle
+ *   type-merged      type /merged into that tab's box, for the person to press Enter (PR #93 Dexter R2-1):
+ *                   an open PR, a tab that is open and at rest
  *   copy            the branch name, to the clipboard
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `gitActions`.
@@ -28,8 +29,10 @@ const OPEN_WORKTREE_WHY = 'needs agent-creator to attach an existing branch';
 // The lock states whose host runs the session (host/session-gate.js): held, no lock to take, or opened anyway.
 const RUNS_A_SESSION = ['held', 'unlocked', 'override'];
 
-const yes = (id, label) => ({ id, label, enabled: true, why: null });
-const no = (id, label, why) => ({ id, label, enabled: false, why });
+// `hint`: what an ENABLED action leaves to the person (only Type /merged has one); `why`: why one is off
+const yes = (id, label, hint = null) => ({ id, label, enabled: true, why: null, hint });
+const no = (id, label, why) => ({ id, label, enabled: false, why, hint: null });
+const TYPE_MERGED_HINT = 'press Enter in its tab to run it';
 
 function openPr(b, c) {
   const hasPr = Number.isInteger(b.pr);
@@ -81,28 +84,28 @@ function sessionBusyWhy(t) {
   return null;
 }
 
-function runMerged(b, c) {
-  const label = 'Run /merged';
-  if (b.state === 'merged') return no('run-merged', label, 'this branch is already merged');
-  if (b.state === 'deleted') return no('run-merged', label, 'the branch is gone from git');
+function typeMerged(b, c) {
+  const label = 'Type /merged';
+  if (b.state === 'merged') return no('type-merged', label, 'this branch is already merged');
+  if (b.state === 'deleted') return no('type-merged', label, 'the branch is gone from git');
   if (b.state !== 'open') {
-    return no('run-merged', label, c.prsKnown === false ? "PR status is unknown: gh didn't answer" : 'no open PR for this branch');
+    return no('type-merged', label, c.prsKnown === false ? "PR status is unknown: gh didn't answer" : 'no open PR for this branch');
   }
-  if (b.place !== 'worktree' || typeof b.folder !== 'string' || !b.folder) return no('run-merged', label, 'no open worktree for this branch');
+  if (b.place !== 'worktree' || typeof b.folder !== 'string' || !b.folder) return no('type-merged', label, 'no open worktree for this branch');
   const t = c.tab;
-  if (!t) return no('run-merged', label, "can't tell what its session is doing");
-  if (t.open !== true) return no('run-merged', label, 'its worktree has no tab in this window');
-  if (t.started !== true) return no('run-merged', label, "its tab hasn't started a session yet");
-  if (t.known !== true) return no('run-merged', label, "its session hasn't reported what it's doing yet");
+  if (!t) return no('type-merged', label, "can't tell what its session is doing");
+  if (t.open !== true) return no('type-merged', label, 'its worktree has no tab in this window');
+  if (t.started !== true) return no('type-merged', label, "its tab hasn't started a session yet");
+  if (t.known !== true) return no('type-merged', label, "its session hasn't reported what it's doing yet");
   const busy = sessionBusyWhy(t);
-  if (busy) return no('run-merged', label, `its session ${busy}`);
-  return yes('run-merged', label);
+  if (busy) return no('type-merged', label, `its session ${busy}`);
+  return yes('type-merged', label, TYPE_MERGED_HINT);
 }
 
 function actionsFor(branch, ctx) {
   const b = branch || {};
   const c = ctx || {};
-  return [openPr(b, c), jump(b, c), openWorktree(b, c), runMerged(b, c), yes('copy', 'Copy name')];
+  return [openPr(b, c), jump(b, c), openWorktree(b, c), typeMerged(b, c), yes('copy', 'Copy name')];
 }
 
 /** The action the keyboard lands on when the drawer opens: Jump if it works, else the first that does. */

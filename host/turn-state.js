@@ -2,7 +2,7 @@
 /**
  * Is a turn running in this session's MAIN conversation, or is a dialog waiting on you?
  *
- * PR #93 Dexter F1 / F2. The Git drawer's *Run /merged* types into a session, so it must know the
+ * PR #93 Dexter F1 / F2. The Git drawer's *Type /merged* types into a session, so it must know the
  * session is at rest. The subagent roster can't say that (a main-session turn that calls no agent
  * touches no subagent's state, host/mood-machine.js), and "needs you" is attention state (a glance clears
  * it). This is measured from the hooks Claude Code itself fires, and from nothing else:

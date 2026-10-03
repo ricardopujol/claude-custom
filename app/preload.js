@@ -28,10 +28,10 @@ contextBridge.exposeInMainWorld('harness', {
   selectFolder: (folder) => ipcRenderer.invoke('tab:selectFolder', folder),
   //   tabStates   worktree folders -> [{ folder, open, started, known, working, needsInput }]: the Git drawer's
   //               view of those tabs' sessions (null working / needsInput: that session hasn't reported)
-  //   runMerged   a worktree folder and the branch the drawer shows -> { kind, text?, branch?, cleared? }:
+  //   typeMerged   a worktree folder and the branch the drawer shows -> { kind, text?, branch?, cleared? }:
   //               switch to its tab, and its page types /merged and Enter (main re-checks all of it)
   tabStates: (folders) => ipcRenderer.invoke('tab:states', folders),
-  runMerged: (folder, branch) => ipcRenderer.invoke('tab:runMerged', folder, branch),
+  typeMerged: (folder, branch) => ipcRenderer.invoke('tab:typeMerged', folder, branch),
   raise: () => ipcRenderer.send('tab:raise'),
   //   onTypeCommand main -> page { id, command }: type it into THIS tab's box, the top bar's way (PR #93 F3)
   //   typed         page -> main { id, ok, reason?, box? }: what came of it

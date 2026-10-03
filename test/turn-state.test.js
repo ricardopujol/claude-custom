@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Is a turn running in the session's MAIN conversation, or is a dialog waiting on you (host/turn-state.js)?
- * PR #93 Dexter F1 / F2: the Run /merged gate read the subagent roster (blind to a main-session turn) and
+ * PR #93 Dexter F1 / F2: the Type /merged gate read the subagent roster (blind to a main-session turn) and
  * "not looked at yet" (cleared by a glance). These pin the gate's new input: what the CLI's own hooks say.
  */
 const test = require('node:test');

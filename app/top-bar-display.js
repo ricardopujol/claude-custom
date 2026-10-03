@@ -370,7 +370,7 @@ function typingKeys(command, enterInsert) {
 const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f]*)?$/;
 
 /**
- * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Run /merged, PR #93
+ * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
  * Dexter F3 / Miguel I2). `screen` is inputState()'s answer. ->
  *   { ok: true, enterInsert, keys }   type `keys`, then read the box back (commandTyped) before the CR
  *   { ok: false, reason }             type nothing

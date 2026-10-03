@@ -134,7 +134,7 @@ const CONTRACT = {
   },
   UserPromptSubmit: {
     // The event itself is the message: host/turn-state.js opens the MAIN session's turn on it, which the
-    // Git drawer's Run /merged waits on (PR #93 Dexter F1). Nothing in the payload is read, and `prompt`
+    // Git drawer's Type /merged waits on (PR #93 Dexter F1). Nothing in the payload is read, and `prompt`
     // (the person's own words) is never read or logged outside CLAUDE_CUSTOM_HOOK_DEBUG.
     fields: { ...COMMON_FIELDS },
   },

@@ -649,7 +649,7 @@ test('a fable model id is its own family, not "other"', () => {
 });
 
 // --- typing a command for another tab (PR #93 Dexter F3 / Miguel I2) ------------------------------------
-// The Git drawer's Run /merged types /merged into ANOTHER tab's session. It now goes through that tab's own
+// The Git drawer's Type /merged types /merged into ANOTHER tab's session. It now goes through that tab's own
 // page and the same plan as requestSwitch: Ctrl-E, Ctrl-U (a draft is cleared, never submitted with the
 // command), `i` first in vim NORMAL, nothing at all into a dialog, and the box read back before the CR.
 const { planTyping, typingKeys, boxText } = require('../app/top-bar-display');
@@ -680,7 +680,7 @@ test('only a single-line slash command is ever typed: a CR or a control key in i
   assert.strictEqual(planTyping({ command: '/model claude-opus-5-5[1m]', screen: 'ready', connected: true }).ok, true);
 });
 
-test('typingKeys is the one key list: the top bar and Run /merged type the same way', () => {
+test('typingKeys is the one key list: the top bar and Type /merged type the same way', () => {
   assert.deepStrictEqual(typingKeys('/effort high', false), ['\x05', '\x15', '/effort high']);
   assert.deepStrictEqual(typingKeys('/effort high', true), ['i', '\x05', '\x15', '/effort high']);
 });
