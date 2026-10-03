@@ -1,9 +1,9 @@
 'use strict';
 /**
  * Review verdicts for the Git drawer (documentation/DESIGN_GIT_TREE.md, "Enhancement #46"). The reports
- * live in ~/.claude/reviews/<project>/YYYY-MM-DD-<branch-dir>-<reviewer>[-rN].md. The rules are the merge
- * gate's own (the worktree skill's review-status.ps1): the LATEST round per reviewer, and a verdict line
- * read best effort -- "report, no verdict line" when it can't be found. Pure, with the file system injected.
+ * live in ~/.claude/reviews/<project>/YYYY-MM-DD-<branch-dir>-<reviewer>[-rN].md. The LATEST report per
+ * reviewer (latest date, then round: PR #93 Dexter F7), and a verdict line read the merge gate's way
+ * (review-status.ps1), best effort -- "report, no verdict line" when it can't be found. Pure, with the file system injected.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -70,20 +70,32 @@ test('verdictLine: a very long line is cut so the drawer stays small', () => {
   assert.ok(v.length <= R.MAX_VERDICT_CHARS + 1, String(v.length));
 });
 
-test('latest: the highest round per reviewer, then the later date', () => {
+// PR #93 Dexter F7: a round number is unique only within its date (-r2 is added when the same DATED file
+// exists), so the latest report is the latest date, then the highest round on it.
+test('latest: the latest date per reviewer, then the highest round on that date', () => {
   const names = [
     '2026-10-01-feat-x-dexter-r1.md', '2026-10-02-feat-x-dexter-r2.md', '2026-10-03-feat-x-dexter-r1.md',
     '2026-10-01-feat-x-miguel.md', '2026-10-02-feat-x-miguel.md', '2026-10-02-feat-y-miguel-r9.md',
+    '2026-10-02-feat-x-mortimer.md', '2026-10-02-feat-x-mortimer-r2.md',
     'notes.md',
   ];
   const got = R.latest(names, 'feat-x');
   assert.deepStrictEqual(got.map(g => [g.reviewer, g.round, g.date, g.file]), [
-    ['dexter', 2, '2026-10-02', '2026-10-02-feat-x-dexter-r2.md'],
+    ['dexter', 1, '2026-10-03', '2026-10-03-feat-x-dexter-r1.md'],
     ['miguel', 1, '2026-10-02', '2026-10-02-feat-x-miguel.md'],
+    ['mortimer', 2, '2026-10-02', '2026-10-02-feat-x-mortimer-r2.md'],
   ]);
 });
 
-test('property: exactly one entry per reviewer present, each the maximum round of its files', () => {
+test("Dexter F7: a re-review the next day (round 1 again) beats yesterday's round 2", () => {
+  const got = R.latest(['2026-10-01-feat-x-dexter.md', '2026-10-01-feat-x-dexter-r2.md', '2026-10-02-feat-x-dexter.md'], 'feat-x');
+  assert.deepStrictEqual(got.map(g => [g.reviewer, g.date, g.round]), [['dexter', '2026-10-02', 1]]);
+  // whatever order the folder lists them in
+  const back = R.latest(['2026-10-02-feat-x-dexter.md', '2026-10-01-feat-x-dexter-r2.md', '2026-10-01-feat-x-dexter.md'], 'feat-x');
+  assert.deepStrictEqual(back.map(g => [g.date, g.round]), [['2026-10-02', 1]]);
+});
+
+test('property: exactly one entry per reviewer present, each the latest (date, round) of its files', () => {
   const reviewer = fc.constantFrom('dexter', 'miguel', 'mortimer');
   fc.assert(fc.property(fc.array(fc.record({ reviewer, round: fc.integer({ min: 1, max: 6 }), day: fc.integer({ min: 1, max: 28 }) }), { maxLength: 20 }),
     (files) => {
@@ -92,7 +104,10 @@ test('property: exactly one entry per reviewer present, each the maximum round o
       const who = new Set(files.map(f => f.reviewer));
       assert.strictEqual(got.length, who.size);
       for (const g of got) {
-        const max = Math.max(...files.filter(f => f.reviewer === g.reviewer).map(f => f.round));
+        const mine = files.filter(f => f.reviewer === g.reviewer);
+        const day = Math.max(...mine.map(f => f.day));
+        const max = Math.max(...mine.filter(f => f.day === day).map(f => f.round));
+        assert.strictEqual(g.date, `2026-10-${String(day).padStart(2, '0')}`);
         assert.strictEqual(g.round, max);
       }
     }));

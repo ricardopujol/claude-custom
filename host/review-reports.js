@@ -4,8 +4,9 @@
  *
  * Reviewers (Dexter, Miguel, Mortimer) write their report to
  *   ~/.claude/reviews/<project>/YYYY-MM-DD-<branch-dir>-<reviewer>[-rN].md
- * and the rules for reading them are the merge gate's own (the worktree skill's review-status.ps1):
- * the LATEST round per reviewer, and a verdict line found best effort. Report formats vary, so a
+ * and the verdict line is read the merge gate's way (the worktree skill's review-status.ps1), best effort.
+ * The LATEST report per reviewer is its latest date, then highest round (latest() says why that differs
+ * from the gate's own ordering). Report formats vary, so a
  * report with no verdict line is "report, no verdict line" (verdict: null), never a guess.
  *
  * Pure but for the file system, which is injected (`fs`: readdirSync, readFileSync, and statSync for
@@ -56,14 +57,20 @@ function verdictLine(text) {
   return null;
 }
 
-/** The latest round per reviewer among `names`, for the branch folder `dir`: [{ reviewer, round, date, file }]. */
+/**
+ * The latest report per reviewer among `names`, for the branch folder `dir`: [{ reviewer, round, date, file }].
+ * Latest is the latest DATE, then the highest round on it (PR #93 Dexter F7): a reviewer adds `-r2` only when
+ * the same dated file exists, so a re-review the next day is round 1 again and must still win. This
+ * DELIBERATELY differs from the worktree skill's Get-ReviewStatus (Worktree.ps1), which ranks by round alone
+ * and, on a tie, keeps the first file listed (the older date).
+ */
 function latest(names, dir) {
   const best = new Map();
   for (const file of Array.isArray(names) ? names : []) {
     const p = parseName(file, dir);
     if (!p) continue;
     const cur = best.get(p.reviewer);
-    if (cur && (cur.round > p.round || (cur.round === p.round && cur.date >= p.date))) continue;
+    if (cur && (cur.date > p.date || (cur.date === p.date && cur.round >= p.round))) continue;
     best.set(p.reviewer, { reviewer: p.reviewer, round: p.round, date: p.date, file });
   }
   return REVIEWERS.filter(r => best.has(r)).map(r => best.get(r));
