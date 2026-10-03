@@ -158,3 +158,8 @@ test('renderer.html loads link-click.js before renderer.js', () => {
 test('the bridge asks main to open a link, and hears whether it did', () => {
   assert.match(strip(PRELOAD), /openExternal: \(url\) => ipcRenderer\.invoke\('tab:openExternal', url\)/);
 });
+
+test('#37: the bridge asks main which paths exist, and asks it to open one', () => {
+  assert.match(strip(PRELOAD), /checkPaths: \(lists\) => ipcRenderer\.invoke\('tab:checkPaths', lists\)/);
+  assert.match(strip(PRELOAD), /openPath: \(p\) => ipcRenderer\.invoke\('tab:openPath', p\)/);
+});

@@ -443,3 +443,22 @@ test('L1 S7: the window keeps room for the terminal and two side zones', () => {
 test('Stop all gets a project root only when the window is in a project', () => {
   assert.match(MAIN, /projectRoot: PROJECT \? PROJECT_ROOT : null/);
 });
+
+// --- #37 terminal file links (2026-10-02) ------------------------------------------
+
+test('#37: tab:checkPaths and tab:openPath are gated FIRST and resolve against the tab\'s own folder', () => {
+  const check = channels.find(x => x.name === 'tab:checkPaths');
+  const open = channels.find(x => x.name === 'tab:openPath');
+  assert.ok(check && open, 'both channels are registered');
+  const cb = callText(MAIN, check.at);
+  assert.match(cb, /^ipcMain\.handle\(\s*'tab:checkPaths',\s*\(e, lists\) => \{\s*if \(!isTabView\(e\.sender\)\) return \[\];/);
+  assert.match(cb, /fileLink\.check\(lists, tab\.cwd, fileFs\)/);
+  const ob = callText(MAIN, open.at);
+  assert.match(ob, /^ipcMain\.handle\(\s*'tab:openPath',\s*\(e, p\) => \{\s*if \(!isTabView\(e\.sender\)\) return \{ ok: false, why: 'refused' \};/);
+  assert.match(ob, /fileLink\.open\(p, tab\.cwd, fileFs, shell\)/);
+});
+
+test('#37: shell.openPath and shell.showItemInFolder are reached only through app/file-link.js', () => {
+  assert.deepStrictEqual([...MAIN.matchAll(/shell\.(openPath|showItemInFolder)\(/g)].map(m => m[0]), []);
+  assert.match(MAIN, /const fileLink = require\('\.\/file-link'\);/);
+});

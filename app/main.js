@@ -48,6 +48,9 @@ const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const fileLink = require('./file-link');
+// What app/file-link.js may ask the disk (#37): two reads, nothing else.
+const fileFs = { stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 const { listBackgroundHosts } = require('../host/background-hosts');
 const { stopHost } = require('../host/stop-holder');
@@ -740,6 +743,22 @@ function registerIpc() {
     if (!isTabView(e.sender)) return false;
     const tab = tabShell.tabForSender(e.sender);
     return openInBrowser(url, tab ? tab.key : 'a tab');
+  });
+  // A local path in a tab's terminal (#37). Main resolves it against THAT
+  // tab's own folder, checks it exists, and decides open or reveal
+  // (app/file-link.js); the page only asks. The click asks again, and main
+  // decides again: the file can change between hover and click.
+  ipcMain.handle('tab:checkPaths', (e, lists) => {
+    if (!isTabView(e.sender)) return [];
+    const tab = tabShell.tabForSender(e.sender);
+    return tab ? fileLink.check(lists, tab.cwd, fileFs) : [];
+  });
+  ipcMain.handle('tab:openPath', (e, p) => {
+    if (!isTabView(e.sender)) return { ok: false, why: 'refused' };
+    const tab = tabShell.tabForSender(e.sender);
+    if (!tab) return { ok: false, why: 'refused' };
+    console.log(`[main] ${tab.key}: file link ${String(p).slice(0, 200)}`);
+    return fileLink.open(p, tab.cwd, fileFs, shell);
   });
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a
