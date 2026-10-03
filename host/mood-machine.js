@@ -240,7 +240,10 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     const mate = invs.find(i => i.mate && !i.agentId && mateMatches(i.mate, agentId, agentType));
     if (mate) { mate.agentId = agentId; mate.mate.runtimeId = agentId; return mate; }
     if (endedIds.has(agentId)) return null;                // over: not a new run
-    const free = agentType ? invs.find(i => !i.agentId && i.name === agentType) : undefined;
+    // A teammate record is NOT up for first-come binding: it binds only through
+    // its own identities (above), or a plain same-type agent that speaks first
+    // takes it and its stop finishes the teammate (Dexter, PR #94, R2-1).
+    const free = agentType ? invs.find(i => !i.agentId && !i.mate && i.name === agentType) : undefined;
     if (!free) return null;          // never started here: not ours to credit
     free.agentId = agentId;
     return free;

@@ -385,3 +385,44 @@ test('property: a teammate that is silent, or reaped, and then speaks is working
     return h.m.stateOf(CARD) === WORKING;
   }), { numRuns: 100 });
 });
+
+// ---- Dexter r2 R2-1: a plain agent of the teammate's type must not take its record -------------
+
+const PLAIN = 'a1111111111111111';
+function plainSpawn(h, id = 'toolu_P') {
+  h.m.handle({ event: 'PreToolUse', payload: { tool_name: 'Agent', tool_use_id: id, tool_input: { subagent_type: CARD } } });
+}
+function plainCall(h) {
+  h.m.handle({ event: 'PostToolUse', payload: { tool_name: 'Bash', tool_input: { command: 'p' + Math.random() },
+    tool_response: { exit_code: 0 }, agent_id: PLAIN, agent_type: CARD } });
+}
+
+for (const type of REAL.runtimeTypes) {
+  test(`R2-1: a plain ${CARD} whose first call lands before the teammate's cannot take (or finish) the teammate's run [teammate agent_type "${type}"]`, () => {
+    const h = harness();
+    h.spawnTeammate();
+    plainSpawn(h);
+    plainCall(h);                                                  // the plain agent speaks first
+    h.own(RUNTIME, type);                                          // then the teammate
+    h.m.handle({ event: 'SubagentStop', payload: { agent_id: PLAIN, agent_type: CARD } });   // the plain one ends
+    h.m.handle({ event: 'PostToolUse', payload: { tool_name: 'Agent', tool_use_id: 'toolu_P',
+      tool_response: { status: 'completed', agentId: PLAIN } } });
+    h.mainStop();
+    for (let i = 0; i < 36; i++) { h.advance(5 * MIN); h.own(RUNTIME, type); }   // 3 hours
+    assert.equal(h.m.stateOf(CARD), WORKING);
+    const mate = h.m.invocations().find(i => i.agentId === RUNTIME);
+    assert.ok(mate && mate.background === true, 'a record bound to the teammate\'s runtime id is open');
+  });
+}
+
+test('R2-1: a plain subagent of the same type still binds its own record normally', () => {
+  const h = harness();
+  h.spawnTeammate();
+  plainSpawn(h);
+  plainCall(h);
+  const byId = Object.fromEntries(h.m.invocations().map(i => [i.agentId, i]));
+  assert.ok(byId[PLAIN] && byId[PLAIN].background === false, 'the plain run owns the unbound NON-teammate record');
+  h.m.handle({ event: 'SubagentStop', payload: { agent_id: PLAIN, agent_type: CARD } });
+  assert.equal(h.m.invocations().length, 1, 'only the plain run ended');
+  assert.equal(h.m.stateOf(CARD), WORKING, 'the teammate still shows working');
+});
