@@ -2203,7 +2203,9 @@ function occupancyWhereHtml(agent) {
   return `<button type="button" class="agent-where" data-where-root="${escapeHtml(line.root)}" title="${escapeHtml(line.title)}">` +
     `${escapeHtml(line.text)}${line.plus > 0 ? `<span class="agent-where-plus">+${line.plus}</span>` : ''}</button>`;
 }
-agentsEl.addEventListener('click', (e) => {
+// Delegated on the document, not added to the roster's one card-click handler (which is pinned as the ONLY
+// handler that opens a log); a button inside a card is never a card click anyway.
+document.addEventListener('click', (e) => {
   const b = e.target.closest && e.target.closest('.agent-where');
   if (b && b.dataset.whereRoot) jumpToFolder(b.dataset.whereRoot).then(() => {}, () => {});
 });
