@@ -127,12 +127,6 @@ test('an agent with no agent_type takes the name the host knows it by', () => {
   assert.strictEqual(r.writes[0].agent, 'logic-reviewer');
 });
 
-test('a host whose own start time isn\'t known yet still writes, with null (readers show nothing for it)', () => {
-  const r = rig({ hostStartedAt: () => null });
-  r.p.handle(edit(path.join(FEAT, 'a.js')));
-  assert.strictEqual(r.writes[0].hostStartedAt, null);
-});
-
 test('a failing writer never throws out of the hook handler', () => {
   const r = rig();
   r.writer.write = () => { throw new Error('disk'); };
@@ -360,4 +354,78 @@ test('teammateFromMeta: the .meta.json beside SubagentStop\'s agent_transcript_p
   for (const p of [null, undefined, {}, { agent_transcript_path: 5 }, { agent_transcript_path: '' }, { agent_transcript_path: 'no-extension' }]) {
     assert.strictEqual(teammateFromMeta(p), false);
   }
+  // the extension is `.jsonl`, dot included: `agent-matexjsonl` is not a transcript, and its last six
+  // characters are not clipped into some other file's name (PR #96 Miguel S1)
+  let asked = null;
+  const spy = (file) => { asked = file; return JSON.stringify({ taskKind: 'in_process_teammate' }); };
+  assert.strictEqual(teammateFromMeta({ agent_transcript_path: path.join(dir, 'agent-matexjsonl') }, { readFileSync: spy }), false);
+  assert.strictEqual(asked, null, 'nothing was read for it');
+  assert.strictEqual(teammateFromMeta({ agent_transcript_path: t('mate') }, { readFileSync: spy }), true);
+  assert.strictEqual(asked, path.join(dir, 'agent-mate.meta.json'));
+});
+
+// --- PR #96 review: Dexter F2, F8 -------------------------------------------------------------------------
+
+test('a host that does not know its own start time writes NOTHING: a claim without the proof is never shown, and would only fight the transcript producer for the file (Dexter F2)', () => {
+  let started = null;
+  const r = rig({ hostStartedAt: () => started });
+  r.p.handle(edit(path.join(FEAT, 'a.js')));
+  r.clock = 2000;
+  r.p.handle(edit(path.join(FEAT, 'b.js')));
+  assert.strictEqual(r.writes.length, 0);
+  for (const junk of ['', '?', 'not-a-filetime', 5, undefined]) {
+    started = junk;
+    r.p.handle(edit(path.join(FEAT, 'c.js')));
+  }
+  assert.strictEqual(r.writes.length, 0, 'only a FILETIME is a start time');
+  // ...and what it touched meanwhile is remembered: the first write, once the time is known, has it all
+  started = '134000000000000000';
+  r.clock = 9000;
+  r.p.handle(edit(path.join(FEAT, 'd.js')));
+  assert.strictEqual(r.writes.length, 1);
+  assert.strictEqual(r.writes[0].hostStartedAt, '134000000000000000');
+  assert.strictEqual(r.writes[0].firstAt, 1000);
+  assert.strictEqual(r.writes[0].count, 8);
+});
+
+function slowRoots(r) {
+  // a worktree list whose refresh resolves only when the test says so
+  let finish;
+  r.stale = true;
+  r.listed = [DEV, FEAT];
+  const fresh = path.join(BASE, 'feat-new');
+  r.roots.refresh = () => new Promise((resolve) => { finish = () => { r.stale = false; r.listed = [DEV, FEAT, fresh]; resolve(r.listed); }; });
+  return { fresh, finish: () => finish() };
+}
+
+test('a retry that comes back after the agent has STOPPED records nothing: no claim for an agent that is gone (Dexter F8)', async () => {
+  const r = rig();
+  const slow = slowRoots(r);
+  r.p.handle(edit(path.join(slow.fresh, 'a.js')));          // unknown worktree, stale list: a refresh starts
+  r.p.handle(ev('SubagentStop', { agent_id: 'ag1' }));       // ...and the agent stops before git answers
+  await flush();
+  slow.finish();
+  await flush(); await flush();
+  assert.strictEqual(r.writes.length, 0);
+});
+
+test('...nor after the SESSION has ended; but an agent that is still there gets its claim from the retry', async () => {
+  const r = rig();
+  const slow = slowRoots(r);
+  r.p.handle(edit(path.join(slow.fresh, 'a.js')));
+  r.p.handle(ev('SessionEnd', {}));
+  await flush();
+  slow.finish();
+  await flush(); await flush();
+  assert.strictEqual(r.writes.length, 0);
+
+  const r2 = rig();
+  const slow2 = slowRoots(r2);
+  r2.p.handle(edit(path.join(slow2.fresh, 'a.js')));
+  r2.p.handle(ev('SubagentStop', { agent_id: 'somebody-else' }));
+  await flush();
+  slow2.finish();
+  await flush(); await flush();
+  assert.strictEqual(r2.writes.length, 1);
+  assert.strictEqual(r2.writes[0].worktree, slow2.fresh);
 });

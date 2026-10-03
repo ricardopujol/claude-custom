@@ -31,8 +31,12 @@
 
 const { claimFrom, buildClaim, safeAgentId, TOUCH_TOOLS } = require('./agent-occupancy');
 const { normPath } = require('./project-layout');
+const { filetimeToMs } = require('./background-hosts');
 
 const fs = require('fs');
+
+// The host's OS start time, as host/proc-start.js gives it: the proof a reader checks. Anything else is not one.
+const isStartTime = s => typeof s === 'string' && filetimeToMs(s) !== null;
 
 const AGENTS_MAX = 100;
 const TOUCHES_MAX = 16;
@@ -48,9 +52,9 @@ const TEAMMATE = 'in_process_teammate';
  */
 function teammateFromMeta(payload, { readFileSync = fs.readFileSync } = {}) {
   const file = payload && typeof payload === 'object' ? payload.agent_transcript_path : null;
-  if (typeof file !== 'string' || !/.jsonl$/.test(file)) return false;
+  if (typeof file !== 'string' || !/\.jsonl$/.test(file)) return false;
   try {
-    const meta = JSON.parse(readFileSync(file.replace(/.jsonl$/, '.meta.json'), 'utf8'));
+    const meta = JSON.parse(readFileSync(file.replace(/\.jsonl$/, '.meta.json'), 'utf8'));
     return !!meta && typeof meta === 'object' && meta.taskKind === TEAMMATE;
   } catch {
     return false;
@@ -75,6 +79,11 @@ function createOccupancyProducer({
 } = {}) {
   const book = new Map();      // agentId -> Map(normPath(worktree) -> { worktree, firstAt, lastAt, count })
   const idle = new Set();      // teammates that ended a turn and have not touched anything since
+  // When each agent last stopped and when the session last ended, as a count of such events: a retry that
+  // comes back from git AFTER its agent stopped must not claim for it (PR #96 Dexter F8).
+  let seq = 0;
+  let endedAt = 0;
+  const stoppedAt = new Map();
 
   function drop(id) {
     book.delete(id);
@@ -106,13 +115,20 @@ function createOccupancyProducer({
     touches.set(key, { worktree: claim.worktree, firstAt: prev ? prev.firstAt : t, lastAt: t, count: (prev ? prev.count : 0) + 1 });
     while (touches.size > TOUCHES_MAX) touches.delete(touches.keys().next().value);
 
+    // No start time, no file. A claim without the proof is never shown by any reader, and writing it would
+    // only overwrite the transcript producer's provable claim for the same agent every 30 s, so the mark
+    // would flicker and the confirm ask again (PR #96 Dexter F2). The touch is remembered: the first write,
+    // once this host knows its start time, carries it.
+    const started = hostStartedAt();
+    if (!isStartTime(started)) return;
+
     const rec = buildClaim({
       agentId: claim.agentId,
       agent: claim.agent || nameOf(claim.agentId) || null,
       fromBranch: fromBranch(),
       fromRoot: ownRoot,
       hostPid,
-      hostStartedAt: hostStartedAt(),
+      hostStartedAt: started,
       touches: [...touches.values()],
     });
     if (rec === null) return;
@@ -126,6 +142,9 @@ function createOccupancyProducer({
     if (event.event === 'SubagentStop') {
       const id = safeAgentId(p.agent_id);
       if (id === null) return;
+      stoppedAt.delete(id);
+      stoppedAt.set(id, ++seq);
+      while (stoppedAt.size > AGENTS_MAX) stoppedAt.delete(stoppedAt.keys().next().value);
       let mate = false;
       try { mate = book.has(id) && isTeammate(p) === true; } catch { mate = false; }
       if (!mate) { drop(id); return; }
@@ -134,6 +153,7 @@ function createOccupancyProducer({
       return;
     }
     if (event.event === 'SessionEnd') {
+      endedAt = ++seq;
       book.clear();
       idle.clear();
       writer.removeAll();
@@ -143,11 +163,15 @@ function createOccupancyProducer({
     const claim = claimFrom(event, roots.get(), ownRoot);
     if (claim !== null) { record(claim); return; }
     if (couldClaim(event) && roots.stale()) {
+      const asked = seq;
       Promise.resolve()
         .then(() => roots.refresh())
         .then(() => {
           const again = claimFrom(event, roots.get(), ownRoot);
-          if (again !== null) record(again);
+          if (again === null) return;
+          // git took its time: the agent may have stopped, or the session ended, since this call
+          if (endedAt > asked || (stoppedAt.get(again.agentId) || 0) > asked) return;
+          record(again);
         })
         .catch(err => log('[occupancy] retry after refreshing the worktree list failed:', err && err.message));
     }
