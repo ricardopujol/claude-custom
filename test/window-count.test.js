@@ -55,14 +55,29 @@ const onWindows = process.platform === 'win32';
 // budget is not what is under test, so the real call gets a budget of its own;
 // every assertion below is unchanged.
 const { createExec } = require('../host/proc-start');
-const realExec = createExec(120000);
+const realExec = createExec(30000);
 
-test('real shell: a cmdlet that is not there is "couldn\'t tell" (null), never 0', { skip: !onWindows }, async () => {
+test('real shell: a cmdlet that is not there is "couldn\'t tell" (null), never 0', { skip: !onWindows, timeout: 60000 }, async () => {
   assert.strictEqual(await windowCount(4242, 7999, { cmdlet: 'Get-NetTCPConnectionX', exec: realExec }), null);
 });
 
-test('real shell: a port with no connections is 0', { skip: !onWindows }, async () => {
+test('real shell: a port with no connections is 0', { skip: !onWindows, timeout: 60000 }, async () => {
   assert.strictEqual(await windowCount(process.pid, 1, { exec: realExec }), 0);
+});
+
+// The ONE place the product's own 5 s budget meets the real powershell.exe, so
+// defaultExec stays exercised. Under load the product is allowed to time out:
+// null is then correct, but only if the budget really was spent. A null that
+// came back sooner is a genuine failure, and so is any wrong count.
+const { QUERY_TIMEOUT_MS } = require('../host/proc-start');
+test('real shell, product budget: defaultExec answers 0, or times out (null) only after its full budget', { skip: !onWindows, timeout: 60000 }, async () => {
+  const t0 = Date.now();
+  const n = await windowCount(process.pid, 1, {});
+  if (n === null) {
+    assert.ok(Date.now() - t0 >= QUERY_TIMEOUT_MS - 250, `null after only ${Date.now() - t0} ms: not a timeout`);
+  } else {
+    assert.strictEqual(n, 0);
+  }
 });
 
 test('the cmdlet name is only ever a plain identifier', async () => {
@@ -123,7 +138,7 @@ test('windowCounts: bad targets get no entry and never reach the script; none va
   assert.strictEqual(ran, 1);
 });
 
-test('real shell: windowCounts sees a real established connection, and 0 where there is none', { skip: !onWindows }, async () => {
+test('real shell: windowCounts sees a real established connection, and 0 where there is none', { skip: !onWindows, timeout: 60000 }, async () => {
   const server = net.createServer(() => {});
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
