@@ -28,7 +28,7 @@ test('every default skill name is one the typing path accepts', () => {
 });
 
 test('isOneEmoji: one pictograph, a ZWJ family, a flag and a keycap are one; text and two are not', () => {
-  for (const ok of ['🌙', '✅', '👨‍👩‍👧', '🇵🇹', '1️⃣', '⚡', '❤️', '👍🏽']) assert.ok(wand.isOneEmoji(ok), ok);
+  for (const ok of ['🌙', '✅', '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', '🇵🇹', '1️⃣', '⚡', '❤️', '👍🏽']) assert.ok(wand.isOneEmoji(ok), ok);
   for (const bad of ['', 'a', 'ab', '🌙🌙', '🌙 ', ' 🌙', '1', '#', 'é', '\n', null, undefined, 5, '🌙x']) {
     assert.ok(!wand.isOneEmoji(bad), JSON.stringify(bad));
   }

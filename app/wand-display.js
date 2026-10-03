@@ -130,6 +130,13 @@ function ask(state) {
   return { ...(state || emptyState()), asked: true };
 }
 
+/** An edit that never left this window (no socket): shown now, since no answer is coming. */
+function failed(state, reason) {
+  const s = state || emptyState();
+  return { ...s, asked: false, error: isStr(reason) && reason ? reason : 'the wand was not changed',
+    editor: s.editor ? { ...s.editor, saving: false } : null };
+}
+
 // --- the skill list ---------------------------------------------------------------------------------------
 
 function matchingSkills(skills, query) {
@@ -378,7 +385,7 @@ function clickAction(ds) {
 }
 
 const api = {
-  emptyState, reduce, ask, view, html, skillListHtml, clickAction, clickPlan, typed, clearFlash, setNotice,
+  emptyState, reduce, ask, failed, view, html, skillListHtml, clickAction, clickPlan, typed, clearFlash, setNotice,
   toggleEdit, openEditor, closeEditor, editorSet, editorSubmit, deleteMsg, moveMsg, skillsRequest, filterSkills,
   SKILL_LIST_CAP, FLASH_TEXT,
 };

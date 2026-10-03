@@ -387,3 +387,15 @@ test('clickAction: a dataset becomes an action; junk becomes null', () => {
     assert.strictEqual(W.clickAction(junk), null, JSON.stringify(junk));
   }
 });
+
+test('failed(): an edit that never left the window is shown now, and a save in flight is released', () => {
+  let s = W.openEditor(W.toggleEdit(loaded()), null);
+  s = W.editorSet(W.editorSet(s, 'emoji', '🚀'), 'skill', 'merged');
+  s = W.editorSubmit(s).state;
+  assert.strictEqual(W.view(s).editor.saving, true);
+  const f = W.failed(s, 'not connected to the host');
+  assert.strictEqual(W.view(f).error, 'not connected to the host');
+  assert.strictEqual(W.view(f).editor.saving, false);
+  assert.strictEqual(f.asked, false);
+  assert.strictEqual(W.view(W.failed(loaded(), '')).error, 'the wand was not changed');
+});

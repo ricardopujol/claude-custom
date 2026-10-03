@@ -16,7 +16,7 @@ const fc = require('fast-check');
 
 const wand = require('../host/wand');
 
-const EMOJI = ['🌙', '✅', '🔀', '💡', '🚀', '👨‍👩‍👧', '🇵🇹', '1️⃣', '⚡', '🧪'];
+const EMOJI = ['🌙', '✅', '🔀', '💡', '🚀', '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', '🇵🇹', '1️⃣', '⚡', '🧪'];
 const emojiArb = fc.constantFrom(...EMOJI);
 const skillArb = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9:_-]{0,20}$/);
 const argsArb = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9 ._=\/-]{0,30}$/).map(s => s.replace(/\s+/g, ' ').trim());

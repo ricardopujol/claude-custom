@@ -761,6 +761,7 @@ function onModuleShown(id) {
   if (id === 'fog') requestFog();
   if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
+  if (id === 'wand') requestWandSkills();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
@@ -3454,6 +3455,138 @@ if (window.harness && window.harness.onTypeCommand) {
   });
 }
 
+// WAND-BEGIN
+// The wand (BACKLOG #51): favourite skills as emoji buttons. app/wand-display.js decides everything (what
+// shows, what a click means, what each edit sends); this is only the DOM and the socket. A click TYPES
+// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and NEVER presses Enter: nothing
+// in this section writes a CR or an input frame, and test/renderer-wand-wiring.test.js pins that.
+let wandState = wandDisplay.emptyState();
+let wandBusy = false;          // a type in flight: two overlapping key sequences would garble the box
+let wandFlashTimer = null;
+let wandDragId = null;
+const wandRoot = document.getElementById('wand-root');
+
+function renderWand() {
+  if (!wandRoot) return;
+  // A redraw (a quiet refresh from another host, a skill rescan) must not eat what the user is typing:
+  // the editor's field, its caret and its focus are put back.
+  const a = document.activeElement;
+  const keep = a && wandRoot.contains(a) && a.dataset && a.dataset.wandField
+    ? { field: a.dataset.wandField, start: a.selectionStart, end: a.selectionEnd } : null;
+  wandRoot.innerHTML = wandDisplay.html(wandDisplay.view(wandState));
+  if (!keep) return;
+  const el = wandRoot.querySelector('[data-wand-field="' + keep.field + '"]');
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  try { el.setSelectionRange(keep.start, keep.end); } catch { /* a field with no selection */ }
+}
+
+function requestWandSkills() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;   // the hello carries them; ws.onopen follows
+  try { ws.send(JSON.stringify(wandDisplay.skillsRequest())); } catch { /* not attached */ }
+}
+
+// Every edit goes through here: a send with no socket is SHOWN, never silently dropped (no answer is coming).
+function wandSend(message) {
+  if (!message) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    wandState = wandDisplay.failed(wandState, 'not connected to the host');
+    renderWand();
+    return;
+  }
+  ws.send(JSON.stringify(message));
+}
+
+function wandType(plan) {
+  if (wandBusy) return;
+  wandBusy = true;
+  typeCommand(plan.command, (r) => {
+    wandBusy = false;
+    wandState = wandDisplay.typed(wandState, plan.id, r);
+    renderWand();
+    clearTimeout(wandFlashTimer);
+    if (r.ok) {
+      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, 2500);
+    }
+  });
+}
+
+function wandAct(action) {
+  if (action.kind === 'press') {
+    const plan = wandDisplay.clickPlan(wandState, action.id);
+    if (!plan) return;
+    if (plan.kind === 'type') { wandType(plan); return; }
+    wandState = plan.kind === 'missing' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
+  } else if (action.kind === 'toggle-edit') {
+    wandState = wandDisplay.toggleEdit(wandState);
+  } else if (action.kind === 'add') {
+    wandState = wandDisplay.openEditor(wandState, null);
+  } else if (action.kind === 'cancel') {
+    wandState = wandDisplay.closeEditor(wandState);
+  } else if (action.kind === 'pick-skill') {
+    wandState = wandDisplay.editorSet(wandState, 'skill', action.skill);
+  } else if (action.kind === 'pick-emoji') {
+    wandState = wandDisplay.editorSet(wandState, 'emoji', action.emoji);
+  } else if (action.kind === 'delete' || action.kind === 'save') {
+    const r = action.kind === 'delete' ? wandDisplay.deleteMsg(wandState, action.id) : wandDisplay.editorSubmit(wandState);
+    wandState = r.state;
+    wandSend(r.message);
+  }
+  renderWand();
+}
+
+if (wandRoot) {
+  // Delegated, so a redraw never needs rebinding.
+  wandRoot.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('button[data-wand-act]');
+    const action = btn && wandDisplay.clickAction(btn.dataset);
+    if (action) wandAct(action);
+  });
+  wandRoot.addEventListener('input', (e) => {
+    const field = e.target && e.target.dataset && e.target.dataset.wandField;
+    if (!field) return;
+    wandState = wandDisplay.editorSet(wandState, field, e.target.value);
+    if (field === 'query') {       // only the list: the box the user is typing in is left alone
+      const list = wandRoot.querySelector('.wand-skill-list');
+      if (list) list.innerHTML = wandDisplay.skillListHtml(wandDisplay.view(wandState));
+    }
+  });
+  wandRoot.addEventListener('keydown', (e) => {
+    if (!(e.target && e.target.dataset && e.target.dataset.wandField)) return;
+    if (e.key === 'Enter') { e.preventDefault(); wandAct({ kind: 'save' }); }
+    else if (e.key === 'Escape') { e.preventDefault(); wandAct({ kind: 'cancel' }); }
+  });
+  // Reorder by dragging (edit mode). Stopped here, so the page-wide file-drop handler never sees it.
+  wandRoot.addEventListener('dragstart', (e) => {
+    const b = e.target.closest && e.target.closest('button[data-wand-act="press"][draggable="true"]');
+    if (!b) return;
+    wandDragId = b.dataset.wandId;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/x-wand-favourite', wandDragId);
+  });
+  wandRoot.addEventListener('dragover', (e) => {
+    if (!wandDragId) return;
+    e.stopPropagation();
+    if (e.target.closest && e.target.closest('[data-wand-cell]')) e.preventDefault();
+  });
+  wandRoot.addEventListener('drop', (e) => {
+    const cell = e.target.closest && e.target.closest('[data-wand-cell]');
+    if (!wandDragId) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const from = wandDragId;
+    wandDragId = null;
+    if (!cell) return;
+    const r = wandDisplay.moveMsg(wandState, from, cell.dataset.wandCell);
+    wandState = r.state;
+    wandSend(r.message);
+    renderWand();
+  });
+  wandRoot.addEventListener('dragend', () => { wandDragId = null; });
+  renderWand();
+}
+// WAND-END
+
 // BACKLOG E #5, #3. The Claude choices, redrawn with a star per choice and
 // favourited ones first -- app/models-favourites.js's pinFavouritesFirst
 // decides the order, this only rewrites the container's markup to match.
@@ -4180,6 +4313,8 @@ function handleControl(msg) {
     if (msg.sessionModel) sessionModel = msg.sessionModel;
     rosterIndexPayload = msg.rosterIndex || null;
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
+    wandState = wandDisplay.reduce(wandState, msg);
+    renderWand();
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
     renderRoster();
@@ -4193,6 +4328,11 @@ function handleControl(msg) {
   if (msg.type === 'loadout') {
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     renderRoster();
+    return;
+  }
+  if (msg.type === 'wand') {
+    wandState = wandDisplay.reduce(wandState, msg);
+    renderWand();
     return;
   }
   if (msg.type === 'mood') {
