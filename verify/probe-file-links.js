@@ -192,7 +192,8 @@ app.on('ready', async () => {
     h = await hover('notes.md:3');
     check('a relative name:line resolves against the tab folder', h.text === 'Opens notes.md in its default app', h.text);
 
-    check('nothing was ever really opened (shell stubbed)', true, shellCalls);
+    // Exactly the three clicks reached the (stubbed) shell, nothing on hover (PR #92 Miguel S7).
+    check('only the three clicks reached the shell', JSON.stringify(shellCalls.map(c => c[0])) === '["open","reveal","open"]', shellCalls);
   } catch (err) {
     console.error('probe error:', err && err.stack);
     failed++;

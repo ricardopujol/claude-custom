@@ -65,6 +65,8 @@ const args = ['--setting-sources', 'project,local', '--model', 'haiku'];
 const child = pty.spawn('cmd.exe', ['/c', 'claude', ...args],
   { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
 child.onData(d => term.write(d));
+// Ctrl+C on the probe ends its own `claude` too, not just the probe (PR #92 Miguel S7).
+process.on('SIGINT', () => { try { child.kill(); } catch {} process.exit(130); });
 
 function rows() {
   const b = term.buffer.active, out = [];
