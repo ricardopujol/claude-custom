@@ -1190,7 +1190,12 @@
                               padding: 2px 5px; font-size: 11px; }
     .tb-menu .custom button { border: 1px solid var(--border); }
     /* Layout pass L1: the layout menu and the right-click "Move to". */
-    #layout-menu { min-width: 200px; }
+    /* The menu never grows past the window (32 presets would): only the preset LIST scrolls, inside its own region, so
+       Save this layout, Just this tab, Reset layout and the own-layout buttons stay on screen. overflow-y is the fallback
+       for a window too short for even those. */
+    #layout-menu { min-width: 200px; max-height: calc(100vh - 8px); overflow-y: auto; }
+    #layout-menu .lm-presets { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
+    #layout-menu .lm-presets-list { overflow-y: auto; min-height: 56px; flex: 0 1 auto; }
     #layout-menu .lm-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
       color: var(--dim); padding: 4px 7px 2px; }
     #layout-menu .lm-row { display: flex; align-items: center; gap: 6px; padding: 1px 7px; }

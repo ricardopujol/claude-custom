@@ -841,6 +841,26 @@ async function main() {
     await mclick('[data-preset-act="save-open"]');
     await type('input[data-preset-field="save"]', 'FromA', 'Enter');
     await waitFor12(p => p.names.includes('FromA'));
+    // PR #103 Miguel B1: with 32 presets the menu never grows past the window: the list scrolls inside its own region and
+    // Save this layout, Just this tab, Reset layout and this tab's own-layout buttons stay on screen and reachable
+    const keepList2 = fileList();
+    const thirtyTwo = Array.from({ length: 32 }, (_, i) => ({ name: 'Preset ' + String(i + 1).padStart(2, '0'), layout: example }));
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify(thirtyTwo));
+    const full = await waitFor12(p => p.menuOpen && p.names.length === 32, 8000);
+    const fit = full && full.fit;
+    const inside = (b) => !!b && b.top >= 0 && b.bottom <= fit.windowHeight + 0.5;
+    check('12: with 32 presets the menu is no taller than the window',
+      !!fit && inside(fit.menu), JSON.stringify(fit && [fit.windowHeight, fit.menu]));
+    check('12: ...Save this layout, Just this tab, Reset layout and this tab\'s own-layout buttons are all inside the window',
+      !!fit && inside(fit.save) && inside(fit.just) && inside(fit.reset) && inside(fit.resetToGlobal) && inside(fit.makeGlobal), JSON.stringify(fit));
+    check('12: ...and the list scrolls inside its own region (more content than it shows)', !!fit && !!fit.list && fit.list.scrollHeight > fit.list.clientHeight + 4, JSON.stringify(fit && fit.list));
+    await mclick(rowSel('Preset 32', 'rename'));
+    const last = await ask();
+    check('12: ...the last preset can be reached: opening its field scrolls it into view inside the list',
+      !!last.fit.active && !!last.fit.list && last.fit.active.top >= last.fit.list.top - 1 && last.fit.active.bottom <= last.fit.list.bottom + 1, JSON.stringify(last.fit));
+    await type('input[data-preset-field="rename"]', undefined, 'Escape');
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify(keepList2));
+    await waitFor12(p => p.names.length === keepList2.length, 8000);
     await view(app, 'closeMenu');
     const back = await onTab('develop');
     const seenD = back && (await waitFor12(p => p.names.includes('FromA')));
@@ -864,6 +884,8 @@ async function main() {
     const junkPresets = '[ { this is not a list';
     fs.writeFileSync(PRESETS_FILE, junkPresets);
     ({ app, ready } = await launchReady(container));
+    // launchReady has already quit or killed the window it could not bring up, and main()'s finally restores the files and
+    // kills the hosts, so this early return still reaches both
     if (!ready) { check('12: the window came up on an unreadable layout-presets.json', false, app.out.slice(-600)); return; }
     await settled(app);
     await openMenu();

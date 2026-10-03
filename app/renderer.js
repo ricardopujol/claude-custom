@@ -1715,6 +1715,19 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           fields: [...layoutMenu.querySelectorAll('input[data-preset-field]')].map(i => ({ action: i.dataset.presetField, value: i.value })),
           asking: [...layoutMenu.querySelectorAll('.lm-row .lm-name')].map(s => s.textContent),
           kept: presetsState.kept || 0, busy: presetsState.busy === true,
+          // where the menu and the controls under the list sit, against the window (B1: it never grows past it)
+          fit: (() => {
+            const box = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom }; };
+            const list = layoutMenu.querySelector('.lm-presets-list');
+            const button = (text) => [...layoutMenu.querySelectorAll('button')].find(b => b.textContent.trim() === text);
+            const just = [...layoutMenu.querySelectorAll('label')].find(l => l.textContent.includes('Just this tab'));
+            return {
+              windowHeight: window.innerHeight, menu: box(layoutMenu),
+              list: list ? { ...box(list), scrollHeight: list.scrollHeight, clientHeight: list.clientHeight } : null,
+              save: box(layoutMenu.querySelector('[data-preset-act="save-open"]')), reset: box(button('Reset layout')), just: box(just),
+              resetToGlobal: box(button('Reset to global')), makeGlobal: box(button('Make this global')), active: box(document.activeElement),
+            };
+          })(),
           // where keyboard focus is, as the probe can read it: a preset's control, a field, the Window button or the page
           active: (() => {
             const a = document.activeElement;
