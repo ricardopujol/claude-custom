@@ -42,13 +42,21 @@ const clip = (s) => (s.length > MAX_STRING ? s.slice(0, MAX_STRING) : s);
 
 // `at` is a call's own time; a call whose input is for another file, or malformed, is no call here.
 function callFrom(block, root, rel, at, doneAt) {
-  if (!block || (block.name !== 'Edit' && block.name !== 'Write')) return null;
+  if (!block || (block.name !== 'Edit' && block.name !== 'Write' && block.name !== 'MultiEdit')) return null;
   const input = block.input;
   if (!input || typeof input.file_path !== 'string') return null;
   const seen = relativeTo(root, input.file_path);
   if (seen === null || seen.toLowerCase() !== rel.toLowerCase()) return null;
   if (block.name === 'Write') {
     return typeof input.content === 'string' ? { tool: 'Write', at, doneAt, content: clip(input.content) } : null;
+  }
+  if (block.name === 'MultiEdit') {
+    // one call, several old -> new pairs; a malformed list is no call
+    const edits = Array.isArray(input.edits)
+      ? input.edits.filter(e => e && typeof e.old_string === 'string' && typeof e.new_string === 'string')
+        .map(e => ({ oldString: clip(e.old_string), newString: clip(e.new_string) }))
+      : [];
+    return edits.length ? { tool: 'MultiEdit', at, doneAt, edits } : null;
   }
   if (typeof input.old_string !== 'string' || typeof input.new_string !== 'string') return null;
   return { tool: 'Edit', at, doneAt, oldString: clip(input.old_string), newString: clip(input.new_string) };
@@ -65,7 +73,7 @@ async function claudeCallsFor({ root, rel, projectsDir } = {}) {
     try { raw = await fsp.readFile(file, 'utf8'); } catch { continue; }
     // A call counts only once its tool_result says it happened (PR #95 Dexter D1): an Edit that answered "Found
     // 2 matches", a Write refused at the prompt and a call never answered are not changes.
-    const collector = createCollector({ wanted: name => name === 'Edit' || name === 'Write' });
+    const collector = createCollector({ wanted: name => name === 'Edit' || name === 'Write' || name === 'MultiEdit' });
     const lines = raw.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -117,6 +125,12 @@ function renderCalls(calls) {
       const lines = lineList(c.content);
       out.push(`@@ Write (${lines.length} line${lines.length === 1 ? '' : 's'})${t ? ` · ${t}` : ''} @@`);
       out.push(...capped(lines, '+'));
+    } else if (c.tool === 'MultiEdit') {
+      out.push(`@@ MultiEdit (${c.edits.length} edit${c.edits.length === 1 ? '' : 's'})${t ? ` · ${t}` : ''} @@`);
+      for (const e of c.edits) {
+        if (e.oldString !== '') out.push(...capped(lineList(e.oldString), '-'));
+        if (e.newString !== '') out.push(...capped(lineList(e.newString), '+'));
+      }
     } else {
       out.push(`@@ Edit${t ? ` · ${t}` : ''} @@`);
       if (c.oldString !== '') out.push(...capped(lineList(c.oldString), '-'));

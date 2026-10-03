@@ -58,3 +58,23 @@ test('a dark file has no edits', async () => {
   const fog = await readFog({ cwd: CWD, projectsDir: dirWith([[]]), now: () => T0, tracked: ['never.js'] });
   assert.strictEqual(fog.files.find(x => x.path === 'never.js').edits, 0);
 });
+
+// ---- PR #95 Dexter r2 notes ----
+
+const callWith = (name, input, at) => ({
+  type: 'assistant', timestamp: new Date(at).toISOString(),
+  message: { content: [{ type: 'tool_use', id: nextId(), name, input }] },
+});
+
+test('NotebookEdit names its file in notebook_path, and still counts as an edit of it', async () => {
+  const fog = await fogOf([[callWith('NotebookEdit', { notebook_path: CWD + '/n.ipynb', new_source: 'x' }, T0 - 5)]]);
+  const e = fog.files.find(x => x.path === 'n.ipynb');
+  assert.ok(e, JSON.stringify(fog.files));
+  assert.deepStrictEqual([e.tier, e.edits], ['edited', 1]);
+});
+
+test('MultiEdit is an edit (one call, one edit), where it used to be ignored', async () => {
+  const fog = await fogOf([[callWith('MultiEdit', { file_path: CWD + '/m.js', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] }, T0 - 5)]]);
+  const e = fog.files.find(x => x.path === 'm.js');
+  assert.deepStrictEqual([e.tier, e.edits], ['edited', 1]);
+});

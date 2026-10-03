@@ -246,3 +246,24 @@ test('D9: across sessions, the untimed call follows the call before it in ITS fi
   const r = await claudeCallsFor({ root: ROOT, rel: 'a.js', projectsDir: dir });
   assert.deepStrictEqual(r.calls.map(c => c.oldString), ['o5', 'o1', 'o2']);
 });
+
+// ---- PR #95 Dexter r2 notes: MultiEdit ----
+
+test('MultiEdit: every one of its edits is a hunk, in order, under one header', async () => {
+  const f = `${ROOT}/a.js`;
+  const multi = use('MultiEdit', { file_path: f, edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c\nd', new_string: 'e' }] }, 1);
+  const r = await claudeCallsFor({ root: ROOT, rel: 'a.js', projectsDir: projects([[multi]]) });
+  assert.strictEqual(r.calls.length, 1);
+  assert.strictEqual(r.calls[0].tool, 'MultiEdit');
+  const lines = renderCalls(r.calls).split('\n');
+  assert.match(lines[0], /^@@ MultiEdit \(2 edits\)/);
+  assert.deepStrictEqual(lines.slice(1), ['-a', '+b', '-c', '-d', '+e']);
+});
+
+test('MultiEdit with a malformed edits list is no call (not "undefined" drawn)', async () => {
+  const f = `${ROOT}/a.js`;
+  const bad = use('MultiEdit', { file_path: f, edits: [{ old_string: 'a' }, 5, null] }, 1);
+  const none = use('MultiEdit', { file_path: f }, 2);
+  const r = await claudeCallsFor({ root: ROOT, rel: 'a.js', projectsDir: projects([[bad, none]]) });
+  assert.deepStrictEqual(r.calls, []);
+});
