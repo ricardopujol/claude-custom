@@ -64,6 +64,8 @@ const CONTROL_TYPES = new Set([
   // The tool belt (BACKLOG #17). Left off this list, an equip frame would be
   // TYPED into the pty as literal JSON -- the hole described above.
   'loadout-equip', 'loadout-unequip',
+  // The wand (BACKLOG #51): favourites edits and the skill rescan. Same hole if left off.
+  'wand-add', 'wand-update', 'wand-delete', 'wand-move', 'wand-skills',
   // BACKLOG #14: {type:'roster', action:'hide'|'unhide', agent}. Absent from
   // this list, a hide click would be typed into the session as JSON.
   'roster',

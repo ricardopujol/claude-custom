@@ -64,6 +64,9 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
+const { createWandControl, onceLogger } = require('./wand-control');
+const { discoverSkills } = require('./wand-skills');
+const { watchDir } = require('./wand-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
@@ -418,6 +421,31 @@ watchLoadout({
     if (frame) broadcastControl(frame);
   },
 });
+// The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
+// list is read from the CLI's own directories (host/wand-skills.js); CLAUDE_CUSTOM_CLAUDE_HOME is a probe seam
+// (host/probe-seams.js), unset in real use.
+const CLAUDE_HOME = seams.claudeHome || path.join(os.homedir(), '.claude');
+const skillLog = onceLogger((line) => console.log(line));
+const wandControl = createWandControl({ store, readSkills: () => discoverSkills({ claudeHome: CLAUDE_HOME, projectDir: CWD, log: skillLog }) });
+// The wand watches the state file (another host's edit) and the skill directories (a skill added while the
+// harness runs). Both frames are QUIET, so neither touches a refusal on screen. The CLI's directories are
+// watched, never created: only the state dir is ours.
+watchDir({
+  dir: path.join(HARNESS_DIR, 'state'),
+  create: true,
+  match: (f) => f === 'wand.json',
+  onChange: () => {
+    const frame = wandControl.changed();
+    if (frame) broadcastControl(frame);
+  },
+});
+const onSkillsChanged = () => {
+  const frame = wandControl.skillsChanged();
+  if (frame) broadcastControl(frame);
+};
+watchDir({ dir: path.join(CLAUDE_HOME, 'skills'), recursive: true, match: () => true, onChange: onSkillsChanged });
+watchDir({ dir: path.join(CLAUDE_HOME, 'plugins'), match: (f) => f === 'installed_plugins.json', onChange: onSkillsChanged });
+watchDir({ dir: path.join(CWD, '.claude', 'skills'), recursive: true, match: () => true, onChange: onSkillsChanged });
 // One record per distinct bug CLASS, so a recurring defect category is a
 // visible count instead of a memory hand-carried between review rounds in PR
 // comments. Persisted through the shared store under `vault.json`, same as
@@ -1981,6 +2009,8 @@ wss.on('connection', (ws, req) => {
     // The tool belt: what is equipped on which agent type, plus the catalogue
     // the renderer draws from. Read off disk here, so a reattach is never stale.
     loadout: loadoutControl.payload(),
+    // The wand: the favourites (or why they are unavailable) and the skills they can point at.
+    wand: wandControl.payload(),
     // Layout pass L1: this tab's own layout, or null for the global one.
     layoutOverride,
     vault: vaultPayload(),
@@ -2324,6 +2354,12 @@ wss.on('connection', (ws, req) => {
     }
     if (msg.type === 'roster') {
       handleRosterMessage(msg);
+      return;
+    }
+    if (wandControl.handles(msg.type)) {
+      // Broadcast, refusal included: the frame carries the true state, and two windows disagreeing about
+      // a favourite is worse than a redraw. Answers are never `quiet` (host/wand-control.js).
+      broadcastControl(wandControl.handle(msg));
       return;
     }
     if (msg.type === 'loadout-equip' || msg.type === 'loadout-unequip') {

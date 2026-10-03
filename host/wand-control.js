@@ -36,6 +36,9 @@
 const wand = require('./wand');
 
 const STORE_KEY = 'wand';
+// Every message type this control answers. host/control.js CONTROL_TYPES must list each, or the frame is
+// typed into the pty as literal JSON (test/wand-wiring.test.js checks both lists against each other).
+const WAND_TYPES = Object.freeze(['wand-add', 'wand-update', 'wand-delete', 'wand-move', 'wand-skills']);
 
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
@@ -178,7 +181,9 @@ function createWandControl({ store, readSkills } = {}) {
     return frame({ ...outcome.done, ...skillsView() });
   }
 
-  return { payload, handle, changed, skillsChanged };
+  const handles = (type) => WAND_TYPES.includes(type);
+
+  return { payload, handle, changed, skillsChanged, handles };
 }
 
-module.exports = { createWandControl, onceLogger, STORE_KEY };
+module.exports = { createWandControl, onceLogger, STORE_KEY, WAND_TYPES };
