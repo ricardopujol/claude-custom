@@ -2,8 +2,9 @@
 /**
  * What one tab's renderer tells the shell about itself (PR 2, worktree tabs).
  *
- *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health, turn, night }, { healthMarker })
- *       -> { working, needsInput, finished, lock, health, turn, night }
+ *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health, turn, night, summary }, { healthMarker })
+ *       -> { working, needsInput, finished, lock, health, turn, night, summary }
+ *   cleanSummary(s)         the tab's "where are we" summary (backlog #39) as { text, model, at, stale, note }, or null
  *   afterSelected(status)   the shell's `tab-selected` event clears needsInput
  *   pendingAfter(p, event)  the page's { urgent, finished } after an event (#31)
  *   sameStatus(a, b)        strict field-by-field equality, so the renderer
@@ -20,6 +21,9 @@
  * A look clears needsInput (attention), never `turn` (PR #93 Dexter F2: a dialog stays open after a glance).
  * `night` is the host's word that a /bedtime night is on (host/bedtime-state.js, backlog #52): only a real `true`.
  * It is the run's, not something waiting for you, so a look never clears it.
+ * `summary` is the local model's "where are we" for the strip's hover card: only a usable one (words, a model, a real
+ * time), else null. It changes rarely (once per summary), so the status isn't re-sent for its age: the strip works
+ * that out when it paints.
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it:
  * `tabStatus`.
@@ -28,6 +32,23 @@
 
 const LOCK_STATES = ['held', 'unlocked', 'blocked', 'override', 'pending'];
 const TURNS = ['idle', 'turn', 'prompt'];
+const SUMMARY_TEXT_MAX = 2000;
+const SUMMARY_NOTE_MAX = 300;
+
+const str = (s, max) => (typeof s === 'string' && s !== '' && s.length <= max ? s : null);
+
+/** { text, model, at, stale, note } or null; every field checked, the rest dropped (a status comes from a renderer). */
+function cleanSummary(s) {
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  const text = str(s.text, SUMMARY_TEXT_MAX);
+  const model = str(s.model, 100);
+  if (text === null || text.trim() === '' || model === null || typeof s.at !== 'number' || !Number.isFinite(s.at)) return null;
+  return { text, model, at: s.at, stale: s.stale === true, note: str(s.note, SUMMARY_NOTE_MAX) };
+}
+
+const sameSummary = (a, b) => (a === null || b === null
+  ? a === b
+  : a.text === b.text && a.model === b.model && a.at === b.at && a.stale === b.stale && a.note === b.note);
 
 function tabStatus(inputs, { healthMarker } = {}) {
   const i = inputs || {};
@@ -46,6 +67,7 @@ function tabStatus(inputs, { healthMarker } = {}) {
     health,
     turn: TURNS.includes(i.turn) ? i.turn : null,
     night: i.night === true,
+    summary: cleanSummary(i.summary),
   };
 }
 
@@ -82,10 +104,11 @@ function sameStatus(a, b) {
     a.lock === b.lock &&
     a.health === b.health &&
     a.turn === b.turn &&
-    a.night === b.night;
+    a.night === b.night &&
+    sameSummary(a.summary === undefined ? null : a.summary, b.summary === undefined ? null : b.summary);
 }
 
-const api = { tabStatus, afterSelected, sameStatus, pendingAfter, TURNS };
+const api = { tabStatus, afterSelected, sameStatus, pendingAfter, cleanSummary, TURNS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

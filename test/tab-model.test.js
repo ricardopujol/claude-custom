@@ -274,3 +274,15 @@ test('night follows the status: only a real true, and a tab with no status has n
   assert.strictEqual(strip([DEV], {})[0].night, false);
   assert.strictEqual(strip([DEV], { [k]: { started: false, status: null } })[0].night, false);
 });
+
+// Backlog #39: the tab's "where are we" summary comes from its status, for the strip's hover card.
+test('summary follows the status: a usable one is carried, none is null', () => {
+  const k = keyOf(DEV.path);
+  const kA = keyOf(A.path);
+  const sum = { text: 'Working on: x', model: 'llama3.2:3b', at: 5, stale: false, note: null };
+  const [dev, a] = strip([DEV, A], { [k]: { started: true, status: { summary: sum } }, [kA]: { started: true, status: { summary: 'nope' } } });
+  assert.deepStrictEqual(dev.summary, sum);
+  assert.strictEqual(a.summary, null);
+  assert.strictEqual(strip([DEV], {})[0].summary, null);
+  assert.strictEqual(strip([DEV], { [k]: { started: false, status: null } })[0].summary, null);
+});

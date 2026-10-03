@@ -121,6 +121,10 @@ function paintTab(doc, entry, bridge) {
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
   // One line per agent under the name, from the model (it has the minutes and the two-writers line).
   if (occ && occ.lines.length) tab.title = [tab.title, ...occ.lines].join('\n');
+  // Backlog #39: the local model's "where are we", under every other line. The shell worked the lines out
+  // (app/summary-display.js hoverLines, labelled as a local model's); this only draws them.
+  const said = Array.isArray(entry.summaryLines) ? entry.summaryLines.filter(nonEmpty) : [];
+  if (said.length) tab.title = [tab.title, ...said].join('\n');
   if (entry.working) tab.appendChild(el(doc, 'span', 'dot working')).title = 'Working';
   if (entry.needsInput) tab.appendChild(el(doc, 'span', 'dot needs')).title = 'Needs your input';
   // #40: the person's own mark on the tab; its meaning on hover.

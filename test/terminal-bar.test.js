@@ -441,3 +441,55 @@ test('Y4: a truncated prompt says so at the end of the full view, and the head i
   assert.strictEqual(T.promptModel(same, NOW).full, 'x');
   assert.strictEqual(T.promptModel({ ...same, truncated: true, omitted: 1 }, NOW).full, 'x\n…(truncated, 1 more character)', 'the memo keys on the marker too');
 });
+
+// --- the where-are-we summary (backlog #39 job 1): it takes the prompt part's place on the left ------------------
+
+const panel = (extra = {}) => ({ label: 'local model · llama3.2:3b · 4 min ago', lines: ['Working on: x', 'Next: y'], note: null, dim: false, pinned: false, ...extra });
+
+test('barModel: a summary panel opens the bar on its own, WITHOUT the prompt part (it takes its place)', () => {
+  const m = T.barModel({ prompt: prompt(), anchor: anchorAt(10), view: view({ viewportY: 40 }), now: NOW, summary: panel() });
+  assert.strictEqual(m.visible, true);
+  assert.strictEqual(m.prompt, null, 'the prompt is scrolled away and due, yet the summary has the left');
+  assert.deepStrictEqual(m.summary, panel());
+});
+
+test('barModel: with no summary the model has no summary key at all (the existing shape is untouched)', () => {
+  assert.deepStrictEqual(T.barModel({ now: NOW }), { visible: false, prompt: null, chips: [] });
+  const m = T.barModel({ prompt: prompt(), anchor: null, now: NOW });
+  assert.ok(!('summary' in m));
+});
+
+test('barModel: when the summary hides, the prompt part comes back if it is still due', () => {
+  const m = T.barModel({ prompt: prompt(), anchor: anchorAt(10), view: view({ viewportY: 40 }), now: NOW, summary: null });
+  assert.strictEqual(m.prompt.head, 'fix the drawer');
+});
+
+test('barModel: the summary shares the bar with the chips', () => {
+  const m = T.barModel({ now: NOW, summary: panel(), bedtime: night() });
+  assert.strictEqual(m.visible, true);
+  assert.strictEqual(m.chips.length, 1);
+  assert.ok(m.summary);
+});
+
+test('barModel: focus mode hides the summary with the rest', () => {
+  const m = T.barModel({ now: NOW, summary: panel(), focusMode: true });
+  assert.deepStrictEqual(m, { visible: false, prompt: null, chips: [] });
+});
+
+test('barModel: a summary that is not a usable panel is none: no empty bar', () => {
+  for (const bad of [null, undefined, {}, 'x', 5, [], { lines: [] }, { lines: [''], note: '' }, { lines: 'x' }]) {
+    assert.strictEqual(T.barModel({ now: NOW, summary: bad }).visible, false, JSON.stringify(bad));
+  }
+});
+
+test('barModel: a note alone (Ollama off, nothing summarised yet) is a panel', () => {
+  const m = T.barModel({ now: NOW, summary: { label: 'local model', lines: [], note: "Local summary off: Ollama isn't running", dim: true } });
+  assert.strictEqual(m.visible, true);
+  assert.deepStrictEqual(m.summary.lines, []);
+  assert.strictEqual(m.summary.note, "Local summary off: Ollama isn't running");
+});
+
+test('barModel: only real trues dim or pin, and the words are copied as strings', () => {
+  const m = T.barModel({ now: NOW, summary: { label: 'l', lines: ['a', 5, '', 'b'], note: null, dim: 'yes', pinned: 1 } });
+  assert.deepStrictEqual(m.summary, { label: 'l', lines: ['a', 'b'], note: null, dim: false, pinned: false });
+});

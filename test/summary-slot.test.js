@@ -10,10 +10,11 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { createSlot, STALE_MS } = require('../host/summary-slot');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'slot-'));
+const tmp = () => tmpDir('slot-');
 const clock = (t = 1_000_000) => { const f = () => t; f.set = (v) => { t = v; }; return f; };
 
 test('the first host takes the slot and a second one is refused until it is released', () => {

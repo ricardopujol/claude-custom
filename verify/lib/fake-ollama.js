@@ -6,7 +6,7 @@
  *
  *   const fake = await startFakeOllama({ models: ['llama3.2:3b'] });
  *   fake.url          'http://127.0.0.1:<port>'
- *   fake.requests     [{ method, path, body }]   in arrival order (body parsed when it is JSON)
+ *   fake.requests     [{ method, path, body, at }]   in arrival order (body parsed when it is JSON; `at` is Date.now())
  *   fake.set({...})   change the behaviour between calls
  *   await fake.close()
  *
@@ -43,7 +43,7 @@ async function startFakeOllama(initial = {}) {
       let body = null;
       if (text) { try { body = JSON.parse(text); } catch { body = text; } }
       const path = req.url.split('?')[0];
-      requests.push({ method: req.method, path, body });
+      requests.push({ method: req.method, path, body, at: Date.now() });
       const send = (status, payload, raw) => {
         res.writeHead(status, { 'content-type': raw !== undefined ? 'text/plain' : 'application/json' });
         res.end(raw !== undefined ? raw : JSON.stringify(payload));

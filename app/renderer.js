@@ -156,7 +156,11 @@ let sessionTurn = null;
 // The terminal bar (backlog #49 + #52): the host's latest main-session prompt and where the CLI echoed it in the
 // terminal buffer, the bedtime night, and the epoch that invalidates the anchor. Every decision is in
 // app/terminal-bar.js; this only holds the facts and paints what it says.
-const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, paintKey: '', chipsKey: '' };
+const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, paintKey: '', chipsKey: '', summaryShown: false };
+// The where-are-we summary (backlog #39 job 1): the host's local-model summary of this session, why there is none, when
+// the panel was opened (a switch to a tab untouched for 10 minutes), whether it is pinned, whether a key was struck
+// since it opened, and the last real keystroke. Every decision is in app/summary-display.js.
+const sum = { summary: null, off: null, openedAt: null, pinned: false, typed: false, lastInputAt: null, timer: null };
 // How long the CLI's echo of a submitted prompt is waited for in the terminal buffer, and how many of the newest lines
 // are searched, before the prompt fails visible (PR #99 Dexter F6).
 const LOCATE_MS = 3000;
@@ -182,6 +186,7 @@ function reportTabStatus() {
     health: tabHealth,
     turn: sessionTurn,
     night: bar.bedtime !== null,
+    summary: sum.summary ? { ...sum.summary, note: summaryDisplay.offNote(sum.off) } : null,
   }, { healthMarker: worktreeStatus.healthMarker });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
@@ -189,7 +194,7 @@ function reportTabStatus() {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); });
+  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); summaryOpenIfIdle(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.
@@ -218,6 +223,11 @@ const barEls = {
   age: document.getElementById('bar-prompt-age'),
   full: document.getElementById('bar-prompt-full'),
   chips: document.getElementById('bar-chips'),
+  summary: document.getElementById('bar-summary'),
+  summaryLabel: document.getElementById('bar-summary-label'),
+  summaryCard: document.getElementById('bar-summary-card'),
+  summaryLines: document.getElementById('bar-summary-lines'),
+  summaryNote: document.getElementById('bar-summary-note'),
 };
 
 // The bar's own place in time: coalesced, so a burst of scrolling paints once. A timer, not requestAnimationFrame:
@@ -258,6 +268,14 @@ function barState() {
     bar: {
       hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, transitionDuration: cs.transitionDuration, display: cs.display,
       top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
+      summary: {
+        hidden: barEls.summary.hidden, cardHidden: barEls.summaryCard.hidden, label: barEls.summaryLabel.textContent,
+        lines: [...barEls.summaryLines.children].map(l => l.textContent), note: barEls.summaryNote.hidden ? null : barEls.summaryNote.textContent,
+        dim: barEls.summary.classList.contains('dim'), expanded: barEls.summary.getAttribute('aria-expanded'),
+        animation: getComputedStyle(barEls.summary).animationName, cardAnimation: getComputedStyle(barEls.summaryCard).animationName,
+        cardTop: Math.round(barEls.summaryCard.getBoundingClientRect().top), cardHeight: Math.round(barEls.summaryCard.getBoundingClientRect().height),
+        color: getComputedStyle(barEls.summaryCard).color, background: getComputedStyle(barEls.summaryCard).backgroundColor,
+      },
       prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden,
         expanded: barEls.prompt.getAttribute('aria-expanded') },
       chips: [...barEls.chips.children].map(c => ({
@@ -286,6 +304,9 @@ function paintBarNow() {
   // A chip keeps the bar open over the terminal's first rows, so a prompt line under it is as good as scrolled away.
   const rowPx = term.rows > 0 ? document.getElementById('term').clientHeight / term.rows : 0;
   const coveredRows = (bar.bedtime !== null || chip !== null) && rowPx > 0 ? Math.ceil(BAR_COVER_PX / rowPx) : 0;
+  const panel = window.summaryDisplay
+    ? summaryDisplay.panelModel({ summary: sum.summary, off: sum.off, now, openedAt: sum.openedAt, pinned: sum.pinned, typed: sum.typed })
+    : null;
   const m = terminalBar.barModel({
     prompt: bar.prompt,
     anchor: bar.anchor,
@@ -295,8 +316,10 @@ function paintBarNow() {
     now,
     bedtime: bar.bedtime,
     occupancy: chip,
+    summary: panel,
     focusMode: document.body.classList.contains('focus-mode'),
   });
+  bar.summaryShown = !!m.summary;
   if (!m.prompt) bar.fullOpen = false;
   // Nothing changed since the last paint (a scroll event per streamed line asks for a paint each): no DOM writes at all,
   // so a selection inside the whole-prompt view survives (PR #99 Miguel Y1, G1).
@@ -305,6 +328,18 @@ function paintBarNow() {
     bar.paintKey = key;
     barEls.bar.hidden = !m.visible;
     document.body.classList.toggle('bar-open', m.visible);
+    // The local model's summary takes the prompt part's place (textContent only: it is a model's words).
+    barEls.summary.hidden = !m.summary;
+    barEls.summaryCard.hidden = !m.summary;
+    if (m.summary) {
+      setText(barEls.summaryLabel, m.summary.label);
+      barEls.summaryLines.replaceChildren(...m.summary.lines.map((l) => { const d = document.createElement('div'); d.textContent = l; return d; }));
+      barEls.summaryNote.hidden = !m.summary.note;
+      setText(barEls.summaryNote, m.summary.note || '');
+      barEls.summary.classList.toggle('dim', m.summary.dim);
+      barEls.summaryCard.classList.toggle('dim', m.summary.dim);
+      barEls.summary.setAttribute('aria-expanded', String(m.summary.pinned));
+    }
     barEls.prompt.hidden = m.prompt === null;
     if (m.prompt) {
       setText(barEls.text, m.prompt.head);
@@ -449,7 +484,16 @@ document.getElementById('occupancy-wait').addEventListener('click', () => occupa
 barEls.prompt.addEventListener('click', () => { bar.fullOpen = !bar.fullOpen; paintBarNow(); });
 // Escape closes it again, from inside the bar only: the terminal's own Escape (interrupt) is never taken (PR #99 Miguel G3).
 barEls.bar.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !bar.fullOpen) return;
+  if (e.key !== 'Escape') return;
+  if (bar.summaryShown) {
+    sum.openedAt = null;
+    sum.pinned = false;
+    paintBarNow();
+    e.stopPropagation();
+    term.focus();
+    return;
+  }
+  if (!bar.fullOpen) return;
   bar.fullOpen = false;
   paintBarNow();
   e.stopPropagation();
@@ -468,7 +512,46 @@ async function jumpToFolder(folder) {
 }
 
 // The minutes on the bar (the prompt's age, "wake due") go stale between pushes.
-setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0) paintBar(); }, 30000);
+setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0 || sum.pinned) paintBar(); }, 30000);
+
+// --- the where-are-we summary (backlog #39 job 1) ----------------------------------------------------------
+// The host's local-model summary of this session (host/summary-service.js). Every decision is in
+// app/summary-display.js; this holds the facts, opens the panel when you SWITCH to a tab you haven't touched for 10
+// minutes, and paints what the model says in the terminal bar. READ-ONLY: nothing here types into the session.
+function applySummary(p, opening) {
+  const o = p && typeof p === 'object' ? p : {};
+  sum.summary = o.summary && typeof o.summary === 'object' ? o.summary : null;
+  sum.off = o.off && typeof o.off === 'object' ? o.off : null;
+  // Only a window that has just attached opens it: a live push of a newer summary never pops it up under your hands.
+  if (opening && !document.hidden) summaryOpenIfIdle();
+  paintBar();
+  reportTabStatus();
+}
+// "Untouched" is the newest of your last real keystroke here and the host's last prompt (it also sees one sent from
+// elsewhere); a tab nobody has typed in this run counts as untouched.
+function summaryOpenIfIdle() {
+  if (!window.summaryDisplay) return;
+  const now = Date.now();
+  const last = summaryDisplay.lastTouchedAt(sum.lastInputAt, bar.prompt && bar.prompt.at);
+  if (!summaryDisplay.openOnSelect({ summary: sum.summary, off: sum.off, lastInputAt: last, now })) return;
+  sum.openedAt = now;
+  sum.typed = false;
+  clearTimeout(sum.timer);
+  sum.timer = setTimeout(() => paintBar(), summaryDisplay.SHOW_MS + 50);
+  paintBar();
+}
+// A real keystroke: the first one hides an unpinned panel.
+function summaryTyped() {
+  sum.lastInputAt = Date.now();
+  if (sum.openedAt !== null && !sum.pinned) { sum.typed = true; paintBar(); }
+}
+// A click pins it open (and a second click closes it); Escape inside the bar closes it (the keydown handler above).
+barEls.summary.addEventListener('click', () => {
+  if (sum.pinned) { sum.pinned = false; sum.openedAt = null; } else { sum.pinned = true; }
+  paintBarNow();
+});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) summaryOpenIfIdle(); });
+// --- end of the where-are-we summary ---
 
 if (window.harness && window.harness.occupancy) {
   window.harness.occupancy.onChange(applyOccupancy);
@@ -1935,7 +2018,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true, text: String(window.getSelection()) });
       }
       case 'barClick': {
-        const el = { prompt: barEls.prompt, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
+        const el = { prompt: barEls.prompt, summary: barEls.summary, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
         if (!el || el.hidden) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
         el.focus();
         el.click();
@@ -5203,6 +5286,7 @@ function handleControl(msg) {
     // from an older host, which is "none", never a stale one.
     applyBarPrompt(msg.prompt, false);
     applyBedtime(msg.bedtime);
+    applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
     paintBar();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
@@ -5384,6 +5468,10 @@ function handleControl(msg) {
   }
   if (msg.type === 'prompt') {
     applyBarPrompt(msg.prompt, true);
+    return;
+  }
+  if (msg.type === 'summary') {
+    applySummary(msg, false);
     return;
   }
   if (msg.type === 'bedtime') {
@@ -5654,6 +5742,9 @@ function sendResize() {
 // (Miguel, PR #58, I1). onKey, not onData: onData also carries focus and
 // mouse reports, which must not clear a selection the user is still using.
 term.onKey(() => { if (term.hasSelection()) term.clearSelection(); });
+// A real keystroke (onKey, not onData: focus and mouse reports arrive through onData and are not typing) hides the
+// where-are-we summary and counts as touching the tab.
+term.onKey(() => { summaryTyped(); });
 
 term.onData((data) => {
   logLine(pendingKeyDesc || 'input', data);

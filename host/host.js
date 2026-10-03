@@ -1127,7 +1127,7 @@ const summary = createSummaryService({
   store: createSummaryStore({ dir: SUMMARY_DIR }),
   scheduler: createScheduler(),
   slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
-  onBattery: createPowerProbe().onBattery,
+  onBattery: seams.summaryPower ? async () => seams.summaryPower === 'battery' : createPowerProbe().onBattery,
   broadcast: (m) => broadcastControl(m),
   log: (...a) => console.log(...a),
 });

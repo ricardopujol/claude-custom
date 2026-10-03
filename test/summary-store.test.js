@@ -11,10 +11,11 @@ const fc = require('fast-check');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { createSummaryStore } = require('../host/summary-store');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'sumstore-'));
+const tmp = () => tmpDir('sumstore-');
 const REC = { text: 'Working on: x\nNext: y', model: 'llama3.2:3b', turnsSeen: 12, newestKey: 'uuid-9' };
 const SID = '0f9d3a52-1c7e-4b8e-9d2a-77aa11bb22cc';
 

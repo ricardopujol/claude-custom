@@ -43,7 +43,7 @@ test('summaries and the GPU slot live in one folder under the harness state, or 
 test('it pushes through the control channel and ticks on an unref\'d timer that never throws into the host', () => {
   const b = summaryBlock();
   assert.match(b, /broadcast: \(m\) => broadcastControl\(m\),/);
-  assert.match(b, /onBattery: createPowerProbe\(\)\.onBattery,/);
+  assert.match(b, /onBattery: seams\.summaryPower \? async \(\) => seams\.summaryPower === 'battery' : createPowerProbe\(\)\.onBattery,/);
   assert.match(b, /const summaryTimer = setInterval\(\(\) => \{ summary\.tick\(\)\.catch\(\(\) => \{ \/\* logged inside \*\/ \}\); \}, TICK_MS\);/);
 });
 

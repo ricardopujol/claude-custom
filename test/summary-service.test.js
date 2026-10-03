@@ -13,6 +13,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const { createSummaryService, readTailFile, RETRY_MS, SLOT_RETRY_MS, TAIL_SIZES } = require('../host/summary-service');
 const { createScheduler, QUIET_MS } = require('../host/summary-scheduler');
@@ -50,7 +51,7 @@ function rig(over = {}) {
       check: async () => { calls.check += 1; return cfg.check; },
       summarize: async (prompt) => { calls.summarize.push(prompt); if (cfg.summarizeThrows) throw new Error('boom'); return cfg.summarize; },
     },
-    store: over.store || createSummaryStore({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'svc-')) }),
+    store: over.store || createSummaryStore({ dir: tmpDir('svc-') }),
     scheduler: createScheduler(),
     slot: { tryAcquire: () => { calls.acquire += 1; return cfg.slotFree; }, release: () => { calls.release += 1; }, lastError: () => '' },
     onBattery: async () => { calls.battery += 1; return cfg.battery; },
@@ -163,7 +164,7 @@ test('a new message after the cap is summarised again, and not before the 2 minu
 });
 
 test('a stored summary from before a restart is dimmed, and confirmed fresh when nothing new was said since', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'svc-'));
+  const dir = tmpDir('svc-');
   createSummaryStore({ dir }).put(SID, { text: 'Working on: old', model: 'llama3.2:3b', turnsSeen: 2, newestKey: 'a1' }, 500);
   const r = rig({ store: createSummaryStore({ dir }) });
   assert.strictEqual(r.svc.snapshot().summary.stale, true);
@@ -380,7 +381,7 @@ test('a message is broadcast only when what the windows would see changed', asyn
 });
 
 test('a store that cannot persist still shows the summary, and says so in the log', async () => {
-  const store = createSummaryStore({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'svc-')), 'x'), rename: () => { throw new Error('EPERM'); } });
+  const store = createSummaryStore({ dir: path.join(tmpDir('svc-'), 'x'), rename: () => { throw new Error('EPERM'); } });
   const r = rig({ store });
   await r.settle();
   assert.ok(r.svc.snapshot().summary);
@@ -396,7 +397,7 @@ test('the log never carries the conversation', async () => {
 // --- readTailFile: the only thing here that touches a transcript, read-only ------------------------------
 
 const tmpFile = (content) => {
-  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tail-')), 't.jsonl');
+  const f = path.join(tmpDir('tail-'), 't.jsonl');
   fs.writeFileSync(f, content);
   return f;
 };

@@ -664,6 +664,23 @@
       user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
       overflow-wrap: anywhere;
     }
+    /* The where-are-we summary (#39): the local model's words, at the left in the prompt part's place. A button that pins
+       its card open; the card hangs under the bar like the whole-prompt view. Never animated; dimmed when stale or off. */
+    #bar-summary[hidden], #bar-summary-card[hidden], #bar-summary-note[hidden] { display: none; }
+    #bar-summary {
+      flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
+      background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+    }
+    #bar-summary .bar-note { flex: 0 0 auto; }
+    #bar-summary-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+    #bar-summary-card {
+      position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; z-index: 17;
+      max-height: 40vh; overflow: auto; padding: 8px 10px; border-radius: 5px; white-space: pre-wrap;
+      user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    #bar-summary-note { margin-top: 6px; color: var(--dim); font-style: italic; }
+    #bar-summary.dim, #bar-summary-card.dim { color: var(--dim); }
     #bar-chips { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
     .bar-chip {
       position: relative; display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; cursor: default;
@@ -1475,6 +1492,10 @@
         <!-- The terminal bar (#49 + #52, with #47's occupancy banner folded in as a chip): one row, the prompt left
              once it has scrolled away, the chips right. Text only, painted from app/terminal-bar.js's model. -->
         <div id="terminal-bar" role="group" aria-label="Last prompt and status" hidden>
+          <button type="button" id="bar-summary" hidden aria-expanded="false" aria-controls="bar-summary-card" title="Where this session stood, written by a local model (click keeps it open, Esc closes it)">
+            <span class="bar-note">📝</span><span id="bar-summary-label"></span>
+          </button>
+          <div id="bar-summary-card" hidden role="note" aria-label="Where we're at, written by a local model"><div id="bar-summary-lines"></div><div id="bar-summary-note" hidden></div></div>
           <button type="button" id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full" title="Show the whole prompt (Esc closes it)">
             <span class="bar-caret">❯</span><span id="bar-prompt-text"></span><span id="bar-prompt-age"></span>
           </button>
@@ -1707,6 +1728,7 @@
   <script src="./occupancy-display.js"></script>
   <script src="./occupancy-confirm.js"></script>
   <script src="./terminal-bar.js"></script>
+  <script src="./summary-display.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>
