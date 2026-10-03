@@ -156,7 +156,9 @@ function pickLinks(candidates, answers) {
   return out;
 }
 
-const api = { findCandidates, pickLinks, MAX_PATH_LENGTH };
+// The caps are main's too (app/file-link.js reads them from here), so the page
+// never offers more than main will look at (PR #92 Miguel S1).
+const api = { findCandidates, pickLinks, MAX_PATH_LENGTH, MAX_OPTIONS, MAX_CANDIDATES };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

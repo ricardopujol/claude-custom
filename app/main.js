@@ -847,7 +847,8 @@ function registerIpc() {
     if (!isTabView(e.sender)) return { ok: false, why: 'refused' };
     const tab = tabShell.tabForSender(e.sender);
     if (!tab) return { ok: false, why: 'refused' };
-    console.log(`[main] ${tab.key}: file link ${String(p).slice(0, 200)}`);
+    // Quoted: a path with a newline in it can't forge a log line (PR #92 Miguel S3).
+    console.log(`[main] ${tab.key}: file link ${JSON.stringify(String(p).slice(0, 200))}`);
     return fileLink.open(p, tab.cwd, fileFs, shell);
   });
   // The receiving side of a host `raise`: select that tab and come forward.

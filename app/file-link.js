@@ -33,7 +33,8 @@
  */
 const path = require('path');
 
-const MAX_PATH = 1024, MAX_LISTS = 32, MAX_OPTIONS = 8;
+// One set of caps for the page and main (PR #92 Miguel S1).
+const { MAX_PATH_LENGTH: MAX_PATH, MAX_CANDIDATES: MAX_LISTS, MAX_OPTIONS } = require('./file-path-parse');
 
 const OPENABLE = new Set([
   '.txt', '.md', '.markdown', '.log', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.ini', '.csv', '.tsv',
@@ -67,37 +68,79 @@ function actionFor({ given, real, isDir }) {
   return OPENABLE.has(extOf(given)) && OPENABLE.has(extOf(real)) ? 'open' : 'reveal';
 }
 
-// What `abs` is on disk: { isDir, action } or null when it's neither a file
-// nor a folder, or can't be read.
-async function inspect(abs, fsApi) {
+// A DEAD DRIVE MUST NOT STALL MAIN (PR #92 Miguel I3). Every hover asks main
+// to stat up to MAX_LISTS x MAX_OPTIONS paths; a disconnected mapped drive can
+// leave a stat hanging for a long time and hold one of libuv's few threadpool
+// threads with it. So each stat (and realpath) races a timeout; a drive that
+// timed out is skipped for SLOW_MS; and hover answers are cached for CACHE_MS,
+// since a pointer moving along one row asks the same paths again and again.
+// A click never uses the cache: it re-decides from the disk.
+const TIMEOUT_MS = 1500, SLOW_MS = 60000, CACHE_MS = 2000, CACHE_MAX = 500;
+const TIMED_OUT = Symbol('timed out');
+const newState = () => ({ slow: new Map(), cache: new Map() });
+const DEFAULT_STATE = newState();
+const driveOf = (abs) => abs.slice(0, 2).toUpperCase();
+
+function withTimeout(promise, ms) {
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms); });
+  return Promise.race([Promise.resolve(promise), late]).finally(() => clearTimeout(timer));
+}
+
+// What `abs` is on disk: { isDir, action }; null when it's neither a file nor
+// a folder, or can't be read; TIMED_OUT when its drive didn't answer in time.
+async function inspect(abs, fsApi, { state = DEFAULT_STATE, now = Date.now, timeoutMs = TIMEOUT_MS } = {}) {
+  const drive = driveOf(abs);
+  if ((state.slow.get(drive) || 0) > now()) return TIMED_OUT;
+  const slow = () => { state.slow.set(drive, now() + SLOW_MS); return TIMED_OUT; };
   let st;
-  try { st = await fsApi.stat(abs); } catch { return null; }
+  try { st = await withTimeout(fsApi.stat(abs), timeoutMs); } catch { return null; }
+  if (st === TIMED_OUT) return slow();
   const isDir = st.isDirectory();
   if (!isDir && !st.isFile()) return null;
   let real = abs;
-  try { real = await fsApi.realpath(abs); } catch { /* keep the given one */ }
+  try {
+    const r = await withTimeout(fsApi.realpath(abs), timeoutMs);
+    if (r === TIMED_OUT) return slow();
+    real = r;
+  } catch { /* keep the given one */ }
+  // `real` only decides; what is opened is always `abs`. A mapped drive's
+  // realpath can be a UNC path, and opening THAT would reach the server
+  // (PR #92 Miguel S8).
   return { isDir, action: actionFor({ given: abs, real: String(real), isDir }) };
 }
 
-async function check(lists, cwd, fsApi) {
+async function cachedInspect(abs, fsApi, opts) {
+  const { state = DEFAULT_STATE, now = Date.now } = opts;
+  const hit = state.cache.get(abs);
+  if (hit && now() - hit.at < CACHE_MS) return hit.found;
+  const found = await inspect(abs, fsApi, opts);
+  if (found === TIMED_OUT) return null;
+  if (state.cache.size >= CACHE_MAX) state.cache.clear();
+  state.cache.set(abs, { found, at: now() });
+  return found;
+}
+
+async function check(lists, cwd, fsApi, opts = {}) {
   if (!Array.isArray(lists)) return [];
   return Promise.all(lists.slice(0, MAX_LISTS).map(async (options) => {
     if (!Array.isArray(options)) return null;
-    const opts = options.slice(0, MAX_OPTIONS);
-    for (let i = 0; i < opts.length; i++) {
-      const abs = safePath(opts[i], cwd);
+    const opts8 = options.slice(0, MAX_OPTIONS);
+    for (let i = 0; i < opts8.length; i++) {
+      const abs = safePath(opts8[i], cwd);
       if (!abs) continue;
-      const found = await inspect(abs, fsApi);
+      const found = await cachedInspect(abs, fsApi, opts);
       if (found) return { option: i, path: abs, action: found.action, isDir: found.isDir, name: path.win32.basename(abs) };
     }
     return null;
   }));
 }
 
-async function open(p, cwd, fsApi, shellApi) {
+async function open(p, cwd, fsApi, shellApi, opts = {}) {
   const abs = safePath(p, cwd);
   if (!abs) return { ok: false, why: 'refused' };
-  const found = await inspect(abs, fsApi);
+  const found = await inspect(abs, fsApi, opts);
+  if (found === TIMED_OUT) return { ok: false, why: 'timed out' };
   if (!found) return { ok: false, why: 'gone' };
   try {
     if (found.action === 'reveal') {
@@ -111,4 +154,4 @@ async function open(p, cwd, fsApi, shellApi) {
   }
 }
 
-module.exports = { OPENABLE, safePath, actionFor, check, open, MAX_LISTS, MAX_OPTIONS };
+module.exports = { OPENABLE, safePath, actionFor, check, open, newState, MAX_LISTS, MAX_OPTIONS };

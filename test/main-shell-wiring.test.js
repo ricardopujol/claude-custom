@@ -519,3 +519,8 @@ test('the Mark rows are checkboxes: a radio group gets a default tick from Elect
 test('a Mark row does what its model row says: the ticked one clears (Dexter #87 r2)', () => {
   assert.match(MAIN, /click: \(\) => chooseMark\(branch, r\.choose\) \}\)\),/);
 });
+
+test('#37 PR #92 Miguel S3: a clicked path is logged quoted, so it cannot forge a log line', () => {
+  const open = channels.find(x => x.name === 'tab:openPath');
+  assert.match(callText(MAIN, open.at), /file link \$\{JSON\.stringify\(String\(p\)\.slice\(0, 200\)\)\}/);
+});

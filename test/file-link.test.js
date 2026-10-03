@@ -120,3 +120,56 @@ test('open says why when it opens nothing, and never calls the shell then', asyn
   const throwing = { openPath: async () => { throw new Error('boom'); }, showItemInFolder: () => {} };
   assert.deepStrictEqual(await open('C:\\b.md', CWD, fs, throwing), { ok: false, why: 'boom' });
 });
+
+// --- PR #92 Miguel I3: a dead drive can't stall main ------------------------------
+const { newState } = require('../app/file-link');
+
+test('a stat that never answers times out, marks its drive slow, and the drive is skipped until it cools', async () => {
+  let t = 1000, calls = [];
+  const fsx = {
+    stat: (p) => { calls.push(p); return p.startsWith('Z:') ? new Promise(() => {}) : Promise.reject(new Error('no')); },
+    realpath: async (p) => p,
+  };
+  const opts = { state: newState(), now: () => t, timeoutMs: 20 };
+  const t0 = Date.now();
+  assert.deepStrictEqual(await check([['Z:\\share\\a.txt'], ['C:\\x.txt']], CWD, fsx, opts), [null, null]);
+  assert.ok(Date.now() - t0 < 1000, 'answered without waiting on the dead drive');
+  calls = [];
+  await check([['z:\\share\\b.txt', 'Z:\\c.txt']], CWD, fsx, opts);
+  assert.deepStrictEqual(calls, [], 'a slow drive is not asked again (either case)');
+  t += 61000;
+  await check([['Z:\\share\\b.txt']], CWD, fsx, opts);
+  assert.deepStrictEqual(calls, ['Z:\\share\\b.txt'], 'after it cools it is tried again');
+});
+
+test('hover answers are cached for a moment; a click never uses the cache', async () => {
+  let t = 0, stats = 0;
+  const fsx = { stat: async () => { stats++; return { isFile: () => true, isDirectory: () => false }; }, realpath: async (p) => p };
+  const opts = { state: newState(), now: () => t, timeoutMs: 1000 };
+  await check([['C:\\a.md']], CWD, fsx, opts);
+  await check([['C:\\a.md']], CWD, fsx, opts);
+  assert.strictEqual(stats, 1);
+  t += 2500;
+  await check([['C:\\a.md']], CWD, fsx, opts);
+  assert.strictEqual(stats, 2);
+  const shell = { openPath: async () => '', showItemInFolder: () => {} };
+  await open('C:\\a.md', CWD, fsx, shell, opts);
+  assert.strictEqual(stats, 3, 'open stats again');
+});
+
+test('a click on a path whose stat hangs says so and runs nothing', async () => {
+  const calls = [];
+  const shell = { openPath: async (p) => { calls.push(p); return ''; }, showItemInFolder: (p) => calls.push(p) };
+  const fsx = { stat: () => new Promise(() => {}), realpath: async (p) => p };
+  const r = await open('Z:\\a.md', CWD, fsx, shell, { state: newState(), now: () => 0, timeoutMs: 20 });
+  assert.deepStrictEqual(r, { ok: false, why: 'timed out' });
+  assert.deepStrictEqual(calls, []);
+});
+
+test('PR #92 Miguel S1: main and the page share one set of caps', () => {
+  const parse = require('../app/file-path-parse');
+  assert.strictEqual(MAX_LISTS, parse.MAX_CANDIDATES);
+  assert.strictEqual(MAX_OPTIONS, parse.MAX_OPTIONS);
+  assert.notStrictEqual(safePath(`C:\\${'a'.repeat(parse.MAX_PATH_LENGTH - 3)}`, CWD), null);
+  assert.strictEqual(safePath(`C:\\${'a'.repeat(parse.MAX_PATH_LENGTH)}`, CWD), null);
+});
