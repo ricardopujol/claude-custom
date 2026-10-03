@@ -188,6 +188,19 @@ test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows 
   assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ fit\.fit\(\); sendResize\(\); \} catch \{\} \}, 0\);/);
 });
 
+test('PR #102 Miguel Y3: the floats\' layer sits between the terminal and the drag overlay, passes clicks through, and the terminal\'s own overlays are contained', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const at = s => html.indexOf(s);
+  assert.ok(at('<div id="termwrap">') !== -1 && at('<div id="dock-floats"></div>') > at('<div id="termwrap">') && at('<div id="dock-overlay"></div>') > at('<div id="dock-floats"></div>'));
+  const layer = /#dock-floats \{([^}]*)\}/.exec(html);
+  assert.ok(layer, 'the layer has a rule');
+  const z = /z-index: (\d+)/.exec(layer[1]);
+  assert.ok(z && Number(z[1]) > 5 && Number(z[1]) < 40, 'above the gutters (5), below the overlay (40)');
+  assert.match(layer[1], /pointer-events: none/, 'the empty layer must not block the groups under it');
+  assert.match(/\.dfloat \{([^}]*)\}/.exec(html)[1], /pointer-events: auto/, 'a float itself takes the pointer');
+  assert.match(/\n\s+#termwrap \{([^}]*)\}/.exec(html)[1], /isolation: isolate/, 'its lock overlay and banners can never interleave with a float');
+});
+
 test('PR #100 Miguel S3: every save of the global layout goes through one helper that says so when the store refuses it', () => {
   // Only the helper talks to the store; the four places that save call it.
   assert.strictEqual([...JS.matchAll(/\bbridge\.set\(/g)].length, 1, 'only inside saveGlobalLayout');

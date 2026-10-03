@@ -548,6 +548,9 @@
     #termwrap {
       position: absolute; box-sizing: border-box; padding: 8px 10px;   /* the lock overlay and banner sit over it */
       background: var(--bg);
+      /* Its own stacking context: the lock overlay (20) and the banners (15, 16, 18) are ranked among themselves INSIDE
+         it, so a floating panel is always above all of them or below all of them, never in between (PR #102 Y3). */
+      isolation: isolate;
       /* The first paint, before the script places it: the default's 180 px group and 5 px divider on the right. */
       left: 0; top: 0; right: 185px; bottom: 0;
     }
@@ -690,10 +693,15 @@
        by dock-tree-display.js, so it takes nothing from .zone's flex sizing. It stays a .zone so every
        rule below that styles a zone's tabs and panels (has-bg, focus mode, the wide shape) still applies. */
     .dgroup { position: absolute; box-sizing: border-box; overflow: hidden; }
-    /* A floating panel (D2): a group that hangs over the dock. dock-tree-display.js sets its z-index (10 and up: above
-       the gutters, below #dock-overlay at 40). Its bar moves it, so its tabs keep their own width and the bar's empty
-       part is the handle; the grip in the corner resizes it. Focus mode hides it like any zone. */
+    /* The floats' layer (D2, PR #102 Y3): a stacking context of its own at 10, above the gutters (5) and the groups,
+       below #dock-overlay (40). Inside it, dock-tree-display.js gives each float its rank (0, 1, 2...) as its z-index, so
+       the order is the layer's own and cannot reach the overlay however many floats there are. The layer itself takes no
+       pointer, so the groups under its empty part keep theirs. */
+    #dock-floats { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
+    /* A floating panel (D2): a group that hangs over the dock. Its bar moves it, so its tabs keep their own width and
+       the bar's empty part is the handle; the grip in the corner resizes it. Focus mode hides it like any zone. */
     .dfloat {
+      pointer-events: auto;
       border: 1px solid var(--border); border-radius: 4px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
     }
@@ -1425,6 +1433,8 @@
           </div>
         </div>
       </div>
+      <!-- Floating panels (D2): their own layer, above the groups, rails and gutters and below the drag overlay. -->
+      <div id="dock-floats"></div>
       <div id="dock-overlay"></div>
       </div>
       <aside id="diag">

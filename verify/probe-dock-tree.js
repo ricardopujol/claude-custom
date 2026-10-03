@@ -639,8 +639,13 @@ async function main() {
     check('12: dropping Vault on the terminal\'s middle lights the float zone, and floats it: a float holds Vault alone',
       dropped.ok && dropped.during.hot === 1 && s.floats.length === 1 && !!fv && fv.tabs.join() === 'vault' && fv.panels[0] === 'vault' && !groupWith(s, 'vault'),
       JSON.stringify([dropped.during, s.floats.map(f => f.tabs)]));
-    check('12: ...the float is inside the dock, above the groups (z-index over the dividers\') and its element is under #dock',
-      !!fv && insideDock(s, fv) && fv.zIndex > 5 && fv.zIndex < 40, fv && JSON.stringify([fv.rect, fv.zIndex]));
+    check('12: ...the float is inside the dock and its element is in the floats\' layer',
+      !!fv && insideDock(s, fv), fv && JSON.stringify([fv.rect, fv.zIndex]));
+    check('12: ...stacking is structural: the layer sits between the terminal and the drag overlay, above the dividers (5) and below the overlay (40)',
+      s.stack.layerZ > 5 && s.stack.layerZ < s.stack.overlayZ && s.stack.order.indexOf('dock-floats') > s.stack.order.indexOf('termwrap') && s.stack.order.indexOf('dock-floats') < s.stack.order.indexOf('dock-overlay'),
+      JSON.stringify(s.stack));
+    check('12: ...and the terminal is its own stacking context, so its lock overlay and banners cannot sit between floats (PR #102 Miguel Y3)',
+      s.stack.termwrapIsolation === 'isolate' && s.stack.lockInTermwrap, JSON.stringify(s.stack));
     check('12: ...the right group keeps the other tabs, and the terminal, fit and pty are exactly as before the float',
       groupWith(s, 'git') && !groupWith(s, 'git').tabs.includes('vault') && termKey(s) === term0 && (await sizesAgree(app)).ok, `${term0} -> ${termKey(s)}`);
     await command(app, { cmd: 'screenshot', file: path.join(shots, '12-float.png') });
@@ -655,6 +660,8 @@ async function main() {
     check('12: Float in the menu floats Git, offset from the first float so they never stack exactly',
       s.floats.length === 2 && !!fg && !!fv2 && (Math.abs(fg.rect.left - fv2.rect.left) > 4 || Math.abs(fg.rect.top - fv2.rect.top) > 4), JSON.stringify(s.floats.map(f => [f.tabs, f.rect.left, f.rect.top])));
     check('12: ...and the new float is on top', !!fg && !!fv2 && fg.zIndex > fv2.zIndex, JSON.stringify([fg && fg.zIndex, fv2 && fv2.zIndex]));
+    check('12: ...floats are ranked inside their layer (0, 1, ...), so no number of them can reach the drag overlay\'s level',
+      s.floats.every(f => f.zIndex >= 0 && f.zIndex < s.floats.length), JSON.stringify(s.floats.map(f => f.zIndex)));
     const menu2 = await view(app, 'openMenu', { which: 'move', id: 'git' });
     check('12: a panel alone in its float is not offered Float again', menu2.ok && !menu2.items.some(i => i.text === 'Float'), JSON.stringify(menu2.items));
     await view(app, 'closeMenu');

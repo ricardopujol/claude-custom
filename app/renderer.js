@@ -1384,7 +1384,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         });
         // Floats hang over the tree, so they are listed apart: the tree's boxes tile #dock, the floats don't.
         const groups = [...document.querySelectorAll('#dock > .dgroup:not(.dfloat)')].map(groupInfo);
-        const floats = [...document.querySelectorAll('#dock > .dfloat')].map(el => ({
+        const floats = [...document.querySelectorAll('#dock-floats > .dfloat')].map(el => ({
           ...groupInfo(el), zIndex: Number(el.style.zIndex), display: getComputedStyle(el).display,
           bar: rectOf(el.querySelector('.zone-tabs')), grip: rectOf(el.querySelector('.dfloat-grip')),
         }));
@@ -1397,10 +1397,19 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
           path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),
         }));
+        // How the floats stack against everything else (PR #102 Y3): the layer's and the drag overlay's z-index, the
+        // terminal's isolation, and where the terminal's own overlays are: inside #termwrap, whose context contains them.
+        const zOf = id => Number(getComputedStyle(document.getElementById(id)).zIndex);
+        const lockEl = document.getElementById('lock-overlay');
+        const stack = {
+          layerZ: zOf('dock-floats'), overlayZ: zOf('dock-overlay'), termwrapIsolation: getComputedStyle(document.getElementById('termwrap')).isolation,
+          lockInTermwrap: !!lockEl && document.getElementById('termwrap').contains(lockEl),
+          order: [...document.getElementById('dock').children].map(e => e.id || e.className.split(' ')[0]),
+        };
         let proposed = null;
         try { proposed = fit.proposeDimensions() || null; } catch {}
         return JSON.stringify({
-          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, floats, rails, gutters,
+          ok: true, layout: placementLayout(), selection, own: ownLayout !== null, shown: [...shownModules], groups, floats, rails, gutters, stack,
           term: { cols: term.cols, rows: term.rows }, fit: proposed, sent: lastSentResize,
           termwrap: rectOf(document.getElementById('termwrap')), dock: rectOf(document.getElementById('dock')),
           termParent: document.getElementById('termwrap').parentNode.id, pushes: layoutPushes,
@@ -1527,7 +1536,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // (dragged by `dx`, `dy`, brought back to where it started, released there), as
       // `abortedDrag` does for the others. Reports how many times the drag drew and how many resizes reached the pty.
       case 'floatDrag': return (async () => {
-        const el = document.querySelector(`#dock .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
+        const el = document.querySelector(`#dock-floats > .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
         if (!el) return JSON.stringify({ ok: false, error: 'no such float' });
         const target = a.what === 'grip' ? el.querySelector('.dfloat-grip') : el.querySelector('.zone-tabs');
         const r = target.getBoundingClientRect();
@@ -1556,7 +1565,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       })();
       // D2: a press and release on a float's body (or, with `bar`, on its bar's empty part): it is raised.
       case 'floatPress': {
-        const el = document.querySelector(`#dock > .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
+        const el = document.querySelector(`#dock-floats > .dfloat[data-group="${CSS.escape(String(a.id))}"]`);
         if (!el) return JSON.stringify({ ok: false, error: 'no such float' });
         const target = a.bar ? el.querySelector('.zone-tabs') : el.querySelector('.zone-panels');
         const r = target.getBoundingClientRect();

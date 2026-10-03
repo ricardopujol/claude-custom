@@ -214,8 +214,6 @@ function afterTreeGet(treeAnswer, v1Answer, { v1Bridge = true } = {}) {
 
 // --- the DOM half ---------------------------------------------------------------
 
-const FLOAT_Z = 10;       // the first float's z-index; each next one is one more (app/renderer.html: gutters 5, overlay 40)
-
 function setRect(el, r) {
   el.style.left = `${r.x}px`;
   el.style.top = `${r.y}px`;
@@ -281,8 +279,8 @@ function moduleOfButton(el) {
 }
 
 /**
- * Copy a plan onto the page. `doc` holds `#dock` (with `#termwrap` and
- * `#dock-overlay` in it), the `.panel[data-panel=…]` blocks and the
+ * Copy a plan onto the page. `doc` holds `#dock` (with `#termwrap`, `#dock-floats`
+ * and `#dock-overlay` in it), the `.panel[data-panel=…]` blocks and the
  * `#panel-store` that keeps panels no group is showing.
  */
 function applyBoxes(plan, doc) {
@@ -297,14 +295,22 @@ function applyBoxes(plan, doc) {
   if (term && termwrap) setRect(termwrap, term.rect);
 
   const mk = (tag, cls) => { const el = doc.createElement(tag); el.className = cls; return el; };
-  // A float is a group element with a float class (D2): the same tabs, panel holder and reuse by id.
-  const groupBoxes = plan.boxes.filter(b => b.kind === 'group' || b.kind === 'float');
-  const groupPool = syncPool(dock, ':scope > .dgroup', groupBoxes, b => b.id, (b) => {
+  // A float is a group element with a float class (D2): the same tabs, panel holder and reuse by id. Floats live in
+  // their own layer (#dock-floats: above the groups, rails and gutters, below the drag overlay, in its own stacking
+  // context), so what covers what never depends on how many of them there are (PR #102 Miguel Y3).
+  const layer = doc.getElementById('dock-floats');
+  const makeGroup = (b) => {
     const el = mk('aside', 'zone dgroup');
     el.dataset.group = b.id;
     el.append(mk('nav', 'zone-tabs'), mk('div', 'zone-panels'));
     return el;
-  }, overlay);
+  };
+  const treeBoxes = plan.boxes.filter(b => b.kind === 'group');
+  const floatBoxes = plan.boxes.filter(b => b.kind === 'float');
+  const groupBoxes = [...treeBoxes, ...floatBoxes];
+  const treePool = syncPool(dock, ':scope > .dgroup', treeBoxes, b => b.id, makeGroup, overlay);
+  const floatPool = syncPool(layer, ':scope > .dgroup', floatBoxes, b => b.id, makeGroup, null);
+  const elOfBox = b => treePool.elOf.get(b) || floatPool.elOf.get(b);
   const gutters = plan.boxes.filter(b => b.kind === 'gutter');
   const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, () => mk('div', 'dgutter'), overlay);
   const rails = plan.boxes.filter(b => b.kind === 'rail');
@@ -312,17 +318,22 @@ function applyBoxes(plan, doc) {
 
   let floatsDrawn = 0;
   for (const b of groupBoxes) {
-    const el = groupPool.elOf.get(b);
+    const el = elOfBox(b);
     el.dataset.shape = b.shape;
     setRect(el, b.rect);
-    // Floats are drawn in stacking order, so the draw order IS the z-order: above the gutters (5), below the
-    // drag overlay (40). A float that is a tree group again (the name was reused) loses all of it.
+    // Floats come in stacking order, so the draw order IS the order: its rank inside the layer (0 = lowest). The
+    // elements are never re-appended to raise one: a re-append resets the panel's scroll and drops focus from a
+    // field inside it. A tree group has no z-index.
     const isFloat = b.kind === 'float';
     el.classList.toggle('dfloat', isFloat);
-    el.style.zIndex = isFloat ? String(FLOAT_Z + floatsDrawn++) : '';
+    el.style.zIndex = isFloat ? String(floatsDrawn++) : '';
     const grip = el.querySelector('.dfloat-grip');
-    if (isFloat && !grip) el.appendChild(mk('div', 'dfloat-grip'));
-    else if (!isFloat && grip) grip.remove();
+    if (isFloat && !grip) {
+      // Pointer-only until D4's keyboard work (move and resize without a mouse): so it is no control for assistive tech.
+      const g = mk('div', 'dfloat-grip');
+      g.setAttribute('aria-hidden', 'true');
+      el.appendChild(g);
+    } else if (!isFloat && grip) grip.remove();
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
     const holder = el.querySelector('.zone-panels');
     if (b.panel !== null) {
@@ -363,7 +374,7 @@ function applyBoxes(plan, doc) {
     p.classList.toggle('on', on);
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
-  for (const el of [...groupPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
+  for (const el of [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
   // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
   // moves focus (the vault opening, the terminal after a click) is the page's own rule and runs after this.
