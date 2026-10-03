@@ -64,6 +64,9 @@ const { buildProviderEnv, describeProvider } = require('./providers');
 const { createCooldowns } = require('./cooldowns');
 const { createLoadoutControl } = require('./loadout-control');
 const { watchLoadout } = require('./loadout-watch');
+const { createWandControl } = require('./wand-control');
+const { discoverSkills, claudeHomeOf, isSkillEvent } = require('./wand-skills');
+const { watchDir } = require('./wand-watch');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
@@ -85,6 +88,12 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
+// Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
+// as claim files the other windows read. See host/occupancy-producer.js.
+const { createOccupancyProducer, isOccupancyOnly, teammateFromMeta, withoutFileText } = require('./occupancy-producer');
+const { createClaimWriter, occupancyDir, sweepDead } = require('./occupancy-store');
+const { judge: judgeClaims } = require('./occupancy-live');
+const { createRootsProvider } = require('./worktree-roots');
 const { readLock } = require('./lock-breaker');
 // The one-shot client for ANOTHER host's controls; `sendControl` below is ours to our windows.
 const { sendControl: sendHostControl } = require('./host-client');
@@ -333,6 +342,8 @@ async function currentFog() {
 const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   helperPath: HELPER_PATH,
   pipeName: PIPE_NAME,
+  // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
+  occupancy: true,
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
@@ -391,7 +402,7 @@ const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
-// Three probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
+// Probe seams (host/probe-seams.js), unset in real use: a file of `gh pr list` JSON stands in for
 // gh, and the transcripts and the review reports come from the probe's own folders. Logged when set.
 const seams = readSeams(process.env);
 announce(seams, (line) => console.log(line));
@@ -418,6 +429,35 @@ watchLoadout({
     if (frame) broadcastControl(frame);
   },
 });
+// The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
+// list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam
+// (host/probe-seams.js), unset in real use.
+const CLAUDE_HOME = claudeHomeOf({ seam: seams.claudeHome, env: process.env, home: os.homedir() });
+// The control logs what is broken once per breakage (a debounced rescan finds the same file again).
+// `emit`: a busy read of wand.json is looked at again shortly, and what it finds is broadcast (host/wand-control.js).
+const wandControl = createWandControl({ store, log: (line) => console.log(line), emit: (frame) => broadcastControl(frame),
+  readSkills: () => discoverSkills({ claudeHome: CLAUDE_HOME, projectDir: CWD }) });
+// The wand watches the state file (another host's edit) and the skill directories (a skill added while the
+// harness runs). Both frames are QUIET, so neither touches a refusal on screen. The CLI's directories are
+// watched, never created: only the state dir is ours.
+watchDir({
+  dir: path.join(HARNESS_DIR, 'state'),
+  create: true,
+  match: (f) => f === 'wand.json',
+  onChange: () => {
+    const frame = wandControl.changed();
+    if (frame) broadcastControl(frame);
+  },
+});
+const onSkillsChanged = () => {
+  const frame = wandControl.skillsChanged();
+  if (frame) broadcastControl(frame);
+};
+watchDir({ dir: path.join(CLAUDE_HOME, 'skills'), recursive: true, match: isSkillEvent, onChange: onSkillsChanged });
+watchDir({ dir: path.join(CLAUDE_HOME, 'plugins'), match: (f) => f === 'installed_plugins.json', onChange: onSkillsChanged });
+// a plugin switched on or off in settings.json changes which plugin skills exist
+watchDir({ dir: CLAUDE_HOME, match: (f) => f === 'settings.json', onChange: onSkillsChanged });
+watchDir({ dir: path.join(CWD, '.claude', 'skills'), recursive: true, match: isSkillEvent, onChange: onSkillsChanged });
 // One record per distinct bug CLASS, so a recurring defect category is a
 // visible count instead of a memory hand-carried between review rounds in PR
 // comments. Persisted through the shared store under `vault.json`, same as
@@ -1103,8 +1143,32 @@ function seatPayload(seats) {
 // point the whole module has run.
 const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
 
+// Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
+// worktree, and deletes it when the agent stops (or this host exits). Every window reads them.
+const occupancyWriter = createClaimWriter({ stateRoot: STATE_ROOT, log: (...a) => console.log(...a) });
+const occupancy = createOccupancyProducer({
+  writer: occupancyWriter,
+  roots: createRootsProvider({ cwd: CWD, log: (...a) => console.log(...a) }),
+  ownRoot: CWD,
+  fromBranch: () => currentBranch(CWD),
+  hostPid: process.pid,
+  hostStartedAt: () => (lockOwner && typeof lockOwner.processStartedAt === 'string' ? lockOwner.processStartedAt : null),
+  nameOf: (agentId) => {
+    const inv = mood.invocations().find(i => i.agentId === agentId);
+    return inv ? inv.name : null;
+  },
+  // A teammate's SubagentStop ends a turn, not the agent: its claim is kept while it idles.
+  isTeammate: teammateFromMeta,
+  log: (...a) => console.log(...a),
+});
+process.on('exit', () => { occupancyWriter.removeAll(); });
+
 let hookBridge = null;
 if (helperExists) {
+  // Claims left by a host that died: this is the producer that deletes them (a reader never does).
+  sweepDead(occupancyDir(STATE_ROOT), { judge: (claims) => judgeClaims(claims, startTimes), log: (...a) => console.log(...a) })
+    .then((r) => { if (r.removed.length) console.log(`[occupancy] swept ${r.removed.length} dead claim(s)`); })
+    .catch(() => { /* a sweep never blocks a host */ });
   hookBridge = createHookBridge({ pipeName: PIPE_NAME });
   hookBridge.on('event', (ev) => {
     // The statusLine document, forwarded by host/status-relay.js on every
@@ -1120,6 +1184,14 @@ if (helperExists) {
       if (status.effort !== undefined) setEffort(status.effort);
       return;
     }
+    // Worktree occupancy sees every hook event; the file-tool PreToolUse that only IT asked for goes no
+    // further: their PostToolUse isn't hooked, so the Running panel would show every Read as running forever.
+    // (Under hook debug their payload is printed here: they never reach the `[hook:full]` line below. Without
+    // the text a Write or an Edit carries: this fires for every file an agent writes, a .env included, and
+    // the probe that reads it only wants who touched which path.)
+    if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
+    occupancy.handle(ev);
+    if (isOccupancyOnly(ev)) return;
     // The context was just replaced (/clear) or summarised (compaction): the
     // last fill is no longer true, whether or not the CLI re-fires the
     // statusLine right after. Unknown until a document says otherwise.
@@ -1624,6 +1696,7 @@ mood.on('change', ({ agent, state }) => {
 const moodTimer = setInterval(() => {
   mood.tick();
   processes.sweep();
+  occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
   // Re-broadcast so elapsed times tick up in the GUI without the view having to
   // own a clock of its own -- and on both falling edges: a sweep that removed
   // the last row, and a party that shrank with nothing left running.
@@ -1981,6 +2054,8 @@ wss.on('connection', (ws, req) => {
     // The tool belt: what is equipped on which agent type, plus the catalogue
     // the renderer draws from. Read off disk here, so a reattach is never stale.
     loadout: loadoutControl.payload(),
+    // The wand: the favourites (or why they are unavailable) and the skills they can point at.
+    wand: wandControl.payload(),
     // Layout pass L1: this tab's own layout, or null for the global one.
     layoutOverride,
     vault: vaultPayload(),
@@ -2324,6 +2399,12 @@ wss.on('connection', (ws, req) => {
     }
     if (msg.type === 'roster') {
       handleRosterMessage(msg);
+      return;
+    }
+    if (wandControl.handles(msg.type)) {
+      // Broadcast, refusal included: the frame carries the true state, and two windows disagreeing about
+      // a favourite is worse than a redraw. Answers are never `quiet` (host/wand-control.js).
+      broadcastControl(wandControl.handle(msg));
       return;
     }
     if (msg.type === 'loadout-equip' || msg.type === 'loadout-unequip') {

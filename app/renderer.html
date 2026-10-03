@@ -30,6 +30,10 @@
          nothing about how the header already looks -- see
          app/top-bar-display.js's cueColour(null, theme). */
       --model-accent: #d08c4a;
+      /* Worktree occupancy (#44 + #47): an agent is working in this folder (--agent), and this tab's own
+         session is writing too (--warn). The same two colours as the strip's hatched edge. */
+      --agent: #6aa5d8;
+      --warn: #e6c34a;
     }
     * { box-sizing: border-box; }
     /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
@@ -595,6 +599,55 @@
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
 
+    /* Worktree occupancy (#44 + #47, take B): a chrome bar over the terminal while an agent is working in this
+       folder, with a coloured left rule; the first-keystroke confirm sits over the input with the same rule.
+       Neither animates: movement means "needs you". */
+    #occupancy-banner {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 16;
+      display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--agent) 12%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--agent) 40%, var(--border));
+      border-left: 4px solid var(--agent);
+    }
+    #occupancy-banner.warn {
+      background: color-mix(in srgb, var(--warn) 14%, var(--chrome));
+      border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+      border-left-color: var(--warn);
+    }
+    #occupancy-banner[hidden], #occupancy-confirm[hidden] { display: none; }
+    #occupancy-banner-text { font-weight: 600; }
+    #occupancy-banner-since, #occupancy-banner-more, #occupancy-banner-note { color: var(--dim); }
+    #occupancy-banner.warn #occupancy-banner-note { color: var(--warn); }
+    #occupancy-banner .spacer { flex: 1; }
+    #occupancy-jump, #occupancy-confirm button {
+      padding: 3px 10px; border-radius: 4px; cursor: pointer; font: inherit;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    }
+    #occupancy-jump:hover, #occupancy-confirm button:hover { border-color: var(--agent); }
+    #occupancy-confirm kbd { font: inherit; font-size: 0.85em; color: var(--dim); margin-left: 4px; }
+    #occupancy-jump[hidden] { display: none; }
+    /* the terminal-banner (other live sessions) sits just under it while both show */
+    body.occupied #terminal-banner { top: 46px; }
+    #occupancy-confirm {
+      position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 18;
+      display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 5px;
+      font-size: 13px; color: var(--text);
+      background: color-mix(in srgb, var(--agent) 16%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--agent) 45%, var(--border));
+      border-left: 4px solid var(--agent);
+    }
+    #occupancy-confirm.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    #occupancy-confirm-text { flex: 1; }
+    /* the hub card's `-> worktree` line (#44) */
+    .agent .agent-where {
+      display: block; max-width: 100%; margin-top: 2px; padding: 0; border: 0; background: none; cursor: pointer;
+      font: inherit; font-size: 10px; text-align: left; color: var(--agent);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .agent .agent-where:hover { text-decoration: underline; }
+    .agent .agent-where-plus { margin-left: 4px; color: var(--dim); }
+
     #diag {
       width: 340px; flex: 0 0 340px;
       background: var(--chrome);
@@ -937,6 +990,64 @@
     .proj.current .proj-name::after { content: ' — you are here'; opacity: 0.6; font-size: 10px; }
     .proj-approx .proj-name::after { content: ' ~'; opacity: 0.6; }
 
+    /* The wand (BACKLOG #51): favourite skills as emoji buttons. Markup comes from app/wand-display.js. A dimmed
+       button is a skill that no longer exists; the flash is "typed", never "ran". */
+    #wand-body { padding: 8px 10px; }
+    .wand-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    #wand-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+    .zone[data-shape="wide"] .panel.on > #wand-root { flex: 1 1 auto; min-width: 240px; max-width: none; }
+    .wand-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .wand-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .wand-edit { font: inherit; font-size: 13px; line-height: 1; padding: 3px 7px; cursor: pointer; background: transparent;
+      color: var(--dim); border: 1px solid transparent; border-radius: 4px; }
+    .wand-edit:hover { color: var(--text); border-color: var(--border); }
+    .wand-edit.on { color: var(--accent); border-color: var(--accent); }
+    /* padding: the ✕ of an edit-mode cell hangs 6px outside it, and the panel clips what overflows */
+    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
+    .wand-cell { position: relative; display: block; }
+    .wand-btn { width: 100%; aspect-ratio: 1; padding: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 18px; line-height: 1; cursor: pointer; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; transition: border-color .12s, background .12s; }
+    .wand-btn:hover { border-color: var(--accent); }
+    .wand-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+    .wand-btn.dim { opacity: .35; filter: grayscale(1); }
+    .wand-btn.flash { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 22%, var(--panel)); }
+    .wand-add { font-size: 20px; color: var(--dim); border-style: dashed; }
+    .wand-x { position: absolute; top: -6px; right: -6px; width: 17px; height: 17px; padding: 0; font-size: 9px; line-height: 17px;
+      text-align: center; cursor: pointer; color: #fff; background: var(--bad); border: 0; border-radius: 50%; }
+    .wand-note { font-size: 11px; line-height: 1.5; color: var(--dim); margin: 0 0 8px; }
+    .wand-note.bad { color: var(--bad); }
+    .wand-note.warn { color: var(--accent); }
+    .wand-status { font-size: 11px; color: var(--ok); margin-top: 8px; }
+    .wand-error { font-size: 11px; color: var(--bad); margin-top: 8px; }
+    .wand-editor .wand-error { margin-top: 0; }
+    .wand-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 8px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 6px; }
+    .wand-ed-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+    .wand-ed-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+    .wand-editor input { font: inherit; font-size: 12px; min-width: 0; padding: 4px 6px; color: var(--text); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .wand-ed-row input { flex: 1; }
+    .wand-ed-emoji { flex: 0 0 4em !important; text-align: center; font-size: 16px !important; }
+    .wand-emoji-pick { display: flex; flex-wrap: wrap; gap: 3px; }
+    .wand-pick { font-size: 15px; line-height: 1; padding: 3px; cursor: pointer; background: transparent; border: 1px solid transparent; border-radius: 4px; }
+    .wand-pick:hover { border-color: var(--accent); }
+    .wand-picked { font-size: 12px; }
+    .wand-missing { color: var(--bad); font-size: 10px; }
+    .wand-skill-list { max-height: 150px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+    .wand-skill { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left; font: inherit; font-size: 11px;
+      padding: 4px 6px; cursor: pointer; color: var(--text); background: transparent; border: 0; border-bottom: 1px solid var(--border); }
+    .wand-skill:hover { background: var(--panel); }
+    .wand-skill.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+    .wand-skill-name { flex: 0 0 auto; }
+    .wand-skill-src { flex: 0 0 auto; font-size: 9px; color: var(--accent); }
+    .wand-skill-desc { flex: 1; min-width: 0; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wand-skill-none, .wand-skill-more { font-size: 11px; color: var(--dim); padding: 4px 6px; }
+    .wand-ed-actions { display: flex; gap: 6px; }
+    .wand-ed-actions button { font: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer; color: var(--text); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .wand-ed-actions button:hover:not(:disabled) { border-color: var(--accent); }
+
     /* The Style tab -- a container that GROWS. One section today (background
        image); app/style-display.js's STYLE_SECTIONS registry is what makes a
        second one later a markup-free addition. */
@@ -1275,6 +1386,22 @@
           <span id="terminal-banner-text"></span>
           <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
         </div>
+        <!-- Worktree occupancy (#44 + #47): an agent launched from another session is working in this folder.
+             Text only (app/occupancy-display.js bannerModel); clears when the agent stops or its host dies. -->
+        <div id="occupancy-banner" role="status" hidden>
+          <span id="occupancy-banner-text"></span>
+          <span id="occupancy-banner-since"></span>
+          <span id="occupancy-banner-more"></span>
+          <span id="occupancy-banner-note"></span>
+          <span class="spacer"></span>
+          <button type="button" id="occupancy-jump" hidden></button>
+        </div>
+        <!-- The first keystroke typed while an agent is writing here is held behind this (app/occupancy-confirm.js). -->
+        <div id="occupancy-confirm" role="alertdialog" aria-labelledby="occupancy-confirm-text" hidden>
+          <span id="occupancy-confirm-text">An agent is writing here. Type anyway?</span>
+          <button type="button" id="occupancy-type">Type <kbd>Enter</kbd></button>
+          <button type="button" id="occupancy-wait">Wait <kbd>Esc</kbd></button>
+        </div>
         <!-- Another session holds this worktree's lock: no session starts here
              until Open anyway. Over the terminal, which is empty meanwhile. -->
         <div id="lock-overlay" role="alertdialog" aria-labelledby="lock-overlay-title" hidden>
@@ -1417,6 +1544,13 @@
         <!-- A container that GROWS: one section today (background image), more
              later. app/style-display.js renders one entry per STYLE_SECTIONS,
              so adding a section is a one-element array change, not a new panel. -->
+        <!-- BACKLOG #51: the wand. app/wand-display.js draws it from the host's `wand` payload. -->
+        <div class="panel" data-panel="wand" id="wand-body">
+          <div id="wand-root"><div class="empty">reading the wand…</div></div>
+          <!-- Announced to screen readers: OUTSIDE #wand-root, whose markup is replaced on every draw (a live region
+               that is replaced is not read out). Visually hidden; the visible copy is in the panel. -->
+          <div id="wand-live" class="wand-live" role="status" aria-live="polite" aria-atomic="true"></div>
+        </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
         </div>
@@ -1452,6 +1586,7 @@
   <script src="./colour-seeds.js"></script>
   <script src="./agent-log-display.js"></script>
   <script src="./loadout-display.js"></script>
+  <script src="./wand-display.js"></script>
   <script src="./top-bar-display.js"></script>
   <script src="./context-fill-display.js"></script>
   <script src="./status-fields-display.js"></script>
@@ -1461,6 +1596,8 @@
   <script src="./paste-action.js"></script>
   <script src="./worktree-status-display.js"></script>
   <script src="./tab-status.js"></script>
+  <script src="./occupancy-display.js"></script>
+  <script src="./occupancy-confirm.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>

@@ -11,6 +11,8 @@
     :root {
       --bg: #11131a; --chrome: #171a23; --border: #262b38; --text: #c7cede;
       --dim: #6d7689; --accent: #d08c4a; --ok: #5fb07a; --bad: #cc5f5f;
+      /* Worktree occupancy: an agent is working in this tab's folder / two writers. */
+      --agent: #6aa5d8; --warn: #e6c34a;
     }
     html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
       font: 12px/1.3 "Segoe UI", system-ui, sans-serif; overflow: hidden; user-select: none; }
@@ -18,8 +20,18 @@
     #strip { height: 34px; box-sizing: border-box; display: flex; align-items: stretch;
       background: var(--chrome); border-bottom: 1px solid var(--border); }
     #tabs { display: flex; align-items: stretch; min-width: 0; overflow: hidden; }
-    .tab { display: flex; align-items: center; gap: 6px; padding: 0 10px; max-width: 240px;
+    .tab { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 10px; max-width: 240px;
       border-right: 1px solid var(--border); cursor: default; white-space: nowrap; }
+    /* Worktree occupancy (#44 + #47, take B "hatched edge"): the lower edge turns to diagonal stripes while an
+       agent is working in this tab's folder, in the warn colour when its own session is writing too. Still,
+       always: movement on the strip means "needs you", and this is only "somebody is here". */
+    .tab.occupied::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; pointer-events: none;
+      background: repeating-linear-gradient(135deg, var(--agent) 0 3px, transparent 3px 6px); }
+    .tab.occupied-warn::after { background: repeating-linear-gradient(135deg, var(--warn) 0 3px, transparent 3px 6px); }
+    .agent-tags { display: inline-flex; gap: 2px; flex: 0 0 auto; }
+    .agent-tag { font-size: 9px; line-height: 1; padding: 1px 3px; border-radius: 3px; color: var(--agent);
+      border: 1px solid color-mix(in srgb, var(--agent) 55%, transparent); font-variant-numeric: tabular-nums; }
+    .tab.occupied-warn .agent-tag { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
     .tab:hover { background: color-mix(in srgb, var(--accent) 10%, var(--chrome)); }
     .tab.selected { background: var(--bg); box-shadow: inset 0 -2px 0 var(--accent); }
     .tab.dim .label { color: var(--dim); }

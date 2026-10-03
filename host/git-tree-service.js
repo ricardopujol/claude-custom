@@ -6,7 +6,8 @@
  *   - Requests while one is running SHARE it: the panel re-asks every 30s and on every reconnect,
  *     and two reads of 500MB of transcripts at once would both be wasted.
  *   - The ledger is loaded from disk once per host, updated on every request (only new bytes are
- *     read), and saved only when something new was read. One that can't be read right now is NOT
+ *     read), and saved only when something new was read. It is given the history's worktrees, so a
+ *     subagent's spend goes to the worktree its tool calls point at. One that can't be read right now is NOT
  *     replaced: it's asked for again next time (PR #84 Dexter F6).
  *   - gh is asked at most once a minute (it's the network), alongside the ledger, not after it.
  *   - The drawer's data (Enhancement #46) rides along: the GitHub repo of `origin` (and each branch's PR
@@ -38,6 +39,18 @@ function ledgerFileFor(stateRoot, fsImpl = fs) {
   return path.join(ensureLookDir(stateRoot, fsImpl), LEDGER_FILE);
 }
 
+/**
+ * The worktrees of a history as the ledger wants them, `[{ root, branch }]` -- or null when the history
+ * names none. A repo always has one, so "none" is a list that couldn't be had, and the ledger then leaves
+ * subagent transcripts unread rather than credit them to the wrong branch for good (host/branch-ledger.js).
+ */
+function ledgerWorktrees(history) {
+  const list = (Array.isArray(history && history.worktrees) ? history.worktrees : [])
+    .filter(w => w && typeof w.path === 'string' && w.path !== '')
+    .map(w => ({ root: path.resolve(w.path), branch: typeof w.branch === 'string' && w.branch !== '' ? w.branch : null }));
+  return list.length > 0 ? list : null;
+}
+
 function createGitTreeService(d) {
   let ledger = null;
   let inFlight = null;
@@ -49,7 +62,7 @@ function createGitTreeService(d) {
     return prs.value;
   }
 
-  async function refreshLedger() {
+  async function refreshLedger(worktrees) {
     const file = d.ledgerFile();
     if (!ledger) {
       if (file) {
@@ -60,7 +73,7 @@ function createGitTreeService(d) {
         ledger = emptyLedger();
       }
     }
-    const r = await d.updateLedger(ledger, { projectsDir: d.projectsDir, projectRoot: d.projectRoot });
+    const r = await d.updateLedger(ledger, { projectsDir: d.projectsDir, projectRoot: d.projectRoot, worktrees });
     ledger = r.ledger;
     if (file && r.read > 0) ledger = await d.saveLedger(file, ledger);
     return r.errors === 0;
@@ -83,7 +96,7 @@ function createGitTreeService(d) {
   async function compute() {
     const history = await d.readHistory(d.cwd);
     if (!history.ok) return { ok: false, error: history.error };
-    const [ledgerOk, openPrList, o] = await Promise.all([refreshLedger().catch(() => false), openPrs(), origin()]);
+    const [ledgerOk, openPrList, o] = await Promise.all([refreshLedger(ledgerWorktrees(history)).catch(() => false), openPrs(), origin()]);
     const repo = o.repo;
     const tree = buildTree({ history, totals: ledger ? totals(ledger) : {}, openPrs: openPrList,
       projectRoot: d.projectRoot, current: d.currentBranch(d.cwd) });

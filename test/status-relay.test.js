@@ -183,12 +183,26 @@ test("the user's command gets the same stdin, and its output is the status line"
   assert.strictEqual(res.out, 'USER:claude-sonnet-5');
 });
 
-test("no host listening: the user's status line still renders, promptly", async () => {
+test("no host listening: the user's status line still renders", async () => {
+  // Process start-up (the relay, then cmd.exe, then the user's node) is what a
+  // wall-clock bound here really measured, and it blew 5 s under full-suite
+  // load. "Promptly" is asserted deterministically in the next test instead.
   const echo = `"${process.execPath}" -e "process.stdout.write('still here')"`;
   const t0 = Date.now();
   const res = await runRelay(['--pipe', pipeName(), '--then', b64(echo)], DOC);
+  // A catastrophic-stall tripwire only (a relay awaiting something it shouldn't);
+  // process start-up under load is well inside it.
+  assert.ok(Date.now() - t0 < 30000, `the relay took ${Date.now() - t0} ms with no host listening`);
   assert.strictEqual(res.out, 'still here');
-  assert.ok(Date.now() - t0 < 5000, 'a missing host must not stall the status line');
+  assert.strictEqual(res.code, 0);
+});
+
+test('no host listening: forward settles on the connect error, never on its deadline', { timeout: 60000 }, async (t) => {
+  // With setTimeout mocked and never ticked, a forward that waited for its
+  // FORWARD_TIMEOUT_MS deadline would never settle. This one must settle from
+  // the connection failure alone, so a missing host costs no wait at all.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await forward(pipeName(), DOC);
 });
 
 test('unparseable stdin is not forwarded, and the user command still runs', async () => {
@@ -207,7 +221,7 @@ test('unparseable stdin is not forwarded, and the user command still runs', asyn
 
 // --- a user command that never exits (Dexter r2 N6) ---------------------------
 
-const { runUser } = require('../host/status-relay');
+const { runUser, forward } = require('../host/status-relay');
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
