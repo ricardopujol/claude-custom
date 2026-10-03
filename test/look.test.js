@@ -71,6 +71,14 @@ test('sanitizeLook keeps setAt only when it is a parseable timestamp', () => {
   assert.strictEqual(at(0), null);
 });
 
+test('sanitizeLook accepts a recorded video background, and still refuses an unlisted video type', () => {
+  assert.strictEqual(sanitizeLook({ background: { file: 'background.webm' } }).background.file, 'background.webm');
+  assert.strictEqual(sanitizeLook({ background: { file: 'background.MP4' } }).background.file, 'background.mp4');
+  for (const file of ['background.mov', 'background.avi', 'background.mkv']) {
+    assert.strictEqual(sanitizeLook({ background: { file } }).background, null, file);
+  }
+});
+
 test('sanitizeLook keeps darkness even with no background, so the slider survives a reset', () => {
   assert.strictEqual(sanitizeLook({ darkness: 0.3 }).darkness, 0.3);
 });

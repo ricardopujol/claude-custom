@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld('harness', {
   // default browser if, and only if, it is plain http(s), and answers whether
   // it did, so the page can say when it didn't.
   openExternal: (url) => ipcRenderer.invoke('tab:openExternal', url),
+  // A local path in the terminal (#37): main answers which of the offered
+  // paths exist and whether a click opens each or shows it in Explorer, then
+  // re-decides and does it on the click.
+  checkPaths: (lists) => ipcRenderer.invoke('tab:checkPaths', lists),
+  openPath: (p) => ipcRenderer.invoke('tab:openPath', p),
   onTabSelected: (fn) => (ipcRenderer.removeAllListeners('tab-selected'), ipcRenderer.on('tab-selected',
     () => {
       try { fn(); } catch (err) { console.error('[preload] tab-selected listener threw', err); }
@@ -180,6 +185,16 @@ contextBridge.exposeInMainWorld('harness', {
             framelessWindow: !!settings && settings.framelessWindow === true });
         } catch (err) { console.error('[preload] chrome-settings listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('chrome-settings')),
+  },
+  // The background video's play inputs (backlog #34) -- see app/playback-bridge.js. `get` answers
+  // { minimised, hidden, onBattery }, each a boolean or null (unknown); `onChange` replaces its
+  // one listener and is handed the same shape.
+  playback: {
+    get: () => ipcRenderer.invoke('playback:get'),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('playback-state'), ipcRenderer.on('playback-state',
+      (_e, state) => {
+        try { fn(state); } catch (err) { console.error('[preload] playback-state listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('playback-state')),
   },
   // Focus mode (layout pass L1, #1): only the terminal shows. Main owns it (the
   // tab view has to cover the strip); the page hides its header and zones when

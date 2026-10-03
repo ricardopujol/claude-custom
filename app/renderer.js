@@ -244,6 +244,65 @@ function flashLinkTarget(text) {
   linkTargetTimer = setTimeout(() => showLinkTarget(null), 4000);
 }
 
+// #37: a local path the terminal shows becomes a link when main says it
+// exists. The rows a long path spans are joined first (app/terminal-rows.js:
+// Ink breaks rows itself, so isWrapped can't be trusted -- measured in
+// verify/probe-file-link-rows.js). Main decides open or reveal, and decides
+// again on the click (app/file-link.js).
+function bufferRow(y) {
+  const line = term.buffer.active.getLine(y);
+  if (!line) return null;
+  const cells = [];
+  for (let x = 0; x < term.cols; x++) {
+    const c = line.getCell(x);
+    cells.push(c ? { chars: c.getChars(), width: c.getWidth() } : { chars: '', width: 1 });
+  }
+  return { cells };
+}
+term.registerLinkProvider({
+  provideLinks(lineNumber, callback) {
+    try {
+      if (!window.harness || typeof window.harness.checkPaths !== 'function') { callback(undefined); return; }
+      const b = terminalRows.block(bufferRow, lineNumber - 1, term.cols);
+      // Only what touches the hovered row is asked about (PR #92 Miguel I2).
+      const cands = filePathParse.findCandidates(b.text, b.breaks, { within: terminalRows.rowSpan(b, lineNumber - 1) });
+      if (cands.length === 0) { callback(undefined); return; }
+      Promise.resolve(window.harness.checkPaths(cands.map(c => c.options.map(o => o.path)))).then((answers) => {
+        const links = filePathParse.pickLinks(cands, answers || [])
+          .map(l => toXtermLink(b, l))
+          .filter(l => l && l.range.start.y <= lineNumber && l.range.end.y >= lineNumber);
+        callback(links.length ? links : undefined);
+      }, () => callback(undefined));
+    } catch (err) {
+      console.error('[file-links] provideLinks threw', err);
+      callback(undefined);
+    }
+  },
+});
+// A picked link -> xterm's ILink (the range math is terminalRows.linkRange,
+// tested on its own: 1-based, end inclusive, over real cells only).
+function toXtermLink(b, { start, end, answer }) {
+  const range = terminalRows.linkRange(b, start, end);
+  if (!range || !answer || typeof answer.path !== 'string') return null;
+  return {
+    range,
+    text: b.text.slice(start, end),
+    activate: (event) => openFileLink(event, answer.path),
+    hover: () => showLinkTarget(linkClick.fileTargetText(answer)),
+    leave: () => showLinkTarget(null),
+  };
+}
+// The same click rule as a web link (one plain left click, once); `p` is the
+// absolute path main resolved, which main re-checks before doing anything.
+function openFileLink(event, p) {
+  const r = linkClick.shouldOpen(event, `file:${p}`, lastLinkOpened, Date.now());
+  lastLinkOpened = r.last;
+  if (!r.open || !window.harness || typeof window.harness.openPath !== 'function') return;
+  Promise.resolve(window.harness.openPath(p)).then((res) => {
+    if (!res || res.ok !== true) flashLinkTarget(linkClick.fileRefusedText(p, res && res.why));
+  }, () => flashLinkTarget(linkClick.fileRefusedText(p, null)));
+}
+
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 
@@ -1263,6 +1322,42 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           }, 150);
         }, 50);
       });
+      // Backlog #34 (verify/probe-video-background.js): the background layer as it is on screen --
+      // the video's own state, the classes and variables the look paints, and the Style tab's note.
+      case 'bgState': {
+        const v = bgVideoEl;
+        const sec = document.querySelector('[data-section="background"]');
+        const note = sec && sec.querySelector('.style-note');
+        const err = sec && sec.querySelector('.style-error');
+        const match = document.getElementById('style-match');
+        const css = getComputedStyle(document.documentElement);
+        return JSON.stringify({
+          ok: true,
+          video: v ? { paused: v.paused, currentTime: v.currentTime, readyState: v.readyState, width: v.videoWidth,
+            muted: v.muted, loop: v.loop, src: v.getAttribute('src'), rect: rectOf(v) } : null,
+          hasBg: document.body.classList.contains('has-bg'), hasCustomBg: document.body.classList.contains('has-custom-bg'),
+          bgImage: document.getElementById('bg').style.backgroundImage,
+          veil: parseFloat(getComputedStyle(document.getElementById('bg'), '::after').opacity),
+          note: note ? note.textContent : null, error: err ? err.textContent : null,
+          paused: (() => { const p = document.getElementById('style-bg-paused'); return p && !p.hidden ? p.textContent : null; })(),
+          matchDisabled: match ? match.disabled : null,
+          vars: { bg: css.getPropertyValue('--bg').trim(), chrome: css.getPropertyValue('--chrome').trim(), border: css.getPropertyValue('--border').trim(),
+            text: css.getPropertyValue('--text').trim(), dim: css.getPropertyValue('--dim').trim(), accent: css.getPropertyValue('--accent').trim(),
+            onAccent: css.getPropertyValue('--on-accent').trim() },
+          reducedMotion: reducedMotionQuery.matches, playback: backgroundPlaybackState(),
+          renderer: rectOf(document.getElementById('bg')),
+        });
+      }
+      // The Style tab's own sends, as the drop zone would make them: a path the host copies in.
+      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}), ...(a.look ? { look: a.look } : {}) }); break;
+      // The Match colours button, as a click would press it.
+      case 'bgMatch': {
+        const b = document.getElementById('style-match');
+        if (!b) return JSON.stringify({ ok: false, error: 'no Match colours button' });
+        if (b.disabled) return JSON.stringify({ ok: false, error: 'the button is disabled' });
+        b.click();
+        break;
+      }
       // Backlog #36: who holds the keyboard now (the first open at load must leave it on the terminal).
       case 'focusState': return JSON.stringify({ ok: true, id: (document.activeElement && document.activeElement.id) || '',
         inTerm: !!(term.element && term.element.contains(document.activeElement)), shown: [...shownModules] });
@@ -1774,6 +1869,7 @@ document.addEventListener('submit', async (e) => {
 // When project art is showing, the terminal must let it through. xterm paints
 // an opaque background by default, which would reduce the art to a border.
 let backgroundUrl = null;
+let backgroundSetAt = null;   // look.json's setAt for the person's own background, or null (Dexter D5)
 
 // Fully transparent, NOT merely translucent. The SVG already bakes in the 90%
 // black dim that makes light text readable; having the terminal darken it a
@@ -2881,16 +2977,126 @@ function flourish(milestone) {
   activeFlourish = { el, show, hide };
 }
 
-// `custom`: the project's own image rather than the generated art. Only a
-// custom image gets the darkness veil -- the generated SVG bakes its own dim.
-// `version` busts the image cache: a replaced background.png keeps its name.
-function applyBackground(filePath, { custom = false, version = '' } = {}) {
+// `custom`: the project's own picture rather than the generated art. Only a
+// custom one gets the darkness veil -- the generated SVG bakes its own dim.
+// `version` busts the cache: a replaced background.png keeps its name.
+// `kind` (backlog #34): 'video' draws a muted looping <video> inside #bg, under the
+// same veil; anything else is the CSS background image it always was.
+let bgVideoEl = null;       // the <video> in #bg, or null
+let failedBgUrl = null;     // a video the engine refused: not retried until the file changes
+
+// What the video's play rule is fed (app/bg-media-display.js shouldPlay). `visible` joins the
+// page's own visibility with main's hidden flag; the battery and the minimised flag come from main
+// only and stay null (unknown) until it has said.
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+const bgPlayback = { pageVisible: document.visibilityState === 'visible', hidden: null, minimised: null, onBattery: null };
+
+function backgroundPlaybackState() {
+  return {
+    visible: bgPlayback.pageVisible && bgPlayback.hidden !== true,
+    minimised: bgPlayback.minimised,
+    onBattery: bgPlayback.onBattery,
+    reducedMotion: reducedMotionQuery.matches,
+  };
+}
+
+function syncBackgroundPlayback() {
+  bgPlayback.pageVisible = document.visibilityState === 'visible';
+  if (bgVideoEl) bgMedia.applyPlayback(bgVideoEl, backgroundPlaybackState());
+  showPausedNote();
+}
+
+// Why a video background is standing still, in the Style tab (Miguel M2): only while there IS a
+// video, and only for the reasons a person looking at the tab could be wondering about.
+function pausedNoteText() {
+  return bgVideoEl ? bgMedia.pausedNote(backgroundPlaybackState()) : null;
+}
+function showPausedNote() {
+  const el = document.getElementById('style-bg-paused');
+  if (!el) return;
+  const note = pausedNoteText();
+  el.textContent = note || '';
+  el.hidden = !note;
+}
+document.addEventListener('visibilitychange', syncBackgroundPlayback);
+reducedMotionQuery.addEventListener('change', syncBackgroundPlayback);
+if (window.harness && window.harness.playback) {
+  const takePlayback = (s) => {
+    if (!s || typeof s !== 'object') return;
+    bgPlayback.hidden = s.hidden === true ? true : s.hidden === false ? false : null;
+    bgPlayback.minimised = s.minimised === true ? true : s.minimised === false ? false : null;
+    bgPlayback.onBattery = s.onBattery === true ? true : s.onBattery === false ? false : null;
+    syncBackgroundPlayback();
+  };
+  window.harness.playback.onChange(takePlayback);
+  window.harness.playback.get().then(takePlayback).catch(() => { /* main has no answer: stays unknown */ });
+}
+
+// Release the decoder, not just the element: removing a <video> leaves its pipeline until GC.
+function removeBackgroundVideo() {
+  if (!bgVideoEl) return;
+  portraitMedia.unloadVideo(bgVideoEl);
+  bgVideoEl.remove();
+  bgVideoEl = null;
+  showPausedNote();
+}
+
+function showBackgroundVideo(url) {
+  if (bgVideoEl && bgVideoEl.getAttribute('src') === url) return;      // same file: keep its place in the loop
+  removeBackgroundVideo();
+  const bgEl = document.getElementById('bg');
+  const el = document.createElement('video');
+  el.className = 'bg-video';
+  el.muted = true;                     // never audio
+  el.loop = true;
+  el.setAttribute('playsinline', '');
+  el.preload = 'auto';
+  el.disablePictureInPicture = true;
+  el.addEventListener('loadeddata', syncBackgroundPlayback);
+  el.addEventListener('error', () => {
+    // Codec or corruption: say so quietly in the Style tab and show NO background -- never a
+    // black or frozen frame. The file stays; a different one is tried afresh.
+    if (el !== bgVideoEl) return;
+    const note = bgMedia.unplayableNote(el.error);
+    failedBgUrl = url;
+    clearBackgroundLayer();
+    styleState = reduceVideoError(styleState, note);
+    renderStylePanel();
+  });
+  bgVideoEl = el;
+  bgEl.prepend(el);
+  el.src = url;
+  syncBackgroundPlayback();
+}
+
+// No background at all: the theme's own colours show through, as before one was set.
+function clearBackgroundLayer() {
+  removeBackgroundVideo();
+  document.getElementById('bg').style.backgroundImage = '';
+  backgroundUrl = null;
+  backgroundSetAt = null;
+  document.body.classList.remove('has-bg', 'has-custom-bg');
+  if (lastTheme) applyTheme(lastTheme);
+}
+
+function applyBackground(filePath, { custom = false, version = '', kind = 'image' } = {}) {
   if (!filePath) return;
-  // encodeURI, then the two characters it leaves alone that a path can hold
-  // and a URL cannot: a project under "C:\a#b" must not lose half its path.
-  const encoded = encodeURI(String(filePath).replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
-  backgroundUrl = 'file:///' + encoded + (version ? '?v=' + encodeURIComponent(version) : '');
-  document.getElementById('bg').style.backgroundImage = `url("${backgroundUrl}")`;
+  const url = bgMedia.fileUrl(filePath, version);
+  const media = bgMedia.mediaFor({ kind, url });
+  // mediaFor answers null for a background it can't describe; keep what is showing rather than
+  // throw halfway through the swap (Miguel M5, PR #91).
+  if (!media) return;
+  if (media.tag === 'video' && url === failedBgUrl) return;     // already known not to play
+  failedBgUrl = null;
+  if (media.tag === 'video') {
+    document.getElementById('bg').style.backgroundImage = '';
+    showBackgroundVideo(media.attrs.src);
+  } else {
+    removeBackgroundVideo();
+    document.getElementById('bg').style.backgroundImage = `url("${media.url}")`;
+  }
+  backgroundUrl = url;
+  backgroundSetAt = custom && version ? version : null;
   document.body.classList.add('has-bg');
   document.body.classList.toggle('has-custom-bg', !!custom);
 
@@ -3393,11 +3599,36 @@ function applyStyleMessage(msg) {
   const look = (msg.style && msg.style.look) || msg.look || {};
   const source = (msg.style && msg.style.source) || msg.source;
   const setAt = (msg.style ? msg.style.setAt : msg.setAt) || '';
-  applyBackground(msg.background, { custom: source === 'override', version: setAt });
+  const kind = (msg.style ? msg.style.kind : msg.kind) === 'video' ? 'video' : 'image';
+  applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
   if (typeof look.darkness === 'number') {
     document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));
   }
   if (msg.theme) applyTheme(msg.theme);
+}
+
+// The picture's pixels, small: the image, or the video's CURRENT frame, drawn onto a 64x64
+// canvas. They are read here and reduced to a few hex colours by colourSeeds; only those colours
+// are ever sent anywhere (test/style-actions.test.js pins it).
+const SAMPLE_SIDE = 64;
+async function sampleBackgroundFrame() {
+  let source;
+  if (bgVideoEl) {
+    if (!(bgVideoEl.readyState >= 2 && bgVideoEl.videoWidth > 0)) throw new Error('the video has no frame yet');
+    source = bgVideoEl;
+  } else if (backgroundUrl) {
+    source = new Image();
+    source.src = backgroundUrl;
+    await source.decode();
+  } else {
+    throw new Error('there is no background to read');
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = SAMPLE_SIDE;
+  canvas.height = SAMPLE_SIDE;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(source, 0, 0, SAMPLE_SIDE, SAMPLE_SIDE);
+  return ctx.getImageData(0, 0, SAMPLE_SIDE, SAMPLE_SIDE).data;
 }
 
 // `ask` names the section asking; the host echoes it on the reply, so a
@@ -3459,14 +3690,18 @@ function renderStyleSection(section) {
     return (
       `<section class="style-section" data-section="background">${header}` +
       `<div class="style-current">${escapeHtml(v.description)}</div>` +
-      `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image here, or ` +
+      `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image or a short video here, or ` +
       `<label class="style-browse">choose a file<input type="file" id="style-bg-file" ` +
-      `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden></label></div>` +
+      `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,video/webm,video/mp4" hidden></label></div>` +
+      (v.note ? `<div class="style-note">${escapeHtml(v.note)}</div>` : '') +
+      ((pn) => `<div class="style-paused" id="style-bg-paused"${pn ? '' : ' hidden'}>${escapeHtml(pn || '')}</div>`)(pausedNoteText()) +
       (v.isOverride
         ? `<span class="style-label">Darkness</span><div class="style-row">` +
           `<input type="range" id="style-dark" min="0" max="95" step="1" value="${dark === null ? 50 : dark}">` +
           `<span class="style-val" id="style-dark-val">${dark === null ? '—' : dark + '%'}</span></div>`
         : '') +
+      `<button type="button" id="style-match"${v.canMatch ? '' : ' disabled'} ` +
+      `title="A palette taken from this background's own colours, checked for contrast">Match colours to this background</button>` +
       `<button type="button" id="style-bg-reset"${v.isOverride ? '' : ' disabled'}>Reset to generated</button>` +
       (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
       `</section>`
@@ -3571,6 +3806,28 @@ function bindStyleSections() {
 
   const reroll = document.getElementById('style-reroll');
   if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
+
+  const match = document.getElementById('style-match');
+  if (match) {
+    match.addEventListener('click', async () => {
+      match.disabled = true;
+      try {
+        // Which background is being read, taken BEFORE the await: the host refuses the match if it
+        // is no longer the one showing by the time the seeds arrive (Dexter D5).
+        const setAt = backgroundSetAt;
+        const seeds = colourSeeds.seedsOf(await sampleBackgroundFrame());
+        sendStyle('background', { action: 'match-colours', seeds, setAt });
+      } catch (err) {
+        styleState = reduceStyle(styleState, { type: 'style', ask: 'background',
+          error: `couldn't read this background's colours: ${err && err.message ? err.message : 'unknown reason'}` });
+        renderStylePanel();
+      } finally {
+        // sendStyle swallows a closed socket, so no reply may ever come to redraw the button: never
+        // leave it disabled for good (Miguel M3, PR #91). A reply that does come redraws it anyway.
+        match.disabled = false;
+      }
+    });
+  }
 
   const resetBtn = document.getElementById('style-bg-reset');
   if (resetBtn) {

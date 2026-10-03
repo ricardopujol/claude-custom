@@ -98,6 +98,8 @@ test('the bridges that took `win` are handed the tab-view predicate', () => {
   // Layout pass L2: the window-chrome settings, the same shape.
   assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
   assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToViews[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
+  // #34: the background video's play inputs (minimised, hidden, on battery), pushed to every view.
+  assert.match(MAIN, /registerPlaybackHandlers\(\{[^}]*powerMonitor[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
 });
 
 test('the window-wide broadcasts reach EVERY tab view', () => {
@@ -474,6 +476,27 @@ test('Stop all gets a project root only when the window is in a project', () => 
   assert.match(MAIN, /projectRoot: PROJECT \? PROJECT_ROOT : null/);
 });
 
+// --- #37 terminal file links (2026-10-02) ------------------------------------------
+
+test('#37: tab:checkPaths and tab:openPath are gated FIRST and resolve against the tab\'s own folder', () => {
+  const check = channels.find(x => x.name === 'tab:checkPaths');
+  const open = channels.find(x => x.name === 'tab:openPath');
+  assert.ok(check && open, 'both channels are registered');
+  const cb = callText(MAIN, check.at);
+  assert.match(cb, /^ipcMain\.handle\(\s*'tab:checkPaths',\s*\(e, lists\) => \{\s*if \(!isTabView\(e\.sender\)\) return \[\];/);
+  assert.match(cb, /fileLink\.check\(lists, tab\.cwd, fileFs\)/);
+  const ob = callText(MAIN, open.at);
+  assert.match(ob, /^ipcMain\.handle\(\s*'tab:openPath',\s*\(e, p\) => \{\s*if \(!isTabView\(e\.sender\)\) return \{ ok: false, why: 'refused' \};/);
+  assert.match(ob, /fileLink\.open\(p, tab\.cwd, fileFs, shell\)/);
+});
+
+test('#37: shell.openPath and shell.showItemInFolder are reached only through app/file-link.js', () => {
+  assert.deepStrictEqual([...MAIN.matchAll(/shell\.(openPath|showItemInFolder)\(/g)].map(m => m[0]), []);
+  assert.match(MAIN, /const fileLink = require\('\.\/file-link'\);/);
+  // Dexter F3: without lstat and readlink, a symlink to a share is followed.
+  assert.match(MAIN, /const fileFs = \{[^}]*lstat: \(p\) => fs\.promises\.lstat\(p\)[^}]*readlink: \(p\) => fs\.promises\.readlink\(p\)/);
+});
+
 // --- #40 tab marks ---------------------------------------------------------------
 
 test('the tab menu offers Mark first, for the branch the tab is on NOW (Dexter #87 F1)', () => {
@@ -501,4 +524,18 @@ test('the Mark rows are checkboxes: a radio group gets a default tick from Elect
 
 test('a Mark row does what its model row says: the ticked one clears (Dexter #87 r2)', () => {
   assert.match(MAIN, /click: \(\) => chooseMark\(branch, r\.choose\) \}\)\),/);
+});
+
+test('#37 PR #92 Miguel S3: a clicked path is logged quoted, so it cannot forge a log line', () => {
+  const open = channels.find(x => x.name === 'tab:openPath');
+  assert.match(callText(MAIN, open.at), /file link \$\{JSON\.stringify\(String\(p\)\.slice\(0, 200\)\)\}/);
+});
+
+test('M8 (PR #91): the probe reduced-motion switch clears its emulation and detaches the debugger when turned off', () => {
+  const at = MAIN.indexOf('async reducedMotion(on)');
+  assert.ok(at > 0);
+  const body = MAIN.slice(at, MAIN.indexOf('async quit()', at));
+  assert.match(body, /if \(on\) \{[\s\S]*?dbg\.attach\('1\.3'\)/, 'attaches only to turn it on');
+  assert.match(body, /setEmulatedMedia', \{ features: \[\] \}/, 'clears the emulated media');
+  assert.match(body, /finally \{ dbg\.detach\(\); \}/, 'detaches even when clearing fails');
 });

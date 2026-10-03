@@ -21,7 +21,7 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, shell, powerMonitor } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
@@ -29,6 +29,7 @@ const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY } = require('./layout-bridge');
 const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
+const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -52,6 +53,11 @@ const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const fileLink = require('./file-link');
+// What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
+// readlink come first, so a symlink to a share is refused before stat follows it.
+const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
+  stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
 const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 const { listBackgroundHosts } = require('../host/background-hosts');
 const { stopHost } = require('../host/stop-holder');
@@ -844,6 +850,23 @@ function registerIpc() {
     const tab = tabShell.tabForSender(e.sender);
     return openInBrowser(url, tab ? tab.key : 'a tab');
   });
+  // A local path in a tab's terminal (#37). Main resolves it against THAT
+  // tab's own folder, checks it exists, and decides open or reveal
+  // (app/file-link.js); the page only asks. The click asks again, and main
+  // decides again: the file can change between hover and click.
+  ipcMain.handle('tab:checkPaths', (e, lists) => {
+    if (!isTabView(e.sender)) return [];
+    const tab = tabShell.tabForSender(e.sender);
+    return tab ? fileLink.check(lists, tab.cwd, fileFs) : [];
+  });
+  ipcMain.handle('tab:openPath', (e, p) => {
+    if (!isTabView(e.sender)) return { ok: false, why: 'refused' };
+    const tab = tabShell.tabForSender(e.sender);
+    if (!tab) return { ok: false, why: 'refused' };
+    // Quoted: a path with a newline in it can't forge a log line (PR #92 Miguel S3).
+    console.log(`[main] ${tab.key}: file link ${JSON.stringify(String(p).slice(0, 200))}`);
+    return fileLink.open(p, tab.cwd, fileFs, shell);
+  });
   // The receiving side of a host `raise`: select that tab and come forward.
   // flashFrame as well, because Windows may refuse to hand focus to a
   // background process.
@@ -977,6 +1000,10 @@ function registerIpc() {
     store: uiStore, sync: chromeSync, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${CHROME_KEY}.json`),
   });
+
+  // Backlog #34: the background video plays only while the window is on screen and on mains.
+  // Main reports the facts only it knows (minimised, hidden, on battery); the page decides.
+  registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender: isTabView, send: pushToViews });
 
   // The global dock layout (layout pass L1): install-wide like the toggle above,
   // and followed across project windows the same way -- see layout-bridge.js.
@@ -1229,6 +1256,28 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
       sel.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
       return { ok: true, before };
+    },
+    // #34: the window as the OS minimises and restores it (the real events fire), and the OS's
+    // reduced-motion preference emulated on the selected view through the debugger protocol.
+    async windowState(state) {
+      if (state === 'minimize') win.minimize(); else win.restore();
+      return { ok: true, minimized: win.isMinimized() };
+    },
+    async reducedMotion(on) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      const dbg = sel.webContents.debugger;
+      if (on) {
+        if (!dbg.isAttached()) dbg.attach('1.3');
+        await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+        return { ok: true, on };
+      }
+      // Off: clear the emulation and let go of the view (Miguel M8, PR #91) -- an attached debugger
+      // left behind holds the page in a state no real window is in, and blocks DevTools on it.
+      if (dbg.isAttached()) {
+        try { await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [] }); } finally { dbg.detach(); }
+      }
+      return { ok: true, on, attached: dbg.isAttached() };
     },
     async quit() {
       setTimeout(() => app.exit(0), 200);
