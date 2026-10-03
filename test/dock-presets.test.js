@@ -119,13 +119,6 @@ test('cleanPresets keeps the first of two names that differ only by case', () =>
   assert.deepStrictEqual(out[0].layout, L('a'));
 });
 
-test('cleanPresets keeps at most 32', () => {
-  const many = Array.from({ length: 40 }, (_, i) => ({ name: `p${i}`, layout: L() }));
-  const out = P.cleanPresets(many);
-  assert.strictEqual(out.length, 32);
-  assert.strictEqual(out[31].name, 'p31');
-});
-
 test('cleanPresets does not throw on a layout that cannot be serialized', () => {
   const loop = {};
   loop.self = loop;

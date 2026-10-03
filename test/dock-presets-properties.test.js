@@ -28,16 +28,16 @@ const entryArb = fc.oneof(
 const rawArb = fc.oneof(fc.array(entryArb, { maxLength: 45 }), fc.anything());
 
 const keyOf = P.nameKey;
-function uniqueAndBounded(list) {
+function uniqueAndBounded(list, bound = P.MAX_PRESETS) {
   assert.ok(Array.isArray(list));
-  assert.ok(list.length <= P.MAX_PRESETS, `length ${list.length}`);
+  assert.ok(list.length <= bound, `length ${list.length}`);
   const keys = list.map(p => keyOf(p.name));
   assert.strictEqual(new Set(keys).size, keys.length, `duplicate names in ${JSON.stringify(keys)}`);
   for (const p of list) assert.strictEqual(P.checkName(p.name), p.name, 'every stored name is already clean');
 }
 
 test('P1: cleanPresets never throws, and its result is unique, bounded and clean', () => {
-  fc.assert(fc.property(rawArb, (raw) => { uniqueAndBounded(P.cleanPresets(raw)); }), RUNS);
+  fc.assert(fc.property(rawArb, (raw) => { uniqueAndBounded(P.cleanPresets(raw), Array.isArray(raw) ? raw.length : 0); }), RUNS);
 });
 
 test('P2: cleanPresets is idempotent', () => {
@@ -60,7 +60,7 @@ function run(list, o) {
 
 test('P3: after ANY sequence of operations from ANY start, names are unique, the list is within 32, nothing throws', () => {
   fc.assert(fc.property(rawArb, fc.array(opArb, { maxLength: 80 }), (raw, ops) => {
-    let list = P.cleanPresets(raw);
+    let list = P.cleanPresets(raw).slice(0, P.MAX_PRESETS);
     for (const o of ops) {
       const before = JSON.stringify(list);
       const r = run(list, o);
@@ -68,6 +68,20 @@ test('P3: after ANY sequence of operations from ANY start, names are unique, the
       if (r.ok) { uniqueAndBounded(r.list); list = r.list; }
       else assert.ok(['name', 'taken', 'full', 'missing', 'layout'].includes(r.reason), String(r.reason));
     }
+  }), RUNS);
+});
+
+test('P6: over the STORED array, an operation changes at most the one entry it names: every other entry comes back as it was', () => {
+  fc.assert(fc.property(fc.array(entryArb, { maxLength: 20 }), opArb, (stored, o) => {
+    const before = JSON.stringify(stored);
+    const r = run(stored, o);
+    assert.strictEqual(JSON.stringify(stored), before, 'the input is untouched');
+    if (!r.ok) return;
+    const rest = r.list.filter(e => !stored.includes(e));          // entries that are new or rewritten
+    assert.ok(rest.length <= 1, `${rest.length} entries changed`);
+    const gone = stored.filter(e => !r.list.includes(e));
+    assert.ok(gone.length <= 1, `${gone.length} entries lost`);
+    assert.ok(Math.abs(r.list.length - stored.length) <= 1);
   }), RUNS);
 });
 

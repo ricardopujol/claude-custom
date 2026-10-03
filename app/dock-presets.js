@@ -47,77 +47,123 @@ function copyLayout(layout) {
   return JSON.parse(json);
 }
 
-/** Anything stored -> a clean list: valid entries only, names unique ignoring case (the first wins), at most 32. */
-function cleanPresets(raw) {
-  if (!Array.isArray(raw)) return [];
+// The whole stored list is at most this many bytes of JSON. Derived, not chosen: 32 entries, each a layout of at
+// most 8192 bytes plus its name (40 characters, at most 160 bytes in UTF-8) and the JSON around them (under 40),
+// so 512 bytes of room an entry. Every list the rules above allow is under it; main refuses nothing that fits.
+const MAX_LIST_BYTES = MAX_PRESETS * (MAX_PRESET_BYTES + 512);
+
+/**
+ * The entries of a stored value this build can use, each with where it sits in the stored array (`at`): a plain
+ * object with a name that passes checkName, a layout that passes copyLayout, and a name no earlier entry has
+ * (ignoring case: the first wins). Everything else in the array is left alone by every operation below.
+ */
+function usable(raw) {
   const out = [];
+  if (!Array.isArray(raw)) return out;
   const seen = new Set();
-  for (const entry of raw) {
-    if (out.length >= MAX_PRESETS) break;
-    if (!isObject(entry)) continue;
+  raw.forEach((entry, at) => {
+    if (!isObject(entry)) return;
     const name = checkName(entry.name);
-    if (name === null || seen.has(keyOf(name))) continue;
+    if (name === null || seen.has(keyOf(name))) return;
     const layout = copyLayout(entry.layout);
-    if (layout === null) continue;
+    if (layout === null) return;
     seen.add(keyOf(name));
-    out.push({ name, layout });
-  }
+    out.push({ name, layout, at });
+  });
   return out;
 }
 
-// Where `name` sits in a clean list, ignoring case and padding; -1 when it isn't there or isn't a string.
+/** Anything stored -> the list the menu shows: usable entries only, as { name, layout }. Display only; never written back. */
+function cleanPresets(raw) {
+  return usable(raw).map(({ name, layout }) => ({ name, layout }));
+}
+
+/** What the menu shows of a stored value, and how many stored entries it keeps without showing (another version's). */
+function describe(raw) {
+  const list = cleanPresets(raw);
+  return { list, kept: Array.isArray(raw) ? raw.length - list.length : 0 };
+}
+
+// Where `name` sits in a list of usable entries, ignoring case and padding; -1 when it isn't there or isn't a string.
 function indexOf(list, name) {
-  if (typeof name !== 'string') return -1;
+  if (typeof name !== 'string' || name.length > NAME_SCAN_MAX) return -1;
   const want = keyOf(name.trim());
   return list.findIndex(p => keyOf(p.name) === want);   // stored names are already NFC and trimmed
 }
 
 /** The preset called `name` (ignoring case), or null. */
-function find(list, name) {
-  const clean = cleanPresets(list);
-  const at = indexOf(clean, name);
-  return at < 0 ? null : clean[at];
+function find(raw, name) {
+  const shown = cleanPresets(raw);
+  const at = indexOf(shown, name);
+  return at < 0 ? null : shown[at];
 }
 
 const refuse = reason => ({ ok: false, reason });
+const bytesOf = list => { try { return new TextEncoder().encode(JSON.stringify(list)).length; } catch { return Infinity; } };
+
+// A list that grew must still fit the byte cap. Thinning (a delete) is never refused: it is how a list gets under.
+const grown = list => (bytesOf(list) > MAX_LIST_BYTES ? refuse('full') : { ok: true, list });
 
 /**
- * Save `layout` under `name`. A name the list already has (ignoring case) is refused as `taken` unless
- * `replace` is true, which replaces in place and takes the newly typed name. Order of refusals: name, layout,
- * taken, full -- the first one the user can fix.
+ * Save `layout` under `name`, over the STORED array `raw` (not the cleaned view): every other entry comes back
+ * exactly as it was. A name the list already has (ignoring case) is refused as `taken` unless `replace` is true,
+ * which replaces in place and takes the newly typed name (fields this build doesn't know stay). The cap of 32
+ * counts every stored entry. Order of refusals: unreadable, name, layout, taken, full -- the first one the user can fix.
  */
-function savePreset(list, name, layout, { replace = false } = {}) {
-  const clean = cleanPresets(list);
+function savePreset(raw, name, layout, { replace = false } = {}) {
+  if (!Array.isArray(raw)) return refuse('unreadable');
   const nm = checkName(name);
   if (nm === null) return refuse('name');
   const copy = copyLayout(layout);
   if (copy === null) return refuse('layout');
-  const at = indexOf(clean, nm);
+  const shown = usable(raw);
+  const at = indexOf(shown, nm);
   if (at >= 0) {
     if (!replace) return refuse('taken');
-    return { ok: true, list: clean.map((p, i) => (i === at ? { name: nm, layout: copy } : p)) };
+    const where = shown[at].at;
+    return grown(raw.map((e, i) => (i === where ? { ...e, name: nm, layout: copy } : e)));
   }
-  if (clean.length >= MAX_PRESETS) return refuse('full');
-  return { ok: true, list: [...clean, { name: nm, layout: copy }] };
+  if (raw.length >= MAX_PRESETS) return refuse('full');
+  return grown([...raw, { name: nm, layout: copy }]);
 }
 
-/** Rename `from` to `to`. Another case of its own name is fine; a name another preset has is `taken`. */
-function renamePreset(list, from, to) {
-  const clean = cleanPresets(list);
-  const at = indexOf(clean, from);
+/** Rename `from` to `to`; the entry keeps its layout and any field this build doesn't know. Another case of its own name is fine; a name another preset has is `taken`. */
+function renamePreset(raw, from, to) {
+  if (!Array.isArray(raw)) return refuse('unreadable');
+  const shown = usable(raw);
+  const at = indexOf(shown, from);
   if (at < 0) return refuse('missing');
   const nm = checkName(to);
   if (nm === null) return refuse('name');
-  const other = indexOf(clean, nm);
+  const other = indexOf(shown, nm);
   if (other >= 0 && other !== at) return refuse('taken');
-  return { ok: true, list: clean.map((p, i) => (i === at ? { name: nm, layout: p.layout } : p)) };
+  const where = shown[at].at;
+  return grown(raw.map((e, i) => (i === where ? { ...e, name: nm } : e)));
 }
 
-function deletePreset(list, name) {
-  const clean = cleanPresets(list);
-  const at = indexOf(clean, name);
+function deletePreset(raw, name) {
+  if (!Array.isArray(raw)) return refuse('unreadable');
+  const shown = usable(raw);
+  const at = indexOf(shown, name);
   if (at < 0) return refuse('missing');
-  return { ok: true, list: clean.filter((_, i) => i !== at) };
+  const where = shown[at].at;
+  return { ok: true, list: raw.filter((_, i) => i !== where) };
+}
+
+const OPS = {
+  save: (raw, r) => savePreset(raw, r.name, r.layout, { replace: r.replace === true }),
+  rename: (raw, r) => renamePreset(raw, r.name, r.to),
+  delete: (raw, r) => deletePreset(raw, r.name),
+};
+
+/**
+ * One operation request -> its result over the stored array: `{ op: 'save' | 'rename' | 'delete', name, to?,
+ * layout?, replace? }`. This is what main runs, under the store's lock, on a fresh read: the page sends what the
+ * user did, never a list.
+ */
+function applyOp(raw, req) {
+  if (!isObject(req) || typeof req.op !== 'string' || !Object.prototype.hasOwnProperty.call(OPS, req.op)) return refuse('op');
+  return OPS[req.op](raw, req);
 }
 
 // A window of 1200 x 750 drawn into the small picture beside each name.
@@ -185,7 +231,8 @@ function refusalText(reason) {
 }
 
 const API = {
-  NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, THUMB, checkName, nameKey: keyOf, cleanPresets, find, savePreset, renamePreset, deletePreset,
+  NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, MAX_LIST_BYTES, THUMB, checkName, nameKey: keyOf, cleanPresets, describe, find,
+  savePreset, renamePreset, deletePreset, applyOp,
   thumbBoxes, afterGet, presetsSaved, refusalText,
 };
 
