@@ -1117,6 +1117,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           reviews: [...document.querySelectorAll('.git-drawer .git-drawer-reviews > *')].map(x => x.textContent),
           people: [...document.querySelectorAll('.git-drawer .git-drawer-who .p')].map(x => x.textContent),
           said: (document.querySelector('.git-drawer .git-drawer-said') || {}).textContent || '',
+          sparkEls: body.querySelectorAll('.git-spark').length,
           boldInPanel: body.querySelectorAll('b:not(.git-foot b)').length,
           hubTextShown: !!body.querySelector('.git-hub-name') && getComputedStyle(body.querySelector('.git-hub-name')).display !== 'none',
         });
