@@ -323,3 +323,42 @@ test('D2: a diff is asked with the file\'s own mtime, so the rule can tell the f
   await svc.handle({ type: 'repo', action: 'diff', path: 'src/deleted.js', seq: 2 });
   assert.strictEqual(seen[1].fileMtimeMs, undefined, 'no file, no time: the rule falls back to the calls');
 });
+
+// ---- PR #95 Dexter D10: the check and the use were separated by awaits ----
+
+test('D10: a path that resolves OUT of the worktree between the check and the read is refused, and no text leaves', async () => {
+  const { root } = repo();
+  const real = path.join(root, 'src', 'a.js');
+  let calls = 0;
+  // first look: inside. By the time the read is done, a junction swap makes it resolve outside.
+  const guard = async () => (++calls === 1
+    ? { ok: true, abs: real, real, rel: 'src/a.js' }
+    : { ok: false, why: 'outside the worktree (a link leads out)' });
+  const svc = make({ root, readFog: noFog, guard });
+  const r = await svc.handle({ type: 'repo', action: 'read', path: 'src/a.js', seq: 1 });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.why, /changed while|outside/);
+  assert.ok(!('text' in r));
+});
+
+test('D10: a path that now resolves to a DIFFERENT file inside the worktree is refused too (not the file that was checked)', async () => {
+  const { root } = repo();
+  const a = path.join(root, 'src', 'a.js');
+  let calls = 0;
+  const guard = async () => ({ ok: true, abs: a, real: calls++ === 0 ? a : path.join(root, 'README.md'), rel: 'src/a.js' });
+  const svc = make({ root, readFog: noFog, guard });
+  const r = await svc.handle({ type: 'repo', action: 'read', path: 'src/a.js', seq: 1 });
+  assert.strictEqual(r.ok, false);
+  assert.ok(!('text' in r));
+});
+
+test('D10: an unchanged path is read as before (the second look agrees, case aside)', async () => {
+  const { root } = repo();
+  const a = path.join(root, 'src', 'a.js');
+  let calls = 0;
+  const guard = async () => ({ ok: true, abs: a, real: calls++ === 0 ? a : a.toUpperCase(), rel: 'src/a.js' });
+  const svc = make({ root, readFog: noFog, guard });
+  const r = await svc.handle({ type: 'repo', action: 'read', path: 'src/a.js', seq: 1 });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.text, 'const a = 1;\n');
+});

@@ -119,6 +119,15 @@ function createRepoService({
         // `modified` (git diff --quiet): a file changed by Bash or by hand gets the Diff toggle too (PR #95 Dexter
         // D2). Asked beside the read, and only attached to one that succeeded.
         const [r, m] = await Promise.all([read(g.real || g.abs), modified(root, g.rel)]);
+        if (r.ok) {
+          // THE CHECK AND THE USE WERE APART (PR #95 Dexter D10): the guard resolved the path, then awaits passed
+          // before the open. Resolve it again now that the bytes are in hand; if it is no longer the same file
+          // inside the worktree (a folder swapped for a junction meanwhile), the text is dropped.
+          const again = await guard(root, msg.path);
+          if (!again.ok || String(again.real || again.abs).toLowerCase() !== String(g.real || g.abs).toLowerCase()) {
+            return { ok: false, why: 'changed while reading', path: g.rel };
+          }
+        }
         return { ...r, ...(r.ok ? { modified: m } : {}), path: g.rel };
       }
       case 'diff': {
