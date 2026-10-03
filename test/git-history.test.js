@@ -87,7 +87,7 @@ const base = {
     'refs/heads/feat/open\x1f2026-10-01\x1fo2', 'refs/heads/worktree-agent-x\x1f2026-09-11\x1fa', 'refs/heads/spike/z\x1f2026-09-15\x1fa',
     'refs/remotes/origin/feat/open\x1f2026-10-01\x1fo2', 'refs/remotes/origin/feat/remote-only\x1f2026-09-25\x1fr1', ''].join('\n'),
   'worktree list --porcelain': 'worktree C:/p/dev\nbranch refs/heads/develop\n\nworktree C:/p/feat-open\nbranch refs/heads/feat/open\n',
-  [`log --merges --first-parent --reverse --date=short ${MERGE_FORMAT} develop`]:
+  [`log --merges --first-parent --reverse --date=short-local ${MERGE_FORMAT} develop`]:
     'm1\x1f2026-09-20\x1fMerge pull request #3 from o/feat/a\x1fa x1\x1fFeat a\x1e',
   [`log --all ${GRAPH_FORMAT}`]: rowsToGraph([
     ['o2', 'o1', 7, 'open two'], ['o1', 'm1', 6, 'feat(x): first'], ['d2', 'm1', 5, 'd two'], ['r1', 'm1', 4, 'only on the remote'],
@@ -127,7 +127,7 @@ test('four git calls, whatever the number of branches', async () => {
 test('a tip the graph does not hold is null, never 0; so is a merge off the first-parent line', async () => {
   const t = { ...base,
     [`for-each-ref ${REF_FORMAT} refs/heads refs/remotes`]: 'refs/heads/develop\x1f2026-10-01\x1fd2\nrefs/heads/feat/ghost\x1f2026-10-01\x1fzz\n',
-    [`log --merges --first-parent --reverse --date=short ${MERGE_FORMAT} develop`]:
+    [`log --merges --first-parent --reverse --date=short-local ${MERGE_FORMAT} develop`]:
       'q9\x1f2026-09-20\x1fMerge pull request #4 from o/feat/q\x1fa x1\x1f\x1e' };
   const h = await readHistory('C:/p/dev', { run: fakeRun(t) });
   assert.deepStrictEqual(h.lanes.map(u => [u.name, u.ahead]), [['feat/ghost', null]]);

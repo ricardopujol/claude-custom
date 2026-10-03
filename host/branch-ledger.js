@@ -60,7 +60,7 @@ const two = n => String(n).padStart(2, '0');
 
 /**
  * The LOCAL Y-M-D of a transcript line's ISO timestamp, the day git prints for the same instant
- * (`%ad --date=short`, host/git-history.js). Not the UTC date: near midnight a branch's last day of
+ * (`%ad --date=short-local`, host/git-history.js). Not the UTC date: near midnight a branch's last day of
  * work and its merge would land on different days and a week arc would split (backlog #38). Null
  * for anything that isn't a date string -- absence is never a day (`new Date(null)` is 1970).
  */
