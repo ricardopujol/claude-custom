@@ -166,3 +166,8 @@ test('D8: the lock is released when the read-back FAILS too, or one failure woul
   typeAndCheck(false, '/b', (r) => out.push(r));
   assert.ok(timers.length > 0, 'typing works again after a failed one');
 });
+
+test('I2: a Reset click goes out through wandSend', () => {
+  assert.match(WAND, /action\.kind === 'reset'/);
+  assert.match(WAND, /wandDisplay\.resetMsg\(wandState\)/);
+});

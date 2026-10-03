@@ -3591,8 +3591,9 @@ function wandAct(action) {
     wandState = wandDisplay.editorSet(wandState, 'skill', action.skill);
   } else if (action.kind === 'pick-emoji') {
     wandState = wandDisplay.editorSet(wandState, 'emoji', action.emoji);
-  } else if (action.kind === 'delete' || action.kind === 'save') {
-    const r = action.kind === 'delete' ? wandDisplay.deleteMsg(wandState, action.id) : wandDisplay.editorSubmit(wandState);
+  } else if (action.kind === 'delete' || action.kind === 'save' || action.kind === 'reset') {
+    const r = action.kind === 'delete' ? wandDisplay.deleteMsg(wandState, action.id)
+      : action.kind === 'reset' ? wandDisplay.resetMsg(wandState) : wandDisplay.editorSubmit(wandState);
     wandState = r.state;
     wandSend(r.message);
   }

@@ -509,3 +509,84 @@ test('D9: a target that no longer exists is a refusal, and an index (the old pro
   assert.match(f.reason, /no longer exists/);
   assert.strictEqual(control.handle({ type: 'wand-move', id: 'f1', to: 2 }).ok, false);
 });
+
+// --- Miguel I2: Reset wand moves a bad file ASIDE, never deletes it ----------------------------------------------
+
+test('I2: reset moves a corrupt file to wand.json.bad-<timestamp>, byte for byte, and starts from the default set', () => {
+  const dir = tmpDir('cc-wc-');
+  const store = createStore({ dir });
+  const file = path.join(dir, 'wand.json');
+  fs.writeFileSync(file, '{ this is the only copy');
+  const control = createWandControl({ store, readSkills: () => SKILLS, now: () => new Date('2026-10-03T12:34:56.789Z') });
+  const f = control.handle({ type: 'wand-reset', req: 'w-1' });
+  assert.strictEqual(f.ok, true);
+  assert.strictEqual(f.req, 'w-1');
+  assert.strictEqual(f.status, 'missing', 'the default set is showing');
+  assert.deepStrictEqual(f.favourites, wand.defaultFavourites());
+  assert.strictEqual(f.movedTo, path.join(dir, 'wand.json.bad-2026-10-03T12-34-56-789Z'));
+  assert.strictEqual(fs.readFileSync(f.movedTo, 'utf8'), '{ this is the only copy', 'nothing was deleted');
+  assert.ok(!fs.existsSync(file), 'the bad file is out of the way');
+});
+
+test('I2: reset also covers a file of the wrong shape or a newer version', () => {
+  for (const content of ['[]', '{"version":2,"favourites":[]}', '{"version":1}']) {
+    const { control, file } = setup();
+    fs.writeFileSync(file, content);
+    const f = control.handle({ type: 'wand-reset' });
+    assert.strictEqual(f.ok, true, content);
+    assert.strictEqual(fs.readFileSync(f.movedTo, 'utf8'), content);
+  }
+});
+
+test('I2: two resets in one second do not overwrite each other\'s backup', () => {
+  const dir = tmpDir('cc-wc-');
+  const store = createStore({ dir });
+  const file = path.join(dir, 'wand.json');
+  const control = createWandControl({ store, readSkills: () => SKILLS, now: () => new Date('2026-10-03T12:00:00.000Z') });
+  fs.writeFileSync(file, 'first bad');
+  const a = control.handle({ type: 'wand-reset' });
+  fs.writeFileSync(file, 'second bad');
+  const b = control.handle({ type: 'wand-reset' });
+  assert.strictEqual(a.ok && b.ok, true);
+  assert.notStrictEqual(a.movedTo, b.movedTo);
+  assert.strictEqual(fs.readFileSync(a.movedTo, 'utf8'), 'first bad');
+  assert.strictEqual(fs.readFileSync(b.movedTo, 'utf8'), 'second bad');
+});
+
+test('I2: reset on a healthy or missing file is refused: there is nothing to set aside', () => {
+  const { control, file } = setup();
+  assert.strictEqual(control.handle({ type: 'wand-reset' }).ok, false, 'missing');
+  control.handle({ type: 'wand-add', emoji: '\u{1F680}', skill: 'merged' });
+  const before = fs.readFileSync(file, 'utf8');
+  const f = control.handle({ type: 'wand-reset' });
+  assert.strictEqual(f.ok, false);
+  assert.match(f.reason, /nothing to reset/i);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before, 'a good file is never moved');
+});
+
+test('I2: reset on a file that is only BUSY is refused with try-again, never moved', () => {
+  const store = scripted([BUSY]);
+  const moved = [];
+  const control = createWandControl({ store, readSkills: () => SKILLS, fs: { renameSync: (...a) => moved.push(a) } });
+  const f = control.handle({ type: 'wand-reset' });
+  assert.strictEqual(f.ok, false);
+  assert.match(f.reason, /try again/i);
+  assert.deepStrictEqual(moved, []);
+});
+
+test('I2: a failed move is a refusal that says so, and the file is where it was', () => {
+  const dir = tmpDir('cc-wc-');
+  const store = createStore({ dir });
+  fs.writeFileSync(path.join(dir, 'wand.json'), 'bad');
+  const control = createWandControl({ store, readSkills: () => SKILLS, fs: { renameSync: () => { throw new Error('EPERM x'); } } });
+  const f = control.handle({ type: 'wand-reset' });
+  assert.strictEqual(f.ok, false);
+  assert.match(f.reason, /EPERM x/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'wand.json'), 'utf8'), 'bad');
+});
+
+test('I2: a store with no path (a test double) cannot reset, and says so', () => {
+  const control = createWandControl({ store: { read: () => 5, write() {} }, readSkills: () => SKILLS });
+  const f = control.handle({ type: 'wand-reset' });
+  assert.strictEqual(f.ok, false);
+});

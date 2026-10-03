@@ -131,8 +131,9 @@ function reduce(state, msg) {
     return { ...next, pending, error: reason, editor: next.editor ? { ...next.editor, saving: false } : null };
   }
   if (msg.ok === true) {
-    // My save landed: the editor's job is done.
-    return { ...next, pending, error: null, editor: cur.editor && cur.editor.saving ? null : next.editor };
+    // My save landed: the editor's job is done. A reset says where the old file went.
+    const moved = isStr(msg.movedTo) && msg.movedTo !== '' ? { flash: null, notice: `Moved the unreadable file to ${msg.movedTo}. Starting from the default set.` } : {};
+    return { ...next, ...moved, pending, error: null, editor: cur.editor && cur.editor.saving ? null : next.editor };
   }
   return { ...next, pending };
 }
@@ -218,7 +219,7 @@ function view(state) {
       mode = 'unavailable';
       note = s.retrying
         ? `Wand temporarily unreadable (${s.unavailable}); retrying. Nothing was changed.`
-        : `Wand unavailable: ${s.unavailable}. Nothing was changed; fix or delete .harness/state/wand.json to get it back.`;
+        : `Wand unavailable: ${s.unavailable}. Nothing was changed. The file is ${s.file || '.harness/state/wand.json'}. Fix it there, or Reset to set it aside and start from the default set.`;
     } else {
       mode = 'ok';
       if (s.favourites.length === 0) note = 'No favourites yet. Turn on edit and add one.';
@@ -361,6 +362,14 @@ function moveMsg(state, id, targetId) {
 
 const skillsRequest = () => ({ type: 'wand-skills' });
 
+/** Reset: set an unavailable (really bad, not just busy) file aside. */
+function resetMsg(state) {
+  const s = state || emptyState();
+  if (s.status !== 'unavailable' || s.retrying) return { state: s, message: null };
+  const b = begin(s);
+  return { state: b.state, message: { type: 'wand-reset', req: b.req } };
+}
+
 // --- html -------------------------------------------------------------------------------------------------
 
 function buttonHtml(v, b) {
@@ -408,6 +417,7 @@ function editorHtml(v) {
 
 function html(v) {
   const head = `<div class="wand-head"><span class="wand-title">Wand</span>` +
+    (v.canReset ? `<button type="button" class="wand-edit" data-wand-act="reset" title="Moves the bad file aside to wand.json.bad-&lt;time&gt; (it never deletes it) and starts from the default set">Reset wand</button>` : '') +
     (v.canEdit ? `<button type="button" class="wand-edit${v.edit ? ' on' : ''}" data-wand-act="toggle-edit" ` +
       `aria-pressed="${v.edit ? 'true' : 'false'}" title="${v.edit ? 'Done editing' : 'Add, edit, delete and reorder favourites'}">✎</button>` : '') +
     `</div>`;
@@ -427,7 +437,7 @@ function html(v) {
     `</div>`;
 }
 
-const ACTS = new Set(['toggle-edit', 'press', 'delete', 'add', 'save', 'cancel', 'pick-skill', 'pick-emoji']);
+const ACTS = new Set(['toggle-edit', 'press', 'delete', 'add', 'save', 'cancel', 'pick-skill', 'pick-emoji', 'reset']);
 
 /** A click's dataset -> what it means, or null. */
 function clickAction(ds) {
@@ -441,7 +451,7 @@ function clickAction(ds) {
 
 const api = {
   emptyState, reduce, begin, clearError, failed, view, html, skillListHtml, clickAction, clickPlan, typed, clearFlash, setNotice,
-  toggleEdit, openEditor, closeEditor, editorSet, editorSubmit, deleteMsg, moveMsg, skillsRequest, filterSkills,
+  toggleEdit, openEditor, closeEditor, editorSet, editorSubmit, deleteMsg, moveMsg, resetMsg, skillsRequest, filterSkills,
   boxCapacity, cellWidth, SKILL_LIST_CAP, FLASH_TEXT,
 };
 

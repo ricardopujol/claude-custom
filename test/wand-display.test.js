@@ -559,3 +559,38 @@ test('D3: a too-long click in edit mode still opens the editor (the fix is to sh
   const s = W.toggleEdit(loaded({ favourites: [{ id: 'long', emoji: '\u{1F680}', skill: 'merged', args: 'x'.repeat(150) }] }));
   assert.strictEqual(W.clickPlan(s, 'long', { cols: 100 }).kind, 'edit');
 });
+
+// --- Miguel I2: the way out of an unavailable wand -------------------------------------------------------------
+
+const BAD = { status: 'unavailable', favourites: null, unavailable: 'the wand file is not valid JSON', file: 'C:/Users/ricar/proj/.harness/state/wand.json' };
+
+test('I2: an unavailable wand shows the ABSOLUTE path and a Reset button that says it never deletes', () => {
+  const v = W.view(loaded(BAD));
+  assert.strictEqual(v.canReset, true);
+  assert.match(v.note, /C:\/Users\/ricar\/proj\/\.harness\/state\/wand\.json/);
+  const html = W.html(v);
+  assert.match(html, /data-wand-act="reset"/);
+  assert.match(html, /never deletes/i);
+  assert.doesNotMatch(v.note, /fix or delete/);
+});
+
+test('I2: resetMsg asks the host to move the file aside, only when it can', () => {
+  const r = W.resetMsg(loaded(BAD));
+  assert.deepStrictEqual(r.message, { type: 'wand-reset', req: r.message.req });
+  assert.ok(r.state.pending.includes(r.message.req));
+  assert.strictEqual(W.resetMsg(loaded()).message, null, 'a healthy wand has nothing to reset');
+  assert.strictEqual(W.resetMsg(loaded({ ...BAD, retrying: true })).message, null, 'a busy file is not reset');
+  assert.strictEqual(W.resetMsg(W.emptyState()).message, null);
+});
+
+test('I2: the answer to MY reset says where the old file went', () => {
+  const r = W.resetMsg(loaded(BAD));
+  const s = W.reduce(r.state, { type: 'wand', ok: true, req: r.message.req, movedTo: 'C:/x/wand.json.bad-2026', ...wandMsg() });
+  assert.strictEqual(W.view(s).mode, 'ok');
+  assert.match(W.view(s).status, /C:\/x\/wand\.json\.bad-2026/);
+  assert.match(W.view(s).status, /default set/);
+});
+
+test('I2: clickAction knows reset', () => {
+  assert.deepStrictEqual(W.clickAction({ wandAct: 'reset' }), { kind: 'reset' });
+});

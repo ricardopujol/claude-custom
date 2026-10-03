@@ -33,17 +33,19 @@
  * `skillsError` set: the panel must not read "could not look" as "no such skill" and dim every button.
  */
 
+const nodeFs = require('fs');
 const wand = require('./wand');
 
 const STORE_KEY = 'wand';
 // Every message type this control answers. host/control.js CONTROL_TYPES must list each, or the frame is
 // typed into the pty as literal JSON (test/wand-wiring.test.js checks both lists against each other).
-const WAND_TYPES = Object.freeze(['wand-add', 'wand-update', 'wand-delete', 'wand-move', 'wand-skills']);
+const WAND_TYPES = Object.freeze(['wand-add', 'wand-update', 'wand-delete', 'wand-move', 'wand-skills', 'wand-reset']);
 
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
 
-function createWandControl({ store, readSkills, log = () => {}, emit = null, retryMs = 250, maxRetries = 20 } = {}) {
+function createWandControl({ store, readSkills, log = () => {}, emit = null, retryMs = 250, maxRetries = 20,
+  fs = nodeFs, now = () => new Date() } = {}) {
   if (!store) throw new Error('createWandControl: store is required');
   if (typeof readSkills !== 'function') throw new Error('createWandControl: readSkills is required');
 
@@ -207,6 +209,8 @@ function createWandControl({ store, readSkills, log = () => {}, emit = null, ret
       return frame({ ok: false, reason, ...v, ...skillsView() });
     };
 
+    if (m.type === 'wand-reset') return reset();
+
     const op = Object.prototype.hasOwnProperty.call(OPS, m.type) ? OPS[m.type] : null;
     if (!op) return refusal('That is not a wand action.');
 
@@ -239,6 +243,36 @@ function createWandControl({ store, readSkills, log = () => {}, emit = null, ret
     if (outcome.refused !== undefined) return refusal(outcome.refused, outcome.view);
     told = key(outcome.done);
     return frame({ ...outcome.done, ...skillsView() });
+  }
+
+  /**
+   * The way out of an unavailable wand (Miguel I2): the bad file is MOVED ASIDE to wand.json.bad-<timestamp>,
+   * never deleted, and the wand starts from the default set. Only a file that is really bad (corrupt, wrong
+   * shape, a newer version) is moved: a healthy one is never touched, and one that is merely busy is retried.
+   */
+  function reset() {
+    const refuse = (reason) => { const v = shown(snapshot().loaded); told = key(v); return frame({ ok: false, reason, ...v, ...skillsView() }); };
+    if (!fileName) return refuse('This wand has no file to reset.');
+    let outcome;
+    try {
+      outcome = locked(() => {
+        const { loaded } = snapshot();
+        if (loaded.transient) return { busy: true, why: loaded.reason };
+        if (loaded.status !== 'unavailable') return { fine: true };
+        const stamp = now().toISOString().replace(/[:.]/g, '-');
+        let target = `${fileName}.bad-${stamp}`;
+        for (let n = 2; fs.existsSync && fs.existsSync(target); n++) target = `${fileName}.bad-${stamp}-${n}`;
+        fs.renameSync(fileName, target);
+        return { movedTo: target };
+      });
+    } catch (err) {
+      return refuse(`Could not set the wand file aside: ${err && err.message ? err.message : 'unknown error'}`);
+    }
+    if (outcome.busy) return refuse(`The wand file could not be read just now (${outcome.why}). Try again.`);
+    if (outcome.fine) return refuse('Nothing to reset: the wand file is fine.');
+    const v = viewOf(snapshot().loaded);
+    told = key(v);
+    return frame({ ...v, ...skillsView(), movedTo: outcome.movedTo });
   }
 
   const handles = (type) => WAND_TYPES.includes(type);
