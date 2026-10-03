@@ -322,6 +322,18 @@ function spotFor(layout, spot) {
   return floatRect({ x: isNum(s.x) ? s.x : at, y: isNum(s.y) ? s.y : at, w: s.w, h: s.h });
 }
 
+/**
+ * Where a panel dropped on the terminal's middle floats: the new float's tab bar under the pointer (60 px in,
+ * 14 down), kept whole inside the window at the default size. `{}` -- "no spot", so the cascade takes over --
+ * when the pointer or the window is junk. `point` and the result are relative to the dock area.
+ */
+function floatSpotAt(point, viewport) {
+  const vp = viewportOf(viewport);
+  if (!isObject(point) || !isNum(point.x) || !isNum(point.y) || !vp) return {};
+  const clampTo = (v, room) => Math.max(0, Math.min(Math.round(v), room));
+  return { x: clampTo(point.x - 60, vp.width - FLOAT_DEFAULT.width), y: clampTo(point.y - 14, vp.height - FLOAT_DEFAULT.height) };
+}
+
 const viewportOf = (vp) => {
   const v = isObject(vp) ? vp : null;
   return v && isSize(v.width) && isSize(v.height) ? { width: Math.floor(v.width), height: Math.floor(v.height) } : null;
@@ -722,7 +734,7 @@ function fit(layout, selection, viewport) {
 
 const API = {
   VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
-  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, hide, show, minSize, setSplitSizes,
+  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
   cleanSelection, selectTab, raiseFloat, toggleFoldAll, activeOf, fit,
 };
 

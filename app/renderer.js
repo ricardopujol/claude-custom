@@ -996,13 +996,24 @@ function showLayoutMenu(x, y) {
   layoutMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
 }
 
-// A module tab's right-click: Hide. (Move and Float arrive in D2 / D4; a tab is moved by dragging it.)
+// A module tab's right-click: Float and Hide. (A tab is moved by dragging it; Move arrives in D4.)
 function openMoveMenu(id, x, y) {
   closeLayoutMenu();
   layoutMenuFor = id;
   const label = (TABS.find(t => t.id === id) || {}).label || id;
   const check = justThisTabCheck();
   layoutMenu.appendChild(node('div', { className: 'lm-title', text: label }));
+  // A panel that is already alone in its float has nothing to float out of.
+  const own = DTm.floatOf(placementLayout(), id);
+  if (!own || own.tabs.length > 1) {
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Float', title: 'Take this panel out of its group into a window of its own over the dock',
+      on: { click: () => {
+        commitPlacement(DTm.dock(placementLayout(), id, { float: true }), { justThisTab: check.box.checked, select: id });
+        closeLayoutMenu();
+      } },
+    }));
+  }
   layoutMenu.appendChild(node('button', {
     type: 'button', text: 'Hide',
     on: { click: () => {
@@ -1118,13 +1129,16 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     if (!drag) {
       if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
       // The dock's rectangle and size are read once, here: a move event must not force a layout every time.
-      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null };
+      // A tab dragged out of a float: that float is no drop target, what is under it decides (D2).
+      const own = DTm.floatOf(placementLayout(), press.id);
+      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null };
       document.body.appendChild(drag.ghost);
       document.body.classList.add('dock-dragging');
     }
     drag.ghost.style.left = `${e.clientX + 12}px`;
     drag.ghost.style.top = `${e.clientY + 10}px`;
-    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top });
+    drag.at = { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top };
+    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude });
     drag.target = hit.target;
     // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
     const sig = JSON.stringify(hit.zones);
@@ -1137,7 +1151,10 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     // and a removed source never reports an end (L1 PR #82 Dexter F1, Miguel I2).
     end();
     if (!d) return;                                     // never moved: the click that follows selects the tab
-    if (d.target) commitPlacement(DTm.dock(placementLayout(), d.id, d.target), { select: d.id });
+    if (!d.target) return;
+    // The terminal's middle floats the panel where it was dropped: the model says where (D2).
+    const target = d.target.float === true ? { float: DTm.floatSpotAt(d.at, d.viewport) } : d.target;
+    commitPlacement(DTm.dock(placementLayout(), d.id, target), { select: d.id });
   });
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
   window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
@@ -1145,6 +1162,72 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
   }, true);
+})();
+
+// --- floating panels (dockable panels D2) -------------------------------------------
+// A float is moved by the empty part of its tab bar, resized by its corner grip and raised by pressing it
+// anywhere. Raising is this window's selection (floatOrder, localStorage): a click never writes the shared
+// layout. A move or resize is DRAWN while it goes (dragLayout, as the dividers do) and saved ONCE on release,
+// applied to the placement as it is then (PR #100 Dexter F6). Dragging a float's TAB is the tab drag above
+// (it docks that panel). What a move or resize asks for, and every clamp, is app/dock-tree.js's.
+let floatDrag = null;     // { kind: 'move' | 'resize', id, start, rect, viewport, base, el, pointerId, last }
+(function initFloats() {
+  const dock = document.getElementById('dock');
+  const apply = (layout, d) => (d.kind === 'move'
+    ? DTm.moveFloat(layout, d.id, d.last, d.viewport)
+    : DTm.resizeFloat(layout, d.id, d.last, d.viewport));
+
+  function finish(d) {
+    try { d.el.releasePointerCapture(d.pointerId); } catch { /* not captured, or the element is gone */ }
+    floatDrag = null;
+  }
+  // A drag the system took away, or whose release never came, is not a choice: draw what is saved.
+  function cancelFloatDrag() {
+    if (!floatDrag) return;
+    finish(floatDrag);
+    dragLayout = null;
+    renderLayout();
+  }
+
+  dock.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const el = e.target.closest && e.target.closest('.dfloat');
+    if (!el) return;
+    const id = el.dataset.group;
+    const raised = DTm.raiseFloat(selection, id);
+    if (JSON.stringify(raised) !== JSON.stringify(selection)) { selection = raised; saveSelection(); renderLayout(); }
+    const kind = e.target.closest('.dfloat-grip') ? 'resize' : (e.target === el.querySelector('.zone-tabs') ? 'move' : null);
+    const box = lastPlan ? lastPlan.boxes.find(b => b.kind === 'float' && b.id === id) : null;
+    if (!kind || !box) return;
+    // The viewport is read once, here: a move event must not force a layout every time. `rect` is where the float
+    // is DRAWN (the window may have clamped it), because that is what the pointer grabbed.
+    floatDrag = { kind, id, start: { x: e.clientX, y: e.clientY }, rect: box.rect, viewport: dockViewport(), base: placementLayout(), el: e.target, pointerId: e.pointerId, last: null };
+    try { e.target.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (!floatDrag) return;
+    if (e.buttons === 0) { cancelFloatDrag(); return; }
+    const d = floatDrag;
+    const dx = e.clientX - d.start.x;
+    const dy = e.clientY - d.start.y;
+    d.last = d.kind === 'move' ? { x: d.rect.x + dx, y: d.rect.y + dy } : { w: Math.max(1, d.rect.width + dx), h: Math.max(1, d.rect.height + dy) };
+    const next = apply(d.base, d);
+    const shown = next === d.base ? null : next;
+    if (shown !== dragLayout) { dragLayout = shown; renderLayout(); }
+  });
+  window.addEventListener('pointerup', () => {
+    if (!floatDrag) return;
+    const d = floatDrag;
+    finish(d);
+    const moved = dragLayout !== null;
+    dragLayout = null;
+    if (moved) commitPlacement(apply(committedLayout(), d));      // the one real choice, saved once
+    else renderLayout();
+  });
+  window.addEventListener('pointercancel', cancelFloatDrag);
+  window.addEventListener('lostpointercapture', cancelFloatDrag);   // after a normal release the drag is already over
+  window.addEventListener('blur', cancelFloatDrag);
 })();
 
 // --- focus mode (layout pass L1, #1) -----------------------------------------

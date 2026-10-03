@@ -690,6 +690,22 @@
        by dock-tree-display.js, so it takes nothing from .zone's flex sizing. It stays a .zone so every
        rule below that styles a zone's tabs and panels (has-bg, focus mode, the wide shape) still applies. */
     .dgroup { position: absolute; box-sizing: border-box; overflow: hidden; }
+    /* A floating panel (D2): a group that hangs over the dock. dock-tree-display.js sets its z-index (10 and up: above
+       the gutters, below #dock-overlay at 40). Its bar moves it, so its tabs keep their own width and the bar's empty
+       part is the handle; the grip in the corner resizes it. Focus mode hides it like any zone. */
+    .dfloat {
+      border: 1px solid var(--border); border-radius: 4px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+    }
+    .dfloat .zone-tabs { cursor: move; }
+    .dfloat .zone-tabs button { flex: 0 1 auto; padding: 8px 10px; cursor: pointer; }
+    .dfloat-grip {
+      position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; z-index: 2;
+      cursor: nwse-resize; -webkit-app-region: no-drag;
+      background: linear-gradient(135deg, transparent 0 50%, var(--dim) 50% 58%, transparent 58% 70%, var(--dim) 70% 78%, transparent 78%);
+      opacity: .7;
+    }
+    .dfloat-grip:hover { opacity: 1; }
     /* The divider between two cells: a 5 px strip with a 1 px line down its middle. */
     .dgutter { position: absolute; z-index: 5; -webkit-app-region: no-drag; }
     .dgutter[data-dir="row"] { cursor: col-resize; background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat; }

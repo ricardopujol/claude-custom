@@ -383,6 +383,23 @@ test('fit with floats never changes the layout or the selection', () => {
   T.fit(l, sel, { width: 300, height: 300 });
 });
 
+// --- where a dropped panel's float appears -----------------------------------------
+
+test('floatSpotAt puts the new float\'s tab bar under the pointer, kept whole inside the window', () => {
+  const vp = { width: 1000, height: 700 };
+  const { width: W, height: H } = T.FLOAT_DEFAULT;
+  assert.deepEqual(T.floatSpotAt({ x: 400, y: 300 }, vp), { x: 340, y: 286 });
+  assert.deepEqual(T.floatSpotAt({ x: 10, y: 5 }, vp), { x: 0, y: 0 }, 'never above or left of the window');
+  assert.deepEqual(T.floatSpotAt({ x: 990, y: 690 }, vp), { x: 1000 - W, y: 700 - H }, 'never past the right or bottom');
+  assert.deepEqual(T.floatSpotAt({ x: 100, y: 100 }, { width: 200, height: 100 }), { x: 0, y: 0 }, 'a window smaller than a float: the corner');
+});
+
+test('floatSpotAt reads junk as "no spot": the cascade takes over', () => {
+  for (const point of [null, 7, {}, { x: 1 }, { x: NaN, y: 1 }, { x: '1', y: 1 }]) assert.deepEqual(T.floatSpotAt(point, { width: 1000, height: 700 }), {});
+  assert.deepEqual(T.floatSpotAt({ x: 5, y: 5 }, null), {}, 'no window: no spot');
+  assert.deepEqual(T.floatSpotAt({ x: 5, y: 5 }, { width: 0, height: 0 }), {});
+});
+
 // --- storage ---------------------------------------------------------------------
 
 test('every real module floating, at the largest values, still fits the bridge\'s byte cap (PR #100 Miguel S3)', () => {
