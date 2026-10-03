@@ -101,7 +101,7 @@ test('update / delete / move each write and answer; the file is what the frame s
   assert.deepStrictEqual(f.favourites[1], { id: 'f2', emoji: '🚀', skill: 'checkpoint', args: 'x' });
   f = control.handle({ type: 'wand-delete', id: 'f1' });
   assert.deepStrictEqual(f.favourites.map(x => x.id), ['f2', 'f3', 'f4']);
-  f = control.handle({ type: 'wand-move', id: 'f4', to: 0 });
+  f = control.handle({ type: 'wand-move', id: 'f4', target: 'f2' });
   assert.deepStrictEqual(f.favourites.map(x => x.id), ['f4', 'f2', 'f3']);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).favourites.map(x => x.id), ['f4', 'f2', 'f3']);
 });
@@ -124,7 +124,7 @@ test('a refusal (bad emoji, unknown id, bad index) carries the reason and the TR
     { type: 'wand-update', id: 'nope', patch: { emoji: '🚀' } },
     { type: 'wand-update', id: 'f1', patch: { skill: 'a b' } },
     { type: 'wand-delete', id: 'nope' },
-    { type: 'wand-move', id: 'f1', to: 99 },
+    { type: 'wand-move', id: 'f1', target: 'nope' },
   ]) {
     const f = control.handle(msg);
     assert.strictEqual(f.ok, false, JSON.stringify(msg));
@@ -468,4 +468,44 @@ test('D6: an edit during a busy read is refused with "try again", and the frame 
   assert.match(f.reason, /try again/i);
   assert.strictEqual(f.status, 'ok');
   assert.strictEqual(f.favourites.length, 1);
+});
+
+// --- Dexter D4: answers echo the request id ------------------------------------------------------------------
+
+test('D4: every answer to an edit, success or refusal, echoes the request id', () => {
+  const { control } = setup();
+  assert.strictEqual(control.handle({ type: 'wand-add', emoji: '\u{1F680}', skill: 'merged', req: 'w1-1' }).req, 'w1-1');
+  assert.strictEqual(control.handle({ type: 'wand-delete', id: 'nope', req: 'w1-2' }).req, 'w1-2');
+  assert.strictEqual(control.handle({ type: 'wand-other', req: 'w1-3' }).req, 'w1-3');
+  assert.strictEqual(control.handle({ type: 'wand-add', emoji: 'x', skill: 'a' }).req, undefined, 'no id asked, none echoed');
+});
+
+test('D4: a request id that is not a short string is not echoed (it is only a label)', () => {
+  const { control } = setup();
+  for (const req of [5, {}, [], null, 'x'.repeat(200)]) assert.strictEqual(control.handle({ type: 'wand-delete', id: 'f1', req }).req, undefined, String(req).slice(0, 10));
+});
+
+test('D4: the answer to wand-skills is QUIET: it is not the answer to anyone\'s edit', () => {
+  const { control } = setup();
+  const f = control.handle({ type: 'wand-skills', req: 'w1-9' });
+  assert.strictEqual(f.quiet, true);
+  assert.strictEqual(f.req, undefined);
+});
+
+// --- Dexter D9: a reorder names the target by id, so a stale view cannot misplace it --------------------------
+
+test('D9: wand-move names the TARGET by id: against a list another host has changed, it lands where it was dropped', () => {
+  const { control, file } = setup();
+  for (const id of ['f1']) control.handle({ type: 'wand-delete', id });      // another host deleted the first one: [f2,f3,f4]
+  const f = control.handle({ type: 'wand-move', id: 'f4', target: 'f2' });
+  assert.deepStrictEqual(f.favourites.map(x => x.id), ['f4', 'f2', 'f3']);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).favourites.map(x => x.id), ['f4', 'f2', 'f3']);
+});
+
+test('D9: a target that no longer exists is a refusal, and an index (the old protocol) moves nothing', () => {
+  const { control } = setup();
+  const f = control.handle({ type: 'wand-move', id: 'f1', target: 'gone' });
+  assert.strictEqual(f.ok, false);
+  assert.match(f.reason, /no longer exists/);
+  assert.strictEqual(control.handle({ type: 'wand-move', id: 'f1', to: 2 }).ok, false);
 });

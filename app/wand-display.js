@@ -50,7 +50,10 @@ function emptyState() {
   return {
     loaded: false, status: null, favourites: [], unavailable: null, retrying: false, dropped: 0, file: null,
     skills: [], skillsLoaded: false, skillsError: null,
-    edit: false, editor: null, error: null, notice: null, flash: null, asked: false,
+    edit: false, editor: null, error: null, notice: null, flash: null,
+    // Requests this window sent and has not seen answered. The host BROADCASTS its answers, so a window acts on
+    // its own (by id) and treats the rest as state (Dexter D4). `nonce` keeps ids apart between windows.
+    pending: [], seq: 0, nonce: Math.random().toString(36).slice(2, 8),
   };
 }
 
@@ -108,34 +111,47 @@ function applyWand(cur, w) {
 function reduce(state, msg) {
   const cur = state || emptyState();
   if (!isObj(msg)) return cur;
-  if (msg.type === 'hello') return isObj(msg.wand) ? applyWand(cur, msg.wand) : cur;
+  if (msg.type === 'hello') {
+    // A reattach: nothing in flight survives it, and a Save that was waiting will never be answered.
+    const fresh = { ...cur, pending: [], editor: cur.editor ? { ...cur.editor, saving: false } : null };
+    return isObj(msg.wand) ? applyWand(fresh, msg.wand) : fresh;
+  }
   if (msg.type !== 'wand') return cur;
 
   const next = applyWand(cur, msg);
   if (next === cur) return cur;
   if (msg.quiet === true) return next;
-  // Broadcast to every window, but a refusal answers ONE click: only the window that asked shows it.
+  // Broadcast to every window, but an answer belongs to the ONE request it names: only that window shows a
+  // refusal or closes its editor, and only once (its id leaves the list).
+  const mine = isStr(msg.req) && cur.pending.includes(msg.req);
+  if (!mine) return next;
+  const pending = cur.pending.filter(r => r !== msg.req);
   if (msg.ok === false) {
-    if (!cur.asked) return next;
     const reason = isStr(msg.reason) && msg.reason ? msg.reason : 'the wand was not changed';
-    return { ...next, asked: false, error: reason, editor: next.editor ? { ...next.editor, saving: false } : null };
+    return { ...next, pending, error: reason, editor: next.editor ? { ...next.editor, saving: false } : null };
   }
-  if (msg.ok === true && cur.asked) {
+  if (msg.ok === true) {
     // My save landed: the editor's job is done.
-    return { ...next, asked: false, error: null, editor: cur.editor && cur.editor.saving ? null : next.editor };
+    return { ...next, pending, error: null, editor: cur.editor && cur.editor.saving ? null : next.editor };
   }
-  return next;
+  return { ...next, pending };
 }
 
-/** Note that THIS window just asked for an edit, so its answer (a refusal included) is shown. */
-function ask(state) {
-  return { ...(state || emptyState()), asked: true };
+const MAX_PENDING = 20;
+
+/** A new request: its id, and the state that awaits its answer. */
+function begin(state) {
+  const s = state || emptyState();
+  const req = `${s.nonce}-${s.seq + 1}`;
+  return { req, state: { ...s, seq: s.seq + 1, pending: [...s.pending, req].slice(-MAX_PENDING) } };
 }
+
+const clearError = (state) => ({ ...(state || emptyState()), error: null });
 
 /** An edit that never left this window (no socket): shown now, since no answer is coming. */
 function failed(state, reason) {
   const s = state || emptyState();
-  return { ...s, asked: false, error: isStr(reason) && reason ? reason : 'the wand was not changed',
+  return { ...s, pending: [], error: isStr(reason) && reason ? reason : 'the wand was not changed',
     editor: s.editor ? { ...s.editor, saving: false } : null };
 }
 
@@ -291,18 +307,22 @@ function editorSubmit(state) {
   const s = state || emptyState();
   const e = s.editor;
   if (!e) return { state: s, message: null };
+  // One Save is one favourite: a held or doubled Enter must not send a second add (Dexter D5).
+  if (e.saving) return { state: s, message: null };
   if (e.emoji.trim() === '') return { state: { ...s, error: 'Pick or type an emoji.' }, message: null };
   if (e.skill === '') return { state: { ...s, error: 'Pick a skill.' }, message: null };
+  const b = begin(s);
   const message = e.id === null
-    ? { type: 'wand-add', emoji: e.emoji.trim(), skill: e.skill, args: e.args }
-    : { type: 'wand-update', id: e.id, patch: { emoji: e.emoji.trim(), skill: e.skill, args: e.args } };
-  return { state: { ...s, error: null, asked: true, editor: { ...e, saving: true } }, message };
+    ? { type: 'wand-add', emoji: e.emoji.trim(), skill: e.skill, args: e.args, req: b.req }
+    : { type: 'wand-update', id: e.id, patch: { emoji: e.emoji.trim(), skill: e.skill, args: e.args }, req: b.req };
+  return { state: { ...b.state, error: null, editor: { ...e, saving: true } }, message };
 }
 
 function deleteMsg(state, id) {
   const s = state || emptyState();
   if (!s.edit || s.dropped > 0 || !isStr(id) || !s.favourites.some(f => f.id === id)) return { state: s, message: null };
-  return { state: ask(s), message: { type: 'wand-delete', id } };
+  const b = begin(s);
+  return { state: b.state, message: { type: 'wand-delete', id, req: b.req } };
 }
 
 /** A drop of `id` onto `targetId`'s slot: the id takes that slot's index. */
@@ -311,7 +331,9 @@ function moveMsg(state, id, targetId) {
   if (!s.edit || s.dropped > 0 || !isStr(id) || !isStr(targetId) || id === targetId) return { state: s, message: null };
   const to = s.favourites.findIndex(f => f.id === targetId);
   if (to === -1 || !s.favourites.some(f => f.id === id)) return { state: s, message: null };
-  return { state: ask(s), message: { type: 'wand-move', id, to } };
+  // The target by id (Dexter D9): the host places `id` in that slot of ITS list, not at an index from this view.
+  const b = begin(s);
+  return { state: b.state, message: { type: 'wand-move', id, target: targetId, req: b.req } };
 }
 
 const skillsRequest = () => ({ type: 'wand-skills' });
@@ -395,7 +417,7 @@ function clickAction(ds) {
 }
 
 const api = {
-  emptyState, reduce, ask, failed, view, html, skillListHtml, clickAction, clickPlan, typed, clearFlash, setNotice,
+  emptyState, reduce, begin, clearError, failed, view, html, skillListHtml, clickAction, clickPlan, typed, clearFlash, setNotice,
   toggleEdit, openEditor, closeEditor, editorSet, editorSubmit, deleteMsg, moveMsg, skillsRequest, filterSkills,
   SKILL_LIST_CAP, FLASH_TEXT,
 };

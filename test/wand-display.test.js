@@ -227,13 +227,13 @@ test('editorSubmit: a NEW favourite becomes wand-add; an existing one becomes wa
   let s = W.openEditor(W.toggleEdit(loaded()), null);
   s = W.editorSet(W.editorSet(W.editorSet(s, 'emoji', '🚀'), 'skill', 'merged'), 'args', '  now ');
   let r = W.editorSubmit(s);
-  assert.deepStrictEqual(r.message, { type: 'wand-add', emoji: '🚀', skill: 'merged', args: '  now ' }, 'the host cleans the args; the page sends what was typed');
+  assert.deepStrictEqual(r.message, { type: 'wand-add', emoji: '🚀', skill: 'merged', args: '  now ', req: r.message.req }, 'the host cleans the args; the page sends what was typed');
   assert.strictEqual(W.view(r.state).editor.saving, true);
 
   s = W.openEditor(W.toggleEdit(loaded()), 'f1');
   s = W.editorSet(s, 'emoji', '🚀');
   r = W.editorSubmit(s);
-  assert.deepStrictEqual(r.message, { type: 'wand-update', id: 'f1', patch: { emoji: '🚀', skill: 'bedtime', args: '' } });
+  assert.deepStrictEqual(r.message, { type: 'wand-update', id: 'f1', patch: { emoji: '🚀', skill: 'bedtime', args: '' }, req: r.message.req });
 });
 
 test('editorSubmit with nothing to send (no emoji, no skill) says what is missing and sends nothing', () => {
@@ -250,13 +250,15 @@ test('editorSubmit with nothing to send (no emoji, no skill) says what is missin
 test('an answer to MY save closes the editor; a refusal keeps it open with the host\'s reason', () => {
   let s = W.openEditor(W.toggleEdit(loaded()), null);
   s = W.editorSet(W.editorSet(s, 'emoji', '🚀'), 'skill', 'merged');
-  s = W.editorSubmit(s).state;
-  const okFrame = { type: 'wand', ok: true, reason: null, ...wandMsg({ favourites: [...FAVS, { id: 'f4', emoji: '🚀', skill: 'merged', args: '' }] }) };
+  const sub = W.editorSubmit(s);
+  s = sub.state;
+  const req = sub.message.req;
+  const okFrame = { type: 'wand', ok: true, reason: null, req, ...wandMsg({ favourites: [...FAVS, { id: 'f4', emoji: '🚀', skill: 'merged', args: '' }] }) };
   const closed = W.reduce(s, okFrame);
   assert.strictEqual(W.view(closed).editor, null);
   assert.strictEqual(W.view(closed).buttons.length, 4);
 
-  const bad = W.reduce(s, { type: 'wand', ok: false, reason: 'Pick one emoji.', ...wandMsg() });
+  const bad = W.reduce(s, { type: 'wand', ok: false, req, reason: 'Pick one emoji.', ...wandMsg() });
   assert.ok(W.view(bad).editor, 'the editor stays so the user can fix it');
   assert.strictEqual(W.view(bad).editor.saving, false);
   assert.strictEqual(W.view(bad).error, 'Pick one emoji.');
@@ -266,20 +268,24 @@ test('a refusal answers ONE window: one that did not ask does not show it (the P
   const s = loaded();
   const other = W.reduce(s, { type: 'wand', ok: false, reason: 'someone else\'s refusal', ...wandMsg() });
   assert.strictEqual(W.view(other).error, null);
-  const asked = W.reduce(W.ask(s), { type: 'wand', ok: false, reason: 'mine', ...wandMsg() });
+  const b = W.begin(s);
+  const asked = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'mine', ...wandMsg() });
   assert.strictEqual(W.view(asked).error, 'mine');
 });
 
 test('a QUIET frame neither sets nor clears an error, but does bring the favourites up to date', () => {
-  let s = W.reduce(W.ask(loaded()), { type: 'wand', ok: false, reason: 'mine', ...wandMsg() });
+  const b = W.begin(loaded());
+  let s = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'mine', ...wandMsg() });
   s = W.reduce(s, { type: 'wand', ok: true, quiet: true, ...wandMsg({ favourites: [FAVS[0]] }) });
   assert.strictEqual(W.view(s).error, 'mine', 'an echo must never wipe a refusal on screen');
   assert.strictEqual(W.view(s).buttons.length, 1);
 });
 
 test('a real success clears the error (for the window that asked)', () => {
-  let s = W.reduce(W.ask(loaded()), { type: 'wand', ok: false, reason: 'mine', ...wandMsg() });
-  s = W.reduce(W.ask(s), { type: 'wand', ok: true, reason: null, ...wandMsg() });
+  const b1 = W.begin(loaded());
+  let s = W.reduce(b1.state, { type: 'wand', ok: false, req: b1.req, reason: 'mine', ...wandMsg() });
+  const b2 = W.begin(s);
+  s = W.reduce(b2.state, { type: 'wand', ok: true, req: b2.req, reason: null, ...wandMsg() });
   assert.strictEqual(W.view(s).error, null);
 });
 
@@ -306,13 +312,14 @@ test('an unavailable frame closes the editor and leaves edit mode', () => {
 test('delete and move build the messages the host answers, and ask for the answer', () => {
   let s = W.toggleEdit(loaded());
   let r = W.deleteMsg(s, 'f2');
-  assert.deepStrictEqual(r.message, { type: 'wand-delete', id: 'f2' });
-  assert.strictEqual(r.state.asked, true);
+  assert.deepStrictEqual(r.message, { type: 'wand-delete', id: 'f2', req: r.message.req });
+  assert.strictEqual(typeof r.message.req, 'string');
+  assert.ok(r.state.pending.includes(r.message.req), 'the answer to this request is awaited');
   assert.strictEqual(W.deleteMsg(s, 'nope').message, null);
   r = W.moveMsg(s, 'f1', 'f3');
-  assert.deepStrictEqual(r.message, { type: 'wand-move', id: 'f1', to: 2 });
+  assert.deepStrictEqual(r.message, { type: 'wand-move', id: 'f1', target: 'f3', req: r.message.req });
   r = W.moveMsg(s, 'f3', 'f1');
-  assert.deepStrictEqual(r.message, { type: 'wand-move', id: 'f3', to: 0 });
+  assert.deepStrictEqual(r.message, { type: 'wand-move', id: 'f3', target: 'f1', req: r.message.req });
   assert.strictEqual(W.moveMsg(s, 'f1', 'f1').message, null, 'dropped on itself: nothing to say');
   assert.strictEqual(W.moveMsg(s, 'f1', 'nope').message, null);
   assert.strictEqual(W.moveMsg(s, 'nope', 'f1').message, null);
@@ -369,13 +376,15 @@ test('html: the picked skill is marked, and the free-entry emoji is the editor\'
 });
 
 test('html: the error and the status line are drawn in their own roles', () => {
-  const s = W.reduce(W.ask(loaded()), { type: 'wand', ok: false, reason: 'Pick one emoji.', ...wandMsg() });
+  const b = W.begin(loaded());
+  const s = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'Pick one emoji.', ...wandMsg() });
   assert.match(W.html(W.view(s)), /role="alert"[^>]*>Pick one emoji\./);
   assert.match(W.html(W.view(W.typed(loaded(), 'f1', { ok: true }))), /role="status"[^>]*>[^<]*typed, press Enter/);
 });
 
 test('html: with the editor open the refusal sits at its TOP, once: a reason below a tall editor is out of sight', () => {
-  const s = W.reduce(W.ask(W.openEditor(W.toggleEdit(loaded()), null)), { type: 'wand', ok: false, reason: 'Pick one emoji.', ...wandMsg() });
+  const b = W.begin(W.openEditor(W.toggleEdit(loaded()), null));
+  const s = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'Pick one emoji.', ...wandMsg() });
   const html = W.html(W.view(s));
   assert.strictEqual((html.match(/role="alert"/g) || []).length, 1);
   assert.ok(html.indexOf('role="alert"') < html.indexOf('data-wand-field="emoji"'), 'the alert comes before the fields');
@@ -404,7 +413,7 @@ test('failed(): an edit that never left the window is shown now, and a save in f
   const f = W.failed(s, 'not connected to the host');
   assert.strictEqual(W.view(f).error, 'not connected to the host');
   assert.strictEqual(W.view(f).editor.saving, false);
-  assert.strictEqual(f.asked, false);
+  assert.deepStrictEqual(f.pending, []);
   assert.strictEqual(W.view(W.failed(loaded(), '')).error, 'the wand was not changed');
 });
 
@@ -434,4 +443,73 @@ test('D6: an unavailable wand that is only RETRYING says so, with no fix-or-dele
   assert.match(v.note, /retrying/i);
   assert.doesNotMatch(v.note, /fix or delete|delete/i);
   assert.strictEqual(v.canReset, false);
+});
+
+// --- Dexter D5: one Save is one favourite ---------------------------------------------------------------------
+
+test('D5: a second submit while the first is in flight sends nothing (a held Enter adds once)', () => {
+  let s = W.editorSet(W.editorSet(W.openEditor(W.toggleEdit(loaded()), null), 'emoji', '\u{1F680}'), 'skill', 'merged');
+  const first = W.editorSubmit(s);
+  assert.ok(first.message);
+  const second = W.editorSubmit(first.state);
+  assert.strictEqual(second.message, null);
+  assert.strictEqual(second.state, first.state, 'and the state is untouched');
+});
+
+// --- Dexter D4: an answer is acted on by the window whose request it answers --------------------------------
+
+test('D4: requests carry distinct ids, unique to this window too', () => {
+  const a = W.begin(loaded());
+  const b = W.begin(a.state);
+  assert.notStrictEqual(a.req, b.req);
+  const other = W.begin(W.reduce(W.emptyState(), hello()));
+  assert.notStrictEqual(other.req, a.req, 'another window mints different ids');
+});
+
+test('D4: another window\'s answer (even a non-quiet success) neither closes my editor nor eats my refusal', () => {
+  let s = W.editorSet(W.editorSet(W.openEditor(W.toggleEdit(loaded()), 'f1'), 'emoji', 'ab'), 'skill', 'merged');
+  const sub = W.editorSubmit(s);
+  s = sub.state;
+  // someone else's answer arrives first: ok, not quiet, a different request id
+  s = W.reduce(s, { type: 'wand', ok: true, reason: null, req: 'another-window-7', ...wandMsg() });
+  assert.ok(W.view(s).editor, 'my editor is still open');
+  assert.strictEqual(W.view(s).editor.saving, true);
+  // then the refusal of MY request
+  s = W.reduce(s, { type: 'wand', ok: false, req: sub.message.req, reason: 'Pick one emoji.', ...wandMsg() });
+  assert.strictEqual(W.view(s).error, 'Pick one emoji.');
+  assert.ok(W.view(s).editor);
+  assert.strictEqual(W.view(s).editor.saving, false);
+});
+
+test('D4: an answer is acted on once: the same request id arriving twice is not mine the second time', () => {
+  const b = W.begin(loaded());
+  let s = W.reduce(b.state, { type: 'wand', ok: false, req: b.req, reason: 'x', ...wandMsg() });
+  assert.strictEqual(W.view(s).error, 'x');
+  s = W.reduce(W.clearError(s), { type: 'wand', ok: false, req: b.req, reason: 'again', ...wandMsg() });
+  assert.strictEqual(W.view(s).error, null);
+});
+
+test('D4: a frame with no request id is never an answer to my edit', () => {
+  const b = W.begin(loaded());
+  const s = W.reduce(b.state, { type: 'wand', ok: false, reason: 'orphan', ...wandMsg() });
+  assert.strictEqual(W.view(s).error, null);
+  assert.deepStrictEqual(s.pending, [b.req], 'still waiting for the real answer');
+});
+
+test('D4: a hello (a reattach) forgets in-flight requests and releases a saving editor', () => {
+  let s = W.editorSet(W.editorSet(W.openEditor(W.toggleEdit(loaded()), null), 'emoji', '\u{1F680}'), 'skill', 'merged');
+  s = W.editorSubmit(s).state;
+  assert.strictEqual(W.view(s).editor.saving, true);
+  s = W.reduce(s, hello());
+  assert.deepStrictEqual(s.pending, []);
+  assert.strictEqual(W.view(s).editor.saving, false, 'Save is usable again');
+  // and a refusal of somebody else's mistake no longer shows up here
+  s = W.reduce(s, { type: 'wand', ok: false, req: 'x', reason: 'not mine', ...wandMsg() });
+  assert.strictEqual(W.view(s).error, null);
+});
+
+test('D4: the pending list is bounded', () => {
+  let s = W.toggleEdit(loaded());
+  for (let i = 0; i < 100; i++) s = W.deleteMsg(s, 'f1').state;
+  assert.ok(s.pending.length <= 20);
 });

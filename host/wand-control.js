@@ -169,13 +169,28 @@ function createWandControl({ store, readSkills, log = () => {}, emit = null, ret
     'wand-update': (favs, m) => (isObj(m.patch) ? wand.update(favs, m.id, m.patch)
       : { ok: false, favourites: favs, reason: 'Nothing to change.' }),
     'wand-delete': (favs, m) => wand.remove(favs, m.id),
-    'wand-move': (favs, m) => wand.moveTo(favs, m.id, m.to),
+    // The TARGET by id, not an index from the sender's (possibly stale) view: the favourite takes that slot in
+    // the list as it is NOW (Dexter D9).
+    'wand-move': (favs, m) => {
+      const to = typeof m.target === 'string' ? favs.findIndex(f => f.id === m.target) : -1;
+      return to === -1 ? { ok: false, favourites: favs, reason: 'That favourite no longer exists.' } : wand.moveTo(favs, m.id, to);
+    },
   };
 
   const locked = (fn) => (typeof store.withLock === 'function' ? store.withLock(STORE_KEY, fn) : fn());
 
-  /** The answer to one control message. Never throws. */
+  /**
+   * The answer to one control message. Never throws. The request id is echoed (Dexter D4): the answer is
+   * BROADCAST, and a window must act on its own only.
+   */
   function handle(msg) {
+    const out = handleInner(msg);
+    const req = isObj(msg) && typeof msg.req === 'string' && msg.req.length <= 80 ? msg.req : undefined;
+    if (req !== undefined && out.quiet !== true) out.req = req;
+    return out;
+  }
+
+  function handleInner(msg) {
     const m = isObj(msg) ? msg : {};
 
     if (m.type === 'wand-skills') {
