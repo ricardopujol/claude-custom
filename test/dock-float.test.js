@@ -249,6 +249,51 @@ test('floatOf and allGroups', () => {
   assert.deepEqual(T.allGroups(l).map(x => x.id), ['a', 'b', 'f']);
 });
 
+// --- hide and show with floats ----------------------------------------------------
+
+test('hiding a tab of a multi-tab float remembers the float; showing it joins that float again', () => {
+  const two = T.dock(base(), 'vault', { cell: 'f', side: 'center' });          // f: git, vault
+  const h = T.hide(two, 'vault');
+  assert.deepEqual(h.hidden, ['vault']);
+  assert.deepEqual(h.seat.vault, { group: 'f', beside: 'git', side: 'center' });
+  assert.deepEqual(tabsOf(h, 'f'), ['git']);
+  const back = T.show(h, 'vault');
+  assert.deepEqual(tabsOf(back, 'f'), ['git', 'vault']);
+  assert.deepEqual(back.hidden, []);
+});
+
+test('hiding a lone floating panel remembers its rectangle; showing it floats it there again', () => {
+  const h = T.hide(T.moveFloat(base(), 'f', { x: 77, y: 88 }), 'git');
+  assert.deepEqual(h.floats, []);
+  assert.deepEqual(h.seat.git, { group: null, beside: null, side: 'center', float: { x: 77, y: 88, w: 300, h: 200 } });
+  const back = T.show(h, 'git');
+  assert.deepEqual(back.floats.map(f => [f.tabs, f.x, f.y, f.w, f.h]), [[['git'], 77, 88, 300, 200]]);
+  assert.deepEqual(back.hidden, []);
+  assert.deepEqual(back.seat, {});
+});
+
+test('showing a lone floating panel whose rectangle is gone from the seat falls back to the right edge', () => {
+  const h = T.hide(base(), 'git');
+  delete h.seat.git.float;
+  const back = T.show(h, 'git');
+  assert.deepEqual(back.floats, []);
+  assert.ok(T.groupOf(back, 'git'));
+});
+
+test('a seat naming a float that has since gone is dropped to no group, and the panel still comes back', () => {
+  const two = T.dock(base(), 'vault', { cell: 'f', side: 'center' });
+  const h = T.hide(T.hide(two, 'vault'), 'git');                               // f empties and goes; vault's seat named it
+  assert.deepEqual(h.floats, []);
+  assert.equal(h.seat.vault.group, null);
+  const back = T.show(h, 'vault');
+  assert.ok(T.groupOf(back, 'vault'), 'it falls back into the tree');
+});
+
+test('hide and show never change their input with floats around', () => {
+  const l = deepFreeze(T.dock(base(), 'vault', { cell: 'f', side: 'center' }));
+  T.show(T.hide(l, 'git'), 'git');
+});
+
 // --- moveFloat, resizeFloat ------------------------------------------------------
 
 test('moveFloat sets the position, rounded and never negative, and keeps the size', () => {

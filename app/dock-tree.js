@@ -397,6 +397,22 @@ function sideOf(layout, a, b) {
   return n.dir === 'row' ? 'right' : 'bottom';
 }
 
+// A float's panel: a float that survives is remembered by name, a lone one by its rectangle (it comes back floating there).
+function hideFloating(layout, id) {
+  const fl = floatOf(layout, id);
+  if (!fl) return layout;
+  const at = fl.tabs.indexOf(id);
+  const survives = fl.tabs.length > 1;
+  const seat = { group: survives ? fl.id : null, beside: at > 0 ? fl.tabs[at - 1] : (survives ? fl.tabs[1] : null), side: 'center' };
+  if (!survives) seat.float = { x: fl.x, y: fl.y, w: fl.w, h: fl.h };
+  const l = clone(layout);
+  const cur = floatOf(l, id);
+  cur.tabs = cur.tabs.filter(t => t !== id);
+  l.hidden.push(id);
+  l.seat[id] = seat;
+  return normalize(l, modulesIn(layout));
+}
+
 /**
  * Hide a module and remember its seat: the group it left (when that group
  * survives), the neighbour it sat beside and on which side. `show` puts a tab
@@ -407,7 +423,7 @@ function sideOf(layout, a, b) {
  */
 function hide(layout, id) {
   const gr = groupOf(layout, id);
-  if (!gr) return layout;                                                    // unknown, or already hidden
+  if (!gr) return hideFloating(layout, id);                                  // a float's panel, or unknown, or already hidden
   const order = groups(layout).flatMap(x => x.tabs);                         // tree order
   const at = gr.tabs.indexOf(id);
   const survives = gr.tabs.length > 1;
@@ -434,7 +450,8 @@ function show(layout, id) {
   if (!layout.hidden.includes(id)) return layout;
   const seat = layout.seat[id];
   if (seat) {
-    if (seat.group && groups(layout).some(x => x.id === seat.group)) return dock(layout, id, { cell: seat.group, side: 'center' });
+    if (seat.group && allGroups(layout).some(x => x.id === seat.group)) return dock(layout, id, { cell: seat.group, side: 'center' });
+    if (seat.float) return dock(layout, id, { float: { x: seat.float.x, y: seat.float.y, w: seat.float.w, h: seat.float.h } });
     const near = seat.beside && groupOf(layout, seat.beside);
     if (near) return dock(layout, id, { cell: near.id, side: seat.side });
   }
