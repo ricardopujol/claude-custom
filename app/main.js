@@ -1110,7 +1110,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // PR 3: the + and the strip's own line, as painted.
       let stripChrome = null;
