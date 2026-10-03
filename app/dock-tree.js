@@ -344,9 +344,43 @@ function setSplitSizes(layout, path, sizes) {
   return normalize(l, modulesIn(layout));
 }
 
+// --- selection -----------------------------------------------------------------
+//
+// Which tab each group shows, and whether everything is folded (Ctrl+B), belong
+// to the WINDOW (localStorage), not to the layout: clicking Vault in one window
+// never switches another (L1 S3a). A selection is { active: { [groupId]: moduleId }, foldAll }.
+
+/** A selection from anything stored. */
+function cleanSelection(raw) {
+  const r = isObject(raw) ? raw : {};
+  return { active: stringMap(r.active), foldAll: r.foldAll === true };
+}
+
+/** A tab click: that module shows in its group, and Ctrl+B's fold is undone. */
+function selectTab(sel, layout, id) {
+  const s = cleanSelection(sel);
+  const gr = groupOf(layout, id);
+  if (!gr) return s;
+  return { active: { ...s.active, [gr.id]: id }, foldAll: false };
+}
+
+function toggleFoldAll(sel) {
+  const s = cleanSelection(sel);
+  return { active: s.active, foldAll: !s.foldAll };
+}
+
+/** What a group shows in this window: its choice if the group still holds it, else its first tab. */
+function activeOf(layout, sel, group) {
+  const gr = typeof group === 'string' ? groups(layout).find(x => x.id === group) : group;
+  if (!gr) return null;
+  const want = cleanSelection(sel).active[gr.id];
+  return typeof want === 'string' && gr.tabs.includes(want) ? want : gr.tabs[0];
+}
+
 const API = {
   VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, dock, hide, show, minSize, setSplitSizes,
+  cleanSelection, selectTab, toggleFoldAll, activeOf,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.

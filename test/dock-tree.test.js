@@ -418,6 +418,51 @@ test('setSplitSizes never changes its input', () => {
   assert.deepEqual(l.root.kids[1].sizes, [1, 1, 1]);
 });
 
+// --- selection (belongs to the window, not to the layout) -----------------------
+
+test('cleanSelection reads anything: only string-to-string entries and a real true survive', () => {
+  assert.deepEqual(T.cleanSelection(null), { active: {}, foldAll: false });
+  assert.deepEqual(T.cleanSelection('x'), { active: {}, foldAll: false });
+  assert.deepEqual(T.cleanSelection({ active: { a: 'agents', b: 7, c: null, d: {} }, foldAll: 'yes' }), { active: { a: 'agents' }, foldAll: false });
+  assert.deepEqual(T.cleanSelection({ active: [1, 2], foldAll: true }), { active: {}, foldAll: true });
+  assert.deepEqual(T.cleanSelection({ active: { a: 'agents' }, foldAll: 1 }).foldAll, false);
+});
+
+test('selectTab shows that module in its group and unfolds everything', () => {
+  const sel = T.selectTab({ active: { c: 'git' }, foldAll: true }, example(), 'vault');
+  assert.deepEqual(sel, { active: { c: 'git', b: 'vault' }, foldAll: false });
+});
+
+test('selectTab for a hidden or unknown module changes nothing but still returns a clean selection', () => {
+  const l = example();
+  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'models'), { active: { a: 'agents' }, foldAll: true });
+  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'nope'), { active: { a: 'agents' }, foldAll: true });
+  assert.deepEqual(T.selectTab(7, l, 'nope'), { active: {}, foldAll: false });
+});
+
+test('toggleFoldAll flips Ctrl+B and keeps what each group shows', () => {
+  const sel = { active: { a: 'agents' }, foldAll: false };
+  assert.deepEqual(T.toggleFoldAll(sel), { active: { a: 'agents' }, foldAll: true });
+  assert.deepEqual(T.toggleFoldAll(T.toggleFoldAll(sel)), sel);
+  assert.deepEqual(T.toggleFoldAll(null), { active: {}, foldAll: true });
+});
+
+test('activeOf: the window\'s choice if the group still holds it, else the group\'s first tab', () => {
+  const l = T.defaultLayout(IDS);
+  const grp = l.root.kids[1];
+  assert.equal(T.activeOf(l, { active: { right: 'git' } }, grp), 'git');
+  assert.equal(T.activeOf(l, { active: { right: 'nope' } }, grp), 'agents');
+  assert.equal(T.activeOf(l, { active: { other: 'git' } }, grp), 'agents');
+  assert.equal(T.activeOf(l, null, grp), 'agents');
+  assert.equal(T.activeOf(l, { active: { right: 'git' } }, 'right'), 'git', 'a group id works too');
+  assert.equal(T.activeOf(l, {}, 'nope'), null);
+});
+
+test('a selection naming a module that moved to another group is ignored by the group it left', () => {
+  const l = T.dock(T.defaultLayout(IDS), 'git', { cell: 'term', side: 'bottom' });
+  assert.equal(T.activeOf(l, { active: { right: 'git' } }, 'right'), 'agents');
+});
+
 // --- migration from L1 --------------------------------------------------------
 
 const DL = require('../app/dock-layout');
