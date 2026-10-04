@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('harness', {
   tabStates: (folders) => ipcRenderer.invoke('tab:states', folders),
   typeMerged: (folder, branch) => ipcRenderer.invoke('tab:typeMerged', folder, branch),
   raise: () => ipcRenderer.send('tab:raise'),
+  //   reportAccent the look's accent (#rrggbb): main hands it to the strip page, which is its own document (#64)
+  reportAccent: (hex) => ipcRenderer.send('tab:accent', hex),
   //   onTypeCommand main -> page { id, command, submit }: type it into THIS tab's box, the top bar's way (PR #93 F3);
   //                 with submit, press Enter too when the page's submit gate allows (BACKLOG #61)
   //   typed         page -> main { id, ok, reason?, box?, submitted?, flash? }: what came of it; main

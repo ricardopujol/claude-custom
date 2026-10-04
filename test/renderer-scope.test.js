@@ -101,7 +101,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
   // app/top-bar-display.js (FF12)
-  'modelFamily', 'cueColour', 'pendingResolver', 'topBarState', 'topBarDisplay',
+  'modelFamily', 'cueColour', 'chosenAccent', 'withChosenAccent', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
@@ -120,6 +120,8 @@ const ALLOWED_GLOBALS = new Set([
   'summaryDisplay',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
+  // app/accent-preview.js (backlog #64): one namespace object, IIFE-wrapped.
+  'accentPreview',
   // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)
   'terminalRows', 'filePathParse',
   // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.

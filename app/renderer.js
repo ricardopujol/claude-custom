@@ -4571,8 +4571,21 @@ function applyModelAccent(family, theme) {
   const accent = cueColour(family, theme);
   document.documentElement.style.setProperty('--model-accent', accent);
   const themeCursor = theme && theme.terminal && theme.terminal.cursor;
-  const cursor = family ? accent : (themeCursor || accent);
+  // A chosen accent (#64) tints the cursor whatever the model; otherwise only a known family does.
+  const cursor = (family || chosenAccent(theme)) ? accent : (themeCursor || accent);
   term.options.theme = { ...term.options.theme, cursor };
+  reportAccentToStrip(theme);
+}
+
+// The tab strip is the window's own page, so the accent reaches it through main
+// (#64). What it gets is the look's accent -- not the model cue -- and only when
+// it changed, so a model switch doesn't send anything.
+let lastReportedAccent = null;
+function reportAccentToStrip(theme) {
+  const hex = theme && theme.chrome && theme.chrome.accent;
+  if (typeof hex !== 'string' || hex === lastReportedAccent) return;
+  lastReportedAccent = hex;
+  if (window.harness && window.harness.reportAccent) window.harness.reportAccent(hex);
 }
 
 function setTopBarNotice(kind, text, isTimeout) {
@@ -5301,6 +5314,27 @@ function renderStyleSection(section) {
   return `<section class="style-section" data-section="${escapeHtml(section.id)}">${header}</section>`;
 }
 
+// The accent colour picker's live preview (#64). It takes the path a saved look takes: the same
+// readable-on-the-panel colour and label colour (app/accent-preview.js, pinned against host/look.js),
+// so nothing jumps on commit; and at most once per animation frame, since each repaint also costs an
+// IPC to main and a send to the strip while the picker fires `input` dozens of times a second.
+let previewAccentFrame = null;
+function previewAccent(hex) {
+  if (!previewAccentFrame) {
+    previewAccentFrame = accentPreview.frameThrottle((cb) => requestAnimationFrame(cb), paintAccentPreview);
+  }
+  previewAccentFrame(hex);
+}
+function paintAccentPreview(hex) {
+  const p = accentPreview.previewChrome(hex, currentTheme && currentTheme.chrome);
+  if (!p) return;
+  const root = document.documentElement.style;
+  root.setProperty('--accent', p.accent);
+  root.setProperty('--on-accent', p.onAccent);
+  currentTheme = withChosenAccent(currentTheme, p.accent, p.onAccent);
+  renderTopBar();
+}
+
 function renderStylePanel() {
   const container = document.getElementById('style-sections');
   if (!container) return;
@@ -5392,7 +5426,7 @@ function bindStyleSections() {
     (hex) => document.documentElement.style.setProperty('--text', hex));
   bindColour(document.getElementById('style-accent'), document.getElementById('style-accent-hex'),
     document.getElementById('style-accent-reset'), 'accentColor',
-    (hex) => document.documentElement.style.setProperty('--accent', hex));
+    previewAccent);
   bindColour(document.getElementById('style-secondary'), document.getElementById('style-secondary-hex'),
     document.getElementById('style-secondary-reset'), 'secondaryColor',
     (hex) => document.documentElement.style.setProperty('--dim', hex));
