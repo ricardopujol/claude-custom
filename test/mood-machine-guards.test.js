@@ -876,3 +876,52 @@ test('queuing the same run again makes it the newest, so a full queue forgets a 
   r.call('id1', 't');
   assert.strictEqual(r.m.invocations().length, open1, 'id1 was the one forgotten: its late call is an echo');
 });
+
+// ---- a run that comes back: what is recorded, and where ----
+
+test('a run that ended twice is remembered as the NEWEST ended id, so the bound forgets the one before it', () => {
+  const r = rig();
+  const run = (i) => { r.spawn('t', { key: `k${i}` }); r.call(`id${i}`, 't'); r.stop(`id${i}`, 't'); };
+  for (let i = 0; i < REMEMBER_MAX; i++) run(i);
+  // id0 comes back on its own id and ends again: it is now the freshest memory, not the oldest.
+  r.send_('t', { success: true, resumedAgentId: 'id0' }, 'resume0');
+  r.stop('id0', 't');
+  assert.strictEqual(r.m.bookkeeping().endedIds, REMEMBER_MAX, 'ending it again did not add a second entry');
+  run(REMEMBER_MAX);
+  assert.strictEqual(r.m.watchedEnd('id0'), true, 'the re-ended run kept its place at the new end');
+  assert.strictEqual(r.m.watchedEnd('id1'), false, 'the oldest remaining one went instead');
+});
+
+test('a woken teammate is linked to its reopened run: one more call of its own opens nothing else', () => {
+  const r = rig();
+  endedMate(r, 'bob');
+  r.send_('bob', { success: true });
+  r.call('abob-0123456789abcdef', 'bob');
+  r.call('abob-0123456789abcdef', 'bob');
+  r.call('abob-0123456789abcdef', 'bob');
+  assert.strictEqual(r.m.invocations().length, 1, 'one reopened run, however many calls follow');
+  r.stop('abob-0123456789abcdef', 'bob');
+  assert.strictEqual(r.m.invocations().length, 0);
+  r.call('abob-0123456789abcdef', 'bob');
+  assert.strictEqual(r.m.invocations().length, 0, 'ended again, and not woken again, so a late call is an echo');
+});
+
+test('a resumed run is findable by the tool call that resumed it; a wake with no call id registers nothing', () => {
+  const r = rig();
+  r.spawn('t', { key: 'k0' });
+  r.call('id0', 't');
+  r.stop('id0', 't');
+  const before = r.m.bookkeeping().spawns;
+  r.send_('t', { success: true, resumedAgentId: 'id0' }, 'resume0');
+  assert.strictEqual(r.m.bookkeeping().spawns, before + 1, 'the resuming call id is tracked while the run is open');
+  r.stop('id0', 't');
+  assert.strictEqual(r.m.bookkeeping().spawns, before, 'and dropped when it ends');
+
+  const m = rig();
+  endedMate(m, 'bob');
+  const base = m.m.bookkeeping().spawns;
+  m.send_('bob', { success: true });
+  m.call('abob-0123456789abcdef', 'bob');
+  assert.strictEqual(m.m.invocations().length, 1);
+  assert.strictEqual(m.m.bookkeeping().spawns, base, 'a wake carries no call id, so nothing is tracked under one');
+});
