@@ -261,11 +261,15 @@ function windowChrome(doc, search, bridge) {
 /**
  * The accent the person chose (#64). The strip is its own document, so its
  * `--accent` is set here when main pushes the selected tab's accent. Only a
- * #rrggbb is accepted: it goes into a style property.
+ * #rrggbb is accepted: it goes into a style property. `null` means the selected
+ * tab hasn't reported one: the strip goes back to its own default accent.
  */
 function paintAccent(doc, hex) {
-  if (!doc || !doc.documentElement || typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return false;
-  doc.documentElement.style.setProperty('--accent', hex);
+  if (!doc || !doc.documentElement) return false;
+  const style = doc.documentElement.style;
+  if (hex === null) { style.removeProperty('--accent'); return true; }
+  if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return false;
+  style.setProperty('--accent', hex);
   return true;
 }
 

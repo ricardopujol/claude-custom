@@ -141,6 +141,11 @@ const SCAN = `(() => {
   return hits.slice(0, 12);
 })()`;
 
+// Ctrl-C / termination: stop only the two processes started here (by pid) and remove the temp dir.
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => { cleanup(); process.exit(130); });
+}
+
 (async () => {
   let host;
   let electron;

@@ -232,13 +232,18 @@ test('tab-strip.html: the window buttons sit after ▾, start hidden, and framel
 
 test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything else (#64)', () => {
   const set = [];
-  const doc = { documentElement: { style: { setProperty: (k, v) => set.push([k, v]) } } };
+  const removed = [];
+  const doc = { documentElement: { style: { setProperty: (k, v) => set.push([k, v]), removeProperty: (k) => removed.push(k) } } };
   assert.strictEqual(paintAccent(doc, '#00ff88'), true);
   assert.deepStrictEqual(set, [['--accent', '#00ff88']]);
-  for (const bad of ['red', '#fff', '#00ff8800', 'url(x)', '#00ff88; x', null, undefined, 5, {}]) {
+  for (const bad of ['red', '#fff', '#00ff8800', 'url(x)', '#00ff88; x', undefined, 5, {}]) {
     assert.strictEqual(paintAccent(doc, bad), false, String(bad));
   }
   assert.strictEqual(set.length, 1, 'nothing invalid reached the style');
+  assert.deepStrictEqual(removed, [], 'nothing invalid cleared it either');
+  // null = the selected tab hasn't reported (F2): back to the strip's own default accent.
+  assert.strictEqual(paintAccent(doc, null), true);
+  assert.deepStrictEqual(removed, ['--accent']);
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 

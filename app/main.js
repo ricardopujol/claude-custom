@@ -63,6 +63,7 @@ const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
 // What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
@@ -467,7 +468,7 @@ function createWindow() {
   // The strip is sent its model as it changes; a (re)load asks for the last one.
   win.webContents.on('did-finish-load', () => {
     if (lastStripPayload) win.webContents.send('strip-model', lastStripPayload);
-    if (lastStripAccent) win.webContents.send('strip-accent', lastStripAccent);
+    win.webContents.send('strip-accent', lastStripAccent);
   });
   // A click on the strip takes the keyboard from the view (Dexter, PR #75 R2-4),
   // so the next selection -- even of the same tab -- focuses its view again.
@@ -593,14 +594,15 @@ let stripWasBusy = false;     // the branch form was open at the last publish
 
 // The accent each tab's page reported (#64). The strip is the window's own page, so it only
 // hears the SELECTED tab's: the colour the person chose follows the tab they are looking at.
-const viewAccent = new WeakMap();
+// A selected tab that hasn't reported yet shows null (the strip's default), never the previous
+// tab's colour (app/strip-accent.js). lastStripAccent is only what a reloaded strip page is told.
+const stripAccent = createStripAccent();
 let lastStripAccent = null;
 function pushStripAccent() {
   if (!win || win.isDestroyed()) return;
   const sel = selectedView();
-  const hex = sel && !sel.webContents.isDestroyed() ? viewAccent.get(sel.webContents) : null;
-  if (hex) lastStripAccent = hex;
-  if (lastStripAccent) win.webContents.send('strip-accent', lastStripAccent);
+  lastStripAccent = sel && !sel.webContents.isDestroyed() ? stripAccent.show(sel.webContents) : null;
+  win.webContents.send('strip-accent', lastStripAccent);
 }
 
 function applySelection(snapshot) {
@@ -866,8 +868,7 @@ function registerIpc() {
   // The look's accent, for the strip (#64): a #rrggbb and nothing else, kept per tab page and
   // pushed to the strip while that tab is the selected one.
   ipcMain.on('tab:accent', (e, hex) => {
-    if (!isTabView(e.sender) || typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return;
-    viewAccent.set(e.sender, hex);
+    if (!isTabView(e.sender) || !stripAccent.report(e.sender, hex)) return;   // only a #rrggbb is kept
     pushStripAccent();
   });
   ipcMain.on('tab:close', (e) => {

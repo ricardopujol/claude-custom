@@ -5314,6 +5314,27 @@ function renderStyleSection(section) {
   return `<section class="style-section" data-section="${escapeHtml(section.id)}">${header}</section>`;
 }
 
+// The accent colour picker's live preview (#64). It takes the path a saved look takes: the same
+// readable-on-the-panel colour and label colour (app/accent-preview.js, pinned against host/look.js),
+// so nothing jumps on commit; and at most once per animation frame, since each repaint also costs an
+// IPC to main and a send to the strip while the picker fires `input` dozens of times a second.
+let previewAccentFrame = null;
+function previewAccent(hex) {
+  if (!previewAccentFrame) {
+    previewAccentFrame = accentPreview.frameThrottle((cb) => requestAnimationFrame(cb), paintAccentPreview);
+  }
+  previewAccentFrame(hex);
+}
+function paintAccentPreview(hex) {
+  const p = accentPreview.previewChrome(hex, currentTheme && currentTheme.chrome);
+  if (!p) return;
+  const root = document.documentElement.style;
+  root.setProperty('--accent', p.accent);
+  root.setProperty('--on-accent', p.onAccent);
+  currentTheme = withChosenAccent(currentTheme, p.accent, p.onAccent);
+  renderTopBar();
+}
+
 function renderStylePanel() {
   const container = document.getElementById('style-sections');
   if (!container) return;
@@ -5405,13 +5426,7 @@ function bindStyleSections() {
     (hex) => document.documentElement.style.setProperty('--text', hex));
   bindColour(document.getElementById('style-accent'), document.getElementById('style-accent-hex'),
     document.getElementById('style-accent-reset'), 'accentColor',
-    (hex) => {
-      // The live preview takes the same path a saved look does (#64): the chip, panel-tab and cursor
-      // tint and the strip follow --accent, instead of keeping the model cue's colour.
-      document.documentElement.style.setProperty('--accent', hex);
-      currentTheme = withChosenAccent(currentTheme, hex);
-      renderTopBar();
-    });
+    previewAccent);
   bindColour(document.getElementById('style-secondary'), document.getElementById('style-secondary-hex'),
     document.getElementById('style-secondary-reset'), 'secondaryColor',
     (hex) => document.documentElement.style.setProperty('--dim', hex));

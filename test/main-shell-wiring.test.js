@@ -78,13 +78,13 @@ test('the accent reaches the strip: a tab reports it, main validates and pushes 
   const at = channels.find(c => c.name === 'tab:accent').at;
   const handler = callText(MAIN, at);
   assert.match(handler, /isTabView\(e\.sender\)/);
-  assert.match(handler, /\[0-9a-f\]\{6\}/, 'only a #rrggbb is accepted');
+  assert.match(handler, /stripAccent\.report\(e\.sender, hex\)/, 'only a #rrggbb is kept (app/strip-accent.js)');
   assert.match(handler, /pushStripAccent\(\)/);
+  assert.match(MAIN, /stripAccent\.show\(sel\.webContents\)/, 'the strip gets the SELECTED tab\'s own accent, never the last one sent');
   // The strip hears it on selection changes and on a reload of its page, not only when a tab reports.
   const apply = MAIN.slice(MAIN.indexOf('function applySelection'), MAIN.indexOf('function openBranchForm'));
   assert.match(apply, /pushStripAccent\(\)/);
-  assert.match(MAIN, /if \(lastStripAccent\) win\.webContents\.send\('strip-accent', lastStripAccent\)/);
-  assert.match(MAIN, /webContents\.send\('strip-accent', lastStripAccent\)/);
+  assert.match(MAIN, /win\.webContents\.send\('strip-accent', lastStripAccent\)/);
 });
 
 test('every strip channel is gated on the window\'s own page, and only they', () => {

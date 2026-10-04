@@ -4,9 +4,10 @@
  * OWN page; the tabs' pages are separate views with app/preload.js.
  *
  * Eleven members and no more: nine ways to ask main for something and two ways
- * to hear what main pushes (the model, and the accent colour). Layout pass L2: minimise and close the window
- * (only drawn when it's frameless). PR 2: select a tab, close a tab, open a tab's
- * context menu. PR 3: open the `+` menu (New branch… / Reopen), submit the
+ * to hear what main pushes (the model, and the accent colour: a #rrggbb, or
+ * null when the selected tab hasn't reported one). Layout pass L2: minimise and
+ * close the window (only drawn when it's frameless). PR 2: select a tab, close
+ * a tab, open a tab's context menu. PR 3: open the `+` menu (New branch… / Reopen), submit the
  * branch form, and cancel it. Windowless sessions PR 2: open the ▾ menu of
  * running sessions, which resolves when that menu closes. The strip decides
  * nothing -- main answers every one of these from host/tab-lifecycle.js and

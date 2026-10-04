@@ -101,8 +101,12 @@ test('the chosen accent is the one source: cursor, strip report and live preview
   assert.match(fn, /reportAccentToStrip\(theme\)/, 'the strip is told the accent whenever the top bar is re-tinted');
   assert.match(JS, /window\.harness\.reportAccent\(hex\)/);
   const preview = JS.slice(JS.indexOf("'style-accent-reset'"), JS.indexOf("'style-secondary'"));
-  assert.match(preview, /currentTheme = withChosenAccent\(currentTheme, hex\)/);
-  assert.match(preview, /renderTopBar\(\)/);
+  assert.match(preview, /previewAccent\)/, 'the picker previews through previewAccent');
+  const paint = JS.slice(JS.indexOf('function paintAccentPreview'), JS.indexOf('function renderStylePanel'));
+  assert.match(paint, /accentPreview\.previewChrome\(hex, currentTheme && currentTheme\.chrome\)/, 'the saved look\'s colour (F4)');
+  assert.match(paint, /currentTheme = withChosenAccent\(currentTheme, p\.accent, p\.onAccent\)/);
+  assert.match(paint, /renderTopBar\(\)/);
+  assert.match(JS, /accentPreview\.frameThrottle\(\(cb\) => requestAnimationFrame\(cb\), paintAccentPreview\)/, 'one repaint per frame (F3)');
   // Nothing hard-codes the default accent onto a live surface: --model-accent is only ever set from cueColour.
   assert.strictEqual((JS.match(/setProperty\('--model-accent'/g) || []).length, 1);
 });

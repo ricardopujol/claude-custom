@@ -103,13 +103,16 @@ function chosenAccent(theme) {
 /**
  * The theme with `hex` as its chosen accent -- what a live colour-picker preview
  * feeds the same path a saved look takes, so there is ONE source for the accent.
- * Returns a copy; an invalid colour returns the theme as it was.
+ * `onAccent` is the label colour for that accent (app/accent-preview.js gives
+ * the one a saved look would). Returns a copy; an invalid colour returns the
+ * theme as it was.
  */
-function withChosenAccent(theme, hex) {
+function withChosenAccent(theme, hex, onAccent) {
   if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return theme;
   const base = theme && typeof theme === 'object' ? theme : {};
   const chrome = base.chrome || {};
-  return { ...base, chrome: { ...chrome, accent: hex, onAccent: chrome.onAccent || '#12141c' } };
+  const label = typeof onAccent === 'string' && onAccent ? onAccent : (chrome.onAccent || '#12141c');
+  return { ...base, chrome: { ...chrome, accent: hex, onAccent: label } };
 }
 
 /**
