@@ -1106,11 +1106,16 @@
     .wand-edit:hover { color: var(--text); border-color: var(--border); }
     .wand-edit.on { color: var(--accent); border-color: var(--accent); }
     /* padding: the ✕ of an edit-mode cell hangs 6px outside it, and the panel clips what overflows */
-    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
+    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
     .wand-cell { position: relative; display: block; }
-    .wand-btn { width: 100%; aspect-ratio: 1; padding: 0; display: flex; align-items: center; justify-content: center;
+    .wand-btn { width: 100%; min-height: 46px; padding: 4px 3px; display: flex; flex-direction: column; gap: 2px; align-items: center; justify-content: center; overflow: hidden;
       font-size: 18px; line-height: 1; cursor: pointer; background: var(--panel); color: var(--text);
       border: 1px solid var(--border); border-radius: 8px; transition: border-color .12s, background .12s; }
+    /* the skill's name under the emoji: ellipsis past the cell; the full /skill args is in title and aria-label */
+    .wand-emoji { line-height: 1; }
+    .wand-name { max-width: 100%; font-size: 9px; line-height: 1.1; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wand-ed-row.wand-ed-check { align-items: flex-start; }
+    .wand-ed-row.wand-ed-check input { flex: 0 0 auto; width: auto; margin: 2px 0 0; }
     .wand-btn:hover { border-color: var(--accent); }
     .wand-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
     .wand-btn.dim { opacity: .35; filter: grayscale(1); }
@@ -1732,6 +1737,7 @@
   <script src="./colour-seeds.js"></script>
   <script src="./agent-log-display.js"></script>
   <script src="./loadout-display.js"></script>
+  <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
   <script src="./top-bar-display.js"></script>
   <script src="./context-fill-display.js"></script>

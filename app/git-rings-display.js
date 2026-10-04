@@ -358,12 +358,6 @@ function fillDrawer(dial, key) {
     const btn = el(doc, 'button', { type: 'button', class: `git-act ${a.id}`, 'data-act': a.id,
       'aria-disabled': a.enabled ? 'false' : 'true' }, row);
     btn.textContent = a.label;
-    if (a.enabled && a.hint) {
-      // an enabled action that leaves the last step to the person says so, beside it
-      const hint = el(doc, 'span', { class: 'git-act-why hint', id: `git-act-hint-${a.id}` }, row);
-      hint.textContent = a.hint;
-      btn.setAttribute('aria-describedby', hint.id);
-    }
     if (!a.enabled) {
       // Every disabled action says why, where it can be seen and heard: beside it, and as its description.
       // Not also as a title, which a screen reader announces a second time (PR #93 Miguel S2).
@@ -465,13 +459,8 @@ async function act(dial, id) {
     } else if (id === 'type-merged') {
       if (!b || !b.folder || !st.onTypeMerged) return;
       const r = await st.onTypeMerged(b.folder, b.name);
-      // A box that wasn't empty was cleared first (a draft, or the CLI's placeholder: the text can't tell)
-      // Typed, never sent: the Enter is the person's (PR #93 Dexter R2-1)
-      if (r && r.kind === 'typed') {
-        say(dial, key, `Typed /merged in ${r.branch || b.name}'s tab: press Enter there to run it.`
-          + (r.cleared ? " Its input box wasn't empty: if that was a draft, Ctrl+Y in that tab brings it back." : ''));
-      }
-      else say(dial, key, (r && r.text) || "Couldn't run /merged.");
+      // Sent when the page's submit gate pressed Enter, typed when it left the Enter to the person (BACKLOG #61)
+      say(dial, key, actionsLib.mergedSaid(r, b.name));
     }
   } catch (err) {
     say(dial, key, `Couldn't do that: ${errText(err)}`);

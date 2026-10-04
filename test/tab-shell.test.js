@@ -1046,13 +1046,40 @@ test('PR #93 Dexter F3: typeMerged switches to the tab and has ITS page type /me
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
   answerTyping(h, { ok: true, box: '' });
   const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
-  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: false });
+  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: false, submitted: false });
   assert.deepStrictEqual(h.typedAt, [key('feat-a')], "the tab is selected before its page types, so the person watches it happen");
   const asks = h.sent.filter(([, ch]) => ch === 'type-command');
   assert.strictEqual(asks.length, 1);
   assert.strictEqual(asks[0][0], key('feat-a'), "that branch's own page types it");
   assert.strictEqual(asks[0][2].command, '/merged');
   assert.deepStrictEqual(h.controls, [], 'nothing goes to the host as raw input: the page clears the line and reads it back');
+});
+
+test('#61 typeMerged asks the page to SUBMIT (submit: true), and reports whether the Enter went in', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, { ok: true, box: '', submitted: true, flash: 'sent' });
+  const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
+  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: false, submitted: true });
+  const asks = h.sent.filter(([, ch]) => ch === 'type-command');
+  assert.strictEqual(asks[0][2].submit, true, 'the page is told to press Enter (its gate decides)');
+  assert.strictEqual(asks[0][2].command, '/merged');
+});
+
+test('#61 only a literal true from the page counts as submitted (a string, a number, a missing field are "typed only")', async () => {
+  for (const submitted of ['true', 1, 'yes', null, undefined]) {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    const devView = h.shell.tabByKey(key('dev')).view;
+    h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+    answerTyping(h, { ok: true, box: '', submitted });
+    const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
+    assert.strictEqual(r.submitted, false, String(submitted));
+  }
 });
 
 test('Dexter F3: a box that held text was cleared first, and the answer says so (Ctrl+Y brings a draft back)', async () => {
@@ -1063,7 +1090,7 @@ test('Dexter F3: a box that held text was cleared first, and the answer says so 
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
   answerTyping(h, { ok: true, box: 'also bump the version' });
   const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
-  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: true });
+  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: true, submitted: false });
 });
 
 test('typeMerged: the page refusing (a dialog, a multi-line draft, the line changed before Enter) is explained with its reason', async () => {
@@ -1209,11 +1236,13 @@ test('PR #93 Miguel I3: main never runs /merged on an integration branch, and re
   assert.deepStrictEqual(h.prAsks.at(-1), [key('feat-a'), 'feat/a'], "gh is asked about THAT branch, in its worktree");
 });
 
-// PR #93 Dexter R2-1 (Ricardo's decision): no hook can say a turn is really over -- another Stop hook can
-// block the first Stop, and the continuation calls only unhooked tools -- so Type /merged TYPES and the person
-// presses Enter. This pins Dexter's sequence through the real host/turn-state.js, and that no Enter is ever
-// asked for, in any state it passes through.
-test('Dexter R2-1: UserPromptSubmit -> Stop -> (a blocked-Stop continuation, no events) -> Stop{stop_hook_active}: never an Enter', async () => {
+// PR #93 Dexter R2-1: no hook can say a turn is really over -- another Stop hook can block the first Stop, and the
+// continuation calls only unhooked tools -- so an "idle" read can be wrong mid-turn. That left the Enter to the
+// person. BACKLOG #61 (Ricardo's pick) changes the answer, not the fact: the CLI QUEUES a line submitted mid-turn
+// (verify/probe-queued-skill.js), so a wrong idle read costs a queued command, never a lost one, and the page's
+// submit gate presses Enter. This still pins Dexter's sequence through the real host/turn-state.js, and that the
+// SHELL itself never writes an Enter: it asks the page (submit: true) and nothing goes to the host as raw input.
+test('Dexter R2-1: UserPromptSubmit -> Stop -> (a blocked-Stop continuation, no events) -> Stop{stop_hook_active}: the shell never writes an Enter itself', async () => {
   const { createTurnState } = require('../host/turn-state');
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
@@ -1238,14 +1267,15 @@ test('Dexter R2-1: UserPromptSubmit -> Stop -> (a blocked-Stop continuation, no 
     assert.ok(r.kind === 'typed' || r.kind === 'explain', JSON.stringify(r));
   }
   // What turn-state CAN see: the turn, then "idle" from the first Stop on -- it can't see the continuation.
-  // That is exactly why the Enter is the person's.
+  // That is exactly why the Enter must be safe when the read is wrong: the CLI queues it (#61).
   assert.deepStrictEqual(seen, ['turn', 'idle', 'idle', 'idle']);
   const asks = h.sent.filter(([, ch]) => ch === 'type-command').map(([, , p]) => p);
   assert.ok(asks.length >= 1, 'it did type where the session read idle');
   for (const p of asks) {
-    assert.deepStrictEqual(Object.keys(p).sort(), ['command', 'id'], 'the page is asked to type, nothing more');
+    assert.deepStrictEqual(Object.keys(p).sort(), ['command', 'id', 'submit'], 'the page is asked to type (and submit through its gate), nothing more');
+    assert.strictEqual(p.submit, true);
     assert.strictEqual(p.command, '/merged');
-    assert.ok(!/[\r\n]/.test(p.command), 'no Enter in what is typed');
+    assert.ok(!/[\r\n]/.test(p.command), 'no Enter in what is typed: the page\'s gate presses it, after the read-back');
   }
   assert.deepStrictEqual(h.controls, [], 'and nothing at all goes to the host as raw input');
 });

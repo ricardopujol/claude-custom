@@ -28,13 +28,13 @@
  *      branch; Open PR follows origin (disabled with no remote, enabled once one is added)
  *   9  live sparks only for MEASURED growth: a first measurement is quiet, a refresh that found new tokens
  *      streams sparks on that branch alone, and they stop
- *  10  Type /merged on an open PR whose session is at rest switches to that tab and its own page types
- *      `/merged` into its box, and NEVER Enter: the person presses it (PR #93 Dexter R2-1). A stand-in CLI box
+ *  10  Run /merged on an open PR whose session is at rest switches to that tab and its own page types
+ *      `/merged` into its box and, once it reads back, presses Enter through the submit gate (BACKLOG #61;
+ *      PR #93 R2-1 had left the Enter to the person). A stand-in CLI box
  *      (verify/lib/fake-claude-box.js) runs in feat-b's cmd.exe, and the CLI's hook events go down feat-b's
  *      host pipe, so nothing bills. PR #93 review cases: a main-session turn with no subagent disables it
  *      (Dexter F1); an open dialog still disables it after the tab is looked at (F2); a draft in the box is
- *      cleared and the box then holds /merged alone, with nothing submitted (F3, R2-1); a double click types
- *      it once (F4)
+ *      cleared and exactly `/merged` is submitted (F3, #61); a double click sends it once more (F4)
  *
  * The Open PR button itself is NOT clicked here: it would open a real browser. Its URL is built and
  * checked by test/pr-url.test.js, and the link gate by test/external-link.test.js.
@@ -599,7 +599,7 @@ async function main() {
   check('10: the dev tab sees feat-b\'s tab open and started, and its host says the session is at rest', !!restB, JSON.stringify(await tabOfB()));
   check('10: an open PR whose session is at rest: Type /merged is enabled', !!(await runIs(/^enabled$/)), await runWhy());
   const tm = actOf(await gs(), 'type-merged');
-  check('10 (Dexter R2-1): it is named for what it does and says the Enter is yours', tm.label === 'Type /merged' && tm.why === 'press Enter in its tab to run it' && !!tm.described, JSON.stringify(tm));
+  check('10 (#61): it is named "Run /merged" and leaves nothing to the person (no Enter hint)', tm.label === 'Run /merged' && !tm.why && !tm.described, JSON.stringify(tm));
 
   // Dexter F1: a main-session turn that calls no agent
   await hook('UserPromptSubmit', { prompt: 'address the findings' });
@@ -624,21 +624,21 @@ async function main() {
   await hook('Stop', {});
   check('10 (Dexter F2): ...and the session moving on enables it again', !!(await runIs(/^enabled$/)), await runWhy());
 
-  // Dexter F3 + R2-1: a half-typed draft in the box. The action TYPES /merged; the person presses Enter.
+  // Dexter F3 + #61: a half-typed draft in the box. The action TYPES /merged and, the tab being at rest, the page's
+  // submit gate presses Enter: what the CLI receives is "/merged" alone, never "also bump the version/merged".
   fs.writeFileSync(boxCtl, JSON.stringify({ draft: 'also bump the version' }));
   await waitFor(async () => (boxLine() === 'also bump the version' ? true : null), 5000, 200);
   await view(app, 'gitAct', { act: 'type-merged' });
-  await waitFor(async () => (boxLine() === '/merged' ? true : null), 15000, 300);
-  await sleep(1500);     // well past the read-back: an Enter would have landed by now
-  check('10 (Dexter F3): the draft was cleared and the box holds /merged alone, never "also bump the version/merged"',
-    boxLine() === '/merged', JSON.stringify(boxLine()));
-  check("10 (Dexter R2-1): nothing was submitted: the Enter is the person's", submitted().length === 0, JSON.stringify(submitted()));
+  await waitFor(async () => (submitted().length >= 1 ? true : null), 15000, 300);
+  await sleep(1500);     // well past the read-back: a second line would have landed by now
+  check('10 (Dexter F3 + #61): the draft was cleared and exactly "/merged" was submitted, never "also bump the version/merged"',
+    JSON.stringify(submitted()) === JSON.stringify(['/merged']) && boxLine() === '', JSON.stringify({ submitted: submitted(), box: boxLine() }));
   const sw = (await command(app, { cmd: 'state' })).selectedKey;
   check('10: it switched to that branch\'s tab to type', /feat-b$/i.test(sw || ''), String(sw));
   await command(app, { cmd: 'select', label: 'develop' });
-  const said = await waitFor(async () => { const s = await gs(); return /Typed \/merged in feat\/b's tab: press Enter there to run it/.test(s.said) ? s : null; }, 8000);
-  check('10: the drawer says it TYPED /merged and the Enter is yours, and that a box that wasn\'t empty was cleared (Ctrl+Y)',
-    !!said && /Ctrl\+Y/.test(said.said) && !/Sent/.test(said.said), String((await gs()).said));
+  const said = await waitFor(async () => { const s = await gs(); return /Sent \/merged to feat\/b's session\./.test(s.said) ? s : null; }, 8000);
+  check('10 (#61): the drawer says it SENT /merged, and that a box that wasn\'t empty was cleared (Ctrl+Y)',
+    !!said && /Ctrl\+Y/.test(said.said) && !/Typed/.test(said.said), String((await gs()).said));
   check('10 (Miguel S2): one status node in the panel, however often the drawer was rebuilt', !!said && said.saidNodes === 1, String(said && said.saidNodes));
 
   // Dexter F4 / Miguel I1: a double click, on an empty box
@@ -646,10 +646,10 @@ async function main() {
   await waitFor(async () => (boxLine() === '' ? true : null), 5000, 200);
   await runIs(/^enabled$/);
   await view(app, 'gitAct', { act: 'type-merged', times: 2 });
-  await waitFor(async () => (boxLine() === '/merged' ? true : null), 15000, 300);
+  await waitFor(async () => (submitted().length >= 2 ? true : null), 15000, 300);
   await sleep(2500);
-  check('10 (Dexter F4): a double click types /merged once (never /merged/merged), and still submits nothing',
-    boxLine() === '/merged' && submitted().length === 0, JSON.stringify({ box: boxLine(), submitted: submitted() }));
+  check('10 (Dexter F4 + #61): a double click sends /merged once more (never /merged/merged): two lines in all, both "/merged"',
+    JSON.stringify(submitted()) === JSON.stringify(['/merged', '/merged']) && boxLine() === '', JSON.stringify({ box: boxLine(), submitted: submitted() }));
   await command(app, { cmd: 'select', label: 'develop' });
 
   await command(app, { cmd: 'quit' });

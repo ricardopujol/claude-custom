@@ -3,8 +3,8 @@
  * The host's side of the wand's protocol (BACKLOG #51), the same shape as host/loadout-control.js.
  *
  *   hello         carries `wand: payload()`
- *   wand-add      { emoji, skill, args }          client -> host
- *   wand-update   { id, patch: { emoji?, skill?, args? } }
+ *   wand-add      { emoji, skill, args, typeOnly? }   client -> host
+ *   wand-update   { id, patch: { emoji?, skill?, args?, typeOnly? } }
  *   wand-delete   { id }
  *   wand-move     { id, to }                      `to` is the id's index in the resulting list
  *   wand-skills   (no fields)                     rescan the skill directories now (the module opened)
@@ -167,7 +167,7 @@ function createWandControl({ store, readSkills, log = () => {}, emit = null, ret
 
   // --- edits ----------------------------------------------------------------------------------------
   const OPS = {
-    'wand-add': (favs, m) => wand.add(favs, { emoji: m.emoji, skill: m.skill, args: m.args }),
+    'wand-add': (favs, m) => wand.add(favs, { emoji: m.emoji, skill: m.skill, args: m.args, ...(Object.prototype.hasOwnProperty.call(m, 'typeOnly') ? { typeOnly: m.typeOnly } : {}) }),
     'wand-update': (favs, m) => (isObj(m.patch) ? wand.update(favs, m.id, m.patch)
       : { ok: false, favourites: favs, reason: 'Nothing to change.' }),
     'wand-delete': (favs, m) => wand.remove(favs, m.id),
