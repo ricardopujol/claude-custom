@@ -4691,8 +4691,8 @@ function typeAndCheck(enterInsert, command, done) {
 
 /**
  * The top bar's switch: typeAndCheck, then Enter -- right after the read-back, in the same task, and only
- * when it read back exactly the command. The ONLY place this page presses Enter for a command it typed:
- * the Git drawer's Type /merged leaves the Enter to the person (PR #93 Dexter R2-1).
+ * when it read back exactly the command. The top bar's own Enter; the wand and the Git drawer's Run /merged
+ * press theirs through submitTyped (the submit gate decides), via typeCommand.
  */
 function typePlanned(enterInsert, command, done) {
   const input = data => send(JSON.stringify({ type: 'input', data }));
@@ -4703,16 +4703,25 @@ function typePlanned(enterInsert, command, done) {
 }
 
 /**
- * Main asks this page to type a command into its own box: the Git drawer's Type /merged, PR #93 Dexter
- * F3. The screen is judged here, where it is, the top bar's way, and the terminal takes the focus so the
- * person's Enter lands in it. It types and reads back, and NEVER presses Enter (Dexter R2-1: no hook can
- * say the turn is really over, so that step is the person's). `done({ ok, box })`, `box` being what the
- * box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
+ * Types a command into this tab's own box: the Git drawer's Run /merged (main asks, PR #93 Dexter F3), the
+ * wand's click, the reader's @mention. The screen is judged here, where it is, the top bar's way, and the
+ * terminal takes the focus. It types and reads back. With `opts.submit` (the wand, Run /merged; BACKLOG #61) it
+ * then asks submitTyped whether to press Enter, in the same task as the read-back; without it (the @mention)
+ * it NEVER presses Enter. `done({ ok, box })`, `box` being what the box held before it was cleared, '' when
+ * empty, plus `submitted` and `flash` (the gate's words) when `submit` was on; or `done({ ok: false, reason })`.
+ * A dialog (`sessionTurn === 'prompt'`) is refused before a key is typed.
  */
-function typeCommand(command, done, kind) {
+function typeCommand(command, done, kind, opts) {
   term.focus();
   const lines = screenLines();
   if (vimInsertShown(lines)) vimSeen = true;
+  const submit = !!(opts && opts.submit);
+  if (submit) {
+    // A dialog is open (the host's measure): refused before a key is typed, type-only or not. planTyping's screen
+    // check refuses a dialog it can see too; this is the hooks' side of the same answer.
+    const early = submitGate.planSubmit({ turn: sessionTurn, typeOnly: opts.typeOnly });
+    if (early.reason) { done({ ok: false, reason: early.reason }); return; }
+  }
   const plan = planTyping({
     command,
     screen: inputState(lines, { vim: vimSeen }),
@@ -4721,20 +4730,44 @@ function typeCommand(command, done, kind) {
   });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
   const box = boxText(lines);
-  typeAndCheck(plan.enterInsert, command, r => done(r.ok ? { ok: true, box: box || '' } : r));
+  typeAndCheck(plan.enterInsert, command, (r) => {
+    if (!r.ok) { done(r); return; }
+    if (!submit) { done({ ok: true, box: box || '' }); return; }
+    // The read-back above is the last check; the Enter is decided and sent in this same task (submitTyped).
+    const gate = submitTyped(opts.typeOnly);
+    done({ ok: true, box: box || '', submitted: gate.enter, flash: gate.flash });
+  });
 }
+
+/**
+ * The ONLY Enter that a wand click or the Git drawer's Run /merged can cause (BACKLOG #61,
+ * DESIGN_WAND_SUBMIT.md): asked after typeAndCheck read the box back as exactly the command, and sent in the same
+ * task. app/submit-gate.js decides from the session's state (`sessionTurn`, host/turn-state.js) and the
+ * favourite's type-only flag; a mid-turn line is queued by the CLI itself (verify/probe-queued-skill.js). Returns
+ * the gate's answer, so the caller can show what actually happened ("sent", "queued", "typed").
+ */
+function submitTyped(typeOnly) {
+  const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+  if (gate.enter) send(JSON.stringify({ type: 'input', data: '\r' }));
+  return gate;
+}
+
+// Main asks this page to type a command into its own box (the Git drawer's Run /merged): with `submit: true`
+// the page's gate presses Enter too. /merged is never a type-only favourite.
 if (window.harness && window.harness.onTypeCommand) {
   window.harness.onTypeCommand((ask) => {
     const id = ask && ask.id;
-    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }));
+    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }), undefined,
+      ask && ask.submit === true ? { submit: true, typeOnly: false } : undefined);
   });
 }
 
 // WAND-BEGIN
 // The wand (BACKLOG #51): favourite skills as emoji buttons. app/wand-display.js decides everything (what
 // shows, what a click means, what each edit sends); this is only the DOM and the socket. A click TYPES
-// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and NEVER presses Enter: nothing
-// in this section writes a CR or an input frame, and test/renderer-wand-wiring.test.js pins that.
+// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and, unless the favourite is type-only,
+// typeCommand's submitTyped presses Enter if the submit gate allows (BACKLOG #61). Nothing in this section writes
+// a CR or an input frame itself, and test/renderer-wand-wiring.test.js pins that.
 let wandState = wandDisplay.emptyState();
 let wandBusy = false;          // a type in flight: two overlapping key sequences would garble the box
 let wandFlashTimer = null;
@@ -4810,7 +4843,7 @@ function wandType(plan) {
     if (r.ok) {
       wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, 2500);
     }
-  });
+  }, undefined, { submit: true, typeOnly: plan.typeOnly });
 }
 
 function wandAct(action) {

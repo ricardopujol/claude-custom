@@ -465,13 +465,8 @@ async function act(dial, id) {
     } else if (id === 'type-merged') {
       if (!b || !b.folder || !st.onTypeMerged) return;
       const r = await st.onTypeMerged(b.folder, b.name);
-      // A box that wasn't empty was cleared first (a draft, or the CLI's placeholder: the text can't tell)
-      // Typed, never sent: the Enter is the person's (PR #93 Dexter R2-1)
-      if (r && r.kind === 'typed') {
-        say(dial, key, `Typed /merged in ${r.branch || b.name}'s tab: press Enter there to run it.`
-          + (r.cleared ? " Its input box wasn't empty: if that was a draft, Ctrl+Y in that tab brings it back." : ''));
-      }
-      else say(dial, key, (r && r.text) || "Couldn't run /merged.");
+      // Sent when the page's submit gate pressed Enter, typed when it left the Enter to the person (BACKLOG #61)
+      say(dial, key, actionsLib.mergedSaid(r, b.name));
     }
   } catch (err) {
     say(dial, key, `Couldn't do that: ${errText(err)}`);

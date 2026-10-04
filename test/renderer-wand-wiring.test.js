@@ -39,20 +39,29 @@ test('the wand section is findable, and is the ONLY place the wand touches the p
   assert.ok(START !== -1 && WAND.length > 200, 'WAND-BEGIN / WAND-END must bracket the glue');
 });
 
-test('a click types through typeCommand (the shared typeAndCheck) and NEVER presses Enter', () => {
+test('#61 a click types through typeCommand with submit on; the wand\'s glue holds NO Enter of its own', () => {
   const body = fnBody('wandType');
-  assert.match(body, /typeCommand\(plan\.command,/);
-  // No Enter anywhere in the wand's glue: not a CR, not a raw input frame, not typePlanned (the one that submits).
+  assert.match(body, /typeCommand\(plan\.command, \(r\) => \{[\s\S]*?\}, undefined, \{ submit: true, typeOnly: plan\.typeOnly \}\);/);
+  // No Enter anywhere in the wand's glue: not a CR, not a raw input frame, not typePlanned. The one CR a click
+  // can cause is submitTyped's, and only when the gate allows it (pinned below).
   assert.doesNotMatch(WAND, /\\r|\\n['"]/);
   assert.doesNotMatch(WAND, /type: 'input'/);
   assert.doesNotMatch(WAND, /typePlanned/);
   assert.doesNotMatch(WAND, /input\(/);
+  assert.doesNotMatch(WAND, /submitTyped/, 'the wand reaches the CR only through typeCommand');
 });
 
-test('the shared typeCommand itself is still the one that never submits (the contract the wand leans on)', () => {
+test('#61 the only CR in the typeCommand path is the one planSubmit allowed, written by submitTyped', () => {
   const t = fnBody('typeCommand');
   assert.match(t, /typeAndCheck\(plan\.enterInsert, command,/);
-  assert.doesNotMatch(t, /\\r/);
+  assert.doesNotMatch(t, /\\r/, 'typeCommand writes no CR itself');
+  assert.match(t, /submitTyped\(/);
+  const sub = fnBody('submitTyped');
+  assert.match(sub, /submitGate\.planSubmit\(\{ turn: sessionTurn, typeOnly \}\)/);
+  assert.strictEqual((sub.match(/\\r/g) || []).length, 1, 'exactly one CR');
+  assert.match(sub, /if \(gate\.enter\)[^\n]*\\r/, 'and it is behind the gate');
+  // and no other function the wand or the drawer reach writes one: typePlanned (the top bar) is the only other
+  assert.deepStrictEqual([...JS.matchAll(/data: '\\r'|input\('\\r'\)/g)].length, 2, 'typePlanned (top bar) and submitTyped, nothing else');
 });
 
 test('a click while one is still typing is ignored: two overlapping type sequences would garble the box', () => {
@@ -219,4 +228,103 @@ test('#61 the page styles the name under the emoji: one line, ellipsis past the 
   assert.match(css, /text-overflow: ellipsis/);
   assert.match(css, /white-space: nowrap/);
   assert.match(css, /overflow: hidden/);
+});
+
+// --- #61: submitTyped / typeCommand, run for real against stubs -------------------------------------------------
+
+function loadTypeCommand({ turn, readBack = true, screen = 'ready', connected = true }) {
+  const sent = [];
+  const order = [];
+  const { planTyping } = require('../app/top-bar-display');
+  const { planSubmit } = require('../app/submit-gate');
+  const env = {
+    term: { focus() {} },
+    screenLines: () => [],
+    vimInsertShown: () => false,
+    inputState: () => screen,
+    boxText: () => 'draft',
+    planTyping,
+    ws: { readyState: 1 },
+    WebSocket: { OPEN: 1 },
+    submitGate: { planSubmit },
+    send: (m) => { const d = JSON.parse(m).data; sent.push(d); order.push('send:' + JSON.stringify(d)); },
+    typeAndCheck: (_enter, _command, cb) => { order.push('typed'); cb(readBack ? { ok: true } : { ok: false, reason: 'the input line changed before it could be confirmed' }); },
+    get sessionTurn() { return turn; },
+  };
+  const names = Object.keys(env).filter(k => k !== 'sessionTurn');
+  const src = fnSource('submitTyped') + '\n' + fnSource('typeCommand');
+  const factory = new Function(...names, 'sessionTurn', 'let vimSeen = false;\n' + src + '\nreturn { typeCommand, submitTyped };');
+  return { ...factory(...names.map(k => env[k]), turn), sent, order };
+}
+
+function fnSource(name) {
+  const start = LF.indexOf(`function ${name}(`);
+  assert.ok(start !== -1, name);
+  return LF.slice(start, LF.indexOf('\n}\n', start) + 2);
+}
+
+const run = (h, command, opts, kind) => { let out; h.typeCommand(command, (r) => { out = r; }, kind, opts); return out; };
+
+test('#61 submit on, idle, not type-only: the box was read back, the CR goes in, the answer says sent', () => {
+  const h = loadTypeCommand({ turn: 'idle' });
+  const r = run(h, '/merged', { submit: true, typeOnly: false });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.submitted, true);
+  assert.strictEqual(r.flash, 'sent');
+  assert.deepStrictEqual(h.sent, ['\r']);
+  assert.deepStrictEqual(h.order, ['typed', 'send:"\\r"'], 'the CR is after the read-back, in the same call');
+});
+
+test('#61 submit on, mid-turn: the CR goes in anyway (the CLI queues it) and the flash says queued', () => {
+  const h = loadTypeCommand({ turn: 'turn' });
+  const r = run(h, '/checkpoint', { submit: true, typeOnly: false });
+  assert.deepStrictEqual(h.sent, ['\r']);
+  assert.match(r.flash, /^queued:/);
+});
+
+test('#61 a type-only favourite, or an unseen session, types and sends NO CR', () => {
+  for (const [turn, typeOnly] of [['idle', true], ['turn', true], [null, false], [null, true]]) {
+    const h = loadTypeCommand({ turn });
+    const r = run(h, '/x', { submit: true, typeOnly });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.submitted, false, `${turn}/${typeOnly}`);
+    assert.strictEqual(r.flash, 'typed, press Enter');
+    assert.deepStrictEqual(h.sent, [], `${turn}/${typeOnly}`);
+  }
+});
+
+test('#61 a dialog (prompt) is refused BEFORE anything is typed, type-only or not', () => {
+  for (const typeOnly of [false, true]) {
+    const h = loadTypeCommand({ turn: 'prompt' });
+    const r = run(h, '/x', { submit: true, typeOnly });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.reason, /dialog/);
+    assert.deepStrictEqual(h.order, [], 'nothing typed, nothing sent');
+  }
+});
+
+test('#61 a read-back that fails sends no CR, whatever the state', () => {
+  for (const turn of ['idle', 'turn']) {
+    const h = loadTypeCommand({ turn, readBack: false });
+    const r = run(h, '/x', { submit: true, typeOnly: false });
+    assert.strictEqual(r.ok, false);
+    assert.deepStrictEqual(h.sent, [], turn);
+  }
+});
+
+test('#61 without submit (the reader\'s @mention) nothing is ever submitted, and the answer is the old one', () => {
+  for (const turn of ['idle', 'turn', null]) {
+    const h = loadTypeCommand({ turn });
+    const r = run(h, '@file#L1', undefined, 'mention');
+    assert.deepStrictEqual(r, { ok: true, box: 'draft' });
+    assert.deepStrictEqual(h.sent, []);
+  }
+});
+
+test('#61 the Git drawer\'s type-command carries submit; only a literal true turns it on, typeOnly is off for /merged', () => {
+  const at = RAW.indexOf('window.harness.onTypeCommand((ask) => {');
+  assert.ok(at !== -1);
+  const body = RAW.slice(at, RAW.indexOf('\n  });', at));
+  assert.match(body, /ask && ask\.submit === true \? \{ submit: true, typeOnly: false \} : undefined/);
+  assert.match(body, /window\.harness\.typed\(\{ id, \.\.\.r \}\)/);
 });

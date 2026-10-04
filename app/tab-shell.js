@@ -906,29 +906,35 @@ function createShell(deps) {
       ok: reply.ok === true,
       reason: typeof reply.reason === 'string' && reply.reason ? reply.reason : null,
       box: typeof reply.box === 'string' ? reply.box : '',
+      submitted: reply.submitted === true,       // only a literal true: the page's gate pressed Enter
     });
     return true;
   }
 
-  /** Asks `tab`'s own page to type `command` into its box; its answer, or null if none came in time. */
-  function askToType(tab, command) {
+  /**
+   * Asks `tab`'s own page to type `command` into its box, and with `submit` to press Enter too if its own submit
+   * gate (app/submit-gate.js) allows it; its answer, or null if none came in time.
+   */
+  function askToType(tab, command, submit) {
     const id = ++typingSeq;
     const reply = new Promise(resolve => typing.set(id, { key: tab.key, resolve }));
-    views.send(tab, 'type-command', { id, command });
+    views.send(tab, 'type-command', { id, command, submit: submit === true });
     return Promise.race([reply, sleep(TYPE_ANSWER_MS).then(() => null)]).then((r) => { typing.delete(id); return r; });
   }
 
   /**
-   * *Type /merged*, for the Git drawer (Enhancement #46): select the branch's tab and have ITS OWN PAGE
-   * type `/merged` into its box. NEVER Enter: the person presses it (Ricardo, PR #93 Dexter R2-1). No
-   * hook can say a turn is really over -- another Stop hook can block the first Stop, and the turn goes on
-   * with tools nothing here sees -- so an automatic Enter could queue /merged into a working session.
+   * *Run /merged*, for the Git drawer (Enhancement #46, BACKLOG #61): select the branch's tab and have ITS OWN
+   * PAGE type `/merged` into its box and press Enter once it reads back, if the page's submit gate allows it
+   * (app/submit-gate.js). PR #93 R2-1 left the Enter to the person because no hook can say a turn is really
+   * over; the answer then was that the CLI QUEUES a line submitted mid-turn (verify/probe-queued-skill.js), so
+   * the worst case is a queued command, never a lost one (Ricardo's pick, DESIGN_WAND_SUBMIT.md).
    * The drawer only enables it for an open PR whose tab is at rest; this re-checks the tab
    * (it may have started a turn since the drawer drew) with the drawer's own rule, and explains instead
    * of typing into a busy session. The page types the top bar's way (PR #93 Dexter F3 / Miguel I2): it
    * judges its own screen (nothing into a dialog or a multi-line draft), clears a single-line draft
    * first, enters vim INSERT if needed, and answers ok only once the box reads back exactly `/merged`.
-   * Always answers { kind: 'typed', branch, cleared } or { kind: 'explain', text }.
+   * Always answers { kind: 'typed', branch, cleared, submitted } or { kind: 'explain', text }; `submitted` is
+   * whether the Enter went in (false when the page's gate left it to the person).
    */
   async function typeMerged(sender, folder, wanted) {
     if (!isTabView(sender)) return { kind: 'explain', text: "That tab's window can't be found." };
@@ -963,10 +969,10 @@ function createShell(deps) {
       if (still) return { kind: 'explain', text: `${name}'s session ${still}.` };
       const branch = wanted;
       await userSelect(key);
-      const r = await askToType(tab, '/merged');
+      const r = await askToType(tab, '/merged', true);
       if (!r) return { kind: 'explain', text: `Couldn't confirm /merged reached ${name}'s session: its page didn't answer.` };
       if (!r.ok) return { kind: 'explain', text: `Didn't send /merged to ${name}'s session: ${r.reason || 'its page refused'}.` };
-      return { kind: 'typed', branch, cleared: r.box !== '' };
+      return { kind: 'typed', branch, cleared: r.box !== '', submitted: r.submitted === true };
     } finally {
       typingMerged.delete(key);
     }

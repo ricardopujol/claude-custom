@@ -177,14 +177,27 @@ test('Dexter F9: an origin that exists but isn\'t a github.com URL says so and n
   assert.match(by(A.actionsFor(noPage, ctx({ repoUrl: null, originHost: null })), 'open-pr').why, /no GitHub remote/);
 });
 
-// PR #93 Dexter R2-1 (Ricardo's decision): the action TYPES /merged; the person presses Enter. It says so.
-test('Type /merged is named for what it does, and when enabled says the Enter is yours', () => {
+// BACKLOG #61 (Ricardo's pick 2): the action RUNS /merged again (PR #93 R2-1 left the Enter to the person; the
+// submit gate, app/submit-gate.js, now presses it, and only for a tab at rest, which this rule already requires).
+test('#61 the action is named "Run /merged" and leaves nothing to the person: no hint', () => {
   const a = by(A.actionsFor(open, ctx()), 'type-merged');
-  assert.strictEqual(a.label, 'Type /merged');
+  assert.strictEqual(a.id, 'type-merged', 'the id is unchanged: the drawer and the shell key on it');
+  assert.strictEqual(a.label, 'Run /merged');
   assert.strictEqual(a.enabled, true);
-  assert.strictEqual(a.hint, 'press Enter in its tab to run it');
-  assert.ok(A.actionsFor(open, ctx()).filter(x => x.id !== 'type-merged').every(x => x.hint === null || x.hint === undefined));
-  assert.strictEqual(by(A.actionsFor(merged, ctx()), 'type-merged').hint, null, 'a disabled one says why instead');
+  assert.strictEqual(a.hint, null);
+  assert.ok(A.actionsFor(open, ctx()).every(x => x.hint === null || x.hint === undefined));
+  assert.strictEqual(by(A.actionsFor(merged, ctx()), 'type-merged').label, 'Run /merged', 'and a disabled one keeps the label');
+});
+
+test('#61 mergedSaid: what the drawer says after Run /merged, by whether the Enter went in', () => {
+  assert.match(A.mergedSaid({ kind: 'typed', branch: 'feat/b', cleared: false, submitted: true }, 'x'), /^Sent \/merged to feat\/b's session\.$/);
+  const typedOnly = A.mergedSaid({ kind: 'typed', branch: 'feat/b', cleared: false, submitted: false }, 'x');
+  assert.match(typedOnly, /^Typed \/merged in feat\/b's tab: press Enter there to run it\.$/);
+  assert.match(A.mergedSaid({ kind: 'typed', cleared: false }, 'feat/c'), /Typed \/merged in feat\/c's tab/, 'no branch in the answer: the drawer\'s own name');
+  assert.match(A.mergedSaid({ kind: 'typed', branch: 'feat/b', cleared: true, submitted: true }, 'x'), /Ctrl\+Y in that tab brings it back/);
+  assert.strictEqual(A.mergedSaid({ kind: 'explain', text: 'nope' }, 'x'), 'nope');
+  for (const junk of [null, undefined, {}, { kind: 'explain' }, 5]) assert.strictEqual(A.mergedSaid(junk, 'x'), "Couldn't run /merged.", String(junk));
+  assert.doesNotMatch(A.mergedSaid({ kind: 'typed', branch: 'b', submitted: 'yes' }, 'x'), /^Sent/, 'only a real true counts as sent');
 });
 
 // --- Mortimer, release PR #101 gate (backlog #58): one field varied at a time against a baseline ----------------
@@ -226,7 +239,7 @@ test('Type /merged: exactly one of place / folder wrong each refuses it with "no
     ['folder: null', { ...open, folder: null }],
   ]) {
     assert.deepStrictEqual(exact(A.actionsFor(b, ctx()), 'type-merged'),
-      { id: 'type-merged', label: 'Type /merged', enabled: false, why: 'no open worktree for this branch', hint: null }, what);
+      { id: 'type-merged', label: 'Run /merged', enabled: false, why: 'no open worktree for this branch', hint: null }, what);
   }
 });
 
@@ -265,7 +278,7 @@ test('the labels the drawer draws are exactly these', () => {
   const l = A.actionsFor(open, ctx());
   assert.deepStrictEqual(l.map(a => [a.id, a.label]), [
     ['open-pr', 'Open PR #91'], ['jump', 'Jump to its tab'], ['open-worktree', 'Open a worktree'],
-    ['type-merged', 'Type /merged'], ['copy', 'Copy name'],
+    ['type-merged', 'Run /merged'], ['copy', 'Copy name'],
   ]);
   assert.deepStrictEqual(exact(l, 'copy'), { id: 'copy', label: 'Copy name', enabled: true, why: null, hint: null });
   assert.deepStrictEqual(exact(A.actionsFor(unmerged, ctx({ tab: null })), 'open-worktree'),

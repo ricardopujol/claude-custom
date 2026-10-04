@@ -28,13 +28,14 @@ contextBridge.exposeInMainWorld('harness', {
   selectFolder: (folder) => ipcRenderer.invoke('tab:selectFolder', folder),
   //   tabStates   worktree folders -> [{ folder, open, started, known, working, needsInput }]: the Git drawer's
   //               view of those tabs' sessions (null working / needsInput: that session hasn't reported)
-  //   typeMerged   a worktree folder and the branch the drawer shows -> { kind, text?, branch?, cleared? }:
-  //               switch to its tab, and its page types /merged and Enter (main re-checks all of it)
+  //   typeMerged   a worktree folder and the branch the drawer shows -> { kind, text?, branch?, cleared?, submitted? }:
+  //               switch to its tab, and its page types /merged and, if its submit gate allows, Enter (main re-checks all of it)
   tabStates: (folders) => ipcRenderer.invoke('tab:states', folders),
   typeMerged: (folder, branch) => ipcRenderer.invoke('tab:typeMerged', folder, branch),
   raise: () => ipcRenderer.send('tab:raise'),
-  //   onTypeCommand main -> page { id, command }: type it into THIS tab's box, the top bar's way (PR #93 F3)
-  //   typed         page -> main { id, ok, reason?, box? }: what came of it
+  //   onTypeCommand main -> page { id, command, submit }: type it into THIS tab's box, the top bar's way (PR #93 F3);
+  //                 with submit, press Enter too when the page's submit gate allows (BACKLOG #61)
+  //   typed         page -> main { id, ok, reason?, box?, submitted?, flash? }: what came of it
   onTypeCommand: (fn) => (ipcRenderer.removeAllListeners('type-command'), ipcRenderer.on('type-command',
     (_e, ask) => {
       try { fn(ask); } catch (err) { console.error('[preload] type-command listener threw', err); }
