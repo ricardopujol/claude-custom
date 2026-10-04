@@ -113,7 +113,12 @@ const evalIn = async (page, expression) => {
   return r.result.result.value;
 };
 async function shot(page, file) {
-  const r = await page.send('Page.captureScreenshot', { format: 'png' });
+  // An occluded window never answers a capture: bring it forward, and never wait for ever.
+  await page.send('Page.bringToFront');
+  const r = await Promise.race([
+    page.send('Page.captureScreenshot', { format: 'png' }),
+    sleep(15000).then(() => { throw new Error('captureScreenshot did not answer in 15 s'); }),
+  ]);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.from(r.result.data, 'base64'));
   return file;
