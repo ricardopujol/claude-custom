@@ -127,7 +127,8 @@ test('the confirm and the occupancy chip carry the coloured left rule, the warn 
   assert.match(rule('.bar-chip.occupancy'), /border-left:[^;]*var\(--agent\)/);
   assert.match(rule('.bar-chip.occupancy.warn'), /var\(--warn\)/);
   assert.match(rule('#occupancy-confirm'), /border-left:[^;]*var\(--agent\)/);
-  assert.match(HTML, /--agent:\s*#/);
+  // The agent colour lives in the shared stylesheet both pages load (backlog #65).
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'agent-colour.css'), 'utf8'), /--agent:\s*#/);
   assert.match(HTML, /--warn:\s*#/);
   assert.doesNotMatch(rule('.bar-chip.occupancy') + rule('#occupancy-confirm'), /animation|transition/);
 });

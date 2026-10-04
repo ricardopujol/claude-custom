@@ -7,6 +7,7 @@
        page-title-updated so the page can never take it back. -->
   <title>claude-custom</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="agent-colour.css" />
   <style>
     :root {
       --bg: #11131a;
@@ -32,7 +33,6 @@
       --model-accent: #d08c4a;
       /* Worktree occupancy (#44 + #47): an agent is working in this folder (--agent), and this tab's own
          session is writing too (--warn). The same two colours as the strip's hatched edge. */
-      --agent: #6aa5d8;
       --warn: #e6c34a;
       /* Backlog #52: a session in a /bedtime night (the strip's night tab, the bar's moon chip). */
       --night: #1a2350;
@@ -1242,12 +1242,12 @@
        portrait itself is a placeholder. */
     .agent[data-state="sleeping"] { opacity: .42; }
     .agent[data-state="working"]  { background: rgba(255,255,255,.05); }
-    .agent[data-state="working"] .face { box-shadow: 0 0 0 2px var(--accent); }
+    .agent[data-state="working"] .face { box-shadow: 0 0 0 2px var(--agent); }
     .agent[data-state="happy"]    { background: rgba(95,176,122,.14); }
     .agent[data-state="happy"] .face { box-shadow: 0 0 0 2px var(--ok); }
     .agent[data-state="stressed"] { background: rgba(204,95,95,.14); }
     .agent[data-state="stressed"] .face { box-shadow: 0 0 0 2px var(--bad); }
-    .agent[data-state="working"] .state { color: var(--accent); }
+    .agent[data-state="working"] .state { color: var(--agent); }
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
 

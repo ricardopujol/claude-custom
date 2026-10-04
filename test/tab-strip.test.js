@@ -553,7 +553,8 @@ test('occupancy page: the hatched edge is stripes in the agent colour, the warni
   assert.match(edge, /repeating-linear-gradient\([^;]*var\(--agent\)/);
   assert.doesNotMatch(edge, /animation|transition/);
   assert.match(rule('.tab.occupied-warn::after'), /var\(--warn\)/);
-  assert.match(html, /--agent:\s*#/);
+  // The agent colour lives in the shared stylesheet both pages load (backlog #65).
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'agent-colour.css'), 'utf8'), /--agent:\s*#/);
   assert.match(html, /--warn:\s*#/);
   assert.doesNotMatch(rule('.agent-tag') || '', /animation/);
   assert.match(rule('.tab'), /position:\s*relative/);
