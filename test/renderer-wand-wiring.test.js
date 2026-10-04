@@ -235,7 +235,10 @@ test('#61 the page styles the name under the emoji: one line, ellipsis past the 
 function loadTypeCommand({ turn, readBack = true, screen = 'ready', connected = true }) {
   const sent = [];
   const order = [];
-  const { planTyping } = require('../app/top-bar-display');
+  // A stub, not app/top-bar-display.js: that module is mutated, and a test that requires it must be in Stryker's
+  // command (test/stryker-config.test.js); this file is repo-scanning and deliberately is not.
+  const planTyping = ({ command, screen, connected }) => (typeof command === 'string' && connected && screen === 'ready'
+    ? { ok: true, enterInsert: false } : { ok: false, reason: 'stub refusal' });
   const { planSubmit } = require('../app/submit-gate');
   const env = {
     term: { focus() {} },
