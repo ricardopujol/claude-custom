@@ -30,9 +30,12 @@ const OPEN_WORKTREE_WHY = 'needs agent-creator to attach an existing branch';
 // The lock states whose host runs the session (host/session-gate.js): held, no lock to take, or opened anyway.
 const RUNS_A_SESSION = ['held', 'unlocked', 'override'];
 
-// `hint`: what an ENABLED action leaves to the person (none does now); `why`: why one is off
-const yes = (id, label, hint = null) => ({ id, label, enabled: true, why: null, hint });
-const no = (id, label, why) => ({ id, label, enabled: false, why, hint: null });
+// `why`: why a disabled action is off
+const yes = (id, label) => ({ id, label, enabled: true, why: null });
+const no = (id, label, why) => ({ id, label, enabled: false, why });
+
+// The cleared-draft note is the wand's too: one copy, in app/submit-gate.js (loaded before this file)
+const submitGate = typeof module !== 'undefined' && module.exports ? require('./submit-gate') : root.submitGate;
 
 function openPr(b, c) {
   const hasPr = Number.isInteger(b.pr);
@@ -120,7 +123,7 @@ function mergedSaid(r, name) {
       ? `Sent /merged to ${where}'s session.`
       : `Typed /merged in ${where}'s tab: press Enter there to run it.`;
     // A box that wasn't empty was cleared first (a draft, or the CLI's placeholder: the text can't tell)
-    return lead + (r.cleared ? " Its input box wasn't empty: if that was a draft, Ctrl+Y in that tab brings it back." : '');
+    return lead + (r.cleared ? submitGate.DRAFT_CLEARED : '');
   }
   return (r && typeof r.text === 'string' && r.text) || "Couldn't run /merged.";
 }

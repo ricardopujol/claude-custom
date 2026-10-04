@@ -4724,17 +4724,20 @@ function typePlanned(enterInsert, command, done) {
  * empty, plus `submitted` and `flash` (the gate's words) when `submit` was on; or `done({ ok: false, reason })`.
  * A dialog (`sessionTurn === 'prompt'`) is refused before a key is typed.
  */
+// The submit path's waits (BACKLOG #61, DESIGN_WAND_SUBMIT.md "Review round picks"): F1, how long a running turn
+// gets between the read-back and the Enter for a dialog to show; F7, how often and how many times the screen is
+// looked at for the CLI's queued-messages line after the Enter (150 ms x 6 = 900 ms).
+const SUBMIT_RECHECK_MS = 400;
+const QUEUED_POLL_MS = 150;
+const QUEUED_POLLS = 6;
+
 function typeCommand(command, done, kind, opts) {
   term.focus();
   const lines = screenLines();
   if (vimInsertShown(lines)) vimSeen = true;
   const submit = !!(opts && opts.submit);
-  if (submit) {
-    // A dialog is open (the host's measure): refused before a key is typed, type-only or not. planTyping's screen
-    // check refuses a dialog it can see too; this is the hooks' side of the same answer.
-    const early = submitGate.planSubmit({ turn: sessionTurn, typeOnly: opts.typeOnly });
-    if (early.reason) { done({ ok: false, reason: early.reason }); return; }
-  }
+  // No refusal from the hook state here (F3): when the host says 'prompt' but the SCREEN is a normal ready box,
+  // the command is typed with no Enter. planTyping's screen check is what refuses a dialog it can see.
   const plan = planTyping({
     command,
     screen: inputState(lines, { vim: vimSeen }),
@@ -4746,23 +4749,67 @@ function typeCommand(command, done, kind, opts) {
   typeAndCheck(plan.enterInsert, command, (r) => {
     if (!r.ok) { done(r); return; }
     if (!submit) { done({ ok: true, box: box || '' }); return; }
-    // The read-back above is the last check; the Enter is decided and sent in this same task (submitTyped).
-    const gate = submitTyped(opts.typeOnly);
-    done({ ok: true, box: box || '', submitted: gate.enter, flash: gate.flash });
+    // The read-back above is the last check; the gate is asked in this same task (submitTyped).
+    submitTyped(command, { typeOnly: opts.typeOnly, enterInsert: plan.enterInsert }, (s) => {
+      done(s.ok ? { ok: true, box: box || '', submitted: s.submitted, flash: s.flash } : s);
+    });
   });
 }
 
 /**
- * The ONLY Enter that a wand click or the Git drawer's Run /merged can cause (BACKLOG #61,
- * DESIGN_WAND_SUBMIT.md): asked after typeAndCheck read the box back as exactly the command, and sent in the same
- * task. app/submit-gate.js decides from the session's state (`sessionTurn`, host/turn-state.js) and the
- * favourite's type-only flag; a mid-turn line is queued by the CLI itself (verify/probe-queued-skill.js). Returns
- * the gate's answer, so the caller can show what actually happened ("sent", "queued", "typed").
+ * Decides, from app/submit-gate.js, whether the typed command gets an Enter, and sees it through. `done` gets
+ * { ok: true, submitted, flash } or { ok: false, reason }. A gate that says no ends it with the gate's own words
+ * and no Enter (a type-only favourite, an unseen session, a host that says 'prompt'). A gate that says yes for an
+ * idle session presses Enter at once, in the same task as the read-back. For a RUNNING turn (`recheck`, F1) it
+ * waits SUBMIT_RECHECK_MS first, holding the typing lock so nobody types over the line, and sends the Enter only
+ * if the box still reads back as exactly the command and the host still doesn't say 'prompt': a permission
+ * dialog can open between the read-back and the Enter, and the read-back only proves what xterm had parsed.
+ * Otherwise the line is cleared and the answer is a refusal. The accepted leftover risk: a dialog that lands in
+ * those last milliseconds.
  */
-function submitTyped(typeOnly) {
+function submitTyped(command, opts, done) {
+  const typeOnly = opts.typeOnly;
   const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
-  if (gate.enter) send(JSON.stringify({ type: 'input', data: '\r' }));
-  return gate;
+  if (!gate.enter) { done({ ok: true, submitted: false, flash: gate.flash }); return; }
+  if (!gate.recheck) { pressEnter(done); return; }
+  typingBusy = true;
+  setTimeout(() => {
+    typingBusy = false;
+    const again = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen })) { pressEnter(done); return; }
+    clearTypedLine(opts.enterInsert);
+    done({ ok: false, reason: 'the screen changed while waiting to press Enter (a dialog may have opened), so nothing was sent' });
+  }, SUBMIT_RECHECK_MS);
+}
+
+/**
+ * The ONLY Enter that a wand click or the Git drawer's Run /merged can cause. A socket that is not OPEN drops the
+ * frame silently (send()), so that is reported as not sent, never as "sent" (Dexter F6 / Miguel M1). Then the
+ * flash is read off the SCREEN, not guessed from the hook state (F7): watchQueued.
+ */
+function pressEnter(done) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { done({ ok: false, reason: 'not connected to the session: the Enter was not sent' }); return; }
+  send(JSON.stringify({ type: 'input', data: '\r' }));
+  watchQueued(done);
+}
+
+/** After an Enter: "queued" only if the CLI's own queued-messages line shows within the window, else "sent" (F7). */
+function watchQueued(done) {
+  let looks = 0;
+  const look = () => {
+    if (submitGate.queuedShown(screenLines())) { done({ ok: true, submitted: true, flash: submitGate.FLASH.queued }); return; }
+    if (++looks >= QUEUED_POLLS) { done({ ok: true, submitted: true, flash: submitGate.FLASH.sent }); return; }
+    setTimeout(look, QUEUED_POLL_MS);
+  };
+  setTimeout(look, QUEUED_POLL_MS);
+}
+
+/** Empties the box of what typeCommand put there, as a failed read-back does: Ctrl-E, Ctrl-U, back to vim NORMAL. */
+function clearTypedLine(enterInsert) {
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  input('\x05');
+  setTimeout(() => input('\x15'), PTY_STEP_MS);
+  if (enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
 }
 
 // Main asks this page to type a command into its own box (the Git drawer's Run /merged): with `submit: true`
@@ -4854,7 +4901,8 @@ function wandType(plan) {
     renderWand();
     clearTimeout(wandFlashTimer);
     if (r.ok) {
-      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, 2500);
+      // a note about a cleared draft needs time to be read (Dexter F5)
+      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, wandState.flash && wandState.flash.long ? 8000 : 2500);
     }
   }, undefined, { submit: true, typeOnly: plan.typeOnly });
 }

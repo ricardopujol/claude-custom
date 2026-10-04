@@ -41,8 +41,12 @@ const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
+// The words come from app/submit-gate.js (loaded before this file in the renderer): one copy of "typed, press
+// Enter" and of the cleared-draft note, shared with the Git drawer (Miguel M8, Dexter F5).
+const gate = typeof module !== 'undefined' && module.exports ? require('./submit-gate') : root.submitGate;
+
 const SKILL_LIST_CAP = 40;
-const FLASH_TEXT = 'typed, press Enter';
+const FLASH_TEXT = gate.FLASH.typed;
 const EMOJI_CHOICES = Object.freeze([
   '🌙', '✅', '🔀', '💡', '🚀', '⚡', '🧪', '🔧', '🛠️', '📝', '📌', '🔍', '🧹', '🎯', '🔥', '⭐',
   '💬', '📦', '🔒', '🧠', '🎨', '🐛', '📈', '⏰', '✨', '🤖', '📚', '🧭', '🪄', '🧰',
@@ -248,7 +252,9 @@ function view(state) {
     buttons: mode === 'ok' ? s.favourites.map(f => ({
       id: f.id, emoji: f.emoji, skill: f.skill, name: f.skill, args: f.args, typeOnly: f.typeOnly === true, command: commandOf(f), title: titleOf(s, f),
       // The accessible name: in edit mode a press OPENS THE EDITOR, and the keyboard can say so and reorder (Miguel I3).
-      label: s.edit ? `${commandOf(f)}, press Enter to edit, Alt+Left or Alt+Right to move` : commandOf(f),
+      // Whether a click RUNS it or only types it is part of the name (Miguel M4): the title is not reliably read.
+      label: s.edit ? `${commandOf(f)}, press Enter to edit, Alt+Left or Alt+Right to move`
+        : `${commandOf(f)}, ${f.typeOnly === true ? 'click to type it, then press Enter' : 'click to run it'}`,
       missing: isMissing(s, f.skill), flash: !!(s.flash && s.flash.id === f.id),
     })) : [],
     editor: mode === 'ok' ? editorView(s) : null,
@@ -307,8 +313,11 @@ function typed(state, id, result) {
   const f = isStr(id) ? s.favourites.find(x => x.id === id) : undefined;
   if (!f) return { ...s, flash: null };
   if (isObj(result) && result.ok === true) {
-    const text = isStr(result.flash) && result.flash !== '' ? result.flash : FLASH_TEXT;
-    return { ...s, flash: { id: f.id, text }, notice: null };
+    const base = isStr(result.flash) && result.flash !== '' ? result.flash : FLASH_TEXT;
+    // The click replaced a non-empty box (a draft, or the CLI's placeholder: the text can't tell): say so, as
+    // Run /merged does, because an Enter makes the loss irreversible from the person's side (Dexter F5).
+    const cleared = isStr(result.box) && result.box !== '';
+    return { ...s, flash: { id: f.id, text: base + (cleared ? gate.DRAFT_CLEARED : ''), long: cleared }, notice: null };
   }
   const reason = isObj(result) && isStr(result.reason) && result.reason ? result.reason : 'the terminal did not take it';
   return { ...s, flash: null, notice: `didn't type ${commandOf(f)}: ${reason}` };
@@ -328,11 +337,12 @@ function openEditor(state, id) {
   const s = state || emptyState();
   if (!s.edit || s.status === 'unavailable' || s.dropped > 0) return s;
   if (id === null) {
-    return { ...s, error: null, editor: { id: null, emoji: '', skill: '', args: '', typeOnly: false, query: '', saving: false } };
+    return { ...s, error: null, editor: { id: null, emoji: '', skill: '', args: '', typeOnly: false, query: '', saving: false, orig: null } };
   }
   const f = isStr(id) ? s.favourites.find(x => x.id === id) : undefined;
   if (!f) return s;
-  return { ...s, error: null, editor: { id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, typeOnly: f.typeOnly === true, query: '', saving: false } };
+  const orig = { emoji: f.emoji, skill: f.skill, args: f.args, typeOnly: f.typeOnly === true };
+  return { ...s, error: null, editor: { id: f.id, ...orig, query: '', saving: false, orig } };
 }
 
 const closeEditor = (state) => ({ ...(state || emptyState()), editor: null, error: null });
@@ -358,8 +368,21 @@ function editorSubmit(state) {
   const b = begin(s);
   const message = e.id === null
     ? { type: 'wand-add', emoji: e.emoji.trim(), skill: e.skill, args: e.args, typeOnly: e.typeOnly === true, req: b.req }
-    : { type: 'wand-update', id: e.id, patch: { emoji: e.emoji.trim(), skill: e.skill, args: e.args, typeOnly: e.typeOnly === true }, req: b.req };
+    : { type: 'wand-update', id: e.id, patch: changedFields(e), req: b.req };
   return { state: { ...b.state, error: null, editor: { ...e, saving: true } }, message };
+}
+
+/**
+ * Only the fields the editor CHANGED since it was opened (Dexter F8): the host writes what it is told, so a
+ * patch of every field would put this window's stale snapshot over a newer value another window saved
+ * (typeOnly most of all: re-arming a submit nobody asked for).
+ */
+function changedFields(e) {
+  const o = e.orig || {};
+  const now = { emoji: e.emoji.trim(), skill: e.skill, args: e.args, typeOnly: e.typeOnly === true };
+  const patch = {};
+  for (const k of Object.keys(now)) if (now[k] !== o[k]) patch[k] = now[k];
+  return patch;
 }
 
 function deleteMsg(state, id) {
