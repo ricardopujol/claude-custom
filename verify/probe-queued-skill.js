@@ -54,6 +54,9 @@ function sse(res, n, text, model) {
 }
 
 async function main() {
+  // Before anything is created: a missing claude must not leave a temp folder or a listening server behind.
+  const claudeBin = findClaude();
+  if (!claudeBin) throw new Error('claude not found under npm root -g');
   const pty = require('node-pty');
   const { Terminal } = require('@xterm/headless');
   const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
@@ -98,7 +101,11 @@ async function main() {
   const port = server.address().port;
 
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_CUSTOM_') || k.startsWith('CLAUDE_CODE_') || k === 'CLAUDECODE') delete env[k];
+  // CLAUDE_CODE_GIT_BASH_PATH stays: the Windows CLI needs it, and stripping it would be a false FAIL.
+  for (const k of Object.keys(env)) {
+    if (k === 'CLAUDE_CODE_GIT_BASH_PATH') continue;
+    if (k.startsWith('CLAUDE_CUSTOM_') || k.startsWith('CLAUDE_CODE_') || k === 'CLAUDECODE') delete env[k];
+  }
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ANTHROPIC_API_KEY;
   env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
@@ -109,8 +116,6 @@ async function main() {
 
   const COLS = 120, ROWS = 40;
   const term = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
-  const claudeBin = findClaude();
-  if (!claudeBin) throw new Error('claude not found under npm root -g');
   const p = pty.spawn(claudeBin, ['--model', 'haiku'], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
   p.onData(d => term.write(d));
   const killed = () => { try { killPidTree(p.pid); } catch { /* gone */ } };
@@ -159,7 +164,8 @@ async function main() {
   } finally {
     killed();
     server.close();
-    try { fs.rmSync(base, { recursive: true, force: true }); } catch { /* temp */ }
+    // a pty that is still dying can hold the folder for a moment (EBUSY on Windows): retry, and say if it stays
+    try { fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch (e) { console.log(`note: could not remove ${base}: ${e.message}`); }
   }
   console.log('RESULT ' + JSON.stringify(verdict));
   console.log(verdict.asSkill ? "RESULT: a /skill submitted mid-turn is KEPT and RUNS AS A SKILL (the skill's body reached the model)."

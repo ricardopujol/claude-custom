@@ -35,7 +35,8 @@ contextBridge.exposeInMainWorld('harness', {
   raise: () => ipcRenderer.send('tab:raise'),
   //   onTypeCommand main -> page { id, command, submit }: type it into THIS tab's box, the top bar's way (PR #93 F3);
   //                 with submit, press Enter too when the page's submit gate allows (BACKLOG #61)
-  //   typed         page -> main { id, ok, reason?, box?, submitted?, flash? }: what came of it
+  //   typed         page -> main { id, ok, reason?, box?, submitted?, flash? }: what came of it; main
+  //                 keeps ok, reason, box and submitted (the wand shows `flash` itself; the drawer words its own)
   onTypeCommand: (fn) => (ipcRenderer.removeAllListeners('type-command'), ipcRenderer.on('type-command',
     (_e, ask) => {
       try { fn(ask); } catch (err) { console.error('[preload] type-command listener threw', err); }

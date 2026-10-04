@@ -37,9 +37,13 @@
  *  12  (BACKLOG #61) the skill's name is drawn under each emoji, ellipsised, the full /skill in title and aria-label
  *  13  (BACKLOG #61) the submit gate in the real page, with the CLI's hook events sent down the host's pipe as the
  *      native helper would: SessionStart -> a click SUBMITS (the stand-in box logs the line; flash "sent"); a turn
- *      running -> it submits anyway and says "queued: Claude runs it when it's free"; a dialog open -> nothing is
- *      typed, nothing submitted, and the panel says why; a type-only favourite (ticked in the editor, persisted
- *      to wand.json) types and does NOT submit, even when idle
+ *      running -> it submits after a ~400 ms re-check (F1), and the flash is read off the SCREEN (F7): "queued"
+ *      only when the stand-in box shows the CLI's "Press up to edit queued messages" line, else "sent"; a dialog
+ *      opening DURING that wait (the host says prompt) -> no Enter, the line is cleared, the panel says nothing
+ *      was sent (F1); the host saying prompt over a normal ready box -> typed with no Enter and the hint (F3);
+ *      prompt over a real dialog on screen -> refused, nothing typed; a click that replaced a draft says so, with
+ *      Ctrl+Y (F5); a type-only favourite (ticked in the editor, persisted to wand.json as version 2) types and
+ *      does NOT submit, even when idle
  *
  * REFUSES to run while a live host is open on this checkout (Miguel S2): the probe corrupts and restores
  * .harness/state/wand.json on purpose, and a real window would see it.
@@ -266,8 +270,13 @@ async function main() {
   // The draft is staged in the fake box, then waited for in the PAGE's own terminal: the box writes its
   // file before the redraw has crossed the pty and the socket, and a click that lands mid-redraw would see
   // a half-drawn screen and (correctly) refuse to type.
+  // The stand-in box reads its control file every 100 ms and ignores a write identical to the last one, so every
+  // write carries a sequence number and is given time to be seen before the next (two writes inside one poll would
+  // lose the first, and an identical `{"draft":""}` twice would leave a stale line in the box).
+  let ctlSeq = 0;
+  const ctl = async (obj) => { fs.writeFileSync(boxCtl, JSON.stringify({ ...obj, n: ++ctlSeq })); await sleep(300); };
   const setDraft = async (text) => {
-    fs.writeFileSync(boxCtl, JSON.stringify({ draft: text }));
+    await ctl({ draft: text });
     await waitFor(() => boxLine() === text, 5000, 100);
     await waitFor(async () => {
       const r = await view(app, 'gitScreen');
@@ -294,7 +303,7 @@ async function main() {
     first.buttons.every(b => b.nameBelow && b.nameEllipsis) && first.buttons.map(b => b.name).join() === 'bedtime,checkpoint,merged,brainstorming',
     JSON.stringify(first.buttons.map(b => [b.name, b.nameBelow, b.nameEllipsis])));
   check('12 (#61): ...while the emoji is still the emoji alone, and the full /skill stays in the accessible name',
-    first.buttons.map(b => b.emoji).join(' ') === '🌙 ✅ 🔀 💡' && first.buttons[1].label === '/checkpoint', JSON.stringify(first.buttons.map(b => [b.emoji, b.label])));
+    first.buttons.map(b => b.emoji).join(' ') === '🌙 ✅ 🔀 💡' && first.buttons[1].label === '/checkpoint, click to run it', JSON.stringify(first.buttons.map(b => [b.emoji, b.label])));
   check('1: outside edit mode there is no ✕, no +, no drag handle', first.deletes === 0 && !first.add && first.buttons.every(b => !b.draggable));
   check('1: no wand.json yet: looking is not writing', disk() === null);
   await sleep(700);     // a capture straight after the tab switch can still hold the previous frame
@@ -503,29 +512,80 @@ async function main() {
   await command(app, { cmd: 'screenshot', file: path.join(shots, '13-sent.png') });
   await sleep(2800);     // let the flash fade
 
+  // F5: a click over a draft replaces it; an Enter makes that irreversible from the person's side, so it says so
+  await setDraft('half a thought');
+  const draftBefore = submitted().length;
+  await click({ act: 'press', id: 'f2' });
+  await waitFor(() => (submitted().length === draftBefore + 1 ? true : null), 10000, 150);
+  const draftSaid = await waitFor(async () => { const s2 = await ws(); return /Ctrl\+Y in that tab brings it back/.test(s2.status) ? s2 : null; }, 6000, 100);
+  check('13 (F5): a click that replaced a draft submitted exactly "/checkpoint" and the flash says the draft was cleared (Ctrl+Y)',
+    !!draftSaid && submitted().at(-1) === '/checkpoint' && /^sent /.test(draftSaid.status), JSON.stringify((await ws()).status));
+  await sleep(8200);     // that flash stays up longer (8 s) than a plain one
+
+  // a turn is running: the Enter waits ~400 ms for a dialog to show, and the words come from the screen (F7)
   await hook('UserPromptSubmit', { prompt: 'a turn is running' });
   check('13: a turn starts (hook) and the page sees it', !!(await turnIs('turn')), JSON.stringify((await ws()).turn));
+  const midBefore = await forget();
+  const t0 = Date.now();
+  await click({ act: 'press', id: 'f3' });
+  await waitFor(() => (boxLine() === '/merged' ? true : null), 10000, 50);
+  await sleep(150);
+  check('13 (F1): mid-turn the line is typed but the Enter is held back for the re-check (nothing submitted yet)', submitted().length === midBefore, JSON.stringify(submitted()));
+  const sent2 = await waitFor(() => (submitted().length === midBefore + 1 ? true : null), 10000, 50);
+  const sentSaid = await waitFor(async () => { const s2 = await ws(); return s2.status === 'sent' ? s2 : null; }, 6000, 100);
+  check('13 (F1): ...and then goes in: "/merged" reached the CLI', !!sent2 && submitted().at(-1) === '/merged', JSON.stringify({ submitted: submitted(), ms: Date.now() - t0 }));
+  check('13 (F7): the stand-in box showed no queued line, so the flash says "sent", not "queued" (the hook state no longer decides)', !!sentSaid, JSON.stringify((await ws()).status));
+  await sleep(2800);
+  await ctl({ queue: true });
   const queuedBefore = await forget();
   await click({ act: 'press', id: 'f3' });
-  const sent2 = await waitFor(() => (submitted().length === queuedBefore + 1 ? true : null), 10000, 150);
-  const queuedSaid = await waitFor(async () => { const s = await ws(); return /^queued: Claude runs it when it's free$/.test(s.status) ? s : null; }, 6000, 100);
-  check('13: mid-turn, a click submits anyway (the CLI queues it): "/merged" reached the CLI', !!sent2 && submitted().at(-1) === '/merged', JSON.stringify(submitted()));
-  check('13: ...and the flash says "queued: Claude runs it when it\'s free"', !!queuedSaid, JSON.stringify((await ws()).status));
+  const sent3 = await waitFor(() => (submitted().length === queuedBefore + 1 ? true : null), 10000, 150);
+  const queuedSaid = await waitFor(async () => { const s2 = await ws(); return /^queued: Claude runs it when it's free$/.test(s2.status) ? s2 : null; }, 6000, 100);
+  check('13 (F7): when the box shows the CLI\'s "Press up to edit queued messages" line the flash says "queued: Claude runs it when it\'s free"', !!sent3 && !!queuedSaid, JSON.stringify((await ws()).status));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '13-queued.png') });
+  await ctl({ queue: false });
+  await setDraft('');
+  await sleep(2800);
+
+  // F1, the point of the wait: a permission dialog lands in the gap between the read-back and the Enter
+  const raceBefore = await forget();
+  await click({ act: 'press', id: 'f2' });
+  await waitFor(() => (boxLine() === '/checkpoint' ? true : null), 10000, 40);
+  // the read-back comes ~240 ms after the last key, then the Enter waits 400 ms: land the dialog in the middle of that
+  await sleep(450);
+  await hook('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
+  const raceSaid = await waitFor(async () => { const s2 = await ws(); return /nothing was sent/.test(s2.status) ? s2 : null; }, 6000, 100);
+  await sleep(1200);
+  check('13 (F1): a dialog opening during the wait (the host says prompt): NO Enter, the line is cleared, and the panel says nothing was sent',
+    !!raceSaid && submitted().length === raceBefore && boxLine() === '', JSON.stringify({ status: (await ws()).status, box: boxLine(), n: submitted().length - raceBefore }));
   await hook('Stop', {});
   await turnIs('idle');
   await sleep(2800);
 
+  // F3: the host says a dialog is open, but the screen shows a normal ready box: typed, never Enter, with a hint
+  await hook('UserPromptSubmit', { prompt: 'again' });
   await hook('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
-  check('13: a dialog opens (hook) and the page sees "prompt"', !!(await turnIs('prompt')), JSON.stringify((await ws()).turn));
-  const dialogBefore = await forget();
+  check('13: the host says "prompt" (hook)', !!(await turnIs('prompt')), JSON.stringify((await ws()).turn));
+  const stuckBefore = await forget();
   await click({ act: 'press', id: 'f2' });
-  const refusedSaid = await waitFor(async () => { const s = await ws(); return /didn't type \/checkpoint: a dialog is open/.test(s.status) ? s : null; }, 6000, 100);
-  await sleep(1500);
-  check('13: with a dialog open nothing is typed and nothing is submitted, and the panel says why',
-    !!refusedSaid && boxLine() === '' && submitted().length === dialogBefore, JSON.stringify({ status: (await ws()).status, box: boxLine(), n: submitted().length - dialogBefore }));
+  const stuckTyped = await waitFor(() => (boxLine() === '/checkpoint' ? true : null), 10000, 150);
+  const stuckSaid = await waitFor(async () => { const s2 = await ws(); return /^Claude may be waiting on you: press Enter if it's free$/.test(s2.status) ? s2 : null; }, 6000, 100);
+  await sleep(1200);
+  check('13 (F3): "prompt" over a normal ready box: typed with NO Enter, and the flash is the hint',
+    !!stuckTyped && !!stuckSaid && submitted().length === stuckBefore, JSON.stringify({ status: (await ws()).status, box: boxLine(), n: submitted().length - stuckBefore }));
+  await setDraft('');
+  // F3: the host says prompt AND the screen shows a dialog: refused before a key is typed
+  await ctl({ dialog: true });
+  await waitFor(async () => { const r = await view(app, 'gitScreen'); return r && /Do you want to run this command/.test(r.text || '') ? r : null; }, 5000, 100);
+  await click({ act: 'press', id: 'f2' });
+  const refusedSaid = await waitFor(async () => { const s2 = await ws(); return /didn't type \/checkpoint: a dialog is open in the terminal/.test(s2.status) ? s2 : null; }, 6000, 100);
+  await sleep(800);
+  check('13 (F3): "prompt" AND a dialog on the screen: refused, nothing typed, nothing submitted', !!refusedSaid && submitted().length === stuckBefore && boxLine() === '',
+    JSON.stringify({ status: (await ws()).status, box: boxLine() }));
+  await ctl({ dialog: false });
   await hook('Stop', {});
   await turnIs('idle');
+  await setDraft('');
   await sleep(300);
 
   // a type-only favourite: ticked in the editor, persisted, and then a click types without submitting
