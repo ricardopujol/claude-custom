@@ -65,6 +65,16 @@ test('the /merged answer is what actionsLib.mergedSaid says: sent, typed, the sh
     assert.strictEqual(r.said(), actionsLib.mergedSaid(reply, 'feat/a'), JSON.stringify(reply));
     assert.notStrictEqual(r.said(), '');
   }
+  // literals, so the oracle above is not the only witness
+  const literal = async (reply) => {
+    const r = rig({ handlers: { onTypeMerged: async () => reply } });
+    r.open('feat/a');
+    await r.press('type-merged');
+    return r.said();
+  };
+  assert.strictEqual(await literal({ kind: 'explain', text: 'That tab is busy.' }), 'That tab is busy.');
+  assert.strictEqual(await literal(undefined), "Couldn't run /merged.");
+  assert.strictEqual(await literal({ kind: 'typed', submitted: false }), "Typed /merged in feat/a's tab: press Enter there to run it.");
   const sent = rig();
   sent.open('feat/a');
   await sent.press('type-merged');
@@ -77,6 +87,14 @@ test('Run /merged with no handler, or on a branch with no folder, does nothing a
   none.open('feat/a');
   await none.press('type-merged');
   assert.strictEqual(none.said(), '');
+
+  // a branch with no folder: the action is off with its reason, and pressing it asks nothing of the handler
+  const folderless = rig({ tree: treeOf([branch({ folder: null })]) });
+  folderless.open('feat/a');
+  assert.strictEqual(folderless.button('type-merged').getAttribute('aria-disabled'), 'true');
+  await folderless.press('type-merged');
+  assert.deepStrictEqual(folderless.h.calls.typeMerged, []);
+  assert.strictEqual(folderless.said(), '');
 });
 
 test('open PR: the handler gets the PR\'s URL and the answer says opened, or could not; no handler says so', async () => {
@@ -298,7 +316,8 @@ test('the drawing: one spoke per branch named and labelled, the hub named, the d
   assert.ok(spokes.every(g => g.getAttribute('tabindex') === '0'), 'each spoke is reachable by keyboard');
   const labels = r.dial.querySelectorAll('.git-label').map(l => l.textContent);
   assert.deepStrictEqual(labels, ['a #91', '▶ b']);
-  assert.match(r.dial.querySelector('.git-foot').textContent, /./);
+  assert.strictEqual(r.dial.querySelector('.git-foot').textContent,
+    '2 branches · 5k tokensmain · 3 merges1 merged · 1 open · 0 unmerged · 0 deleted');
 });
 
 test('a hub with no total spend says "?", never 0', () => {
@@ -325,6 +344,7 @@ test('a ledger that could not be fully read is said above the dial', () => {
 
 test('hovering a spoke shows its card with the facts and moves it with the pointer; leaving hides it; a pinned drawer suppresses it', () => {
   const r = rig();
+  r.dial.layout = { width: 800, height: 600 };
   const card = r.dial.querySelector('.git-card');
   assert.strictEqual(card.hidden, true);
   r.spoke('feat/a').dispatch('mouseover', { clientX: 30, clientY: 40 });
@@ -332,6 +352,9 @@ test('hovering a spoke shows its card with the facts and moves it with the point
   assert.strictEqual(card.dataset.key, 'feat/a');
   assert.match(card.textContent, /feat\/a/);
   assert.match(card.textContent, /1\.2M tokens · 12 commits/);
+  assert.deepStrictEqual([card.style.left, card.style.top], ['42px', '52px'], 'beside the pointer (+12)');
+  r.dial.dispatch('mousemove', { clientX: 100, clientY: 200 });
+  assert.deepStrictEqual([card.style.left, card.style.top], ['112px', '212px'], 'and it follows the pointer');
   r.spoke('feat/a').dispatch('mouseout', { relatedTarget: r.dial });
   assert.strictEqual(card.hidden, true);
 
@@ -346,6 +369,19 @@ test('the keyboard: Enter opens the drawer and focuses the first action that wor
   assert.strictEqual(enter.defaultPrevented, true);
   assert.strictEqual(r.dial.querySelector('.git-drawer').hidden, false);
   assert.strictEqual(r.doc.activeElement.getAttribute('data-act'), 'jump', 'Jump if it works');
+
+  const title = () => r.dial.querySelector('.git-drawer').getAttribute('aria-label');
+  const right = r.spoke('feat/a').dispatch('keydown', { key: 'ArrowRight' });
+  assert.strictEqual(right.defaultPrevented, true);
+  assert.strictEqual(r.doc.activeElement, r.spoke('fix/b'), 'the next spoke takes the focus');
+  assert.strictEqual(title(), 'fix/b: details and actions', 'and the drawer follows');
+  r.spoke('fix/b').dispatch('keydown', { key: 'ArrowDown' });
+  assert.strictEqual(r.doc.activeElement, r.spoke('feat/a'), 'past the last spoke it wraps to the first');
+  r.spoke('feat/a').dispatch('keydown', { key: 'ArrowLeft' });
+  assert.strictEqual(r.doc.activeElement, r.spoke('fix/b'), 'and back before the first it wraps to the last');
+  assert.strictEqual(title(), 'fix/b: details and actions');
+  r.spoke('fix/b').dispatch('keydown', { key: 'ArrowUp' });
+  assert.strictEqual(r.doc.activeElement, r.spoke('feat/a'));
 });
 
 test('an answer that arrives after the person opened another branch\'s drawer is not shown there', async () => {

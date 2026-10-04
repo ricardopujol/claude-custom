@@ -20,7 +20,14 @@ const parseCompound = (s) => {
   }
   return sel;
 };
-const parse = (selector) => String(selector).split(',').map(s => parseCompound(s.trim()));
+// Only what parseCompound honours. Anything else (a descendant or child combinator, a pseudo-class, a quote other than
+// the double quotes of [attr="v"]) THROWS, so a module that starts to use it fails loudly instead of matching nothing.
+const SUPPORTED = /^[A-Za-z0-9_\-.#[\]="]+$/;
+const parse = (selector) => String(selector).split(',').map((s) => {
+  const c = s.trim();
+  if (!SUPPORTED.test(c)) throw new Error(`fake-dom: unsupported selector ${JSON.stringify(String(selector))}`);
+  return parseCompound(c);
+});
 
 class FakeElement {
   constructor(doc, tag, ns) {
@@ -37,6 +44,7 @@ class FakeElement {
     this.layout = { width: 0, height: 0 };
     this.clientWidth = 0;
     this.offsetWidth = 0;
+    this.offsetHeight = 0;
     this.visible = true;
     const self = this;
     this.classList = {
