@@ -363,7 +363,7 @@ async function main() {
   check('5: changing the emoji redraws the button and closes the editor', !!changed, JSON.stringify(await ws()).slice(0, 300));
   const d1 = disk();
   check('5: it persisted to .harness/state/wand.json, and the first edit wrote the WHOLE default set',
-    !!d1 && d1.version === 1 && d1.favourites.length === 4 && d1.favourites[1].emoji === '🚀' && d1.favourites[1].skill === 'checkpoint'
+    !!d1 && d1.version === 2 && d1.favourites.length === 4 && d1.favourites[1].emoji === '🚀' && d1.favourites[1].skill === 'checkpoint'
       && d1.favourites[3].skill === 'brainstorming', JSON.stringify(d1));
   const before = fs.readFileSync(WAND_FILE, 'utf8');
   await click({ act: 'add' });

@@ -5,13 +5,20 @@
  *
  * THE STORE, `.harness/state/wand.json`, key 'wand':
  *
- *     { "version": 1, "favourites": [ { "id", "emoji", "skill", "args", "typeOnly" } ] }
+ *     { "version": 2, "favourites": [ { "id", "emoji", "skill", "args", "typeOnly" } ] }
  *
- * `typeOnly` (BACKLOG #61) is optional and additive, so `version` stays 1: a click normally TYPES the command
- * and presses Enter (app/submit-gate.js); a type-only favourite is for a skill that takes an argument typed at
- * run time, and keeps the old behaviour (type, leave the Enter to the person). A file without it loads as
- * false. A value that is not a boolean is an invalid favourite (dropped and counted, never coerced: `"false"`
- * must not become a submitting favourite or a silent flip).
+ * `typeOnly` (BACKLOG #61): a click normally TYPES the command and presses Enter (app/submit-gate.js); a
+ * type-only favourite is for a skill that takes an argument typed at run time, and keeps the old behaviour
+ * (type, leave the Enter to the person). A value that is not a boolean is an invalid favourite (dropped and
+ * counted, never coerced: `"false"` must not become a submitting favourite or a silent flip).
+ *
+ * WHY THE VERSION IS 2 (Dexter F2, PR #106). A host started before #61 keeps running its old module (hosts
+ * outlive the app) and shares this file. The old serialize() writes { id, emoji, skill, args } only, so an
+ * edit or a reorder in an old tab would strip every typeOnly flag from a file that still said version 1, and a
+ * "type only" favourite would start submitting. An additive field is only safe for READERS. Version 2 makes the
+ * old module refuse the file ("unavailable: version 2", no favourites, every edit blocked, nothing written),
+ * which is the fail-closed direction. This build still READS version 1 (typeOnly false for all: that file has
+ * no flags to lose) and WRITES version 2. test/wand-old-writer.test.js runs the real pre-#61 module against it.
  *
  * INSTALL-WIDE, one global set (Ricardo's pick; per-project extras are a later design), like the
  * tool belt next to it.
@@ -36,7 +43,8 @@
 
 const { SKILL_NAME } = require('./wand-skills');
 
-const VERSION = 1;
+const VERSION = 2;                      // what is written
+const READS = Object.freeze([1, 2]);    // what is read: 1 is a file from before #61 (no typeOnly: all false)
 const MAX_FAVOURITES = 48;
 const MAX_ARGS = 200;
 const ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
@@ -141,11 +149,11 @@ function load(state) {
   const v = state.value;
   // The version first: a newer build may have changed the shape too, and "not a wand store" (fix or delete it)
   // is the wrong advice for a file a newer build wrote (Dexter D11).
-  if (isObj(v) && typeof v.version === 'number' && v.version !== VERSION) {
-    return unavailable(`the wand file is version ${v.version}, which this build does not support (it reads version ${VERSION})`);
+  if (isObj(v) && typeof v.version === 'number' && !READS.includes(v.version)) {
+    return unavailable(`the wand file is version ${v.version}, which this build does not support (it reads versions ${READS.join(' and ')})`);
   }
   if (!isObj(v) || !Array.isArray(v.favourites)) return unavailable('the wand file is not a wand store');
-  if (v.version !== VERSION) return unavailable('the wand file has no version');
+  if (!READS.includes(v.version)) return unavailable('the wand file has no version');
 
   const kept = [];
   let dropped = 0;

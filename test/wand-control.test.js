@@ -89,7 +89,7 @@ test('add: writes the WHOLE set (defaults included, on first edit) and answers w
   assert.strictEqual(f.favourites.length, 5);
   assert.deepStrictEqual(f.favourites[4], { id: 'f5', emoji: '🚀', skill: 'checkpoint', args: 'now', typeOnly: false });
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.strictEqual(onDisk.version, 1);
+  assert.strictEqual(onDisk.version, 2, 'written as version 2: an old host refuses it (Dexter F2)');
   assert.deepStrictEqual(onDisk.favourites, f.favourites);
   assert.strictEqual(f.quiet, undefined, 'an answer is never quiet: a refusal must stay visible');
 });
@@ -126,7 +126,7 @@ test('deleting the last favourite writes a real empty list, which is OK and not 
   const p = control.payload();
   assert.strictEqual(p.status, 'ok');
   assert.deepStrictEqual(p.favourites, []);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 1, favourites: [] });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 2, favourites: [] });
 });
 
 test('a refusal (bad emoji, unknown id, bad index) carries the reason and the TRUE favourites, writes nothing', () => {
@@ -543,7 +543,7 @@ test('I2: reset moves a corrupt file to wand.json.bad-<timestamp>, byte for byte
 });
 
 test('I2: reset also covers a file of the wrong shape or a newer version', () => {
-  for (const content of ['[]', '{"version":2,"favourites":[]}', '{"version":1}']) {
+  for (const content of ['[]', '{"version":3,"favourites":[]}', '{"version":1}']) {
     const { control, file } = setup();
     fs.writeFileSync(file, content);
     const f = control.handle({ type: 'wand-reset' });

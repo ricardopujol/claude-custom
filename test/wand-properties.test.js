@@ -61,7 +61,7 @@ test('property 1b: load -> serialize -> load is a fixed point for any valid-or-r
 
 test('property 2: a file that is not a wand store is never an empty grid', () => {
   const isStore = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
-    && v.version === 1 && Array.isArray(v.favourites);
+    && (v.version === 1 || v.version === 2) && Array.isArray(v.favourites);
   fc.assert(fc.property(fc.jsonValue().filter(v => !isStore(v)), (value) => {
     const r = wand.load({ status: 'ok', value });
     assert.strictEqual(r.status, 'unavailable');

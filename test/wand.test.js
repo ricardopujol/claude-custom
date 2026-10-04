@@ -86,9 +86,9 @@ test('load: a readable file of the wrong SHAPE is unavailable too, never an empt
 });
 
 test('load: a NEWER version is unavailable (and says so), not read as if it were v1', () => {
-  const r = wand.load({ status: 'ok', value: { version: 2, favourites: [fav('f1', '✅', 'checkpoint')] } });
+  const r = wand.load({ status: 'ok', value: { version: 3, favourites: [fav('f1', '✅', 'checkpoint')] } });
   assert.strictEqual(r.status, 'unavailable');
-  assert.match(r.reason, /version 2/);
+  assert.match(r.reason, /version 3/);
 });
 
 test('load: a deliberately empty list is OK and empty: that is the user\'s choice, and different from unavailable', () => {
@@ -133,9 +133,9 @@ test('load: an unknown field on a favourite is not carried into the in-memory fa
   assert.deepStrictEqual(Object.keys(r.favourites[0]).sort(), ['args', 'emoji', 'id', 'skill', 'typeOnly']);
 });
 
-test('serialize: the on-disk shape is { version: 1, favourites }', () => {
+test('serialize: the on-disk shape is { version: 2, favourites } (Dexter F2: an old host refuses it)', () => {
   const favs = [fav('a', '🌙', 'bedtime')];
-  assert.deepStrictEqual(wand.serialize(favs), { version: 1, favourites: favs });
+  assert.deepStrictEqual(wand.serialize(favs), { version: 2, favourites: favs });
 });
 
 // --- edits -------------------------------------------------------------------------------------
@@ -232,9 +232,9 @@ test('nextId: one past the largest f<number>, ignoring other ids; "f1" on an emp
 // --- Dexter D11: a newer file is "version N", whatever shape it has ---------------------------------
 
 test('D11: a newer-version file of a DIFFERENT shape still says "version N", not "not a wand store"', () => {
-  const r = wand.load({ status: 'ok', value: { version: 2, favourites: { order: ['a'] } } });
+  const r = wand.load({ status: 'ok', value: { version: 3, favourites: { order: ['a'] } } });
   assert.strictEqual(r.status, 'unavailable');
-  assert.match(r.reason, /version 2/);
+  assert.match(r.reason, /version 3/);
   assert.match(wand.load({ status: 'ok', value: { version: 7 } }).reason, /version 7/);
   // a v1 file with the wrong shape is still "not a wand store"
   assert.match(wand.load({ status: 'ok', value: { version: 1, favourites: {} } }).reason, /not a wand store/);
@@ -259,11 +259,12 @@ test('D6: an unreadable read is marked transient (retry), a corrupt one is not',
 
 // --- #61: the per-favourite "type only" flag ---------------------------------------------------------------
 
-test('#61 load: a v1 file without typeOnly loads as false (additive field, version stays 1)', () => {
+test('#61 load: a v1 file (from before the flag) without typeOnly loads as false, and a v2 one without it too', () => {
   const r = wand.load({ status: 'ok', value: { version: 1, favourites: [{ id: 'a', emoji: '🌙', skill: 'bedtime', args: '' }] } });
   assert.strictEqual(r.status, 'ok');
   assert.strictEqual(r.favourites[0].typeOnly, false);
-  assert.strictEqual(wand.VERSION, 1);
+  assert.strictEqual(wand.load({ status: 'ok', value: { version: 2, favourites: [{ id: 'a', emoji: '🌙', skill: 'bedtime' }] } }).favourites[0].typeOnly, false);
+  assert.strictEqual(wand.VERSION, 2);
 });
 
 test('#61 load: typeOnly true is kept; a non-boolean is an invalid favourite (dropped and counted, never coerced)', () => {
