@@ -1,0 +1,614 @@
+'use strict';
+/**
+ * The code as the BROWSER actually loads it.
+ *
+ * THE DEFECT CLASS THIS RETIRES. The renderer loads its scripts as plain
+ * `<script src>` tags, which share ONE global lexical scope. Two files each
+ * declaring `const UNKNOWN` is a `SyntaxError` that aborts the second file
+ * entirely -- and the aborted file's functions are then `undefined`, so the
+ * panel it draws silently never renders.
+ *
+ * **No unit test can see this.** Every other test in this repo `require()`s a
+ * module into its own scope, where there is nothing to collide with. It has
+ * now bitten twice: `app/career-display.js` and `app/quota-display.js` were
+ * both dead on arrival in the real renderer while 100% of their tests passed.
+ * `test/sources-parse.test.js` cannot see it either -- it runs `node --check`
+ * per file, in isolation, and a duplicate-`const` collision only exists when
+ * two scripts share one scope.
+ *
+ * So this test does the only thing that can catch it: parses the script list
+ * out of `app/renderer.html` and evaluates every one of them, IN ORDER, into a
+ * single shared `vm` context -- which is what Chromium does.
+ *
+ * The allow-list is deliberately an ALLOW-list. A new global is out of scope
+ * until someone opts it in, so the next file to leak a `plural` or an
+ * `escapeHtml` fails here rather than in six months in the product.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const APP = path.join(__dirname, '..', 'app');
+
+// Every global the renderer's scripts are permitted to define. Anything else
+// showing up here is a leak waiting to collide with the next file added.
+const ALLOWED_GLOBALS = new Set([
+  // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:
+  // renderer.js calls it as a bare global inside the xterm key handler,
+  // which is the only place that can stop the terminal eating Ctrl+B.
+  'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
+  // app/dock-layout.js, app/dock-zones-display.js (layout pass L1): one
+  // namespace each, reached through `window.`.
+  'dockLayout', 'dockZones',
+  // app/dock-tree.js, app/dock-drag.js, app/dock-tree-display.js (dockable panels D1): the same.
+  'dockTree', 'dockDrag', 'dockTreeView',
+  // app/dock-presets.js (dockable panels D3): the layout presets, one namespace.
+  'dockPresets',
+  // app/secret-mask.js, app/attention-surface.js
+  'createMask', 'surfacesFor',
+  // the display modules
+  'usageDisplay', 'spendOf', 'cacheReadOf',
+  // app/roster-width.js -- the panel width POLICY, moved out of renderer.js
+  // (Miguel, PR #33, A1) so its three tuned numbers can be asserted.
+  'rosterWidth', 'rosterMax', 'faceSize',
+  // app/vault-lock-display.js -- the lock panel's four states
+  'vaultLockDisplay',
+  'cacheWriteOf',
+  'careerDisplay', 'formatCareerMinutes', 'mergeAgentStats', 'rosterEmptyState',
+  // app/roster-tabs-display.js (BACKLOG D #16: Active/Inactive roster tabs)
+  'splitActiveInactive', 'rosterTokenState', 'sortRosterRows',
+  // app/hidden-agents-display.js (BACKLOG #14)
+  'reconcileHidden', 'visibleRows', 'hideButtonFor', 'hiddenCount', 'rosterActionFromClick', 'repaintNeeded',
+  'quotaDisplay', 'formatQuotaCountdown',
+  // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
+  // IIFE-wrapped module, not leaks -- checked before allowlisting them, since
+  // "a name escaped into the shared scope" and "a module deliberately published
+  // a name" look identical from here and only one of them is a bug.
+  //
+  // renderer.js reaches `bugVaultDisplay` through `window.` rather than as a
+  // bare global, so unlike isPanelToggle above this entry is not load-bearing
+  // for reachability. `formatBugRow` is published to the browser scope and used
+  // by nothing there -- surface that invites a second, divergent caller. Left
+  // as the feature author wrote it and flagged rather than trimmed, because
+  // deleting someone else's export is not conflict resolution.
+  'bugVaultDisplay', 'formatBugRow',
+  'projectsDisplay',
+  // app/style-display.js
+  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
+  // app/agent-card-display.js
+  'instanceCounts', 'modelLine', 'modelEntry',
+  // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
+  'loadoutDisplay',
+  // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
+  'wandDisplay',
+  // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object
+  // rather than six bare globals.
+  'portraitMedia',
+  // app/bg-media-display.js (BACKLOG #34): one namespace object, IIFE-wrapped.
+  'bgMedia',
+  // app/colour-seeds.js (BACKLOG #34): one namespace object, IIFE-wrapped.
+  'colourSeeds',
+  // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
+  'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
+  // app/style-display.js, Window section (layout pass L2, #27/#28)
+  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError',
+  // app/status-fields-display.js (BACKLOG #27)
+  'statusFieldsText', 'statusFieldsView',
+  // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
+  'agentLogDisplay',
+  // app/top-bar-display.js (FF12)
+  'modelFamily', 'cueColour', 'pendingResolver', 'topBarState', 'topBarDisplay',
+  'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
+  'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
+  'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
+  // PR #93 Dexter F3: the typing plan the top bar and the Git drawer's Type /merged share
+  'planTyping', 'typingKeys', 'boxText',
+  // app/context-fill-display.js (BACKLOG #6)
+  'contextFill', 'applyContextFill', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
+  // app/worktree-status-display.js (PR 1b, Extension X1/X4): one namespace object.
+  'worktreeStatus',
+  // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
+  'tabModel', 'tabStatus', 'goToSession',
+  // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
+  'occupancyDisplay', 'occupancyConfirm',
+  // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
+  'terminalBar',
+  // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
+  'linkClick',
+  // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)
+  'terminalRows', 'filePathParse',
+  // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.
+  'gitRings', 'gitRingsDisplay',
+  // app/repo-*.js (#45 + #32, the Files tab and the code reader): one namespace object each, IIFE-wrapped.
+  'repoLanguage', 'repoMention', 'repoTreeDisplay', 'repoRequester', 'repoRefresh', 'repoFilesPanel', 'repoReader', 'repoBrowser',
+  // app/git-swing.js + app/git-actions.js (Enhancement #46): one namespace object each, IIFE-wrapped.
+  'gitSwing', 'gitActions',
+  // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
+  // renderer.js's key handler, like isPanelToggle.
+  'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',
+  // app/models-favourites.js (BACKLOG E #5, #3)
+  'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'toggleFavourite', 'setFavourite',
+  'partitionFavourites', 'pinFavouritesFirst',
+  // app/models-refresh.js (BACKLOG E #5, #2)
+  'refreshButtonState',
+  // app/models-catalogue.js (BACKLOG E #5, PR #60 review: Dexter F1/F4)
+  'mergeCatalogueReply', 'shouldClearPending',
+]);
+
+// The scripts renderer.html loads from ./, in document order. node_modules
+// vendor scripts are skipped: they are not ours and xterm is not loadable
+// outside a DOM.
+function rendererScripts() {
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+  const out = [];
+  const re = /<script\s+src="\.\/([^"]+)"><\/script>/g;
+  let m;
+  while ((m = re.exec(html))) out.push(m[1]);
+  return out;
+}
+
+// A context with just enough browser to let these files reach their
+// `window` branch. None of them touches the DOM at load time -- if one starts
+// to, this test is the right place to find out.
+function makeContext() {
+  const ctx = { console };
+  ctx.window = ctx;
+  ctx.globalThis = ctx;
+  ctx.document = {
+    getElementById: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    createElement: () => ({ classList: { add() {}, remove() {} }, style: {}, remove() {} }),
+    body: { appendChild() {} },
+  };
+  return vm.createContext(ctx);
+}
+
+test('renderer.html actually lists the display modules it depends on', () => {
+  // The other half of the same failure: a module can be perfect, wrapped, and
+  // simply never loaded. `careerDisplay` is referenced in exactly one place in
+  // renderer.js, and nothing asserted the tag existed.
+  const scripts = rendererScripts();
+  assert.ok(scripts.includes('renderer.js'), 'the renderer itself must be loaded');
+  assert.ok(scripts.indexOf('renderer.js') === scripts.length - 1,
+    'renderer.js must load LAST -- it consumes what the others define');
+  for (const f of scripts) {
+    assert.ok(fs.existsSync(path.join(APP, f)), `renderer.html loads ${f}, which does not exist`);
+  }
+});
+
+test('every renderer script loads into ONE shared scope without colliding', () => {
+  // This is the test that fails when someone adds a fifth module declaring a
+  // name a fourth one already has.
+  const ctx = makeContext();
+  for (const file of rendererScripts()) {
+    if (file === 'renderer.js') continue;     // needs a real DOM; covered above
+    const src = fs.readFileSync(path.join(APP, file), 'utf8');
+    try {
+      vm.runInContext(src, ctx, { filename: file });
+    } catch (err) {
+      assert.fail(`${file} failed to load alongside the scripts before it: ${err.message}`);
+    }
+  }
+});
+
+// NOTE FOR MUTATION RUNS: this test cannot pass under StrykerJS. Its
+// instrumentation adds stryNS_*/stryCov_*/stryMutAct_*/__stryker__ to the vm
+// context and the allow-list correctly refuses them, so it fails on the
+// UNMUTATED baseline and aborts the dry run. Deselect it by name; it kills no
+// mutant, because what it asserts is a property of the FILES rather than of
+// any expression a mutator can reach. CLAUDE.md records the same shape for
+// mutmut: a test whose subject is the repository, not a function.
+test('no renderer script leaks a global outside the allow-list', () => {
+  const ctx = makeContext();
+  const before = new Set(Object.getOwnPropertyNames(ctx));
+  for (const file of rendererScripts()) {
+    if (file === 'renderer.js') continue;
+    vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
+  }
+  const leaked = Object.getOwnPropertyNames(ctx).filter(k => !before.has(k));
+  const unexpected = leaked.filter(k => !ALLOWED_GLOBALS.has(k));
+  assert.deepStrictEqual(unexpected, [],
+    'these globals are not on the allow-list and will collide with the next file that wants the name');
+});
+
+test('the display modules the renderer needs are actually defined after loading', () => {
+  // Reachability, not just absence of error. This is what `fix: the career
+  // display never loaded in the real renderer` owed and did not have.
+  const ctx = makeContext();
+  for (const file of rendererScripts()) {
+    if (file === 'renderer.js') continue;
+    vm.runInContext(fs.readFileSync(path.join(APP, file), 'utf8'), ctx, { filename: file });
+  }
+  // Mortimer, PR #29 mutation gate, D7: emptying the `else { root.X = ... }`
+  // branch in app/bugvault-display.js left every test green, with
+  // `window.bugVaultDisplay` never published -- the panel dead on arrival in
+  // the real renderer. That is the failure this repo has already paid for
+  // TWICE (career-display.js, quota-display.js) and that this very file exists
+  // to prevent; it did not prevent it here, because the list below named only
+  // `usageDisplay`, and the export check further down skips names reached
+  // through `window.` rather than as bare globals.
+  //
+  // Node's coverage confirmed it independently: app/bugvault-display.js lines
+  // 153-155 never executed.
+  //
+  // ANY module the renderer draws a panel from belongs on this list.
+  // Every display module the renderer calls, not just the first one anyone
+  // thought to list. Both sides of this merge learned that separately --
+  // develop added career/quota/projects after the Projects panel drew nothing
+  // in a real window, #29 added bugVaultDisplay after mutation testing showed
+  // its browser-export branch was executed by nothing. Same lesson, two
+  // branches, so the list is the UNION: taking either alone silently drops a
+  // module that has already been caught once.
+  for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
+                    'rosterWidth', 'faceSize', 'bugVaultDisplay',
+                    'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry',
+                    'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote',
+                    'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'setFavourite',
+                    'partitionFavourites', 'pinFavouritesFirst', 'refreshButtonState',
+                    'mergeCatalogueReply', 'shouldClearPending',
+                    'splitActiveInactive', 'rosterTokenState', 'sortRosterRows']) {
+    assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);
+  }
+});
+
+test('no two renderer scripts declare the same top-level name', () => {
+  // The DYNAMIC check above proves a collision throws (verified: two scripts
+  // each declaring `const UNKNOWN` in one vm context raise "Identifier
+  // 'UNKNOWN' has already been declared"). But a top-level `const` is NOT an
+  // own property of the context, so the allow-list test cannot see lexical
+  // leaks at all -- it only catches `var` and assignment.
+  //
+  // This is the static half: it names the offender and the file, and it catches
+  // the collision BEFORE the two files are ever loaded together.
+  const declRe = /^(?:const|let|class|function)\s+([A-Za-z_$][\w$]*)/gm;
+  const owner = new Map();
+  const clashes = [];
+
+  for (const file of rendererScripts()) {
+    const src = fs.readFileSync(path.join(APP, file), 'utf8');
+    // A file wrapped in an IIFE declares NOTHING in the shared scope, however
+    // its declarations are indented -- and this codebase does not indent inside
+    // the wrapper. Skipping them is what keeps this check from crying wolf on
+    // the three display modules, which all legitimately declare `UNKNOWN`
+    // inside their own wrappers. A test that fires on safe code gets deleted,
+    // and then the real one is gone too.
+    if (/^\(function \(root\) \{/m.test(src)) continue;
+    const seen = new Set();
+    let m;
+    while ((m = declRe.exec(src))) seen.add(m[1]);
+    for (const name of seen) {
+      if (owner.has(name)) clashes.push(`${name}: ${owner.get(name)} and ${file}`);
+      else owner.set(name, file);
+    }
+  }
+
+  assert.deepStrictEqual(clashes, [],
+    'these names are declared at top level in two scripts that share one scope');
+});
+
+test('every module function renderer.js calls is actually exported to it', () => {
+  // THE MIRROR OF THE LEAK TEST, and the gap that let this file pass while the
+  // app broke. The leak test asks what escapes a module; nothing asked what
+  // FAILS to escape one. Wrapping app/side-tabs.js in an IIFE while resolving
+  // the #26/#27 merge removed `isPanelToggle` from the global scope that
+  // renderer.js calls it from -- silently re-breaking Ctrl+B with the whole
+  // suite green, which is exactly how PR #27 found it the first time.
+  //
+  // So: any name a module declares AND renderer.js calls must be reachable
+  // after the modules load.
+  const ctx = makeContext();
+  const modules = rendererScripts().filter(f => f !== 'renderer.js');
+  const declared = new Map();                 // name -> the file that declares it
+  const DECL = /(?:^|\n)\s*(?:function|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  for (const file of modules) {
+    const src = fs.readFileSync(path.join(APP, file), 'utf8');
+    vm.runInContext(src, ctx, { filename: file });
+    let m;
+    while ((m = DECL.exec(src))) if (!declared.has(m[1])) declared.set(m[1], file);
+  }
+
+  // Names renderer.js declares itself are its own, and prove nothing here.
+  const renderer = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const ownDecls = new Set();
+  const OWN = /(?:^|\n)\s*(?:function|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  let d;
+  while ((d = OWN.exec(renderer))) ownDecls.add(d[1]);
+
+  // Whole-line comments are not calls: "the ... toggle (BACKLOG C #18)" read as
+  // a bare `toggle(` once app/loadout-display.js declared a `toggle`.
+  const code = renderer.replace(/^\s*\/\/.*$/gm, '');
+  const missing = [];
+  for (const [name, file] of declared) {
+    if (ownDecls.has(name)) continue;
+    if (!new RegExp('(?:^|[^\\w$.])' + name + '\\s*\\(').test(code)) continue;   // not called at all
+    if (!(name in ctx)) missing.push(name + ' (declared in ' + file + ')');
+  }
+  assert.deepStrictEqual(missing, [],
+    'renderer.js calls these as bare globals, but no module exports them -- ' +
+    'they are ReferenceErrors in the real window');
+});
+
+test('every element id renderer.js reaches for at TOP LEVEL exists in renderer.html', () => {
+  // Miguel, PR #31. `document.getElementById(x)` returning null at module top
+  // level is a TypeError that ABORTS ALL OF renderer.js -- terminal, panels,
+  // everything -- for a renamed id. Nothing could see it: the tests above
+  // deliberately skip renderer.js when loading the scripts, because it needs a
+  // real DOM.
+  //
+  // This is the mirror of the TABS-vs-markup drift guard in
+  // test/side-tabs.test.js, which was itself written after a panel turned out
+  // to be unreachable with the whole suite green. Same shape of gap, same
+  // shape of answer: compare the two artifacts that must agree.
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+
+  // Top level only: stop at the first line that is indented, i.e. inside
+  // something. Crude, and it is the region where a null actually kills the file.
+  const topLevel = js.split('\n').filter(l => !/^\s/.test(l)).join('\n');
+  const ids = [...topLevel.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(m => m[1]);
+  assert.ok(ids.length > 0, 'the scan must find something for this check to mean anything');
+
+  const missing = ids.filter(id => !html.includes(`id="${id}"`));
+  assert.deepStrictEqual(missing, [],
+    `renderer.js reaches for these ids at top level and renderer.html has none of them: ${missing.join(', ')}`);
+});
+
+test('EVERY element id renderer.js reaches for exists in renderer.html, at any depth', () => {
+  // Miguel, PR #40, A7. The guard above scans TOP LEVEL only, because that is
+  // where a null `getElementById` throws and aborts the file. But a null deeper
+  // in is not harmless -- it is worse, because it is SILENT.
+  //
+  // `app/renderer.js` reads the Shared checkbox as
+  // `!!(sharedBox && sharedBox.checked)`, inside the submit handler. Rename or
+  // delete `vault-shared` in the HTML and the null-guard swallows it: `shared`
+  // is false forever, the user ticks a box that does nothing, no console error,
+  // suite green. A null-guard written for safety converts a loud failure into a
+  // permanent quiet wrong answer.
+  //
+  // This repo has now shipped that shape FOUR times -- careerDisplay,
+  // quotaDisplay, isPanelToggle, and `.vault-row`. Two of them were the same
+  // renderer.js/renderer.html drift this checks. It is a recurring class with a
+  // known guard, so the guard should cover the whole file.
+  //
+  // NOT a substring check against renderer.js. Miguel flagged the trap before I
+  // could walk into it again: `js.includes('vault-shared')` is satisfied by the
+  // `getElementById('vault-shared')` call itself, so it is true precisely when
+  // the bug is present. The comparison has to be against renderer.html.
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+
+  const ids = [...js.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(m => m[1]);
+  assert.ok(ids.length > 0, 'the scan must find something for this check to mean anything');
+
+  // THE INDIRECT IDS, which the first version of this guard missed and which
+  // matter more than the direct ones, because an indirection is where a static
+  // check usually gives up and a reader assumes it did not.
+  //
+  // Three call sites pass a VARIABLE: two `val = (id) => ...` helpers and the
+  // loop in `wireModelPanel`. My first version simply asserted no computed
+  // argument existed, and failed on all three -- a guard whose response to real
+  // code was to declare the code wrong. The ids are still statically knowable;
+  // they just travel one hop. So follow the hop instead of exempting it:
+  // `val('x')` call sites, and literal arrays handed to a getElementById loop.
+  for (const m of js.matchAll(/\bval\(['"]([^'"]+)['"]\)/g)) ids.push(m[1]);
+  for (const m of js.matchAll(/const ids = \[([^\]]+)\]/g)) {
+    for (const lit of m[1].matchAll(/['"]([^'"]+)['"]/g)) ids.push(lit[1]);
+  }
+
+  // Anything still computed is out of reach of a static check. There is nothing
+  // like that today; this asserts it rather than assuming it, so that adding one
+  // is a deliberate act with a name attached.
+  const computed = [...js.matchAll(/getElementById\(([^'")][^)]*)\)/g)]
+    .map(m => m[1].trim())
+    .filter(a => a !== 'id');   // the three helper parameters, followed above
+  assert.deepStrictEqual(computed, [],
+    'a computed getElementById argument cannot be checked statically -- ' +
+    'if one is added deliberately, exempt it here by name and say why');
+
+  // TWO legitimate sources of an element, not one. The static markup is the
+  // obvious one; the other is markup renderer.js builds itself and assigns
+  // through innerHTML -- the vault lock panel's key field is created that way,
+  // because which field exists depends on which of the four lock states is
+  // showing. Those elements are real and reachable, and a guard that knows only
+  // about renderer.html calls them missing.
+  //
+  // Caught by this guard on its first run against the lock panel. Worth keeping
+  // as a comment rather than a silent widening, because the first instinct on a
+  // red guard is to trust the guard.
+  //
+  // THIS IS NOT the substring trap Miguel warned about, and the difference is
+  // worth stating precisely, because the two look alike. His trap was that
+  // searching renderer.js for `vault-shared` is satisfied by the
+  // `getElementById('vault-shared')` call itself -- the check is true exactly
+  // when the bug is present. Here the pattern matched is the ATTRIBUTE form,
+  // `id="x"`, which a getElementById call cannot produce. Only markup makes it,
+  // and markup is the thing being looked for.
+  const emitted = (id) => new RegExp(`id=["']${id}["']`).test(js);
+  const missing = [...new Set(ids)]
+    .filter(id => !html.includes(`id="${id}"`) && !emitted(id));
+  assert.deepStrictEqual(missing, [],
+    `renderer.js reaches for these ids and neither renderer.html nor renderer.js ` +
+    `creates them: ${missing.join(', ')}`);
+});
+
+test('the emitted-id escape hatch cannot be opened by a getElementById call alone', () => {
+  // The guard above accepts an id that renderer.js emits as markup. That escape
+  // hatch is exactly where Miguel's substring trap would get back in, so this
+  // pins the distinction instead of trusting the comment.
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+  const emitted = (id, src) => new RegExp(`id=["']${id}["']`).test(src);
+
+  assert.strictEqual(emitted('made-up-id', `document.getElementById('made-up-id')`), false,
+    'a getElementById call must NOT count as creating the element');
+  assert.strictEqual(emitted('made-up-id', `'<input id="made-up-id" />'`), true,
+    'markup that creates it must count');
+  assert.strictEqual(emitted('vault-key', js), true,
+    'precondition: the lock panel still builds its key field in renderer.js');
+});
+
+test('the deep-id guard actually catches a renamed id', () => {
+  // The guard above is a scan, and a scan that matches nothing passes. This
+  // pins that it would FAIL -- the check Miguel's A1 taught me to write, after
+  // my first version of a drift guard passed because the broken selector
+  // contained the string it searched for.
+  const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
+  const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
+
+  assert.ok(js.includes("getElementById('vault-shared')"),
+    'precondition: the Shared checkbox is still read by this id');
+
+  const renamed = html.replace('id="vault-shared"', 'id="vault-shared-RENAMED"');
+  assert.notStrictEqual(renamed, html, 'precondition: the id exists in the markup');
+
+  const ids = [...new Set(
+    [...js.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(m => m[1]))];
+  assert.ok(ids.filter(id => !renamed.includes(`id="${id}"`)).includes('vault-shared'),
+    'renaming the checkbox must be caught -- otherwise the box silently does nothing');
+});
+
+test('no source file contains a stray control character', () => {
+  // A GUARD FOR A TOOLING TRAP, NOT A PRODUCT BUG, and it earns its place by
+  // recurrence: backslash mangling through a shell heredoc has now damaged this
+  // repo's source three times in one session.
+  //
+  // The last one wrote the guard directly above this. `\b` inside a
+  // double-quoted Python string is not the two characters backslash-b, it is
+  // BACKSPACE (0x08). So `/\bval\(...)/` was written to disk as
+  // `/<0x08>val\(...)/`, a regex that matches nothing.
+  //
+  // The damage is that it fails in the SAFE-LOOKING direction: a scan matching
+  // nothing finds nothing missing, so the guard passed, reported nine green
+  // tests, and covered exactly none of what it claimed. It was caught only by
+  // renaming an id on purpose and noticing the guard did not care.
+  //
+  // Invisible to every other check: it is valid UTF-8, a legal regex, and
+  // renders as nothing in most editors and in `git diff`.
+  const dirs = ['app', 'test', 'host', 'bin'];
+  const files = [];
+  for (const d of dirs) {
+    const dir = path.join(__dirname, '..', d);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (/\.(js|html|json)$/.test(f)) files.push(path.join(dir, f));
+    }
+  }
+  assert.ok(files.length > 20, `the scan must find the source to mean anything (${files.length})`);
+
+  // THE WALK IS NOT RECURSIVE, so assert that it does not need to be. Miguel:
+  // there is no subdirectory under these four today, so this is a fuse rather
+  // than a bug -- the day `app/panels/` appears the scan narrows silently while
+  // `files.length > 20` keeps passing. Same idiom as the computed-getElementById
+  // check above: state the thing the scan assumes instead of assuming it.
+  //
+  // The tracked-source test below is the other half: it compares this population
+  // against `git ls-files`, so a missed subdirectory fails there too.
+  for (const d of dirs) {
+    const dir = path.join(__dirname, '..', d);
+    if (!fs.existsSync(dir)) continue;
+    const subdirs = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => `${d}/${e.name}`);
+    assert.deepStrictEqual(subdirs, [],
+      `this scan is not recursive: ${subdirs.join(', ')} would be skipped silently`);
+  }
+
+  // WHAT COUNTS AS A STRAY CHARACTER, and the comment used to claim a wider
+  // class than the check covered. Miguel's second gap: the justification is
+  // "renders as nothing in most editors and in git diff", and that is equally
+  // true of DEL, a non-breaking space, a zero-width space and a BOM stranded
+  // mid-file -- a UTF-8 BOM at the head of a .js being the realistic one. Either
+  // narrow the claim or widen the check; widened, because every one of these
+  // arrives the same way and is invisible the same way.
+  //
+  // Tab, newline and carriage return are the only ones source should hold.
+  const NAMED = { 0x7f: 'DEL', 0xa0: 'NO-BREAK SPACE', 0x200b: 'ZERO WIDTH SPACE',
+                  0x200c: 'ZERO WIDTH NON-JOINER', 0x200d: 'ZERO WIDTH JOINER',
+                  0xfeff: 'BOM / ZERO WIDTH NO-BREAK SPACE' };
+  const stray = (c) => (c < 0x20 && c !== 9 && c !== 10 && c !== 13) || c in NAMED;
+
+  const offenders = [];
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8');
+    for (let i = 0; i < src.length; i++) {
+      const c = src.charCodeAt(i);
+      if (!stray(c)) continue;
+      const what = NAMED[c] ? ` (${NAMED[c]})` : ' (C0 control)';
+      offenders.push(`${path.basename(f)} byte ${i}: 0x${c.toString(16).padStart(2, '0')}${what}`);
+      break;
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    `invisible characters in source -- usually a mangled backslash escape: ${offenders.join('; ')}`);
+
+  // The scope is a CHOICE, said out loud because heredoc mangling hits .md and
+  // .ps1 just as hard. Limited to source the suite and the product actually
+  // execute, where a mangled escape changes behaviour rather than prose.
+  assert.deepStrictEqual(dirs, ['app', 'test', 'host', 'bin'],
+    'if a new source directory appears it belongs in this scan');
+});
+
+test('the source the suite scans is exactly the source git tracks', () => {
+  // THE GAP BOTH REVIEWERS LANDED ON, and it was live when they found it.
+  //
+  // `app/secret-vault-mutant.js` sat untracked in `app/` for hours: a 419-line
+  // near-copy of the vault with `deriveKey` replaced by `Buffer.alloc(32, 7)` --
+  // one constant key on every machine, for any password -- and the comment above
+  // it still swearing there is scrypt. A reviewer's hand-mutation artifact, left
+  // in the product directory, one `git add -A` from a commit that downgrades the
+  // vault's cryptography while reading as if it strengthened it. The name
+  // autocompletes next to the real file.
+  //
+  // WORSE, AND THIS IS WHY THE CHECK BELONGS HERE: the control-character guard
+  // above walks `app/` with readdirSync, so its population depended on untracked
+  // state. It was scanning a file that does not exist in a clean checkout. "the
+  // suite scans the source" had quietly become "the suite scans whatever is on
+  // this disk", which is a claim about somebody's scratch space.
+  //
+  // NOT solved by gitignoring it -- that makes it MORE invisible, which is the
+  // wrong direction in a repo whose recurring defect is verification failing
+  // quietly in the safe-looking direction. Solved by making the two populations
+  // agree, so an untracked .js in a scanned directory is a red test.
+  const { execFileSync } = require('child_process');
+  const root = path.join(__dirname, '..');
+
+  let tracked;
+  try {
+    tracked = execFileSync('git', ['ls-files', 'app', 'test', 'host', 'bin'],
+      { cwd: root, encoding: 'utf8' });
+  } catch {
+    // No git available (a tarball, a sandbox). Skipping is right here -- the
+    // check is about repository hygiene and there is no repository to ask.
+    return;
+  }
+
+  const want = new Set(tracked.split(/\r?\n/)
+    .filter(f => /\.(js|html|json)$/.test(f))
+    .map(f => f.replace(/\//g, path.sep)));
+  assert.ok(want.size > 20, `git must report the source (${want.size})`);
+
+  const have = new Set();
+  for (const d of ['app', 'test', 'host', 'bin']) {
+    const dir = path.join(root, d);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (/\.(js|html|json)$/.test(f)) have.add(path.join(d, f));
+    }
+  }
+
+  const untracked = [...have].filter(f => !want.has(f));
+  assert.deepStrictEqual(untracked, [],
+    'these files are in a scanned product directory but not tracked by git -- '
+    + 'move scratch work out of app/test/host/bin rather than gitignoring it: '
+    + untracked.join(', '));
+
+  // And the other direction: a tracked file the walk MISSES. This is the fuse
+  // Miguel named -- `readdirSync` is not recursive, and the day `app/panels/`
+  // appears the guard narrows silently while `files.length > 20` keeps passing.
+  const missed = [...want].filter(f => !have.has(f));
+  assert.deepStrictEqual(missed, [],
+    'git tracks these and the non-recursive walk cannot see them -- '
+    + 'the scan has silently narrowed: ' + missed.join(', '));
+});

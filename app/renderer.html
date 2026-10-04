@@ -2,7 +2,10 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>claude-custom — spike</title>
+  <!-- Replaced at runtime by the project folder (FF3). This is only what
+       shows before the window exists; main.js preventDefaults
+       page-title-updated so the page can never take it back. -->
+  <title>claude-custom</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <style>
     :root {
@@ -14,18 +17,519 @@
       --accent: #d08c4a;
       --ok: #5fb07a;
       --bad: #cc5f5f;
+      /* Used by the models and projects panels but never defined until now,
+         so their hover and seated states painted nothing. Derived, so it
+         follows a project's app colour like everything else. */
+      --panel: color-mix(in srgb, var(--chrome) 60%, var(--border));
+      /* The project's background-image darkness and the install-wide
+         unfocused-window dim. Both set from JS; these are the defaults. */
+      --bg-darkness: 0.5;
+      --unfocused-dim: 0.45;
+      /* FF12: the model's persistent colour cue. Defaults to the same value
+         as --accent so an unresolved model (no sessionModel yet) changes
+         nothing about how the header already looks -- see
+         app/top-bar-display.js's cueColour(null, theme). */
+      --model-accent: #d08c4a;
+      /* Worktree occupancy (#44 + #47): an agent is working in this folder (--agent), and this tab's own
+         session is writing too (--warn). The same two colours as the strip's hatched edge. */
+      --agent: #6aa5d8;
+      --warn: #e6c34a;
+      /* Backlog #52: a session in a /bedtime night (the strip's night tab, the bar's moon chip). */
+      --night: #1a2350;
+      --night-edge: #7f93e0;
+      --night-text: #e8ecff;
     }
     * { box-sizing: border-box; }
+    /* FF4 -- the finished-task cue. Deliberately a border on the WINDOW rather
+       than a badge in a panel: it cannot be scrolled past, it does not compete
+       with anything for space, and it is part of the alt-tab thumbnail, which
+       is where you actually decide which window to return to. Cleared by main
+       the moment the window is focused. */
+    body.attention-cue::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      border: 3px solid #e0674f;
+      pointer-events: none;       /* a cue must never eat a click */
+      z-index: 9999;
+      animation: cue-breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes cue-breathe {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .45; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body.attention-cue::after { animation: none; }
+    }
     html, body {
       margin: 0; height: 100%;
       background: var(--bg); color: var(--text);
       font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
       overflow: hidden;
     }
-    #app { display: flex; flex-direction: column; height: 100%; }
+    #app { display: flex; flex-direction: column; height: 100%; position: relative; }
+
+    /* Per-project background art. Fixed and behind everything; the artwork is
+       already dimmed to 10% in the SVG itself, so nothing here needs to darken
+       it further and the palette stays the theme's. */
+    #bg {
+      position: fixed; inset: 0; z-index: 0;
+      background-size: cover; background-position: center;
+      pointer-events: none;
+    }
+    /* A video background (backlog #34): the same layer, filled edge to edge. The darkness veil is
+       #bg::after, which comes later in paint order, so it sits OVER the video exactly as it does
+       over an image. */
+    #bg .bg-video {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; pointer-events: none;
+    }
+    #app > * { position: relative; z-index: 1; }
+
+    /* A project's OWN image is not pre-dimmed the way the generated art is, so
+       it gets a veil at the chosen darkness. The veil is mostly BLACK with a
+       quarter of the app colour: "darkness" has to mean darker for every app
+       colour -- a pure app-colour veil washed an image out to white under a
+       white app colour (Dexter F8) -- while still tinting toward the project. */
+    body.has-custom-bg #bg::after {
+      content: ''; position: absolute; inset: 0;
+      background: color-mix(in srgb, var(--bg) 25%, #000); opacity: var(--bg-darkness);
+    }
+
+    /* The unfocused-window dim: the window you are NOT typing into goes dark,
+       so the one you are is unmistakable. Below the attention cue's z-index on
+       purpose -- that cue exists for unfocused windows and must stay bright. */
+    #focus-veil {
+      position: fixed; inset: 0; z-index: 9998;
+      background: #000; opacity: 0;
+      pointer-events: none;       /* a click must still focus the window */
+      transition: opacity 150ms ease-out;
+    }
+    body.unfocused #focus-veil { opacity: var(--unfocused-dim); }
+    @media (prefers-reduced-motion: reduce) { #focus-veil { transition: none; } }
+
+    /* The terminal and panels must NOT paint an opaque background or the art
+       behind them is invisible. Transparency here is what makes it a
+       background rather than a border decoration. */
+    body.has-bg #termwrap { background: transparent; }
+    body.has-bg header,
+    body.has-bg .zone,
+    body.has-bg #diag { background: color-mix(in srgb, var(--chrome) 72%, transparent); }
+    body.has-bg .xterm-viewport { background: transparent !important; }
+
+
+    /* --- vault ------------------------------------------------------------
+       Deliberately plain. Nothing here animates or flashes: a panel holding
+       passwords should look like a drawer, not a feature. */
+    #vault-body { padding: 10px 12px; gap: 10px; }
+    #vault-body input, #vault-body button {
+      font: inherit; font-size: 12px;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px;
+    }
+    #vault-body button { cursor: pointer; }
+    #vault-body button:hover { border-color: var(--accent); }
+    /* --- git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) ----------
+       Rings: every branch on one dial. Color = what happened to it, tip shape =
+       where it was worked on; all colors are the theme's, through currentColor. */
+    #git-body { padding: 6px 8px; gap: 4px; }
+    #git-status { font-size: 11px; color: var(--dim); flex: 0 0 auto; }
+    #git-status:empty { display: none; }
+    #git-dial { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+    /* fits BOTH ways (viewBox, meet): a short bottom zone shrinks it by height, not clips it */
+    .git-svg { display: block; width: 100%; height: 100%; flex: 1; min-height: 0; }
+    /* too small for its own text to read (app/git-rings-display.js fitText): the card and footer talk */
+    #git-dial.narrow .git-label, #git-dial.narrow .git-tick, #git-dial.narrow .git-hub text { display: none; }
+    .git-svg text { font-family: ui-monospace, Consolas, monospace; font-size: 10px; fill: currentColor;
+      paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+    .git-week { fill: none; stroke: var(--border); stroke-width: 3; stroke-linecap: round; }
+    .git-week.alt { stroke: var(--dim); opacity: .6; }
+    .git-noon { stroke: var(--border); stroke-dasharray: 2 3; }
+    .git-tick { color: var(--dim); font-size: 9px !important; }
+    .git-spoke { color: var(--dim); cursor: pointer; outline: none; }
+    .git-spoke.open { color: var(--ok); }
+    .git-spoke.unmerged { color: var(--dim); opacity: .55; }
+    .git-spoke.deleted { color: var(--bad); opacity: .8; }
+    /* open PRs unknown (gh failed): a live lane may have one, so it isn't drawn as "no PR" */
+    .git-spoke.unmerged.pr-unknown { color: var(--text); opacity: .7; }
+    .git-spoke.current, .git-hub.current { color: var(--accent); opacity: 1; }
+    .git-stem { fill: none; stroke: currentColor; stroke-linecap: round; }
+    .git-stem.dashed { stroke-dasharray: 3 3; }
+    .git-tip { fill: currentColor; stroke: currentColor; stroke-width: 1.2; }
+    .git-tip.empty { fill: var(--panel); }
+    /* no token record: the tip says "unknown" like its dashed stem */
+    .git-tip.unknown { fill: var(--panel); stroke-dasharray: 2 2; }
+    .git-ring { fill: none; stroke: currentColor; stroke-width: 1; }
+    .git-here { fill: currentColor; opacity: .3; }
+    .git-hit { fill: transparent; stroke: transparent; stroke-width: 8; }
+    .git-spoke:hover .git-stem, .git-spoke:focus-visible .git-stem { stroke-width: 3.2; }
+    .git-spoke:focus-visible .git-tip { stroke: var(--accent); stroke-width: 2; }
+    .git-hub { color: var(--text); cursor: pointer; outline: none; }
+    .git-hub circle { fill: var(--panel); stroke: currentColor; stroke-width: 2; }
+    .git-hub:focus-visible circle { stroke: var(--accent); stroke-width: 3; }
+    .git-hub-sum { color: var(--dim); font-size: 9.5px !important; }
+    .git-label { font-size: 10px; }
+    .git-label.open { color: var(--ok); }
+    .git-label.current { color: var(--accent); }
+    /* never wider than its zone: the default right zone is 180px (window probe, check 3) */
+    .git-card { position: absolute; z-index: 5; width: min(240px, calc(100% - 8px)); box-sizing: border-box;
+      padding: 8px 10px; display: grid; gap: 4px;
+      background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px;
+      color: var(--text); pointer-events: none; }
+    .git-card[hidden] { display: none; }
+    .git-card-top { display: flex; gap: 8px; align-items: baseline; }
+    .git-card-name { font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; flex: 1; }
+    .git-card-kind, .git-card-sum { color: var(--dim); font-size: 10.5px; }
+    .git-card-why.none { color: var(--dim); font-style: italic; }
+    .git-card-who { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; font-variant-numeric: tabular-nums; }
+    .git-card-who .n { color: var(--dim); text-align: right; }
+    /* --- the drawer (Enhancement #46): beside the dial in a wide zone, under it in a narrow one --- */
+    .git-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+    #git-dial.beside .git-stage { flex-direction: row; }
+    .git-drawer { flex: 0 0 auto; box-sizing: border-box; overflow: auto; max-height: 55%; padding: 8px 10px; display: grid; gap: 6px;
+      align-content: start; background: var(--chrome); border: 1px solid var(--accent); border-radius: 6px;
+      font-size: 11.5px; color: var(--text); }
+    #git-dial.beside .git-drawer { width: 270px; max-height: none; }
+    .git-drawer[hidden] { display: none; }
+    .git-drawer:focus-visible { outline: 1px solid var(--accent); }
+    .git-drawer-who { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: center; font-variant-numeric: tabular-nums; }
+    .git-drawer-who .n { color: var(--dim); text-align: right; }
+    .git-drawer-who .more { grid-column: 1 / -1; color: var(--dim); }
+    .git-drawer-who .bar { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+    .git-drawer-who .bar.none { background: transparent; border: 1px dashed var(--border); }
+    .git-drawer-who .bar i { display: block; height: 100%; background: var(--accent); }
+    .git-drawer-reviews { display: grid; grid-template-columns: auto 1fr; gap: 1px 8px; font-size: 10.5px; }
+    .git-drawer-reviews .p { color: var(--dim); }
+    .git-drawer-reviews .none, .git-drawer-reviews .v.none { color: var(--dim); font-style: italic; }
+    .git-drawer-reviews > .none { grid-column: 1 / -1; }
+    .git-acts { display: grid; gap: 4px; }
+    .git-act-row { display: grid; gap: 1px; }
+    .git-act { justify-self: start; background: var(--accent); color: var(--on-accent, var(--bg)); border: 0; border-radius: 4px;
+      padding: 3px 9px; font: inherit; cursor: pointer; }
+    .git-act:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+    /* disabled but still reachable: a keyboard user finds the button and reads why */
+    .git-act[aria-disabled="true"] { background: transparent; color: var(--dim); border: 1px dashed var(--border); cursor: not-allowed; }
+    .git-act-why { color: var(--dim); font-size: 10px; }
+    .git-said:empty { display: none; }
+    .git-said { flex: 0 0 auto; color: var(--text); font-size: 10.5px; padding-top: 4px; }
+    /* live: a working tab, or measured growth. Its own look; sparks stream only for measured growth */
+    .git-spoke.live { color: var(--text); opacity: 1; }
+    .git-spoke.live .git-stem { filter: drop-shadow(0 0 2px currentColor); }
+    .git-spark { fill: currentColor; pointer-events: none; }
+    .git-label.live { color: var(--text); }
+    .git-foot { flex: 0 0 auto; border-top: 1px solid var(--border); padding-top: 4px; font-size: 10.5px; color: var(--dim);
+      font-variant-numeric: tabular-nums; }
+    .git-foot b { color: var(--text); font-weight: 600; }
+    .git-foot-row { display: flex; justify-content: space-between; gap: 8px; }
+    /* --- the Files tab (#45) -------------------------------------------------
+       This worktree's files, with what Claude touched marked on them: edited rows
+       bright with a count, read rows fainter, folders rolling their files up.
+       (.fog-sum and .fog-warn stay: the Bug vault's summary line uses them.) */
+    #fog-body { padding: 8px 10px; gap: 6px; }
+    .fog-sum { font-size: 11px; color: var(--dim); line-height: 1.5; flex: 0 0 auto; }
+    .fog-sum b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .fog-sum .dark-count { color: var(--accent); }
+    .fog-sum .fog-warn { color: var(--bad); }
+    #files-note.fog-warn { color: var(--bad); }
+    #files-bar { flex: 0 0 auto; }
+    #files-said { flex: 0 0 auto; font-size: 10.5px; color: var(--accent); line-height: 1.4; }
+    #files-said:empty { display: none; }
+    #files-tree { flex: 1; min-height: 0; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+    .fr { display: flex; align-items: baseline; gap: 4px; padding: 1px 6px; white-space: nowrap; cursor: default; border-radius: 3px; }
+    .fr[data-path] { cursor: pointer; }
+    .fr:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .fr:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+    .fr.sel { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+    .fr .chev { flex: 0 0 10px; width: 10px; color: var(--dim); }
+    .fr .nm { overflow: hidden; text-overflow: ellipsis; }
+    .fr .bd { margin-left: auto; padding-left: 8px; font-size: 10px; color: var(--ok); font-variant-numeric: tabular-nums; }
+    .fr.none .nm { color: var(--text); opacity: .85; }
+    .fr.read .nm { color: color-mix(in srgb, var(--ok) 45%, var(--dim)); }
+    .fr.edited .nm { color: var(--ok); }
+    .fr.loading, .fr.more, .files-empty { color: var(--dim); font-style: italic; }
+    .files-empty { padding: 6px; line-height: 1.5; }
+    .files-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 150px; padding: 3px;
+      background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+    .files-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 4px 9px;
+      border-radius: 4px; font: inherit; font-size: 11.5px; cursor: pointer; }
+    .files-menu button:hover, .files-menu button:focus-visible { background: var(--bg); color: var(--accent); outline: none; }
+    /* --- the code reader (#32): a split beside the terminal -------------------- */
+    /* The reader and its divider sit in #dock, absolutely positioned over the strip app/repo-reader.js layout() frees
+       at the right of #termwrap's rectangle (the dock tree places #termwrap; see app/dock-tree-display.js). */
+    #reader-split { position: absolute; z-index: 30; cursor: col-resize; background: var(--border); touch-action: none; }
+    #reader-split:hover, #reader-split:focus-visible, body.reader-resizing #reader-split { background: var(--accent); outline: none; }
+    #reader-split[hidden], #reader[hidden] { display: none; }
+    body.reader-resizing { user-select: none; cursor: col-resize; }
+    #reader { position: absolute; z-index: 30; box-sizing: border-box; display: flex; flex-direction: column; min-width: 240px; min-height: 0; background: var(--bg); }
+    body.focus-mode #reader, body.focus-mode #reader-split { display: none; }
+    #reader-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 8px; font-size: 11px;
+      background: var(--chrome); border-bottom: 1px solid var(--border); }
+    #reader-path { flex: 1 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
+    #reader-meta { order: 9; flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10.5px; }
+    #reader-meta:empty { display: none; }
+    #reader-head button, #reader-bar button, #reader-note button { background: transparent; color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap; }
+    #reader-head button:hover, #reader-bar button:hover, #reader-note button:hover { border-color: var(--accent); color: var(--accent); }
+    #reader-head button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent, var(--bg)); border-color: var(--accent); }
+    #reader-head button[hidden], #reader-bar button[hidden], #reader-note button[hidden], #reader-bar[hidden], #reader-note[hidden], #reader-body[hidden] { display: none; }
+    #reader-close { border: none !important; font-size: 13px !important; padding: 0 4px !important; }
+    #reader-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px;
+      background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); border-bottom: 1px solid var(--accent); }
+    #reader-bar-text { flex: 1; }
+    #reader-body { flex: 1; min-height: 0; overflow: hidden; }
+    #reader-body .cm-editor { height: 100%; }
+    .reader-plain { margin: 0; padding: 8px 10px; height: 100%; overflow: auto; box-sizing: border-box; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text); white-space: pre; }
+    #reader-note { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px; font-size: 12px; line-height: 1.5; color: var(--dim); }
+    #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    #vault-list .none, #vault-list .err { color: var(--dim); font-size: 11px; line-height: 1.5; }
+    #vault-list .err { color: var(--bad); }
+    .sec {
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 7px 9px; background: rgba(255,255,255,.02);
+    }
+    .sec .row { display: flex; align-items: center; gap: 8px; }
+    .sec .label { flex: 1; min-width: 0; font-size: 12px; font-weight: 600;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sec button { padding: 3px 7px; font-size: 11px; }
+    .sec .shown {
+      margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+      word-break: break-all; color: var(--accent);
+      background: color-mix(in srgb, var(--bg) 80%, black); border-radius: 4px; padding: 5px 6px;
+    }
+    .sec .said { margin-top: 5px; font-size: 10.5px; color: var(--ok); }
+    /* The reveal toggle sits INSIDE the field's row, so it reads as part of the
+       input rather than as another action in the form. */
+    .secret-field { display: flex; gap: 6px; }
+    .secret-field input { flex: 1; min-width: 0; }
+    .secret-field button { flex: 0 0 auto; font-size: 11px; padding: 6px 8px; }
+    #vault-secret[type="text"] { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+    #vault-lock { display: flex; flex-direction: column; gap: 6px; }
+    /* `lock-note`, not `locked-note`: the same element carries the "unlocked"
+       text in open-with-key, so the old name lied on the one screen where the
+       state is the whole point (Miguel, PR #42, minors). */
+    #vault-lock .lock-note { font-size: 11px; color: var(--accent); }
+    /* A label that is present for a screen reader and absent on screen. The
+       three password fields had placeholders only, which is a WCAG 3.3.2
+       failure on a field holding a vault key (Miguel A7). */
+    #vault-lock .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+    #vault-lock .lock-row { display: flex; gap: 6px; align-items: center; }
+    #vault-lock input { flex: 1; min-width: 0; }
+    /* Melt is destructive and irreversible, so it does not look like the rest.
+       It is also not offered until the second click. */
+    #vault-lock .melt { color: #e0674f; border-color: #e0674f; }
+    #vault-lock .melt-warn { font-size: 10.5px; color: #e0674f; line-height: 1.45; }
+    #vault-lock .keyless { font-size: 10.5px; color: var(--dim); }
+    #vault-shared-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px;
+      color: var(--dim); cursor: pointer; }
+    #vault-shared-row input { margin: 0; }
+    /* A shared secret must announce itself in the list. The original defect
+       was a scope nobody could see -- and this selector named a class that does
+       not exist (`.vault-row`); the rows are `.sec`. Miguel, PR #40, A1: the
+       marker rendered completely unstyled, which is the same invisibility in a
+       new place. Caught by reading the markup, because nothing here renders. */
+    #vault-list .sec .scope { font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--accent); opacity: .8; margin-left: 6px; }
+    #vault-add { display: flex; flex-direction: column; gap: 6px;
+                 border-top: 1px solid var(--border); padding-top: 10px; }
+    #vault-body .warn { margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--dim); }
+
+    /* --- bug vault ----------------------------------------------------------
+       Grouping is the feature: the detection breakdown is what makes "found
+       by measurement, not by reading" a visible fact rather than a feeling. */
+    #bugvault-body { padding: 10px 12px; gap: 8px; overflow-y: auto; }
+    /* The category grouping. Shares the detection block's type scale so the
+       two read as one summary rather than two widgets; the BAR is what makes
+       a recurring class visible at a glance, which is the feature. */
+    #bugvault-groups { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+    #bugvault-groups h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em;
+      color: var(--dim); font-weight: 600; margin: 0 0 2px; }
+    .grp { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+    .grp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: var(--text); }
+    .grp-bar { height: 3px; border-radius: 2px; background: var(--accent); opacity: .55;
+      flex: 0 0 auto; align-self: center; }
+    .grp-count { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .grp-open { color: var(--dim); font-variant-numeric: tabular-nums; }
+    #bugvault-detection { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+    #bugvault-detection h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em;
+      color: var(--dim); font-weight: 600; margin: 0 0 2px; }
+    .det { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+    .det-label { flex: 1; color: var(--text); }
+    .det-count { color: var(--accent); font-variant-numeric: tabular-nums; }
+    /* A vault that could not be read. Deliberately loud and deliberately NOT
+       styled like an empty list -- the records are still on disk and the host
+       is refusing to write over them. See Dexter F1. */
+    .vault-warn { color: #e0674f; }
+    .vault-warn-detail { font-size: 10.5px; color: var(--dim); line-height: 1.45; margin-top: 4px; }
+    #bugvault-list { display: flex; flex-direction: column; gap: 6px; }
+    .bug-row { border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+      background: rgba(255,255,255,.02); font-size: 11px; }
+    .bug-row.fixed { opacity: .55; }
+    .bug-head { display: flex; align-items: center; gap: 6px; }
+    .bug-icon { font-size: 13px; line-height: 1; }
+    .bug-cat { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bug-toggle { font-size: 10px; padding: 2px 6px; }
+    .bug-summary { margin-top: 3px; color: var(--text); }
+    .bug-detail { margin-top: 4px; display: flex; flex-direction: column; gap: 1px;
+      font-size: 10px; color: var(--dim); }
+    #bugvault-add { display: flex; flex-direction: column; gap: 6px;
+      border-top: 1px solid var(--border); padding-top: 10px; }
+
+    /* --- project HP -------------------------------------------------------
+       One bar, one meaning: pass rate. Clicking it runs the suite. */
+    #hp {
+      display: none; align-items: center; gap: 6px; flex: 0 0 auto; white-space: nowrap;
+      font-size: 10.5px; color: var(--dim); cursor: pointer;
+      -webkit-app-region: no-drag;
+    }
+    #hp.show { display: flex; }
+    #hp .track {
+      width: 64px; height: 7px; border-radius: 4px;
+      background: var(--border); overflow: hidden; border: 1px solid var(--border);
+    }
+    #hp .fill { height: 100%; width: 0; transition: width .4s ease, background .4s ease; }
+    #hp.healthy  .fill { background: var(--ok); }
+    #hp.hurt     .fill { background: var(--accent); }
+    #hp.critical .fill { background: var(--bad); }
+    /* Unknown is NOT an empty bar -- an empty bar reads as "everything is
+       broken", which is a false accusation against a project with no tests. */
+    #hp.unknown .track { background: repeating-linear-gradient(
+      45deg, var(--border), var(--border) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 6px); }
+    #hp.unknown .fill { width: 0; }
+    #hp.running .track { animation: hp-pulse 1.1s ease-in-out infinite; }
+    @keyframes hp-pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+    #hp .num { font-variant-numeric: tabular-nums; color: var(--text); }
+
+    /* --- cooldowns --------------------------------------------------------
+       Advisory, never blocking: the harness does not refuse to run an agent,
+       it makes a cost visible. So this is a note, not a barrier. */
+    #cooldowns { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 6px 10px; }
+    #cooldowns:empty { display: none; }
+    #cooldowns h3 {
+      margin: 0 0 4px; font-size: 9.5px; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--dim); font-weight: 600;
+    }
+    .cool {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 10.5px; color: var(--dim); padding: 2px 0;
+    }
+    .cool .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cool .left { font-variant-numeric: tabular-nums; color: var(--accent); }
+    .cool .bar { width: 38px; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+    .cool .bar i { display: block; height: 100%; background: var(--accent); opacity: .7; }
+    /* --- token spend ------------------------------------------------------- */
+    #usage {
+      display: flex; align-items: center; gap: 14px; flex: 0 0 auto; white-space: nowrap;
+      font-size: 11px; color: var(--dim);
+      -webkit-app-region: no-drag;
+    }
+    #usage .grp { display: flex; align-items: baseline; gap: 5px; }
+    #usage .lbl { text-transform: uppercase; letter-spacing: .07em; font-size: 9.5px; opacity: .75; }
+    #usage .val { color: var(--text); font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
+    #usage .sub { opacity: .8; font-variant-numeric: tabular-nums; }
+
+    /* --- drag and drop ----------------------------------------------------
+       A border, not an overlay. An overlay covering the terminal while you
+       drag hides the very prompt the path is about to land in. */
+    #app.dropping::after {
+      content: 'drop to add to the prompt';
+      position: absolute; inset: 0; z-index: 30; pointer-events: none;
+      border: 2px dashed var(--accent); border-radius: 6px;
+      display: flex; align-items: flex-end; justify-content: center;
+      padding-bottom: 26px;
+      font-size: 11px; letter-spacing: .04em; color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 7%, transparent);
+    }
+
+    /* --- plan quota --------------------------------------------------------
+       The OPPOSITE of the milestone bar beside it, and they must not be
+       confused: that one counts UP forever and can never run out, this one is
+       a fuel gauge for something that can. So this one has a full state, a
+       colour that changes as it fills, and a countdown to when it empties.
+
+       Percent only: the account reports no dollars and no token allowance on
+       this plan, so there is nothing else honest to draw. */
+    #quota {
+      display: flex; align-items: center; gap: 10px; flex: 0 0 auto; white-space: nowrap;
+      font-size: 11px; color: var(--dim);
+      -webkit-app-region: no-drag;
+    }
+    #quota .meter { display: flex; align-items: center; gap: 4px; }
+    #quota .meter .lbl {
+      text-transform: uppercase; letter-spacing: .07em; font-size: 9.5px; opacity: .75;
+    }
+    #quota .meter .track {
+      width: 34px; height: 5px; border-radius: 3px;
+      background: var(--border); overflow: hidden; border: 1px solid var(--border);
+    }
+    #quota .meter .fill { display: block; height: 100%; transition: width .6s ease, background .4s ease; }
+    #quota .meter .pct { font-variant-numeric: tabular-nums; font-size: 10.5px; opacity: .9; }
+    /* The binding window -- the one that will actually stop you first. */
+    #quota .meter.active .lbl { opacity: 1; color: var(--text); }
+    #quota .tone-normal   .fill { background: var(--ok); opacity: .8; }
+    #quota .tone-warn     .fill { background: var(--accent); }
+    #quota .tone-critical .fill { background: var(--bad); }
+    /* Unknown is NOT an empty bar: an empty bar here would read as "nothing
+       used", which is the one thing we specifically do not know. Hatched, the
+       same way the HP bar says unknown. */
+    #quota .tone-unknown .track {
+      background: repeating-linear-gradient(45deg, var(--border), var(--border) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 6px);
+    }
+    #quota .tone-unknown .fill { width: 0 !important; }
+    /* Absence draws NO bars at all, only why. Three bars at zero would be a
+       confident claim that the plan is untouched. */
+    #quota .none { opacity: .7; font-size: 10.5px; }
+
+    /* An UNKNOWN career: an em dash, dimmed, with the reason in the tooltip.
+       Not blank -- blank is what "this agent never ran here" looks like, and
+       the whole point is that those are different claims. */
+    .career-unknown { opacity: .45; font-variant-numeric: tabular-nums; cursor: help; }
+
+    /* --- token milestones --------------------------------------------------
+       A counter, never a limit. The bar FILLS toward the next milestone and has
+       no empty/full state to be alarmed by: no red, no warning, nothing that
+       can run out. */
+    #usage .milestone { display: flex; align-items: center; gap: 5px; }
+    #usage .milestone .icon { font-size: 12px; line-height: 1; }
+    #usage .milestone .track {
+      width: 46px; height: 4px; border-radius: 3px;
+      background: var(--border); overflow: hidden; border: 1px solid var(--border);
+    }
+    #usage .milestone .fill {
+      display: block; height: 100%;
+      background: var(--accent); opacity: .85;
+      transition: width .6s ease;
+    }
+
+    /* The flourish. Deliberately out of the way and short-lived: a celebration
+       that covers the terminal stops being a celebration on its second showing. */
+    .flourish {
+      position: fixed; right: 18px; bottom: 22px; z-index: 40;
+      display: flex; align-items: center; gap: 9px;
+      padding: 9px 14px; border-radius: 9px;
+      background: color-mix(in srgb, var(--chrome) 92%, transparent);
+      border: 1px solid var(--accent);
+      box-shadow: 0 6px 24px rgba(0,0,0,.45);
+      opacity: 0; transform: translateY(10px);
+      transition: opacity .35s ease, transform .35s ease;
+      pointer-events: none;
+    }
+    .flourish.go { opacity: 1; transform: translateY(0); }
+    .flourish .icon { font-size: 20px; line-height: 1; }
+    .flourish .name {
+      font-size: 12px; font-weight: 600; color: var(--accent);
+      letter-spacing: .03em; white-space: nowrap;
+    }
 
     header {
       display: flex; align-items: center; gap: 12px;
+      /* No wrapping. The header is a single row of status; letting it wrap
+         turns one line into three and pushes the terminal down. Items shrink
+         or ellipsize instead. */
+      flex-wrap: nowrap; overflow: hidden;
       padding: 8px 14px;
       background: var(--chrome);
       border-bottom: 1px solid var(--border);
@@ -37,26 +541,177 @@
       background: var(--bad); transition: background .2s;
     }
     header .dot.on { background: var(--ok); }
-    header .title { font-weight: 600; letter-spacing: .2px; }
-    header .cwd { color: var(--dim); font-size: 12px; }
+    /* Attention cues, cleared when the window regains focus. */
+    header .dot.wants-input { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+    header .dot.just-finished { background: var(--ok); box-shadow: 0 0 0 3px rgba(95,176,122,.35); }
+    header .title { font-weight: 600; letter-spacing: .2px; white-space: nowrap; flex: 0 0 auto; }
+    header .cwd { color: var(--dim); font-size: 12px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     header .spacer { flex: 1; }
+    /* The keyboard hints are the least of the header: in a crowded row they
+       clip first (a shrink weight far above anything else's), before the
+       status fields or a control is pushed off the edge (Miguel L2 Y1). */
     header .hint {
-      color: var(--dim); font-size: 11px;
+      color: var(--dim); font-size: 11px; white-space: nowrap; flex: 0 1000 auto;
+      min-width: 0; overflow: hidden;
       -webkit-app-region: no-drag;
     }
     header kbd {
-      background: #222735; border: 1px solid var(--border);
+      background: var(--panel); border: 1px solid var(--border);
       border-radius: 3px; padding: 1px 5px; font-size: 11px;
       font-family: ui-monospace, monospace;
     }
+    /* Layout pass L1: the layout menu (▦) and focus mode (⛶). */
+    .hdr-btn {
+      flex: 0 0 auto; position: relative; cursor: pointer; -webkit-app-region: no-drag;
+      background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px;
+      font: inherit; font-size: 12px; line-height: 1; padding: 3px 6px;
+    }
+    .hdr-btn:hover { color: var(--text); border-color: var(--accent); }
+    /* This tab has its own layout (Just this tab): a dot on the button, so a tab
+       that ignores the global layout says so. */
+    #layout-btn.own { color: var(--accent); }
+    #layout-btn.own::after {
+      content: ''; position: absolute; top: -3px; right: -3px; width: 6px; height: 6px;
+      border-radius: 50%; background: var(--accent);
+    }
 
+    /* Dockable panels (D1): #dock is the area the tree fills. app/dock-tree-display.js gives every
+       box (the terminal, each group, each divider, each rail) its rectangle; nothing here lays them out. */
     #body { flex: 1; display: flex; min-height: 0; }
+    #dock { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 
     #termwrap {
-      flex: 1; min-width: 0; padding: 8px 10px;
+      position: absolute; box-sizing: border-box; padding: 8px 10px;   /* the lock overlay and banner sit over it */
       background: var(--bg);
+      /* Its own stacking context: the lock overlay (20) and the banners (15, 16, 18) are ranked among themselves INSIDE
+         it, so a floating panel is always above all of them or below all of them, never in between (PR #102 Y3). */
+      isolation: isolate;
+      /* The first paint, before the script places it: the default's 180 px group and 5 px divider on the right. */
+      left: 0; top: 0; right: 185px; bottom: 0;
     }
     #term { width: 100%; height: 100%; }
+
+    /* Extension X1/X4 (PR 1b). */
+    .wt-health, .wt-lock { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .wt-health.wt-behind { color: var(--accent); }
+    .wt-health.wt-ahead  { color: var(--dim); }
+    .wt-lock { cursor: default; }
+    #lock-overlay {
+      position: absolute; inset: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+    }
+    #lock-overlay[hidden], #terminal-banner[hidden] { display: none; }
+    .lock-card {
+      max-width: 460px; padding: 18px 20px; border-radius: 8px;
+      background: var(--chrome); border: 1px solid var(--accent); color: var(--text);
+    }
+    #lock-overlay-title { font-weight: 600; margin-bottom: 8px; color: var(--accent); }
+    #lock-overlay-detail { font-size: 13px; line-height: 1.45; color: var(--text); }
+    .lock-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+    .lock-actions button {
+      padding: 5px 12px; border-radius: 4px; cursor: pointer;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    }
+    .lock-actions button:hover { border-color: var(--accent); }
+    .lock-actions button[hidden] { display: none; }
+    #lock-goto-note { margin-top: 10px; font-size: 12px; line-height: 1.4; color: var(--dim); }
+    #lock-goto-note:empty { display: none; }
+    #link-target {
+      position: absolute; left: 10px; bottom: 6px; z-index: 15; max-width: calc(100% - 20px);
+      box-sizing: border-box; padding: 3px 8px; border-radius: 4px; pointer-events: none;
+      font-size: 12px; line-height: 1.4; color: var(--text); white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; background: var(--chrome); border: 1px solid var(--border);
+    }
+    #link-target[hidden] { display: none; }
+    #terminal-banner {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 15;
+      display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--accent) 16%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+    }
+    #terminal-banner-text { flex: 1; }
+    #terminal-banner-dismiss {
+      background: none; border: none; color: var(--dim); cursor: pointer; font-size: 15px; line-height: 1;
+    }
+    #terminal-banner-dismiss:hover { color: var(--text); }
+
+    /* The terminal bar (#49 last prompt + #52 bedtime, with #47's occupancy banner folded in as a chip;
+       documentation/DESIGN_TERMINAL_BAR.md): ONE row over the terminal, the prompt on the left once it has scrolled
+       away, the status chips on the right. Absent when there is nothing to say. It never animates (movement means
+       "needs you"), focus mode hides it with the rest of the chrome, and it is part of the terminal, not a dock panel. */
+    #terminal-bar {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 16;
+      display: flex; align-items: center; gap: 12px; padding: 5px 10px; border-radius: 5px;
+      font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--chrome) 94%, transparent);
+      border: 1px solid var(--border);
+    }
+    #terminal-bar[hidden], #occupancy-confirm[hidden], #bar-prompt[hidden], #bar-prompt-full[hidden] { display: none; }
+    body.focus-mode #terminal-bar { display: none; }
+    #bar-prompt {
+      flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
+      background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+    }
+    #bar-prompt .bar-caret { color: var(--accent); flex: 0 0 auto; }
+    #bar-prompt-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #bar-prompt-age { flex: 0 0 auto; color: var(--dim); white-space: nowrap; }
+    #bar-prompt-full {
+      position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; z-index: 17;
+      max-height: 40vh; overflow: auto; padding: 8px 10px; border-radius: 5px; white-space: pre-wrap;
+      user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    #bar-chips { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+    .bar-chip {
+      position: relative; display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; cursor: default;
+      font: inherit; color: var(--text); white-space: nowrap;
+      background: var(--panel); border: 1px solid var(--border); border-left-width: 4px;
+    }
+    /* The night chip carries its OWN pair, whatever the look: a solid night blue with a fixed light text (about 13:1),
+       never mixed with --chrome or --text, which a light look turns dark (PR #99 Miguel Y3; probe-terminal-bar.js
+       measures the contrast under both). Its hover keeps the look's own pair. */
+    .bar-chip.bedtime { background: var(--night); color: var(--night-text); border-color: var(--night-edge); border-left-color: var(--night-edge); }
+    .bar-chip.occupancy { border-left: 4px solid var(--agent); font-variant-numeric: tabular-nums; }
+    .bar-chip.occupancy.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    button.bar-chip { cursor: pointer; }
+    button.bar-chip:hover { border-color: var(--agent); }
+    /* hover or focus expands a chip: the detail lines under it, right-aligned to the bar */
+    .bar-chip .chip-long {
+      display: none; position: absolute; top: 100%; right: 0; margin-top: 4px; z-index: 17; min-width: max-content;
+      padding: 6px 10px; border-radius: 5px; white-space: pre; text-align: left; font-weight: 400;
+      background: var(--chrome); border: 1px solid var(--border); color: var(--text);
+    }
+    .bar-chip:hover .chip-long, .bar-chip:focus-visible .chip-long { display: block; }
+    .bar-chip.occupancy.warn .chip-long { border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    #occupancy-confirm button {
+      padding: 3px 10px; border-radius: 4px; cursor: pointer; font: inherit;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    }
+    #occupancy-confirm button:hover { border-color: var(--agent); }
+    #occupancy-confirm kbd { font: inherit; font-size: 0.85em; color: var(--dim); margin-left: 4px; }
+    /* the terminal-banner (other live sessions) sits just under the bar while it shows */
+    body.bar-open #terminal-banner { top: 46px; }
+    #occupancy-confirm {
+      position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 18;
+      display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 5px;
+      font-size: 13px; color: var(--text);
+      background: color-mix(in srgb, var(--agent) 16%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--agent) 45%, var(--border));
+      border-left: 4px solid var(--agent);
+    }
+    #occupancy-confirm.warn { border-left-color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+    #occupancy-confirm-text { flex: 1; }
+    /* the hub card's `-> worktree` line (#44) */
+    .agent .agent-where {
+      display: block; max-width: 100%; margin-top: 2px; padding: 0; border: 0; background: none; cursor: pointer;
+      font: inherit; font-size: 10px; text-align: left; color: var(--agent);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .agent .agent-where:hover { text-decoration: underline; }
+    .agent .agent-where-plus { margin-left: 4px; color: var(--dim); }
 
     #diag {
       width: 340px; flex: 0 0 340px;
@@ -80,28 +735,950 @@
       font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
       font-size: 11px; line-height: 1.6;
     }
-    #log .row { padding: 2px 0; border-bottom: 1px solid #1d212c; }
+    #log .row { padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, var(--chrome)); }
     #log .k { color: var(--accent); }
     #log .b { color: var(--text); }
     #log .n { color: var(--dim); }
+
+    /* --- agent roster ------------------------------------------------------
+       Reactive, not a gallery: an agent appears when it first runs and its
+       portrait reflects the mood machine's state. */
+    /* --- dock groups (layout pass L1, BACKLOG #22; the split tree, #53) -------
+       Every side panel is a module in a tabbed group beside the terminal.
+       Rectangles come from app/dock-tree-display.js; nothing here decides them. */
+    .zone {
+      position: relative; min-width: 0; min-height: 0;
+      background: var(--chrome);
+      display: flex; flex-direction: column;
+    }
+    /* A group is an absolutely positioned box in #dock (dockable panels D1): its rectangle is set inline
+       by dock-tree-display.js, so it takes nothing from .zone's flex sizing. It stays a .zone so every
+       rule below that styles a zone's tabs and panels (has-bg, focus mode, the wide shape) still applies. */
+    .dgroup { position: absolute; box-sizing: border-box; overflow: hidden; }
+    /* The floats' layer (D2, PR #102 Y3): a stacking context of its own at 35, above the gutters (5), the groups and the code reader (30),
+       below #dock-overlay (40). Inside it, dock-tree-display.js gives each float its rank (0, 1, 2...) as its z-index, so
+       the order is the layer's own and cannot reach the overlay however many floats there are. The layer itself takes no
+       pointer, so the groups under its empty part keep theirs. */
+    #dock-floats { position: absolute; inset: 0; z-index: 35; pointer-events: none; }
+    /* A floating panel (D2): a group that hangs over the dock. Its bar moves it, so its tabs keep their own width and
+       the bar's empty part is the handle; the grip in the corner resizes it. Focus mode hides it like any zone. */
+    /* The frame along its bottom edge (PR #102 S2): padding the bar's colour, so the resize grip sits in it and not over
+       the end of the panel's scrollbar or a control in the panel's corner. */
+    .dfloat {
+      pointer-events: auto; padding-bottom: 8px; background: var(--chrome);
+      border: 1px solid var(--border); border-radius: 4px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+    }
+    .dfloat .zone-tabs { cursor: move; }
+    /* The move handle (PR #102 Y1): a fixed 18 px at the bar's left end, the bar's first flex item, so however many tabs
+       a float collects they shrink (ellipsis) instead of pushing it out. Pressing it presses the bar itself, which is
+       what moves a float; so does the bar's empty part, when there is one. */
+    .dfloat .zone-tabs::before {
+      content: ''; flex: 0 0 18px; cursor: move; opacity: .7;
+      background: radial-gradient(circle, var(--dim) 1px, transparent 1.6px) center / 6px 6px;
+    }
+    .dfloat .zone-tabs button { flex: 0 1 auto; padding: 8px 10px; cursor: pointer; }
+    .dfloat-grip {
+      position: absolute; right: 0; bottom: 0; width: 22px; height: 8px; z-index: 2;
+      cursor: nwse-resize; -webkit-app-region: no-drag;
+      background: repeating-linear-gradient(135deg, transparent 0 2px, var(--dim) 2px 3px);
+      opacity: .7;
+    }
+    .dfloat-grip:hover { opacity: 1; }
+    /* The divider between two cells: a 5 px strip with a 1 px line down its middle. */
+    .dgutter { position: absolute; z-index: 5; -webkit-app-region: no-drag; }
+    .dgutter[data-dir="row"] { cursor: col-resize; background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat; }
+    .dgutter[data-dir="col"] { cursor: row-resize; background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat; }
+    .dgutter:hover, .dgutter.dragging { background-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    /* A folded cell: a rail of its modules' names, vertical beside the terminal and horizontal above or below it. */
+    .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
+    .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+    .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .drail button {
+      flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
+      cursor: pointer; background: transparent; color: var(--dim); border: 0; white-space: nowrap;
+    }
+    .drail[data-dir="v"] button { writing-mode: vertical-rl; padding: 10px 0; }
+    .drail[data-dir="h"] button { padding: 0 10px; }
+    .drail button:hover { color: var(--text); }
+    /* Dragging a tab: every zone of the cell under the pointer is lit, the one under it filled. */
+    #dock-overlay { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
+    #dock-overlay .dz {
+      position: absolute; box-sizing: border-box; border-radius: 3px;
+      border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+    #dock-overlay .dz.hot { border-style: solid; background: color-mix(in srgb, var(--accent) 40%, transparent); }
+    #dock-ghost {
+      position: fixed; z-index: 70; pointer-events: none; padding: 5px 9px; font-size: 11px; white-space: nowrap;
+      background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 3px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, .6); transform: rotate(-3deg);
+    }
+    body.dock-dragging { user-select: none; cursor: grabbing; }
+    .zone-panels { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+    #panel-store { display: none; }
+
+    .zone-tabs {
+      display: flex; flex: 0 0 auto;
+      border-bottom: 1px solid var(--border);
+      -webkit-app-region: no-drag;
+    }
+    .zone-tabs button {
+      flex: 1; min-width: 0;
+      font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
+      padding: 8px 6px; cursor: pointer;
+      background: transparent; color: var(--dim);
+      border: 0; border-bottom: 2px solid transparent;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .zone-tabs button:hover { color: var(--text); }
+    /* The ring sits INSIDE the button (negative offset): .dgroup and .drail clip their overflow, so an outer ring is cut off. */
+    .zone-tabs button:focus-visible, .drail button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    /* FF12: the active-tab underline carries the model's colour cue, not the
+       theme's own --accent -- one of the two surfaces (with the xterm
+       cursor) Ricardo approved for the persistent per-model tint. Untinted,
+       --model-accent is byte-equal to --accent, so this is a no-op look
+       until a model is known. */
+    .zone-tabs button.on { color: var(--model-accent); border-bottom-color: var(--model-accent); }
+
+    /* Only the showing panel is in the layout at all -- a hidden panel that
+       still occupies space is the usual way a tab strip goes wrong. */
+    .zone .panel { display: none; flex-direction: column; min-height: 0; min-width: 0; flex: 1; }
+    .zone .panel.on { display: flex; }
+    #agents { flex: 1; overflow-y: auto; padding: 8px; }
+
+    #agents .empty { color: var(--dim); font-size: 11px; padding: 8px; line-height: 1.5; }
+
+    /* A zone never paints outside itself: in a 160 px top zone the vault's form
+       once drew straight over the terminal. A panel taller than its zone scrolls. */
+    .zone-panels { overflow: hidden; }
+    /* overflow-x stated: `overflow-y: auto` alone makes x auto too, and Models'
+       too-wide controls then grew a 17 px scrollbar under the list (probe check 3). */
+    .zone .panel { overflow-y: auto; overflow-x: hidden; }
+
+    /* #9: each panel's main list takes the rest of the zone and scrolls; its
+       header and form stay their own size, anchored below. Projects had no rule
+       at all and stopped 638 px short of the bottom (L1's verify/probe-dock-zones.js, since replaced by probe-dock-tree.js). */
+    #projects-body { padding: 8px 10px; gap: 8px; }
+    #projects-list { flex: 1; min-height: 0; overflow-y: auto; }
+    #vault-list, #files-tree, #model-list, #agents { min-height: 0; }
+
+    /* The WIDE shape (top/bottom zones): a panel's sections sit side by side,
+       each its own scrolling column, the main list the widest. The tab bar
+       stays on top. */
+    /* align-items: start, or the row stretches every column -- a lone search
+       box became a 120 px tall field. Side columns are capped so one long line
+       (the vault's warning) can't push the row wider than the zone. */
+    .zone[data-shape="wide"] .panel.on { flex-direction: row; align-items: flex-start; gap: 12px; overflow-x: auto; overflow-y: hidden; }
+    .zone[data-shape="wide"] .panel.on > * { flex: 0 1 auto; min-width: 160px; max-width: 320px; max-height: 100%; overflow-y: auto; }
+    .zone[data-shape="wide"] .panel.on > #agents,
+    .zone[data-shape="wide"] .panel.on > #vault-list,
+    .zone[data-shape="wide"] .panel.on > #bugvault-list,
+    .zone[data-shape="wide"] .panel.on > #model-list,
+    .zone[data-shape="wide"] .panel.on > #files-tree,
+    .zone[data-shape="wide"] .panel.on > #projects-list,
+    /* the Git dial takes the whole wide zone, so its drawer can sit beside it (#46) */
+    .zone[data-shape="wide"] .panel.on > #git-dial,
+    .zone[data-shape="wide"] .panel.on > #style-sections { flex: 1 1 auto; min-width: 280px; max-width: none; }
+    /* ...and the zone's full HEIGHT: a wide panel lays its children out flex-start, so without a definite
+       height the svg's height:100% fell back to its aspect ratio -- a dial 3x the zone, clipped, with its
+       text hidden as "narrow" (window probe 3b, PR #93) */
+    .zone[data-shape="wide"] .panel.on > #git-dial { align-self: stretch; height: 100%; overflow: hidden; }
+    /* Agents in a row: the roster flows as a grid of cards, not one tall list. */
+    .zone[data-shape="wide"] #agents {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      align-content: start; gap: 4px;
+    }
+    .zone[data-shape="wide"] #agents .agent { margin-bottom: 0; }
+    .zone[data-shape="wide"] #roster-subtabs { flex-direction: column; align-items: stretch; min-width: 0; }
+    .zone[data-shape="wide"] #cooldowns,
+    .zone[data-shape="wide"] #party,
+    .zone[data-shape="wide"] #procs { border-top: 0; border-left: 1px solid var(--border); }
+
+    /* BACKLOG #10: a click on a card (anywhere but its face, which is the
+       portrait drop target) opens that agent's log IN PLACE of the roster;
+       the back arrow returns to it. The rest of the Agents panel is hidden,
+       not removed, so the roster re-appears exactly as it was left. */
+    #agents .agent { cursor: pointer; }
+    #agent-log { display: none; }
+    .panel.logging > :not(#agent-log) { display: none; }
+    .panel.logging > #agent-log { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .alog-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+      border-bottom: 1px solid var(--border); }
+    .alog-close { background: none; border: 1px solid var(--border); color: var(--text);
+      border-radius: 4px; cursor: pointer; padding: 0 6px; }
+    .alog-close:hover { border-color: var(--accent); }
+    .alog-title { font-weight: 600; font-size: 12px; flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .alog-status { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+    .alog-src { font-size: 10px; color: var(--dim); padding: 2px 8px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    .alog-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px;
+      font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; line-height: 1.45; }
+    .alog-none, .alog-note { color: var(--dim); font-size: 11px; padding: 8px 0; line-height: 1.5;
+      font-family: inherit; }
+    .alog-note { padding: 2px 0; font-size: 10px; }
+    .alog-entry { display: flex; gap: 6px; padding: 1px 0; align-items: baseline; }
+    .alog-time { color: var(--dim); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+    .alog-kind { flex: 0 0 auto; width: 4.2em; color: var(--dim); }
+    .alog-name { flex: 0 0 auto; font-weight: 600; max-width: 8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .alog-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .85; }
+    .alog-tool_use .alog-kind { color: var(--accent); }
+    .alog-error .alog-kind, .alog-error .alog-sum { color: #e06c75; }
+    .alog-unknown { opacity: .45; }
+    .alog-unk { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 10px; padding: 0 2px; }
+    .alog-unk:hover { color: var(--text); }
+    .alog-unk[hidden] { display: none; }
+
+    .agent {
+      display: flex; align-items: center; gap: 9px;
+      padding: 6px; border-radius: 6px; margin-bottom: 4px;
+      transition: background .25s, opacity .35s;
+    }
+    .agent .face {
+      width: var(--face, 34px); height: var(--face, 34px); flex: 0 0 var(--face, 34px);
+      border-radius: 7px; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; letter-spacing: .04em;
+      color: #0e1017;
+      border: 1px solid rgba(255,255,255,.10);
+    }
+    /* FF7: img and video share one rule -- a <video> portrait must fill the
+       same square an <img> does, not report its own intrinsic size. */
+    .agent .face .face-media { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* BACKLOG C #13: the hover pencil that opens the file picker for a face.
+       Hidden until the face is hovered or focused, so it costs no space. */
+    .agent .face { position: relative; }
+    .agent .face .face-pencil {
+      position: absolute; right: 1px; bottom: 1px;
+      width: 16px; height: 16px; padding: 0; line-height: 14px; font-size: 11px;
+      border: 1px solid rgba(255,255,255,.25); border-radius: 4px;
+      background: rgba(14,16,23,.75); color: #fff; cursor: pointer;
+      opacity: 0; transition: opacity .15s;
+    }
+    .agent .face:hover .face-pencil, .agent .face .face-pencil:focus-visible { opacity: 1; }
+    /* BACKLOG C #18: the roster header's "agent images" switch. */
+    #roster-subtabs { display: flex; align-items: center; }
+    #images-toggle { margin-left: auto; cursor: pointer; }
+    #images-toggle.off { opacity: .45; }
+    /* flex-basis 0 so the meta column is BOUNDED by the card: the tool belt's
+       picker is wider than a name, and unbounded it pushed past the panel. */
+    .agent .meta { min-width: 0; flex: 1 1 0; }
+    .agent .name {
+      font-size: clamp(10.5px, calc(var(--face, 34px) * .3), 15px); font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .agent .state { font-size: 10px; color: var(--dim); text-transform: capitalize; }
+    /* Career: tokens spent and time worked IN THIS PROJECT, across every
+       session on the folder. Dimmer than the state so it reads as a footnote
+       to the portrait rather than competing with it. */
+    .agent .career {
+      font-size: 10px; color: var(--dim); opacity: 0.75;
+      font-variant-numeric: tabular-nums; margin-top: 1px;
+      display: flex; gap: 3px; align-items: baseline;
+    }
+    .agent .career-sep { opacity: 0.5; }
+    .agent .career-warn { color: var(--accent); font-weight: 600; cursor: help; }
+    /* The model an agent ACTUALLY used (host/session-model.js), and how many
+       instances of it are running right now (mood.stack() via `party`). */
+    .agent .agent-model { font-size: 10px; color: var(--dim); opacity: 0.6;
+      font-variant-numeric: tabular-nums; margin-top: 1px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    /* BACKLOG #14. A small button in its own element, shown on a sleeping card
+       only (and as "unhide" while hidden rows are revealed). Appears on hover
+       or keyboard focus, and sits off .face entirely: the face is a portrait
+       drop target. */
+    .agent { position: relative; }
+    .agent .agent-hide {
+      position: absolute; top: 3px; right: 3px;
+      font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--dim);
+      cursor: pointer; opacity: 0; transition: opacity .15s;
+    }
+    .agent:hover .agent-hide, .agent .agent-hide:focus-visible { opacity: 1; }
+    .agent .agent-hide:hover { color: var(--accent); border-color: var(--accent); }
+    .agent[data-hidden="true"] { outline: 1px dashed var(--border); outline-offset: -1px; }
+    #roster-show-hidden {
+      display: block; width: 100%; margin: 0 0 4px; padding: 3px 6px; text-align: left;
+      font-size: 10px; color: var(--dim); background: transparent;
+      border: 0; border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    #roster-show-hidden[hidden] { display: none; }
+    #roster-show-hidden:hover { color: var(--accent); }
+    .agent .agent-count { font-size: 10px; font-weight: 700; color: var(--accent);
+      opacity: .85; margin-left: 4px; }
+
+    /* The tool belt (BACKLOG #17; app/loadout-display.js): what an agent carries
+       into its NEXT spawn. Every control is a <button>. */
+    .agent .belt { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+    .agent .belt-strip { display: flex; flex-wrap: wrap; gap: 3px; }
+    .agent .belt-item { font-size: 9.5px; color: var(--dim); border: 1px solid var(--border);
+      border-radius: 3px; padding: 0 4px; }
+    .agent .belt-glyph { color: var(--accent); margin-right: 3px; font-weight: 700; }
+    .agent .belt-off { font-size: 9.5px; color: var(--dim); opacity: .55; cursor: help; }
+    .agent .belt-btn, .agent .belt-row { font: inherit; font-size: 10px; color: var(--dim);
+      background: none; border: 1px solid var(--border); border-radius: 3px; padding: 0 5px;
+      cursor: pointer; }
+    .agent .belt-btn:hover, .agent .belt-row:hover, .agent .belt-btn.on { color: var(--text); border-color: var(--accent); }
+    .agent .belt-picker { flex: 1 0 100%; display: flex; flex-direction: column; gap: 2px;
+      padding: 4px; margin-top: 2px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 4px; }
+    .agent .belt-note { font-size: 9.5px; color: var(--dim); line-height: 1.35; }
+    .agent .belt-row { display: flex; align-items: flex-start; gap: 4px; text-align: left; padding: 1px 5px; }
+    .agent .belt-row.on { color: var(--text); border-color: var(--accent); }
+    .agent .belt-name { flex: 1 1 0; min-width: 0; }
+    .agent .belt-do { margin-left: auto; opacity: .7; white-space: nowrap; }
+    .agent .belt-hint { display: block; font-size: 9px; opacity: .6; }
+    /* A card with an open picker is tall: pin the portrait to the top rather than float mid-card. */
+    .agent:has(.belt-picker) { align-items: flex-start; }
+    .agent .belt-error { font-size: 10px; color: var(--bad); line-height: 1.35; }
+
+    /* --- model browser ---------------------------------------------------- */
+    #models-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+    #council h3, #procs h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--dim); margin: 0 0 4px; font-weight: 600; }
+    #seat-list { display: flex; flex-direction: column; gap: 3px; }
+    .seat { display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
+    .seat .seat-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .seat .seat-provider { color: var(--dim); font-size: 10px; }
+    .seat button { background: none; border: none; color: var(--dim); cursor: pointer;
+      font-size: 13px; line-height: 1; padding: 0 2px; }
+    .seat button:hover { color: var(--bad); }
+    /* Warnings, not errors: each describes a council that WORKS and whose
+       answers are worth less than they look. Amber, never red. */
+    #seat-warnings { margin-top: 4px; display: flex; flex-direction: column; gap: 3px; }
+    .seat-warn { font-size: 10px; line-height: 1.35; color: var(--accent);
+      border-left: 2px solid var(--accent); padding-left: 6px; opacity: .9; }
+    #model-controls { display: flex; flex-direction: column; gap: 4px; }
+    #model-controls .row { display: flex; gap: 4px; }
+    #model-controls select, #model-search { background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; font: inherit; font-size: 11px; }
+    #model-controls select { flex: 1; }
+    #model-search { width: 100%; }
+    .check { font-size: 10px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+    #model-provenance { font-size: 10px; line-height: 1.3; }
+    /* Stale prices are called out in amber. A month-old price shown as current
+       is the failure here that actually costs money. */
+    #model-provenance.stale { color: var(--accent); }
+    #model-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 0; flex: 1; }
+    .model { display: flex; align-items: baseline; gap: 6px; padding: 3px 5px; border-radius: 4px;
+      font-size: 11px; cursor: pointer; border: 1px solid transparent; }
+    /* The project picker. A row is only clickable when it is somewhere else to
+       go -- the current project is listed so you can see where you are, and
+       deliberately does not look like a button. */
+    .proj { padding: 6px 8px; border: 1px solid transparent; border-radius: 4px;
+            margin-bottom: 3px; }
+    .proj-open { cursor: pointer; }
+    .proj-open:hover { background: var(--panel); border-color: var(--border); }
+    .proj-name { font-size: 12px; }
+    .proj-detail { font-size: 10px; opacity: 0.6; }
+    .proj.current { border-color: var(--accent); }
+    .proj.current .proj-name::after { content: ' — you are here'; opacity: 0.6; font-size: 10px; }
+    .proj-approx .proj-name::after { content: ' ~'; opacity: 0.6; }
+
+    /* The wand (BACKLOG #51): favourite skills as emoji buttons. Markup comes from app/wand-display.js. A dimmed
+       button is a skill that no longer exists; the flash is "typed", never "ran". */
+    #wand-body { padding: 8px 10px; }
+    .wand-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    #wand-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+    .zone[data-shape="wide"] .panel.on > #wand-root { flex: 1 1 auto; min-width: 240px; max-width: none; }
+    .wand-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .wand-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .wand-edit { font: inherit; font-size: 13px; line-height: 1; padding: 3px 7px; cursor: pointer; background: transparent;
+      color: var(--dim); border: 1px solid transparent; border-radius: 4px; }
+    .wand-edit:hover { color: var(--text); border-color: var(--border); }
+    .wand-edit.on { color: var(--accent); border-color: var(--accent); }
+    /* padding: the ✕ of an edit-mode cell hangs 6px outside it, and the panel clips what overflows */
+    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
+    .wand-cell { position: relative; display: block; }
+    .wand-btn { width: 100%; aspect-ratio: 1; padding: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 18px; line-height: 1; cursor: pointer; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; transition: border-color .12s, background .12s; }
+    .wand-btn:hover { border-color: var(--accent); }
+    .wand-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+    .wand-btn.dim { opacity: .35; filter: grayscale(1); }
+    .wand-btn.flash { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 22%, var(--panel)); }
+    .wand-add { font-size: 20px; color: var(--dim); border-style: dashed; }
+    .wand-x { position: absolute; top: -6px; right: -6px; width: 17px; height: 17px; padding: 0; font-size: 9px; line-height: 17px;
+      text-align: center; cursor: pointer; color: #fff; background: var(--bad); border: 0; border-radius: 50%; }
+    .wand-note { font-size: 11px; line-height: 1.5; color: var(--dim); margin: 0 0 8px; }
+    .wand-note.bad { color: var(--bad); }
+    .wand-note.warn { color: var(--accent); }
+    .wand-status { font-size: 11px; color: var(--ok); margin-top: 8px; }
+    .wand-error { font-size: 11px; color: var(--bad); margin-top: 8px; }
+    .wand-editor .wand-error { margin-top: 0; }
+    .wand-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 8px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 6px; }
+    .wand-ed-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+    .wand-ed-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+    .wand-editor input { font: inherit; font-size: 12px; min-width: 0; padding: 4px 6px; color: var(--text); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .wand-ed-row input { flex: 1; }
+    .wand-ed-emoji { flex: 0 0 4em !important; text-align: center; font-size: 16px !important; }
+    .wand-emoji-pick { display: flex; flex-wrap: wrap; gap: 3px; }
+    .wand-pick { font-size: 15px; line-height: 1; padding: 3px; cursor: pointer; background: transparent; border: 1px solid transparent; border-radius: 4px; }
+    .wand-pick:hover { border-color: var(--accent); }
+    .wand-picked { font-size: 12px; }
+    .wand-missing { color: var(--bad); font-size: 10px; }
+    .wand-skill-list { max-height: 150px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+    .wand-skill { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left; font: inherit; font-size: 11px;
+      padding: 4px 6px; cursor: pointer; color: var(--text); background: transparent; border: 0; border-bottom: 1px solid var(--border); }
+    .wand-skill:hover { background: var(--panel); }
+    .wand-skill.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+    .wand-skill-name { flex: 0 0 auto; }
+    .wand-skill-src { flex: 0 0 auto; font-size: 9px; color: var(--accent); }
+    .wand-skill-desc { flex: 1; min-width: 0; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wand-skill-none, .wand-skill-more { font-size: 11px; color: var(--dim); padding: 4px 6px; }
+    .wand-ed-actions { display: flex; gap: 6px; }
+    .wand-ed-actions button { font: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer; color: var(--text); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .wand-ed-actions button:hover:not(:disabled) { border-color: var(--accent); }
+
+    /* The Style tab -- a container that GROWS. One section today (background
+       image); app/style-display.js's STYLE_SECTIONS registry is what makes a
+       second one later a markup-free addition. */
+    #style-sections { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding: 10px 12px; }
+    .style-section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; margin: 0 0 6px; }
+    .style-current { font-size: 11px; color: var(--dim); margin-bottom: 8px; }
+    .style-dropzone {
+      border: 1px dashed var(--border); border-radius: 6px; padding: 16px 10px;
+      text-align: center; font-size: 11px; color: var(--dim); margin-bottom: 8px;
+    }
+    .style-dropzone.dropping { border-color: var(--accent); color: var(--accent); }
+    .style-browse { color: var(--accent); cursor: pointer; text-decoration: underline; }
+    .style-error { color: var(--bad); font-size: 11px; margin-top: 6px; }
+    /* Label ABOVE its controls, so a row is only the controls and fits the
+       narrow, resizable sidebar on one line. */
+    .style-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; min-width: 0; }
+    .style-label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 3px; }
+    .style-row input[type=color] {
+      width: 32px; height: 22px; padding: 0; flex: none; cursor: pointer;
+      border: 1px solid var(--border); border-radius: 4px; background: none;
+    }
+    .style-hex {
+      /* Never shrinks: a narrowed sidebar (or its scrollbar) cut "#3a1418" to
+         "#3a141". The Reset button gives up width instead. */
+      width: calc(7ch + 14px); flex: none; font: 11px Consolas, monospace; padding: 3px 5px;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+    }
+    .style-hex.bad { border-color: var(--bad); }
+    .style-note { font-size: 10.5px; color: var(--dim); margin: -6px 0 10px; }
+    .style-paused { font-size: 10.5px; color: var(--dim); margin: -6px 0 10px; }
+    .style-paused[hidden] { display: none; }
+    .style-row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+    .style-val { width: 34px; text-align: right; font-size: 11px; color: var(--dim); flex: none; }
+    .style-section button {
+      font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+    }
+    .style-section button:disabled { opacity: .45; cursor: default; }
+
+    .model:hover { background: var(--panel); border-color: var(--border); }
+    .model.seated { border-color: var(--accent); background: var(--panel); }
+    .model .m-id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .model .m-price { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+    .model .m-ctx { color: var(--dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+    /* An UNPRICED model is not a free one, and must never read like one. */
+    .model .m-price.unknown { color: var(--accent); }
+    .model .m-notools { color: var(--bad); font-size: 10px; }
+    /* Provider headings. The provider is also the unit the council cares about:
+       two models from one vendor share failure modes. */
+    .provider { display: flex; align-items: baseline; gap: 6px; font-size: 10px;
+      text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+      margin: 6px 0 1px; padding-bottom: 2px; border-bottom: 1px solid var(--border); }
+    .provider:first-child { margin-top: 0; }
+    .provider .p-name { flex: 1; font-weight: 600; }
+    .provider .p-count { opacity: .6; }
+    .model { padding-left: 10px; }
+
+    /* Favourites (BACKLOG E #5, #3): a star on any OpenRouter row, pinned to
+       its own section at the very top of the whole list -- ahead of the
+       provider grouping, so a star is never buried inside its provider's own
+       price/context position. */
+    .model .m-star { order: -1; background: none; border: none; cursor: pointer;
+      font-size: 12px; line-height: 1; padding: 0 2px; color: var(--dim); }
+    .model .m-star.starred { color: var(--accent); }
+    .model .m-star:hover { color: var(--accent); }
+    #model-provenance { display: flex; align-items: baseline; gap: 6px; }
+    #model-provenance .prov-text { flex: 1; }
+    #model-refresh { font: inherit; font-size: 10px; padding: 2px 7px; cursor: pointer;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+    #model-refresh:disabled { opacity: .5; cursor: default; }
+
+    /* The Claude choices (top-bar model menu): each gets its own star, and
+       favouriting one reorders the row to the front -- app/models-favourites.js
+       decides the order, renderer.js only rewrites this container's markup. */
+    .tb-model-choice { display: inline-flex; align-items: stretch; }
+    .tb-model-choice .star { font: inherit; font-size: 11px; background: none; border: none;
+      cursor: pointer; color: var(--dim); padding: 0 3px; }
+    .tb-model-choice .star.starred { color: var(--accent); }
+    .tb-model-choice .star:hover { color: var(--accent); }
+
+    /* State is carried by opacity and a ring, so it still reads when the
+       portrait itself is a placeholder. */
+    .agent[data-state="sleeping"] { opacity: .42; }
+    .agent[data-state="working"]  { background: rgba(255,255,255,.05); }
+    .agent[data-state="working"] .face { box-shadow: 0 0 0 2px var(--accent); }
+    .agent[data-state="happy"]    { background: rgba(95,176,122,.14); }
+    .agent[data-state="happy"] .face { box-shadow: 0 0 0 2px var(--ok); }
+    .agent[data-state="stressed"] { background: rgba(204,95,95,.14); }
+    .agent[data-state="stressed"] .face { box-shadow: 0 0 0 2px var(--bad); }
+    .agent[data-state="working"] .state { color: var(--accent); }
+    .agent[data-state="happy"] .state { color: var(--ok); }
+    .agent[data-state="stressed"] .state { color: var(--bad); }
+
+    /* --- top bar: model / effort ---------------------------------------------
+       FF12. Model and effort are CONTROLS, not labels -- clicking either opens
+       a small picker that types the matching /model or /effort command into
+       the pty, exactly as a human would (see app/renderer.js requestModel /
+       requestEffort). The tint is app/top-bar-display.js's cueColour: fixed
+       per model family, so it means the same thing in every themed project;
+       untinted (no model known yet) it is byte-equal to the theme's own
+       --accent, so the panel changes nothing about the header until PR-A's
+       sessionModel lands. */
+    #top-bar { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
+    /* Layout pass L2 (#27): the CLI's status row, dim like it was there. In a
+       crowded header it gives way first, clipped with an ellipsis, rather than
+       pushing the controls off the edge (Miguel L2 Y1). */
+    #status-fields { color: var(--dim); font-size: 11px; white-space: nowrap; margin: 0 6px;
+                     min-width: 0; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
+    .tb-chip { background: var(--chrome); color: var(--text); border: 1px solid var(--model-accent);
+               border-radius: 999px; padding: 2px 9px; font-size: 10.5px; line-height: 1.5;
+               cursor: pointer; font: inherit;
+               /* The chip shows a FULL id ("claude-sonnet-5"); wrapped, the
+                  pill became a three-line circle (seen in the live probe). */
+               white-space: nowrap; }
+    .tb-chip:hover { background: color-mix(in srgb, var(--model-accent) 14%, var(--chrome)); }
+    /* Pending never claims success -- see app/top-bar-display.js's
+       pendingResolver. It only ever LOOKS unsettled until the truth (or the
+       timeout) says otherwise. */
+    .tb-chip.pending { opacity: .68; animation: pulse 1.2s ease-in-out infinite; }
+    /* A switch that did not take, or was not sent. The label still reports
+       the truth; the dashed border says "look at the tooltip". */
+    .tb-chip.notice { border-style: dashed; }
+    /* BACKLOG #6 context-fill circle. The palette is app/context-fill-display.js's
+       PALETTE (test/renderer-context-fill.test.js fails if these drift). Unknown
+       is hollow and dashed -- a shape of its own, never one of the five. */
+    .tb-ctx { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+              margin-left: 3px; box-sizing: border-box; flex: none; }
+    .ctx-0 { background: #8a8f98; }
+    .ctx-1 { background: #4caf6a; }
+    .ctx-2 { background: #e6c229; }
+    .ctx-3 { background: #f08a24; }
+    .ctx-4 { background: #e04848; }
+    .ctx-unknown { background: transparent; border: 1.5px dashed var(--text); opacity: .55; }
+    .tb-menu .note { font-size: 10px; opacity: .6; padding: 3px 7px 0; max-width: 170px; }
+    .tb-menu { position: fixed; left: 0; top: 0; z-index: 50; display: flex; flex-direction: column;
+               gap: 2px; background: var(--chrome); border: 1px solid var(--border);
+               border-radius: 8px; padding: 5px; min-width: 128px;
+               box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+    .tb-menu[hidden] { display: none; }
+    .tb-menu button { background: transparent; border: none; color: var(--text); text-align: left;
+                      padding: 4px 7px; border-radius: 5px; cursor: pointer; font-size: 11px; }
+    .tb-menu button:hover { background: var(--bg); color: var(--model-accent); }
+    .tb-menu .custom { display: flex; gap: 3px; margin-top: 2px; padding-top: 4px;
+                        border-top: 1px solid var(--border); }
+    .tb-menu .custom input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+                              border: 1px solid var(--border); border-radius: 4px;
+                              padding: 2px 5px; font-size: 11px; }
+    .tb-menu .custom button { border: 1px solid var(--border); }
+    /* Layout pass L1: the layout menu and the right-click "Move to". */
+    /* The menu never grows past the window (32 presets would): only the preset LIST scrolls, inside its own region, so
+       Save this layout, Just this tab, Reset layout and the own-layout buttons stay on screen. overflow-y is the fallback
+       for a window too short for even those. */
+    #layout-menu { min-width: 200px; max-height: calc(100vh - 8px); overflow-y: auto; }
+    #layout-menu .lm-presets { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
+    #layout-menu .lm-presets-list { overflow-y: auto; min-height: 56px; flex: 0 1 auto; }
+    #layout-menu .lm-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+      color: var(--dim); padding: 4px 7px 2px; }
+    #layout-menu .lm-row { display: flex; align-items: center; gap: 6px; padding: 1px 7px; }
+    #layout-menu .lm-row .lm-name { flex: 1; font-size: 12px; white-space: nowrap; }
+    #layout-menu .lm-row button { padding: 1px 5px; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; }
+    #layout-menu .lm-row button.on { color: var(--model-accent); border-color: var(--model-accent); }
+    #layout-menu button:disabled { opacity: .4; cursor: default; }
+    #layout-menu .lm-sep { border-top: 1px solid var(--border); margin: 4px 0; }
+    /* Presets (D3): a thumbnail of the layout, its name (click applies), small rename and delete buttons. */
+    #layout-menu .lm-thumb { position: relative; flex: none; width: 44px; height: 28px; border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+    #layout-menu .lm-thumb.unknown { display: flex; align-items: center; justify-content: center; font-size: 12px; opacity: .6; }
+    #layout-menu .lm-thumb i { position: absolute; display: block; box-sizing: border-box; border: 1px solid var(--border); }
+    #layout-menu .lm-thumb i.term { background: var(--model-accent); opacity: .55; }
+    #layout-menu .lm-row button.lm-apply { flex: 1; min-width: 0; max-width: 200px; text-align: left; border-color: transparent; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #layout-menu .lm-row button.lm-mini { flex: none; }
+    #layout-menu .lm-row input[type="text"] { flex: 1; min-width: 0; font-size: 12px; padding: 1px 4px; }
+    #layout-menu .lm-note { font-size: 11px; padding: 3px 7px; max-width: 260px; white-space: normal; }
+    #layout-menu .lm-note.err { color: #e5534b; }
+    #layout-menu .lm-row button:focus-visible, #layout-menu .lm-row input:focus-visible { outline: 2px solid var(--model-accent); outline-offset: 1px; }
+    #layout-menu label { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 7px; color: var(--text); }
+    /* Focus mode (#1): only the terminal. The exit lives in the top-right corner,
+       visible on hover; it covers only that corner, not the terminal's top row. */
+    body.focus-mode header, body.focus-mode .zone, body.focus-mode #diag,
+    body.focus-mode .dgutter, body.focus-mode .drail, body.focus-mode #dock-overlay { display: none; }
+    /* ...and the terminal takes the whole area, wherever the layout last put it (inline rect). */
+    body.focus-mode #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
+    #focus-hot { display: none; }
+    body.focus-mode #focus-hot {
+      display: flex; justify-content: flex-end; align-items: flex-start;
+      position: fixed; top: 0; right: 0; width: 280px; height: 8px; z-index: 60;
+    }
+    /* 8 px: inside the terminal's own top padding, so the hidden hover area
+       covers no text (PR #82 Miguel S1); it grows to hold the button once hovered. */
+    body.focus-mode #focus-hot:hover { height: 32px; }
+    #focus-exit {
+      visibility: hidden; margin: 3px 8px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11px;
+      background: var(--chrome); color: var(--text); border: 1px solid var(--accent); border-radius: 4px;
+    }
+    #focus-exit kbd { background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-size: 10px; }
+    body.focus-mode #focus-hot:hover #focus-exit, #focus-exit:focus-visible { visibility: visible; }
+
+    /* --- permission mode ---------------------------------------------------
+       Five modes, measured by cycling shift+tab. Bypass is flagged because
+       "running with permissions bypassed" should be impossible to forget. */
+    #mode { display: flex; align-items: center; gap: 6px; font-size: 10.5px;
+            padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border);
+            -webkit-app-region: no-drag; }
+    #mode .skulls { display: flex; gap: 1px; font-style: normal; line-height: 1; }
+    #mode .skulls i { font-style: normal; font-size: 13px; color: var(--border); transition: color .2s; }
+    #mode .skulls i.on { color: var(--accent); text-shadow: 0 0 6px color-mix(in srgb, var(--accent) 55%, transparent); }
+    #mode.risky .skulls i.on { color: var(--bad); text-shadow: 0 0 8px color-mix(in srgb, var(--bad) 65%, transparent); }
+    #mode .nm { color: var(--text); font-weight: 600; }
+    #mode.risky { border-color: var(--bad); }
+    #mode.risky .nm { color: var(--bad); }
+
+
+    /* --- party -------------------------------------------------------------
+       The live delegation chain, so a subagent that quietly spawned six more
+       is visible rather than inferred. */
+    #party { padding: 6px 8px; border-top: 1px solid var(--border); font-size: 10.5px; }
+    #party .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+    #party .who { background: rgba(255,255,255,.06); border-radius: 4px; padding: 1px 5px; }
+    #party .who.inner { background: var(--accent); color: var(--on-accent, #12141c); font-weight: 600; }
+    #party .arrow { color: var(--dim); }
+    #party .none { color: var(--dim); opacity: .7; }
+
+    /* --- running processes -------------------------------------------------
+       Long work must be visible. A four-minute GPU job that shows nothing is
+       indistinguishable from a hung session. */
+    #procs { border-top: 1px solid var(--border); padding: 8px; flex: 0 0 auto; max-height: 190px; overflow-y: auto; }
+    #procs h3 { margin: 0 0 6px; font-size: 10px; text-transform: uppercase;
+                letter-spacing: .08em; color: var(--dim); font-weight: 600; }
+    #procs .none { color: var(--dim); font-size: 10.5px; opacity: .7; }
+    .proc { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; font-size: 11px; }
+    .proc .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+                 flex: 0 0 5px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+    .proc .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; font-family: ui-monospace, monospace; font-size: 10.5px; }
+    .proc .el { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+    /* Anything past a minute is worth noticing rather than assuming hung. */
+    .proc.slow .el { color: var(--accent); }
+    /* Ended without its own close event: not running, so no pulse. */
+    .proc.stale { opacity: .55; }
+    .proc.stale .dot { animation: none; background: var(--dim); }
+    .proc.stale .lbl { text-decoration: line-through; }
+
+    /* Scrollbars follow the theme. The default chrome scrollbar is a bright
+       grey slab that ignores the palette entirely and is the one element that
+       gives away that this is a web view rather than a terminal. */
+    .xterm-viewport::-webkit-scrollbar,
+    #agents::-webkit-scrollbar,
+    #log::-webkit-scrollbar { width: 9px; }
+    .xterm-viewport::-webkit-scrollbar-track,
+    #agents::-webkit-scrollbar-track,
+    #log::-webkit-scrollbar-track { background: transparent; }
+    .xterm-viewport::-webkit-scrollbar-thumb,
+    #agents::-webkit-scrollbar-thumb,
+    #log::-webkit-scrollbar-thumb {
+      background: var(--border); border-radius: 5px;
+      border: 2px solid transparent; background-clip: content-box;
+    }
+    .xterm-viewport::-webkit-scrollbar-thumb:hover,
+    #agents::-webkit-scrollbar-thumb:hover,
+    #log::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: content-box; }
   </style>
 </head>
 <body>
+  <div id="bg"></div>
+  <div id="focus-veil"></div>
+  <!-- FF12's menus, at BODY level on purpose: inside the header they were
+       clipped by its overflow:hidden and painted over by the panels below
+       (every #app child is its own z-index:1 layer). renderer.js places
+       them against their chip with menuPlacement(). -->
+  <div id="tb-model-menu" class="tb-menu" hidden>
+    <!-- BACKLOG E #5, #3: rewritten by app/renderer.js's renderClaudeChoices()
+         on load and whenever a favourite changes, so favourited choices sort
+         first -- this static markup is only the pre-JS fallback shape. -->
+    <div id="tb-model-choices">
+      <span class="tb-model-choice"><button type="button" data-model="fable">fable</button></span>
+      <span class="tb-model-choice"><button type="button" data-model="opus">opus</button></span>
+      <span class="tb-model-choice"><button type="button" data-model="sonnet">sonnet</button></span>
+      <span class="tb-model-choice"><button type="button" data-model="haiku">haiku</button></span>
+    </div>
+    <div class="custom">
+      <input id="tb-model-custom" type="text" placeholder="full model id…" autocomplete="off" />
+      <button type="button" id="tb-model-custom-go">Go</button>
+    </div>
+    <!-- MEASURED (verify/probe-top-bar-truth.js): /model saves the pick as
+         the default for new sessions. Approved 2026-09-26: say so. -->
+    <div class="note">also becomes your default for new sessions</div>
+  </div>
+
+  <!-- Layout pass L1: the layout menu (▦) and a module tab's right-click menu,
+       one element filled by renderer.js. At body level for the same reason as
+       the menus above: inside a zone it would be clipped. -->
+  <div id="layout-menu" class="tb-menu" role="menu" hidden></div>
+  <!-- Focus mode's way out by mouse: the window's top-right corner. Hovering it
+       shows the button; never a state with nothing to click (the dead end the
+       old sidebar once was). -->
+  <div id="focus-hot"><button type="button" id="focus-exit" title="Show the panels again">Exit focus <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></button></div>
+
+  <div id="tb-effort-menu" class="tb-menu" hidden>
+    <button type="button" data-effort="low">low</button>
+    <button type="button" data-effort="medium">medium</button>
+    <button type="button" data-effort="high">high</button>
+    <button type="button" data-effort="xhigh">xhigh</button>
+    <button type="button" data-effort="max">max</button>
+    <button type="button" data-effort="auto">auto</button>
+    <div class="note">also becomes your default for new sessions</div>
+  </div>
   <div id="app">
     <header>
       <span class="dot" id="dot"></span>
-      <span class="title">claude-custom</span>
+      <span class="title" id="title">claude-custom</span>
+      <!-- Extension X4/X1 (PR 1b): behind develop / develop ahead of main, and
+           an overridden or missing session lock. Painted by
+           app/worktree-status-display.js; hidden when there is nothing to say. -->
+      <span id="wt-health" class="wt-health" hidden></span>
+      <span id="wt-lock" class="wt-lock" hidden></span>
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
+      <span id="hp" title="Project HP — click to run the test suite"></span>
+      <!-- FF12: model + effort, the two things that change how the NEXT turn
+           behaves. Working directory is FF3 (window title); spend/quota are
+           status, not controls, and stay in #usage/#quota below. -->
+      <span id="top-bar">
+        <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
+        <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
+        <span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span>
+      </span>
+      <!-- Layout pass L2 (#27): the CLI's status row, moved here when the Window
+           setting says so: cost, lines, time, ctx>200k. -->
+      <span id="status-fields" title="This session's cost, lines changed and time, from the CLI's status line" hidden></span>
+      <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
+      <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
+      <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
+      <button type="button" id="layout-btn" class="hdr-btn" title="Layout: where each panel sits">▦</button>
+      <button type="button" id="focus-btn" class="hdr-btn" title="Focus: only the terminal (Ctrl+Shift+F)">⛶</button>
+      <span class="hint" id="side-hint" title="Show or hide every panel">panels <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
       <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
     </header>
     <div id="body">
-      <div id="termwrap"><div id="term"></div></div>
+      <!-- Dockable panels (D1): the area the layout tree fills. app/dock-tree-display.js
+           adds one box per group, divider and rail beside the terminal and moves the
+           panels below into the groups; #termwrap is placed, never reparented. -->
+      <div id="dock">
+      <div id="termwrap"><div id="term"></div>
+        <!-- fix/terminal-links: where the link under the pointer really goes,
+             or that a clicked one wasn't opened. Text only (app/link-click.js). -->
+        <div id="link-target" role="status" hidden></div>
+        <!-- Extension X1 (PR 1b). Other live claude sessions in this worktree:
+             a warning, never a block. Dismissed until the set of sessions changes. -->
+        <div id="terminal-banner" role="status" hidden>
+          <span id="terminal-banner-text"></span>
+          <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
+        </div>
+        <!-- The terminal bar (#49 + #52, with #47's occupancy banner folded in as a chip): one row, the prompt left
+             once it has scrolled away, the chips right. Text only, painted from app/terminal-bar.js's model. -->
+        <div id="terminal-bar" role="group" aria-label="Last prompt and status" hidden>
+          <button type="button" id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full" title="Show the whole prompt (Esc closes it)">
+            <span class="bar-caret">❯</span><span id="bar-prompt-text"></span><span id="bar-prompt-age"></span>
+          </button>
+          <div id="bar-prompt-full" hidden></div>
+          <div id="bar-chips"></div>
+        </div>
+        <!-- The first keystroke typed while an agent is writing here, or an overnight run is going, is held behind
+             this (app/occupancy-confirm.js). -->
+        <div id="occupancy-confirm" role="alertdialog" aria-labelledby="occupancy-confirm-text" hidden>
+          <span id="occupancy-confirm-text">An agent is writing here. Type anyway?</span>
+          <button type="button" id="occupancy-type">Type <kbd>Enter</kbd></button>
+          <button type="button" id="occupancy-wait">Wait <kbd>Esc</kbd></button>
+        </div>
+        <!-- Another session holds this worktree's lock: no session starts here
+             until Open anyway. Over the terminal, which is empty meanwhile. -->
+        <div id="lock-overlay" role="alertdialog" aria-labelledby="lock-overlay-title" hidden>
+          <div class="lock-card">
+            <div id="lock-overlay-title"></div>
+            <div id="lock-overlay-detail"></div>
+            <div class="lock-actions">
+              <button type="button" id="lock-go-to" hidden>Go to that session</button>
+              <button type="button" id="lock-stop" hidden>Stop that session</button>
+              <button type="button" id="lock-open-anyway">Open anyway</button>
+              <button type="button" id="lock-close">Close window</button>
+            </div>
+            <div id="lock-goto-note" role="status"></div>
+          </div>
+        </div>
+      </div>
+      <!-- The code reader (#32): a file opened from the Files tab, beside the terminal. Hidden until a file is
+           opened; app/repo-reader.js owns it. The divider is draggable and keyboard-adjustable. -->
+      <div id="reader-split" role="separator" aria-orientation="vertical" aria-label="Resize the file reader" tabindex="0" hidden></div>
+      <section id="reader" aria-label="File reader" hidden>
+        <header id="reader-head">
+          <span id="reader-path"></span>
+          <button type="button" id="reader-diff" title="What Claude changed in this file" aria-pressed="false" hidden>Diff</button>
+          <button type="button" id="reader-mention" title="Type @this-file (or the selected lines) into the prompt; you press Enter">@ in prompt</button>
+          <button type="button" id="reader-reveal" title="Show this file in Explorer">Show in Explorer</button>
+          <button type="button" id="reader-close" title="Close (Esc)" aria-label="Close the reader">&times;</button>
+          <span id="reader-meta" role="status"></span>
+        </header>
+        <div id="reader-bar" role="status" hidden><span id="reader-bar-text"></span><button type="button" id="reader-reload">Reload</button></div>
+        <div id="reader-body"></div>
+        <div id="reader-note" role="status" hidden><span id="reader-note-text"></span><button type="button" id="reader-note-reveal" hidden>Show in Explorer</button></div>
+      </section>
+      <!-- Floating panels (D2): their own layer, above the groups, rails, gutters and the reader, below the drag overlay. -->
+      <div id="dock-floats"></div>
+      <div id="dock-overlay"></div>
+      </div>
       <aside id="diag">
         <h2>Key diagnostics</h2>
         <div id="checks"></div>
         <div id="log"></div>
       </aside>
+      <!-- Every module's panel. A panel no zone is showing waits here. The vault
+           is a PANEL, never inside the terminal: nothing in it is written to the
+           pty, so a secret cannot reach the session by being rendered in the
+           wrong place. -->
+      <div id="panel-store" hidden>
+        <div class="panel" data-panel="agents">
+          <!-- BACKLOG D #16: Active is today's roster (unchanged); Inactive is
+               the whole roster (every agent definition plus every name ever
+               seen in a transcript, across every project) minus Active,
+               sorted by lifetime tokens. The split and sort are pure and live
+               in app/roster-tabs-display.js -- this is markup only. -->
+          <nav id="roster-subtabs">
+            <button type="button" data-roster-tab="active" class="on" title="Working in this host's lifetime">Active</button>
+            <button type="button" data-roster-tab="inactive" title="Every other agent this project or account has ever used">Inactive</button>
+            <button type="button" id="images-toggle" title="Agent images: reading the setting">🖼</button>
+          </nav>
+          <!-- BACKLOG #14: shown only on the Active tab and only while at least
+               one sleeping agent is hidden (or the reveal is on). Decisions in
+               app/hidden-agents-display.js; renderer.js draws the label. -->
+          <button type="button" id="roster-show-hidden" hidden></button>
+          <div id="agents"><div class="empty">No agents yet — portraits light up when one runs.</div></div>
+          <!-- BACKLOG #10: filled by app/agent-log-display.js while a log is
+               open; the panel gets `.logging` and the rest of it steps aside. -->
+          <div id="agent-log"></div>
+          <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
+          <div id="cooldowns"></div>
+        <div id="procs">
+            <h3>Running</h3>
+            <div id="proclist"><div class="none">nothing running</div></div>
+          </div>
+        </div>
+        <div class="panel" data-panel="vault" id="vault-body">
+          <!-- The lock. Rendered from main's authoritative state, never from a
+               guess held here: a padlock the window decides is a padlock the
+               window can be wrong about. -->
+          <div id="vault-lock"></div>
+          <input id="vault-search" type="search" placeholder="search labels" autocomplete="off" />
+          <div id="vault-list"></div>
+          <form id="vault-add" autocomplete="off">
+            <input id="vault-label" placeholder="label (e.g. github token)" autocomplete="off" />
+            <div class="secret-field">
+              <input id="vault-secret" type="password" placeholder="secret" autocomplete="new-password" />
+              <button type="button" id="vault-mask" title="Show or hide what you are typing">Show</button>
+            </div>
+            <!-- Scope, stated at the moment of storing. The vault file is
+                 per-INSTALL, so before this every secret was reachable from
+                 every project and nothing said so. Default is this project. -->
+            <label id="vault-shared-row" title="Shared secrets are visible from every project on this machine">
+              <input id="vault-shared" type="checkbox" />
+              <span>share with all projects</span>
+            </label>
+            <button type="submit">Store</button>
+          </form>
+          <p class="warn">Pasting a secret into the session writes it to the
+            transcript in plaintext, permanently. Copy is for other apps.</p>
+        </div>
+        <!-- Bug vault: one record per distinct bug CLASS, grouped so a
+             recurring category is a visible count rather than a memory
+             scattered across PR comments. Never touches the pty -- filing a
+             bug is not part of the conversation, unlike a skill invocation. -->
+        <div class="panel" data-panel="bugvault" id="bugvault-body">
+          <div id="bugvault-summary" class="fog-sum">reading the vault…</div>
+          <div id="bugvault-groups"></div>
+          <div id="bugvault-detection"></div>
+          <div id="bugvault-list"></div>
+          <form id="bugvault-add" autocomplete="off">
+            <input id="bugvault-category" placeholder="category — the bug CLASS, e.g. 'silent failure exit code'" autocomplete="off" required />
+            <input id="bugvault-summary-input" placeholder="one-line summary" autocomplete="off" required />
+            <input id="bugvault-where" placeholder="where found (optional)" autocomplete="off" />
+            <input id="bugvault-detected" placeholder="how it was detected (optional) — e.g. measurement, code review" autocomplete="off" />
+            <input id="bugvault-survived" placeholder="how long it survived (optional)" autocomplete="off" />
+            <input id="bugvault-caught" placeholder="what would have caught it sooner (optional)" autocomplete="off" />
+            <button type="submit">Record bug</button>
+          </form>
+          <div id="bugvault-error" class="err"></div>
+        </div>
+        <!-- Fog of war. The DARK rows are the point: files nobody has opened. -->
+        <div class="panel" data-panel="models" id="models-body">
+          <div id="council">
+            <h3>Council seats <span class="dim" id="seat-count"></span></h3>
+            <div id="seat-list"><div class="none">no seats — the council needs models that fail differently</div></div>
+            <div id="seat-warnings"></div>
+          </div>
+          <div id="model-controls">
+            <input id="model-search" type="search" placeholder="search 445 models" autocomplete="off" />
+            <div class="row">
+              <select id="model-target" title="What the model is for. The main session needs tool support; the council does not.">
+                <option value="council">for the council</option>
+                <option value="session">for the main session</option>
+              </select>
+              <select id="model-sort" title="Order">
+                <option value="price">cheapest</option>
+                <option value="context">biggest context</option>
+                <option value="name">by name</option>
+              </select>
+            </div>
+            <label class="check"><input type="checkbox" id="model-free" /> free only</label>
+          </div>
+          <div id="model-provenance" class="dim">
+            <span class="prov-text"></span>
+            <button type="button" id="model-refresh" title="force a fresh fetch from OpenRouter">Refresh</button>
+          </div>
+          <div id="model-list"><div class="none">loading the catalogue…</div></div>
+        </div>
+        <!-- The Files tab (#45). Module id stays `fog`: saved layouts and the dock tests name it. Drawn by
+             app/repo-files-panel.js; every name in the tree is set with textContent. -->
+        <div class="panel" data-panel="fog" id="fog-body">
+          <div id="files-note" class="fog-sum">reading the files…</div>
+          <div id="files-bar"><label class="check" title="Show only the files Claude has read or edited"><input type="checkbox" id="files-only" /> Only what Claude touched</label></div>
+          <div id="files-said" role="status"></div>
+          <div id="files-tree" role="tree" aria-label="Files in this worktree"></div>
+        </div>
+        <div class="panel" data-panel="git" id="git-body">
+          <div id="git-status">reading the history…</div>
+          <div id="git-dial"></div>
+        </div>
+        <div class="panel" data-panel="projects" id="projects-body">
+          <div id="projects-note" class="dim">reading your projects…</div>
+          <div id="projects-list"></div>
+        </div>
+        <!-- A container that GROWS: one section today (background image), more
+             later. app/style-display.js renders one entry per STYLE_SECTIONS,
+             so adding a section is a one-element array change, not a new panel. -->
+        <!-- BACKLOG #51: the wand. app/wand-display.js draws it from the host's `wand` payload. -->
+        <div class="panel" data-panel="wand" id="wand-body">
+          <div id="wand-root"><div class="empty">reading the wand…</div></div>
+          <!-- Announced to screen readers: OUTSIDE #wand-root, whose markup is replaced on every draw (a live region
+               that is replaced is not read out). Visually hidden; the visible copy is in the panel. -->
+          <div id="wand-live" class="wand-live" role="status" aria-live="polite" aria-atomic="true"></div>
+        </div>
+        <div class="panel" data-panel="style" id="style-body">
+          <div id="style-sections"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -109,6 +1686,59 @@
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
+  <script src="./side-tabs.js"></script>
+  <script src="./dock-layout.js"></script>
+  <script src="./dock-zones-display.js"></script>
+  <script src="./dock-tree.js"></script>
+  <script src="./dock-presets.js"></script>
+  <script src="./dock-drag.js"></script>
+  <script src="./dock-tree-display.js"></script>
+  <script src="./secret-mask.js"></script>
+  <script src="./attention-surface.js"></script>
+  <script src="./usage-display.js"></script>
+  <script src="./roster-width.js"></script>
+  <script src="./vault-lock-display.js"></script>
+  <script src="./career-display.js"></script>
+  <script src="./roster-tabs-display.js"></script>
+  <script src="./hidden-agents-display.js"></script>
+  <script src="./quota-display.js"></script>
+  <script src="./bugvault-display.js"></script>
+  <script src="./projects-display.js"></script>
+  <script src="./style-display.js"></script>
+  <script src="./agent-card-display.js"></script>
+  <script src="./portrait-media-display.js"></script>
+  <script src="./bg-media-display.js"></script>
+  <script src="./colour-seeds.js"></script>
+  <script src="./agent-log-display.js"></script>
+  <script src="./loadout-display.js"></script>
+  <script src="./wand-display.js"></script>
+  <script src="./top-bar-display.js"></script>
+  <script src="./context-fill-display.js"></script>
+  <script src="./status-fields-display.js"></script>
+  <script src="./models-favourites.js"></script>
+  <script src="./models-refresh.js"></script>
+  <script src="./models-catalogue.js"></script>
+  <script src="./paste-action.js"></script>
+  <script src="./worktree-status-display.js"></script>
+  <script src="./tab-status.js"></script>
+  <script src="./occupancy-display.js"></script>
+  <script src="./occupancy-confirm.js"></script>
+  <script src="./terminal-bar.js"></script>
+  <script src="./link-click.js"></script>
+  <script src="./terminal-rows.js"></script>
+  <script src="./file-path-parse.js"></script>
+  <script src="./git-rings.js"></script>
+  <script src="./git-swing.js"></script>
+  <script src="./git-actions.js"></script>
+  <script src="./git-rings-display.js"></script>
+  <script src="./repo-language.js"></script>
+  <script src="./repo-mention.js"></script>
+  <script src="./repo-tree-display.js"></script>
+  <script src="./repo-requester.js"></script>
+  <script src="./repo-refresh.js"></script>
+  <script src="./repo-files-panel.js"></script>
+  <script src="./repo-reader.js"></script>
+  <script src="./repo-browser.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

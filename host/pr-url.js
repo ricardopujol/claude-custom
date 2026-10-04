@@ -1,0 +1,60 @@
+'use strict';
+/**
+ * The GitHub page of a PR, from `origin`'s URL (documentation/DESIGN_GIT_TREE.md, "Enhancement #46":
+ * *Open PR #N*). Pure.
+ *
+ *   repoUrl(remote)      'https://github.com/<owner>/<repo>' or null
+ *   prUrl(repoUrl, n)    '<repoUrl>/pull/<n>' or null
+ *
+ * Null (no remote, not GitHub, unreadable) disables the action and it says why. Only the owner and the
+ * repo come out of a remote's URL: a token in it (`https://user:token@github.com/o/r.git`) is dropped
+ * and never reaches a message, a page or the browser.
+ */
+
+const HOST = 'github\\.com';
+const SCP = new RegExp(`^(?:[\\w.-]+@)?${HOST}:([^/\\s]+)/([^/\\s]+?)(?:\\.git)?/?$`, 'i');
+const URL_FORM = new RegExp(`^(?:https?|ssh|git)://(?:[^@/\\s]+@)?${HOST}(?::\\d+)?/([^/\\s?#]+)/([^/\\s?#]+?)(?:\\.git)?/?$`, 'i');
+const NAME = /^[A-Za-z0-9_.-]+$/;
+
+/** `{ owner, repo }` for a GitHub remote URL (https, ssh, git or scp-like), else null. */
+function parseRemoteUrl(remote) {
+  if (typeof remote !== 'string') return null;
+  const s = remote.trim();
+  const m = URL_FORM.exec(s) || SCP.exec(s);
+  if (!m) return null;
+  const [, owner, repo] = m;
+  const ok = n => NAME.test(n) && n !== '.' && n !== '..';
+  return ok(owner) && ok(repo) ? { owner, repo } : null;
+}
+
+function repoUrl(remote) {
+  const p = parseRemoteUrl(remote);
+  return p ? `https://github.com/${p.owner}/${p.repo}` : null;
+}
+
+function prUrl(repo, n) {
+  if (typeof repo !== 'string' || !repo) return null;
+  return Number.isInteger(n) && n > 0 ? `${repo}/pull/${n}` : null;
+}
+
+const HOSTNAME = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+// scheme://[userinfo@]host, then a port, a path or the end; or scp-like [user@]host:path (not a drive letter)
+const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/\s]*@)?([^/:\s?#@]+)(?=$|[/:?#])/i;
+const SCP_HOST = /^(?:[^@\s:/]+@)?([^@\s:/]+):(?!\/\/)/;
+
+/**
+ * Only the host a remote points at, lower-cased ('github-work' for an ssh alias); never its user, password
+ * or path. Null for a local path. Lets a disabled *Open PR* say what origin IS rather than "no remote"
+ * (PR #93 Dexter F9).
+ */
+function remoteHost(remote) {
+  if (typeof remote !== 'string') return null;
+  const s = remote.trim();
+  if (!s) return null;
+  const m = URL_HOST.exec(s) || SCP_HOST.exec(s);
+  const host = m ? m[1] : null;
+  if (!host || /^[A-Za-z]$/.test(host) || !HOSTNAME.test(host)) return null;
+  return host.toLowerCase();
+}
+
+module.exports = { repoUrl, prUrl, parseRemoteUrl, remoteHost };

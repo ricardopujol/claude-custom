@@ -1,8 +1,28 @@
 # claude-custom — Design Document
 
-**Status:** Step 0 walking skeleton executed — terminal fidelity verified, risk #1 retired
+**Status:** Steps 0–3 built and verified. Risks #1, #2 and #4 retired.
+Remaining: forge (steps 4 & 6) and Remote Control confirmation.
 **Date:** 2026-09-11
 **Location:** `C:\Users\ricar\VibeCode\claude-custom`
+
+
+> **AMENDED 2026-09-17.** This document is the frozen original design and its body is
+> left as written. Two claims in it are now FALSE and are corrected here rather than
+> edited in place, so the record of what was believed on 2026-09-11 survives:
+>
+> 1. **The forge is further along than the status line says.** Steps 4 and 6 are not
+>    "remaining": `forge/README.md` records a real fixed-seed guidance sweep with
+>    measured per-image adherence, and generated portraits exist on disk for at least
+>    `code-reviewer` and `logic-reviewer` at
+>    `agent-creator/portraits/<agent>/{sleeping,working,happy,stressed}.png`, each with
+>    a `report.json`. Verified 2026-09-17: the host resolves all four states of
+>    `code-reviewer` to real files, not placeholders.
+> 2. **`claude-custom` IS a git repo** — see the "not a git repo" parenthetical under
+>    Theming. It has `develop` and `main`, a curated `.gitignore`, and an active PR
+>    workflow. The central-registry decision still stands on its own merits (several
+>    *target* folders genuinely aren't repos), but that parenthetical is wrong.
+>
+> Current build state is in `CLAUDECUSTOM_BUILD_LOG.md`, which is canonical.
 
 ---
 
@@ -91,17 +111,62 @@ host
 
 **Native helper required:** a ~50-line Go or Rust binary that writes one line to the pipe and exits (~5ms). A Node script costs 60–100ms of startup; PowerShell ~200ms.
 
+> **MEASURED 2026-09-11 (`npm run bench:hooks`).** Built in C# instead — no Go or
+> Rust toolchain on this machine, but the .NET 10 SDK is present and Native AOT
+> produces a genuine native binary with no runtime startup. n=30 timed, 5 warmup
+> discarded, full process lifetime, delivery confirmed on the bridge (35/35).
+>
+> | helper | mean | p50 | p95 | estimate | verdict |
+> |---|---|---|---|---|---|
+> | **native AOT `.exe`** | **23.3ms** | 22.0ms | 34.0ms | ~5ms | **4.7× optimistic** |
+> | node script | 152.9ms | 156.6ms | 206.7ms | 60–100ms | **worse than feared** |
+> | powershell | 171.2ms | 166.2ms | 224.1ms | ~200ms | accurate |
+>
+> **The decomposition matters more than the totals.** Running the same binary
+> with no `--pipe` argument, so it parses args and returns immediately:
+>
+> - **Windows process creation + runtime startup: 21.1ms**
+> - **attributable to the pipe round-trip: 2.2ms**
+>
+> So the helper's own work *does* hit the design's target — it's ~2ms. The ~5ms
+> estimate simply omitted **the cost of starting a process on Windows at all**,
+> which is ~21ms and is paid by *every* hook implementation in any language.
+>
+> **Two consequences.**
+>
+> 1. **Scoped matchers are doing far more work than the language choice.** The
+>    design already scopes `PreToolUse` to `Task`; that decision now looks
+>    load-bearing rather than merely tidy. A `*` matcher would add ~21ms to
+>    every Read, Grep and edit *even with a perfect helper* — the floor cannot
+>    be optimised away in the helper, only by hooking less often.
+> 2. Language still matters a lot: native is **6.6× faster than Node**. The
+>    Node figure being ~1.5× worse than estimated reinforces the original call.
+>
+> Intermediate datum, since it cost a build to learn: the same C# compiled to
+> **.NET Framework** via the bundled `csc.exe` measured **35.9ms** mean / 53.3ms
+> p95. AOT is worth the extra toolchain step, but the plain-CLR build is a
+> serviceable fallback and needs nothing installed.
+
+**Build gotcha:** Native AOT fails with `MSB3073 ... link.exe ... exited with
+code 123` when `vswhere.exe` is not on `PATH`. The error names `link.exe`, so it
+reads as a missing linker when the linker is present and fine — the ILCompiler
+targets simply emit a malformed command. `helper/build.ps1` prepends the
+installer directory and exists for exactly this reason.
+
 ### Settings must be MERGED, not replaced
 
 The generated settings file is built by reading the real user settings and merging harness hooks in. Writing it from scratch risks shadowing config that Remote Control or MCP depend on.
 
-> **Measured 2026-09-11 — the hazard is narrower and worse than written above.**
-> `--settings` *does* merge with the user layer, but **only at the top level**;
-> any key the file supplies replaces its counterpart **wholesale**, with no deep
-> merge. A partial `statusLine: {padding: 1}` destroyed the sibling `command`.
-> Therefore writing a `hooks` key at all — the file's whole purpose — drops every
-> user hook event. The host must read the user's `hooks` and write the **union**.
-> See *Verification items* for the controlled runs.
+> **Measured 2026-09-11 — and the conclusion is the opposite of the obvious one.**
+> `--settings` merges with the user layer at the **top level only**; any
+> single-valued key it supplies replaces its counterpart **wholesale** (a partial
+> `statusLine: {padding: 1}` destroyed the sibling `command`). **But `hooks`
+> accumulates across layers rather than replacing** — so the host must supply
+> only its own matchers and must **NOT** union the user's, which would run every
+> user hook twice. The generated file therefore contains exactly one key:
+> `hooks`. Harness variables travel via the pty environment, never via settings,
+> precisely because an `env` key *would* clobber the user's. See *Verification
+> items* for the controlled runs and the residual uncertainty.
 
 ---
 
@@ -171,6 +236,27 @@ Ink positions box-drawing by computed character width. xterm.js defaults to a Un
 
 **Hardware:** NVIDIA RTX 4070 Laptop, 8188 MiB, driver 610.62
 
+> **VERIFIED 2026-09-11.** `nvidia-smi` confirms the GPU, VRAM and driver
+> exactly as written. Python **3.12 is installed** via the `py` launcher (3.14
+> is what's on `PATH`), so the CUDA-side split holds without new installs.
+>
+> **What was NOT true: "IP-Adapter, ControlNet and inpainting nodes are already
+> wired."** There is no ComfyUI anywhere on C, D or G. A full-drive scan found
+> ~11 GB of model weights, but the stack is **audio**, not image:
+>
+> | weights on disk | size | modality |
+> |---|---|---|
+> | `ace-step/acestep-v15-turbo` + LMs | 9.1 GB | music generation |
+> | `laion/clap-*` ×2 | 1.3 GB | audio-text |
+> | `Qwen3-Embedding-0.6B` | 1.1 GB | text |
+> | `all-MiniLM-L6-v2`, `beat_this` | 0.2 GB | text / beat |
+>
+> Two near-misses worth naming, because both look relevant and are not:
+> `ace-step/vae/diffusion_pytorch_model.safetensors` is an **audio** VAE, and
+> **CLAP is not CLIP** — it is the audio-text analogue, useless for the image
+> identity gate. The forge therefore needs its own ~10–12 GB: torch ~2.5 GB,
+> SDXL base ~6.9 GB, Lightning LoRA ~0.4 GB, CLIP ~0.6 GB.
+
 8 GB rules out comfortable Flux (needs Q4 quantization, 40–90s/image on this GPU).
 
 **Target:** SDXL fp16 with model CPU offload, using a distilled checkpoint (Lightning or DMD2, 4–8 steps) — 3-second iterations materially change how much exploration happens.
@@ -209,20 +295,38 @@ Keyed on agent filename. **Zero edits to agent `.md` files** — which matters b
 | 1 | ~~Terminal fidelity fails~~ | ~~**Binary — kills project**~~ | **RETIRED 2026-09-11** — measured; render, alignment, Shift+Tab and Shift+Enter all correct |
 | 2 | ~~Detach correctness unknown~~ | ~~Load-bearing for phone use~~ | **RETIRED 2026-09-11** — pty survives detach, state intact on reattach |
 | 3 | Forge reject rate unknown | Weekend vs. month | `spike/` branch, 2 agents |
-| 4 | Hook latency | Degrades daily use | Native helper; measure, don't trust estimates |
+| 4 | ~~Hook latency~~ | Degrades daily use | **MEASURED 2026-09-11** — 23.3ms mean / 34.0ms p95 on scoped matchers, of which 21.1ms is irreducible Windows process creation. Acceptable on `Task`/`Bash` only; would not be on `*` |
 | 5 | Upstream drift | Low, ongoing | Nothing reimplements CLI behavior — drift costs adjustments, not rewrites |
 
 ---
 
 ## Build order — riskiest first
 
-0. **Walking skeleton** — pty + xterm.js + real `claude` in a bare window. Nothing else. Prove or kill fidelity. *(1–2 days)*
-1. Host + detach/reattach
-2. Hook bridge + native helper + mood machine
-3. Theming
-4. Forge spike, 2 agents
-5. Chrome + portraits
-6. Forge batch
+0. ~~**Walking skeleton**~~ — **DONE.** Fidelity proven; see *Verification items*.
+1. ~~Host + detach/reattach~~ — **DONE.** `terminal-state.js` keeps the authoritative screen via `@xterm/headless` + serialize addon, so a late attach is handed the current screen rather than nothing. Verified in `verify/probe-protocol.js`.
+2. ~~Hook bridge + native helper + mood machine~~ — **DONE.** Native AOT helper, named-pipe bridge, deterministic mood machine. Latency measured.
+3. ~~Theming~~ — **DONE.** Central registry in `registry/`, keyed by project path, applied to both terminal palette and GUI chrome.
+4. Forge spike, 2 agents — **IN PROGRESS.** Environment built (Python 3.12 + CUDA torch); prompt derivation done and tested against all 161 agent files; `generate.py` and `states.py` written but not yet executed against the GPU. Driven straight from `diffusers`, **not** ComfyUI — the design assumed an existing ComfyUI install with IP-Adapter and ControlNet wired, and there is none on this machine, so a scripted pipeline is fewer moving parts than installing one to drive it by API.
+5. ~~Chrome + portraits~~ — **PARTLY DONE.** Reactive agent roster with theme-aware state styling and stable per-agent placeholders. Real portraits await step 4.
+6. Forge batch — **NOT STARTED.**
+
+### What exists now
+
+| Module | Role |
+|---|---|
+| `host/host.js` | pty + WebSocket + wiring |
+| `host/settings-writer.js` | generates the `--settings` file; argv construction |
+| `host/hook-bridge.js` | named-pipe listener, newline-framed, survives junk |
+| `host/mood-machine.js` | deterministic state machine, injected clock |
+| `host/terminal-state.js` | authoritative screen for detach/reattach replay |
+| `host/themes.js` | project→theme resolution with defaults and font-stack enforcement |
+| `host/portraits.js` | convention-based lookup + stable placeholders |
+| `helper/hook-helper.cs` | Native AOT hook helper |
+
+**Attach protocol.** BINARY frames are raw pty bytes; TEXT frames are control
+JSON (`hello`, `mood`, `exit`). Deliberately *not* content-sniffed — terminal
+output can contain anything, including a leading `{`, which is what the spike's
+`startsWith('{')` check would have mis-parsed.
 
 **Honest effort:** several weeks of evenings, not a weekend.
 
@@ -244,8 +348,13 @@ below is measured output, not reasoning. Claude Code v2.1.268, Node v24.14.0.
       Yes. Host and pty survive client disconnect; on reattach the session is
       intact — a marker typed before detach was still in the input buffer and
       accepted further keystrokes. (`verify/probe-detach.js`)
-- [ ] Real round-trip latency of the native hook helper on a live session —
-      **still open**, the helper doesn't exist yet (step 2).
+- [x] **Real round-trip latency of the native hook helper.** Measured:
+      **23.3ms mean / 34.0ms p95** per invocation, 35/35 delivered, of which
+      only **2.2ms** is the pipe round-trip — the other **21.1ms is Windows
+      process creation**, paid by any hook in any language. The `~5ms` estimate
+      omitted process-creation cost. See the *Hook matchers* section for the
+      full table and what it implies for matcher scoping.
+      Re-run any time with `npm run bench:hooks`.
 - [x] **Does Shift+Tab cycle permission modes through xterm.js?** Yes. `\x1b[Z`
       (CSI Z) cycles **five** modes, not the assumed three:
       `bypass permissions → auto → manual → accept edits → plan`.
@@ -284,12 +393,53 @@ proving the file was actually read:
 
 So the merge is **top-level only; there is no deep merge within a key.**
 
-**The consequence for this project is specific and severe:** the moment the host
-writes a `hooks` key — which is the entire point of the generated settings file —
-it replaces the user's `hooks` object *wholesale*, silently dropping all 12
-configured hook events. The host must **read the user's `hooks`, deep-merge its
-own matchers into it, and write the union.** Supplying only the harness's own
-matchers would look correct and quietly disable the user's whole hook setup.
+**This holds for single-valued keys. It does NOT hold for `hooks`.**
+
+> **CORRECTION, same day.** An earlier revision of this section concluded that
+> the host "must write the union" of the user's hooks and its own. That was an
+> **inference from `statusLine`, not a measurement of `hooks`**, and three
+> subsequent probes contradict it. Generalising one key's precedence to another
+> key was the mistake; `hooks` is a collection, `statusLine` is a single value,
+> and they do not behave alike.
+
+Measured for `hooks` specifically:
+
+| Observation | Probe | Implication |
+|---|---|---|
+| A `--settings` file omitting `statusLine` left the **user's** `statusLine` applied | `probe-settings.js` Run A | `--settings` is an **additional layer**, not a substitute for the user file |
+| CLI hooks **and** project-layer hooks both fired | `probe-hook-layers.js` | For `hooks`, the CLI layer **accumulates** rather than replaces |
+| `/hooks` reports `SessionStart (4)` while user settings defines exactly **1** | `probe-hooks-command.js` | Hooks already accumulate across sources in the live config |
+
+**Conclusion: the host must supply only its own hook matchers, and must NOT
+union the user's.** Unioning would run every user hook **twice** — including
+`hook-sync-agent.ps1` and `sync-docs-trigger.ps1`, which do real work.
+
+**Residual uncertainty, stated honestly.** No probe directly observed a *user*
+layer hook executing alongside a `--settings` hook. Four instruments were tried;
+all failed for reasons now recorded in `verify/` so they aren't retried:
+
+- **Alternate home** — relocating the config dir stops hooks running entirely,
+  including the `--settings` ones. Cannot tell shadowing from a disabled layer.
+- **`/hooks` menu** — byte-identical with and without `--settings`. It is blind
+  to the CLI layer, so surviving user events prove nothing. The probe now carries
+  an instrument check; without it, it reported a confident **false** "confirmed".
+- **`--debug`** — does not name hook commands in interactive output.
+
+The conclusion rests on three consistent indirect measurements rather than one
+direct one. Worth one more attempt if a better instrument appears — but the
+asymmetry favours it: under this reading a wrong call costs *nothing*, whereas
+unioning on a wrong call silently double-fires every hook the user owns.
+
+### The shallow-merge hazard still applies — just not to `hooks`
+
+The wholesale-replacement finding remains load-bearing for **every other key**.
+Concretely: if the host ever writes an `env` key to pass the pipe name, it would
+destroy the user's `env` — which carries `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.
+
+The host therefore passes harness variables through the **pty environment**, not
+through settings, and the generated file contains **exactly one key: `hooks`**.
+Every other setting falls through the normal layers untouched. That is the whole
+design, and it is smaller than the original note assumed.
 
 ### Incidental finding — inherited session env leaked into the hosted session
 

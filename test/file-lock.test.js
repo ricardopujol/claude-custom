@@ -1,0 +1,751 @@
+'use strict';
+/**
+ * A cross-process mutex for one file.
+ *
+ * Dexter, PR #29 review, F3B. `host/store.js`'s own header has documented the
+ * hole since the multi-project change landed: `update()` is read-modify-write,
+ * which is not atomic ACROSS PROCESSES. Two hosts both read N and both write
+ * N+1; two events happened and the file says one.
+ *
+ * It was a documented, deliberately-deferred defect while everything in the
+ * store was regenerable convenience state. The bug vault is the first consumer
+ * holding records a user cannot reconstruct, so the same race stops being an
+ * off-by-one in a counter and becomes a lost piece of evidence. And because
+ * `.harness/state` is install-wide, it is not "two windows on one project" --
+ * it is EVERY PAIR OF OPEN WINDOWS, across every project.
+ *
+ * `fs.openSync(path, 'wx')` is an atomic create-or-fail on both Windows and
+ * POSIX, which is the whole mechanism. Everything else here is about not
+ * deadlocking forever when a holder dies without cleaning up.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const { withFileLock, isStale, STALE_MS, DEADLINE_MS } = require('../host/file-lock');
+const { tmpDir } = require('./tmp-dir');
+
+const tmpdir = () => tmpDir('cc-lock-');
+const lockIn = (dir) => path.join(dir, 'thing.json.lock');
+
+test('the work runs and its value comes back', () => {
+  const lock = lockIn(tmpdir());
+  assert.strictEqual(withFileLock(lock, () => 42), 42);
+});
+
+test('the lock file is gone afterwards', () => {
+  const lock = lockIn(tmpdir());
+  withFileLock(lock, () => 'x');
+  assert.strictEqual(fs.existsSync(lock), false);
+});
+
+test('the lock exists WHILE the work runs -- otherwise it is not a lock', () => {
+  const lock = lockIn(tmpdir());
+  let seen = null;
+  withFileLock(lock, () => { seen = fs.existsSync(lock); });
+  assert.strictEqual(seen, true);
+});
+
+test('a throw from the work releases the lock and still propagates', () => {
+  // A lock leaked by an exception is a vault that never writes again.
+  const lock = lockIn(tmpdir());
+  assert.throws(() => withFileLock(lock, () => { throw new Error('boom'); }), /boom/);
+  assert.strictEqual(fs.existsSync(lock), false);
+});
+
+test('a lock held by a live process is NOT taken, and the attempt fails closed', () => {
+  // The case the whole module exists for. It must refuse rather than proceed
+  // unlocked -- proceeding is exactly the lost update we are here to stop.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  let ran = false;
+  assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 120 }), /lock/i);
+  assert.strictEqual(ran, false, 'the work must not run without the lock');
+  assert.strictEqual(fs.existsSync(lock), true, 'someone else’s lock must survive our failure');
+});
+
+test('waiting for a held lock is bounded by wall clock, not by attempts', () => {
+  // The bound this project asks for by name: a retry loop that counts tries
+  // has no idea how long it has blocked the caller.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  const started = Date.now();
+  assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 150 }));
+  const waited = Date.now() - started;
+  assert.ok(waited >= 100, `must actually wait, waited ${waited}ms`);
+  assert.ok(waited < 2000, `must give up near the deadline, waited ${waited}ms`);
+});
+
+test('a lock left behind by a DEAD process is broken and the work proceeds', () => {
+  // The failure this would otherwise cause is permanent: one crashed host and
+  // the vault never accepts another record.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+  assert.strictEqual(fs.existsSync(lock), false);
+});
+
+test('an OLD lock is broken even if its pid happens to be alive', () => {
+  // pids are reused. A holder that has been sitting on the lock far longer
+  // than any write could take is treated as gone.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() - STALE_MS - 1 }));
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+});
+
+test('a lock file that is not JSON is not trusted forever', () => {
+  // Unparseable means we cannot read its age from the contents, so the file's
+  // own mtime decides. It must not become a permanent tombstone.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, 'not json at all');
+  const old = Date.now() - STALE_MS - 1000;
+  fs.utimesSync(lock, old / 1000, old / 1000);
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+});
+
+// --- isStale, and the boundaries the constants encode ------------------------
+//
+// STALE_MS and DEADLINE_MS live at module scope, which means StrykerJS and
+// mutmut alike generate NO mutants for them: a mutation score says nothing
+// about whether these boundaries are asserted. CLAUDE.md records that trap at
+// length -- tuned thresholds are the numbers most likely to be wrong and least
+// likely to be pinned. So they are pinned explicitly, here.
+
+test('a lock younger than STALE_MS is not stale', () => {
+  assert.strictEqual(isStale({ pid: process.pid, at: Date.now() - (STALE_MS - 1) }, Date.now()), false);
+});
+
+test('a lock of exactly STALE_MS is not yet stale -- the boundary is inclusive', () => {
+  const now = Date.now();
+  assert.strictEqual(isStale({ pid: process.pid, at: now - STALE_MS }, now), false);
+});
+
+test('a lock one millisecond past STALE_MS is stale', () => {
+  const now = Date.now();
+  assert.strictEqual(isStale({ pid: process.pid, at: now - STALE_MS - 1 }, now), true);
+});
+
+test('a dead pid is stale immediately, however fresh the lock', () => {
+  assert.strictEqual(isStale({ pid: deadPid(), at: Date.now() }, Date.now()), true);
+});
+
+test('an unusable pid is never PROBED -- and is not assumed dead either', () => {
+  // `process.kill(0, 0)` addresses the caller's whole PROCESS GROUP and
+  // `kill(-1, 0)` every process the user can signal, so these values must
+  // never reach `kill`. A lock file is whatever was on disk.
+  //
+  // THIS TEST USED TO ASSERT THE OPPOSITE and was pinning a real bug. It said
+  // an unusable pid meant "stale", which let a fresh lock be broken instantly:
+  // `openSync(path, 'wx')` creates the file EMPTY and writes the pid a moment
+  // later, so a competitor reading in that window sees no pid at all. With
+  // this test green, verify/probe-vault-concurrency.js measured 2 of 120
+  // records lost WITH the lock in place. "Cannot prove it is dead" is not
+  // "assume it is dead".
+  for (const pid of [0, -1, -12345, 1.5, NaN, null, undefined, 'x']) {
+    assert.strictEqual(isStale({ pid, at: Date.now() }, Date.now()), false,
+      `a FRESH lock claiming pid ${JSON.stringify(pid)} must be left alone`);
+  }
+});
+
+test('an unusable pid does not make a lock immortal -- age still breaks it', () => {
+  // The other half. Refusing to break an unprobeable lock is only safe because
+  // age remains an independent reason, so nothing can wedge the vault forever
+  // by writing a lock file with no pid in it.
+  const now = Date.now();
+  for (const pid of [0, -1, null, 'x']) {
+    assert.strictEqual(isStale({ pid, at: now - STALE_MS - 1 }, now), true,
+      `an OLD lock claiming pid ${JSON.stringify(pid)} must be breakable`);
+  }
+});
+
+test('a lock with neither a usable pid nor an age is left alone, not broken', () => {
+  // Fail closed. Nothing is known about this holder, so the caller waits out
+  // its deadline and reports a refusal -- visible -- rather than breaking a
+  // lock that may well be live and losing a record silently.
+  assert.strictEqual(isStale({ pid: null }, Date.now()), false);
+  assert.strictEqual(isStale({ pid: null, at: 'yesterday' }, Date.now()), false);
+  assert.strictEqual(isStale({}, Date.now()), false);
+});
+
+test('a lock file with no age on disk still gets one, from its mtime', () => {
+  // Which is what stops the case above from being a tombstone in practice:
+  // withFileLock never sees an ageless lock, because the file always has an
+  // mtime even when its contents do not carry `at`.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));   // no `at`
+  const old = Date.now() - STALE_MS - 1000;
+  fs.utimesSync(lock, old / 1000, old / 1000);
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+});
+
+test('the deadline is shorter than the stale window, or nothing would ever wait', () => {
+  // A relationship, not a value: if giving up took longer than declaring the
+  // holder dead, the waiting branch would be unreachable.
+  assert.ok(DEADLINE_MS < STALE_MS, `${DEADLINE_MS} must be < ${STALE_MS}`);
+});
+
+// A pid that is almost certainly not running. High, and probed to be sure --
+// if it IS alive on this machine the test would be asserting nothing, so it
+// says so rather than passing quietly.
+function deadPid() {
+  for (const pid of [999999, 999998, 999997]) {
+    try { process.kill(pid, 0); } catch (err) { if (err.code === 'ESRCH') return pid; }
+  }
+  throw new Error('could not find a dead pid to test with');
+}
+
+// --- liveness: every path must reach the deadline ----------------------------
+//
+// Mortimer, PR #29 mutation gate. Found on the UNMUTATED shipped code, not by
+// a mutant: `withFileLock` could spin forever.
+//
+// The stale-breaking branch ended in `continue`, which jumps the deadline
+// check below it. If readLock returned null (the path could not be read) AND
+// unlinkSync failed (the path could not be deleted), the loop went round
+// again, read null again, failed to unlink again, and never terminated. The
+// empty catch treated "somebody beat us to it" and "this cannot be removed"
+// as the same event, and only the first is safe to retry immediately.
+//
+// A HANG IS WORSE THAN THE THROW DEXTER F2 CLOSED. sleepSync uses
+// Atomics.wait, so the thread blocks; the host owns the pty, so the Claude
+// session goes with it. And this module's own header promises the opposite in
+// capitals: FAIL CLOSED, it throws and the work does not run.
+//
+// Realistic trigger on Windows: any lock file another process holds open
+// without share-delete -- an antivirus scanner, a backup agent, a crashed host
+// still holding the handle -- is both unreadable and undeletable.
+
+test('a lock path that can be neither read nor deleted fails closed instead of hanging', () => {
+  // A directory where the lock file should be: readFileSync throws EISDIR, so
+  // readLock returns null; unlinkSync refuses to remove a directory. Exactly
+  // the pair that used to loop.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.mkdirSync(lock, { recursive: true });
+
+  const started = Date.now();
+  let ran = false;
+  assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 200 }), /lock/i);
+  const waited = Date.now() - started;
+  assert.strictEqual(ran, false, 'the work must not run without the lock');
+  assert.ok(waited < 5000, `must give up, not spin -- still going after ${waited}ms`);
+});
+
+test('a deadline of 0 against a LIVE holder tries once and does not wait', () => {
+  // "Once" is against a holder that is alive. Against a stale lock a zero
+  // deadline breaks it and takes the one extra open a break earns -- see
+  // "a deadline of 0 still takes a STALE lock" below (Dexter, PR #57 F3).
+  //
+  // Mortimer: `Number.isFinite(opts.deadlineMs) ? opts.deadlineMs : DEADLINE_MS`
+  // is a ternary with a bare CALL as its test, which StrykerJS generates no
+  // mutant for -- so nothing in a mutation score can tell you this default is
+  // right. Swapping the isFinite check for a truthy one would silently turn 0
+  // into 3000. Asserted explicitly, because the tool cannot.
+  //
+  // COUNTED IN ATTEMPTS, NOT MILLISECONDS. This used to assert the call took
+  // under 200ms of wall clock, and it failed under full-suite load: one pass
+  // (open, read, stat, pid probe) on a machine running ~1550 tests in
+  // parallel can take longer than that on its own. "Did not wait" means "did
+  // not come round again", which the attempt counter says exactly, on any
+  // machine; a deadline wrongly defaulted to 3000 makes hundreds.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(attempts, 1, `a zero deadline must not wait, took ${attempts} attempts`);
+});
+
+// --- the rules the tests were only accidentally enforcing --------------------
+//
+// Mortimer, PR #29 mutation gate, R1a/R1b/R1c. All three are LATENT: the
+// shipped code is correct and the suite could not tell.
+
+test('a holder we may not signal (EPERM) is ALIVE, not stale', () => {
+  // `kill` failing with EPERM means the process EXISTS and belongs to another
+  // user. Treating that as dead breaks a live lock -- the same failure class
+  // as the pid bug this module already shipped once. The comment on the catch
+  // names EPERM explicitly; nothing asserted it, because deadPid() only ever
+  // produces ESRCH.
+  const real = process.kill;
+  process.kill = () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
+  try {
+    assert.strictEqual(isStale({ pid: 4321, at: Date.now() }, Date.now()), false);
+  } finally {
+    process.kill = real;
+  }
+});
+
+test('an unusable pid never reaches process.kill at all', () => {
+  // THE RULE, not the outcome. The test above this one is titled "never
+  // PROBED" and asserted only the return value -- and `process.kill(0, 0)`
+  // does not throw on this machine, so narrowing the guard to `pid < 0` let
+  // pid 0 reach `kill`, return false, and keep that test green. Since
+  // `kill(0, …)` addresses the caller's whole PROCESS GROUP, "never probed" is
+  // the load-bearing half, and it was enforced by nothing but a coincidence of
+  // Windows semantics.
+  const real = process.kill;
+  const calls = [];
+  process.kill = (pid, sig) => { calls.push(pid); return real.call(process, pid, sig); };
+  try {
+    for (const pid of [0, -1, -12345, 1.5, NaN, null, undefined, 'x']) {
+      isStale({ pid, at: Date.now() }, Date.now());
+    }
+  } finally {
+    process.kill = real;
+  }
+  assert.deepStrictEqual(calls, [], `these unusable pids were signalled: ${calls.join(', ')}`);
+});
+
+test('the lock we hold names our pid, so a competitor can probe us', () => {
+  // The other half of the empty-file window. isStale's reaction to a pid-less
+  // lock is tested; that withFileLock ever WRITES a pid was not -- deleting
+  // the writeSync left every test green, with the lock permanently empty and
+  // every contended write degrading into a full deadline stall.
+  const lock = lockIn(tmpdir());
+  let seen = null;
+  withFileLock(lock, () => { seen = JSON.parse(fs.readFileSync(lock, 'utf8')); });
+  assert.strictEqual(seen.pid, process.pid);
+  assert.ok(Number.isFinite(seen.at), 'the lock must carry a usable age');
+});
+
+test('a genuine filesystem error surfaces at once, not as a lock timeout 3 seconds later', () => {
+  // Mortimer: `err.code !== 'EEXIST'` mutated to `false` swallows a real error
+  // into the retry loop, where it resurfaces as "could not take the lock" --
+  // a message that sends the reader looking for a competing process that does
+  // not exist. Only EEXIST means "somebody holds it".
+  //
+  // "At once" is counted as "never entered the retry loop" -- no read of the
+  // lock path -- rather than as under 500ms of wall clock, which a machine
+  // under full-suite load can miss without the code doing anything wrong.
+  const missing = path.join(tmpdir(), 'no-such-dir', 'thing.json.lock');
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === missing) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(missing, () => {}), (err) => err.code === 'ENOENT');
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(attempts, 0, `it must not spend the deadline on it, retried ${attempts} times`);
+});
+
+test('waiting sleeps rather than spinning -- the host owns the pty', () => {
+  // Mortimer: three mutants delete the sleep, turning the retry loop into a
+  // busy-wait that burns a core in the process running the terminal. The
+  // Atomics.wait comment exists to prevent exactly that and nothing asserted
+  // it. Counted by attempts rather than by CPU, which is the observable half.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...args) => {
+    if (String(args[0]) === lock) attempts++;
+    return realRead.apply(fs, args);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 150 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  // ~10 attempts at RETRY_MS=15 over 150ms. A busy-wait makes tens of thousands.
+  assert.ok(attempts > 0 && attempts < 50, `expected a paced retry, got ${attempts} attempts`);
+});
+
+// --- the other half of the liveness fix --------------------------------------
+//
+// Mortimer, PR #29 mutation re-run, R13. The deadline check stops the HANG and
+// is fully pinned -- two of its mutants die as timeouts, which is the tool
+// recreating the original defect and these tests catching it. The `broke`
+// classification is the other half, and it was pinned by nothing: four mutants
+// on it, all surviving, verified by building each one and running this whole
+// file against it (25/25 passed every time).
+//
+// Why the two tests above cannot see it, both being otherwise correct:
+//   - the directory test asserts `waited < 5000`, and a busy-spin also gives
+//     up on time, so it passes;
+//   - the pacing test has exactly the right instrument, the attempt counter,
+//     but points it at a lock held by a LIVE pid -- isStale returns false, the
+//     breaking branch never runs, and `broke` is never assigned at all.
+//
+// Measured: `broke = true` spins 1763 attempts in 150ms and
+// `broke = err.code !== 'ENOENT'` spins 1421, where the shipped code does
+// about ten. A core burned inside the process that owns the pty, which is
+// precisely what the Atomics.wait comment exists to prevent.
+
+test('an undeletable lock path is PACED, not retried at full speed', () => {
+  const lock = lockIn(tmpdir());
+  fs.mkdirSync(lock, { recursive: true });      // unreadable AND undeletable
+
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 150 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.ok(attempts > 0 && attempts < 50, `expected a paced retry, got ${attempts} attempts`);
+});
+
+test('a zero deadline gives up on the FIRST check -- the deadline is inclusive', () => {
+  // Mortimer's own correction, and the sharper finding of the two. He first
+  // filed `now() >= giveUpAt -> >` as an EQUIVALENT mutant -- "differs only if
+  // the clock lands exactly on the deadline, costing one extra 15ms retry".
+  // It is not equivalent: with an injected clock it never terminates. The same
+  // liveness class as the bug this file just fixed, one character away.
+  //
+  // It also escaped the report: Stryker called it Killed, and running this
+  // suite against the built mutant passed 25/25 -- because the `deadlineMs: 0`
+  // test uses the REAL clock, which advances on the next retry and lets the
+  // mutant out. Only an injected clock reaches it.
+  //
+  // BUT A FROZEN CLOCK IS THE WRONG INSTRUMENT, and he measured why: against
+  // the mutant it does not fail, it HANGS, and no per-test timeout can stop it
+  // -- the retry loop is fully synchronous and `sleepSync` uses Atomics.wait,
+  // so the thread never yields and node's test timer never gets a turn. `npm
+  // test` would hang forever instead of going red: a stuck CI job rather than
+  // a failing build, and Ctrl-C rather than a message locally. A suite that
+  // hangs is the one that gets a test deleted six months later.
+  //
+  // So the clock SITS ON the deadline for a few reads and then jumps well past
+  // it. Both versions terminate, and the attempt count says which check fired.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  let reads = 0;
+  const now = () => (reads++ < 8 ? 1000 : 9999999);
+
+  const realRead = fs.readFileSync;
+  let attempts = 0;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) attempts++;
+    return realRead.apply(fs, a);
+  };
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0, now }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(attempts, 1, `a zero deadline must give up on the first check, took ${attempts}`);
+});
+
+test('a lock whose mtime cannot be read is broken, not treated as a tombstone', () => {
+  // Mortimer's second correction. He filed the `catch { return parsed; }` in
+  // readLock as "not producible deterministically"; it is producible with a
+  // statSync stub, exactly like the process.kill stub above, and the
+  // behaviours differ materially.
+  //
+  // Measured: the shipped code acquires in 1ms; the mutant burns the whole
+  // deadline and refuses. `readLock` returns null when it can learn nothing,
+  // so `held === null` breaks the lock. Returning `{ pid: null, at: null }`
+  // instead makes isStale call it not-stale forever -- the permanent tombstone
+  // the mtime fallback exists to prevent, per its own comment.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, 'not json at all');
+
+  const realStat = fs.statSync;
+  fs.statSync = (...a) => {
+    if (String(a[0]) === lock) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    return realStat.apply(fs, a);
+  };
+  try {
+    assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+  } finally {
+    fs.statSync = realStat;
+  }
+});
+
+test('Finding A: an EMPTY lock whose mtime cannot be read is not broken', () => {
+  // Dexter, PR #57 re-review, Finding A (accepted then, fixed in #22). Empty
+  // is exactly what a live lock looks like between its `wx` and its write, so
+  // "no content and no age" tells us nothing about the holder. The test above
+  // still holds for content that IS there and isn't a lock: garbage has no
+  // creation window to be caught in, and must not become a tombstone.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, '');
+
+  const realStat = fs.statSync;
+  fs.statSync = (...a) => {
+    if (String(a[0]) === lock) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    return realStat.apply(fs, a);
+  };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 100 }), /lock/i);
+  } finally {
+    fs.statSync = realStat;
+  }
+  assert.strictEqual(ran, false);
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), '', 'the lock was broken');
+});
+
+// --- a successful break must get its retry, even past the deadline ----------
+//
+// The full-suite flake, 2026-09-26/27. Under load, four stale-lock tests
+// failed with "could not take the lock ... within 200ms" -- on a lock that had
+// just been BROKEN. Instrumented under a stress harness (24 parallel copies of
+// this file plus CPU burners): 65 of the give-ups fired with `broke === true`.
+//
+// The loop checked the deadline BETWEEN unlinking the stale lock and trying
+// the open again. When one slow pass (read + stat + a pid probe + unlink)
+// outlasted the deadline, the caller threw away a lock it had already freed
+// and refused the write. Not a test artefact: in production the same thing
+// happens whenever the machine is slow enough to eat the deadline inside a
+// single pass -- an AV scan of the lock file, a paging host -- and a
+// recovered stale lock turns into a refused record.
+
+test('a stale lock broken just as the deadline passes is still taken', () => {
+  // The clock is on time for the give-up computation and then jumps far past
+  // it: the one pass that breaks the lock is the pass that runs out of time.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  let calls = 0;
+  const now = () => (calls++ === 0 ? 1000 : 9999999);
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200, now }), 'took it');
+  assert.strictEqual(fs.existsSync(lock), false);
+});
+
+test('past the deadline a break earns exactly ONE more attempt, not a loop', () => {
+  // The liveness half. "Retry after a break" must not become "retry forever"
+  // when something keeps re-creating a stale lock as fast as we remove it.
+  // A competitor beats every open we make and leaves a dead-pid lock behind
+  // each time -- so every pass finds a stale lock and breaks it.
+  const lock = lockIn(tmpdir());
+  const stale = () => fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  stale();
+  const realOpen = fs.openSync;
+  let opens = 0;
+  fs.openSync = (...a) => {
+    if (String(a[0]) !== lock) return realOpen.apply(fs, a);
+    // A backstop so a looping mutant fails instead of hanging the suite.
+    if (++opens > 20) throw new Error('looped past the deadline');
+    if (!fs.existsSync(lock)) stale();
+    const e = new Error('EEXIST'); e.code = 'EEXIST'; throw e;
+  };
+  let calls = 0;
+  const now = () => (calls++ === 0 ? 1000 : 9999999);
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 200, now }), /could not take the lock/);
+  } finally {
+    fs.openSync = realOpen;
+  }
+  assert.strictEqual(opens, 2, `the first try plus one after the break, got ${opens}`);
+});
+
+test('a refusal after the extra try says so, rather than claiming the deadline alone', () => {
+  // Miguel, PR #57 review. "within 200ms" is not the whole truth when one more
+  // attempt was granted past the deadline; somebody diagnosing timing from
+  // the message deserves to know. Same competitor as the test above.
+  const lock = lockIn(tmpdir());
+  const stale = () => fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  stale();
+  const realOpen = fs.openSync;
+  let opens = 0;
+  fs.openSync = (...a) => {
+    if (String(a[0]) !== lock) return realOpen.apply(fs, a);
+    if (++opens > 20) throw new Error('looped past the deadline');
+    if (!fs.existsSync(lock)) stale();
+    const e = new Error('EEXIST'); e.code = 'EEXIST'; throw e;
+  };
+  let calls = 0;
+  const now = () => (calls++ === 0 ? 1000 : 9999999);
+  try {
+    assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 200, now }),
+      /within 200ms and one more attempt after breaking a stale lock/);
+  } finally {
+    fs.openSync = realOpen;
+  }
+});
+
+test('a plain refusal does not claim an extra attempt it never made', () => {
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  assert.throws(() => withFileLock(lock, () => {}, { deadlineMs: 0 }),
+    (err) => /within 0ms/.test(err.message) && !/one more attempt/.test(err.message));
+});
+
+test('a deadline of 0 still takes a STALE lock -- in exactly two opens, without waiting', () => {
+  // Dexter, PR #57 F3. Before the extra try, a zero deadline refused a lock it
+  // had just recovered. It no longer does, and that is the better contract: a
+  // caller that cannot wait should not be refused a lock that is free. Pinned
+  // so the next change cannot quietly reverse it.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const realOpen = fs.openSync;
+  let opens = 0;
+  fs.openSync = (...a) => {
+    if (String(a[0]) === lock) opens++;
+    return realOpen.apply(fs, a);
+  };
+  try {
+    assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 0 }), 'took it');
+  } finally {
+    fs.openSync = realOpen;
+  }
+  assert.strictEqual(opens, 2, `one refused open, one after the break; got ${opens}`);
+});
+
+// --- breaking removes EXACTLY the lock that was judged stale ------------------
+//
+// Dexter, PR #57 review, Finding 1 (High). Two waiters read the same dead-pid
+// lock L0. W1 unlinks it and takes a fresh lock L1; W2, a moment behind,
+// unlinks BY PATH -- which now names L1 -- takes the lock itself, and both run
+// fn. One irreplaceable record is lost with no error. `unlinkSync(path)`
+// deletes whatever is there NOW, not what readLock inspected.
+
+test('a lock replaced between being judged stale and being broken survives', () => {
+  // W1 winning in the gap, simulated in one process: the first stat of the
+  // lock path (inside readLock, AFTER the read of L0) swaps in a fresh, live
+  // lock. The waiter judged L0 stale; it must not delete L1.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const fresh = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const realStat = fs.statSync;
+  let swapped = false;
+  fs.statSync = (...a) => {
+    if (!swapped && String(a[0]) === lock) {
+      swapped = true;
+      fs.unlinkSync(lock);
+      fs.writeFileSync(lock, fresh);
+    }
+    return realStat.apply(fs, a);
+  };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 200 }), /lock/i);
+  } finally {
+    fs.statSync = realStat;
+  }
+  assert.strictEqual(ran, false, 'the work ran alongside the live holder');
+  assert.strictEqual(fs.existsSync(lock) && fs.readFileSync(lock, 'utf8'), fresh,
+    'the fresh lock was deleted by a waiter that had judged a different file');
+});
+
+test('a lock that cannot be READ is not judged, so it is not broken', () => {
+  // The same rule from the other side: a transient read failure (a scanner's
+  // sharing violation) tells us nothing about the holder, and a waiter that
+  // judged nothing must delete nothing. It waits out its deadline instead.
+  const lock = lockIn(tmpdir());
+  const fresh = JSON.stringify({ pid: process.pid, at: Date.now() });
+  fs.writeFileSync(lock, fresh);
+  const realRead = fs.readFileSync;
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === lock) { const e = new Error('EBUSY'); e.code = 'EBUSY'; throw e; }
+    return realRead.apply(fs, a);
+  };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 100 }), /lock/i);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.strictEqual(ran, false);
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), fresh);
+});
+
+test('without hard links, a wrongly taken live lock is still put back', () => {
+  // The restore is a create-or-fail link; on a volume with no hard links it
+  // falls back to an exclusive copy. Either way the live lock must return.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  const fresh = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const realStat = fs.statSync;
+  const realLink = fs.linkSync;
+  let swapped = false;
+  fs.statSync = (...a) => {
+    if (!swapped && String(a[0]) === lock) {
+      swapped = true;
+      fs.unlinkSync(lock);
+      fs.writeFileSync(lock, fresh);
+    }
+    return realStat.apply(fs, a);
+  };
+  fs.linkSync = () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; };
+  let ran = false;
+  try {
+    assert.throws(() => withFileLock(lock, () => { ran = true; }, { deadlineMs: 100 }), /lock/i);
+  } finally {
+    fs.statSync = realStat;
+    fs.linkSync = realLink;
+  }
+  assert.strictEqual(ran, false);
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), fresh);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['thing.json.lock'], 'no tombstone left behind');
+});
+
+// --- the injected clock times the DEADLINE, never the lock's age -------------
+//
+// Dexter, PR #57 review, F2. `opts.now` is a seam for how long THIS caller
+// waits. The lock's `at` is read by OTHER processes against their own
+// Date.now(), so it must always be wall clock. One clock for both meant an
+// injected monotonic clock (the standard fix for wall-clock jumps) would write
+// `at: ~12345`, and every competitor would judge a live lock 55 years stale.
+
+test('the lock we write carries WALL-CLOCK time, whatever clock the deadline uses', () => {
+  const lock = lockIn(tmpdir());
+  let seen = null;
+  withFileLock(lock, () => { seen = JSON.parse(fs.readFileSync(lock, 'utf8')); }, { now: () => 12345 });
+  assert.ok(Math.abs(seen.at - Date.now()) < 60000,
+    `the lock's age must be comparable across processes, got at=${seen.at}`);
+});
+
+test('a lock\'s age is judged on wall clock, not on the injected deadline clock', () => {
+  // An OLD lock with a live pid: only the age rule can break it. Judged on
+  // the injected clock (small numbers) its age comes out negative and it is
+  // never stale; judged on wall clock it is long past STALE_MS.
+  const lock = lockIn(tmpdir());
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() - STALE_MS - 1000 }));
+  let calls = 0;
+  const now = () => (calls++ < 4 ? 1000 : 9999999);
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200, now }), 'took it');
+});
+
+test('breaking a stale lock leaves nothing behind in the directory', () => {
+  // The break goes through a uniquely named tombstone; it must not litter.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  fs.writeFileSync(lock, JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  assert.strictEqual(withFileLock(lock, () => 'took it', { deadlineMs: 200 }), 'took it');
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('release removes only OUR lock: one that replaced it while the work ran survives', () => {
+  // Dexter, PR #71 F3. A holder that outlives STALE_MS (the port allocator
+  // waiting on an offline network path) has its lock broken and re-taken by
+  // somebody else; its `finally` used to unlinkSync the path -- deleting the
+  // NEW holder's lock and letting a third in beside it.
+  const dir = tmpdir();
+  const lock = lockIn(dir);
+  const theirs = JSON.stringify({ pid: process.ppid, at: Date.now(), theirs: true });
+  withFileLock(lock, () => {
+    fs.unlinkSync(lock);                   // ours was broken as stale ...
+    fs.writeFileSync(lock, theirs);        // ... and somebody else took it
+  });
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), theirs);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['thing.json.lock'], 'no tomb left behind');
+});
