@@ -35,11 +35,11 @@
  *      labelled "local model · llama3.2:3b · N min ago", three lines, a single row, never animated, readable (contrast)
  *   D  the first keystroke hides it; a tab just typed in does not open it when you switch back
  *   E  the other tab (never typed in) shows ITS summary, and it closes by itself after 30 seconds
- *   F0 Escape is CLAUDE'S interrupt: with the focus in the terminal it reaches the pty untouched, and the panel closes by the
- *      first-keystroke rule (the key is observed, never eaten)
  *   F  a click pins it open (past 30 s); Escape with the focus on the bar closes it and does NOT reach the pty
  *   G  Ollama stops answering: the last summary stays, DIMMED, with "Local summary off: Ollama isn't running", in the
  *      panel and on the hover card; nothing is sent to a server that isn't there
+ *   F0 Escape is CLAUDE'S interrupt: with the focus in the terminal it reaches the pty untouched, and the panel closes by the
+ *      first-keystroke rule (the key is observed, never eaten); it runs after G because a keystroke touches the tab
  *   H  Ollama comes back: within the minute the note clears and a new summary is made, with no typing
  *   I  READ-ONLY: the transcripts are byte-for-byte what the probe wrote, the project folders hold nothing new, the
  *      terminals never saw a summary, only Ollama's three endpoints were asked, the slot is released
@@ -401,17 +401,6 @@ async function main() {
   const openFor = (Date.now() - shownAt) / 1000;
   check(`E: ...and closes by itself at 30 seconds, with no key pressed (open for ${openFor.toFixed(0)} s)`, !!gone && openFor >= 29 && openFor <= 40);
 
-  // F0 ----------------------------------------------------------------------------
-  await selectTab(app, 'develop');
-  await selectTab(app, 'feat/a');
-  const escOpen = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === false ? b : null; }, 8000);
-  const escBefore = escOpen ? escOpen.inputs.filter(d => d === '\u001b').length : -1;
-  await command(app, { cmd: 'key', key: 'Escape' });
-  const escClosed = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === true && b.bar.summary.expanded === 'false' ? b : null; }, 5000);
-  check('F0: Escape with the focus in the terminal closes the auto-opened panel (the first-keystroke rule)', !!escOpen && !!escClosed);
-  const escReached = await waitFor(async () => { const b = await barState(app); return b && b.inputs.filter(d => d === '\u001b').length === escBefore + 1 ? b : null; }, 5000);
-  check('F0: ...and that Escape reached the pty path untouched (it is Claude\'s interrupt)', !!escReached, JSON.stringify(escReached && escReached.inputs));
-
   // F -----------------------------------------------------------------------------
   await selectTab(app, 'develop');
   await selectTab(app, 'feat/a');
@@ -453,6 +442,18 @@ async function main() {
   await sleep(300);
   await shoot(app, '3-ollama-off');
   check('G: nothing was sent to a model that is not there (no new generate request)', fake.count('POST', '/api/generate') === generatesBefore, `before ${generatesBefore}, now ${fake.count('POST', '/api/generate')}`);
+
+  // F0 ----------------------------------------------------------------------------
+  // After G, because a keystroke touches the tab: from here on the tab no longer counts as untouched.
+  await selectTab(app, 'develop');
+  await selectTab(app, 'feat/a');
+  const escOpen = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === false ? b : null; }, 8000);
+  const escBefore = escOpen ? escOpen.inputs.filter(d => d === '\u001b').length : -1;
+  await command(app, { cmd: 'key', key: 'Escape' });
+  const escClosed = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === true && b.bar.summary.expanded === 'false' ? b : null; }, 5000);
+  check('F0: Escape with the focus in the terminal closes the auto-opened panel (the first-keystroke rule)', !!escOpen && !!escClosed);
+  const escReached = await waitFor(async () => { const b = await barState(app); return b && b.inputs.filter(d => d === '\u001b').length === escBefore + 1 ? b : null; }, 5000);
+  check('F0: ...and that Escape reached the pty path untouched (it is Claude\'s interrupt)', !!escReached, JSON.stringify(escReached && escReached.inputs));
 
   // H -----------------------------------------------------------------------------
   fake.set({ rootStatus: 200 });                               // Ollama is back
