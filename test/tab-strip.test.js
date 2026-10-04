@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { paneFor, paint, alertFor, GLYPHS } = require('../app/tab-strip');
+const { paneFor, paint, alertFor, paintAccent, GLYPHS } = require('../app/tab-strip');
 
 // --- a fake DOM, just enough for paint() ---------------------------------------
 function node(tag) {
@@ -230,13 +230,30 @@ test('tab-strip.html: the window buttons sit after ▾, start hidden, and framel
   assert.match(html, /body\.frameless[^{]*#strip button[^{]*\{[^}]*-webkit-app-region:\s*no-drag/);
 });
 
-test('the strip bridge exposes its ten members -- and nothing else', () => {
+test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything else (#64)', () => {
+  const set = [];
+  const removed = [];
+  const doc = { documentElement: { style: { setProperty: (k, v) => set.push([k, v]), removeProperty: (k) => removed.push(k) } } };
+  assert.strictEqual(paintAccent(doc, '#00ff88'), true);
+  assert.deepStrictEqual(set, [['--accent', '#00ff88']]);
+  for (const bad of ['red', '#fff', '#00ff8800', 'url(x)', '#00ff88; x', undefined, 5, {}]) {
+    assert.strictEqual(paintAccent(doc, bad), false, String(bad));
+  }
+  assert.strictEqual(set.length, 1, 'nothing invalid reached the style');
+  assert.deepStrictEqual(removed, [], 'nothing invalid cleared it either');
+  // null = the selected tab hasn't reported (F2): back to the strip's own default accent.
+  assert.strictEqual(paintAccent(doc, null), true);
+  assert.deepStrictEqual(removed, ['--accent']);
+  assert.strictEqual(paintAccent(null, '#00ff88'), false);
+});
+
+test('the strip bridge exposes its eleven members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'winMinimize', 'winClose']);
+    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose']);
   assert.match(src, /'strip:winMinimize'/);
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
@@ -536,7 +553,8 @@ test('occupancy page: the hatched edge is stripes in the agent colour, the warni
   assert.match(edge, /repeating-linear-gradient\([^;]*var\(--agent\)/);
   assert.doesNotMatch(edge, /animation|transition/);
   assert.match(rule('.tab.occupied-warn::after'), /var\(--warn\)/);
-  assert.match(html, /--agent:\s*#/);
+  // The agent colour lives in the shared stylesheet both pages load (backlog #65).
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'agent-colour.css'), 'utf8'), /--agent:\s*#/);
   assert.match(html, /--warn:\s*#/);
   assert.doesNotMatch(rule('.agent-tag') || '', /animation/);
   assert.match(rule('.tab'), /position:\s*relative/);
@@ -583,4 +601,38 @@ test('tab-strip.html: the night tab is a still deep blue declared after .selecte
   assert.match(rule('.tab.night'), /background:\s*var\(--night\)/);
   assert.doesNotMatch(rule('.tab.night') + rule('.tab.night:hover') + rule('.moon'), /animation|transition/);
   assert.ok(html.indexOf('.tab.night {') > html.indexOf('.tab.selected {'), 'declared after .selected so it wins the background');
+});
+
+// --- backlog #39: the "where are we" summary on the hover card ---------------------------------------------
+
+// The shell works the lines out (app/summary-display.js hoverLines); the strip only draws them.
+const SAID = ["Where we're at (local model · llama3.2:3b · 4 min ago):", 'Working on: the drawer', 'Next: fix it'];
+
+test('hover: the lines the shell worked out go under the tab name, as they are', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ summaryLines: SAID })] }, bridgeSpy());
+  assert.strictEqual(doc.byId.tabs.children[0].title, ['feat/a', ...SAID].join('\n'));
+});
+
+test('hover: the summary comes after the existing lines, and a note about why it may be out of date comes last', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ phaseText: 'Merged, and kept: dirty', summaryLines: [...SAID, "Local summary off: Ollama isn't running"] })] }, bridgeSpy());
+  const lines = doc.byId.tabs.children[0].title.split('\n');
+  assert.strictEqual(lines[0], 'feat/a: Merged, and kept: dirty');
+  assert.match(lines[1], /^Where we're at/);
+  assert.strictEqual(lines[lines.length - 1], "Local summary off: Ollama isn't running");
+});
+
+test('hover: no lines, or lines that are not text, add nothing', () => {
+  for (const summaryLines of [undefined, null, [], 'x', 5, {}, ['', null, 7]]) {
+    const doc = fakeDoc();
+    paint(doc, { model: [entry({ summaryLines })] }, bridgeSpy());
+    assert.strictEqual(doc.byId.tabs.children[0].title, 'feat/a', JSON.stringify(summaryLines));
+  }
+});
+
+test('hover: the lines are set as title text, never markup', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ summaryLines: ['<img src=x onerror=alert(1)>'] })] }, bridgeSpy());
+  assert.strictEqual(doc.byId.tabs.children[0].title, 'feat/a\n<img src=x onerror=alert(1)>');
 });

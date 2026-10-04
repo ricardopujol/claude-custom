@@ -78,6 +78,12 @@ const { createPromptKeeper } = require('./prompt-keeper');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
 const { createNightStatus } = require('./night-status');
 const { countNightPrs } = require('./night-prs');
+const { createSummaryService, TICK_MS } = require('./summary-service');
+const { createScheduler } = require('./summary-scheduler');
+const { createSlot } = require('./summary-slot');
+const { createOllamaClient } = require('./summary-ollama');
+const { createSummaryStore } = require('./summary-store');
+const { createPowerProbe } = require('./summary-power');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
@@ -1109,6 +1115,27 @@ const sessionModels = createSessionModelRefresher({
   onChange: (m) => broadcastControl({ type: 'sessionModel', ...m }),
 });
 
+// Backlog #39 job 1: the "where are we" summary of THIS session, written by a local model (Ollama, llama3.2:3b) from
+// the tail of the session's transcript (host/summary-service.js, documentation/DESIGN_SLAVE_MODE_SUMMARY.md). READ-ONLY:
+// it never types into the session and never edits a project's files; it writes only its own summaries and a GPU slot
+// that makes jobs one-at-a-time across every host. The probe seams (host/probe-seams.js) point it at a fake Ollama.
+const SUMMARY_DIR = seams.summaryDir || path.join(HARNESS_DIR, 'state', 'summaries');
+const summaryStore = createSummaryStore({ dir: SUMMARY_DIR });
+const summary = createSummaryService({
+  sessionId: () => sessionId,
+  transcriptFile: (id) => path.join(seams.projectsDir || defaultProjectsDir(), projectDirName(CWD), id + '.jsonl'),
+  ollama: createOllamaClient({ baseUrl: seams.ollamaUrl || undefined }),
+  store: summaryStore,
+  scheduler: createScheduler(),
+  slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
+  onBattery: seams.summaryPower ? async () => seams.summaryPower === 'battery' : createPowerProbe().onBattery,
+  broadcast: (m) => broadcastControl(m),
+  log: (...a) => console.log(...a),
+});
+const summaryTimer = setInterval(() => { summary.tick().catch(() => { /* logged inside */ }); }, TICK_MS);
+summaryTimer.unref();
+summaryStore.sweep().catch(() => { /* best effort */ });     // one prune sweep at start: old summaries, orphan temp files
+
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
@@ -2033,6 +2060,7 @@ wss.on('connection', (ws, req) => {
   // generated art without the Style panel needing a second round trip just to
   // learn what is already showing.
   const styleResolved = currentStyle();
+  const summaryNow = summary.snapshot();
   sendControl(ws, {
     type: 'hello',
     // What this host accepts as control. host/host-client.js sends `stop` /
@@ -2064,6 +2092,9 @@ wss.on('connection', (ws, req) => {
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
     prompt: promptKeeper.snapshot(),
     bedtime: night.payload(),
+    // Backlog #39: this session's "where are we" summary (null: none yet) and why there is no fresh one (null: nothing wrong).
+    summary: summaryNow.summary,
+    summaryOff: summaryNow.off,
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),

@@ -1,0 +1,6 @@
+/* Backlog #65: the one "agent" colour. An agent is working (the agent cards, the worktree occupancy chip,
+   the strip's hatched edge and tag). Fixed blue, never the user's accent. Loaded by BOTH app/renderer.html
+   and app/tab-strip.html: change it here and nowhere else. */
+:root {
+  --agent: #6aa5d8;
+}

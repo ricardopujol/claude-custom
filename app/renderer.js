@@ -156,7 +156,12 @@ let sessionTurn = null;
 // The terminal bar (backlog #49 + #52): the host's latest main-session prompt and where the CLI echoed it in the
 // terminal buffer, the bedtime night, and the epoch that invalidates the anchor. Every decision is in
 // app/terminal-bar.js; this only holds the facts and paints what it says.
-const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, paintKey: '', chipsKey: '' };
+const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0, bedtime: null, nightKey: '', fullOpen: false, queued: false, paintKey: '', chipsKey: '', summaryShown: false };
+// The where-are-we summary (backlog #39 job 1): the host's local-model summary of this session, why there is none, when
+// the panel was opened (a switch to a tab untouched for 10 minutes), whether it is pinned, whether a key was struck
+// since it opened, and the last real keystroke. Every decision is in app/summary-display.js.
+const sentInputs = [];
+const sum = { summary: null, off: null, openedAt: null, pinned: false, typed: false, lastInputAt: null, timer: null, session: null };
 // How long the CLI's echo of a submitted prompt is waited for in the terminal buffer, and how many of the newest lines
 // are searched, before the prompt fails visible (PR #99 Dexter F6).
 const LOCATE_MS = 3000;
@@ -182,6 +187,9 @@ function reportTabStatus() {
     health: tabHealth,
     turn: sessionTurn,
     night: bar.bedtime !== null,
+    summary: sum.summary ? { ...sum.summary, note: summaryDisplay.offNote(sum.off) } : null,
+    // with no summary yet, why (Ollama off) rides on the hover card alone: the bar does not pop up for it
+    summaryNote: sum.summary ? null : summaryDisplay.offNote(sum.off),
   }, { healthMarker: worktreeStatus.healthMarker });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
@@ -189,7 +197,7 @@ function reportTabStatus() {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); });
+  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); summaryOpenIfIdle(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.
@@ -218,6 +226,11 @@ const barEls = {
   age: document.getElementById('bar-prompt-age'),
   full: document.getElementById('bar-prompt-full'),
   chips: document.getElementById('bar-chips'),
+  summary: document.getElementById('bar-summary'),
+  summaryLabel: document.getElementById('bar-summary-label'),
+  summaryCard: document.getElementById('bar-summary-card'),
+  summaryLines: document.getElementById('bar-summary-lines'),
+  summaryNote: document.getElementById('bar-summary-note'),
 };
 
 // The bar's own place in time: coalesced, so a burst of scrolling paints once. A timer, not requestAnimationFrame:
@@ -255,9 +268,18 @@ function barState() {
   const buf = term.buffer.active;
   const cs = getComputedStyle(barEls.bar);
   return {
+    inputs: sentInputs.slice(),
     bar: {
       hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, transitionDuration: cs.transitionDuration, display: cs.display,
       top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
+      summary: {
+        hidden: barEls.summary.hidden, cardHidden: barEls.summaryCard.hidden, label: barEls.summaryLabel.textContent,
+        lines: [...barEls.summaryLines.children].map(l => l.textContent), note: barEls.summaryNote.hidden ? null : barEls.summaryNote.textContent,
+        dim: barEls.summary.classList.contains('dim'), expanded: barEls.summary.getAttribute('aria-expanded'),
+        animation: getComputedStyle(barEls.summary).animationName, cardAnimation: getComputedStyle(barEls.summaryCard).animationName,
+        cardTop: Math.round(barEls.summaryCard.getBoundingClientRect().top), cardHeight: Math.round(barEls.summaryCard.getBoundingClientRect().height),
+        color: getComputedStyle(barEls.summaryCard).color, background: getComputedStyle(barEls.summaryCard).backgroundColor,
+      },
       prompt: { hidden: barEls.prompt.hidden, text: barEls.text.textContent, age: barEls.age.textContent, full: barEls.full.textContent, fullHidden: barEls.full.hidden,
         expanded: barEls.prompt.getAttribute('aria-expanded') },
       chips: [...barEls.chips.children].map(c => ({
@@ -286,6 +308,9 @@ function paintBarNow() {
   // A chip keeps the bar open over the terminal's first rows, so a prompt line under it is as good as scrolled away.
   const rowPx = term.rows > 0 ? document.getElementById('term').clientHeight / term.rows : 0;
   const coveredRows = (bar.bedtime !== null || chip !== null) && rowPx > 0 ? Math.ceil(BAR_COVER_PX / rowPx) : 0;
+  const panel = window.summaryDisplay
+    ? summaryDisplay.panelModel({ summary: sum.summary, off: sum.off, now, openedAt: sum.openedAt, pinned: sum.pinned, typed: sum.typed })
+    : null;
   const m = terminalBar.barModel({
     prompt: bar.prompt,
     anchor: bar.anchor,
@@ -295,8 +320,10 @@ function paintBarNow() {
     now,
     bedtime: bar.bedtime,
     occupancy: chip,
+    summary: panel,
     focusMode: document.body.classList.contains('focus-mode'),
   });
+  bar.summaryShown = !!m.summary;
   if (!m.prompt) bar.fullOpen = false;
   // Nothing changed since the last paint (a scroll event per streamed line asks for a paint each): no DOM writes at all,
   // so a selection inside the whole-prompt view survives (PR #99 Miguel Y1, G1).
@@ -305,6 +332,19 @@ function paintBarNow() {
     bar.paintKey = key;
     barEls.bar.hidden = !m.visible;
     document.body.classList.toggle('bar-open', m.visible);
+    // The local model's summary takes the prompt part's place (textContent only: it is a model's words).
+    barEls.summary.hidden = !m.summary;
+    barEls.summaryCard.hidden = !m.summary;
+    if (m.summary) {
+      setText(barEls.summaryLabel, m.summary.label);
+      barEls.summaryLines.replaceChildren(...m.summary.lines.map((l) => { const d = document.createElement('div'); d.textContent = l; return d; }));
+      barEls.summaryNote.hidden = !m.summary.note;
+      setText(barEls.summaryNote, m.summary.note || '');
+      barEls.summary.classList.toggle('dim', m.summary.dim);
+      barEls.summaryCard.classList.toggle('dim', m.summary.dim);
+    }
+    // "expanded" is the card showing, whether the person pinned it or a switch opened it
+    barEls.summary.setAttribute('aria-expanded', String(!!m.summary));
     barEls.prompt.hidden = m.prompt === null;
     if (m.prompt) {
       setText(barEls.text, m.prompt.head);
@@ -449,7 +489,19 @@ document.getElementById('occupancy-wait').addEventListener('click', () => occupa
 barEls.prompt.addEventListener('click', () => { bar.fullOpen = !bar.fullOpen; paintBarNow(); });
 // Escape closes it again, from inside the bar only: the terminal's own Escape (interrupt) is never taken (PR #99 Miguel G3).
 barEls.bar.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !bar.fullOpen) return;
+  if (e.key !== 'Escape') return;
+  // The where-are-we panel (#39): with the focus on the bar or the panel itself, Escape closes it and goes no further. With the
+  // focus in the terminal this handler never runs: Escape is Claude's interrupt and reaches the pty untouched, and the panel
+  // closes by the first-keystroke rule (summaryTyped, which only observes the key).
+  if (bar.summaryShown) {
+    sum.openedAt = null;
+    sum.pinned = false;
+    paintBarNow();
+    e.stopPropagation();
+    term.focus();
+    return;
+  }
+  if (!bar.fullOpen) return;
   bar.fullOpen = false;
   paintBarNow();
   e.stopPropagation();
@@ -468,7 +520,49 @@ async function jumpToFolder(folder) {
 }
 
 // The minutes on the bar (the prompt's age, "wake due") go stale between pushes.
-setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0) paintBar(); }, 30000);
+setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0 || sum.pinned) paintBar(); }, 30000);
+
+// --- the where-are-we summary (backlog #39 job 1) ----------------------------------------------------------
+// The host's local-model summary of this session (host/summary-service.js). Every decision is in
+// app/summary-display.js; this holds the facts, opens the panel when you SWITCH to a tab you haven't touched for 10
+// minutes, and paints what the model says in the terminal bar. READ-ONLY: nothing here types into the session.
+function applySummary(p, opening) {
+  const o = p && typeof p === 'object' ? p : {};
+  sum.summary = o.summary && typeof o.summary === 'object' ? o.summary : null;
+  sum.off = o.off && typeof o.off === 'object' ? o.off : null;
+  // The pin and the open panel belong to the summary they were made for: /clear (it goes away) or another session's
+  // summary releases them, so a later push never surfaces a pinned panel under your hands (Dexter F7).
+  Object.assign(sum, summaryDisplay.afterPush(sum, sum.summary));
+  // Only a window that has just attached opens it: a live push of a newer summary never pops it up under your hands.
+  if (opening && !document.hidden) summaryOpenIfIdle();
+  paintBar();
+  reportTabStatus();
+}
+// "Untouched" is the newest of your last real keystroke here and the host's last prompt (it also sees one sent from
+// elsewhere); a tab nobody has typed in this run counts as untouched.
+function summaryOpenIfIdle() {
+  if (!window.summaryDisplay) return;
+  const now = Date.now();
+  const last = summaryDisplay.lastTouchedAt(sum.lastInputAt, bar.prompt && bar.prompt.at);
+  if (!summaryDisplay.openOnSelect({ summary: sum.summary, lastInputAt: last, now })) return;
+  sum.openedAt = now;
+  sum.typed = false;
+  clearTimeout(sum.timer);
+  sum.timer = setTimeout(() => paintBar(), summaryDisplay.SHOW_MS + 50);
+  paintBar();
+}
+// A real keystroke: the first one hides an unpinned panel.
+function summaryTyped() {
+  sum.lastInputAt = Date.now();
+  if (sum.openedAt !== null && !sum.pinned) { sum.typed = true; paintBar(); }
+}
+// A click pins it open (and a second click closes it); Escape inside the bar closes it (the keydown handler above).
+barEls.summary.addEventListener('click', () => {
+  if (sum.pinned) { sum.pinned = false; sum.openedAt = null; } else { sum.pinned = true; }
+  paintBarNow();
+});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) summaryOpenIfIdle(); });
+// --- end of the where-are-we summary ---
 
 if (window.harness && window.harness.occupancy) {
   window.harness.occupancy.onChange(applyOccupancy);
@@ -2265,7 +2359,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true, text: String(window.getSelection()) });
       }
       case 'barClick': {
-        const el = { prompt: barEls.prompt, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
+        const el = { prompt: barEls.prompt, summary: barEls.summary, bedtime: barEls.chips.querySelector('.bar-chip.bedtime'), occupancy: barEls.chips.querySelector('.bar-chip.occupancy') }[a.target];
         if (!el || el.hidden) return JSON.stringify({ ok: false, error: `nothing to click for ${a.target}` });
         el.focus();
         el.click();
@@ -2293,9 +2387,20 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           scope: typeof window.wandDisplay === 'object' && typeof window.wandDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="wand"]').classList.contains('on'),
           text: root.textContent,
-          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => ({ id: b.dataset.wandId, emoji: b.textContent,
-            label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
-            title: b.title, draggable: b.draggable })),
+          // #61: `emoji` is the emoji span alone (the name now sits under it); `name` is the skill name span, and
+          // nameBelow says it is drawn under the emoji (its top at or past the emoji's bottom) and ellipsised.
+          turn: sessionTurn,
+          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => {
+            const em = b.querySelector('.wand-emoji');
+            const nm = b.querySelector('.wand-name');
+            const er = em ? em.getBoundingClientRect() : null;
+            const nr = nm ? nm.getBoundingClientRect() : null;
+            return { id: b.dataset.wandId, emoji: em ? em.textContent : b.textContent, name: nm ? nm.textContent : null,
+              nameBelow: !!(er && nr && nr.top >= er.bottom - 1 && nr.width > 0),
+              nameEllipsis: nm ? getComputedStyle(nm).textOverflow === 'ellipsis' : false,
+              label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
+              title: b.title, draggable: b.draggable };
+          }),
           deletes: root.querySelectorAll('.wand-x').length,
           add: !!q('[data-wand-act="add"]'),
           edit: !!q('.wand-edit.on'),
@@ -2304,6 +2409,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           error: (q('.wand-error') || {}).textContent || '',
           editor: ed ? { emoji: q('[data-wand-field="emoji"]').value, picked: (q('.wand-picked') || {}).textContent || '',
             query: q('[data-wand-field="query"]').value, args: q('[data-wand-field="args"]').value,
+            typeOnly: !!(q('[data-wand-field="typeOnly"]') || {}).checked,
             listed: [...root.querySelectorAll('.wand-skill')].map(b => b.dataset.wandSkill),
             saveDisabled: !!(q('[data-wand-act="save"]') || {}).disabled } : null,
           rect: rectOf(root),
@@ -2325,7 +2431,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const el = document.querySelector('#wand-root [data-wand-field="' + String(a.field) + '"]');
         if (!el) return JSON.stringify({ ok: false, error: 'no editor field ' + a.field });
         el.focus();
-        el.value = String(a.value);
+        if (el.type === 'checkbox') el.checked = a.value === true;
+        else el.value = String(a.value);
         el.dispatchEvent(new Event('input', { bubbles: true }));
         return JSON.stringify({ ok: true });
       }
@@ -4464,8 +4571,21 @@ function applyModelAccent(family, theme) {
   const accent = cueColour(family, theme);
   document.documentElement.style.setProperty('--model-accent', accent);
   const themeCursor = theme && theme.terminal && theme.terminal.cursor;
-  const cursor = family ? accent : (themeCursor || accent);
+  // A chosen accent (#64) tints the cursor whatever the model; otherwise only a known family does.
+  const cursor = (family || chosenAccent(theme)) ? accent : (themeCursor || accent);
   term.options.theme = { ...term.options.theme, cursor };
+  reportAccentToStrip(theme);
+}
+
+// The tab strip is the window's own page, so the accent reaches it through main
+// (#64). What it gets is the look's accent -- not the model cue -- and only when
+// it changed, so a model switch doesn't send anything.
+let lastReportedAccent = null;
+function reportAccentToStrip(theme) {
+  const hex = theme && theme.chrome && theme.chrome.accent;
+  if (typeof hex !== 'string' || hex === lastReportedAccent) return;
+  lastReportedAccent = hex;
+  if (window.harness && window.harness.reportAccent) window.harness.reportAccent(hex);
 }
 
 function setTopBarNotice(kind, text, isTimeout) {
@@ -4597,8 +4717,8 @@ function typeAndCheck(enterInsert, command, done) {
 
 /**
  * The top bar's switch: typeAndCheck, then Enter -- right after the read-back, in the same task, and only
- * when it read back exactly the command. The ONLY place this page presses Enter for a command it typed:
- * the Git drawer's Type /merged leaves the Enter to the person (PR #93 Dexter R2-1).
+ * when it read back exactly the command. The top bar's own Enter; the wand and the Git drawer's Run /merged
+ * press theirs through submitTyped (the submit gate decides), via typeCommand.
  */
 function typePlanned(enterInsert, command, done) {
   const input = data => send(JSON.stringify({ type: 'input', data }));
@@ -4609,16 +4729,28 @@ function typePlanned(enterInsert, command, done) {
 }
 
 /**
- * Main asks this page to type a command into its own box: the Git drawer's Type /merged, PR #93 Dexter
- * F3. The screen is judged here, where it is, the top bar's way, and the terminal takes the focus so the
- * person's Enter lands in it. It types and reads back, and NEVER presses Enter (Dexter R2-1: no hook can
- * say the turn is really over, so that step is the person's). `done({ ok, box })`, `box` being what the
- * box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
+ * Types a command into this tab's own box: the Git drawer's Run /merged (main asks, PR #93 Dexter F3), the
+ * wand's click, the reader's @mention. The screen is judged here, where it is, the top bar's way, and the
+ * terminal takes the focus. It types and reads back. With `opts.submit` (the wand, Run /merged; BACKLOG #61) it
+ * then asks submitTyped whether to press Enter, in the same task as the read-back; without it (the @mention)
+ * it NEVER presses Enter. `done({ ok, box })`, `box` being what the box held before it was cleared, '' when
+ * empty, plus `submitted` and `flash` (the gate's words) when `submit` was on; or `done({ ok: false, reason })`.
+ * A dialog (`sessionTurn === 'prompt'`) is refused before a key is typed.
  */
-function typeCommand(command, done, kind) {
+// The submit path's waits (BACKLOG #61, DESIGN_WAND_SUBMIT.md "Review round picks"): F1, how long a running turn
+// gets between the read-back and the Enter for a dialog to show; F7, how often and how many times the screen is
+// looked at for the CLI's queued-messages line after the Enter (150 ms x 6 = 900 ms).
+const SUBMIT_RECHECK_MS = 400;
+const QUEUED_POLL_MS = 150;
+const QUEUED_POLLS = 6;
+
+function typeCommand(command, done, kind, opts) {
   term.focus();
   const lines = screenLines();
   if (vimInsertShown(lines)) vimSeen = true;
+  const submit = !!(opts && opts.submit);
+  // No refusal from the hook state here (F3): when the host says 'prompt' but the SCREEN is a normal ready box,
+  // the command is typed with no Enter. planTyping's screen check is what refuses a dialog it can see.
   const plan = planTyping({
     command,
     screen: inputState(lines, { vim: vimSeen }),
@@ -4627,20 +4759,88 @@ function typeCommand(command, done, kind) {
   });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
   const box = boxText(lines);
-  typeAndCheck(plan.enterInsert, command, r => done(r.ok ? { ok: true, box: box || '' } : r));
+  typeAndCheck(plan.enterInsert, command, (r) => {
+    if (!r.ok) { done(r); return; }
+    if (!submit) { done({ ok: true, box: box || '' }); return; }
+    // The read-back above is the last check; the gate is asked in this same task (submitTyped).
+    submitTyped(command, { typeOnly: opts.typeOnly, enterInsert: plan.enterInsert }, (s) => {
+      done(s.ok ? { ok: true, box: box || '', submitted: s.submitted, flash: s.flash } : s);
+    });
+  });
 }
+
+/**
+ * Decides, from app/submit-gate.js, whether the typed command gets an Enter, and sees it through. `done` gets
+ * { ok: true, submitted, flash } or { ok: false, reason }. A gate that says no ends it with the gate's own words
+ * and no Enter (a type-only favourite, an unseen session, a host that says 'prompt'). A gate that says yes for an
+ * idle session presses Enter at once, in the same task as the read-back. For a RUNNING turn (`recheck`, F1) it
+ * waits SUBMIT_RECHECK_MS first, holding the typing lock so nobody types over the line, and sends the Enter only
+ * if the box still reads back as exactly the command and the host still doesn't say 'prompt': a permission
+ * dialog can open between the read-back and the Enter, and the read-back only proves what xterm had parsed.
+ * Otherwise the line is cleared and the answer is a refusal. The accepted leftover risk: a dialog that lands in
+ * those last milliseconds.
+ */
+function submitTyped(command, opts, done) {
+  const typeOnly = opts.typeOnly;
+  const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+  if (!gate.enter) { done({ ok: true, submitted: false, flash: gate.flash }); return; }
+  if (!gate.recheck) { pressEnter(done); return; }
+  typingBusy = true;
+  setTimeout(() => {
+    typingBusy = false;
+    const again = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen })) { pressEnter(done); return; }
+    clearTypedLine(opts.enterInsert);
+    done({ ok: false, reason: 'the screen changed while waiting to press Enter (a dialog may have opened), so nothing was sent' });
+  }, SUBMIT_RECHECK_MS);
+}
+
+/**
+ * The ONLY Enter that a wand click or the Git drawer's Run /merged can cause. A socket that is not OPEN drops the
+ * frame silently (send()), so that is reported as not sent, never as "sent" (Dexter F6 / Miguel M1). Then the
+ * flash is read off the SCREEN, not guessed from the hook state (F7): watchQueued.
+ */
+function pressEnter(done) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { done({ ok: false, reason: 'not connected to the session: the Enter was not sent' }); return; }
+  send(JSON.stringify({ type: 'input', data: '\r' }));
+  watchQueued(done);
+}
+
+/** After an Enter: "queued" only if the CLI's own queued-messages line shows within the window, else "sent" (F7). */
+function watchQueued(done) {
+  let looks = 0;
+  const look = () => {
+    if (submitGate.queuedShown(screenLines())) { done({ ok: true, submitted: true, flash: submitGate.FLASH.queued }); return; }
+    if (++looks >= QUEUED_POLLS) { done({ ok: true, submitted: true, flash: submitGate.FLASH.sent }); return; }
+    setTimeout(look, QUEUED_POLL_MS);
+  };
+  setTimeout(look, QUEUED_POLL_MS);
+}
+
+/** Empties the box of what typeCommand put there, as a failed read-back does: Ctrl-E, Ctrl-U, back to vim NORMAL. */
+function clearTypedLine(enterInsert) {
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  input('\x05');
+  setTimeout(() => input('\x15'), PTY_STEP_MS);
+  if (enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
+}
+
+// Main asks this page to type a command into its own box (the Git drawer's Run /merged): with `submit: true`
+// the page's gate presses Enter too. /merged is never a type-only favourite.
 if (window.harness && window.harness.onTypeCommand) {
   window.harness.onTypeCommand((ask) => {
     const id = ask && ask.id;
-    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }));
+    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }), undefined,
+      ask && ask.submit === true ? { submit: true, typeOnly: false } : undefined);
   });
 }
 
 // WAND-BEGIN
 // The wand (BACKLOG #51): favourite skills as emoji buttons. app/wand-display.js decides everything (what
 // shows, what a click means, what each edit sends); this is only the DOM and the socket. A click TYPES
-// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and NEVER presses Enter: nothing
-// in this section writes a CR or an input frame, and test/renderer-wand-wiring.test.js pins that.
+// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and, unless the favourite is type-only,
+// typeCommand's submitTyped presses Enter if the submit gate allows (BACKLOG #61). Nothing in this section writes
+// a CR or an input frame itself, and test/renderer-wand-wiring.test.js pins that.
 let wandState = wandDisplay.emptyState();
 let wandBusy = false;          // a type in flight: two overlapping key sequences would garble the box
 let wandFlashTimer = null;
@@ -4714,9 +4914,10 @@ function wandType(plan) {
     renderWand();
     clearTimeout(wandFlashTimer);
     if (r.ok) {
-      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, 2500);
+      // a note about a cleared draft needs time to be read (Dexter F5)
+      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, wandState.flash && wandState.flash.long ? 8000 : 2500);
     }
-  });
+  }, undefined, { submit: true, typeOnly: plan.typeOnly });
 }
 
 function wandAct(action) {
@@ -4760,7 +4961,8 @@ if (wandRoot) {
   wandRoot.addEventListener('input', (e) => {
     const field = e.target && e.target.dataset && e.target.dataset.wandField;
     if (!field) return;
-    wandState = wandDisplay.editorSet(wandState, field, e.target.value);
+    // the type-only checkbox is a boolean (editorSet takes it as nothing else); the text fields are strings
+    wandState = wandDisplay.editorSet(wandState, field, e.target.type === 'checkbox' ? e.target.checked : e.target.value);
     if (field === 'query') {       // only the list: the box the user is typing in is left alone
       const list = wandRoot.querySelector('.wand-skill-list');
       if (list) list.innerHTML = wandDisplay.skillListHtml(wandDisplay.view(wandState));
@@ -5112,6 +5314,27 @@ function renderStyleSection(section) {
   return `<section class="style-section" data-section="${escapeHtml(section.id)}">${header}</section>`;
 }
 
+// The accent colour picker's live preview (#64). It takes the path a saved look takes: the same
+// readable-on-the-panel colour and label colour (app/accent-preview.js, pinned against host/look.js),
+// so nothing jumps on commit; and at most once per animation frame, since each repaint also costs an
+// IPC to main and a send to the strip while the picker fires `input` dozens of times a second.
+let previewAccentFrame = null;
+function previewAccent(hex) {
+  if (!previewAccentFrame) {
+    previewAccentFrame = accentPreview.frameThrottle((cb) => requestAnimationFrame(cb), paintAccentPreview);
+  }
+  previewAccentFrame(hex);
+}
+function paintAccentPreview(hex) {
+  const p = accentPreview.previewChrome(hex, currentTheme && currentTheme.chrome);
+  if (!p) return;
+  const root = document.documentElement.style;
+  root.setProperty('--accent', p.accent);
+  root.setProperty('--on-accent', p.onAccent);
+  currentTheme = withChosenAccent(currentTheme, p.accent, p.onAccent);
+  renderTopBar();
+}
+
 function renderStylePanel() {
   const container = document.getElementById('style-sections');
   if (!container) return;
@@ -5203,7 +5426,7 @@ function bindStyleSections() {
     (hex) => document.documentElement.style.setProperty('--text', hex));
   bindColour(document.getElementById('style-accent'), document.getElementById('style-accent-hex'),
     document.getElementById('style-accent-reset'), 'accentColor',
-    (hex) => document.documentElement.style.setProperty('--accent', hex));
+    previewAccent);
   bindColour(document.getElementById('style-secondary'), document.getElementById('style-secondary-hex'),
     document.getElementById('style-secondary-reset'), 'secondaryColor',
     (hex) => document.documentElement.style.setProperty('--dim', hex));
@@ -5534,6 +5757,7 @@ function handleControl(msg) {
     // from an older host, which is "none", never a stale one.
     applyBarPrompt(msg.prompt, false);
     applyBedtime(msg.bedtime);
+    applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
     paintBar();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
@@ -5715,6 +5939,10 @@ function handleControl(msg) {
   }
   if (msg.type === 'prompt') {
     applyBarPrompt(msg.prompt, true);
+    return;
+  }
+  if (msg.type === 'summary') {
+    applySummary(msg, false);
     return;
   }
   if (msg.type === 'bedtime') {
@@ -5985,8 +6213,13 @@ function sendResize() {
 // (Miguel, PR #58, I1). onKey, not onData: onData also carries focus and
 // mouse reports, which must not clear a selection the user is still using.
 term.onKey(() => { if (term.hasSelection()) term.clearSelection(); });
+// A real keystroke (onKey, not onData: focus and mouse reports arrive through onData and are not typing) hides the
+// where-are-we summary and counts as touching the tab.
+term.onKey(() => { summaryTyped(); });
 
 term.onData((data) => {
+  sentInputs.push(data);                      // what the probe reads back: did this reach the pty path?
+  if (sentInputs.length > 20) sentInputs.shift();
   logLine(pendingKeyDesc || 'input', data);
   pendingKeyDesc = null;
   userInput(data);

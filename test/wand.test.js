@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const wand = require('../host/wand');
 const { SKILL_NAME } = require('../host/wand-skills');
 
-const fav = (id, emoji, skill, args = '') => ({ id, emoji, skill, args });
+const fav = (id, emoji, skill, args = '', typeOnly = false) => ({ id, emoji, skill, args, typeOnly });
 
 test('the default set is the four the design names, in order, with unique ids', () => {
   const d = wand.defaultFavourites();
@@ -18,6 +18,7 @@ test('the default set is the four the design names, in order, with unique ids', 
     [['🌙', 'bedtime'], ['✅', 'checkpoint'], ['🔀', 'merged'], ['💡', 'brainstorming']]);
   assert.strictEqual(new Set(d.map(f => f.id)).size, 4);
   assert.ok(d.every(f => f.args === ''));
+  assert.ok(d.every(f => f.typeOnly === false), 'a default favourite submits');
   // a fresh copy each call: editing one must never edit the next
   d[0].emoji = 'X';
   assert.strictEqual(wand.defaultFavourites()[0].emoji, '🌙');
@@ -85,9 +86,9 @@ test('load: a readable file of the wrong SHAPE is unavailable too, never an empt
 });
 
 test('load: a NEWER version is unavailable (and says so), not read as if it were v1', () => {
-  const r = wand.load({ status: 'ok', value: { version: 2, favourites: [fav('f1', '✅', 'checkpoint')] } });
+  const r = wand.load({ status: 'ok', value: { version: 3, favourites: [fav('f1', '✅', 'checkpoint')] } });
   assert.strictEqual(r.status, 'unavailable');
-  assert.match(r.reason, /version 2/);
+  assert.match(r.reason, /version 3/);
 });
 
 test('load: a deliberately empty list is OK and empty: that is the user\'s choice, and different from unavailable', () => {
@@ -129,12 +130,12 @@ test('load: args are cleaned on the way in, and a missing args is ""', () => {
 
 test('load: an unknown field on a favourite is not carried into the in-memory favourite', () => {
   const r = wand.load({ status: 'ok', value: { version: 1, favourites: [{ id: 'a', emoji: '🌙', skill: 'bedtime', args: '', evil: 1 }] } });
-  assert.deepStrictEqual(Object.keys(r.favourites[0]).sort(), ['args', 'emoji', 'id', 'skill']);
+  assert.deepStrictEqual(Object.keys(r.favourites[0]).sort(), ['args', 'emoji', 'id', 'skill', 'typeOnly']);
 });
 
-test('serialize: the on-disk shape is { version: 1, favourites }', () => {
+test('serialize: the on-disk shape is { version: 2, favourites } (Dexter F2: an old host refuses it)', () => {
   const favs = [fav('a', '🌙', 'bedtime')];
-  assert.deepStrictEqual(wand.serialize(favs), { version: 1, favourites: favs });
+  assert.deepStrictEqual(wand.serialize(favs), { version: 2, favourites: favs });
 });
 
 // --- edits -------------------------------------------------------------------------------------
@@ -144,7 +145,7 @@ test('add: appends one with a fresh id, and returns the id', () => {
   const r = wand.add(start, { emoji: '🔀', skill: 'merged', args: ' now ' });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.favourites.length, 3);
-  assert.deepStrictEqual(r.favourites[2], { id: 'f8', emoji: '🔀', skill: 'merged', args: 'now' });
+  assert.deepStrictEqual(r.favourites[2], { id: 'f8', emoji: '🔀', skill: 'merged', args: 'now', typeOnly: false });
   assert.strictEqual(r.id, 'f8');
   assert.strictEqual(start.length, 2, 'the input is never mutated');
 });
@@ -178,7 +179,7 @@ test('update: changes the named fields only, in place, keeping id and position',
   const start = [fav('a', '🌙', 'bedtime'), fav('b', '✅', 'checkpoint', 'x'), fav('c', '🔀', 'merged')];
   const r = wand.update(start, 'b', { emoji: '🚀' });
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.favourites[1], { id: 'b', emoji: '🚀', skill: 'checkpoint', args: 'x' });
+  assert.deepStrictEqual(r.favourites[1], { id: 'b', emoji: '🚀', skill: 'checkpoint', args: 'x', typeOnly: false });
   assert.deepStrictEqual(r.favourites.map(f => f.id), ['a', 'b', 'c']);
   const r2 = wand.update(start, 'b', { args: '' });
   assert.strictEqual(r2.favourites[1].args, '', 'clearing the args is a real edit');
@@ -231,9 +232,9 @@ test('nextId: one past the largest f<number>, ignoring other ids; "f1" on an emp
 // --- Dexter D11: a newer file is "version N", whatever shape it has ---------------------------------
 
 test('D11: a newer-version file of a DIFFERENT shape still says "version N", not "not a wand store"', () => {
-  const r = wand.load({ status: 'ok', value: { version: 2, favourites: { order: ['a'] } } });
+  const r = wand.load({ status: 'ok', value: { version: 3, favourites: { order: ['a'] } } });
   assert.strictEqual(r.status, 'unavailable');
-  assert.match(r.reason, /version 2/);
+  assert.match(r.reason, /version 3/);
   assert.match(wand.load({ status: 'ok', value: { version: 7 } }).reason, /version 7/);
   // a v1 file with the wrong shape is still "not a wand store"
   assert.match(wand.load({ status: 'ok', value: { version: 1, favourites: {} } }).reason, /not a wand store/);
@@ -254,4 +255,59 @@ test('D6: an unreadable read is marked transient (retry), a corrupt one is not',
   assert.strictEqual(wand.load({ status: 'unreadable', error: { code: 'EBUSY' } }).transient, true);
   assert.strictEqual(wand.load({ status: 'corrupt' }).transient, false);
   assert.strictEqual(wand.load({ status: 'ok', value: [] }).transient, false);
+});
+
+// --- #61: the per-favourite "type only" flag ---------------------------------------------------------------
+
+test('#61 load: a v1 file (from before the flag) without typeOnly loads as false, and a v2 one without it too', () => {
+  const r = wand.load({ status: 'ok', value: { version: 1, favourites: [{ id: 'a', emoji: '🌙', skill: 'bedtime', args: '' }] } });
+  assert.strictEqual(r.status, 'ok');
+  assert.strictEqual(r.favourites[0].typeOnly, false);
+  assert.strictEqual(wand.load({ status: 'ok', value: { version: 2, favourites: [{ id: 'a', emoji: '🌙', skill: 'bedtime' }] } }).favourites[0].typeOnly, false);
+  assert.strictEqual(wand.VERSION, 2);
+});
+
+test('#61 load: typeOnly true is kept; a non-boolean is an invalid favourite (dropped and counted, never coerced)', () => {
+  const r = wand.load({ status: 'ok', value: { version: 1, favourites: [
+    { id: 'a', emoji: '🌙', skill: 'bedtime', typeOnly: true },
+    { id: 'b', emoji: '✅', skill: 'checkpoint', typeOnly: 'yes' },
+    { id: 'c', emoji: '🔀', skill: 'merged', typeOnly: 1 },
+    { id: 'd', emoji: '💡', skill: 'brainstorming', typeOnly: null },
+    { id: 'e', emoji: '🚀', skill: 'x', typeOnly: false },
+  ] } });
+  assert.deepStrictEqual(r.favourites.map(f => [f.id, f.typeOnly]), [['a', true], ['e', false]]);
+  assert.strictEqual(r.dropped, 3);
+});
+
+test('#61 serialize: typeOnly is written for every favourite', () => {
+  const out = wand.serialize([fav('a', '🌙', 'bedtime', '', true), fav('b', '✅', 'checkpoint')]);
+  assert.deepStrictEqual(out.favourites.map(f => f.typeOnly), [true, false]);
+});
+
+test('#61 add: typeOnly is optional (false), true is kept, a non-boolean is refused with a reason', () => {
+  assert.strictEqual(wand.add([], { emoji: '🌙', skill: 'a' }).favourites[0].typeOnly, false);
+  assert.strictEqual(wand.add([], { emoji: '🌙', skill: 'a', typeOnly: true }).favourites[0].typeOnly, true);
+  for (const bad of ['true', 1, 0, null, {}, []]) {
+    const r = wand.add([], { emoji: '🌙', skill: 'a', typeOnly: bad });
+    assert.strictEqual(r.ok, false, JSON.stringify(bad));
+    assert.match(r.reason, /type only/i);
+    assert.deepStrictEqual(r.favourites, []);
+  }
+});
+
+test('#61 update: typeOnly can be switched on and off alone; a non-boolean is refused, list unchanged', () => {
+  const start = [fav('a', '🌙', 'bedtime')];
+  const on = wand.update(start, 'a', { typeOnly: true });
+  assert.strictEqual(on.ok, true);
+  assert.strictEqual(on.favourites[0].typeOnly, true);
+  assert.strictEqual(on.favourites[0].emoji, '🌙');
+  assert.strictEqual(wand.update(on.favourites, 'a', { typeOnly: false }).favourites[0].typeOnly, false);
+  const bad = wand.update(start, 'a', { typeOnly: 'yes' });
+  assert.strictEqual(bad.ok, false);
+  assert.deepStrictEqual(bad.favourites, start);
+});
+
+test('#61 an update that does not name typeOnly leaves it alone', () => {
+  const start = [fav('a', '🌙', 'bedtime', '', true)];
+  assert.strictEqual(wand.update(start, 'a', { emoji: '🚀' }).favourites[0].typeOnly, true);
 });

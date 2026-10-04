@@ -113,7 +113,8 @@ function stamp(at) {
 
 function capped(lines, sign) {
   const out = lines.slice(0, MAX_WRITE_LINES).map(l => sign + l);
-  if (lines.length > MAX_WRITE_LINES) out.push(`… ${lines.length - MAX_WRITE_LINES} more lines`);
+  const more = lines.length - MAX_WRITE_LINES;
+  if (more > 0) out.push(`… ${more} more line${more === 1 ? '' : 's'}`);
   return out;
 }
 

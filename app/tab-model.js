@@ -70,7 +70,7 @@ function pulseFor(st) {
 
 /**
  * stripModel({ tabs }, runtime, selectedKey, { keyOf }) ->
- *   [{ key, label, isDev, selected, started, closable, working, needsInput, night, pulse,
+ *   [{ key, label, isDev, selected, started, closable, working, needsInput, night, summary, pulse,
  *      lockGlyph, health, phase, error, note, setup, createdWarning }]
  * Dev first (order otherwise as given). Exactly one entry is selected: the one
  * matching `selectedKey`, else dev (else the first entry).
@@ -100,6 +100,9 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       needsInput: !!st && st.needsInput === true,
       // Backlog #52: the session is in a /bedtime night (a real true only).
       night: !!st && st.night === true,
+      // Backlog #39: the "where are we" summary for the hover card (cut down in the shell by app/tab-status.js cleanSummary; null when none).
+      summary: st && st.summary && typeof st.summary === 'object' && !Array.isArray(st.summary) ? st.summary : null,
+      summaryNote: st && isString(st.summaryNote) && st.summaryNote !== '' ? st.summaryNote : null,
       pulse: i === selIdx ? null : pulseFor(st),
       lockGlyph: st ? glyphFor(st.lock) : null,
       health: st && isString(st.health) && st.health !== '' ? st.health : null,

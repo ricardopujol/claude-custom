@@ -94,7 +94,7 @@ test('Y1 + G1: a paint with nothing new writes nothing (a selection in the whole
 test('G3: the prompt toggle says whether it is open, and Escape inside the bar closes it without taking the terminal\'s own Escape', () => {
   assert.match(HTML, /id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full"/);
   assert.match(RENDERER, /barEls\.prompt\.setAttribute\('aria-expanded', String\(!!\(m\.prompt && bar\.fullOpen\)\)\)/);
-  assert.match(RENDERER, /barEls\.bar\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape' \|\| !bar\.fullOpen\) return;/);
+  assert.match(RENDERER, /barEls\.bar\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape'\) return;[\s\S]*?if \(!bar\.fullOpen\) return;/);
   assert.match(RENDERER, /setAttribute\('role', 'note'\)/);
 });
 
@@ -116,7 +116,7 @@ test('Y3: the night chip carries its own colour pair, not one mixed from the loo
 });
 
 test('G1: the 30 s repaint only runs where there is something on the bar', () => {
-  assert.match(RENDERER, /setInterval\(\(\) => \{ if \(bar\.prompt \|\| bar\.bedtime !== null \|\| occupancy\.here\.length > 0\) paintBar\(\); \}, 30000\)/);
+  assert.match(RENDERER, /setInterval\(\(\) => \{ if \(bar\.prompt \|\| bar\.bedtime !== null \|\| occupancy\.here\.length > 0 \|\| sum\.pinned\) paintBar\(\); \}, 30000\)/);
 });
 
 test('a resize, an erased scrollback (CSI 3 J) and a shrinking buffer each start a new epoch, so the prompt fails visible', () => {

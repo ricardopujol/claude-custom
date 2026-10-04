@@ -220,14 +220,22 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
   assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
-test('sanitizeStatus keeps seven fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
+test('sanitizeStatus keeps eight fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
+    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true });
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null });
+});
+
+// Backlog #39: a renderer may say its summary, cut down to the known fields; garbage is none.
+test('sanitizeStatus keeps a usable summary and drops an unusable one', () => {
+  const sum = { text: 'Working on: x', model: 'llama3.2:3b', at: 5, stale: true, note: 'n' };
+  assert.deepStrictEqual(sanitizeStatus({ summary: { ...sum, extra: 1 } }).summary, sum);
+  assert.strictEqual(sanitizeStatus({ summary: { ...sum, at: null } }).summary, null);
+  assert.strictEqual(sanitizeStatus({ summary: 'text' }).summary, null);
 });
 
 // --- open: criterion 1, X5, criterion 8 --------------------------------------
@@ -1038,13 +1046,40 @@ test('PR #93 Dexter F3: typeMerged switches to the tab and has ITS page type /me
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
   answerTyping(h, { ok: true, box: '' });
   const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
-  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: false });
+  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: false, submitted: false });
   assert.deepStrictEqual(h.typedAt, [key('feat-a')], "the tab is selected before its page types, so the person watches it happen");
   const asks = h.sent.filter(([, ch]) => ch === 'type-command');
   assert.strictEqual(asks.length, 1);
   assert.strictEqual(asks[0][0], key('feat-a'), "that branch's own page types it");
   assert.strictEqual(asks[0][2].command, '/merged');
   assert.deepStrictEqual(h.controls, [], 'nothing goes to the host as raw input: the page clears the line and reads it back');
+});
+
+test('#61 typeMerged asks the page to SUBMIT (submit: true), and reports whether the Enter went in', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+  answerTyping(h, { ok: true, box: '', submitted: true, flash: 'sent' });
+  const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
+  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: false, submitted: true });
+  const asks = h.sent.filter(([, ch]) => ch === 'type-command');
+  assert.strictEqual(asks[0][2].submit, true, 'the page is told to press Enter (its gate decides)');
+  assert.strictEqual(asks[0][2].command, '/merged');
+});
+
+test('#61 only a literal true from the page counts as submitted (a string, a number, a missing field are "typed only")', async () => {
+  for (const submitted of ['true', 1, 'yes', null, undefined]) {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    const devView = h.shell.tabByKey(key('dev')).view;
+    h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
+    answerTyping(h, { ok: true, box: '', submitted });
+    const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
+    assert.strictEqual(r.submitted, false, String(submitted));
+  }
 });
 
 test('Dexter F3: a box that held text was cleared first, and the answer says so (Ctrl+Y brings a draft back)', async () => {
@@ -1055,7 +1090,7 @@ test('Dexter F3: a box that held text was cleared first, and the answer says so 
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, idleStatus);
   answerTyping(h, { ok: true, box: 'also bump the version' });
   const r = await h.shell.typeMerged(devView, wt('feat-a'), 'feat/a');
-  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: true });
+  assert.deepStrictEqual(r, { kind: 'typed', branch: 'feat/a', cleared: true, submitted: false });
 });
 
 test('typeMerged: the page refusing (a dialog, a multi-line draft, the line changed before Enter) is explained with its reason', async () => {
@@ -1201,11 +1236,13 @@ test('PR #93 Miguel I3: main never runs /merged on an integration branch, and re
   assert.deepStrictEqual(h.prAsks.at(-1), [key('feat-a'), 'feat/a'], "gh is asked about THAT branch, in its worktree");
 });
 
-// PR #93 Dexter R2-1 (Ricardo's decision): no hook can say a turn is really over -- another Stop hook can
-// block the first Stop, and the continuation calls only unhooked tools -- so Type /merged TYPES and the person
-// presses Enter. This pins Dexter's sequence through the real host/turn-state.js, and that no Enter is ever
-// asked for, in any state it passes through.
-test('Dexter R2-1: UserPromptSubmit -> Stop -> (a blocked-Stop continuation, no events) -> Stop{stop_hook_active}: never an Enter', async () => {
+// PR #93 Dexter R2-1: no hook can say a turn is really over -- another Stop hook can block the first Stop, and the
+// continuation calls only unhooked tools -- so an "idle" read can be wrong mid-turn. That left the Enter to the
+// person. BACKLOG #61 (Ricardo's pick) changes the answer, not the fact: the CLI QUEUES a line submitted mid-turn
+// (verify/probe-queued-skill.js), so a wrong idle read costs a queued command, never a lost one, and the page's
+// submit gate presses Enter. This still pins Dexter's sequence through the real host/turn-state.js, and that the
+// SHELL itself never writes an Enter: it asks the page (submit: true) and nothing goes to the host as raw input.
+test('Dexter R2-1: UserPromptSubmit -> Stop -> (a blocked-Stop continuation, no events) -> Stop{stop_hook_active}: the shell never writes an Enter itself', async () => {
   const { createTurnState } = require('../host/turn-state');
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
@@ -1230,14 +1267,15 @@ test('Dexter R2-1: UserPromptSubmit -> Stop -> (a blocked-Stop continuation, no 
     assert.ok(r.kind === 'typed' || r.kind === 'explain', JSON.stringify(r));
   }
   // What turn-state CAN see: the turn, then "idle" from the first Stop on -- it can't see the continuation.
-  // That is exactly why the Enter is the person's.
+  // That is exactly why the Enter must be safe when the read is wrong: the CLI queues it (#61).
   assert.deepStrictEqual(seen, ['turn', 'idle', 'idle', 'idle']);
   const asks = h.sent.filter(([, ch]) => ch === 'type-command').map(([, , p]) => p);
   assert.ok(asks.length >= 1, 'it did type where the session read idle');
   for (const p of asks) {
-    assert.deepStrictEqual(Object.keys(p).sort(), ['command', 'id'], 'the page is asked to type, nothing more');
+    assert.deepStrictEqual(Object.keys(p).sort(), ['command', 'id', 'submit'], 'the page is asked to type (and submit through its gate), nothing more');
+    assert.strictEqual(p.submit, true);
     assert.strictEqual(p.command, '/merged');
-    assert.ok(!/[\r\n]/.test(p.command), 'no Enter in what is typed');
+    assert.ok(!/[\r\n]/.test(p.command), 'no Enter in what is typed: the page\'s gate presses it, after the read-back');
   }
   assert.deepStrictEqual(h.controls, [], 'and nothing at all goes to the host as raw input');
 });
@@ -2283,6 +2321,28 @@ test("occupancy: the tab's own session reporting a turn is the two-writers warni
   assert.strictEqual(mark().warn, false);
   h.shell.report(aView, { turn: 'prompt' });
   assert.strictEqual(mark().warn, false);
+});
+
+// Backlog #39: the shell works out the hover card's lines for a tab's local-model summary (the strip only draws them).
+test("summary: a tab whose page reported a summary carries the hover lines, aged from the shell's clock; others carry none", async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const lines = () => Object.fromEntries(h.shell.model().map(e => [e.label, e.summaryLines]));
+  assert.ok(Object.values(lines()).every(l => Array.isArray(l) && l.length === 0), 'nothing reported: no lines');
+  h.shell.report(aView, { summary: { text: 'Working on: x\nNext: y', model: 'llama3.2:3b', at: 1_000_000_000 - 4 * 60_000, stale: false, note: null } });
+  assert.deepStrictEqual(lines()['feat/a'], ["Where we're at (local model · llama3.2:3b · 4 min ago):", 'Working on: x', 'Next: y']);
+  assert.deepStrictEqual(lines().develop, []);
+  h.shell.report(aView, { summary: { text: 'Working on: x', model: 'llama3.2:3b', at: 1_000_000_000 - 4 * 60_000, stale: true, note: "Local summary off: Ollama isn't running" } });
+  assert.strictEqual(lines()['feat/a'][0], "Where we're at (local model · llama3.2:3b · 4 min ago · not refreshed yet):");
+  assert.strictEqual(lines()['feat/a'].slice(-1)[0], "Local summary off: Ollama isn't running");
+  h.shell.report(aView, { summary: { text: '', model: 'x', at: 1 } });
+  assert.deepStrictEqual(lines()['feat/a'], [], 'an unusable summary is none');
+  // Miguel I1: Ollama off and nothing ever summarised: the hover card says so, alone
+  h.shell.report(aView, { summaryNote: "Local summary off: Ollama isn't running" });
+  assert.deepStrictEqual(lines()['feat/a'], ["Local summary off: Ollama isn't running"]);
+  assert.deepStrictEqual(lines().develop, []);
 });
 
 test("occupancy: each started tab's page is pushed what is in it and what it launched, only when that changed", async () => {

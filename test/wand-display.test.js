@@ -124,7 +124,7 @@ test('a plugin skill is found under its plugin:name', () => {
 
 test('a click (outside edit mode) plans typing the command, and NOTHING that submits it', () => {
   const plan = W.clickPlan(loaded(), 'f2');
-  assert.deepStrictEqual(plan, { kind: 'type', command: '/checkpoint wrap up', id: 'f2' });
+  assert.deepStrictEqual(plan, { kind: 'type', command: '/checkpoint wrap up', id: 'f2', typeOnly: false });
   assert.ok(!('enter' in plan) && !('submit' in plan), 'the plan has no Enter in it');
 });
 
@@ -140,7 +140,7 @@ test('in edit mode a click on a button opens its editor, it does not type', () =
 
 test('typed(): success flashes "typed, press Enter" on that button; a refusal says why, and clears no one else\'s note', () => {
   let s = W.typed(loaded(), 'f2', { ok: true });
-  assert.deepStrictEqual(s.flash, { id: 'f2', text: 'typed, press Enter' });
+  assert.deepStrictEqual(s.flash, { id: 'f2', text: 'typed, press Enter', long: false });
   assert.strictEqual(W.view(s).buttons[1].flash, true);
   assert.strictEqual(W.view(s).buttons[0].flash, false);
   assert.match(W.view(s).status, /typed, press Enter/);
@@ -151,9 +151,100 @@ test('typed(): success flashes "typed, press Enter" on that button; a refusal sa
   assert.strictEqual(W.clearFlash(W.typed(loaded(), 'f2', { ok: true })).flash, null);
 });
 
-test('a flash never claims the CLI took it: the words are "typed, press Enter", nothing about running it', () => {
+test('a result with no flash text of its own (a type-only favourite, an old caller) says "typed, press Enter", nothing about running it', () => {
   const s = W.typed(loaded(), 'f1', { ok: true });
-  assert.doesNotMatch(JSON.stringify(W.view(s)), /sent|ran|running|submitted/i);
+  assert.doesNotMatch(JSON.stringify(W.view(s)), /sent|ran|running|submitted|queued/i);
+});
+
+test('#61 typed(): the flash is the submit gate\'s own words, so "sent" and "queued" are only ever said when Enter went in', () => {
+  const sent = W.typed(loaded(), 'f1', { ok: true, flash: 'sent' });
+  assert.deepStrictEqual(sent.flash, { id: 'f1', text: 'sent', long: false });
+  const queued = W.typed(loaded(), 'f1', { ok: true, flash: "queued: Claude runs it when it's free" });
+  assert.match(W.view(queued).status, /queued: Claude runs it when it's free/);
+  for (const bad of ['', null, 5, undefined, {}]) {
+    assert.strictEqual(W.typed(loaded(), 'f1', { ok: true, flash: bad }).flash.text, 'typed, press Enter', String(bad));
+  }
+  const refused = W.typed(loaded(), 'f1', { ok: false, flash: 'sent', reason: 'a dialog is open' });
+  assert.strictEqual(refused.flash, null, 'a refusal never flashes, whatever flash it carries');
+});
+
+// --- #61: type only, and the name under the emoji ---------------------------------------------------------
+
+const TO = [
+  { id: 'a', emoji: '🌙', skill: 'bedtime', args: '', typeOnly: true },
+  { id: 'b', emoji: '✅', skill: 'checkpoint', args: 'wrap up', typeOnly: false },
+  { id: 'c', emoji: '🔀', skill: 'merged', args: '' },
+  { id: 'd', emoji: '🚀', skill: 'vercel:deploy', args: '', typeOnly: 'yes' },
+];
+
+test('#61 the panel keeps typeOnly as a strict boolean: true stays true; absent and non-boolean are false', () => {
+  const s = loaded({ favourites: TO });
+  assert.deepStrictEqual(s.favourites.map(f => f.typeOnly), [true, false, false, false]);
+  assert.deepStrictEqual(W.view(s).buttons.map(b => b.typeOnly), [true, false, false, false]);
+});
+
+test('#61 a click plan carries the favourite\'s typeOnly (the gate is asked with it)', () => {
+  const s = loaded({ favourites: TO });
+  assert.strictEqual(W.clickPlan(s, 'a').typeOnly, true);
+  assert.strictEqual(W.clickPlan(s, 'b').typeOnly, false);
+  assert.strictEqual(W.clickPlan(s, 'c').typeOnly, false);
+});
+
+test('#61 each button shows the skill name under the emoji; the full /skill args stays in title and accessible name', () => {
+  const s = loaded({ favourites: TO });
+  const html = W.html(W.view(s));
+  assert.match(html, /<span class="wand-emoji">🌙<\/span><span class="wand-name">bedtime<\/span>/);
+  assert.match(html, /<span class="wand-emoji">🚀<\/span><span class="wand-name">vercel:deploy<\/span>/);
+  const b = W.view(s).buttons[1];
+  assert.strictEqual(b.name, 'checkpoint', 'the name is the skill, not the args');
+  assert.match(b.title, /\/checkpoint/);
+  assert.match(b.title, /pre-fills: wrap up/);
+  assert.strictEqual(b.label, '/checkpoint wrap up, click to run it');
+  assert.match(html, /aria-label="\/checkpoint wrap up, click to run it"/);
+});
+
+test('#61 a skill name is escaped where it is drawn under the emoji', () => {
+  const s = loaded({ favourites: [{ id: 'x', emoji: '🌙', skill: '<img src=x onerror=1>', args: '' }] });
+  const html = W.html(W.view(s));
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /wand-name">&lt;img/);
+});
+
+test('#61 a type-only favourite says so in its title (so a hover explains why a click does not run it)', () => {
+  const v = W.view(loaded({ favourites: TO }));
+  assert.match(v.buttons[0].title, /type only/i);
+  assert.doesNotMatch(v.buttons[1].title, /type only/i);
+});
+
+test('#61 the editor has a "type only" checkbox: unchecked for a new favourite, as saved for an existing one', () => {
+  const edit = (id) => W.openEditor(W.toggleEdit(loaded({ favourites: TO })), id);
+  assert.strictEqual(W.view(edit(null)).editor.typeOnly, false);
+  assert.strictEqual(W.view(edit('a')).editor.typeOnly, true);
+  assert.strictEqual(W.view(edit('b')).editor.typeOnly, false);
+  assert.match(W.html(W.view(edit('a'))), /<input type="checkbox"[^>]*data-wand-field="typeOnly"[^>]*checked/);
+  assert.doesNotMatch(W.html(W.view(edit('b'))), /data-wand-field="typeOnly"[^>]*checked/);
+  assert.match(W.html(W.view(edit('b'))), /data-wand-field="typeOnly"/);
+});
+
+test('#61 editorSet takes typeOnly as a boolean only, and the other fields as strings only', () => {
+  let s = W.openEditor(W.toggleEdit(loaded({ favourites: TO })), 'a');
+  assert.strictEqual(s.editor.typeOnly, true);
+  for (const bad of ['false', 0, null, undefined, {}]) assert.strictEqual(W.editorSet(s, 'typeOnly', bad).editor.typeOnly, true, String(bad));
+  s = W.editorSet(s, 'typeOnly', false);
+  assert.strictEqual(s.editor.typeOnly, false);
+  assert.strictEqual(W.editorSet(s, 'typeOnly', true).editor.typeOnly, true);
+  assert.strictEqual(W.editorSet(s, 'skill', true).editor.skill, 'bedtime', 'a boolean is not a skill name');
+});
+
+test('#61 Save sends typeOnly: with a new favourite and in the update patch', () => {
+  let s = W.openEditor(W.toggleEdit(loaded({ favourites: TO })), null);
+  s = W.editorSet(W.editorSet(W.editorSet(s, 'emoji', '🚀'), 'skill', 'merged'), 'typeOnly', true);
+  let r = W.editorSubmit(s);
+  assert.strictEqual(r.message.type, 'wand-add');
+  assert.strictEqual(r.message.typeOnly, true);
+  s = W.editorSet(W.openEditor(W.toggleEdit(loaded({ favourites: TO })), 'a'), 'typeOnly', false);
+  r = W.editorSubmit(s);
+  assert.deepStrictEqual(r.message.patch, { typeOnly: false }, 'only what changed (Dexter F8)');
 });
 
 // --- edit mode and the editor -------------------------------------------------------------------------
@@ -227,13 +318,13 @@ test('editorSubmit: a NEW favourite becomes wand-add; an existing one becomes wa
   let s = W.openEditor(W.toggleEdit(loaded()), null);
   s = W.editorSet(W.editorSet(W.editorSet(s, 'emoji', '🚀'), 'skill', 'merged'), 'args', '  now ');
   let r = W.editorSubmit(s);
-  assert.deepStrictEqual(r.message, { type: 'wand-add', emoji: '🚀', skill: 'merged', args: '  now ', req: r.message.req }, 'the host cleans the args; the page sends what was typed');
+  assert.deepStrictEqual(r.message, { type: 'wand-add', emoji: '🚀', skill: 'merged', args: '  now ', typeOnly: false, req: r.message.req }, 'the host cleans the args; the page sends what was typed');
   assert.strictEqual(W.view(r.state).editor.saving, true);
 
   s = W.openEditor(W.toggleEdit(loaded()), 'f1');
   s = W.editorSet(s, 'emoji', '🚀');
   r = W.editorSubmit(s);
-  assert.deepStrictEqual(r.message, { type: 'wand-update', id: 'f1', patch: { emoji: '🚀', skill: 'bedtime', args: '' }, req: r.message.req });
+  assert.deepStrictEqual(r.message, { type: 'wand-update', id: 'f1', patch: { emoji: '🚀' }, req: r.message.req });
 });
 
 test('editorSubmit with nothing to send (no emoji, no skill) says what is missing and sends nothing', () => {
@@ -612,7 +703,7 @@ test('I3: moveStepMsg moves a favourite one place left or right, by naming its n
 test('I3: in edit mode a favourite\'s accessible name says Enter edits it and Alt+arrows move it', () => {
   const normal = W.view(loaded()).buttons[1];
   const edit = W.view(W.toggleEdit(loaded())).buttons[1];
-  assert.strictEqual(normal.label, '/checkpoint wrap up');
+  assert.strictEqual(normal.label, '/checkpoint wrap up, click to run it');
   assert.match(edit.label, /^\/checkpoint wrap up/);
   assert.match(edit.label, /Enter to edit/);
   assert.match(edit.label, /Alt\+Left or Alt\+Right to move/);
@@ -631,4 +722,58 @@ test('I3: the live text is the error if there is one, else the status; it is NOT
 
 test('I3: clickAction does not know the keyboard-only move: it is not a data-attribute action', () => {
   assert.strictEqual(W.clickAction({ wandAct: 'move-step', wandId: 'f1' }), null);
+});
+
+// --- review round: PR #106 ----------------------------------------------------------------------------------
+
+const G = require('../app/submit-gate');
+
+test('Miguel M8: the "typed, press Enter" words have ONE source: the display\'s fallback is the gate\'s', () => {
+  assert.strictEqual(W.FLASH_TEXT, G.FLASH.typed);
+  assert.strictEqual(W.typed(loaded(), 'f1', { ok: true }).flash.text, G.FLASH.typed);
+});
+
+test('Dexter F5: a click that cleared a draft says so, with the SAME words as Run /merged (Ctrl+Y)', () => {
+  const s = W.typed(loaded(), 'f2', { ok: true, box: 'also update the README', submitted: true, flash: 'queued: Claude runs it when it\'s free' });
+  assert.strictEqual(s.flash.text, "queued: Claude runs it when it's free" + G.DRAFT_CLEARED);
+  assert.match(W.view(s).status, /Ctrl\+Y in that tab brings it back/);
+  assert.match(W.view(s).live, /Ctrl\+Y/, 'and the live region announces it');
+  assert.strictEqual(s.flash.long, true, 'a flash with a note stays up longer than the plain one');
+  for (const box of ['', undefined, null, 5]) {
+    const plain = W.typed(loaded(), 'f2', { ok: true, box, submitted: true, flash: 'sent' });
+    assert.strictEqual(plain.flash.text, 'sent', String(box));
+    assert.strictEqual(plain.flash.long, false);
+  }
+  const typedOnly = W.typed(loaded(), 'f2', { ok: true, box: 'draft' });
+  assert.strictEqual(typedOnly.flash.text, 'typed, press Enter' + G.DRAFT_CLEARED);
+});
+
+test('Dexter F8: an emoji-only edit never sends typeOnly, so a newer typeOnly set in another window survives', () => {
+  const favs = [{ id: 'f1', emoji: '🌙', skill: 'bedtime', args: '', typeOnly: false }];
+  // window 1 opens the editor ...
+  let w1 = W.openEditor(W.toggleEdit(loaded({ favourites: favs })), 'f1');
+  // ... window 2 ticks type-only and saves; window 1 only hears the quiet broadcast (its editor stays open)
+  w1 = W.reduce(w1, { type: 'wand', quiet: true, ...wandMsg({ favourites: [{ ...favs[0], typeOnly: true }] }) });
+  assert.strictEqual(w1.favourites[0].typeOnly, true);
+  assert.ok(w1.editor, 'the open editor survives the refresh');
+  w1 = W.editorSet(w1, 'emoji', '🚀');
+  const r = W.editorSubmit(w1);
+  assert.deepStrictEqual(r.message.patch, { emoji: '🚀' });
+  assert.ok(!('typeOnly' in r.message.patch));
+});
+
+test('Dexter F8: every changed field is sent, nothing else; and an unchanged editor sends an empty patch', () => {
+  let s = W.openEditor(W.toggleEdit(loaded({ favourites: TO })), 'b');
+  assert.deepStrictEqual(W.editorSubmit(s).message.patch, {});
+  s = W.editorSet(W.editorSet(W.editorSet(W.editorSet(s, 'emoji', '🚀'), 'skill', 'merged'), 'args', 'x'), 'typeOnly', true);
+  assert.deepStrictEqual(W.editorSubmit(s).message.patch, { emoji: '🚀', skill: 'merged', args: 'x', typeOnly: true });
+});
+
+test('Miguel M4: the accessible name says whether a click runs the skill or only types it', () => {
+  const v = W.view(loaded({ favourites: TO }));
+  assert.strictEqual(v.buttons[0].label, '/bedtime, click to type it, then press Enter');
+  assert.strictEqual(v.buttons[1].label, '/checkpoint wrap up, click to run it');
+  assert.match(W.html(v), /aria-label="\/bedtime, click to type it, then press Enter"/);
+  const edit = W.view(W.toggleEdit(loaded({ favourites: TO }))).buttons[0].label;
+  assert.match(edit, /^\/bedtime, press Enter to edit/, 'in edit mode a press opens the editor, whatever the favourite does');
 });

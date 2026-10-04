@@ -3,8 +3,10 @@
  * The terminal bar's decisions (backlog #49 last prompt + #52 bedtime, with #47's occupancy banner folded in as
  * a chip; documentation/DESIGN_TERMINAL_BAR.md). Pure: the page only paints what `barModel` says.
  *
- *   barModel({ prompt, anchor, view, now, bedtime, occupancy, focusMode })
- *       -> { visible, prompt: { head, full, age } | null, chips: [{ kind, short, long, warn, jump? }] }
+ *   barModel({ prompt, anchor, view, now, bedtime, occupancy, summary, focusMode })
+ *       -> { visible, prompt: { head, full, age } | null, chips: [{ kind, short, long, warn, jump? }], summary? }
+ *       `summary` (backlog #39, app/summary-display.js panelModel) takes the prompt part's place on the left while it
+ *       shows, and the result has a `summary` key ONLY then: { label, lines, note, dim, pinned }
  *   scrolledAway(prompt, anchor, view)   is the prompt's place in the terminal above the top of the viewport?
  *   makeAnchor(prompt, { line, epoch}) / locatingAnchor(prompt, epoch)   the line the CLI's echo was FOUND on, or
  *                                        "not drawn yet"
@@ -190,18 +192,30 @@ function occupancyChip(m) {
 
 // --- the bar ---------------------------------------------------------------------------------------------
 
-/** Shown when the prompt part is due OR any chip is active; never in focus mode; absent when there is nothing to say. */
-function barVisible({ promptDue, chips, focusMode } = {}) {
+/** Shown when the prompt part is due, a summary is showing OR any chip is active; never in focus mode; absent when there is nothing to say. */
+function barVisible({ promptDue, chips, summaryDue, focusMode } = {}) {
   if (focusMode === true) return false;
-  return promptDue === true || (Array.isArray(chips) && chips.length > 0);
+  return promptDue === true || summaryDue === true || (Array.isArray(chips) && chips.length > 0);
 }
 
-function barModel({ prompt = null, anchor = null, view = null, now, bedtime = null, occupancy = null, focusMode = false } = {}) {
+/** The summary panel as the bar paints it, or null when it is not a usable one (no lines and no note). Words are copied as strings. */
+function summaryPart(s) {
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  const lines = Array.isArray(s.lines) ? s.lines.filter(isStr) : [];
+  const note = isStr(s.note) ? s.note : null;
+  if (lines.length === 0 && note === null) return null;
+  return { label: isStr(s.label) ? s.label : 'local model', lines, note, dim: s.dim === true, pinned: s.pinned === true };
+}
+
+function barModel({ prompt = null, anchor = null, view = null, now, bedtime = null, occupancy = null, summary = null, focusMode = false } = {}) {
   const p = promptModel(prompt, now);
   const due = p !== null && scrolledAway(prompt, anchor, view);
   const chips = [bedtimeChip(bedtime, now), occupancyChip(occupancy)].filter(c => c !== null);
-  const visible = barVisible({ promptDue: due, chips, focusMode });
-  return { visible, prompt: visible && due ? p : null, chips: visible ? chips : [] };
+  const sum = summaryPart(summary);
+  const visible = barVisible({ promptDue: due, summaryDue: sum !== null, chips, focusMode });
+  const out = { visible, prompt: visible && due && sum === null ? p : null, chips: visible ? chips : [] };
+  if (visible && sum !== null) out.summary = sum;
+  return out;
 }
 
 const api = {

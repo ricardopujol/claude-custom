@@ -68,8 +68,8 @@ test('without an injected healthMarker, health is null rather than a throw', () 
 });
 
 test('no inputs at all is a quiet status', () => {
-  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
-  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
+  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
+  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
 });
 
 // Backlog #52: the host's word that a /bedtime night is on (host/bedtime-state.js), for the strip's night tab.
@@ -134,4 +134,47 @@ test('PROPERTY: after a finished turn nothing urgent is pending, whatever came b
         if (e === 'looked') assert.deepStrictEqual(p, { urgent: false, finished: false });
       }
     }));
+});
+
+// Backlog #39: the tab's "where are we" summary, for the strip's hover card. Only a usable one; the page decides the words.
+const SUM = { text: 'Working on: x\nNext: y', model: 'llama3.2:3b', at: 1000, stale: false, note: null };
+const { cleanSummary } = require('../app/tab-status');
+
+test('summary: a usable summary rides on the status; anything else is null, never a half-summary', () => {
+  assert.deepStrictEqual(ts({ summary: SUM }).summary, SUM);
+  for (const bad of [null, undefined, {}, 'x', 5, [], { ...SUM, text: '' }, { ...SUM, text: 5 }, { ...SUM, model: '' }, { ...SUM, at: null }, { ...SUM, at: '5' }, { ...SUM, at: NaN }]) {
+    assert.strictEqual(ts({ summary: bad }).summary, null, JSON.stringify(bad));
+  }
+});
+
+test('summary: stale is a real true only, the note a non-empty string only, extra fields are dropped, long words are cut', () => {
+  assert.strictEqual(cleanSummary({ ...SUM, stale: 'yes' }).stale, false);
+  assert.strictEqual(cleanSummary({ ...SUM, stale: true }).stale, true);
+  assert.strictEqual(cleanSummary({ ...SUM, note: '' }).note, null);
+  assert.strictEqual(cleanSummary({ ...SUM, note: 5 }).note, null);
+  assert.strictEqual(cleanSummary({ ...SUM, note: 'Local summary off' }).note, 'Local summary off');
+  assert.deepStrictEqual(Object.keys(cleanSummary({ ...SUM, secret: 'x', newestKey: 'k' })).sort(), ['at', 'model', 'note', 'stale', 'text']);
+  assert.strictEqual(cleanSummary({ ...SUM, text: 'x'.repeat(5000) }), null, 'a summary that long was never written by us');
+});
+
+test('sameStatus: a new summary is a change, the same one is not (so the strip hears about it, and only once)', () => {
+  const a = ts({ summary: SUM });
+  assert.strictEqual(sameStatus(a, ts({ summary: { ...SUM } })), true);
+  for (const change of [{ text: 'Working on: z' }, { model: 'other' }, { at: 2000 }, { stale: true }, { note: 'Local summary off' }]) {
+    assert.strictEqual(sameStatus(a, ts({ summary: { ...SUM, ...change } })), false, JSON.stringify(change));
+  }
+  assert.strictEqual(sameStatus(a, ts({})), false);
+  assert.strictEqual(sameStatus(ts({}), ts({})), true);
+});
+
+test('summary survives a look: afterSelected only clears the pending flags', () => {
+  assert.deepStrictEqual(afterSelected(ts({ summary: SUM })).summary, SUM);
+});
+
+// Miguel I1: with no summary yet, why there is none rides on its own field for the hover card.
+test('summaryNote: a non-empty string only, else null; and a change is a change', () => {
+  assert.strictEqual(ts({ summaryNote: "Local summary off: Ollama isn't running" }).summaryNote, "Local summary off: Ollama isn't running");
+  for (const bad of [undefined, null, '', 5, {}, 'x'.repeat(301)]) assert.strictEqual(ts({ summaryNote: bad }).summaryNote, null, JSON.stringify(bad));
+  assert.strictEqual(sameStatus(ts({}), ts({ summaryNote: 'x' })), false);
+  assert.strictEqual(sameStatus(ts({ summaryNote: 'x' }), ts({ summaryNote: 'x' })), true);
 });

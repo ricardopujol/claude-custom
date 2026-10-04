@@ -41,6 +41,12 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
+test('the strip page wires its accent: the bridge listens, the page paints (#64)', () => {
+  // Read as text here, not in tab-strip.test.js: tab-strip.js is a mutated module.
+  assert.match(read('app/tab-strip.js'), /root\.strip\.onAccent\(\(hex\) => paintAccent\(root\.document, hex\)\)/);
+  assert.match(read('app/preload-strip.js'), /removeAllListeners\('strip-accent'\)/);
+});
+
 test('J1: a sweep failure cannot reach the ok flag that melt returns', () => {
   // Dexter, PR #42, J1, and a defect in my own H5 fix. `withFileLock` throws if it
   // cannot acquire, and that throw escaped `melt()` AFTER the vault was replaced
@@ -230,10 +236,11 @@ test('the git-panel probe seams are read in ONE place: no other host or app file
   }
 });
 
-// PR #93 Dexter R2-1 (Ricardo's decision): no hook can say a turn is really over, so Type /merged TYPES and
-// the person presses Enter. Here, not in tab-shell.test.js: that file is in the mutation command, and
+// PR #93 Dexter R2-1, as changed by BACKLOG #61: the SHELL still never writes an Enter. It asks the tab's page to
+// type /merged with `submit: true`, and that page's submit gate (app/submit-gate.js) presses it after the read-back
+// (the CLI queues a mid-turn line). Here, not in tab-shell.test.js: that file is in the mutation command, and
 // tab-shell.js is mutated.
-test("the shell's Type /merged path sends no Enter and no raw input anywhere", () => {
+test("the shell's Run /merged path sends no Enter and no raw input anywhere", () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
   for (const fn of ['async function typeMerged(', 'function askToType(', 'function typed(']) {
     const a = src.indexOf(fn);
@@ -241,7 +248,7 @@ test("the shell's Type /merged path sends no Enter and no raw input anywhere", (
     const body = src.slice(a, src.indexOf('\n  }\n', a));
     assert.doesNotMatch(body, /\\r|\\x0d|\\u000d|hosts\.control|type: 'input'/, `${fn} must not press Enter`);
   }
-  assert.match(src, /askToType\(tab, '\/merged'\)/);
+  assert.match(src, /askToType\(tab, '\/merged', true\)/);
 });
 
 
@@ -378,4 +385,30 @@ test('every key the code uses is NAMED in the store header (the converse of the 
   const unnamed = [...keys].filter(k => !header.includes(`'${k}'`) && !header.includes(`${k}.json`));
   assert.deepStrictEqual(unnamed, [], `the code uses these store keys and the header does not name them: ${unnamed.join(', ')}`);
   assert.ok(!/THAT IS THE WHOLE LIST/.test(header) || unnamed.length === 0);
+});
+
+// Moved from test/git-drawer.test.js: app/git-rings-display.js is mutated now, and these read its CODE SHAPE.
+const GIT_RINGS_SRC = read('app/git-rings-display.js')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+
+test('Miguel S1: the breath runs on the swing clock, so it holds when the dial holds', () => {
+  assert.match(GIT_RINGS_SRC, /swing\.breath\(p\.name, st\.swing\.clock, \{ reduced \}\)/);
+});
+
+test('Miguel S2: a disabled action is described once (aria-describedby), never also by a title', () => {
+  assert.doesNotMatch(GIT_RINGS_SRC, /btn\.title\s*=/);
+  assert.match(GIT_RINGS_SRC, /btn\.setAttribute\('aria-describedby', why\.id\)/);
+});
+
+test("Miguel S2: the answer has ONE status node per panel, made once, never rebuilt with the drawer", () => {
+  assert.match(GIT_RINGS_SRC, /rootEl\.querySelector\('\.git-said'\) \|\| el\(doc, 'div', \{ class: 'git-said', role: 'status'/);
+  assert.strictEqual((GIT_RINGS_SRC.match(/role: 'status'/g) || []).length, 1, 'no second status node in the drawer');
+});
+
+test('Miguel I4: a redraw puts the hover card back where it was, reading no layout; the dead cardAt is gone', () => {
+  assert.doesNotMatch(GIT_RINGS_SRC, /cardAt/);
+  const at = GIT_RINGS_SRC.indexOf('const cardWas');
+  assert.ok(at !== -1);
+  assert.doesNotMatch(GIT_RINGS_SRC.slice(at, GIT_RINGS_SRC.indexOf('dial.textContent', at)), /getBoundingClientRect/);
+  assert.match(GIT_RINGS_SRC, /fillCard\(dial, card, cardWas\.key\)/);
 });

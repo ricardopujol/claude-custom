@@ -83,6 +83,8 @@ const ALLOWED_GLOBALS = new Set([
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
   'wandDisplay',
+  // app/submit-gate.js (BACKLOG #61): the wand / Run /merged submit gate. ONE name leaves its IIFE.
+  'submitGate',
   // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object
   // rather than six bare globals.
   'portraitMedia',
@@ -99,7 +101,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
   // app/top-bar-display.js (FF12)
-  'modelFamily', 'cueColour', 'pendingResolver', 'topBarState', 'topBarDisplay',
+  'modelFamily', 'cueColour', 'chosenAccent', 'withChosenAccent', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
@@ -115,8 +117,11 @@ const ALLOWED_GLOBALS = new Set([
   'occupancyDisplay', 'occupancyConfirm',
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
   'terminalBar',
+  'summaryDisplay',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
+  // app/accent-preview.js (backlog #64): one namespace object, IIFE-wrapped.
+  'accentPreview',
   // app/terminal-rows.js, app/file-path-parse.js (#37 terminal file links)
   'terminalRows', 'filePathParse',
   // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.

@@ -39,20 +39,32 @@ test('the wand section is findable, and is the ONLY place the wand touches the p
   assert.ok(START !== -1 && WAND.length > 200, 'WAND-BEGIN / WAND-END must bracket the glue');
 });
 
-test('a click types through typeCommand (the shared typeAndCheck) and NEVER presses Enter', () => {
+test('#61 a click types through typeCommand with submit on; the wand\'s glue holds NO Enter of its own', () => {
   const body = fnBody('wandType');
-  assert.match(body, /typeCommand\(plan\.command,/);
-  // No Enter anywhere in the wand's glue: not a CR, not a raw input frame, not typePlanned (the one that submits).
+  assert.match(body, /typeCommand\(plan\.command, \(r\) => \{[\s\S]*?\}, undefined, \{ submit: true, typeOnly: plan\.typeOnly \}\);/);
+  // No Enter anywhere in the wand's glue: not a CR, not a raw input frame, not typePlanned. The one CR a click
+  // can cause is submitTyped's, and only when the gate allows it (pinned below).
   assert.doesNotMatch(WAND, /\\r|\\n['"]/);
   assert.doesNotMatch(WAND, /type: 'input'/);
   assert.doesNotMatch(WAND, /typePlanned/);
   assert.doesNotMatch(WAND, /input\(/);
+  assert.doesNotMatch(WAND, /submitTyped/, 'the wand reaches the CR only through typeCommand');
 });
 
-test('the shared typeCommand itself is still the one that never submits (the contract the wand leans on)', () => {
+test('#61 the only CR in the typeCommand path is pressEnter\'s, reached only through submitTyped\'s gate', () => {
   const t = fnBody('typeCommand');
   assert.match(t, /typeAndCheck\(plan\.enterInsert, command,/);
-  assert.doesNotMatch(t, /\\r/);
+  assert.doesNotMatch(t, /\\r/, 'typeCommand writes no CR itself');
+  assert.match(t, /submitTyped\(/);
+  const sub = fnBody('submitTyped');
+  assert.match(sub, /submitGate\.planSubmit\(\{ turn: sessionTurn, typeOnly \}\)/);
+  assert.doesNotMatch(sub, /\\r/, 'submitTyped decides; it writes nothing');
+  assert.match(sub, /if \(!gate\.enter\) \{[^\n]*return;/, 'a gate that says no ends it before any Enter');
+  const press = fnBody('pressEnter');
+  assert.strictEqual((press.match(/\\r/g) || []).length, 1, 'exactly one CR');
+  assert.match(press, /ws\.readyState !== WebSocket\.OPEN/, 'and it is not reported sent when the socket is not open');
+  // no other function the wand or the drawer reach writes one: typePlanned (the top bar) is the only other
+  assert.strictEqual([...JS.matchAll(/data: '\\r'|input\('\\r'\)/g)].length, 2, 'typePlanned (top bar) and pressEnter, nothing else');
 });
 
 test('a click while one is still typing is ignored: two overlapping type sequences would garble the box', () => {
@@ -203,4 +215,274 @@ test('I3: the status is announced from a node OUTSIDE the rebuilt subtree', () =
   assert.match(root, /<\/div>\s*<div $/, 'the live region is a sibling of the root, not inside it');
   assert.match(fnBody('renderWand'), /getElementById\('wand-live'\)/);
   assert.match(fnBody('renderWand'), /\.textContent = v\.live/);
+});
+
+// --- #61: the type-only checkbox and the name under the emoji ----------------------------------------------
+
+test('#61 the editor\'s type-only checkbox goes to editorSet as a boolean, every other field as its text', () => {
+  const at = WAND.indexOf("addEventListener('input'");
+  assert.ok(at !== -1);
+  const handler = WAND.slice(at, WAND.indexOf('addEventListener(', at + 10));
+  assert.match(handler, /editorSet\(wandState, field, e\.target\.type === 'checkbox' \? e\.target\.checked : e\.target\.value\)/);
+});
+
+test('#61 the page styles the name under the emoji: one line, ellipsis past the cell', () => {
+  const css = HTML.slice(HTML.indexOf('.wand-name {'), HTML.indexOf('}', HTML.indexOf('.wand-name {')));
+  assert.match(css, /text-overflow: ellipsis/);
+  assert.match(css, /white-space: nowrap/);
+  assert.match(css, /overflow: hidden/);
+});
+
+// --- #61: submitTyped / typeCommand, run for real against stubs -------------------------------------------------
+
+// A virtual clock for the submit path: setTimeout is injected, so nothing here sleeps (F1's 400 ms, F7's window).
+function loadTypeCommand({ turn, readBack = true, screen = 'ready', connected = true, queued = false, retype = null }) {
+  const sent = [];
+  const order = [];
+  const timers = [];
+  let now = 0;
+  // A stub, not app/top-bar-display.js: that module is mutated, and a test that requires it must be in Stryker's
+  // command (test/stryker-config.test.js); this file is repo-scanning and deliberately is not.
+  const planTyping = ({ command, screen: sc, connected: c }) => (typeof command === 'string' && c && sc === 'ready'
+    ? { ok: true, enterInsert: false } : { ok: false, reason: 'a dialog is open in the terminal; answer it or press Esc first' });
+  const gate = require('../app/submit-gate');
+  const apiRef = {};
+  const state = { turn, screen, queued, lineOk: true, ws: { readyState: connected ? 1 : 3 } };
+  const env = {
+    term: { focus() {} },
+    screenLines: () => (state.queued ? ['❯ /x', '❯ Press up to edit queued messages'] : ['❯ /x']),
+    vimInsertShown: () => false,
+    inputState: () => state.screen,
+    boxText: () => 'draft',
+    commandTyped: () => state.lineOk,
+    planTyping,
+    WebSocket: { OPEN: 1 },
+    submitGate: gate,
+    send: (m) => { const d = JSON.parse(m).data; sent.push(d); order.push('send:' + JSON.stringify(d)); },
+    setTimeout: (fn, ms) => { timers.push({ at: now + ms, fn }); },
+    PTY_STEP_MS: 120,
+    typeAndCheck: (_enter, _command, cb) => {
+      order.push('typed');
+      if (retype) retype(apiRef, state);
+      cb(readBack ? { ok: true } : { ok: false, reason: 'the input line changed before it could be confirmed' });
+    },
+  };
+  const names = Object.keys(env);
+  const consts = ['SUBMIT_RECHECK_MS', 'QUEUED_POLL_MS', 'QUEUED_POLLS'].map(constSource).join('\n');
+  const src = [fnSource('typeCommand'), fnSource('submitTyped'), fnSource('pressEnter'), fnSource('watchQueued'), fnSource('clearTypedLine')].join('\n');
+  const body = `${consts}\nlet vimSeen = false;\nlet typingBusy = false;\nlet sessionTurn = __state.turn;\nlet ws = __state.ws;\n`
+    + `${src}\nreturn { typeCommand, busy: () => typingBusy, setTurn: (t) => { sessionTurn = t; }, setBusy: (b) => { typingBusy = b; } };`;
+  const factory = new Function('__state', ...names, body);
+  const api = factory(state, ...names.map(k => env[k]));
+  Object.assign(apiRef, api);
+  // advance the virtual clock, running every timer that comes due (including ones they schedule)
+  const advance = (ms) => {
+    const end = now + ms;
+    for (;;) {
+      const due = timers.filter(t => t.at <= end).sort((a, b) => a.at - b.at)[0];
+      if (!due) break;
+      timers.splice(timers.indexOf(due), 1);
+      now = Math.max(now, due.at);
+      due.fn();
+    }
+    now = end;
+  };
+  return { ...api, sent, order, state, advance, pending: () => timers.length };
+}
+
+function fnSource(name) {
+  const start = LF.indexOf(`function ${name}(`);
+  assert.ok(start !== -1, name);
+  return LF.slice(start, LF.indexOf('\n}\n', start) + 2);
+}
+function constSource(name) {
+  const m = LF.match(new RegExp(`^const ${name} = [^;]+;`, 'm'));
+  assert.ok(m, name);
+  return m[0];
+}
+
+const run = (h, command, opts, kind) => {
+  const out = { r: null };
+  h.typeCommand(command, (r) => { out.r = r; }, kind, opts);
+  return out;
+};
+const SUBMIT = { submit: true, typeOnly: false };
+
+test('#61 idle: the CR goes in at the read-back, in the same call; the flash waits for the screen and says "sent"', () => {
+  const h = loadTypeCommand({ turn: 'idle' });
+  const out = run(h, '/merged', SUBMIT);
+  assert.deepStrictEqual(h.order, ['typed', 'send:"\\r"'], 'the CR is after the read-back, with no timer between');
+  assert.strictEqual(out.r, null, 'not answered yet: the page is looking at the screen');
+  h.advance(2000);
+  assert.deepStrictEqual(out.r, { ok: true, box: 'draft', submitted: true, flash: 'sent' });
+  assert.deepStrictEqual(h.sent, ['\r']);
+});
+
+test('F7: the flash says "queued" only when the CLI\'s own queued-messages line shows within the window; else "sent"', () => {
+  const queued = loadTypeCommand({ turn: 'idle', queued: true });
+  const q = run(queued, '/x', SUBMIT);
+  queued.advance(2000);
+  assert.strictEqual(q.r.flash, "queued: Claude runs it when it's free");
+  assert.strictEqual(q.r.submitted, true);
+  const plain = loadTypeCommand({ turn: 'idle' });
+  const p = run(plain, '/x', SUBMIT);
+  plain.advance(2000);
+  assert.strictEqual(p.r.flash, 'sent');
+  // the line shows up late but inside the window
+  const late = loadTypeCommand({ turn: 'idle' });
+  const l = run(late, '/x', SUBMIT);
+  late.advance(300);
+  late.state.queued = true;
+  late.advance(2000);
+  assert.strictEqual(l.r.flash, "queued: Claude runs it when it's free");
+});
+
+test('F7: the hook state no longer decides the words: a running turn whose screen shows no queued line says "sent"', () => {
+  const h = loadTypeCommand({ turn: 'turn' });
+  const out = run(h, '/x', SUBMIT);
+  h.advance(5000);
+  assert.strictEqual(out.r.flash, 'sent');
+});
+
+test('F1: mid-turn, NO CR at the read-back; ~400 ms later, with the line still typed and no dialog, the CR goes in', () => {
+  const h = loadTypeCommand({ turn: 'turn', queued: true });
+  const out = run(h, '/x', SUBMIT);
+  assert.deepStrictEqual(h.sent, [], 'not at the read-back');
+  assert.strictEqual(h.busy(), true, 'and nobody else may type while we wait');
+  h.advance(399);
+  assert.deepStrictEqual(h.sent, [], 'not before the wait is over');
+  h.advance(1);
+  assert.deepStrictEqual(h.sent, ['\r']);
+  assert.strictEqual(h.busy(), false);
+  h.advance(2000);
+  assert.strictEqual(out.r.submitted, true);
+});
+
+test('F1: a dialog opens during the wait (the host says prompt): no CR, the line is cleared, and the answer is a refusal', () => {
+  const h = loadTypeCommand({ turn: 'turn' });
+  const out = run(h, '/x', SUBMIT);
+  h.advance(200);
+  h.setTurn('prompt');
+  h.advance(300);
+  assert.deepStrictEqual(h.sent.filter(d => d === '\r'), [], 'no Enter');
+  h.advance(1000);
+  assert.deepStrictEqual(h.sent, ['\x05', '\x15'], 'the typed line is cleared, as a failed read-back clears it');
+  assert.strictEqual(out.r.ok, false);
+  assert.match(out.r.reason, /nothing was sent/);
+  assert.strictEqual(h.busy(), false);
+});
+
+test('F1: the screen no longer shows exactly the command after the wait (a dialog drawn over it): no CR, cleared, refused', () => {
+  const h = loadTypeCommand({ turn: 'turn' });
+  const out = run(h, '/x', SUBMIT);
+  h.state.lineOk = false;
+  h.advance(2000);
+  assert.deepStrictEqual(h.sent, ['\x05', '\x15']);
+  assert.strictEqual(out.r.ok, false);
+  assert.match(out.r.reason, /nothing was sent/);
+});
+
+test('F1: the re-check only applies in a running turn: idle sends at once even if the screen changes later', () => {
+  const h = loadTypeCommand({ turn: 'idle' });
+  run(h, '/x', SUBMIT);
+  assert.deepStrictEqual(h.sent, ['\r']);
+  assert.strictEqual(h.pending(), 1, 'only the queued-line look is scheduled');
+});
+
+test('F3: the host says prompt but the screen shows a ready box: typed with NO Enter, and the hint is the flash', () => {
+  for (const typeOnly of [false, true]) {
+    const h = loadTypeCommand({ turn: 'prompt' });
+    const out = run(h, '/x', { submit: true, typeOnly });
+    h.advance(3000);
+    assert.deepStrictEqual(h.sent, [], `typeOnly ${typeOnly}`);
+    assert.deepStrictEqual(out.r, { ok: true, box: 'draft', submitted: false, flash: "Claude may be waiting on you: press Enter if it's free" });
+  }
+});
+
+test('F3: the host says prompt AND the screen shows a dialog: refused before a key is typed, as before', () => {
+  const h = loadTypeCommand({ turn: 'prompt', screen: 'dialog' });
+  const out = run(h, '/x', SUBMIT);
+  assert.strictEqual(out.r.ok, false);
+  assert.match(out.r.reason, /dialog/);
+  assert.deepStrictEqual(h.order, [], 'nothing typed, nothing sent');
+});
+
+test('Dexter M3: a dialog opening between the click and the read-back (idle -> prompt) never gets a CR', () => {
+  const h = loadTypeCommand({ turn: 'idle', retype: (api) => api.setTurn('prompt') });
+  const out = run(h, '/x', SUBMIT);
+  h.advance(3000);
+  assert.deepStrictEqual(h.sent, []);
+  assert.strictEqual(out.r.submitted, false);
+  assert.match(out.r.flash, /waiting on you/);
+});
+
+test('Dexter F6 / Miguel M1: a socket that is not OPEN when the CR would go is "not sent", never "sent"', () => {
+  for (const turn of ['idle', 'turn']) {
+    // CLOSING at the read-back (idle: the CR would go now) ...
+    const h = loadTypeCommand({ turn, retype: (_api, st) => { st.ws.readyState = 2; } });
+    const out = run(h, '/x', SUBMIT);
+    h.advance(3000);
+    assert.deepStrictEqual(h.sent, [], turn);
+    assert.strictEqual(out.r.ok, false, turn);
+    assert.match(out.r.reason, /not connected/, turn);
+  }
+  // ... and for a running turn, closing during the wait
+  const w = loadTypeCommand({ turn: 'turn' });
+  const out = run(w, '/x', SUBMIT);
+  w.advance(100);
+  w.state.ws.readyState = 3;
+  w.advance(3000);
+  assert.deepStrictEqual(w.sent, [], 'no CR, and no clear either: a dead socket takes nothing');
+  assert.strictEqual(out.r.ok, false);
+});
+
+test('a type-only favourite, or an unseen session, types and sends NO CR, flash "typed, press Enter"', () => {
+  for (const [turn, typeOnly] of [['idle', true], ['turn', true], [null, false], [null, true]]) {
+    const h = loadTypeCommand({ turn });
+    const out = run(h, '/x', { submit: true, typeOnly });
+    h.advance(3000);
+    assert.strictEqual(out.r.ok, true);
+    assert.strictEqual(out.r.submitted, false, `${turn}/${typeOnly}`);
+    assert.strictEqual(out.r.flash, 'typed, press Enter');
+    assert.deepStrictEqual(h.sent, [], `${turn}/${typeOnly}`);
+  }
+});
+
+test('a read-back that fails sends no CR, whatever the state', () => {
+  for (const turn of ['idle', 'turn']) {
+    const h = loadTypeCommand({ turn, readBack: false });
+    const out = run(h, '/x', SUBMIT);
+    h.advance(3000);
+    assert.strictEqual(out.r.ok, false);
+    assert.deepStrictEqual(h.sent, [], turn);
+  }
+});
+
+test('without submit (the reader\'s @mention) nothing is ever submitted, and the answer is the old one', () => {
+  for (const turn of ['idle', 'turn', null]) {
+    const h = loadTypeCommand({ turn });
+    const out = run(h, '@file#L1', undefined, 'mention');
+    assert.deepStrictEqual(out.r, { ok: true, box: 'draft' });
+    assert.deepStrictEqual(h.sent, []);
+    assert.strictEqual(h.pending(), 0);
+  }
+});
+
+test('#61 the Git drawer\'s type-command carries submit; only a literal true turns it on, typeOnly is off for /merged', () => {
+  const at = RAW.indexOf('window.harness.onTypeCommand((ask) => {');
+  assert.ok(at !== -1);
+  const body = RAW.slice(at, RAW.indexOf('\n  });', at));
+  assert.match(body, /ask && ask\.submit === true \? \{ submit: true, typeOnly: false \} : undefined/);
+  assert.match(body, /window\.harness\.typed\(\{ id, \.\.\.r \}\)/);
+});
+
+test('#61 the type-only checkbox is not stretched by `.wand-ed-row input { flex: 1 }` (it was invisible in the first probe screenshot)', () => {
+  const rule = HTML.match(/\.wand-ed-row\.wand-ed-check input \{[^}]*\}/);
+  assert.ok(rule, 'a rule that is more specific than .wand-ed-row input');
+  assert.match(rule[0], /flex: 0 0 auto/);
+});
+
+test('Dexter F5: a flash that carries the cleared-draft note stays up longer (8 s) than a plain one (2.5 s)', () => {
+  const body = fnBody('wandType');
+  assert.match(body, /wandState\.flash && wandState\.flash\.long \? 8000 : 2500/);
 });

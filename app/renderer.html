@@ -7,6 +7,7 @@
        page-title-updated so the page can never take it back. -->
   <title>claude-custom</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="agent-colour.css" />
   <style>
     :root {
       --bg: #11131a;
@@ -32,7 +33,6 @@
       --model-accent: #d08c4a;
       /* Worktree occupancy (#44 + #47): an agent is working in this folder (--agent), and this tab's own
          session is writing too (--warn). The same two colours as the strip's hatched edge. */
-      --agent: #6aa5d8;
       --warn: #e6c34a;
       /* Backlog #52: a session in a /bedtime night (the strip's night tab, the bar's moon chip). */
       --night: #1a2350;
@@ -664,6 +664,23 @@
       user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
       overflow-wrap: anywhere;
     }
+    /* The where-are-we summary (#39): the local model's words, at the left in the prompt part's place. A button that pins
+       its card open; the card hangs under the bar like the whole-prompt view. Never animated; dimmed when stale or off. */
+    #bar-summary[hidden], #bar-summary-card[hidden], #bar-summary-note[hidden] { display: none; }
+    #bar-summary {
+      flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
+      background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+    }
+    #bar-summary .bar-note { flex: 0 0 auto; }
+    #bar-summary-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+    #bar-summary-card {
+      position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; z-index: 17;
+      max-height: 40vh; overflow: auto; padding: 8px 10px; border-radius: 5px; white-space: pre-wrap;
+      user-select: text; cursor: text; background: var(--chrome); border: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    #bar-summary-note { margin-top: 6px; color: var(--dim); font-style: italic; }
+    #bar-summary.dim, #bar-summary-card.dim { color: var(--dim); }
     #bar-chips { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
     .bar-chip {
       position: relative; display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; cursor: default;
@@ -1089,11 +1106,16 @@
     .wand-edit:hover { color: var(--text); border-color: var(--border); }
     .wand-edit.on { color: var(--accent); border-color: var(--accent); }
     /* padding: the ✕ of an edit-mode cell hangs 6px outside it, and the panel clips what overflows */
-    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
+    .wand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px; padding: 7px 7px 0 0; }
     .wand-cell { position: relative; display: block; }
-    .wand-btn { width: 100%; aspect-ratio: 1; padding: 0; display: flex; align-items: center; justify-content: center;
+    .wand-btn { width: 100%; min-height: 46px; padding: 4px 3px; display: flex; flex-direction: column; gap: 2px; align-items: center; justify-content: center; overflow: hidden;
       font-size: 18px; line-height: 1; cursor: pointer; background: var(--panel); color: var(--text);
       border: 1px solid var(--border); border-radius: 8px; transition: border-color .12s, background .12s; }
+    /* the skill's name under the emoji: ellipsis past the cell; the full /skill args is in title and aria-label */
+    .wand-emoji { line-height: 1; }
+    .wand-name { max-width: 100%; font-size: 9px; line-height: 1.1; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wand-ed-row.wand-ed-check { align-items: flex-start; }
+    .wand-ed-row.wand-ed-check input { flex: 0 0 auto; width: auto; margin: 2px 0 0; }
     .wand-btn:hover { border-color: var(--accent); }
     .wand-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
     .wand-btn.dim { opacity: .35; filter: grayscale(1); }
@@ -1220,12 +1242,12 @@
        portrait itself is a placeholder. */
     .agent[data-state="sleeping"] { opacity: .42; }
     .agent[data-state="working"]  { background: rgba(255,255,255,.05); }
-    .agent[data-state="working"] .face { box-shadow: 0 0 0 2px var(--accent); }
+    .agent[data-state="working"] .face { box-shadow: 0 0 0 2px var(--agent); }
     .agent[data-state="happy"]    { background: rgba(95,176,122,.14); }
     .agent[data-state="happy"] .face { box-shadow: 0 0 0 2px var(--ok); }
     .agent[data-state="stressed"] { background: rgba(204,95,95,.14); }
     .agent[data-state="stressed"] .face { box-shadow: 0 0 0 2px var(--bad); }
-    .agent[data-state="working"] .state { color: var(--accent); }
+    .agent[data-state="working"] .state { color: var(--agent); }
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
 
@@ -1491,6 +1513,10 @@
         <!-- The terminal bar (#49 + #52, with #47's occupancy banner folded in as a chip): one row, the prompt left
              once it has scrolled away, the chips right. Text only, painted from app/terminal-bar.js's model. -->
         <div id="terminal-bar" role="group" aria-label="Last prompt and status" hidden>
+          <button type="button" id="bar-summary" hidden aria-expanded="false" aria-controls="bar-summary-card" title="Where this session stood, written by a local model (click keeps it open, Esc closes it)">
+            <span class="bar-note">📝</span><span id="bar-summary-label"></span>
+          </button>
+          <div id="bar-summary-card" hidden role="note" aria-label="Where we're at, written by a local model"><div id="bar-summary-lines"></div><div id="bar-summary-note" hidden></div></div>
           <button type="button" id="bar-prompt" hidden aria-expanded="false" aria-controls="bar-prompt-full" title="Show the whole prompt (Esc closes it)">
             <span class="bar-caret">❯</span><span id="bar-prompt-text"></span><span id="bar-prompt-age"></span>
           </button>
@@ -1711,8 +1737,10 @@
   <script src="./colour-seeds.js"></script>
   <script src="./agent-log-display.js"></script>
   <script src="./loadout-display.js"></script>
+  <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
   <script src="./top-bar-display.js"></script>
+  <script src="./accent-preview.js"></script>
   <script src="./context-fill-display.js"></script>
   <script src="./status-fields-display.js"></script>
   <script src="./models-favourites.js"></script>
@@ -1724,6 +1752,7 @@
   <script src="./occupancy-display.js"></script>
   <script src="./occupancy-confirm.js"></script>
   <script src="./terminal-bar.js"></script>
+  <script src="./summary-display.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>
