@@ -5,6 +5,8 @@
  *   1. ROUND-TRIP: serialize -> JSON -> load gives the same favourites, order kept.
  *   2. A CORRUPT FILE IS NEVER EMPTY: whatever else is on disk, if it is not a wand store the load is
  *      `unavailable` with no favourites, never an empty grid that reads as "no favourites".
+ *   4. (#61) TYPE-ONLY: typeOnly survives the round trip and an edit that does not name it; a favourite from a
+ *      file without it loads as false; a non-boolean in a file is never coerced into either value.
  *   3. IDS STAY UNIQUE after any sequence of add / update / remove / move, and a load repairs a file
  *      whose ids collide.
  *
@@ -20,7 +22,7 @@ const EMOJI = ['🌙', '✅', '🔀', '💡', '🚀', '\u{1F468}\u200D\u{1F469}\
 const emojiArb = fc.constantFrom(...EMOJI);
 const skillArb = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9:_-]{0,20}$/);
 const argsArb = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9 ._=\/-]{0,30}$/).map(s => s.replace(/\s+/g, ' ').trim());
-const favArb = fc.record({ emoji: emojiArb, skill: skillArb, args: fc.oneof(fc.constant(''), argsArb) });
+const favArb = fc.record({ emoji: emojiArb, skill: skillArb, args: fc.oneof(fc.constant(''), argsArb), typeOnly: fc.boolean() });
 
 // A valid list built the only legitimate way: through add().
 const listArb = fc.array(favArb, { maxLength: 20 }).map((items) => {
@@ -87,7 +89,7 @@ test('property 2b: corrupt and unreadable are unavailable whatever error they ca
 test('property 3: ids stay unique and every edit keeps its promises, across any sequence of edits', () => {
   const opArb = fc.oneof(
     fc.record({ op: fc.constant('add'), item: favArb }),
-    fc.record({ op: fc.constant('update'), at: fc.nat(30), patch: fc.record({ emoji: emojiArb }, { requiredKeys: [] }) }),
+    fc.record({ op: fc.constant('update'), at: fc.nat(30), patch: fc.record({ emoji: emojiArb, typeOnly: fc.boolean() }, { requiredKeys: [] }) }),
     fc.record({ op: fc.constant('remove'), at: fc.nat(30) }),
     fc.record({ op: fc.constant('move'), at: fc.nat(30), to: fc.nat(30) }),
   );
@@ -149,4 +151,31 @@ test('D7 property: every string cleanArgs accepts has no control, format or sepa
     const r = wand.cleanArgs(s);
     if (r !== null) assert.ok(!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(r), JSON.stringify(r));
   }), { numRuns: 1000 });
+});
+
+test('#61 property 5: typeOnly round-trips, and an update that does not name it never changes it', () => {
+  fc.assert(fc.property(listArb, fc.nat(30), emojiArb, (favs, at, emoji) => {
+    fc.pre(favs.length > 0);
+    const target = favs[at % favs.length];
+    const r = wand.update(favs, target.id, { emoji });
+    assert.ok(r.ok);
+    assert.deepStrictEqual(r.favourites.map(f => f.typeOnly), favs.map(f => f.typeOnly));
+    const again = wand.load({ status: 'ok', value: JSON.parse(JSON.stringify(wand.serialize(r.favourites))) });
+    assert.deepStrictEqual(again.favourites.map(f => f.typeOnly), favs.map(f => f.typeOnly));
+  }), { numRuns: 300 });
+});
+
+test('#61 property 6: a v1 favourite with no typeOnly loads as false, and a non-boolean one is dropped, never coerced', () => {
+  const notBool = fc.jsonValue().filter(v => typeof v !== 'boolean' && v !== undefined);
+  fc.assert(fc.property(favArb, (f) => {
+    const { typeOnly, ...old } = f;                              // eslint-disable-line no-unused-vars
+    const r = wand.load({ status: 'ok', value: { version: 1, favourites: [{ id: 'a', ...old }] } });
+    assert.strictEqual(r.favourites[0].typeOnly, false);
+  }), { numRuns: 200 });
+  fc.assert(fc.property(favArb, notBool, (f, bad) => {
+    const r = wand.load({ status: 'ok', value: { version: 1, favourites: [{ id: 'a', ...f, typeOnly: bad }] } });
+    assert.deepStrictEqual(r.favourites, []);
+    assert.strictEqual(r.dropped, 1);
+    assert.strictEqual(wand.add([], { ...f, typeOnly: bad }).ok, false);
+  }), { numRuns: 200 });
 });

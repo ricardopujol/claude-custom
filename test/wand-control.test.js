@@ -87,18 +87,32 @@ test('add: writes the WHOLE set (defaults included, on first edit) and answers w
   assert.strictEqual(f.reason, null);
   assert.strictEqual(f.status, 'ok');
   assert.strictEqual(f.favourites.length, 5);
-  assert.deepStrictEqual(f.favourites[4], { id: 'f5', emoji: '🚀', skill: 'checkpoint', args: 'now' });
+  assert.deepStrictEqual(f.favourites[4], { id: 'f5', emoji: '🚀', skill: 'checkpoint', args: 'now', typeOnly: false });
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.strictEqual(onDisk.version, 1);
   assert.deepStrictEqual(onDisk.favourites, f.favourites);
   assert.strictEqual(f.quiet, undefined, 'an answer is never quiet: a refusal must stay visible');
 });
 
+test('#61 add and update carry typeOnly through the host to the file; a non-boolean is refused and nothing is written', () => {
+  const { control, file } = setup();
+  const a = control.handle({ type: 'wand-add', emoji: '🚀', skill: 'checkpoint', args: '', typeOnly: true });
+  assert.strictEqual(a.ok, true);
+  assert.strictEqual(a.favourites[4].typeOnly, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).favourites[4].typeOnly, true);
+  const u = control.handle({ type: 'wand-update', id: 'f1', patch: { typeOnly: true } });
+  assert.strictEqual(u.favourites[0].typeOnly, true);
+  const bad = control.handle({ type: 'wand-update', id: 'f1', patch: { typeOnly: 'yes' } });
+  assert.strictEqual(bad.ok, false);
+  assert.match(bad.reason, /type only/i);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).favourites[0].typeOnly, true, 'the refused edit wrote nothing');
+});
+
 test('update / delete / move each write and answer; the file is what the frame says', () => {
   const { control, file } = setup();
   let f = control.handle({ type: 'wand-update', id: 'f2', patch: { emoji: '🚀', args: 'x' } });
   assert.strictEqual(f.ok, true);
-  assert.deepStrictEqual(f.favourites[1], { id: 'f2', emoji: '🚀', skill: 'checkpoint', args: 'x' });
+  assert.deepStrictEqual(f.favourites[1], { id: 'f2', emoji: '🚀', skill: 'checkpoint', args: 'x', typeOnly: false });
   f = control.handle({ type: 'wand-delete', id: 'f1' });
   assert.deepStrictEqual(f.favourites.map(x => x.id), ['f2', 'f3', 'f4']);
   f = control.handle({ type: 'wand-move', id: 'f4', target: 'f2' });

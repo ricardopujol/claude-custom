@@ -5,7 +5,13 @@
  *
  * THE STORE, `.harness/state/wand.json`, key 'wand':
  *
- *     { "version": 1, "favourites": [ { "id", "emoji", "skill", "args" } ] }
+ *     { "version": 1, "favourites": [ { "id", "emoji", "skill", "args", "typeOnly" } ] }
+ *
+ * `typeOnly` (BACKLOG #61) is optional and additive, so `version` stays 1: a click normally TYPES the command
+ * and presses Enter (app/submit-gate.js); a type-only favourite is for a skill that takes an argument typed at
+ * run time, and keeps the old behaviour (type, leave the Enter to the person). A file without it loads as
+ * false. A value that is not a boolean is an invalid favourite (dropped and counted, never coerced: `"false"`
+ * must not become a submitting favourite or a silent flip).
  *
  * INSTALL-WIDE, one global set (Ricardo's pick; per-project extras are a later design), like the
  * tool belt next to it.
@@ -47,7 +53,7 @@ const DEFAULTS = Object.freeze([
 ]);
 
 function defaultFavourites() {
-  return DEFAULTS.map((d, i) => ({ id: `f${i + 1}`, emoji: d.emoji, skill: d.skill, args: '' }));
+  return DEFAULTS.map((d, i) => ({ id: `f${i + 1}`, emoji: d.emoji, skill: d.skill, args: '', typeOnly: false }));
 }
 
 const segmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
@@ -98,14 +104,15 @@ function freshId(used) {
 
 const nextId = (favs) => freshId(new Set((Array.isArray(favs) ? favs : []).map(f => f && f.id)));
 
-/** One favourite from untrusted input: { emoji, skill, args } (and the id the caller checks), or null. */
+/** One favourite from untrusted input: { emoji, skill, args, typeOnly } (and the id the caller checks), or null. */
 function readFavourite(raw) {
   if (!isObj(raw)) return null;
   if (!isOneEmoji(raw.emoji)) return null;
   if (!isStr(raw.skill) || !SKILL_NAME.test(raw.skill)) return null;
   const args = cleanArgs(raw.args);
   if (args === null) return null;
-  return { emoji: raw.emoji, skill: raw.skill, args };
+  if (raw.typeOnly !== undefined && typeof raw.typeOnly !== 'boolean') return null;
+  return { emoji: raw.emoji, skill: raw.skill, args, typeOnly: raw.typeOnly === true };
 }
 
 // `transient`: only an UNREADABLE read (a handle held for a moment) is worth retrying; corrupt, wrong shape and
@@ -157,10 +164,10 @@ function load(state) {
     f.id = freshId(claimed);
     claimed.add(f.id);
   }
-  return { status: 'ok', favourites: kept.map(f => ({ id: f.id, emoji: f.emoji, skill: f.skill, args: f.args })), reason: null, dropped, transient: false };
+  return { status: 'ok', favourites: kept.map(f => ({ id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, typeOnly: f.typeOnly })), reason: null, dropped, transient: false };
 }
 
-const serialize = (favourites) => ({ version: VERSION, favourites: favourites.map(f => ({ id: f.id, emoji: f.emoji, skill: f.skill, args: f.args })) });
+const serialize = (favourites) => ({ version: VERSION, favourites: favourites.map(f => ({ id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, typeOnly: f.typeOnly === true })) });
 
 // --- edits: each returns { ok, favourites, reason, id? }; a refusal returns the list untouched -------------
 
@@ -171,9 +178,13 @@ const REASONS = {
   emoji: 'Pick one emoji.',
   skill: "Pick a skill whose name can be typed as a slash command.",
   args: `The argument must be one line of plain text, up to ${MAX_ARGS} characters.`,
+  typeOnly: 'Type only must be on or off.',
 };
 
-/** Check the fields named in `patch` (all three for an add). Returns { fields } or { reason }. */
+/**
+ * Check the fields named in `patch` (emoji, skill and args are all required for an add; `typeOnly` is optional
+ * and false when not named). Returns { fields } or { reason }.
+ */
 function checkFields(patch, all) {
   const p = isObj(patch) ? patch : {};
   const fields = {};
@@ -191,6 +202,12 @@ function checkFields(patch, all) {
     if (a === null) return { reason: REASONS.args };
     fields.args = a;
   }
+  if (has('typeOnly')) {
+    if (typeof p.typeOnly !== 'boolean') return { reason: REASONS.typeOnly };
+    fields.typeOnly = p.typeOnly;
+  } else if (all) {
+    fields.typeOnly = false;
+  }
   return { fields };
 }
 
@@ -200,7 +217,7 @@ function add(favs, patch) {
   const c = checkFields(patch, true);
   if (c.reason) return refuse(favs, c.reason);
   const id = nextId(cur);
-  return { ok: true, reason: null, id, favourites: [...cur, { id, emoji: c.fields.emoji, skill: c.fields.skill, args: c.fields.args }] };
+  return { ok: true, reason: null, id, favourites: [...cur, { id, emoji: c.fields.emoji, skill: c.fields.skill, args: c.fields.args, typeOnly: c.fields.typeOnly }] };
 }
 
 function update(favs, id, patch) {
