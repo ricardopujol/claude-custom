@@ -11,6 +11,7 @@ const { parseCount, nightPrArgs } = require('../host/night-prs');
 
 // defaultRun has no seam, so child_process.execFile is replaced for a fresh load of the module. The module
 // destructures execFile at load, which is why it is re-required here rather than patched afterwards.
+// The require.cache / execFile swap relies on `node --test` running each test file in its own process.
 function withExecFile(fake, body) {
   const cp = require('child_process');
   const real = cp.execFile;

@@ -185,6 +185,8 @@ test('diffFor says truncated, and how many calls it kept, when the cap cut some'
 
 // ---- the event loop is yielded to ----
 
+// Deliberately pins the yielding MECHANISM (a setImmediate per batch and per file), not just that the scan
+// stays responsive: a change to how it yields must update this test on purpose.
 test('the scan yields to the event loop once per 500 lines and once per file', async () => {
   const real = global.setImmediate;
   let yields = 0;

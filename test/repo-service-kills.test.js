@@ -545,6 +545,7 @@ test('a service call that throws is reported as a failure carrying the reason, f
 
 // Replaces the global timers for the body, then restores them. The service reads them when it is CREATED
 // (clearTimer's default) and when it arms a timer (setTimer's default), so the body builds it inside.
+// It swaps globals across an await: safe only because tests in one file run serially and no real I/O happens inside.
 async function withGlobalTimers(fake, body) {
   const real = { setTimeout: global.setTimeout, clearTimeout: global.clearTimeout };
   global.setTimeout = fake.setTimeout;
