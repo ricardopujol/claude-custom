@@ -328,3 +328,9 @@ test('#61 the Git drawer\'s type-command carries submit; only a literal true tur
   assert.match(body, /ask && ask\.submit === true \? \{ submit: true, typeOnly: false \} : undefined/);
   assert.match(body, /window\.harness\.typed\(\{ id, \.\.\.r \}\)/);
 });
+
+test('#61 the type-only checkbox is not stretched by `.wand-ed-row input { flex: 1 }` (it was invisible in the first probe screenshot)', () => {
+  const rule = HTML.match(/\.wand-ed-row\.wand-ed-check input \{[^}]*\}/);
+  assert.ok(rule, 'a rule that is more specific than .wand-ed-row input');
+  assert.match(rule[0], /flex: 0 0 auto/);
+});

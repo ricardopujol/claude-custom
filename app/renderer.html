@@ -1114,7 +1114,8 @@
     /* the skill's name under the emoji: ellipsis past the cell; the full /skill args is in title and aria-label */
     .wand-emoji { line-height: 1; }
     .wand-name { max-width: 100%; font-size: 9px; line-height: 1.1; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .wand-ed-check { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; color: var(--dim); }
+    .wand-ed-row.wand-ed-check { align-items: flex-start; }
+    .wand-ed-row.wand-ed-check input { flex: 0 0 auto; width: auto; margin: 2px 0 0; }
     .wand-btn:hover { border-color: var(--accent); }
     .wand-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
     .wand-btn.dim { opacity: .35; filter: grayscale(1); }

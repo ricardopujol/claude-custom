@@ -2387,9 +2387,20 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           scope: typeof window.wandDisplay === 'object' && typeof window.wandDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="wand"]').classList.contains('on'),
           text: root.textContent,
-          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => ({ id: b.dataset.wandId, emoji: b.textContent,
-            label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
-            title: b.title, draggable: b.draggable })),
+          // #61: `emoji` is the emoji span alone (the name now sits under it); `name` is the skill name span, and
+          // nameBelow says it is drawn under the emoji (its top at or past the emoji's bottom) and ellipsised.
+          turn: sessionTurn,
+          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => {
+            const em = b.querySelector('.wand-emoji');
+            const nm = b.querySelector('.wand-name');
+            const er = em ? em.getBoundingClientRect() : null;
+            const nr = nm ? nm.getBoundingClientRect() : null;
+            return { id: b.dataset.wandId, emoji: em ? em.textContent : b.textContent, name: nm ? nm.textContent : null,
+              nameBelow: !!(er && nr && nr.top >= er.bottom - 1 && nr.width > 0),
+              nameEllipsis: nm ? getComputedStyle(nm).textOverflow === 'ellipsis' : false,
+              label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
+              title: b.title, draggable: b.draggable };
+          }),
           deletes: root.querySelectorAll('.wand-x').length,
           add: !!q('[data-wand-act="add"]'),
           edit: !!q('.wand-edit.on'),
@@ -2398,6 +2409,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           error: (q('.wand-error') || {}).textContent || '',
           editor: ed ? { emoji: q('[data-wand-field="emoji"]').value, picked: (q('.wand-picked') || {}).textContent || '',
             query: q('[data-wand-field="query"]').value, args: q('[data-wand-field="args"]').value,
+            typeOnly: !!(q('[data-wand-field="typeOnly"]') || {}).checked,
             listed: [...root.querySelectorAll('.wand-skill')].map(b => b.dataset.wandSkill),
             saveDisabled: !!(q('[data-wand-act="save"]') || {}).disabled } : null,
           rect: rectOf(root),
@@ -2419,7 +2431,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const el = document.querySelector('#wand-root [data-wand-field="' + String(a.field) + '"]');
         if (!el) return JSON.stringify({ ok: false, error: 'no editor field ' + a.field });
         el.focus();
-        el.value = String(a.value);
+        if (el.type === 'checkbox') el.checked = a.value === true;
+        else el.value = String(a.value);
         el.dispatchEvent(new Event('input', { bubbles: true }));
         return JSON.stringify({ ok: true });
       }
