@@ -41,6 +41,12 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
+test('the strip page wires its accent: the bridge listens, the page paints (#64)', () => {
+  // Read as text here, not in tab-strip.test.js: tab-strip.js is a mutated module.
+  assert.match(read('app/tab-strip.js'), /root\.strip\.onAccent\(\(hex\) => paintAccent\(root\.document, hex\)\)/);
+  assert.match(read('app/preload-strip.js'), /removeAllListeners\('strip-accent'\)/);
+});
+
 test('J1: a sweep failure cannot reach the ok flag that melt returns', () => {
   // Dexter, PR #42, J1, and a defect in my own H5 fix. `withFileLock` throws if it
   // cannot acquire, and that throw escaped `melt()` AFTER the vault was replaced

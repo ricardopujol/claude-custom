@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { paneFor, paint, alertFor, GLYPHS } = require('../app/tab-strip');
+const { paneFor, paint, alertFor, paintAccent, GLYPHS } = require('../app/tab-strip');
 
 // --- a fake DOM, just enough for paint() ---------------------------------------
 function node(tag) {
@@ -230,13 +230,25 @@ test('tab-strip.html: the window buttons sit after ▾, start hidden, and framel
   assert.match(html, /body\.frameless[^{]*#strip button[^{]*\{[^}]*-webkit-app-region:\s*no-drag/);
 });
 
-test('the strip bridge exposes its ten members -- and nothing else', () => {
+test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything else (#64)', () => {
+  const set = [];
+  const doc = { documentElement: { style: { setProperty: (k, v) => set.push([k, v]) } } };
+  assert.strictEqual(paintAccent(doc, '#00ff88'), true);
+  assert.deepStrictEqual(set, [['--accent', '#00ff88']]);
+  for (const bad of ['red', '#fff', '#00ff8800', 'url(x)', '#00ff88; x', null, undefined, 5, {}]) {
+    assert.strictEqual(paintAccent(doc, bad), false, String(bad));
+  }
+  assert.strictEqual(set.length, 1, 'nothing invalid reached the style');
+  assert.strictEqual(paintAccent(null, '#00ff88'), false);
+});
+
+test('the strip bridge exposes its eleven members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'winMinimize', 'winClose']);
+    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose']);
   assert.match(src, /'strip:winMinimize'/);
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);

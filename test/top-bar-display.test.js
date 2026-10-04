@@ -14,7 +14,7 @@ const assert = require('node:assert');
 const fc = require('fast-check');
 
 const {
-  modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
+  modelFamily, cueColour, chosenAccent, withChosenAccent, pendingResolver, topBarState, topBarDisplay,
   MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS,
   modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
   vimInsertShown, commandTyped, menuPlacement,
@@ -90,6 +90,57 @@ test('cueColour never throws when the theme is missing or malformed', () => {
   assert.doesNotThrow(() => cueColour(null, {}));
   assert.doesNotThrow(() => cueColour('opus', undefined));
   assert.strictEqual(typeof cueColour(null, undefined), 'string');
+});
+
+// --- a CHOSEN accent beats the family cue (#64) ---------------------------------
+// Ricardo picked an accent and the panel tabs, chips and cursor stayed amber: the
+// per-model cue overrode his choice. A look with a chosen accent carries onAccent.
+
+const CHOSEN = { chrome: { accent: '#00ff88', onAccent: '#12141c' } };
+
+test('chosenAccent: the theme\'s accent only when the person chose one', () => {
+  assert.strictEqual(chosenAccent(CHOSEN), '#00ff88');
+  assert.strictEqual(chosenAccent(THEME), null, 'the default theme accent is not a choice');
+  assert.strictEqual(chosenAccent({ chrome: { onAccent: '#000000' } }), null, 'a marker without an accent is nothing');
+  assert.strictEqual(chosenAccent(null), null);
+  assert.strictEqual(chosenAccent({}), null);
+});
+
+test('cueColour: a chosen accent wins over every family', () => {
+  for (const family of ['fable', 'opus', 'sonnet', 'haiku', 'other', null]) {
+    assert.strictEqual(cueColour(family, CHOSEN), '#00ff88', String(family));
+  }
+});
+
+test('cueColour: with no chosen accent the family cue is unchanged', () => {
+  assert.notStrictEqual(cueColour('opus', THEME), THEME.chrome.accent);
+  assert.strictEqual(cueColour(null, THEME), THEME.chrome.accent);
+});
+
+test('property: cueColour of any family under any chosen hex is that hex', () => {
+  fc.assert(fc.property(
+    fc.constantFrom('fable', 'opus', 'sonnet', 'haiku', 'other', null),
+    fc.integer({ min: 0, max: 0xffffff }),
+    (family, n) => {
+      const hex = '#' + n.toString(16).padStart(6, '0');
+      return cueColour(family, { chrome: { accent: hex, onAccent: '#000000' } }) === hex;
+    }));
+});
+
+test('topBarState carries the chosen accent for a known model', () => {
+  const s = topBarState({ model: 'claude-opus-4-1', effort: 'high', theme: CHOSEN });
+  assert.strictEqual(s.accent, '#00ff88');
+});
+
+test('withChosenAccent: a live preview makes the theme\'s accent a choice, without mutating it', () => {
+  const before = JSON.stringify(THEME);
+  const t = withChosenAccent(THEME, '#ff00aa');
+  assert.strictEqual(chosenAccent(t), '#ff00aa');
+  assert.strictEqual(JSON.stringify(THEME), before, 'the original theme is untouched');
+  assert.strictEqual(chosenAccent(withChosenAccent(CHOSEN, '#112233')), '#112233');
+  assert.strictEqual(withChosenAccent(CHOSEN, '#112233').chrome.onAccent, '#12141c', 'an existing label colour is kept');
+  assert.strictEqual(chosenAccent(withChosenAccent(null, '#112233')), '#112233', 'no theme yet is fine');
+  assert.strictEqual(withChosenAccent(THEME, 'not a colour'), THEME, 'an invalid colour changes nothing');
 });
 
 // --- pendingResolver -----------------------------------------------------------

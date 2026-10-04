@@ -95,6 +95,18 @@ test('a theme applied mid-session re-tints the top bar (#47 x FF12)', () => {
   assert.ok(repaint > replace, 'the top bar must be repainted AFTER the terminal theme is replaced');
 });
 
+test('the chosen accent is the one source: cursor, strip report and live preview all go through it (#64)', () => {
+  const fn = JS.slice(JS.indexOf('function applyModelAccent'), JS.indexOf('function setTopBarNotice'));
+  assert.match(fn, /\(family \|\| chosenAccent\(theme\)\) \? accent/, 'a chosen accent tints the cursor whatever the model');
+  assert.match(fn, /reportAccentToStrip\(theme\)/, 'the strip is told the accent whenever the top bar is re-tinted');
+  assert.match(JS, /window\.harness\.reportAccent\(hex\)/);
+  const preview = JS.slice(JS.indexOf("'style-accent-reset'"), JS.indexOf("'style-secondary'"));
+  assert.match(preview, /currentTheme = withChosenAccent\(currentTheme, hex\)/);
+  assert.match(preview, /renderTopBar\(\)/);
+  // Nothing hard-codes the default accent onto a live surface: --model-accent is only ever set from cueColour.
+  assert.strictEqual((JS.match(/setProperty\('--model-accent'/g) || []).length, 1);
+});
+
 test('the cursor goes to end-of-line BEFORE Ctrl-U (Dexter r2 N1)', () => {
   // MEASURED live: Ctrl-U deletes only back to the cursor. With the cursor at
   // Home it deleted nothing, and a `sonnet` click submitted

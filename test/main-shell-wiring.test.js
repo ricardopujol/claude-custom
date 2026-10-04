@@ -73,6 +73,20 @@ test('the scan finds the channels this file registers', () => {
   }
 });
 
+test('the accent reaches the strip: a tab reports it, main validates and pushes the selected tab\'s (#64)', () => {
+  assert.ok(channels.some(c => c.name === 'tab:accent'), 'tab:accent must be registered');
+  const at = channels.find(c => c.name === 'tab:accent').at;
+  const handler = callText(MAIN, at);
+  assert.match(handler, /isTabView\(e\.sender\)/);
+  assert.match(handler, /\[0-9a-f\]\{6\}/, 'only a #rrggbb is accepted');
+  assert.match(handler, /pushStripAccent\(\)/);
+  // The strip hears it on selection changes and on a reload of its page, not only when a tab reports.
+  const apply = MAIN.slice(MAIN.indexOf('function applySelection'), MAIN.indexOf('function openBranchForm'));
+  assert.match(apply, /pushStripAccent\(\)/);
+  assert.match(MAIN, /if \(lastStripAccent\) win\.webContents\.send\('strip-accent', lastStripAccent\)/);
+  assert.match(MAIN, /webContents\.send\('strip-accent', lastStripAccent\)/);
+});
+
 test('every strip channel is gated on the window\'s own page, and only they', () => {
   assert.deepStrictEqual(ungated(MAIN, /fromStrip\(e\)/, c => c.name.startsWith('strip:')), []);
   for (const c of channels.filter(x => !x.name.startsWith('strip:'))) {

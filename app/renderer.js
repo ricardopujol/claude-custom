@@ -4558,8 +4558,21 @@ function applyModelAccent(family, theme) {
   const accent = cueColour(family, theme);
   document.documentElement.style.setProperty('--model-accent', accent);
   const themeCursor = theme && theme.terminal && theme.terminal.cursor;
-  const cursor = family ? accent : (themeCursor || accent);
+  // A chosen accent (#64) tints the cursor whatever the model; otherwise only a known family does.
+  const cursor = (family || chosenAccent(theme)) ? accent : (themeCursor || accent);
   term.options.theme = { ...term.options.theme, cursor };
+  reportAccentToStrip(theme);
+}
+
+// The tab strip is the window's own page, so the accent reaches it through main
+// (#64). What it gets is the look's accent -- not the model cue -- and only when
+// it changed, so a model switch doesn't send anything.
+let lastReportedAccent = null;
+function reportAccentToStrip(theme) {
+  const hex = theme && theme.chrome && theme.chrome.accent;
+  if (typeof hex !== 'string' || hex === lastReportedAccent) return;
+  lastReportedAccent = hex;
+  if (window.harness && window.harness.reportAccent) window.harness.reportAccent(hex);
 }
 
 function setTopBarNotice(kind, text, isTimeout) {
@@ -5297,7 +5310,13 @@ function bindStyleSections() {
     (hex) => document.documentElement.style.setProperty('--text', hex));
   bindColour(document.getElementById('style-accent'), document.getElementById('style-accent-hex'),
     document.getElementById('style-accent-reset'), 'accentColor',
-    (hex) => document.documentElement.style.setProperty('--accent', hex));
+    (hex) => {
+      // The live preview takes the same path a saved look does (#64): the chip, panel-tab and cursor
+      // tint and the strip follow --accent, instead of keeping the model cue's colour.
+      document.documentElement.style.setProperty('--accent', hex);
+      currentTheme = withChosenAccent(currentTheme, hex);
+      renderTopBar();
+    });
   bindColour(document.getElementById('style-secondary'), document.getElementById('style-secondary-hex'),
     document.getElementById('style-secondary-reset'), 'secondaryColor',
     (hex) => document.documentElement.style.setProperty('--dim', hex));

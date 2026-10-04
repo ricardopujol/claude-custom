@@ -77,11 +77,39 @@ function modelFamily(id) {
  * model changes nothing about how the header already looks.
  */
 function cueColour(family, theme) {
+  // Backlog #64: an accent the person CHOSE is the only accent on screen, so it
+  // beats the model-family cue (opus amber read as "the accent never changed").
+  const chosen = chosenAccent(theme);
+  if (chosen) return chosen;
   if (family && Object.prototype.hasOwnProperty.call(FAMILY_COLOURS, family)) {
     return FAMILY_COLOURS[family];
   }
   const chromeAccent = theme && theme.chrome && theme.chrome.accent;
   return typeof chromeAccent === 'string' && chromeAccent ? chromeAccent : '#d08c4a';
+}
+
+/**
+ * The accent the person chose for this look, or null. host/look.js derivePalette
+ * gives a look with a chosen accent `chrome.onAccent` (its label colour) and a
+ * look without one does not, so that is the marker: the theme's own default
+ * accent is not a choice and must not suppress the family cue.
+ */
+function chosenAccent(theme) {
+  const c = theme && theme.chrome;
+  if (!c || typeof c.accent !== 'string' || !c.accent || !c.onAccent) return null;
+  return c.accent;
+}
+
+/**
+ * The theme with `hex` as its chosen accent -- what a live colour-picker preview
+ * feeds the same path a saved look takes, so there is ONE source for the accent.
+ * Returns a copy; an invalid colour returns the theme as it was.
+ */
+function withChosenAccent(theme, hex) {
+  if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return theme;
+  const base = theme && typeof theme === 'object' ? theme : {};
+  const chrome = base.chrome || {};
+  return { ...base, chrome: { ...chrome, accent: hex, onAccent: chrome.onAccent || '#12141c' } };
 }
 
 /**
@@ -454,7 +482,7 @@ function menuPlacement(anchor, menu, viewport) {
 // app/quota-display.js.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    modelFamily, cueColour, pendingResolver, topBarState, topBarDisplay,
+    modelFamily, cueColour, chosenAccent, withChosenAccent, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
     vimInsertShown, commandTyped, menuPlacement, planTyping, typingKeys, boxText,
@@ -462,6 +490,8 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   root.modelFamily = modelFamily;
   root.cueColour = cueColour;
+  root.chosenAccent = chosenAccent;
+  root.withChosenAccent = withChosenAccent;
   root.pendingResolver = pendingResolver;
   root.topBarState = topBarState;
   root.topBarDisplay = topBarDisplay;
