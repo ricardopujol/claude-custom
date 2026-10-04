@@ -9,6 +9,13 @@
  *   WHERE_SUMMARY_PROBE_STOP_AFTER=B                                      stop after phase B (a quick run, about a minute)
  *   WHERE_SUMMARY_PROBE_QUICK=1                                           skip phase A2's minute-long wait (for looping phase B)
  *
+ * TOLERANCE (Miguel I6, PR #105): phase B waits up to 90 s for the OTHER tab's hover to carry its summary (40 s for the dev
+ * tab's). Looped 22 times, that hover was missing at 40 s in 3 runs: one explained (Ollama was down at start, so the
+ * host's first check failed and its job sat out the 60 s retry), two while other work was loading the machine (cause
+ * unproven), then 12 clean runs in a row on a quiet machine.
+ * Not reproduced on a quiet machine, so the window is the tolerance; a run that still misses it prints every tab's title
+ * and looks at the page itself (see the diagnostic block after B3).
+ *
  * The unit tests pin the decisions. No unit test can see a transcript flattened by a real host, a job queued behind a
  * GPU slot shared by two hosts, a summary travel host -> websocket -> page, the panel painted in the terminal bar,
  * or the strip's hover card. This runs the whole chain over a temp git project (develop, feat/a): each host's
@@ -242,7 +249,7 @@ async function main() {
   let maxInFlight = 0;
   // Ollama starts DOWN (GET / answers 500): phase A2 needs a host that has never made a summary, with Ollama off.
   const fake = await startFakeOllama({
-    rootStatus: 500,
+    rootStatus: process.env.WHERE_SUMMARY_PROBE_QUICK === '1' ? 200 : 500,
     generate: (body) => {
       inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
       setTimeout(() => { inFlight -= 1; }, 1200);
@@ -325,18 +332,28 @@ async function main() {
   check('B2: ...the instruction comes AFTER the transcript', prompt.endsWith(INSTRUCTION) && prompt.indexOf('DEV-MARKER') < prompt.indexOf(INSTRUCTION));
   check('B2: llama3.2:3b, num_ctx 8192, keep_alive 5m, not streamed', !!devReq && devReq.body.model === 'llama3.2:3b' && devReq.body.options.num_ctx === 8192
     && devReq.body.keep_alive === '5m' && devReq.body.stream === false, JSON.stringify(devReq && { m: devReq.body.model, o: devReq.body.options, k: devReq.body.keep_alive }));
-  const hoverOf = async (label, wanted) => waitFor(async () => {
+  const hoverOf = async (label, wanted, ms = 40000) => waitFor(async () => {
     const t = await stripTab(app, label);
     return t && t.title.includes(wanted) ? t : null;
-  }, 40000);
+  }, ms);
   const devHover = await hoverOf('develop', 'keeping the drawer');
   if (!devHover) console.log('      develop hover not seen; every tab\'s title now: ' + await allTitles(app));
-  const featHover = await hoverOf('feat/a', 'feat-a probe lane');
+  const featHover = await hoverOf('feat/a', 'feat-a probe lane', 90000);
   check('B3: the strip\'s hover card carries the dev tab\'s summary under its name, labelled as a local model',
     !!devHover && /^develop\nWhere we're at \(local model · llama3\.2:3b · (just now|\d+ min ago)\):\nWorking on: keeping the drawer's hover card open across redraws\nWhere it stands: .+\nNext: review and merge$/.test(devHover.title),
     JSON.stringify(devHover && devHover.title));
   check('B3: ...and the other tab\'s own summary, not the dev tab\'s', !!featHover && featHover.title.includes('feat-a probe lane') && !featHover.title.includes('drawer'),
     featHover ? JSON.stringify(featHover.title) : await allTitles(app));
+  if (!featHover) {
+    // Not a check: where is the summary the strip is missing? Waits longer, then looks at the page itself.
+    const late = await hoverOf('feat/a', 'feat-a probe lane').catch(() => null);
+    console.log('      feat/a hover after a further 40 s: ' + (late ? 'PRESENT' : 'still absent'));
+    await selectTab(app, 'feat/a');
+    await sleep(1500);
+    const there = await barState(app);
+    console.log('      selecting feat/a: its page has the summary: ' + !!(there && there.bar.summary.hidden === false) + '; title now: ' + JSON.stringify((await stripTab(app, 'feat/a') || {}).title));
+    await selectTab(app, 'develop');
+  }
   const afterB = await barState(app);
   check('B: a summary arriving while you look at the tab does NOT pop the panel open (only a switch does)', !!afterB && afterB.bar.hidden === true && afterB.bar.summary.hidden === true);
   if (process.env.WHERE_SUMMARY_PROBE_STOP_AFTER === 'B') { await command(app, { cmd: 'quit' }); await fake.close(); return; }
