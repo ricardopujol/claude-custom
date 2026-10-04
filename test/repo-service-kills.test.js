@@ -630,3 +630,30 @@ test('diff cuts the path it echoes on a refusal to 200 characters', async () => 
   assert.strictEqual(r.path.length, 200);
   assert.strictEqual(r.path, long.slice(0, 200));
 });
+
+// ---- a failure names its cause ----
+
+test('an overlay read that throws says why: the error message is in the answer, and a thrown non-Error is shown as itself', async () => {
+  const a = build({ readFog: async () => { throw new Error('transcripts folder vanished'); } });
+  const r = await ask(a.svc, { action: 'overlay' });
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.error.includes('transcripts folder vanished'), r.error);
+  assert.ok(!r.error.includes('Error:'), 'the message, not the whole Error, is shown');
+
+  const b = build({ readFog: async () => { throw 'plain string cause'; } });
+  const s = await ask(b.svc, { action: 'overlay' });
+  assert.strictEqual(s.ok, false);
+  assert.ok(s.error.includes('plain string cause'), s.error);
+});
+
+test('a request whose handler throws says why: the message is in the answer, and a thrown non-Error is shown as itself', async () => {
+  const a = build({ index: fakeIndex({ list: () => { throw new Error('index exploded'); } }) });
+  const r = await ask(a.svc, { action: 'list', dir: 'd' });
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.error.includes('index exploded'), r.error);
+  assert.ok(!r.error.includes('Error:'), 'the message, not the whole Error, is shown');
+
+  const b = build({ index: fakeIndex({ list: () => { throw 'bare cause'; } }) });
+  const s = await ask(b.svc, { action: 'list', dir: 'd' });
+  assert.ok(s.error.includes('bare cause'), s.error);
+});
