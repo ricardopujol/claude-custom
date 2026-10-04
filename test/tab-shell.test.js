@@ -220,14 +220,22 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
   assert.deepStrictEqual(observeWorktrees('', ROOT, noMarker).merged, {});
 });
 
-test('sanitizeStatus keeps seven fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
+test('sanitizeStatus keeps eight fields and never invents a value', () => {
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false });
+    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true });
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null });
+});
+
+// Backlog #39: a renderer may say its summary, cut down to the known fields; garbage is none.
+test('sanitizeStatus keeps a usable summary and drops an unusable one', () => {
+  const sum = { text: 'Working on: x', model: 'llama3.2:3b', at: 5, stale: true, note: 'n' };
+  assert.deepStrictEqual(sanitizeStatus({ summary: { ...sum, extra: 1 } }).summary, sum);
+  assert.strictEqual(sanitizeStatus({ summary: { ...sum, at: null } }).summary, null);
+  assert.strictEqual(sanitizeStatus({ summary: 'text' }).summary, null);
 });
 
 // --- open: criterion 1, X5, criterion 8 --------------------------------------
@@ -2283,6 +2291,28 @@ test("occupancy: the tab's own session reporting a turn is the two-writers warni
   assert.strictEqual(mark().warn, false);
   h.shell.report(aView, { turn: 'prompt' });
   assert.strictEqual(mark().warn, false);
+});
+
+// Backlog #39: the shell works out the hover card's lines for a tab's local-model summary (the strip only draws them).
+test("summary: a tab whose page reported a summary carries the hover lines, aged from the shell's clock; others carry none", async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const lines = () => Object.fromEntries(h.shell.model().map(e => [e.label, e.summaryLines]));
+  assert.ok(Object.values(lines()).every(l => Array.isArray(l) && l.length === 0), 'nothing reported: no lines');
+  h.shell.report(aView, { summary: { text: 'Working on: x\nNext: y', model: 'llama3.2:3b', at: 1_000_000_000 - 4 * 60_000, stale: false, note: null } });
+  assert.deepStrictEqual(lines()['feat/a'], ["Where we're at (local model · llama3.2:3b · 4 min ago):", 'Working on: x', 'Next: y']);
+  assert.deepStrictEqual(lines().develop, []);
+  h.shell.report(aView, { summary: { text: 'Working on: x', model: 'llama3.2:3b', at: 1_000_000_000 - 4 * 60_000, stale: true, note: "Local summary off: Ollama isn't running" } });
+  assert.strictEqual(lines()['feat/a'][0], "Where we're at (local model · llama3.2:3b · 4 min ago · not refreshed yet):");
+  assert.strictEqual(lines()['feat/a'].slice(-1)[0], "Local summary off: Ollama isn't running");
+  h.shell.report(aView, { summary: { text: '', model: 'x', at: 1 } });
+  assert.deepStrictEqual(lines()['feat/a'], [], 'an unusable summary is none');
+  // Miguel I1: Ollama off and nothing ever summarised: the hover card says so, alone
+  h.shell.report(aView, { summaryNote: "Local summary off: Ollama isn't running" });
+  assert.deepStrictEqual(lines()['feat/a'], ["Local summary off: Ollama isn't running"]);
+  assert.deepStrictEqual(lines().develop, []);
 });
 
 test("occupancy: each started tab's page is pushed what is in it and what it launched, only when that changed", async () => {

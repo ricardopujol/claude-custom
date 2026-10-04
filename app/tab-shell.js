@@ -47,6 +47,7 @@ const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
 const tabStatusLib = require('./tab-status');
 const occupancyDisplay = require('./occupancy-display');
+const summaryDisplay = require('./summary-display');
 const { planGoTo } = require('./go-to-session');
 
 // --- pure helpers ------------------------------------------------------------
@@ -118,7 +119,7 @@ const noWindowText = (h) => `That session is in another claude-custom (pid ${h.p
 
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
-/** What a renderer may say about itself, cut down to the seven known fields. */
+/** What a renderer may say about itself, cut down to the eight known fields. */
 // The drawer's rule for "is this session at rest?" -- one copy, so the re-check here agrees with it.
 const { sessionBusyWhy } = require('./git-actions');
 const busyWhy = (status) => sessionBusyWhy(status);
@@ -133,6 +134,8 @@ function sanitizeStatus(s) {
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
     turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
     night: o.night === true,
+    summary: tabStatusLib.cleanSummary(o.summary),
+    summaryNote: typeof o.summaryNote === 'string' && o.summaryNote !== '' && o.summaryNote.length <= 300 ? o.summaryNote : null,
   };
 }
 
@@ -304,6 +307,8 @@ function createShell(deps) {
         badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(branchOf(e.key)),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
         occupancy: occupancyDisplay.tabOccupancy(claims, e.key, { keyOf, turn: t && t.status ? t.status.turn : null, now: at }),
+        // Backlog #39: the hover card's lines for this tab's local-model summary ([] when it has none).
+        summaryLines: summaryDisplay.hoverLines(e.summary, at, e.summaryNote),
       };
     });
   }

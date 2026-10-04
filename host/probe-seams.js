@@ -7,6 +7,9 @@
  *   CLAUDE_CUSTOM_GIT_PROJECTS_DIR   the transcripts come from here, not ~/.claude/projects
  *   CLAUDE_CUSTOM_REVIEWS_DIR        the review reports come from here, not ~/.claude/reviews
  *   CLAUDE_CUSTOM_CLAUDE_HOME        the wand finds skills under here, not ~/.claude (verify/probe-wand.js)
+ *   CLAUDE_CUSTOM_OLLAMA_URL         the where-are-we summary talks to this Ollama, not 127.0.0.1:11434 (verify/probe-where-summary.js)
+ *   CLAUDE_CUSTOM_SUMMARY_DIR        its summaries and GPU slot live here, not in .harness/state
+ *   CLAUDE_CUSTOM_SUMMARY_POWER      'mains' | 'battery': the power state it sees, so a probe doesn't depend on the charger
  *
  * They're read by the production host and main, so a seam that leaks in (a shell that exported one) must be
  * visible: announce() logs one line naming every active seam, and a fixture that can't be read or isn't gh's
@@ -15,7 +18,8 @@
 
 const nodeFs = require('fs');
 
-const SEAMS = ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME'];
+const SEAMS = ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME',
+  'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER'];
 
 const val = (env, k) => (env && typeof env[k] === 'string' && env[k] !== '' ? env[k] : null);
 
@@ -25,7 +29,10 @@ function readSeams(env) {
     projectsDir: val(env, SEAMS[1]),
     reviewsDir: val(env, SEAMS[2]),
     claudeHome: val(env, SEAMS[3]),
-    active: SEAMS.filter(k => val(env, k) !== null),
+    ollamaUrl: val(env, SEAMS[4]),
+    summaryDir: val(env, SEAMS[5]),
+    summaryPower: ['mains', 'battery'].includes(val(env, SEAMS[6])) ? val(env, SEAMS[6]) : null,
+    active: SEAMS.filter(k => (k === SEAMS[6] ? ['mains', 'battery'].includes(val(env, k)) : val(env, k) !== null)),
   };
 }
 

@@ -584,3 +584,37 @@ test('tab-strip.html: the night tab is a still deep blue declared after .selecte
   assert.doesNotMatch(rule('.tab.night') + rule('.tab.night:hover') + rule('.moon'), /animation|transition/);
   assert.ok(html.indexOf('.tab.night {') > html.indexOf('.tab.selected {'), 'declared after .selected so it wins the background');
 });
+
+// --- backlog #39: the "where are we" summary on the hover card ---------------------------------------------
+
+// The shell works the lines out (app/summary-display.js hoverLines); the strip only draws them.
+const SAID = ["Where we're at (local model · llama3.2:3b · 4 min ago):", 'Working on: the drawer', 'Next: fix it'];
+
+test('hover: the lines the shell worked out go under the tab name, as they are', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ summaryLines: SAID })] }, bridgeSpy());
+  assert.strictEqual(doc.byId.tabs.children[0].title, ['feat/a', ...SAID].join('\n'));
+});
+
+test('hover: the summary comes after the existing lines, and a note about why it may be out of date comes last', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ phaseText: 'Merged, and kept: dirty', summaryLines: [...SAID, "Local summary off: Ollama isn't running"] })] }, bridgeSpy());
+  const lines = doc.byId.tabs.children[0].title.split('\n');
+  assert.strictEqual(lines[0], 'feat/a: Merged, and kept: dirty');
+  assert.match(lines[1], /^Where we're at/);
+  assert.strictEqual(lines[lines.length - 1], "Local summary off: Ollama isn't running");
+});
+
+test('hover: no lines, or lines that are not text, add nothing', () => {
+  for (const summaryLines of [undefined, null, [], 'x', 5, {}, ['', null, 7]]) {
+    const doc = fakeDoc();
+    paint(doc, { model: [entry({ summaryLines })] }, bridgeSpy());
+    assert.strictEqual(doc.byId.tabs.children[0].title, 'feat/a', JSON.stringify(summaryLines));
+  }
+});
+
+test('hover: the lines are set as title text, never markup', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ summaryLines: ['<img src=x onerror=alert(1)>'] })] }, bridgeSpy());
+  assert.strictEqual(doc.byId.tabs.children[0].title, 'feat/a\n<img src=x onerror=alert(1)>');
+});
