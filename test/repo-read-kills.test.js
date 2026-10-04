@@ -230,7 +230,7 @@ test('a NUL in the first 8 KiB makes a file binary, with its size; one past 8 Ki
 
 test('a leading UTF-8 BOM is dropped; one in the middle stays; Latin-1 bytes become replacement characters', async () => {
   assert.strictEqual((await read(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('hi')]))).text, 'hi');
-  assert.strictEqual((await read(Buffer.concat([Buffer.from('a'), Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('b')]))).text, 'a﻿b');
+  assert.strictEqual((await read(Buffer.concat([Buffer.from('a'), Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('b')]))).text, 'a\uFEFFb');
   assert.strictEqual((await read([0x63, 0x61, 0x66, 0xe9])).text, 'caf�');
 });
 
