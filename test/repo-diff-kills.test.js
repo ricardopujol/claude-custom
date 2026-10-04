@@ -482,3 +482,41 @@ test('the default git is child_process.execFile, looked up when asked (an inject
   }
   assert.ok(seen.length >= 2 && seen.every((f) => f === 'git'));
 });
+
+// ---- the same name in another folder, an unreadable transcript, and ties ----
+
+test('a call on a file of the same NAME in another folder of the project is not a call on this file', async () => {
+  const dir = projects([[
+    edit(`${ROOT}/sub/a.js`, 'other', 'other2', 1),
+    edit(`${ROOT}/a.js`, 'mine', 'mine2', 2),
+    edit(`${ROOT}/A.JS`, 'mine-again', 'mine-again2', 3),
+  ]]);
+  const r = await callsOf(dir, 'a.js');
+  assert.deepStrictEqual(r.calls.map((c) => c.oldString), ['mine', 'mine-again']);
+  const sub = await callsOf(dir, 'sub/a.js');
+  assert.deepStrictEqual(sub.calls.map((c) => c.oldString), ['other']);
+});
+
+test('a project with transcripts says so, with or without a call on this file; one with none says it has none', async () => {
+  const withCalls = await callsOf(projects([[edit(`${ROOT}/a.js`, 'o', 'n', 1)]]));
+  assert.strictEqual(withCalls.transcripts, true);
+  const noCalls = await callsOf(projects([[edit(`${ROOT}/b.js`, 'o', 'n', 1)]]));
+  assert.strictEqual(noCalls.transcripts, true);
+  assert.deepStrictEqual(noCalls.calls, []);
+  const none = await callsOf(tmpDir('cc-diffk-empty-'));
+  assert.strictEqual(none.transcripts, false);
+});
+
+test('calls that share a time stay in written order even when an earlier-written call is newer', async () => {
+  const times = [2, 1, 1, 2, 1, 3, 1];
+  const dir = projects([times.map((n, i) => edit(`${ROOT}/a.js`, `c${i}`, 'n', n))]);
+  const r = await callsOf(dir);
+  assert.deepStrictEqual(r.calls.map((c) => c.oldString), ['c1', 'c2', 'c4', 'c6', 'c0', 'c3', 'c5']);
+});
+
+test('many calls with the same time come back in the order they were written, within a file and across files', async () => {
+  const mk = (tag) => Array.from({ length: 12 }, (_, i) => edit(`${ROOT}/a.js`, `${tag}${String(i).padStart(2, '0')}`, 'n', 5));
+  const dir = projects([mk('x'), mk('y')]);
+  const r = await callsOf(dir);
+  assert.deepStrictEqual(r.calls.map((c) => c.oldString), [...mk('x'), ...mk('y')].map((e) => e.message.content[0].input.old_string));
+});
