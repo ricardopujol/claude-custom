@@ -220,9 +220,9 @@ test('a Write of exactly MAX_WRITE_LINES lines has no "more" row; three over has
 test('the same cap applies to each side of an Edit and to every pair of a MultiEdit', () => {
   const body = (n, p) => Array.from({ length: n }, (_, i) => `${p}${i}`).join('\n');
   const edit_ = renderCalls([{ tool: 'Edit', at: NaN, oldString: body(MAX_WRITE_LINES + 2, 'o'), newString: body(MAX_WRITE_LINES + 4, 'n') }]).split('\n');
-  assert.deepStrictEqual(edit_.filter((l) => /more lines/.test(l)), ['… 2 more lines', '… 4 more lines']);
+  assert.deepStrictEqual(edit_.filter((l) => /more lines?$/.test(l)), ['… 2 more lines', '… 4 more lines']);
   const multi = renderCalls([{ tool: 'MultiEdit', at: NaN, edits: [{ oldString: body(MAX_WRITE_LINES + 1, 'a'), newString: 'x' }, { oldString: 'y', newString: body(MAX_WRITE_LINES + 7, 'b') }] }]).split('\n');
-  assert.deepStrictEqual(multi.filter((l) => /more lines/.test(l)), ['… 1 more lines', '… 7 more lines']);
+  assert.deepStrictEqual(multi.filter((l) => /more lines?$/.test(l)), ['… 1 more line', '… 7 more lines']);
 });
 
 test('headers count their lines and edits with a plural, and carry the time only when there is one', () => {
