@@ -4854,7 +4854,8 @@ if (wandRoot) {
   wandRoot.addEventListener('input', (e) => {
     const field = e.target && e.target.dataset && e.target.dataset.wandField;
     if (!field) return;
-    wandState = wandDisplay.editorSet(wandState, field, e.target.value);
+    // the type-only checkbox is a boolean (editorSet takes it as nothing else); the text fields are strings
+    wandState = wandDisplay.editorSet(wandState, field, e.target.type === 'checkbox' ? e.target.checked : e.target.value);
     if (field === 'query') {       // only the list: the box the user is typing in is left alone
       const list = wandRoot.querySelector('.wand-skill-list');
       if (list) list.innerHTML = wandDisplay.skillListHtml(wandDisplay.view(wandState));

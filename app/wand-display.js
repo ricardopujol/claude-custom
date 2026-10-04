@@ -3,10 +3,13 @@
  * The wand panel (BACKLOG #51): favourite skills as emoji buttons. Pure decisions and HTML strings only;
  * renderer.js wires the clicks, the drag and the websocket, the same split as app/loadout-display.js.
  *
- * WHAT A CLICK MEANS. Outside edit mode a click TYPES `/skill [args]` into this tab's CLI input and stops:
- * the plan (clickPlan) carries a command and nothing that submits it, and the flash says "typed, press
- * Enter" -- never that anything ran. The typing itself is renderer.js's typeCommand, the one shared
- * typeAndCheck (clears a one-line draft, refuses a dialog or a multi-line draft, reads the box back).
+ * WHAT A CLICK MEANS (BACKLOG #61). Outside edit mode a click TYPES `/skill [args]` into this tab's CLI input
+ * and, for a favourite that is not "type only", presses Enter too: app/submit-gate.js decides that, from the
+ * session's state, AFTER the box was read back as exactly the command. The plan (clickPlan) carries the command
+ * and the favourite's `typeOnly`, and nothing that submits: the Enter is renderer.js's submitTyped. The flash is
+ * the gate's own words ("sent", "queued: ...", "typed, press Enter"), set by `typed()` from the result, so the
+ * panel never says "sent" for a line that was only typed. The typing itself is renderer.js's typeCommand, the
+ * one shared typeAndCheck (clears a one-line draft, refuses a dialog or a multi-line draft, reads the box back).
  *
  * ABSENCE IS NOT EMPTINESS, in three places (the bug this project keeps catching):
  *   - the wand can be UNAVAILABLE (a corrupt or unreadable file): the panel says so and shows no grid, so
@@ -45,6 +48,7 @@ const EMOJI_CHOICES = Object.freeze([
   '💬', '📦', '🔒', '🧠', '🎨', '🐛', '📈', '⏰', '✨', '🤖', '📚', '🧭', '🪄', '🧰',
 ]);
 const EDITOR_FIELDS = ['emoji', 'skill', 'args', 'query'];
+const EDITOR_BOOLEANS = ['typeOnly'];
 
 function emptyState() {
   return {
@@ -61,7 +65,8 @@ function readFavourites(raw) {
   const out = [];
   for (const f of raw) {
     if (!isObj(f) || !isStr(f.id) || f.id === '' || !isStr(f.emoji) || f.emoji === '' || !isStr(f.skill) || f.skill === '') continue;
-    out.push({ id: f.id, emoji: f.emoji, skill: f.skill, args: isStr(f.args) ? f.args : '' });
+    // typeOnly is a strict boolean: anything else (absent, "yes", 1) is false, the old behaviour of a favourite.
+    out.push({ id: f.id, emoji: f.emoji, skill: f.skill, args: isStr(f.args) ? f.args : '', typeOnly: f.typeOnly === true });
   }
   return out;
 }
@@ -192,6 +197,7 @@ function titleOf(state, f) {
   if (isMissing(state, f.skill)) lines.push(`/${f.skill}: skill not found`);
   else lines.push(s && s.description ? `/${f.skill} — ${s.description}` : `/${f.skill}`);
   if (f.args !== '') lines.push(`pre-fills: ${f.args}`);
+  if (f.typeOnly) lines.push('type only: a click types it, you press Enter');
   if (state.edit) lines.push('click to edit, drag to reorder');
   return lines.join('\n');
 }
@@ -201,7 +207,7 @@ function editorView(state) {
   if (!e) return null;
   const all = matchingSkills(state.skills, e.query);
   return {
-    id: e.id, isNew: e.id === null, emoji: e.emoji, skill: e.skill, args: e.args, query: e.query, saving: e.saving,
+    id: e.id, isNew: e.id === null, emoji: e.emoji, skill: e.skill, args: e.args, typeOnly: e.typeOnly === true, query: e.query, saving: e.saving,
     emojiChoices: EMOJI_CHOICES.slice(),
     skills: all.slice(0, SKILL_LIST_CAP),
     moreSkills: Math.max(0, all.length - SKILL_LIST_CAP),
@@ -240,7 +246,7 @@ function view(state) {
     warning: n > 0 ? `${n} favourite${n === 1 ? '' : 's'} in ${s.file || 'the file'} ${n === 1 ? "isn't" : "aren't"} valid and ${n === 1 ? "isn't" : "aren't"} shown, so editing is off until ${n === 1 ? 'it is' : 'they are'} fixed.` : null,
     skillsNote: s.skillsError !== null ? `Couldn't read the skill list (${s.skillsError}), so no favourite is checked.` : null,
     buttons: mode === 'ok' ? s.favourites.map(f => ({
-      id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, command: commandOf(f), title: titleOf(s, f),
+      id: f.id, emoji: f.emoji, skill: f.skill, name: f.skill, args: f.args, typeOnly: f.typeOnly === true, command: commandOf(f), title: titleOf(s, f),
       // The accessible name: in edit mode a press OPENS THE EDITOR, and the keyboard can say so and reorder (Miguel I3).
       label: s.edit ? `${commandOf(f)}, press Enter to edit, Alt+Left or Alt+Right to move` : commandOf(f),
       missing: isMissing(s, f.skill), flash: !!(s.flash && s.flash.id === f.id),
@@ -289,15 +295,21 @@ function clickPlan(state, id, opts) {
   if (cap !== null && width > cap) {
     return { kind: 'toolong', id: f.id, note: `${command.length > 60 ? `${command.slice(0, 57)}...` : command} is ${width} columns, wider than this tab's ${opts.cols}-column input box, so nothing was typed. Shorten the argument or widen the window.` };
   }
-  return { kind: 'type', command, id: f.id };
+  return { kind: 'type', command, id: f.id, typeOnly: f.typeOnly === true };
 }
 
-/** typeCommand's answer for a click: a flash on that button, or why nothing was typed. */
+/**
+ * typeCommand's / submitTyped's answer for a click: a flash on that button, or why nothing was typed. The flash
+ * text is the submit gate's (`result.flash`); without one, or on a refusal, it is the plain "typed" words.
+ */
 function typed(state, id, result) {
   const s = state || emptyState();
   const f = isStr(id) ? s.favourites.find(x => x.id === id) : undefined;
   if (!f) return { ...s, flash: null };
-  if (isObj(result) && result.ok === true) return { ...s, flash: { id: f.id, text: FLASH_TEXT }, notice: null };
+  if (isObj(result) && result.ok === true) {
+    const text = isStr(result.flash) && result.flash !== '' ? result.flash : FLASH_TEXT;
+    return { ...s, flash: { id: f.id, text }, notice: null };
+  }
   const reason = isObj(result) && isStr(result.reason) && result.reason ? result.reason : 'the terminal did not take it';
   return { ...s, flash: null, notice: `didn't type ${commandOf(f)}: ${reason}` };
 }
@@ -316,18 +328,21 @@ function openEditor(state, id) {
   const s = state || emptyState();
   if (!s.edit || s.status === 'unavailable' || s.dropped > 0) return s;
   if (id === null) {
-    return { ...s, error: null, editor: { id: null, emoji: '', skill: '', args: '', query: '', saving: false } };
+    return { ...s, error: null, editor: { id: null, emoji: '', skill: '', args: '', typeOnly: false, query: '', saving: false } };
   }
   const f = isStr(id) ? s.favourites.find(x => x.id === id) : undefined;
   if (!f) return s;
-  return { ...s, error: null, editor: { id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, query: '', saving: false } };
+  return { ...s, error: null, editor: { id: f.id, emoji: f.emoji, skill: f.skill, args: f.args, typeOnly: f.typeOnly === true, query: '', saving: false } };
 }
 
 const closeEditor = (state) => ({ ...(state || emptyState()), editor: null, error: null });
 
 function editorSet(state, field, value) {
   const s = state || emptyState();
-  if (!s.editor || !EDITOR_FIELDS.includes(field) || !isStr(value)) return s;
+  if (!s.editor) return s;
+  // The checkbox is a boolean and nothing else; the text fields are strings and nothing else.
+  if (EDITOR_BOOLEANS.includes(field)) return typeof value === 'boolean' ? { ...s, editor: { ...s.editor, [field]: value } } : s;
+  if (!EDITOR_FIELDS.includes(field) || !isStr(value)) return s;
   return { ...s, editor: { ...s.editor, [field]: value } };
 }
 
@@ -342,8 +357,8 @@ function editorSubmit(state) {
   if (e.skill === '') return { state: { ...s, error: 'Pick a skill.' }, message: null };
   const b = begin(s);
   const message = e.id === null
-    ? { type: 'wand-add', emoji: e.emoji.trim(), skill: e.skill, args: e.args, req: b.req }
-    : { type: 'wand-update', id: e.id, patch: { emoji: e.emoji.trim(), skill: e.skill, args: e.args }, req: b.req };
+    ? { type: 'wand-add', emoji: e.emoji.trim(), skill: e.skill, args: e.args, typeOnly: e.typeOnly === true, req: b.req }
+    : { type: 'wand-update', id: e.id, patch: { emoji: e.emoji.trim(), skill: e.skill, args: e.args, typeOnly: e.typeOnly === true }, req: b.req };
   return { state: { ...b.state, error: null, editor: { ...e, saving: true } }, message };
 }
 
@@ -389,7 +404,7 @@ function resetMsg(state) {
 function buttonHtml(v, b) {
   const main = `<button type="button" class="wand-btn${b.missing ? ' dim' : ''}${b.flash ? ' flash' : ''}" ` +
     `data-wand-act="press" data-wand-id="${esc(b.id)}" title="${esc(b.title)}" aria-label="${esc(b.label)}"` +
-    `${v.edit ? ' draggable="true"' : ''}><span class="wand-emoji">${esc(b.emoji)}</span></button>`;
+    `${v.edit ? ' draggable="true"' : ''}><span class="wand-emoji">${esc(b.emoji)}</span><span class="wand-name">${esc(b.name)}</span></button>`;
   if (!v.edit) return main;
   return `<span class="wand-cell" data-wand-cell="${esc(b.id)}">${main}` +
     `<button type="button" class="wand-x" data-wand-act="delete" data-wand-id="${esc(b.id)}" ` +
@@ -425,6 +440,7 @@ function editorHtml(v) {
     `<input type="search" class="wand-ed-search" data-wand-field="query" value="${esc(e.query)}" placeholder="search skills" autocomplete="off" spellcheck="false">` +
     `<div id="wand-skill-list" class="wand-skill-list">${skillListHtml(v)}</div>` +
     `<label class="wand-ed-row">Argument <input type="text" class="wand-ed-args" data-wand-field="args" value="${esc(e.args)}" maxlength="200" placeholder="optional, pre-filled after the skill" autocomplete="off" spellcheck="false"></label>` +
+    `<label class="wand-ed-row wand-ed-check"><input type="checkbox" data-wand-field="typeOnly"${e.typeOnly ? ' checked' : ''}> Type only (don't press Enter: for a skill that takes an argument you type)</label>` +
     `<div class="wand-ed-actions"><button type="button" data-wand-act="save"${e.saving ? ' disabled' : ''}>Save</button>` +
     `<button type="button" data-wand-act="cancel">Cancel</button></div></div>`;
 }

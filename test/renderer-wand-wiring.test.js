@@ -204,3 +204,19 @@ test('I3: the status is announced from a node OUTSIDE the rebuilt subtree', () =
   assert.match(fnBody('renderWand'), /getElementById\('wand-live'\)/);
   assert.match(fnBody('renderWand'), /\.textContent = v\.live/);
 });
+
+// --- #61: the type-only checkbox and the name under the emoji ----------------------------------------------
+
+test('#61 the editor\'s type-only checkbox goes to editorSet as a boolean, every other field as its text', () => {
+  const at = WAND.indexOf("addEventListener('input'");
+  assert.ok(at !== -1);
+  const handler = WAND.slice(at, WAND.indexOf('addEventListener(', at + 10));
+  assert.match(handler, /editorSet\(wandState, field, e\.target\.type === 'checkbox' \? e\.target\.checked : e\.target\.value\)/);
+});
+
+test('#61 the page styles the name under the emoji: one line, ellipsis past the cell', () => {
+  const css = HTML.slice(HTML.indexOf('.wand-name {'), HTML.indexOf('}', HTML.indexOf('.wand-name {')));
+  assert.match(css, /text-overflow: ellipsis/);
+  assert.match(css, /white-space: nowrap/);
+  assert.match(css, /overflow: hidden/);
+});
