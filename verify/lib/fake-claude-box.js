@@ -13,6 +13,13 @@
  *   Enter            submits it: appended to <submitted.log> as one JSON string per line
  * The probe stages a half-typed draft by writing <ctl.json> as { "draft": "..." }, and reads what the box
  * holds now from <submitted.log>.line (a JSON string, rewritten on every draw).
+ *
+ * Two more ctl switches (BACKLOG #61, verify/probe-wand.js):
+ *   { "queue": true }   every Enter then leaves the CLI's own queued-messages line in the box row
+ *                       ("❯ Press up to edit queued messages", measured: verify/probe-queued-skill.js) until
+ *                       { "queue": false }; the wand reads it off the screen to say "queued"
+ *   { "dialog": true }  the box is replaced by a permission-style dialog (no input box, no rules) until
+ *                       { "dialog": false }: what a page must refuse to type into
  */
 const fs = require('fs');
 
@@ -22,10 +29,15 @@ const [ctl, log] = process.argv.slice(2);
 const rule = () => '─'.repeat(Math.max(10, (process.stdout.columns || 61) - 1));
 let line = '';
 let lastCtl = '';
+let queueMode = false;
+let queued = false;
+let dialog = false;
 const history = [];
 
 function draw() {
-  const rows = [...history.slice(-6), rule(), `❯ ${line}`, rule(), '  fake claude box'];
+  const rows = dialog
+    ? [...history.slice(-6), 'Do you want to run this command?', '❯ 1. Yes', '  2. No']
+    : [...history.slice(-6), rule(), `❯ ${line || (queued ? 'Press up to edit queued messages' : '')}`, rule(), '  fake claude box'];
   process.stdout.write(`\x1b[2J\x1b[H${rows.join('\r\n')}`);
   if (log) fs.writeFileSync(`${log}.line`, JSON.stringify(line));
 }
@@ -38,6 +50,7 @@ process.stdin.on('data', (chunk) => {
       if (log) fs.appendFileSync(log, `${JSON.stringify(line)}\n`);
       history.push(`> ${line}`);
       line = '';
+      if (queueMode) queued = true;
     } else if (ch === '\x15') {
       line = '';
     } else if (ch === '\x03') {
@@ -57,6 +70,8 @@ setInterval(() => {
   try {
     const c = JSON.parse(text);
     if (typeof c.draft === 'string') { line = c.draft; draw(); }
+    if (typeof c.queue === 'boolean') { queueMode = c.queue; if (!c.queue) queued = false; draw(); }
+    if (typeof c.dialog === 'boolean') { dialog = c.dialog; draw(); }
   } catch { /* half-written: the next read gets it */ }
 }, 100);
 

@@ -2387,9 +2387,20 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           scope: typeof window.wandDisplay === 'object' && typeof window.wandDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="wand"]').classList.contains('on'),
           text: root.textContent,
-          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => ({ id: b.dataset.wandId, emoji: b.textContent,
-            label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
-            title: b.title, draggable: b.draggable })),
+          // #61: `emoji` is the emoji span alone (the name now sits under it); `name` is the skill name span, and
+          // nameBelow says it is drawn under the emoji (its top at or past the emoji's bottom) and ellipsised.
+          turn: sessionTurn,
+          buttons: [...root.querySelectorAll('.wand-btn[data-wand-id]')].map(b => {
+            const em = b.querySelector('.wand-emoji');
+            const nm = b.querySelector('.wand-name');
+            const er = em ? em.getBoundingClientRect() : null;
+            const nr = nm ? nm.getBoundingClientRect() : null;
+            return { id: b.dataset.wandId, emoji: em ? em.textContent : b.textContent, name: nm ? nm.textContent : null,
+              nameBelow: !!(er && nr && nr.top >= er.bottom - 1 && nr.width > 0),
+              nameEllipsis: nm ? getComputedStyle(nm).textOverflow === 'ellipsis' : false,
+              label: b.getAttribute('aria-label'), dim: b.classList.contains('dim'), flash: b.classList.contains('flash'),
+              title: b.title, draggable: b.draggable };
+          }),
           deletes: root.querySelectorAll('.wand-x').length,
           add: !!q('[data-wand-act="add"]'),
           edit: !!q('.wand-edit.on'),
@@ -2398,6 +2409,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           error: (q('.wand-error') || {}).textContent || '',
           editor: ed ? { emoji: q('[data-wand-field="emoji"]').value, picked: (q('.wand-picked') || {}).textContent || '',
             query: q('[data-wand-field="query"]').value, args: q('[data-wand-field="args"]').value,
+            typeOnly: !!(q('[data-wand-field="typeOnly"]') || {}).checked,
             listed: [...root.querySelectorAll('.wand-skill')].map(b => b.dataset.wandSkill),
             saveDisabled: !!(q('[data-wand-act="save"]') || {}).disabled } : null,
           rect: rectOf(root),
@@ -2419,7 +2431,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const el = document.querySelector('#wand-root [data-wand-field="' + String(a.field) + '"]');
         if (!el) return JSON.stringify({ ok: false, error: 'no editor field ' + a.field });
         el.focus();
-        el.value = String(a.value);
+        if (el.type === 'checkbox') el.checked = a.value === true;
+        else el.value = String(a.value);
         el.dispatchEvent(new Event('input', { bubbles: true }));
         return JSON.stringify({ ok: true });
       }
@@ -4704,8 +4717,8 @@ function typeAndCheck(enterInsert, command, done) {
 
 /**
  * The top bar's switch: typeAndCheck, then Enter -- right after the read-back, in the same task, and only
- * when it read back exactly the command. The ONLY place this page presses Enter for a command it typed:
- * the Git drawer's Type /merged leaves the Enter to the person (PR #93 Dexter R2-1).
+ * when it read back exactly the command. The top bar's own Enter; the wand and the Git drawer's Run /merged
+ * press theirs through submitTyped (the submit gate decides), via typeCommand.
  */
 function typePlanned(enterInsert, command, done) {
   const input = data => send(JSON.stringify({ type: 'input', data }));
@@ -4716,16 +4729,28 @@ function typePlanned(enterInsert, command, done) {
 }
 
 /**
- * Main asks this page to type a command into its own box: the Git drawer's Type /merged, PR #93 Dexter
- * F3. The screen is judged here, where it is, the top bar's way, and the terminal takes the focus so the
- * person's Enter lands in it. It types and reads back, and NEVER presses Enter (Dexter R2-1: no hook can
- * say the turn is really over, so that step is the person's). `done({ ok, box })`, `box` being what the
- * box held before it was cleared, '' when empty; or `done({ ok: false, reason })`.
+ * Types a command into this tab's own box: the Git drawer's Run /merged (main asks, PR #93 Dexter F3), the
+ * wand's click, the reader's @mention. The screen is judged here, where it is, the top bar's way, and the
+ * terminal takes the focus. It types and reads back. With `opts.submit` (the wand, Run /merged; BACKLOG #61) it
+ * then asks submitTyped whether to press Enter, in the same task as the read-back; without it (the @mention)
+ * it NEVER presses Enter. `done({ ok, box })`, `box` being what the box held before it was cleared, '' when
+ * empty, plus `submitted` and `flash` (the gate's words) when `submit` was on; or `done({ ok: false, reason })`.
+ * A dialog (`sessionTurn === 'prompt'`) is refused before a key is typed.
  */
-function typeCommand(command, done, kind) {
+// The submit path's waits (BACKLOG #61, DESIGN_WAND_SUBMIT.md "Review round picks"): F1, how long a running turn
+// gets between the read-back and the Enter for a dialog to show; F7, how often and how many times the screen is
+// looked at for the CLI's queued-messages line after the Enter (150 ms x 6 = 900 ms).
+const SUBMIT_RECHECK_MS = 400;
+const QUEUED_POLL_MS = 150;
+const QUEUED_POLLS = 6;
+
+function typeCommand(command, done, kind, opts) {
   term.focus();
   const lines = screenLines();
   if (vimInsertShown(lines)) vimSeen = true;
+  const submit = !!(opts && opts.submit);
+  // No refusal from the hook state here (F3): when the host says 'prompt' but the SCREEN is a normal ready box,
+  // the command is typed with no Enter. planTyping's screen check is what refuses a dialog it can see.
   const plan = planTyping({
     command,
     screen: inputState(lines, { vim: vimSeen }),
@@ -4734,20 +4759,88 @@ function typeCommand(command, done, kind) {
   });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
   const box = boxText(lines);
-  typeAndCheck(plan.enterInsert, command, r => done(r.ok ? { ok: true, box: box || '' } : r));
+  typeAndCheck(plan.enterInsert, command, (r) => {
+    if (!r.ok) { done(r); return; }
+    if (!submit) { done({ ok: true, box: box || '' }); return; }
+    // The read-back above is the last check; the gate is asked in this same task (submitTyped).
+    submitTyped(command, { typeOnly: opts.typeOnly, enterInsert: plan.enterInsert }, (s) => {
+      done(s.ok ? { ok: true, box: box || '', submitted: s.submitted, flash: s.flash } : s);
+    });
+  });
 }
+
+/**
+ * Decides, from app/submit-gate.js, whether the typed command gets an Enter, and sees it through. `done` gets
+ * { ok: true, submitted, flash } or { ok: false, reason }. A gate that says no ends it with the gate's own words
+ * and no Enter (a type-only favourite, an unseen session, a host that says 'prompt'). A gate that says yes for an
+ * idle session presses Enter at once, in the same task as the read-back. For a RUNNING turn (`recheck`, F1) it
+ * waits SUBMIT_RECHECK_MS first, holding the typing lock so nobody types over the line, and sends the Enter only
+ * if the box still reads back as exactly the command and the host still doesn't say 'prompt': a permission
+ * dialog can open between the read-back and the Enter, and the read-back only proves what xterm had parsed.
+ * Otherwise the line is cleared and the answer is a refusal. The accepted leftover risk: a dialog that lands in
+ * those last milliseconds.
+ */
+function submitTyped(command, opts, done) {
+  const typeOnly = opts.typeOnly;
+  const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+  if (!gate.enter) { done({ ok: true, submitted: false, flash: gate.flash }); return; }
+  if (!gate.recheck) { pressEnter(done); return; }
+  typingBusy = true;
+  setTimeout(() => {
+    typingBusy = false;
+    const again = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen })) { pressEnter(done); return; }
+    clearTypedLine(opts.enterInsert);
+    done({ ok: false, reason: 'the screen changed while waiting to press Enter (a dialog may have opened), so nothing was sent' });
+  }, SUBMIT_RECHECK_MS);
+}
+
+/**
+ * The ONLY Enter that a wand click or the Git drawer's Run /merged can cause. A socket that is not OPEN drops the
+ * frame silently (send()), so that is reported as not sent, never as "sent" (Dexter F6 / Miguel M1). Then the
+ * flash is read off the SCREEN, not guessed from the hook state (F7): watchQueued.
+ */
+function pressEnter(done) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { done({ ok: false, reason: 'not connected to the session: the Enter was not sent' }); return; }
+  send(JSON.stringify({ type: 'input', data: '\r' }));
+  watchQueued(done);
+}
+
+/** After an Enter: "queued" only if the CLI's own queued-messages line shows within the window, else "sent" (F7). */
+function watchQueued(done) {
+  let looks = 0;
+  const look = () => {
+    if (submitGate.queuedShown(screenLines())) { done({ ok: true, submitted: true, flash: submitGate.FLASH.queued }); return; }
+    if (++looks >= QUEUED_POLLS) { done({ ok: true, submitted: true, flash: submitGate.FLASH.sent }); return; }
+    setTimeout(look, QUEUED_POLL_MS);
+  };
+  setTimeout(look, QUEUED_POLL_MS);
+}
+
+/** Empties the box of what typeCommand put there, as a failed read-back does: Ctrl-E, Ctrl-U, back to vim NORMAL. */
+function clearTypedLine(enterInsert) {
+  const input = data => send(JSON.stringify({ type: 'input', data }));
+  input('\x05');
+  setTimeout(() => input('\x15'), PTY_STEP_MS);
+  if (enterInsert) setTimeout(() => input('\x1b'), PTY_STEP_MS * 2);
+}
+
+// Main asks this page to type a command into its own box (the Git drawer's Run /merged): with `submit: true`
+// the page's gate presses Enter too. /merged is never a type-only favourite.
 if (window.harness && window.harness.onTypeCommand) {
   window.harness.onTypeCommand((ask) => {
     const id = ask && ask.id;
-    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }));
+    typeCommand(ask && ask.command, (r) => window.harness.typed({ id, ...r }), undefined,
+      ask && ask.submit === true ? { submit: true, typeOnly: false } : undefined);
   });
 }
 
 // WAND-BEGIN
 // The wand (BACKLOG #51): favourite skills as emoji buttons. app/wand-display.js decides everything (what
 // shows, what a click means, what each edit sends); this is only the DOM and the socket. A click TYPES
-// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and NEVER presses Enter: nothing
-// in this section writes a CR or an input frame, and test/renderer-wand-wiring.test.js pins that.
+// `/skill [args]` through typeCommand -- the one shared typeAndCheck -- and, unless the favourite is type-only,
+// typeCommand's submitTyped presses Enter if the submit gate allows (BACKLOG #61). Nothing in this section writes
+// a CR or an input frame itself, and test/renderer-wand-wiring.test.js pins that.
 let wandState = wandDisplay.emptyState();
 let wandBusy = false;          // a type in flight: two overlapping key sequences would garble the box
 let wandFlashTimer = null;
@@ -4821,9 +4914,10 @@ function wandType(plan) {
     renderWand();
     clearTimeout(wandFlashTimer);
     if (r.ok) {
-      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, 2500);
+      // a note about a cleared draft needs time to be read (Dexter F5)
+      wandFlashTimer = setTimeout(() => { wandState = wandDisplay.clearFlash(wandState); renderWand(); }, wandState.flash && wandState.flash.long ? 8000 : 2500);
     }
-  });
+  }, undefined, { submit: true, typeOnly: plan.typeOnly });
 }
 
 function wandAct(action) {
@@ -4867,7 +4961,8 @@ if (wandRoot) {
   wandRoot.addEventListener('input', (e) => {
     const field = e.target && e.target.dataset && e.target.dataset.wandField;
     if (!field) return;
-    wandState = wandDisplay.editorSet(wandState, field, e.target.value);
+    // the type-only checkbox is a boolean (editorSet takes it as nothing else); the text fields are strings
+    wandState = wandDisplay.editorSet(wandState, field, e.target.type === 'checkbox' ? e.target.checked : e.target.value);
     if (field === 'query') {       // only the list: the box the user is typing in is left alone
       const list = wandRoot.querySelector('.wand-skill-list');
       if (list) list.innerHTML = wandDisplay.skillListHtml(wandDisplay.view(wandState));

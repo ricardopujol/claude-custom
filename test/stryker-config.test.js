@@ -47,6 +47,9 @@ const REPO_SCANNING = new Set([
   // renderer.js / renderer.html source text; requires top-bar-display only for
   // MODEL_CHOICES / EFFORT_LEVELS, which top-bar-display.test.js pins itself.
   'renderer-top-bar.test.js',
+  // renderer.js source text, plus a run of its submit path against stubs; it requires submit-gate only to feed
+  // those stubs the real gate, which submit-gate.test.js and submit-gate-properties.test.js pin themselves.
+  'renderer-wand-wiring.test.js',
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))

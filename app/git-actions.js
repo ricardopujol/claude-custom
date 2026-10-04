@@ -17,8 +17,9 @@
  *   open-pr         the PR's GitHub page (origin's URL)
  *   jump            select the branch's open worktree tab
  *   open-worktree   an existing branch gets a worktree: DISABLED until agent-creator can attach one
- *   type-merged      type /merged into that tab's box, for the person to press Enter (PR #93 Dexter R2-1):
- *                   an open PR, a tab that is open and at rest
+ *   type-merged      "Run /merged" (BACKLOG #61): the tab's page types /merged and, once it reads back, presses
+ *                   Enter (app/submit-gate.js; PR #93 R2-1 had left the Enter to the person). An open PR, a tab
+ *                   that is open and at rest. The id keeps its old name: the drawer and the shell key on it.
  *   copy            the branch name, to the clipboard
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `gitActions`.
@@ -29,10 +30,12 @@ const OPEN_WORKTREE_WHY = 'needs agent-creator to attach an existing branch';
 // The lock states whose host runs the session (host/session-gate.js): held, no lock to take, or opened anyway.
 const RUNS_A_SESSION = ['held', 'unlocked', 'override'];
 
-// `hint`: what an ENABLED action leaves to the person (only Type /merged has one); `why`: why one is off
-const yes = (id, label, hint = null) => ({ id, label, enabled: true, why: null, hint });
-const no = (id, label, why) => ({ id, label, enabled: false, why, hint: null });
-const TYPE_MERGED_HINT = 'press Enter in its tab to run it';
+// `why`: why a disabled action is off
+const yes = (id, label) => ({ id, label, enabled: true, why: null });
+const no = (id, label, why) => ({ id, label, enabled: false, why });
+
+// The cleared-draft note is the wand's too: one copy, in app/submit-gate.js (loaded before this file)
+const submitGate = typeof module !== 'undefined' && module.exports ? require('./submit-gate') : root.submitGate;
 
 function openPr(b, c) {
   const hasPr = Number.isInteger(b.pr);
@@ -85,7 +88,7 @@ function sessionBusyWhy(t) {
 }
 
 function typeMerged(b, c) {
-  const label = 'Type /merged';
+  const label = 'Run /merged';
   if (b.state === 'merged') return no('type-merged', label, 'this branch is already merged');
   if (b.state === 'deleted') return no('type-merged', label, 'the branch is gone from git');
   if (b.state !== 'open') {
@@ -99,13 +102,30 @@ function typeMerged(b, c) {
   if (t.known !== true) return no('type-merged', label, "its session hasn't reported what it's doing yet");
   const busy = sessionBusyWhy(t);
   if (busy) return no('type-merged', label, `its session ${busy}`);
-  return yes('type-merged', label, TYPE_MERGED_HINT);
+  return yes('type-merged', label);
 }
 
 function actionsFor(branch, ctx) {
   const b = branch || {};
   const c = ctx || {};
   return [openPr(b, c), jump(b, c), openWorktree(b, c), typeMerged(b, c), yes('copy', 'Copy name')];
+}
+
+/**
+ * What the drawer says once Run /merged has answered (the shell's `typeMerged` answer): sent when the page's gate
+ * pressed Enter, typed when it left the Enter to the person (a session that hadn't reported its state), the
+ * shell's own explanation when there is one, else a plain failure. Only a literal `submitted: true` says "Sent".
+ */
+function mergedSaid(r, name) {
+  if (r && r.kind === 'typed') {
+    const where = typeof r.branch === 'string' && r.branch ? r.branch : name;
+    const lead = r.submitted === true
+      ? `Sent /merged to ${where}'s session.`
+      : `Typed /merged in ${where}'s tab: press Enter there to run it.`;
+    // A box that wasn't empty was cleared first (a draft, or the CLI's placeholder: the text can't tell)
+    return lead + (r.cleared ? submitGate.DRAFT_CLEARED : '');
+  }
+  return (r && typeof r.text === 'string' && r.text) || "Couldn't run /merged.";
 }
 
 /** The action the keyboard lands on when the drawer opens: Jump if it works, else the first that does. */
@@ -115,7 +135,7 @@ function firstFocus(actions) {
   return (j || on[0] || {}).id || null;
 }
 
-const api = { actionsFor, firstFocus, sessionBusyWhy, OPEN_WORKTREE_WHY };
+const api = { actionsFor, firstFocus, sessionBusyWhy, mergedSaid, OPEN_WORKTREE_WHY };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
