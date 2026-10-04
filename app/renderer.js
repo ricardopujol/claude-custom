@@ -160,6 +160,7 @@ const bar = { prompt: null, anchor: null, locate: null, epoch: 0, lastLength: 0,
 // The where-are-we summary (backlog #39 job 1): the host's local-model summary of this session, why there is none, when
 // the panel was opened (a switch to a tab untouched for 10 minutes), whether it is pinned, whether a key was struck
 // since it opened, and the last real keystroke. Every decision is in app/summary-display.js.
+const sentInputs = [];
 const sum = { summary: null, off: null, openedAt: null, pinned: false, typed: false, lastInputAt: null, timer: null, session: null };
 // How long the CLI's echo of a submitted prompt is waited for in the terminal buffer, and how many of the newest lines
 // are searched, before the prompt fails visible (PR #99 Dexter F6).
@@ -267,6 +268,7 @@ function barState() {
   const buf = term.buffer.active;
   const cs = getComputedStyle(barEls.bar);
   return {
+    inputs: sentInputs.slice(),
     bar: {
       hidden: barEls.bar.hidden, open: document.body.classList.contains('bar-open'), animation: cs.animationName, transition: cs.transitionProperty, transitionDuration: cs.transitionDuration, display: cs.display,
       top: Math.round(barEls.bar.getBoundingClientRect().top), height: Math.round(barEls.bar.getBoundingClientRect().height),
@@ -487,7 +489,19 @@ document.getElementById('occupancy-wait').addEventListener('click', () => occupa
 barEls.prompt.addEventListener('click', () => { bar.fullOpen = !bar.fullOpen; paintBarNow(); });
 // Escape closes it again, from inside the bar only: the terminal's own Escape (interrupt) is never taken (PR #99 Miguel G3).
 barEls.bar.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !bar.fullOpen) return;
+  if (e.key !== 'Escape') return;
+  // The where-are-we panel (#39): with the focus on the bar or the panel itself, Escape closes it and goes no further. With the
+  // focus in the terminal this handler never runs: Escape is Claude's interrupt and reaches the pty untouched, and the panel
+  // closes by the first-keystroke rule (summaryTyped, which only observes the key).
+  if (bar.summaryShown) {
+    sum.openedAt = null;
+    sum.pinned = false;
+    paintBarNow();
+    e.stopPropagation();
+    term.focus();
+    return;
+  }
+  if (!bar.fullOpen) return;
   bar.fullOpen = false;
   paintBarNow();
   e.stopPropagation();
@@ -548,16 +562,6 @@ barEls.summary.addEventListener('click', () => {
   paintBarNow();
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) summaryOpenIfIdle(); });
-// Escape closes it wherever the focus is, not only inside the bar (Miguel S4). Captured, and taken only while the panel is
-// showing: the first Escape closes the panel, the next one is the terminal's own (an interrupt) as ever.
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !bar.summaryShown) return;
-  sum.openedAt = null;
-  sum.pinned = false;
-  paintBarNow();
-  e.preventDefault();
-  e.stopPropagation();
-}, true);
 // --- end of the where-are-we summary ---
 
 if (window.harness && window.harness.occupancy) {
@@ -6085,6 +6089,8 @@ term.onKey(() => { if (term.hasSelection()) term.clearSelection(); });
 term.onKey(() => { summaryTyped(); });
 
 term.onData((data) => {
+  sentInputs.push(data);                      // what the probe reads back: did this reach the pty path?
+  if (sentInputs.length > 20) sentInputs.shift();
   logLine(pendingKeyDesc || 'input', data);
   pendingKeyDesc = null;
   userInput(data);

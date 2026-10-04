@@ -97,15 +97,27 @@ test('the page never types the summary into the session', () => {
 });
 
 // Miguel S4 / Dexter F7 / Miguel I1 (PR #105)
-test('Escape closes the panel wherever the focus is: a captured document listener, taken only while the panel shows', () => {
-  const at = RENDERER.indexOf("document.addEventListener('keydown', (e) => {\r\n  if (e.key !== 'Escape' || !bar.summaryShown) return;");
-  const alt = RENDERER.indexOf("document.addEventListener('keydown', (e) => {\n  if (e.key !== 'Escape' || !bar.summaryShown) return;");
-  const from = at !== -1 ? at : alt;
-  assert.ok(from !== -1, 'the listener exists');
-  const body = RENDERER.slice(from, from + 500);
-  assert.match(body, /sum\.openedAt = null;/);
-  assert.match(body, /sum\.pinned = false;/);
-  assert.match(body, /\}, true\);/, 'captured, so xterm does not see the Escape that closed the panel');
+// Escape is Claude's interrupt, and the panel opens by itself on a switch: the terminal's Escape is never taken.
+test('Escape with the focus on the bar closes the panel and goes no further; with the focus in the terminal the bar handler never runs', () => {
+  const src = RENDERER.replace(/\r\n/g, '\n');
+  const at = src.indexOf("barEls.bar.addEventListener('keydown', (e) => {");
+  const body = src.slice(at, src.indexOf('\n});', at));
+  assert.match(body, /if \(bar\.summaryShown\) \{\s*sum\.openedAt = null;\s*sum\.pinned = false;\s*paintBarNow\(\);\s*e\.stopPropagation\(\);/);
+  assert.ok(src.slice(0, src.indexOf('// --- end of the where-are-we summary ---')).lastIndexOf("barEls.bar.addEventListener('keydown'") === at, 'one handler, on the bar');
+  assert.doesNotMatch(src, /window\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape' \|\| !bar\.summaryShown\)/);
+  assert.doesNotMatch(src, /document\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape' \|\| !bar\.summaryShown\)/);
+});
+
+test('a keystroke typed into the terminal closes the panel by observing it: summaryTyped never prevents, stops or swallows the key', () => {
+  const src = RENDERER.replace(/\r\n/g, '\n');
+  const typed = src.slice(src.indexOf('function summaryTyped'), src.indexOf('function summaryTyped') + 400);
+  assert.doesNotMatch(typed, /preventDefault|stopPropagation|stopImmediatePropagation|return false/);
+  assert.match(src, /term\.onKey\(\(\) => \{ summaryTyped\(\); \}\);/, 'onKey observes; it cannot consume');
+  assert.match(typed, /sum\.typed = true/);
+  // and the key still takes its normal road to the pty
+  const data = src.slice(src.indexOf('term.onData((data) =>'), src.indexOf('term.onData((data) =>') + 400);
+  assert.match(data, /userInput\(data\);/);
+  assert.doesNotMatch(data, /summaryTyped|preventDefault/);
 });
 
 test('a push releases a pin whose summary went away or is another session\'s', () => {

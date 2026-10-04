@@ -35,8 +35,9 @@
  *      labelled "local model · llama3.2:3b · N min ago", three lines, a single row, never animated, readable (contrast)
  *   D  the first keystroke hides it; a tab just typed in does not open it when you switch back
  *   E  the other tab (never typed in) shows ITS summary, and it closes by itself after 30 seconds
- *   F0 Escape closes an auto-opened panel with the focus still in the terminal (Miguel S4)
- *   F  a click pins it open (past 30 s) and Escape inside the bar closes it
+ *   F0 Escape is CLAUDE'S interrupt: with the focus in the terminal it reaches the pty untouched, and the panel closes by the
+ *      first-keystroke rule (the key is observed, never eaten)
+ *   F  a click pins it open (past 30 s); Escape with the focus on the bar closes it and does NOT reach the pty
  *   G  Ollama stops answering: the last summary stays, DIMMED, with "Local summary off: Ollama isn't running", in the
  *      panel and on the hover card; nothing is sent to a server that isn't there
  *   H  Ollama comes back: within the minute the note clears and a new summary is made, with no typing
@@ -404,9 +405,12 @@ async function main() {
   await selectTab(app, 'develop');
   await selectTab(app, 'feat/a');
   const escOpen = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === false ? b : null; }, 8000);
+  const escBefore = escOpen ? escOpen.inputs.filter(d => d === '\u001b').length : -1;
   await command(app, { cmd: 'key', key: 'Escape' });
   const escClosed = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === true && b.bar.summary.expanded === 'false' ? b : null; }, 5000);
-  check('F0: Escape closes an auto-opened panel although the focus is in the terminal, not the bar', !!escOpen && !!escClosed);
+  check('F0: Escape with the focus in the terminal closes the auto-opened panel (the first-keystroke rule)', !!escOpen && !!escClosed);
+  const escReached = await waitFor(async () => { const b = await barState(app); return b && b.inputs.filter(d => d === '\u001b').length === escBefore + 1 ? b : null; }, 5000);
+  check('F0: ...and that Escape reached the pty path untouched (it is Claude\'s interrupt)', !!escReached, JSON.stringify(escReached && escReached.inputs));
 
   // F -----------------------------------------------------------------------------
   await selectTab(app, 'develop');
@@ -419,9 +423,13 @@ async function main() {
   await sleep(33000);
   const afterPin = await barState(app);
   check('F: ...it is still open after 33 seconds', !!afterPin && afterPin.bar.summary.hidden === false);
+  const escsBefore = afterPin ? afterPin.inputs.filter(d => d === '\u001b').length : -1;
   await command(app, { cmd: 'key', key: 'Escape' });
   const closed = await waitFor(async () => { const b = await barState(app); return b && b.bar.summary.hidden === true && b.bar.summary.expanded === 'false' ? b : null; }, 6000);
-  check('F: Escape inside the bar closes it, and aria-expanded follows', !!closed);
+  check('F: Escape with the focus on the bar closes it, and aria-expanded follows', !!closed);
+  await sleep(500);
+  const afterEsc = await barState(app);
+  check('F: ...and that Escape did NOT reach the pty (the bar took it)', !!afterEsc && afterEsc.inputs.filter(d => d === '\u001b').length === escsBefore, JSON.stringify(afterEsc && afterEsc.inputs));
 
   // G -----------------------------------------------------------------------------
   const generatesBefore = fake.count('POST', '/api/generate');
