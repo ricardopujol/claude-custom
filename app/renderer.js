@@ -2637,7 +2637,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
               open: !!pop && !pop.hidden, expanded: chip ? chip.getAttribute('aria-expanded') : null,
               popRect: pop && !pop.hidden ? rect(pop) : null,
               graphs: pop ? [...pop.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, ours: g.querySelectorAll('.hg-ours').length,
-                latest: g.querySelectorAll('.hg-latest').length, axis: (g.querySelector('.hg-axis') || {}).textContent || '', readout: (g.querySelector('.hg-readout') || {}).textContent || '',
+                latest: g.querySelectorAll('.hg-latest').length, dots: g.querySelectorAll('.hg-dot-rest').length, axis: (g.querySelector('.hg-axis') || {}).textContent || '', readout: (g.querySelector('.hg-readout') || {}).textContent || '',
                 empty: !!g.querySelector('.hg-empty'), cursor: !!g.querySelector('.hg-cursor') })) : [],
             };
           })(),

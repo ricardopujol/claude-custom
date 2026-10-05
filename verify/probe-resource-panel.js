@@ -280,9 +280,9 @@ async function main() {
   check('8: clicking the chip opens the popover with a CPU and a memory graph', !!popped && popped.hist.graphs.map(g => g.kind).join() === 'cpu,mem' && popped.hist.expanded === 'true', JSON.stringify(popped && popped.hist.graphs));
   check('8: each graph draws its area, marks the latest point and has the 60 / 30 / now axis', !!popped && popped.hist.graphs.every(g => g.rest >= 1 && g.latest === 1 && /60 min\s*30\s*now/.test(g.axis)), JSON.stringify(popped && popped.hist.graphs));
   check('8: the popover sits fully inside the window, under the chip', !!popped && popped.hist.popRect.x >= 0 && popped.hist.popRect.x + popped.hist.popRect.w <= popped.hist.winW && popped.hist.popRect.y >= popped.hist.chipRect.y + popped.hist.chipRect.h, JSON.stringify(popped && [popped.hist.popRect, popped.hist.chipRect]));
-  await view(app, 'resourcesHistoryDo', { op: 'hover', kind: 'cpu', frac: 0.8 });
-  const hovered = await waitFor(async () => { const s = await rs(); const g = s.hist.graphs.find(x => x.kind === 'cpu'); return g && g.cursor && /^\d+ min ago · / .test(g.readout) ? s : null; }, 5000, 150);
-  check('8: hovering a minute shows its readout and a cursor', !!hovered, JSON.stringify(hovered && hovered.hist.graphs[0]));
+  await view(app, 'resourcesHistoryDo', { op: 'hover', kind: 'cpu', frac: 0.995 });   // the right edge: "now", where a sample is
+  const hovered = await waitFor(async () => { const s = await rs(); const g = s.hist.graphs.find(x => x.kind === 'cpu'); return g && g.cursor && /^now · CPU \d+(\.\d)?%, ours (\d+(\.\d)?%|<1%)/.test(g.readout) ? s : null; }, 5000, 150);
+  check('8: hovering the newest minute shows a real reading (a %, not "no data") and a cursor', !!hovered, JSON.stringify(hovered && hovered.hist.graphs[0]));
   await sleep(300);
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'resource-history-popover.png') });
   await view(app, 'resourcesClick', { chip: true });
@@ -465,20 +465,30 @@ async function main() {
   check('7: ticking it again brings the chip back', retick.ok === true && retick.before === false && !!chipBack, JSON.stringify(retick));
 
   // 8 (gap) a minimised stretch is a break in the line ----------------------------------
-  // lines only: the first sample after a gap is a lone dot until the next one joins it
-  const runsNow = async () => { const s = await rs(); return s.hist.spark[0] ? s.hist.spark[0].polylines : 0; };
+  // Main marks a break the moment the window is minimised, so a short minimise proves it. The MEMORY sparkline is counted
+  // (its first sample after the restore already has a value; the CPU one needs two): runs = lines + lone dots, and exactly one
+  // more is expected.
+  const runsNow = async () => { const s = await rs(); return s.hist.spark[1] ? s.hist.spark[1].polylines + s.hist.spark[1].dots : 0; };
   const runsBefore = await runsNow();
-  const gapStart = Date.now();
   await command(app, { cmd: 'window-state', state: 'minimize' });
-  await sleep(40000);
+  await sleep(8000);
   await command(app, { cmd: 'window-state', state: 'restore' });
-  const afterGap = await waitFor(async () => { const s = await rs(); return s.hist.spark[0] && s.hist.spark[0].polylines >= runsBefore + 1 ? s : null; }, 90000, 500);
-  check('8: a window minimised for 40 s leaves a break in the line: one more run after it, never a drop to 0', !!afterGap, `runs before ${runsBefore}, now ${await runsNow()} (minimised ${Math.round((Date.now() - gapStart) / 1000)} s)`);
+  const afterGap = await waitFor(async () => (await runsNow()) >= runsBefore + 1 ? true : null, 60000, 500);
+  const runsAfter = await runsNow();
+  check('8: a window minimised for 8 s leaves exactly one break in the memory line (one more run), never a drop to 0', !!afterGap && runsAfter === runsBefore + 1, `runs before ${runsBefore}, after ${runsAfter}`);
   await view(app, 'resourcesClick', { chip: true });
   const gapPop = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length === 2 ? s : null; }, 5000, 150);
-  check('8: the popover draws the break too (two or more areas in the CPU graph)', !!gapPop && gapPop.hist.graphs[0].rest >= 2, JSON.stringify(gapPop && gapPop.hist.graphs[0]));
+  check('8: the popover draws the break too (two or more marks in the memory graph: areas and dots)', !!gapPop && gapPop.hist.graphs[1].rest + gapPop.hist.graphs[1].dots >= 2, JSON.stringify(gapPop && gapPop.hist.graphs[1]));
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'resource-history-gap.png') });
   await view(app, 'resourcesHistoryDo', { op: 'esc' });
+  // the popover also closes when the window loses focus / the page hides (minimise hides it)
+  await view(app, 'resourcesClick', { chip: true });
+  await waitFor(async () => (await rs()).hist.open, 5000, 150);
+  await command(app, { cmd: 'window-state', state: 'minimize' });
+  await sleep(1500);
+  await command(app, { cmd: 'window-state', state: 'restore' });
+  const closedByHide = await waitFor(async () => { const s = await rs(); return s && s.hist && s.hist.open === false ? s : null; }, 10000, 300);
+  check('8: the popover closes when the window loses focus or the page hides', !!closedByHide);
 
   const errors = (app.out.match(/\[renderer:[a-z]+\].*/g) || []).filter(l => /error|not defined|undefined is not|cannot read/i.test(l));
   check('the renderer reported no errors', errors.length === 0, errors.slice(0, 3).join(' | '));
