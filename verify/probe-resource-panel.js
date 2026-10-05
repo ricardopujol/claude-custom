@@ -465,13 +465,14 @@ async function main() {
   check('7: ticking it again brings the chip back', retick.ok === true && retick.before === false && !!chipBack, JSON.stringify(retick));
 
   // 8 (gap) a minimised stretch is a break in the line ----------------------------------
-  const runsNow = async () => { const s = await rs(); return s.hist.spark[0] ? s.hist.spark[0].polylines + s.hist.spark[0].dots : 0; };
+  // lines only: the first sample after a gap is a lone dot until the next one joins it
+  const runsNow = async () => { const s = await rs(); return s.hist.spark[0] ? s.hist.spark[0].polylines : 0; };
   const runsBefore = await runsNow();
   const gapStart = Date.now();
   await command(app, { cmd: 'window-state', state: 'minimize' });
   await sleep(40000);
   await command(app, { cmd: 'window-state', state: 'restore' });
-  const afterGap = await waitFor(async () => { const s = await rs(); return s.hist.spark[0] && s.hist.spark[0].polylines + s.hist.spark[0].dots >= runsBefore + 1 ? s : null; }, 60000, 500);
+  const afterGap = await waitFor(async () => { const s = await rs(); return s.hist.spark[0] && s.hist.spark[0].polylines >= runsBefore + 1 ? s : null; }, 90000, 500);
   check('8: a window minimised for 40 s leaves a break in the line: one more run after it, never a drop to 0', !!afterGap, `runs before ${runsBefore}, now ${await runsNow()} (minimised ${Math.round((Date.now() - gapStart) / 1000)} s)`);
   await view(app, 'resourcesClick', { chip: true });
   const gapPop = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length === 2 ? s : null; }, 5000, 150);
