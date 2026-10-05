@@ -89,7 +89,7 @@ test('the sampler always runs, and only a minimised window pauses it', () => {
 
 test('the probe may read and click the Resources panel, by name only', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['resourcesState', 'resourcesClick']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  for (const a of ['resourcesState', 'resourcesClick', 'resourcesHistoryDo']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
 test('Q2: the Window menu has the chip toggle, the page hides the chip on a payload that says off, and main answers it gated', () => {

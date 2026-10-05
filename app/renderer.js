@@ -2608,7 +2608,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
-          chip: chip ? { hidden: chip.hidden, text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
+          chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
           rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
             fit: cellFit(r.querySelector('.res-name'), !r.classList.contains('res-plain')),
@@ -2621,6 +2621,24 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
           notes: q('.res-note').map(n => n.textContent),
+          hist: (() => {
+            const pop = document.getElementById('res-popover');
+            const rect = el => { const b = el.getBoundingClientRect(); return { x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height) }; };
+            const bar = document.getElementById('top-bar');
+            return {
+              points: resPayload && Array.isArray(resPayload.history) ? resPayload.history.length : 0,
+              spark: chip ? [...chip.querySelectorAll('svg.hs')].map(s => ({ polylines: s.querySelectorAll('polyline').length, dots: s.querySelectorAll('circle').length, w: s.width.baseVal.value, h: s.height.baseVal.value })) : [],
+              chipRect: chip && !chip.hidden ? rect(chip) : null,
+              chipClipped: chip ? chip.scrollWidth > chip.clientWidth : null,
+              barClipped: bar ? bar.scrollWidth > bar.clientWidth : null,
+              winW: window.innerWidth,
+              open: !!pop && !pop.hidden, expanded: chip ? chip.getAttribute('aria-expanded') : null,
+              popRect: pop && !pop.hidden ? rect(pop) : null,
+              graphs: pop ? [...pop.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, ours: g.querySelectorAll('.hg-ours').length,
+                latest: g.querySelectorAll('.hg-latest').length, axis: (g.querySelector('.hg-axis') || {}).textContent || '', readout: (g.querySelector('.hg-readout') || {}).textContent || '',
+                empty: !!g.querySelector('.hg-empty'), cursor: !!g.querySelector('.hg-cursor') })) : [],
+            };
+          })(),
           hasPayload: resPayload !== null,
           payloadHasModel: !!(resPayload && resPayload.model),
           machine: resPayload && resPayload.machine ? resPayload.machine : null,
@@ -2635,6 +2653,19 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const before = input.checked;
         input.click();
         return JSON.stringify({ ok: true, before, after: input.checked });
+      }
+      // #63 follow-up: the popover's other ways to close, and the hover readout, as the page would see them
+      case 'resourcesHistoryDo': {
+        if (a.op === 'esc') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return JSON.stringify({ ok: true }); }
+        if (a.op === 'outside') { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); return JSON.stringify({ ok: true }); }
+        if (a.op === 'hover') {
+          const plot = document.querySelector('#res-popover .hg[data-hist-graph="' + String(a.kind) + '"] .hg-plot');
+          if (!plot) return JSON.stringify({ ok: false, error: 'no graph to hover' });
+          const b = plot.getBoundingClientRect();
+          plot.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: b.left + b.width * Number(a.frac), clientY: b.top + b.height / 2 }));
+          return JSON.stringify({ ok: true });
+        }
+        return JSON.stringify({ ok: false, error: 'unknown op' });
       }
       case 'resourcesClick': {
         // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape
