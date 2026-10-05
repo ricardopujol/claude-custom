@@ -194,3 +194,61 @@ test('D4/D5 real PowerShell: kills a process with the right start time, refuses 
     for (const c of [a, b]) { try { process.kill(c.pid); } catch { /* gone */ } }
   }
 });
+
+// ---- the real script against a STUBBED process table: Get-Process and Get-CimInstance are replaced by functions, so no real process is touched ----
+// `procs`: [{ id, pp, name, cmd, st (FILETIME), start? (what Get-Process reports, default st) }]. Returns what the script printed and the pids it Kill()ed.
+async function runKillAgainstStub(targets, procs) {
+  const { tmpDir } = require('./tmp-dir');
+  const path = require('path');
+  const fs = require('fs');
+  const rows = procs.map(p => `@{ id=${p.id}; pp=${p.pp}; name='${p.name}'; cmd='${p.cmd || ''}'; st=[long]${p.st}; start=[long]${p.start || p.st}; dead=$false }`).join(',\n  ');
+  const stubs = `$global:tab = @(
+  ${rows}
+)
+$global:log = @()
+  function Get-Process { param($Id)
+  $r = $global:tab | Where-Object { $_.id -eq $Id -and -not $_.dead } | Select-Object -First 1
+  if (-not $r) { return $null }
+  $o = [pscustomobject]@{ Handle = 1; Rec = $r; StartTime = [datetime]::FromFileTimeUtc($r.start) }
+  $o | Add-Member -MemberType ScriptProperty -Name HasExited -Value { $this.Rec.dead }
+  $o | Add-Member -MemberType ScriptMethod -Name Kill -Value { $this.Rec.dead = $true; $global:log += "KILL $($this.Rec.id)" }
+  $o | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($ms) $true }
+  $o
+}
+  function Get-CimInstance { param($c)
+  $global:tab | Where-Object { -not $_.dead } | ForEach-Object { [pscustomobject]@{ ProcessId = $_.id; ParentProcessId = $_.pp; Name = $_.name; CommandLine = $_.cmd; CreationDate = [datetime]::FromFileTimeUtc($_.st) } }
+}
+`;
+  let out = '';
+  const exec = async (script) => {
+    const file = path.join(tmpDir('cc-stub-'), 'kill.ps1');
+    fs.writeFileSync(file, `${stubs}\n${script}\n$global:log | ForEach-Object { $_ }\n`);
+    out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    return out;
+  };
+  const res = await K.killVerified(targets, { exec });
+  return { res, killed: out.split(/\r?\n/).filter(l => l.startsWith('KILL ')).map(l => Number(l.slice(5))) };
+}
+
+test('N6 real PowerShell (stubbed table): a target refused as reused never seeds the sweep, so the unrelated process that took its pid keeps its children', { skip: process.platform !== 'win32', timeout: 120000 }, async () => {
+  const R = 134000000000000000n;
+  const procs = [
+    { id: 100, pp: 1, name: 'node.exe', cmd: 'node root', st: R },
+    { id: 200, pp: 1, name: 'node.exe', cmd: 'node Q', st: R + 900000000n },                        // Q: a different process now holds pid 200
+    { id: 300, pp: 200, name: 'node.exe', cmd: 'node C', st: R + 950000000n },                      // C: Q's child
+  ];
+  const { res, killed } = await runKillAgainstStub([{ pid: 100, start: String(R) }, { pid: 200, start: String(R + 1000n) }], procs);
+  assert.deepStrictEqual(res.map(r => [r.pid, r.status]), [[100, 'killed'], [200, 'reused']], JSON.stringify(res));
+  assert.deepStrictEqual(killed, [100], 'only the proven root ended: Q and its child C are not ours');
+});
+
+test('N6 real PowerShell (stubbed table): a target that was killed still seeds the sweep, so its late child is ended too', { skip: process.platform !== 'win32', timeout: 120000 }, async () => {
+  const R = 134000000000000000n;
+  const procs = [
+    { id: 100, pp: 1, name: 'node.exe', cmd: 'node root', st: R },
+    { id: 400, pp: 100, name: 'node.exe', cmd: 'node late', st: R + 5000000n },                     // started after the list was read
+  ];
+  const { res, killed } = await runKillAgainstStub([{ pid: 100, start: String(R) }], procs);
+  assert.deepStrictEqual(res.map(r => [r.pid, r.status]), [[100, 'killed'], [400, 'killed']], JSON.stringify(res));
+  assert.deepStrictEqual(killed, [100, 400]);
+});

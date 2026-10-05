@@ -30,8 +30,9 @@ function killScript(targets) {
   // The protected roles by image, as host/resource-tree.js roleOf names them (claude, Electron, a session host's host.js).
   return `$ErrorActionPreference='SilentlyContinue'
 $done = @{}
+$tried = @{}
 function K($id, [long]$want) {
-  $script:done[$id] = $want
+  $script:tried[$id] = 1
   $p = Get-Process -Id $id
   if (-not $p) { return "$id gone" }
   try { $null = $p.Handle } catch { return "$id failed could not open it: $($_.Exception.Message)" }
@@ -40,7 +41,7 @@ function K($id, [long]$want) {
   if ([math]::Abs($got - $want) -gt ${START_SLACK}) { return "$id reused" }
   try { $p.Kill() } catch { return "$id failed $($_.Exception.Message)" }
   [void]$p.WaitForExit(3000)
-  if ($p.HasExited) { return "$id killed" }
+  if ($p.HasExited) { $script:done[$id] = $want; return "$id killed" }
   return "$id failed it is still running"
 }
 function Below($seeds) {
@@ -73,9 +74,9 @@ if ($bad.Count -gt 0) {
 ${calls}
   if ($r -like '* killed') {
     for ($pass = 0; $pass -lt 3; $pass++) {
-      $more = @(Below $done | Where-Object { -not (Own $_) -and -not (Prot $_) -and -not $done.ContainsKey($_.id) })
+      $more = @(Below $done | Where-Object { -not (Own $_) -and -not (Prot $_) -and -not $tried.ContainsKey($_.id) })
       if ($more.Count -eq 0) { break }
-      foreach ($c in $more) { if (-not $done.ContainsKey($c.id)) { K $c.id $c.st } }
+      foreach ($c in $more) { if (-not $tried.ContainsKey($c.id)) { K $c.id $c.st } }
     }
   }
 }
