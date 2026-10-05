@@ -338,6 +338,36 @@ test('Q2: setChip saves the answer, tells every page at once, and refuses anythi
   assert.deepStrictEqual(written, [false, true]);
 });
 
+test('D8: reloadChip follows a change by another window to the saved setting, tells every page, and is quiet when nothing changed', () => {
+  let stored = null;
+  const calls = [];
+  const r = rig({ chipStore: { read: () => stored, write: () => {} }, send: (full, light) => calls.push([full, light]) });
+  r.svc.onUpdate(fullSnap(2, 10));
+  const before = calls.length;
+  assert.strictEqual(r.svc.reloadChip(), true);
+  assert.strictEqual(calls.length, before, 'unchanged: nothing is sent');
+  stored = false;
+  assert.strictEqual(r.svc.reloadChip(), false);
+  assert.strictEqual(r.svc.chipOn(), false);
+  assert.strictEqual(calls.length, before + 1);
+  assert.strictEqual(calls.at(-1)[0].chipOn, false);
+  assert.strictEqual(calls.at(-1)[1].chipOn, false);
+  assert.ok(calls.at(-1)[0].model, 'the model is not lost');
+  stored = 'garbage';
+  assert.strictEqual(r.svc.reloadChip(), true, 'an unusable value is "never set": on');
+});
+
+test('D8: a toggle made before the first sample is still sent to the pages (a payload with no model), not held back', () => {
+  const calls = [];
+  const r = rig({ chipStore: { read: () => null, write: () => {} }, send: (full, light) => calls.push([full, light]) });
+  assert.strictEqual(r.svc.get(), null, 'no sample yet: nothing to hand out');
+  assert.strictEqual(r.svc.setChip(false), false);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0][0].chipOn, false);
+  assert.strictEqual(calls[0][0].model, null);
+  assert.strictEqual(r.svc.get().chipOn, false, 'and a page that opens now is told');
+});
+
 test('Q2: the toggle never stops the sampling (the warning needs it with the chip off and the panel closed)', () => {
   const r = rig({ chipStore: { read: () => false, write: () => {} } });
   r.svc.refresh();

@@ -226,6 +226,8 @@ contextBridge.exposeInMainWorld('harness', {
   resources: {
     get: () => ipcRenderer.invoke('resources:get'),
     setChip: (on) => ipcRenderer.invoke('resources:setChip', on === true),
+    // the saved setting, read synchronously so the page decides the chip before its first paint
+    chipOn: () => ipcRenderer.sendSync('resources:chipOn') !== false,
     stop: (req) => ipcRenderer.invoke('resources:stop', req),
     onState: (fn) => (ipcRenderer.removeAllListeners('resources:state'), ipcRenderer.on('resources:state',
       (_e, payload) => {

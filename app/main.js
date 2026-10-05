@@ -93,6 +93,7 @@ const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/b
 const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
 const { killVerified } = require('../host/resource-kill');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
+const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
@@ -104,7 +105,7 @@ const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail }
 // its own key, so neither side can clobber the other's file.
 const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state') });
 const UI_KEY = 'look-global';
-const RESOURCE_CHIP_KEY = 'resource-chip';
+const resourceChip = createChipStore(uiStore);
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -795,6 +796,7 @@ function registerIpc() {
   ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
     ? resources.get(!!selectedView() && selectedView().webContents === e.sender)
     : null));
+  ipcMain.on('resources:chipOn', (e) => { e.returnValue = isTabView(e.sender) ? resourceChip.read() !== false : true; });
   ipcMain.handle('resources:setChip', (e, on) => (isTabView(e.sender) && resources ? resources.setChip(on) : null));
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
@@ -1570,12 +1572,11 @@ app.whenReady().then(async () => {
     warnAt: warnAtSeam,
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },
     // Q2: install-wide, in the same store as the other window-wide UI state
-    chipStore: {
-      read: () => { const v = uiStore.read(RESOURCE_CHIP_KEY, {}); return v && typeof v.show === 'boolean' ? v.show : null; },
-      write: (on) => { uiStore.update(RESOURCE_CHIP_KEY, {}, () => ({ show: on })); },
-    },
+    chipStore: resourceChip,
     log: (...a) => console.log(...a),
   });
+  // Other project windows are other mains sharing the saved file: follow their change of the chip, live, as the panels do.
+  watchChip({ file: path.join(__dirname, '..', '.harness', 'state', `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
 

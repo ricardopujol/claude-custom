@@ -85,7 +85,10 @@ test('Q2: the Window menu has the chip toggle, the page hides the chip on a payl
   assert.match(RAW, /function resourceChipRow\(\)/);
   assert.match(RAW, /node\('span', \{ text: 'Show CPU and memory in the top bar' \}\)/);
   assert.match(RAW, /layoutMenu\.appendChild\(resourceChipRow\(\)\);\s*appendPresetSection\(check\);/);
-  assert.match(BLOCK, /tbResourcesEl\.hidden = !!resPayload && resPayload\.chipOn === false;/);
+  assert.match(BLOCK, /tbResourcesEl\.hidden = !resChipOn;/);
+  assert.match(BLOCK, /let resChipOn = !\(resBridge && typeof resBridge\.chipOn === 'function' && resBridge\.chipOn\(\) === false\);/);
+  assert.match(PRELOAD, /chipOn: \(\) => ipcRenderer\.sendSync\('resources:chipOn'\) !== false/);
+  assert.match(MAIN, /ipcMain\.on\('resources:chipOn'/);
   assert.match(PRELOAD, /setChip: \(on\) => ipcRenderer\.invoke\('resources:setChip', on === true\)/);
   assert.match(MAIN, /ipcMain\.handle\('resources:setChip', \(e, on\) => \(isTabView\(e\.sender\) && resources \? resources\.setChip\(on\) : null\)\);/);
 });

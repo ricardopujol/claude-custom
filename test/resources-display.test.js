@@ -329,3 +329,12 @@ test('a child row\'s hover text is its FULL command line, and its Stop label nam
   assert.match(h, /<div class="res-child" title="node &quot;C:\/a b\/burn\.js&quot; 8 out\.pid 100"><span class="res-cname">burn\.js</);
   assert.match(h, /aria-label="Stop burn\.js, PID 77"/);
 });
+
+test('D8: the page\'s chip on/off: a payload with a real boolean wins, anything else keeps what the page had', () => {
+  assert.strictEqual(D.nextChipOn(true, { chipOn: false }), false);
+  assert.strictEqual(D.nextChipOn(false, { chipOn: true }), true);
+  for (const p of [null, undefined, {}, { chipOn: 'false' }, { chipOn: 0 }, { chipOn: null }]) {
+    assert.strictEqual(D.nextChipOn(false, p), false, JSON.stringify(p));
+    assert.strictEqual(D.nextChipOn(true, p), true, JSON.stringify(p));
+  }
+});

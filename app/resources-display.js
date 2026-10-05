@@ -236,7 +236,10 @@ function html(v) {
     + '<div class="res-footer">Every 10 s · paused while minimised</div></div>';
 }
 
-const API = { fmtCpu, fmtBytes, chipView, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, actionOf, view, html };
+/** The chip's on/off the page holds: a payload with a real boolean wins; anything else keeps what the page had. */
+const nextChipOn = (current, payload) => (payload && typeof payload.chipOn === 'boolean' ? payload.chipOn : current);
+
+const API = { fmtCpu, fmtBytes, chipView, nextChipOn, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, actionOf, view, html };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesDisplay = API;

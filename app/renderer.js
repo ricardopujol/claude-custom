@@ -1110,12 +1110,14 @@ function onModuleShown(id) {
 const resBridge = window.harness && window.harness.resources;
 let resState = window.resourcesDisplay.emptyState();
 let resPayload = null;              // the last payload main pushed: the chip draws from it, the panel from resState
+// The chip's on/off is read from main's saved setting synchronously, BEFORE the first paint, so "off" never flashes the chip.
+let resChipOn = !(resBridge && typeof resBridge.chipOn === 'function' && resBridge.chipOn() === false);
 const resRoot = document.getElementById('resources-root');
 const tbResourcesEl = document.getElementById('tb-resources');
 
 // Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
 function resourceChipRow() {
-  const box = node('input', { type: 'checkbox', checked: !(resPayload && resPayload.chipOn === false) });
+  const box = node('input', { type: 'checkbox', checked: resChipOn });
   box.addEventListener('change', () => { if (resBridge) resBridge.setChip(box.checked); });
   return node('label', { title: 'The machine CPU and memory chip in the top bar' }, [box, node('span', { text: 'Show CPU and memory in the top bar' })]);
 }
@@ -1129,7 +1131,7 @@ function renderResourcesChip() {
   tbResourcesEl.classList.toggle('res-red', c.level === 'red');
   tbResourcesEl.classList.toggle('res-dim', c.dim === true);
   // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
-  tbResourcesEl.hidden = !!resPayload && resPayload.chipOn === false;
+  tbResourcesEl.hidden = !resChipOn;
 }
 
 function renderResources() {
@@ -1146,10 +1148,12 @@ function renderResources() {
 
 function onResourcesState(payload) {
   resPayload = payload;
+  resChipOn = window.resourcesDisplay.nextChipOn(resChipOn, payload);
   resState = window.resourcesDisplay.withPayload(resState, payload);
   renderResourcesChip();
   renderResources();
 }
+renderResourcesChip();
 if (resBridge) {
   resBridge.onState(onResourcesState);
   // A page that opens between two pushes asks for the last one instead of waiting up to 10 s.

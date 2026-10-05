@@ -119,6 +119,15 @@ function createResourcesService({
     send(lastPayload, lastLight);
   }
 
+  // A page learns the chip's state from the payload; before the first sample there is none, so a bare one (no model, no
+  // machine) carries it.
+  function push() {
+    const bare = { model: null, status: { stale: false, expired: false, ageMs: null }, machine: null };
+    lastPayload = { ...(lastPayload || bare), chipOn };
+    lastLight = { ...(lastLight || bare), chipOn };
+    send(lastPayload, lastLight);
+  }
+
   async function stop(request) {
     return stopper.stop(request, {
       readProcs: () => sampler.sampleNow(),
@@ -146,11 +155,15 @@ function createResourcesService({
       if (typeof on !== 'boolean') return chipOn;
       chipOn = on;
       try { chipStore.write(on); } catch (err) { log('[resources] could not save the chip setting:', err && err.message); }
-      if (lastPayload) {
-        lastPayload = { ...lastPayload, chipOn };
-        lastLight = { ...lastLight, chipOn };
-        send(lastPayload, lastLight);
-      }
+      push();
+      return chipOn;
+    },
+    /** Another window (another main process sharing the saved file) changed the setting: follow it, live, like the panels' own toggles. */
+    reloadChip() {
+      const next = chipStore.read() !== false;
+      if (next === chipOn) return chipOn;
+      chipOn = next;
+      push();
       return chipOn;
     },
     get: (full = true) => (full ? lastPayload : lastLight),
