@@ -44,7 +44,7 @@ function rig(extra = {}) {
     sampler: { setWanted: w => wanted.push(w), sampleNow: async () => reread, snapshot: () => null },
     tabs: () => [{ key: 'k', cwd: 'C:\\r\\dev', branch: 'main', port: 7701 }, { key: 'k2', cwd: 'C:\\r\\feat', branch: null, port: 7702 }],
     claims: () => claims, installDirs: () => [INSTALL], ownPid: 10, cores: 4, labelOf: c => c.split('\\').pop(),
-    send: (ch, payload) => sent.push([ch, payload]), isSelectedView: id => selected.has(id), kill: pid => killed.push(pid),
+    send: payload => sent.push(payload), isSelectedView: id => selected.has(id), kill: pid => killed.push(pid),
     refreshStrip: () => refreshed.push(1), now: () => 5000, ...extra,
   });
   return { svc, sent, refreshed, wanted, killed, procs, setSelected: (s) => { selected = new Set(s); }, setReread: (r) => { reread = r; } };
@@ -79,8 +79,7 @@ test('a full sample is pushed to every page: the model, the status, and the mach
   const r = rig();
   r.svc.setShown('v1', true);
   r.svc.onUpdate(fullSnap(2, 50));
-  const [channel, p] = r.sent.at(-1);
-  assert.strictEqual(channel, 'resources:state');
+  const p = r.sent.at(-1);
   assert.ok(p.model, 'the model is there');
   assert.strictEqual(p.model.project.rows[0].key, 'k');
   assert.strictEqual(p.model.project.rows[0].label, 'main');
@@ -93,7 +92,7 @@ test('a full sample is pushed to every page: the model, the status, and the mach
 test('a machine-only sample pushes the chip\'s figures and no model', () => {
   const r = rig();
   r.svc.onUpdate(snap({ mode: 'machine', machine: { last: sampleAt(world(), 0, 2), prev: sampleAt(world(), 0, 1) } }));
-  const p = r.sent.at(-1)[1];
+  const p = r.sent.at(-1);
   assert.strictEqual(p.model, null);
   assert.ok(Math.abs(p.machine.cpu - 50) < 1e-6);
 });
@@ -101,7 +100,7 @@ test('a machine-only sample pushes the chip\'s figures and no model', () => {
 test('before any sample the chip has no machine figures: null, not zeros', () => {
   const r = rig();
   r.svc.onUpdate(snap({ mode: 'machine', failures: 1, stale: true, lastGoodAt: null }));
-  const p = r.sent.at(-1)[1];
+  const p = r.sent.at(-1);
   assert.strictEqual(p.machine, null);
   assert.deepStrictEqual(p.status, { stale: true, expired: false, ageMs: null });
 });
@@ -110,7 +109,7 @@ test('get returns the last payload for a page that just opened, or null', () => 
   const r = rig();
   assert.strictEqual(r.svc.get(), null);
   r.svc.onUpdate(fullSnap(2, 10));
-  assert.strictEqual(r.svc.get(), r.sent.at(-1)[1]);
+  assert.strictEqual(r.svc.get(), r.sent.at(-1));
 });
 
 test('the tab warning: three samples over 40% turn it on and tell the strip; one under clears it', () => {
@@ -163,7 +162,7 @@ test('three failed samples in a row clear the warnings: a number nobody could me
 test('a tab whose host is not proven has no row and no warning, and a host with a reused pid is not believed', () => {
   const r = rig({ claims: () => [{ pid: 20, port: 7701, cwd: 'C:\\r\\dev', processStartedAt: '1' }] });
   r.svc.onUpdate(fullSnap(2, 60));
-  assert.deepStrictEqual(r.sent.at(-1)[1].model.project.rows, []);
+  assert.deepStrictEqual(r.sent.at(-1).model.project.rows, []);
 });
 
 test('stop: forwards to the guard with this window\'s session hosts, kills that pid only, and says what happened', async () => {

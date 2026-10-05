@@ -89,7 +89,7 @@ function createResourcesService({
     }
 
     lastPayload = { model: built, status, machine };
-    send('resources:state', lastPayload);
+    send(lastPayload);
   }
 
   async function stop(request) {

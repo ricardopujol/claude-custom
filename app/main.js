@@ -88,7 +88,11 @@ const repoActions = createRepoActions({
     return repoDragIcon;
   },
 });
-const { listBackgroundHosts } = require('../host/background-hosts');
+const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
+// The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
+const { createSampler } = require('../host/resource-sampler');
+const { createResourcesService } = require('./resources-service');
+const { killPidTree } = require('../host/kill-tree');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
@@ -356,6 +360,8 @@ function markSubmenu(branch) {
 
 let win = null;
 let tabShell = null;
+let resources = null;              // the Resources panel's service (#63), built once the shell exists
+let resourceSampler = null;
 let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
 let transcriptOccupancy = null;    // ...and the fallback producer: claims read off the subagent transcripts
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
@@ -453,8 +459,8 @@ function createWindow() {
     focusSelected();
   });
   win.on('blur', () => { focused = false; sendFocus(); });
-  win.on('minimize', () => { focused = false; });
-  win.on('restore', () => { focused = win.isFocused(); sendFocus(); });
+  win.on('minimize', () => { focused = false; if (resources) resources.setMinimised(true); });
+  win.on('restore', () => { focused = win.isFocused(); sendFocus(); if (resources) resources.setMinimised(false); });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
     win.on(ev, () => forEachView(layoutView));
   }
@@ -539,6 +545,8 @@ function createTabView(tab) {
 
   const wc = view.webContents;
   registerShortcuts(wc);
+  const viewId = wc.id;
+  wc.once('destroyed', () => { if (resources) resources.forget(viewId); });
   wc.on('did-finish-load', () => {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
@@ -625,6 +633,8 @@ function applySelection(snapshot) {
   if (step.focus) live.webContents.focus();
   lastFocusedView = step.lastFocused;
   pushStripAccent();
+  // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
+  if (resources) resources.refresh();
 }
 
 // Ctrl+Alt+T. A form that is ALREADY open is not a transition, so neither
@@ -781,6 +791,16 @@ async function showBackgroundMenu() {
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
+  // The Resources panel (#63). `shown` is the page saying its panel is on screen; `stop` is the Stop button, which
+  // main re-checks in full (host/resource-stop.js) however the page asks.
+  ipcMain.on('resources:shown', (e, on) => {
+    if (!isTabView(e.sender) || !resources) return;
+    resources.setShown(e.sender.id, on === true);
+  });
+  ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources ? resources.get() : null));
+  ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
+    ? resources.stop(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
   // The strip page's own channels: gated on the window's OWN webContents, so a
   // tab's page (which has the other preload) cannot use them.
   ipcMain.on('strip:select', (e, key) => {
@@ -1474,6 +1494,8 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
+    // #63: each tab's "over 40% CPU for 30 s" chip, from the Resources service (cleared while the panel is hidden).
+    resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
     // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
     occupancy: { claims: () => occupancyService.current() },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
@@ -1513,6 +1535,40 @@ app.whenReady().then(async () => {
     },
   });
 
+  // The Resources panel (#63). Identity files of every build beside this one say which pids are session hosts;
+  // each is proven against the process table (host/resource-tree.js provenHosts) before anything is attributed.
+  const resourceInstalls = () => { try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; } };
+  const cpuCores = require('os').cpus().length;
+  resourceSampler = createSampler({ cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); } });
+  resources = createResourcesService({
+    sampler: resourceSampler,
+    tabs: () => tabShell.snapshot().tabs,
+    claims: () => {
+      const out = [];
+      for (const install of resourceInstalls()) {
+        let entries;
+        try { entries = identitiesIn(install); } catch { continue; }
+        for (const { port, parsed } of entries) {
+          if (parsed && Number.isInteger(parsed.pid) && parsed.pid > 0 && parsed.port === port && typeof parsed.cwd === 'string') {
+            out.push({ pid: parsed.pid, port, cwd: parsed.cwd, processStartedAt: parsed.processStartedAt });
+          }
+        }
+      }
+      return out;
+    },
+    installDirs: resourceInstalls,
+    ownPid: process.pid,
+    cores: cpuCores,
+    // a worktree's cwd names its PROJECT (the folder that holds `dev\`), the way the window title does
+    labelOf: (cwd) => { const p = projectOf(cwd); return projectLabel(p ? p.root : cwd); },
+    send: (payload) => forEachView((v) => v.webContents.send('resources:state', payload)),
+    isSelectedView: (id) => { const v = selectedView(); return !!v && !v.webContents.isDestroyed() && v.webContents.id === id; },
+    kill: (pid) => killPidTree(pid),
+    refreshStrip: () => { if (tabShell) tabShell.refresh(); },
+    log: (...a) => console.log(...a),
+  });
+  resourceSampler.start();
+
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
@@ -1551,4 +1607,4 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('will-quit', () => { if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
+app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
