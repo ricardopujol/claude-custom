@@ -75,3 +75,36 @@ test('kill guard: pid 1 and a one-digit start are the smallest accepted values',
   await K.killVerified([{ pid: 1, start: '0' }], { exec });
   assert.strictEqual(calls.length, 1);
 });
+
+// pid is a Windows DWORD and start is cast to [long] in the script: a value past either range is not a process.
+const OUT_OF_RANGE = [
+  ['pid 1e21 (an integer to JS, written as 1e+21 into the script)', { pid: 1e21, start: '1' }],
+  ['pid one past a DWORD', { pid: 4294967296, start: '1' }],
+  ['start of 20 digits', { pid: 5, start: '12345678901234567890' }],
+  ['start with leading zeros past 19 digits', { pid: 5, start: '00000000000000000001' }],
+  ['start one past a signed 64-bit integer', { pid: 5, start: '9223372036854775808' }],
+  ['start of 19 nines', { pid: 5, start: '9999999999999999999' }],
+];
+for (const [name, target] of OUT_OF_RANGE) {
+  test(`kill guard: ${name} is refused and nothing is executed`, async () => {
+    const { calls, exec } = recording();
+    const r = await K.killVerified([target], { exec });
+    assert.strictEqual(calls.length, 0);
+    assert.deepStrictEqual(r, [{ pid: target.pid, status: 'failed', text: 'not a valid target' }]);
+  });
+}
+
+for (const [name, target] of [
+  ['the largest DWORD pid', { pid: 4294967295, start: '1' }],
+  ['the largest signed 64-bit start', { pid: 5, start: '9223372036854775807' }],
+  ['a real FILETIME start (18 digits)', { pid: 5, start: '134355977388659781' }],
+  ['a short start that starts with a 9 (length decides, not the leading digit)', { pid: 5, start: '999999999999999999' }],
+  ['a 19-digit start below the maximum', { pid: 5, start: '9223372036854775806' }],
+  ['a 19-digit start with a smaller leading digit', { pid: 5, start: '1999999999999999999' }],
+]) {
+  test(`kill guard: ${name} IS executed`, async () => {
+    const { calls, exec } = recording();
+    await K.killVerified([target], { exec });
+    assert.strictEqual(calls.length, 1);
+  });
+}
