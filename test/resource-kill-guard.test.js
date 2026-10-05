@@ -26,6 +26,14 @@ const BAD = [
   ['start with an injected line', { pid: 5, start: '1\ncalc' }],
   ['start with a trailing newline', { pid: 5, start: '1\n' }],
   ['start negative', { pid: 5, start: '-1' }],
+  ['start with a backtick', { pid: 5, start: '1`calc' }],
+  ['start with a subexpression', { pid: 5, start: '1$(calc)' }],
+  ['start with a space', { pid: 5, start: '1 2' }],
+  ['start with a leading space', { pid: 5, start: ' 1' }],
+  ['start with a leading +', { pid: 5, start: '+1' }],
+  ['start with a leading -', { pid: 5, start: '-1' }],
+  ['start in Arabic-Indic digits', { pid: 5, start: String.fromCharCode(0x661, 0x662, 0x663) }],
+  ['start in full-width digits', { pid: 5, start: String.fromCharCode(0xff11, 0xff12, 0xff13) }],
   ['null target', null],
 ];
 
