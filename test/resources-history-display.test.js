@@ -17,7 +17,7 @@ const run = (from, n, over) => Array.from({ length: n }, (_, i) => pt(from + i *
 
 test('fractions: cpu is a percent, memory is used over total, an unmeasured one is null', () => {
   assert.deepStrictEqual(D.fractions(pt(1, { cpu: 50, cpuOurs: 20, memUsed: 250, memOurs: 100 })),
-    { at: 1, cpu: 0.5, cpuOurs: 0.2, mem: 0.25, memOurs: 0.1 });
+    { at: 1, brk: false, cpu: 0.5, cpuOurs: 0.2, mem: 0.25, memOurs: 0.1 });
   const f = D.fractions(nul(1));
   assert.deepStrictEqual([f.cpu, f.cpuOurs, f.mem, f.memOurs], [null, null, null, null]);
   assert.strictEqual(D.fractions(pt(1, { memTotal: 0 })).mem, null, 'no total, no fraction (never a divide to Infinity)');
@@ -34,11 +34,11 @@ test('segments: a null splits the line in two, it is not a point at 0', () => {
   assert.ok(segs.flat().every(p => p.v === 0.4));
 });
 
-test('segments: a time gap over 2.5 samples (a minimised window) splits the line', () => {
-  const pts = [...run(NOW - 600000, 3), ...run(NOW - 120000, 3)];
-  assert.strictEqual(D.segments(pts, 'cpu').length, 2);
-  assert.strictEqual(D.segments([pt(1000), pt(1000 + 24000)], 'cpu').length, 1, 'a late sample is not a gap');
-  assert.strictEqual(D.segments([pt(1000), pt(1000 + 26000)], 'cpu').length, 2);
+test('segments: a point marked brk starts a new run; spacing alone never does (a slow sample is not a missed one)', () => {
+  const pts = [...run(NOW - 600000, 3), { ...pt(NOW - 300000), brk: true }, pt(NOW - 290000)];
+  const segs = D.segments(pts, 'cpu');
+  assert.deepStrictEqual(segs.map(r => r.length), [3, 2]);
+  assert.strictEqual(D.segments([pt(0), pt(26000), pt(26000 + 3600000 / 2)], 'cpu').length, 1, 'no break without a marker, however far apart');
 });
 
 test('segments: no points, no segments', () => {
@@ -153,4 +153,48 @@ test('chipHtml: each figure is followed by its own sparkline, and a figure is es
   const html = D.chipHtml('CPU 71%', '21.4 GB / 32.0 GB', run(NOW - 60000, 4), NOW);
   assert.match(html, /^<span class="tbr-n">CPU 71%<\/span><svg class="hs"[\s\S]*<\/svg><span class="tbr-n">21\.4 GB \/ 32\.0 GB<\/span><svg class="hs"/);
   assert.match(D.chipHtml('<b>', '&', [], NOW), /<span class="tbr-n">&lt;b&gt;<\/span>[\s\S]*<span class="tbr-n">&amp;<\/span>/);
+});
+
+// ---- review fixes (Dexter, PR #114 D1 D2 D5 D6, Miguel S1) -----------------------------------------------------------------
+
+test('D2: where the total is null, "ours" is null too: nothing orange is drawn across a break in the total', () => {
+  const f = D.fractions(pt(1, { cpu: null, cpuOurs: 10 }));
+  assert.strictEqual(f.cpuOurs, null);
+  assert.strictEqual(D.fractions(pt(1, { memUsed: null, memOurs: 100 })).memOurs, null);
+  const pts = [pt(NOW - 22000, { cpu: 50, cpuOurs: 10 }), pt(NOW - 11000, { cpu: null, cpuOurs: 10 }), pt(NOW, { cpu: 50, cpuOurs: 10 })];
+  assert.deepStrictEqual(D.segments(pts, 'cpuOurs').map(r => r.length), [1, 1]);
+  const html = D.graph(pts, 'cpu', NOW);
+  assert.ok(!/<path class="hg-ours"/.test(html), 'no orange area spanning the null point');
+});
+
+test('D6: "ours" is clipped to the total in the figures, exactly as the graph does', () => {
+  assert.strictEqual(D.fractions(pt(1, { cpu: 5, cpuOurs: 6 })).cpuOurs, 0.05);
+  assert.strictEqual(D.readout([pt(NOW, { cpu: 5, cpuOurs: 6 })], NOW, 0, 'cpu'), 'now · CPU 5.0%, ours 5.0%');
+  assert.strictEqual(D.readout([pt(NOW, { memUsed: 500, memOurs: 700, memTotal: 1000 })], NOW, 0, 'mem'), 'now · memory 0 MB, ours 0 MB');
+});
+
+test('D6: the readout takes the nearest MEASURED point near the minute, not a nearer failure', () => {
+  const target = NOW - 12 * 60000;
+  const pts = [pt(target - 9000, { cpu: 33, cpuOurs: 3 }), nul(target + 2000)];
+  assert.strictEqual(D.readout(pts, NOW, 12, 'cpu'), '12 min ago · CPU 33%, ours 3.0%');
+  assert.strictEqual(D.readout([nul(target)], NOW, 12, 'cpu'), '12 min ago · no data');
+});
+
+test('D5: a lone measured point is drawn in the graph (a dot, as in the sparkline); "Collecting data" only when nothing is drawable', () => {
+  const lone = [pt(NOW - 600000, { memUsed: 8, memOurs: 2, memTotal: 16 }), nul(NOW - 300000), pt(NOW)];
+  const html = D.graph(lone, 'mem', NOW);
+  assert.strictEqual((html.match(/class="hg-dot-rest"/g) || []).length, 2);
+  assert.ok(!/collecting/i.test(html));
+  assert.ok(/collecting/i.test(D.graph([nul(NOW - 10000), nul(NOW)], 'mem', NOW)));
+});
+
+test('D1 (display): a point later than "now" is not drawn pinned at the right edge', () => {
+  const svg = D.sparkline([pt(NOW + 60000)], 'cpu', NOW);
+  assert.ok(!/<polyline|<circle/.test(svg));
+});
+
+test('S1: the readout is escaped where it enters the markup', () => {
+  const html = D.graph([pt(NOW)], 'cpu', NOW);
+  assert.match(html, /<div class="hg-readout">now · CPU 40%, ours 10%<\/div>/);
+  assert.strictEqual(D.esc('<&>'), '&lt;&amp;&gt;');
 });
