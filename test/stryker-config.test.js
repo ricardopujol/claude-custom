@@ -176,6 +176,10 @@ test('no test in the command reads a MUTATED module as text', () => {
   const TOLERATED = new Set([
     'openrouter.test.js',        // asserts a comment in host/openrouter.js
     'secret-vault-lock.test.js', // asserts the B2(a) limit paragraph
+    // Reads app/tab-strip.js as text only to RUN it as a plain <script> in a vm context (the load-time accent wiring
+    // cannot be reached any other way). Instrumented text still runs there, and `process` is injected for it. It
+    // asserts no code shape. A named exception, on purpose.
+    'tab-strip-accent-wiring.test.js',
   ]);
 
   // THE BASENAME ANYWHERE INSIDE THE QUOTES. Mortimer, PR #42 run 3, and this is
