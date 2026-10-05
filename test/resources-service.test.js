@@ -162,6 +162,17 @@ test('N4: a minimise gap forgets the warning counts and clears a lit chip (the s
   assert.ok(lit.refreshed.length > before, 'the strip is told');
 });
 
+test('N6: the Stop own re-read (an `adhoc` sample) is shown but does not step the warning counters', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 60));
+  r.svc.onUpdate(fullSnap(3, 60));
+  r.svc.onUpdate({ ...fullSnap(4, 60), adhoc: true });
+  assert.strictEqual(r.svc.warnFor('k'), null, 'two scheduled samples and one off-cadence one are not 30 s');
+  assert.ok(r.sent.at(-1).model, 'the page still gets the fresh model');
+  r.svc.onUpdate(fullSnap(5, 60));
+  assert.ok(r.svc.warnFor('k'), 'the third scheduled sample lights it');
+});
+
 test('three failed samples in a row clear the warnings: a number nobody could measure is not a warning', () => {
   const r = rig();
   for (let n = 2; n <= 4; n++) r.svc.onUpdate(fullSnap(n, 60));

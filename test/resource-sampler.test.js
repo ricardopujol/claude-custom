@@ -174,6 +174,17 @@ test('sampleNow waits for a run in flight, then takes a fresh full sample and re
   assert.deepStrictEqual(procs.map(p => p.pid), [77]);
 });
 
+test('N6: the update after a Stop own re-read is marked `adhoc`, a scheduled one is not', async () => {
+  const { sampler, updates } = rig([text(1, { procs: P }), text(2, { procs: P })]);
+  sampler.start();
+  sampler.setWanted({ panel: true, chip: true });
+  await until(() => updates.length === 1);
+  assert.notStrictEqual(updates[0].adhoc, true);
+  await sampler.sampleNow();
+  assert.strictEqual(updates.length, 2);
+  assert.strictEqual(updates[1].adhoc, true);
+});
+
 test('sampleNow answers null when the sample fails', async () => {
   const { sampler } = rig([new Error('boom')]);
   assert.strictEqual(await sampler.sampleNow(), null);

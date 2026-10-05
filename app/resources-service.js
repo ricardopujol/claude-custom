@@ -92,7 +92,8 @@ function createResourcesService({
     if (built && snap.expired !== true) {
       // Only a FRESH sample steps the counters. After a failed sample the sampler re-sends the last good one, and
       // stepping on it would count one real 50% reading three times (Dexter, PR #113 finding 3).
-      if (snap.sample !== lastStepped) {
+      // Stop's own re-read (`adhoc`) is off the 10 s cadence: shown, but not counted (Dexter, PR #113 N6).
+      if (snap.sample !== lastStepped && snap.adhoc !== true) {
         lastStepped = snap.sample;
         const next = new Map();
         const present = new Set();

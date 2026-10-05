@@ -73,7 +73,8 @@ function policy(wanted) {
  * createSampler({ exec, cores, onUpdate, intervalMs, now, setTimer, clearTimer }) ->
  *   { start, stop, setWanted({ panel, chip }), sampleNow() -> procs | null, snapshot() }
  * onUpdate gets the snapshot after every sample, good or failed:
- *   { mode, sample, prev, machine: { last, prev }, failures, lastGoodAt, stale, expired }
+ *   { mode, sample, prev, machine: { last, prev }, failures, lastGoodAt, stale, expired, adhoc? }
+ * `adhoc` marks the sample Stop asked for off the cadence: it is shown, but it is not one of the 10 s steps the warning counts.
  */
 function createSampler({
   exec = createExec(), cores, onUpdate = () => {}, intervalMs = INTERVAL_MS,
@@ -98,9 +99,9 @@ function createSampler({
     failures, lastGoodAt, stale: failures > 0, expired: failures >= EXPIRE_AFTER,
   });
   // A listener that throws must not stop sampling, and must not go unseen either.
-  const emit = () => { try { onUpdate(snapshot()); } catch (err) { log('[resources] update listener threw:', (err && err.stack) || err); } };
+  const emit = (adhoc = false) => { try { onUpdate(adhoc ? { ...snapshot(), adhoc: true } : snapshot()); } catch (err) { log('[resources] update listener threw:', (err && err.stack) || err); } };
 
-  function take(mode) {
+  function take(mode, adhoc = false) {
     if (running) return running;
     running = (async () => {
       let dropped = false;
@@ -126,7 +127,7 @@ function createSampler({
         running = null;
         inFlight = null;
       }
-      if (!dropped) emit();
+      if (!dropped) emit(adhoc);
     })();
     return running;
   }
@@ -180,7 +181,7 @@ function createSampler({
     async sampleNow() {
       if (running) await running;
       const before = last;
-      await take('full');
+      await take('full', true);
       return failures === 0 && last && last !== before ? last.procs : null;
     },
     snapshot,
