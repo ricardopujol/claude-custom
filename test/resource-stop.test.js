@@ -103,7 +103,7 @@ test('stop: re-reads the table, kills exactly that pid through the vetted path, 
     kill: async (targets) => { asked.push(targets.map(t => t.pid)); return targets.map(t => ({ pid: t.pid, status: 'killed' })); },
   });
   assert.deepStrictEqual(r, { ok: true, pid: 23, name: 'node.exe' });
-  assert.deepStrictEqual(asked, [[24, 23]]);
+  assert.deepStrictEqual(asked, [[23, 24]]);
   assert.strictEqual(reads, 1);
 });
 
