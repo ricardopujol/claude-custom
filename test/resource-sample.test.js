@@ -14,7 +14,7 @@ const plus = (ts, n) => String(BigInt(ts) + BigInt(n));
 
 function raw({ procs = [], perf = [], cpu = null, os = null, end = true, bom = false } = {}) {
   const body = JSON.stringify({ procs, perf, cpu, os });
-  return (bom ? '﻿' : '') + body + (end ? '\nEND' : '');
+  return (bom ? String.fromCharCode(0xfeff) : '') + body + (end ? '\nEND' : '');
 }
 
 const proc = (pid, ppid, start, extra = {}) => ({ pid, ppid, name: 'x.exe', cmd: null, start: String(start), priv: 1000, ...extra });

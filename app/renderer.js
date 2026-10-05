@@ -1095,11 +1095,107 @@ function onModuleShown(id) {
   if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
+  if (id === 'resources') renderResources();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
   if (id === 'vault') renderVault();
 }
+
+// --- the Resources panel and the top-bar chip (BACKLOG #63) ----------------------------------------------------
+// RESOURCES-BEGIN
+// app/resources-display.js decides what is drawn. The figures come from main's sampler (app/resources-service.js),
+// which also decides WHEN it samples: the process tree only while this page says its panel is showing (the selected
+// tab, this window visible), the machine totals for the chip otherwise. Nothing here reads the OS.
+const resBridge = window.harness && window.harness.resources;
+let resState = window.resourcesDisplay.emptyState();
+let resPayload = null;              // the last payload main pushed: the chip draws from it, the panel from resState
+let resReportedShown = null;        // what this page last told main, so it says it once per change
+const resRoot = document.getElementById('resources-root');
+const tbResourcesEl = document.getElementById('tb-resources');
+
+function renderResourcesChip() {
+  if (!tbResourcesEl) return;
+  const c = window.resourcesDisplay.chipView(resPayload);
+  tbResourcesEl.textContent = c.text;
+  tbResourcesEl.title = c.title;
+  tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
+  tbResourcesEl.classList.toggle('res-red', c.level === 'red');
+  tbResourcesEl.classList.toggle('res-dim', c.dim === true);
+}
+
+function renderResources() {
+  if (!resRoot || !shownModules.has('resources')) return;
+  // The markup is replaced on every draw: keep the keyboard on the same row or button.
+  const focused = document.activeElement && resRoot.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focused && focused.dataset ? { act: focused.dataset.resAct, key: focused.dataset.resKey, pid: focused.dataset.resPid } : null;
+  resRoot.innerHTML = window.resourcesDisplay.html(window.resourcesDisplay.view(resState));
+  if (!keep) return;
+  const again = [...resRoot.querySelectorAll('[data-res-act]')].find(el => el.dataset.resAct === keep.act
+    && el.dataset.resKey === keep.key && el.dataset.resPid === keep.pid);
+  if (again) again.focus();
+}
+
+// Tell main whether this page's panel is on screen. Sent on a change only: main starts and stops the sample on it.
+function syncResourcesShown() {
+  if (!resBridge) return;
+  const want = shownModules.has('resources') && document.visibilityState === 'visible';
+  if (want === resReportedShown) return;
+  resReportedShown = want;
+  try { resBridge.setShown(want); } catch { /* main is gone: the window is closing */ }
+}
+document.addEventListener('visibilitychange', syncResourcesShown);
+
+function onResourcesState(payload) {
+  resPayload = payload;
+  resState = window.resourcesDisplay.withPayload(resState, payload);
+  renderResourcesChip();
+  renderResources();
+}
+if (resBridge) {
+  resBridge.onState(onResourcesState);
+  // A page that opens between two pushes asks for the last one instead of waiting up to 10 s.
+  resBridge.get().then((p) => { if (p && !resPayload) onResourcesState(p); }, () => {});
+}
+
+async function resourcesAct(a) {
+  const D = window.resourcesDisplay;
+  if (a.act === 'toggle') resState = D.toggle(resState, a.key);
+  else if (a.act === 'ask-stop') resState = D.askStop(resState, a);
+  else if (a.act === 'cancel-stop') resState = D.cancelStop(resState);
+  else if (a.act === 'confirm-stop') {
+    const req = resState.confirm;
+    if (!req || !resBridge) return;
+    let result;
+    try { result = await resBridge.stop({ pid: req.pid, startTime: req.start }); } catch { result = null; }
+    resState = D.stopResult(resState, req, result || { ok: false, reason: 'unreadable', text: 'the request did not get through' });
+  }
+  renderResources();
+}
+if (resRoot) {
+  resRoot.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-res-act]') : null;
+    const a = el ? window.resourcesDisplay.actionOf(el.dataset) : null;
+    if (a) resourcesAct(a);
+  });
+  // A row is a role=button div: Enter and Space work it like a button.
+  resRoot.addEventListener('keydown', (e) => {
+    if ((e.key !== 'Enter' && e.key !== ' ') || !e.target || e.target.tagName === 'BUTTON') return;
+    const a = window.resourcesDisplay.actionOf(e.target.dataset);
+    if (!a) return;
+    e.preventDefault();
+    resourcesAct(a);
+  });
+}
+// The chip opens the panel and takes the keyboard to it.
+if (tbResourcesEl) {
+  tbResourcesEl.addEventListener('click', () => {
+    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(placementLayout(), 'resources'), { select: 'resources' });
+    else selectModule('resources');
+    setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
+  });
+}
+// RESOURCES-END
 
 // Leaving the vault puts every revealed secret back out of sight -- both the
 // listed ones and whatever is half-typed in the field. A value left on screen
@@ -1129,6 +1225,7 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
   for (const id of fx.newlyShown) onModuleShown(id);
+  syncResourcesShown();
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
   if (fx.focus === 'term') term.focus();
@@ -2417,6 +2514,33 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           focus: (() => { const d = document.activeElement && document.activeElement.dataset; return d && root.contains(document.activeElement)
             ? { act: d.wandAct || null, id: d.wandId || null, field: d.wandField || null } : null; })(),
         });
+      }
+      // backlog #63: verify/probe-resource-panel.js reads the Resources panel and the chip, and clicks as a pointer would
+      case 'resourcesState': {
+        const q = s => [...document.querySelectorAll('#resources-root ' + s)];
+        const chip = document.getElementById('tb-resources');
+        return JSON.stringify({
+          scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
+          shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
+          reportedShown: resReportedShown,
+          chip: chip ? { text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
+          text: (document.getElementById('resources-root') || {}).textContent || '',
+          rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open') })),
+          children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: (c.querySelector('.res-ccmd') || {}).textContent || '',
+            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
+          confirm: (q('.res-confirm')[0] || {}).textContent || null,
+          notes: q('.res-note').map(n => n.textContent),
+          hasPayload: resPayload !== null,
+          machine: resPayload && resPayload.machine ? resPayload.machine : null,
+        });
+      }
+      case 'resourcesClick': {
+        const sel = a.chip === true ? '#tb-resources' : '#resources-root [data-res-act="' + String(a.act) + '"]'
+          + (a.key !== undefined ? '[data-res-key="' + String(a.key) + '"]' : '') + (a.pid !== undefined ? '[data-res-pid="' + String(a.pid) + '"]' : '');
+        const el = document.querySelector(sel);
+        if (!el) return JSON.stringify({ ok: false, error: 'no resources control ' + JSON.stringify(a) });
+        el.click();
+        return JSON.stringify({ ok: true });
       }
       case 'wandClick': {
         const btn = [...document.querySelectorAll('#wand-root button[data-wand-act]')].find(b => b.dataset.wandAct === a.act
