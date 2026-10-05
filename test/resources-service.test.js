@@ -102,7 +102,7 @@ test('get returns the last payload for a page that just opened, or null', () => 
   const r = rig();
   assert.strictEqual(r.svc.get(), null);
   r.svc.onUpdate(fullSnap(2, 10));
-  assert.strictEqual(r.svc.get(), r.sent.at(-1));
+  assert.deepStrictEqual(r.svc.get(), r.sent.at(-1));
 });
 
 test('the tab warning: three samples over 40% turn it on and tell the strip; one under clears it', () => {
@@ -305,7 +305,7 @@ test('S5: the full payload (command lines) goes to the page showing the panel; a
   assert.strictEqual(light.model, null);
   assert.deepStrictEqual(light.machine, full.machine);
   assert.deepStrictEqual(light.status, full.status);
-  assert.strictEqual(r.svc.get(true), full);
+  assert.deepStrictEqual(r.svc.get(true), full);
   assert.strictEqual(r.svc.get(false), light);
 });
 
@@ -385,74 +385,167 @@ test('Q2: a store that throws on save is logged, not raised, and the setting sti
 });
 
 // ---- the one-hour history (#63 follow-up) -----------------------------------------------------------------------
+// Points are ordered and spaced by a MONOTONIC clock (`mono`), never by the wall clock (Dexter, PR #114 D1/D3): one wall-clock
+// step must not freeze or reorder the ring. A break is explicit (a null point, a minimise, a long silence), never a guess from
+// the spacing, because the cadence is a 10 s gap AFTER a sample and a slow sample is not a missed one (D3).
 
-test('history: each fresh sample adds one point (machine and ours) and rides in both payloads', () => {
-  const r = rig();
+function hrig(extra = {}) {
+  let t = 100000;
+  let wall = 5000;
+  const r = rig({ mono: () => t, now: () => wall, ...extra });
+  r.tick = (ms) => { t += ms; wall += ms; };
+  r.jumpWall = (ms) => { wall += ms; };
+  return r;
+}
+const hist = r => r.sent.at(-1).history;
+
+test('history: each fresh sample adds one point (machine and ours), in the SELECTED page payload', () => {
+  const r = hrig();
   r.svc.onUpdate(fullSnap(2, 50));
   const p = r.sent.at(-1);
   assert.strictEqual(p.history.length, 1);
+  assert.strictEqual(p.historyNow, 100000, 'the monotonic "now" the points are measured against');
   const pt = p.history[0];
-  assert.strictEqual(pt.at, 4000);
-  assert.ok(Math.abs(pt.cpu - 50) < 1e-6);
-  assert.ok(Math.abs(pt.cpuOurs - 50) < 1e-6);
+  assert.strictEqual(pt.at, 100000);
+  assert.ok(Math.abs(pt.cpu - 50) < 0.06);
+  assert.ok(Math.abs(pt.cpuOurs - 50) < 0.06);
   assert.strictEqual(pt.memUsed, 600);
   assert.strictEqual(pt.memTotal, 1000);
   assert.strictEqual(pt.memOurs, 850, 'ours: the private working sets of the process tree');
 });
 
-test('history: the light payload carries it too (the chip needs it on every page)', () => {
-  const r = rig();
+test('history: only the full (selected page) payload carries it, and get(false) does not', () => {
+  const r = hrig();
   r.svc.onUpdate(fullSnap(2, 50));
-  assert.strictEqual(r.sent.length, 1);
-  assert.strictEqual(r.svc.get(false).history.length, 1);
   assert.strictEqual(r.svc.get(true).history.length, 1);
+  assert.strictEqual(r.svc.get(false).history, undefined);
+  assert.strictEqual(r.svc.get(true).historyNow, 100000);
+});
+
+test('history: values are rounded at record time (CPU to 0.1)', () => {
+  const r = hrig();
+  r.svc.onUpdate(fullSnap(2, 33.3333));
+  assert.strictEqual(hist(r)[0].cpuOurs, 33.3);
 });
 
 test('history: the first sample has no CPU yet, so cpu is null (not 0) and memory is there', () => {
-  const r = rig();
+  const r = hrig();
   r.svc.onUpdate(fullSnap(1, 50));
-  const pt = r.sent.at(-1).history[0];
+  const pt = hist(r)[0];
   assert.strictEqual(pt.cpu, null);
   assert.strictEqual(pt.memUsed, 600);
 });
 
 test('history: a machine-only sample records the machine and no "ours"', () => {
-  const r = rig();
+  const r = hrig();
   r.svc.onUpdate(snap({ mode: 'machine', machine: { last: sampleAt(world(), 0, 2), prev: sampleAt(world(), 0, 1) } }));
-  const pt = r.sent.at(-1).history[0];
-  assert.ok(Math.abs(pt.cpu - 50) < 1e-6);
+  const pt = hist(r)[0];
+  assert.ok(Math.abs(pt.cpu - 50) < 0.06);
   assert.strictEqual(pt.cpuOurs, null);
   assert.strictEqual(pt.memOurs, null);
 });
 
-test('history: a re-sent old sample, or Stop\'s ad-hoc re-read, adds no point', () => {
-  const r = rig();
-  r.svc.onUpdate(fullSnap(2, 50));
-  r.svc.onUpdate(fullSnap(2, 50));                       // the same lastGoodAt: nothing new was measured
-  r.svc.onUpdate({ ...fullSnap(3, 50), lastGoodAt: 5000, adhoc: true });
-  assert.strictEqual(r.sent.at(-1).history.length, 1);
+test('history: a re-sent old sample (the same sample object) adds no point', () => {
+  const r = hrig();
+  const s = fullSnap(2, 50);
+  r.svc.onUpdate(s);
+  r.tick(10000);
+  r.svc.onUpdate({ ...s });
+  assert.strictEqual(hist(r).length, 1);
 });
 
-test('history: a failed sample is a null point, a break in the line and never a 0', () => {
-  const r = rig();
+test('D1: one wall-clock step (4 h ahead, then corrected) neither freezes nor reorders the ring', () => {
+  const r = hrig();
+  r.svc.onUpdate({ ...fullSnap(2, 50), lastGoodAt: 1000 });
+  r.tick(10000); r.jumpWall(4 * 3600 * 1000);
+  r.svc.onUpdate({ ...fullSnap(3, 50), lastGoodAt: 4 * 3600 * 1000 + 11000 });
+  r.tick(10000); r.jumpWall(-4 * 3600 * 1000);
+  r.svc.onUpdate({ ...fullSnap(4, 50), lastGoodAt: 21000 });
+  r.tick(10000);
+  r.svc.onUpdate({ ...fullSnap(5, 50), lastGoodAt: 31000 });
+  const h = hist(r);
+  assert.strictEqual(h.length, 4, 'every fresh sample kept its point');
+  assert.deepStrictEqual(h.map(p => p.at), [100000, 110000, 120000, 130000], 'in monotonic order, 10 s apart');
+});
+
+test('D1: a wall-clock step shows as a break (a jump of either sign), the monotonic spacing does not', () => {
+  const r = hrig();
   r.svc.onUpdate(fullSnap(2, 50));
+  r.tick(10000);
+  r.svc.onUpdate(fullSnap(3, 50));
+  r.tick(10000); r.jumpWall(-3600 * 1000);
+  r.svc.onUpdate(fullSnap(4, 50));
+  const h = hist(r);
+  assert.strictEqual(h[1].brk, undefined);
+  assert.strictEqual(h[2].brk, true);
+});
+
+test('D3: a slow but good sample (30 s after the last) is not a break', () => {
+  const r = hrig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.tick(30000);
+  r.svc.onUpdate(fullSnap(3, 50));
+  assert.strictEqual(hist(r)[1].brk, undefined);
+});
+
+test('history: a long silence (over a minute with no sample at all) is a break', () => {
+  const r = hrig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.tick(61000);
+  r.svc.onUpdate(fullSnap(3, 50));
+  assert.strictEqual(hist(r)[1].brk, true);
+});
+
+test('D4: a Stop re-read that stands in for a cadence tick still records its point; one right after a point adds none', () => {
+  const r = hrig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.tick(9500);
+  r.svc.onUpdate({ ...fullSnap(3, 50), adhoc: true });       // the cadence tick joined this read: it is that slot's point
+  assert.strictEqual(hist(r).length, 2);
+  r.tick(1000);
+  r.svc.onUpdate({ ...fullSnap(4, 50), adhoc: true });       // a second read 1 s later is not a new slot
+  assert.strictEqual(hist(r).length, 2);
+});
+
+test('history: a failed Stop re-read records nothing; a failed cadence sample is a null point (a break, never a 0)', () => {
+  const r = hrig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.tick(10000);
+  r.svc.onUpdate({ ...fullSnap(2, 50), failures: 1, stale: true, adhoc: true });
+  assert.strictEqual(hist(r).length, 1);
   r.svc.onUpdate({ ...fullSnap(2, 50), failures: 1, stale: true });
-  const h = r.sent.at(-1).history;
+  const h = hist(r);
   assert.strictEqual(h.length, 2);
   assert.deepStrictEqual([h[1].cpu, h[1].memUsed, h[1].cpuOurs, h[1].memOurs], [null, null, null, null]);
 });
 
-test('history: minimising keeps it (the time gap is the break); a chip toggle keeps it too', () => {
-  const r = rig();
+test('history: minimising marks a break before the next point; the points already there stay', () => {
+  const r = hrig();
   r.svc.onUpdate(fullSnap(2, 50));
   r.svc.setMinimised(true);
+  r.tick(6000);
   r.svc.setMinimised(false);
-  r.svc.setChip(false);
-  assert.strictEqual(r.sent.at(-1).history.length, 1);
+  r.svc.onUpdate(fullSnap(3, 50));
+  const h = hist(r);
+  assert.strictEqual(h.length, 2);
+  assert.strictEqual(h[1].brk, true);
 });
 
-test('history: a bare push before any sample carries an empty history', () => {
-  const r = rig();
+test('history: a chip toggle keeps the history and adds no break', () => {
+  const r = hrig();
+  r.svc.onUpdate(fullSnap(2, 50));
   r.svc.setChip(false);
-  assert.deepStrictEqual(r.sent.at(-1).history, []);
+  assert.strictEqual(hist(r).length, 1);
+  assert.strictEqual(hist(r)[0].brk, undefined);
+});
+
+test('history: a bare push before any sample carries an empty history, and resend() sends the last payloads again', () => {
+  const r = hrig();
+  r.svc.setChip(false);
+  assert.deepStrictEqual(hist(r), []);
+  r.svc.onUpdate(fullSnap(2, 50));
+  const n = r.sent.length;
+  r.svc.resend();
+  assert.strictEqual(r.sent.length, n + 1);
+  assert.strictEqual(r.sent.at(-1).history.length, 1);
 });

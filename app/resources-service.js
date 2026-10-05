@@ -21,6 +21,8 @@ const warning = require('../host/resource-warning');
 const stopper = require('../host/resource-stop');
 const { createHistory } = require('../host/resource-history');
 
+const HALF_CADENCE_MS = 5000;
+
 const basename = (p) => {
   const parts = String(p).split(/[\\/]+/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : String(p);
@@ -29,6 +31,8 @@ const basename = (p) => {
 function createResourcesService({
   sampler, tabs, claims, installDirs, ownPid, cores, labelOf = basename, send, kill,
   refreshStrip = () => {}, now = Date.now, log = () => {},
+  // The history is ordered and spaced by a MONOTONIC clock (ms), never the wall clock: one wall-clock step must not freeze it (PR #114 D1).
+  mono = () => performance.now(),
   // Q2: the top-bar chip's on/off, kept install-wide. `read()` -> true | false | null (null: never set or unreadable), `write(on)`.
   chipStore = { read: () => null, write: () => {} },
   // The warning's CPU threshold, 40 by default. A verification seam (CLAUDE_CUSTOM_RESOURCE_WARN_AT in app/main.js), so a
@@ -42,7 +46,8 @@ function createResourcesService({
   let lastLight = null;        // the same payload with no process model: what a page that is not showing the panel gets
   let lastSignature = '';
   const history = createHistory();   // the one-hour sparklines' data: in memory only, starts empty after a restart
-  let lastRecordedAt = null;
+  let lastRecordedSample = null;   // the sample object a point was last made from: a re-sent old one makes none
+  let lastRecordMono = -Infinity;
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
 
   // A minimised window wants nothing: the page's visibility is a second witness the app does not trust alone
@@ -72,20 +77,29 @@ function createResourcesService({
     try { refreshStrip(); } catch (err) { log('[resources] refreshStrip threw:', err && err.message); }
   }
 
-  // One point per fresh sample; a failed one is a null point (a break in the line, never a 0). Stop's off-cadence re-read and a
-  // re-sent old sample add nothing. A minimised window records nothing, and the view breaks the line on that time gap.
+  // One point per fresh sample; a failed one is a null point (a break in the line, never a 0). A re-sent old sample adds nothing.
+  // Stop's off-cadence re-read adds its point only when it stands in for a cadence slot (the tick that fired while it was in
+  // flight joined it and emits no sample of its own, PR #114 D4): when the last point is under half a cadence old it adds none.
+  // A minimised window records nothing; setMinimised marks the break.
   function record(snap, built, machine) {
-    if (snap.adhoc === true) return;
-    if (snap.failures > 0) { history.recordFailure(now()); return; }
-    if (typeof snap.lastGoodAt !== 'number' || snap.lastGoodAt === lastRecordedAt || !machine) return;
-    lastRecordedAt = snap.lastGoodAt;
+    const at = Math.round(mono());
+    if (snap.adhoc === true && (snap.failures > 0 || at - lastRecordMono < HALF_CADENCE_MS)) return;
+    if (snap.failures > 0) { history.recordFailure(at, now()); lastRecordMono = at; return; }
+    const sampleObj = snap.machine && snap.machine.last;
+    if (!sampleObj || sampleObj === lastRecordedSample || !machine) return;
+    lastRecordedSample = sampleObj;
+    lastRecordMono = at;
     const ours = built && built.machine ? built.machine.ours : null;
     history.record({
-      at: snap.lastGoodAt, cpu: machine.cpu,
+      at, wall: now(), cpu: machine.cpu,
       cpuOurs: ours ? ours.cpu : null, memOurs: ours ? ours.bytes : null,
       memUsed: machine.mem ? machine.mem.usedBytes : null, memTotal: machine.mem ? machine.mem.totalBytes : null,
     });
   }
+
+  // Only the SELECTED page's payload carries the history (the other pages' chips aren't on screen), as one copy; `historyNow`
+  // is the monotonic time the points are measured against.
+  const withHistory = full => (full ? { ...full, history: history.points(), historyNow: Math.round(mono()) } : full);
 
   function onUpdate(snap) {
     const last = snap.machine && snap.machine.last;
@@ -132,19 +146,19 @@ function createResourcesService({
     }
 
     record(snap, built, machine);
-    lastPayload = { model: built, status, machine, chipOn, history: history.points() };
-    lastLight = { model: null, status, machine, chipOn, history: history.points() };
+    lastPayload = { model: built, status, machine, chipOn };
+    lastLight = { model: null, status, machine, chipOn };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
-    send(lastPayload, lastLight);
+    send(withHistory(lastPayload), lastLight);
   }
 
   // A page learns the chip's state from the payload; before the first sample there is none, so a bare one (no model, no
   // machine) carries it.
   function push() {
     const bare = { model: null, status: { stale: false, expired: false, ageMs: null }, machine: null };
-    lastPayload = { ...(lastPayload || bare), chipOn, history: history.points() };
-    lastLight = { ...(lastLight || bare), chipOn, history: history.points() };
-    send(lastPayload, lastLight);
+    lastPayload = { ...(lastPayload || bare), chipOn };
+    lastLight = { ...(lastLight || bare), chipOn };
+    send(withHistory(lastPayload), lastLight);
   }
 
   async function stop(request) {
@@ -163,11 +177,14 @@ function createResourcesService({
     // chip) would carry across the gap and one reading after it could be "the third" (Dexter, PR #113 N4).
     setMinimised(on) {
       minimised = on === true;
+      if (minimised) history.markBreak();
       if (minimised) { lastStepped = null; setWarnings(new Map()); }
       refresh();
     },
     refresh,
     onUpdate,
+    /** The page that shows the chip changed (a tab was selected): it gets the last payload again, history included, at once. */
+    resend: push,
     chipOn: () => chipOn,
     /** Q2: "Show CPU and memory in the top bar". Only a real boolean counts; saved, then every page is told at once. */
     setChip(on) {
@@ -185,7 +202,7 @@ function createResourcesService({
       push();
       return chipOn;
     },
-    get: (full = true) => (full ? lastPayload : lastLight),
+    get: (full = true) => (full ? withHistory(lastPayload) : lastLight),
     warnFor(key) {
       const s = warnings.get(key);
       return s && s.on ? { pct: s.pct, level: s.level } : null;

@@ -98,3 +98,59 @@ test('property: at most 360 points, time strictly increasing, and a null never c
     },
   ));
 });
+
+// ---- breaks and rounding (Dexter, PR #114 D1/D3) ---------------------------------------------------------------------------
+
+test('markBreak: the next point carries brk, and the one after it does not; with nothing before it there is nothing to break', () => {
+  const h = H.createHistory();
+  h.markBreak();
+  h.record(good(10000));
+  assert.strictEqual(h.points()[0].brk, undefined, 'the first point has no "before"');
+  h.record(good(20000));
+  h.markBreak();
+  h.record(good(30000));
+  h.record(good(40000));
+  assert.deepStrictEqual(h.points().map(p => p.brk), [undefined, undefined, true, undefined]);
+});
+
+test('a step over a minute with no sample breaks the line; a slow 30 s one does not', () => {
+  const h = H.createHistory();
+  h.record(good(0));
+  h.record(good(30000));
+  h.record(good(30000 + 61000));
+  assert.deepStrictEqual(h.points().map(p => p.brk), [undefined, undefined, true]);
+});
+
+test('a wall-clock jump of either sign, against the monotonic spacing, breaks the line', () => {
+  const h = H.createHistory();
+  h.record(good(0, { wall: 1000000 }));
+  h.record(good(10000, { wall: 1010000 }));                 // wall agrees with the monotonic clock
+  h.record(good(20000, { wall: 1020000 + 4 * 3600000 }));   // 4 h ahead
+  h.record(good(30000, { wall: 1030000 }));                 // and back
+  h.record(good(40000, { wall: 1042000 }));                 // 2 s of slack is not a break
+  assert.deepStrictEqual(h.points().map(p => p.brk), [undefined, undefined, true, true, undefined]);
+});
+
+test('D1: the exact counterexample, T+4h then T+10s, keeps every point when time is the monotonic clock', () => {
+  const h = H.createHistory();
+  h.record(good(1000, { wall: 1000 }));
+  h.record(good(11000, { wall: 4 * 3600000 + 11000 }));
+  h.record(good(21000, { wall: 21000 }));
+  h.record(good(31000, { wall: 31000 }));
+  assert.deepStrictEqual(h.points().map(p => p.at), [1000, 11000, 21000, 31000]);
+});
+
+test('values are rounded when recorded: CPU to 0.1, bytes to whole numbers; a wall time is not stored', () => {
+  const h = H.createHistory();
+  h.record(good(1000, { cpu: 12.3456, cpuOurs: 0.04, memUsed: 1234.6, memOurs: 99.5, memTotal: 2000, wall: 5 }));
+  assert.deepStrictEqual(h.points()[0], { at: 1000, cpu: 12.3, cpuOurs: 0, memUsed: 1235, memOurs: 100, memTotal: 2000 });
+});
+
+test('a failure point can break too (after a minimise), and carries nulls', () => {
+  const h = H.createHistory();
+  h.record(good(1000));
+  h.markBreak();
+  h.recordFailure(11000);
+  assert.strictEqual(h.points()[1].brk, true);
+  assert.strictEqual(h.points()[1].cpu, null);
+});

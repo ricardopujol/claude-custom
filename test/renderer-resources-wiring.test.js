@@ -103,3 +103,7 @@ test('Q2: the Window menu has the chip toggle, the page hides the chip on a payl
   assert.match(PRELOAD, /setChip: \(on\) => ipcRenderer\.invoke\('resources:setChip', on === true\)/);
   assert.match(MAIN, /ipcMain\.handle\('resources:setChip', \(e, on\) => \(isTabView\(e\.sender\) && resources \? resources\.setChip\(on\) : null\)\);/);
 });
+
+test('the history goes to the selected page only: a newly selected page is re-sent the last payloads at once', () => {
+  assert.match(MAIN, /if \(resources && live !== resHistoryView\) \{ resHistoryView = live; resources\.resend\(\); \}/);
+});
