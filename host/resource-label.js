@@ -147,7 +147,7 @@ function interpreterLabel(shown, args, { value, evals, pyModule = false }) {
 function payloadLabel(payload, depth) {
   const text = isStr(payload) ? payload : '';
   const ev = /(?:^|[\s;&|])eval\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/.exec(text);
-  if (ev) return labelOfCommand((ev[1] !== undefined ? ev[1] : ev[2]).replace(/\\(["\\$`])/g, '$1'), '', depth + 1, true);
+  if (ev && depth < DEPTH) return payloadLabel((ev[1] !== undefined ? ev[1] : ev[2]).replace(/\\(["\\$`])/g, '$1'), depth + 1);
   const segs = text.split(/\s*(?:&&|\|\||;|\|)\s*/).map(s => s.trim()).filter(Boolean);
   const pick = segs.find((s) => {
     const w = s.split(/\s+/)[0];
@@ -156,6 +156,10 @@ function payloadLabel(payload, depth) {
   const stripped = tokens(pick, { posix: true }).filter(t => !/^\d*[<>]/.test(t));
   while (stripped.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(stripped[0])) stripped.shift();
   if (stripped[0] === 'exec' || stripped[0] === 'command' || stripped[0] === 'sudo') stripped.shift();
+  if (stripped[0] === 'env') {
+    stripped.shift();
+    while (stripped.length && (/^-/.test(stripped[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(stripped[0]))) stripped.splice(0, /^-[uC]$/.test(stripped[0]) ? 2 : 1);
+  }
   return labelOfCommand(stripped.map(t => (/\s/.test(t) ? `"${t}"` : t)).join(' '), '', depth + 1, true);
 }
 

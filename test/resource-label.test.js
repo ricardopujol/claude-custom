@@ -119,6 +119,21 @@ test('D10: the result never starts with a dash or slash, never holds a quote, an
   assert.ok(!/["']/.test(displayName('node "C:\\a b\\it\'s.js"', 'node.exe')));
 });
 
+// The command line Claude Code's Bash tool REALLY gives bash.exe, captured from this machine's process table (2026-10-05):
+// the tool's command is one single-quoted `eval` argument inside a `-c "..."` payload, with a snapshot, exports and
+// `pwd -P` around it. (`-c -l` forms exist too; those are covered above.)
+const BASH_TOOL = String.raw`"C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/ricar/.claude/shell-snapshots/snapshot-bash-1791203932202-9fw7k5.sh 2>/dev/null || true && export TEMP='C:\Users\ricar\AppData\Local\Temp' TMP='C:\Users\ricar\AppData\Local\Temp' && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'CMD' < /dev/null && pwd -P >| /c/Users/ricar/AppData/Local/Temp/claude-cfc0-cwd"`;
+const bashTool = c => BASH_TOOL.replace('CMD', () => c);
+
+test('a REAL Claude Code Bash-tool command line labels as the command it runs', () => {
+  assert.strictEqual(displayName(bashTool('node C:/w/burn.js 8'), 'bash.exe'), 'burn.js');
+  assert.strictEqual(displayName(bashTool('npm run build 2>&1 | tail -5'), 'bash.exe'), 'npm run build');
+  assert.strictEqual(displayName(bashTool('npx stryker run --concurrency 2'), 'bash.exe'), 'stryker run');
+  assert.strictEqual(displayName(bashTool(String.raw`powershell.exe -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"Name='\"'\"'bash.exe'\"'\"'\\\" | Select-Object ProcessId\" 2>&1 | cut -c1-600`), 'bash.exe'), 'Get-CimInstance');
+  assert.strictEqual(displayName(bashTool('git status --short'), 'bash.exe'), 'git');
+  assert.strictEqual(displayName(String.raw`"C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /x.sh && eval 'node /c/w/a.js' < /dev/null && pwd -P >| /tmp/c"`, 'bash.exe'), 'a.js');
+});
+
 test('tokens: Windows quoting, escaped quotes, an open quote, a cap', () => {
   assert.deepStrictEqual(tokens('a "b c" d'), ['a', 'b c', 'd']);
   assert.deepStrictEqual(tokens('x "say \\"hi\\"" y'), ['x', 'say "hi"', 'y']);
@@ -192,4 +207,10 @@ test('property: a program that is not an interpreter, shell or wrapper shows exa
     fc.pre(!/^(?:node|nodejs|bun|deno|ruby|python\d*|py|pythonw|bash|sh|zsh|dash|ash|cmd|powershell|pwsh|npx|npm|yarn|pnpm|pnpx)$/.test(base));
     assert.strictEqual(displayName(`"C:\\Tools x\\${base}.exe" ${args}`, `${base}.exe`), base);
   }));
+});
+
+test('a compound Bash-tool command (cd && env ... && node script) labels as the program that does the work', () => {
+  assert.strictEqual(displayName(bashTool('cd /c/proj && env -u ELECTRON_RUN_AS_NODE -u X=1 FOO=bar node verify/probe-x.js 2>&1 | tail -3'), 'bash.exe'), 'probe-x.js');
+  assert.strictEqual(displayName(bashTool('cd /c/proj && npm test'), 'bash.exe'), 'npm test');
+  assert.strictEqual(displayName(bashTool('cd /c/proj'), 'bash.exe'), 'cd');
 });

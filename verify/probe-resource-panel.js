@@ -295,6 +295,40 @@ async function main() {
     check('3: the Stop square is small but its hit area is at least 24 x 24', !!fitNow.stopHit && fitNow.stopHit.box <= 18 && fitNow.stopHit.w >= 24 && fitNow.stopHit.h >= 24, JSON.stringify(fitNow.stopHit));
     check('3: CPU and memory line up from row to row (the same right edge in every child row)', fitNow.figX.length >= 2 && fitNow.figX.every(x => x[0] === fitNow.figX[0][0] && x[1] === fitNow.figX[0][1]), JSON.stringify(fitNow.figX));
     console.log(`     name widths: ${JSON.stringify(fitNow.rows.map(r => [r.name, r.fit && r.fit.width, r.fit && r.fit.clipped]))}`);
+
+    // The label parser against REAL command lines the OS reports. (1) A bash started the way Claude Code's Bash tool starts
+    // one (`bash -c "source <snapshot> ... && eval '<cmd>' < /dev/null && pwd -P >| <file>"`), read back from Win32_Process.
+    const { displayName } = require(path.join(ROOT, 'host', 'resource-label'));
+    const cimLine = (pid) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', windowsHide: true }).trim();
+    const bashExe = 'C:\\Program Files\\Git\\bin\\bash.exe';
+    if (!fs.existsSync(bashExe)) {
+      note('Git bash is not installed here: the Bash-tool label is not checked');
+    } else {
+      const idleJs = path.join(tmp, 'idle-label.js');
+      fs.writeFileSync(idleJs, 'setTimeout(() => {}, 60000);\n');
+      const posix = idleJs.replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`).replace(/\\/g, '/');
+      const payload = `source /dev/null 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && eval 'node ${posix}' < /dev/null && pwd -P >| /dev/null`;
+      const sh = spawn(bashExe, ['-c', payload], { stdio: 'ignore', windowsHide: true });
+      hygiene.registerSpawnedTree(sh.pid);
+      try {
+        const line = await waitFor(async () => { const l = cimLine(sh.pid); return /eval/.test(l) ? l : null; }, 15000, 300);
+        check('3: a REAL Bash-tool command line (read from the process table) labels as the script it runs', !!line && displayName(line, 'bash.exe') === 'idle-label.js', JSON.stringify([line && line.slice(0, 160), line && displayName(line, 'bash.exe')]));
+      } finally {
+        // the bash and the node it started: ended by their own pids, never by name
+        const kids = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${sh.pid}").ProcessId`], { encoding: 'utf8', windowsHide: true }).split(/\s+/).filter(Boolean).map(Number);
+        for (const pid of [...kids, sh.pid]) { try { process.kill(pid); } catch { /* gone */ } }
+      }
+    }
+    // (2) Whatever bash this very session's Claude Code started right now, if there is one: shown, and held to the same rules.
+    const live = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "(Get-CimInstance Win32_Process -Filter \"Name='bash.exe'\" | Where-Object { $_.CommandLine -match 'eval' } | Select-Object -First 1).CommandLine"], { encoding: 'utf8', windowsHide: true }).trim();
+    if (live) {
+      const shown = displayName(live, 'bash.exe');
+      note(`live Bash-tool line labels as ${JSON.stringify(shown)}`);
+      check('3: a live Bash-tool line gives a sensible label (not a flag, not blank, not the shell)', shown !== '' && !/^[-/]/.test(shown) && shown !== 'bash', JSON.stringify([live.slice(0, 120), shown]));
+    }
   }
 
   // The panel's CPU figure against an independent measurement: this process's own TotalProcessorTime, read twice 10 s
