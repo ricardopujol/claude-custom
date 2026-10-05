@@ -89,7 +89,10 @@ const beginStop = state => (state.confirm && !state.pending ? { ...state, pendin
 
 function stopResult(state, req, result) {
   const base = { pid: req.pid, start: req.start, name: req.name };
-  if (result && result.ok === true) return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'stopped' } };
+  if (result && result.ok === true) {
+    const left = Array.isArray(result.failedChildren) ? result.failedChildren.filter(c => c && Number.isInteger(c.pid)).map(c => c.pid) : [];
+    return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'stopped', ...(left.length ? { left } : {}) } };
+  }
   if (result && result.reason === 'gone') return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'gone', text: 'Already exited' } };
   const why = result && isStr(result.text) && result.text !== '' ? result.text : 'it could not be stopped';
   return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'refused', text: `Couldn't stop PID ${req.pid}: ${why}.` } };
@@ -189,7 +192,9 @@ const meterHtml = pct => (pct === null
 
 function childHtml(c) {
   if (c.outcome && c.outcome.kind === 'stopped') {
-    return `<div class="res-child res-note">Stopped (PID ${esc(c.pid)})</div>`;
+    const left = Array.isArray(c.outcome.left) ? c.outcome.left : [];
+    const rest = left.length ? `; couldn't stop ${left.length} ${left.length === 1 ? 'child' : 'children'} (PID${left.length === 1 ? '' : 's'} ${left.map(esc).join(', ')})` : '';
+    return `<div class="res-child res-note">Stopped (PID ${esc(c.pid)})${rest}</div>`;
   }
   const stop = c.canStop
     ? `<button type="button" class="res-stop" data-res-act="ask-stop" data-res-pid="${esc(c.pid)}" data-res-start="${esc(c.start)}" data-res-name="${esc(c.name)}" aria-label="Stop ${esc(c.name)}, PID ${esc(c.pid)}" title="Stop ${esc(c.name)}, PID ${esc(c.pid)}">■</button>`

@@ -136,6 +136,16 @@ test('D5: stop() says "Stopped" only when the TARGET was reported killed; denied
   assert.strictEqual(none.reason, 'kill-failed', 'no answer for the target: not stopped');
 });
 
+test('N5: stop() reports the children it could not end, and says nothing extra when all ended', async () => {
+  n = 1000;
+  const procs = [win(10), host(20, 10), row(22, 20, 'claude.exe', 'claude.exe'), row(30, 22, 'node.exe', 'node x', 5000), row(31, 30, 'node.exe', 'child', 5100)];
+  const run = (answer) => S.stop({ pid: 30, startTime: '5000' }, { readProcs: async () => procs, hostPids: () => [20], kill: async () => answer });
+  const part = await run([{ pid: 30, status: 'killed' }, { pid: 31, status: 'failed', text: 'Access is denied' }, { pid: 77, status: 'failed', extra: true, text: 'x' }, { pid: 78, status: 'killed', extra: true }]);
+  assert.strictEqual(part.ok, true);
+  assert.deepStrictEqual(part.failedChildren, [{ pid: 31, text: 'Access is denied' }, { pid: 77, text: 'x' }]);
+  assert.deepStrictEqual(await run([{ pid: 30, status: 'killed' }, { pid: 31, status: 'gone' }]), { ok: true, pid: 30, name: 'node.exe' });
+});
+
 test('property: whatever the table, an accepted Stop never has a protected process, a host or a host\'s direct child in its kill set', () => {
   const NAMES = [['electron.exe', `${EXE} ${INSTALL}`], ['electron.exe', `${EXE} --type=gpu-process`], ['electron.exe', `${EXE} ${INSTALL}\\host\\host.js`],
     ['claude.exe', 'claude.exe'], ['conhost.exe', 'conhost.exe'], ['node.exe', 'node a'], ['git.exe', 'git b'], ['cmd.exe', 'cmd.exe c']];

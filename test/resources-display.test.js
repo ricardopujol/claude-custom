@@ -185,6 +185,17 @@ test('after a Stop the row reads "Stopped (PID n)" until the next sample, then i
   assert.doesNotMatch(D.html(D.view(next)), /node\.exe/);
 });
 
+test('N5: a Stop that ended the process but not all its children says so, with the PIDs', () => {
+  let s = D.toggle(stateWith(), 's:k-main');
+  const req = { pid: 18432, start: '777', name: 'node.exe' };
+  const one = D.stopResult(D.askStop(s, req), req, { ok: true, pid: 18432, failedChildren: [{ pid: 18500, text: 'Access is denied' }] });
+  assert.match(D.html(D.view(one)), /Stopped \(PID 18432\); couldn't stop 1 child \(PID 18500\)/);
+  const two = D.stopResult(D.askStop(s, req), req, { ok: true, pid: 18432, failedChildren: [{ pid: 18500 }, { pid: 18501 }] });
+  assert.match(D.html(D.view(two)), /couldn't stop 2 children \(PIDs 18500, 18501\)/);
+  const clean = D.stopResult(D.askStop(s, req), req, { ok: true, pid: 18432, failedChildren: [] });
+  assert.doesNotMatch(D.html(D.view(clean)), /couldn/);
+});
+
 test('a refused Stop says why and keeps the row: "Couldn\'t stop PID n: reason." and "Already exited"', () => {
   let s = D.toggle(stateWith(), 's:k-main');
   const req = { pid: 18432, start: '777', name: 'node.exe' };

@@ -64,7 +64,12 @@ async function stop(request, { readProcs, hostPids, kill }) {
     return { ok: false, reason: 'kill-failed', text: `${reasonText('kill-failed')}: ${(err && err.message) || err}` };
   }
   const mine = Array.isArray(results) ? results.find(r => r && r.pid === d.target.pid) : null;
-  if (mine && mine.status === 'killed') return { ok: true, pid: d.target.pid, name: d.target.name };
+  if (mine && mine.status === 'killed') {
+    // Anything ELSE the kill could not end is said, not dropped: the answer is "Stopped" only for what really stopped.
+    const failedChildren = results.filter(r => r && r.pid !== d.target.pid && r.status === 'failed')
+      .map(r => ({ pid: r.pid, ...(r.text ? { text: r.text } : {}) }));
+    return { ok: true, pid: d.target.pid, name: d.target.name, ...(failedChildren.length ? { failedChildren } : {}) };
+  }
   if (mine && mine.status === 'gone') return { ok: false, reason: 'gone', text: reasonText('gone') };
   if (mine && mine.status === 'reused') return { ok: false, reason: 'reused', text: reasonText('reused') };
   const why = mine && mine.text ? `: ${mine.text}` : '';
