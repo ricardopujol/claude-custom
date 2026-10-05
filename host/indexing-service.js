@@ -227,7 +227,26 @@ function createIndexingService({
       guess: n.guess, options: n.options,
       undoable: n.state === 'filed' && text(n.where.file) !== null && undoInsert(text(n.where.file), n.record).ok === true,
     }));
-    return { mode: mode(), counts: counts(notes, project, t), list };
+    return { mode: mode(), counts: counts(notes, project, t), list, titles: titlesFor(project, list) };
+  }
+
+  /** The current titles of every item the list names, for the picker and the places (read now: titles get edited). */
+  function titlesFor(project, list) {
+    const wanted = new Set();
+    for (const r of list) {
+      for (const n of r.options || []) wanted.add(n);
+      if (r.guess && Number.isInteger(r.guess.target)) wanted.add(r.guess.target);
+      if (r.where && Number.isInteger(r.where.target)) wanted.add(r.where.target);
+    }
+    const out = {};
+    if (wanted.size === 0) return out;
+    let docs = null;
+    try { docs = docsFor(project); } catch { docs = null; }
+    if (!docs || docs.ok !== true) return out;
+    for (const it of parseBacklog(readOr(docs.backlog, '')).items) {
+      if (wanted.has(it.n) && !it.dup) out[it.n] = it.title;
+    }
+    return out;
   }
 
   return { submit, tick, choose, undo, move, snapshot };

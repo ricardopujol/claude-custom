@@ -336,6 +336,21 @@ test('snapshot: mode, counts and the list; another project\'s notes are not in i
   assert.deepStrictEqual(s.list.map(n => n.text), ['mine']);
 });
 
+test('snapshot: the titles of the items the list names (options, guesses, places), read from the backlog now', async () => {
+  const t = setup({ mode: 'propose', replies: [KIND('A')] });
+  t.svc.submit(t.project, 'wand buttons should run skills mid-turn');
+  await t.svc.tick();
+  const s = t.svc.snapshot(t.project);
+  assert.deepStrictEqual(s.titles, { 61: 'Wand buttons run the skill, not just type it', 63: 'A resource panel: CPU and memory' });
+});
+
+test('snapshot: no backlog, no titles (and no throw)', () => {
+  const t = setup();
+  fs.unlinkSync(t.backlog);
+  t.svc.submit(t.project, 'x');
+  assert.deepStrictEqual(t.svc.snapshot(t.project).titles, {});
+});
+
 test('a tick never throws, and two ticks at once run one job', async () => {
   const t = setup({ replies: [KIND('C')] });
   t.svc.submit(t.project, 'a decision');
