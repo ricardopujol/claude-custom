@@ -1165,7 +1165,10 @@ async function resourcesAct(a) {
   else if (a.act === 'cancel-stop') resState = D.cancelStop(resState);
   else if (a.act === 'confirm-stop') {
     const req = resState.confirm;
-    if (!req || !resBridge) return;
+    // one Stop, one answer: a second press while it is in flight does nothing
+    if (!req || !resBridge || resState.pending) return;
+    resState = D.beginStop(resState);
+    renderResources();
     let result;
     try { result = await resBridge.stop({ pid: req.pid, startTime: req.start }); } catch { result = null; }
     resState = D.stopResult(resState, req, result || { ok: false, reason: 'unreadable', text: 'the request did not get through' });

@@ -50,7 +50,7 @@ test('Stop sends the pid and the start time the row was drawn with, and nothing 
   assert.match(BLOCK, /resBridge\.stop\(\{ pid: req\.pid, startTime: req\.start \}\)/);
   assert.doesNotMatch(BLOCK, /stop\([^)]*name/);
   // Only a confirmed request is sent: the confirm is state, set by the Stop button and cleared by Cancel or a result.
-  assert.match(BLOCK, /else if \(a\.act === 'confirm-stop'\) \{\s*const req = resState\.confirm;\s*if \(!req \|\| !resBridge\) return;/);
+  assert.match(BLOCK, /else if \(a\.act === 'confirm-stop'\) \{\s*const req = resState\.confirm;\s*if \(!req \|\| !resBridge \|\| resState\.pending\) return;\s*resState = D\.beginStop\(resState\);/);
 });
 
 test('a click is read through actionOf, so a hand-edited attribute is refused', () => {

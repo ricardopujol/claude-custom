@@ -225,3 +225,12 @@ test('property: nothing the model sums is counted twice, and no figure is ever N
     for (const r of rows) assert.ok(Number.isFinite(r.bytes) && (r.cpu === null || Number.isFinite(r.cpu)));
   }));
 });
+
+test('D9: a child whose private bytes are unknown has bytes null ("—" on screen), never 0', () => {
+  const list = procs();
+  list.find(p => p.pid === 23).priv = null;
+  const s = sampleOf(list, every(list, () => 0), T0);
+  const main = M.buildModel({ ...base, sample: s, prev: null }).project.rows.find(r => r.key === 'k-main');
+  assert.strictEqual(main.children.find(c => c.pid === 23).bytes, null);
+  assert.ok(main.children.filter(c => c.pid !== 23).every(c => typeof c.bytes === 'number'));
+});

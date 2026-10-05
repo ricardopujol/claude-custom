@@ -60,7 +60,7 @@ function chipView(payload) {
 
 // ---- state --------------------------------------------------------------------------------------------------
 
-const emptyState = () => ({ payload: null, expanded: [], confirm: null, outcome: null });
+const emptyState = () => ({ payload: null, expanded: [], confirm: null, pending: null, outcome: null });
 
 function sessionRows(payload) {
   return payload && payload.model && payload.model.project && Array.isArray(payload.model.project.rows) ? payload.model.project.rows : [];
@@ -82,14 +82,17 @@ function toggle(state, id) {
   return { ...state, expanded: open ? state.expanded.filter(x => x !== id) : [...state.expanded, id] };
 }
 const askStop = (state, req) => ({ ...state, confirm: { pid: req.pid, start: req.start, name: req.name }, outcome: null });
-const cancelStop = state => ({ ...state, confirm: null });
+const cancelStop = state => (state.pending ? state : { ...state, confirm: null });
+
+/** "Stop it" was pressed: the request is in flight. A second press does nothing, and the buttons read "Stopping…" (one Stop, one answer). */
+const beginStop = state => (state.confirm && !state.pending ? { ...state, pending: state.confirm } : state);
 
 function stopResult(state, req, result) {
   const base = { pid: req.pid, start: req.start, name: req.name };
-  if (result && result.ok === true) return { ...state, confirm: null, outcome: { ...base, kind: 'stopped' } };
-  if (result && result.reason === 'gone') return { ...state, confirm: null, outcome: { ...base, kind: 'gone', text: 'Already exited' } };
+  if (result && result.ok === true) return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'stopped' } };
+  if (result && result.reason === 'gone') return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'gone', text: 'Already exited' } };
   const why = result && isStr(result.text) && result.text !== '' ? result.text : 'it could not be stopped';
-  return { ...state, confirm: null, outcome: { ...base, kind: 'refused', text: `Couldn't stop PID ${req.pid}: ${why}.` } };
+  return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'refused', text: `Couldn't stop PID ${req.pid}: ${why}.` } };
 }
 
 /** A click's data attributes -> an action, or null. Strict: a pid is a positive integer, a start time is digits. */
@@ -127,13 +130,16 @@ function view(state) {
   const mem = m.mem && isNum(m.mem.usedBytes) && isNum(m.mem.totalBytes) && m.mem.totalBytes > 0 ? m.mem : null;
   const cpuKnown = !expired && isNum(m.cpu);
   const restCpu = cpuKnown && isNum(ours.cpu) ? Math.max(0, m.cpu - ours.cpu) : null;
-  const restMem = mem && isNum(ours.bytes) ? Math.max(0, mem.usedBytes - ours.bytes) : null;
+  // claude-custom's figure is PRIVATE (commit) bytes and the machine's is physical in use: when ours is the bigger one
+  // (a lot of it paged out) the two are not the same unit and a difference means nothing, so it is "—", never 0 B.
+  const restMem = mem && isNum(ours.bytes) && ours.bytes <= mem.usedBytes ? mem.usedBytes - ours.bytes : null;
   const machine = {
     cpuFig: cpuFig(m.cpu),
-    cpuBar: cpuKnown ? { ours: clampPct(isNum(ours.cpu) ? ours.cpu : 0), rest: clampPct(restCpu === null ? m.cpu : restCpu) } : null,
+    // A segment that was not measured is not drawn (the bar is the hatched empty one), never a 0 or "the rest is everything".
+    cpuBar: cpuKnown && restCpu !== null ? { ours: clampPct(ours.cpu), rest: clampPct(restCpu) } : null,
     cpuLegend: `claude-custom ${cpuFig(ours.cpu)} · everything else ${expired || restCpu === null ? '—' : fmtCpu(restCpu)}`,
     memFig: expired || !mem ? '—' : `${fmtBytes(mem.usedBytes)} / ${fmtBytes(mem.totalBytes)}`,
-    memBar: !expired && mem ? { ours: clampPct(((isNum(ours.bytes) ? ours.bytes : 0) / mem.totalBytes) * 100), rest: clampPct(((restMem === null ? mem.usedBytes : restMem) / mem.totalBytes) * 100) } : null,
+    memBar: !expired && mem && restMem !== null ? { ours: clampPct((ours.bytes / mem.totalBytes) * 100), rest: clampPct((restMem / mem.totalBytes) * 100) } : null,
     memLegend: `claude-custom ${memFig(ours.bytes)} · everything else ${expired || restMem === null ? '—' : fmtBytes(restMem)}`,
     level: expired ? null : levelOf(m.cpu),
   };
@@ -143,7 +149,7 @@ function view(state) {
     const same = x => !!x && x.pid === c.pid && x.start === c.start;
     return {
       pid: c.pid, name: c.name, cmd: c.cmd, start: c.start, cpuFig: cpuFig(c.cpu), memFig: memFig(c.bytes), canStop: c.canStop === true,
-      confirm: same(state.confirm), outcome: same(state.outcome) ? state.outcome : null,
+      confirm: same(state.confirm), pending: same(state.pending), outcome: same(state.outcome) ? state.outcome : null,
     };
   };
   const rows = (proj.rows || []).map((r) => {
@@ -191,8 +197,9 @@ function childHtml(c) {
   let h = `<div class="res-child"><span class="res-cname">${esc(c.name)}</span><span class="res-ccmd" title="${esc(c.cmd)}">${esc(c.cmd)}</span>`
     + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop}</div>`;
   if (c.confirm) {
+    const off = c.pending ? ' disabled' : '';
     h += `<div class="res-confirm" role="alert">Stop ${esc(c.name)}, PID ${esc(c.pid)}? Only this process stops, and anything it started stops with it. `
-      + '<button type="button" data-res-act="confirm-stop">Stop it</button> <button type="button" data-res-act="cancel-stop">Cancel</button></div>';
+      + `<button type="button" data-res-act="confirm-stop"${off}>${c.pending ? 'Stopping…' : 'Stop it'}</button> <button type="button" data-res-act="cancel-stop"${off}>Cancel</button></div>`;
   }
   if (c.outcome) h += `<div class="res-note res-refused">${esc(c.outcome.text)}</div>`;
   return h;
@@ -222,7 +229,7 @@ function html(v) {
     + '<div class="res-footer">Every 10 s while this panel is shown · paused when hidden</div></div>';
 }
 
-const API = { fmtCpu, fmtBytes, chipView, emptyState, withPayload, toggle, askStop, cancelStop, stopResult, actionOf, view, html };
+const API = { fmtCpu, fmtBytes, chipView, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, actionOf, view, html };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesDisplay = API;

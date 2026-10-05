@@ -243,3 +243,53 @@ test('property: no view ever prints NaN, undefined or null, whatever the payload
     assert.doesNotMatch(D.chipView(p).text, /NaN|undefined|null/);
   }));
 });
+
+// ---- PR #113 review round 1 (Miguel I2, I3, S2; Dexter 9, 10) ----
+
+test('I2: after "Stop it" the request is pending: the buttons are disabled and read "Stopping…", and a second press changes nothing', () => {
+  let s = D.askStop(D.toggle(stateWith(), 's:k-main'), { pid: 18432, start: '777', name: 'node.exe' });
+  s = D.beginStop(s);
+  assert.deepStrictEqual(s.pending, { pid: 18432, start: '777', name: 'node.exe' });
+  const h = D.html(D.view(s));
+  assert.match(h, /data-res-act="confirm-stop" disabled>Stopping…</);
+  assert.match(h, /data-res-act="cancel-stop" disabled>Cancel</);
+  assert.strictEqual(D.beginStop(s), s, 'a second begin is a no-op');
+  assert.strictEqual(D.cancelStop(s), s, 'Cancel cannot withdraw a request already sent');
+  const done = D.stopResult(s, { pid: 18432, start: '777', name: 'node.exe' }, { ok: true });
+  assert.strictEqual(done.pending, null);
+  assert.strictEqual(D.beginStop(D.emptyState()).pending, null, 'nothing to begin without a question asked');
+});
+
+test('I3: a bar segment that was not measured is not drawn, never a zero or "everything else is all of it"', () => {
+  const m = model({ machine: { cpu: 71, mem: { usedBytes: 21.4 * GB, totalBytes: 32 * GB }, ours: { cpu: null, bytes: null } } });
+  const v = D.view(stateWith(payload({ model: m })));
+  assert.strictEqual(v.machine.cpuBar, null);
+  assert.strictEqual(v.machine.memBar, null);
+  assert.match(D.html(v), /res-bar res-bar-empty/);
+  assert.match(v.machine.cpuLegend, /claude-custom — · everything else —/);
+});
+
+test('D10: when claude-custom\'s private bytes exceed the machine\'s physical use the difference means nothing: "—", not 0 B', () => {
+  const m = model({ machine: { cpu: 10, mem: { usedBytes: 16 * GB, totalBytes: 32 * GB }, ours: { cpu: 5, bytes: 20 * GB } } });
+  const v = D.view(stateWith(payload({ model: m })));
+  assert.match(v.machine.memLegend, /claude-custom 20\.0 GB · everything else —$/);
+  assert.strictEqual(v.machine.memBar, null);
+  assert.doesNotMatch(v.machine.memLegend, /0 MB|0\.0 GB$/);
+  const fine = D.view(stateWith());
+  assert.match(fine.machine.memLegend, /everything else 18\.4 GB/);
+});
+
+test('D9: a child whose memory is unknown reads "—", not "0 MB"', () => {
+  const s = stateWith(payload({ model: model({ project: { ...model().project, rows: [session({ children: [child({ bytes: null })] })] } }) }));
+  const v = D.view(D.toggle(s, 's:k-main'));
+  assert.strictEqual(v.project.rows[0].children[0].memFig, '—');
+});
+
+test('S2: a quote in a process name or command cannot break out of an attribute', () => {
+  const evil = '" onmouseover="alert(1)';
+  const s = stateWith(payload({ model: model({ project: { ...model().project, rows: [session({ children: [child({ name: evil, cmd: evil })] })] } }) }));
+  const h = D.html(D.view(D.toggle(s, 's:k-main')));
+  assert.match(h, /data-res-name="&quot; onmouseover=&quot;alert\(1\)"/);
+  assert.match(h, /title="&quot; onmouseover=&quot;alert\(1\)"/);
+  assert.doesNotMatch(h, /"\s+onmouseover="/);
+});
