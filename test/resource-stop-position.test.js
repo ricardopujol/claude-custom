@@ -1,7 +1,7 @@
 'use strict';
 /**
  * PR #113 review round 1 (Dexter 1, 2, 4, 5, 11; Miguel I1): Stop protects by POSITION, ends exactly the guarded subtree
- * leaf first, re-proves each process at the kill, and reports what really happened.
+ * root first, re-proves each process at the kill, and reports what really happened.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -26,7 +26,7 @@ test('D1: the kill set is exactly the guarded subtree, so an older orphan that o
   const procs2 = [win(10), host(20, 10), row(22, 20, 'claude.exe', 'claude.exe'), row(30, 22, 'node.exe', 'node target', 5000), row(31, 30, 'node.exe', 'orphan', 100), row(32, 30, 'node.exe', 'real child', 5100)];
   const r = ask(procs2, 30);
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.kill.map(k => k.pid), [32, 30], 'orphan 31 started before its "parent" and is NOT killed');
+  assert.deepStrictEqual(r.kill.map(k => k.pid), [30, 32], 'orphan 31 started before its "parent" and is NOT killed');
   assert.ok(r.kill.every(k => typeof k.start === 'string'), 'each carries the start time to re-prove it by');
 });
 
@@ -53,7 +53,7 @@ test('D2c: a plain build or server in the session, with ordinary children, may b
   const procs = [win(10), host(20, 10), row(22, 20, 'claude.exe', 'claude.exe'), row(30, 22, 'node.exe', 'node build'), row(31, 30, 'esbuild.exe', 'esbuild')];
   const r = ask(procs, 30);
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.kill.map(k => k.pid), [31, 30]);
+  assert.deepStrictEqual(r.kill.map(k => k.pid), [30, 31]);
 });
 
 test('D2/D11: the view model offers Stop exactly where the guard allows it, and never on a session with no tab', () => {
@@ -84,9 +84,9 @@ test('D12: a claim with no start time, or one that does not match, is not a host
 });
 
 // ---- the kill itself ----
-test('D4: the kill script re-proves each process through a handle at the moment it ends it, leaf first, one call', () => {
-  const s = K.killScript([{ pid: 24, start: '1100' }, { pid: 23, start: '1000' }]);
-  assert.ok(s.indexOf('K 24 1100') < s.indexOf('K 23 1000'), 'leaf first');
+test('D4: the kill script re-proves each process through a handle at the moment it ends it, root first, one call', () => {
+  const s = K.killScript([{ pid: 23, start: '1000' }, { pid: 24, start: '1100' }]);
+  assert.ok(s.indexOf('K 23 1000') < s.indexOf('K 24 1100'), 'root first');
   assert.match(s, /\$null = \$p\.Handle/);
   assert.ok(s.indexOf('$p.Handle') < s.indexOf('$p.StartTime') && s.indexOf('$p.StartTime') < s.indexOf('$p.Kill()'), 'handle, then the start time through it, then the kill');
   assert.match(s, /return "\$id reused"/);
@@ -144,7 +144,7 @@ test('property: whatever the table, an accepted Stop never has a protected proce
       assert.ok(!hostPids.includes(k.pid), `pid ${k.pid} is a session host`);
       assert.ok(!directOfHosts.has(k.pid), `pid ${k.pid} is a host's direct child`);
     }
-    assert.strictEqual(d.kill.at(-1).pid, pid, 'the target is last');
+    assert.strictEqual(d.kill[0].pid, pid, 'the target is first');
   }));
 });
 

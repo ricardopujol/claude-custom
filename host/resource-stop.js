@@ -10,7 +10,7 @@
  *   - not protected BY POSITION or by image: claude, a host, a ConPTY, Electron, a direct child of a session host (what
  *     the pty launched), or anything with one of those in its subtree (host/resource-tree.js stopBlock). Closing the
  *     tab is how a session ends.
- * When it says yes it also returns the exact set to end, LEAF FIRST (resource-tree.js killSet): the guarded subtree,
+ * When it says yes it also returns the exact set to end, ROOT FIRST (resource-tree.js killSet): the guarded subtree,
  * not a bare `taskkill /T`, which could reach processes the guard never judged.
  *
  * `stop` re-reads the table, asks the guard, then hands the set to a kill that RE-PROVES each process (pid and start

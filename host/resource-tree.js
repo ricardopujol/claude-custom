@@ -225,9 +225,9 @@ function stopBlock(procs, pid, hostPids) {
   return null;
 }
 
-/** The processes that die with `pid`, LEAF FIRST, each with the start time to re-prove it by: exactly the guarded subtree, never a bare tree kill. */
+/** The processes that die with `pid`, ROOT FIRST (a parent that restarts a child on exit must be dead before the child is touched), each with the start time to re-prove it by: exactly the guarded subtree, never a bare tree kill. */
 function killSet(procs, pid) {
-  return walkFrom(indexOf(procs), pid).reverse().map(p => ({ pid: p.pid, start: p.start, name: p.name }));
+  return walkFrom(indexOf(procs), pid).map(p => ({ pid: p.pid, start: p.start, name: p.name }));
 }
 
 module.exports = { roleOf, descendants, attribute, namesInstall, provenHosts, stopBlock, killSet, isProtectedRole, sameStart };

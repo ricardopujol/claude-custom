@@ -34,7 +34,7 @@ test('a live child of this window\'s session, with its start time, may be stoppe
   const r = ask(23, '5000');
   assert.deepStrictEqual(r.target, { pid: 23, name: 'node.exe', start: '5000' });
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.kill.map(k => k.pid), [24, 23], 'the subtree that dies with it, LEAF FIRST, target last');
+  assert.deepStrictEqual(r.kill.map(k => k.pid), [23, 24], 'the subtree that dies with it, ROOT FIRST, target first');
 });
 
 test('a grandchild may be stopped too: anything the session started', () => {

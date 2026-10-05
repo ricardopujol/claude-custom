@@ -1,7 +1,7 @@
 'use strict';
 /**
  * The Resources panel's kill (BACKLOG #63, PR #113 Dexter findings 1, 4, 5). Not `taskkill /T`: the caller hands over
- * the exact set of processes to end (host/resource-tree.js killSet, start-time guarded, LEAF FIRST) and each one is
+ * the exact set of processes to end (host/resource-tree.js killSet, start-time guarded, ROOT FIRST) and each one is
  * ended by its own pid after being re-proved at that moment.
  *
  * ONE PowerShell call for the whole set. For each target it opens the process (`Get-Process -Id`, then `.Handle`,
