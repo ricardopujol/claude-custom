@@ -92,7 +92,9 @@ test('a session row lists its top 3 children by CPU, never claude itself, with t
   const main = M.buildModel({ ...base, sample: next, prev }).project.rows.find(r => r.key === 'k-main');
   assert.deepStrictEqual(main.children.map(c => c.pid), [23, 24, 25]);
   assert.deepStrictEqual(main.more, { count: 2, underOnePct: true });
-  assert.strictEqual(main.children[0].name, 'node.exe');
+  assert.strictEqual(main.children[0].name, 'server.js', 'the row shows what it runs');
+  assert.strictEqual(main.children[0].image, 'node.exe');
+  assert.strictEqual(main.children[0].full, '"C:\\Program Files\\nodejs\\node.exe" C:\\work\\server.js --port 80', 'the hover text is the whole command line');
   assert.strictEqual(main.children[0].cmd, 'C:\\work\\server.js --port 80', 'the executable path is cut, the arguments stay');
   assert.strictEqual(main.children[0].bytes, 400e6);
   assert.strictEqual(main.children[0].start, procs()[5].start);

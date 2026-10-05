@@ -322,3 +322,10 @@ test('Q5: a child that may not be stopped keeps the line\'s shape (an empty slot
   assert.match(h, /res-stop-gap/);
   assert.doesNotMatch(h, /ask-stop/);
 });
+
+test('a child row\'s hover text is its FULL command line, and its Stop label names what the row shows', () => {
+  const s = stateWith(payload({ model: model({ project: { ...model().project, rows: [session({ children: [child({ pid: 77, name: 'burn.js', cmd: '.../burn.js 8', full: 'node "C:/a b/burn.js" 8 out.pid 100' })] })] } }) }));
+  const h = D.html(D.view(D.toggle(s, 's:k-main')));
+  assert.match(h, /<div class="res-child" title="node &quot;C:\/a b\/burn\.js&quot; 8 out\.pid 100"><span class="res-cname">burn\.js</);
+  assert.match(h, /aria-label="Stop burn\.js, PID 77"/);
+});

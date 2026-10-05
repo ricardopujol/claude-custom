@@ -10,7 +10,7 @@
  *       windows: [{ rootPid, label, cpu, bytes, sessions }],
  *       background: { cpu, bytes, sessions } | null }
  *   session: { key, label, hostPid, cpu, bytes, claude: { pid, cpu, bytes } | null, children: [child], more: { count, underOnePct } }
- *   child:   { pid, name, cmd, cpu, bytes, start, canStop }
+ *   child:   { pid, name (what it runs), image, cmd (clipped), full (whole command line), cpu, bytes, start, canStop }
  *
  * `cpu` is `null` when nothing in it was measured (the first sample): the view says "measuring…", never 0.
  * `bytes` is the private working set (physical RAM, Task Manager's Memory column), always a number on a row; null on a child with no figure. `tabs` is [{ key, label, hostPid | null }]; `hosts` the proven
@@ -19,6 +19,7 @@
 
 const sample = require('./resource-sample');
 const tree = require('./resource-tree');
+const { displayName } = require('./resource-label');
 
 const CMD_MAX = 60;
 const CHILDREN_SHOWN = 3;
@@ -93,7 +94,8 @@ function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECT
   const rows = pids.filter(pid => pid !== claudePid && byPid.has(pid)).map((pid) => {
     const p = byPid.get(pid);
     return {
-      pid, name: p.name, cmd: shortCmd(p.cmd, p.name), cpu: cpuOf(cpus, pid),
+      // `name` is what the row SHOWS (what it runs: burn.js, stryker run), `image` the process's own name, `full` the whole command line (hover).
+      pid, name: displayName(p.cmd, p.name), image: p.name, cmd: shortCmd(p.cmd, p.name), full: typeof p.cmd === 'string' && p.cmd.trim() !== '' ? p.cmd : p.name, cpu: cpuOf(cpus, pid),
       bytes: typeof mem.get(pid) === 'number' ? mem.get(pid) : null, start: p.start,
     };
   });

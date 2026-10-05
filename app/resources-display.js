@@ -151,7 +151,7 @@ function view(state) {
   const childView = (c) => {
     const same = x => !!x && x.pid === c.pid && x.start === c.start;
     return {
-      pid: c.pid, name: c.name, cmd: c.cmd, start: c.start, cpuFig: cpuFig(c.cpu), memFig: memFig(c.bytes), canStop: c.canStop === true,
+      pid: c.pid, name: c.name, cmd: c.cmd, full: isStr(c.full) && c.full !== '' ? c.full : c.cmd, start: c.start, cpuFig: cpuFig(c.cpu), memFig: memFig(c.bytes), canStop: c.canStop === true,
       confirm: same(state.confirm), pending: same(state.pending), outcome: same(state.outcome) ? state.outcome : null,
     };
   };
@@ -201,7 +201,7 @@ function childHtml(c) {
     : '';
   // ONE line per child: name (truncated first), CPU, memory, then a small square Stop at the end. The command line is the
   // row's hover tooltip, not a line of its own.
-  let h = `<div class="res-child" title="${esc(c.cmd)}"><span class="res-cname">${esc(c.name)}</span>`
+  let h = `<div class="res-child" title="${esc(c.full)}"><span class="res-cname">${esc(c.name)}</span>`
     + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop || '<span class="res-stop-gap"></span>'}</div>`;
   if (c.confirm) {
     const lock = c.pending ? ' disabled' : '';
