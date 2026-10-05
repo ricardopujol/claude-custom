@@ -22,6 +22,7 @@ const tree = require('./resource-tree');
 const { displayName } = require('./resource-label');
 
 const CMD_MAX = 60;
+const FULL_MAX = 1000;     // the hover text rides in every payload and can hold a token: clipped before IPC
 const CHILDREN_SHOWN = 3;
 const PROTECTED = role => role === 'host' || role === 'claude' || role === 'conpty' || role.startsWith('electron:');
 
@@ -29,6 +30,8 @@ const basename = (cwd) => {
   const parts = String(cwd).split(/[\\/]+/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : String(cwd);
 };
+
+const clipFull = t => (typeof t === 'string' && t.length > FULL_MAX ? `${t.slice(0, FULL_MAX - 1)}…` : t);
 
 /** The command line without the executable (quoted or not); the process name when there are no arguments. Clipped. */
 function shortCmd(cmd, name) {
@@ -72,13 +75,15 @@ function sumCpu(pids, cpus) {
 }
 // Memory is each process's PRIVATE WORKING SET (Task Manager's Memory column, `WorkingSetPrivate` in the perf row): physical
 // RAM, the same unit as the machine's "in use". `mem` maps pid -> bytes; a pid with no figure adds nothing (and shows "—" alone).
+// Like sumCpu: null when NOTHING in it was measured (a failed perf read gives `perf: []`), never a confident "0 MB".
 function sumBytes(pids, mem) {
   let total = 0;
+  let any = false;
   for (const pid of pids) {
     const v = mem.get(pid);
-    if (typeof v === 'number') total += v;
+    if (typeof v === 'number') { total += v; any = true; }
   }
-  return total;
+  return any ? total : null;
 }
 const figures = (pids, cpus, mem) => ({ cpu: sumCpu(pids, cpus), bytes: sumBytes(pids, mem) });
 
@@ -95,7 +100,7 @@ function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECT
     const p = byPid.get(pid);
     return {
       // `name` is what the row SHOWS (what it runs: burn.js, stryker run), `image` the process's own name, `full` the whole command line (hover).
-      pid, name: displayName(p.cmd, p.name), image: p.name, cmd: shortCmd(p.cmd, p.name), full: typeof p.cmd === 'string' && p.cmd.trim() !== '' ? p.cmd : p.name, cpu: cpuOf(cpus, pid),
+      pid, name: displayName(p.cmd, p.name), image: p.name, cmd: shortCmd(p.cmd, p.name), full: clipFull(typeof p.cmd === 'string' && p.cmd.trim() !== '' ? p.cmd : p.name), cpu: cpuOf(cpus, pid),
       bytes: typeof mem.get(pid) === 'number' ? mem.get(pid) : null, start: p.start,
     };
   });

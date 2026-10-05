@@ -214,6 +214,44 @@ test('stop is offered for ordinary children and not for Electron, a host, a ConP
   assert.strictEqual(electron.canStop, false);
 });
 
+test('D4: when no process has a measured memory (perf: []), every memory total is null, shown as "—", with no bar segment', () => {
+  const D = require('../app/resources-display');
+  const list = procs();
+  const s = { ...sampleOf(list, every(list, () => 0), T0), perf: new Map() };
+  const m = M.buildModel({ ...base, sample: s, prev: null });
+  const rows = [...m.project.rows, m.project.self, ...m.project.self.parts, ...m.windows, ...(m.background ? [m.background] : [])];
+  assert.ok(rows.length > 4);
+  for (const r of rows) assert.strictEqual(r.bytes, null, JSON.stringify(r.label || r.key || r.id));
+  assert.strictEqual(m.project.bytes, null);
+  assert.strictEqual(m.machine.ours.bytes, null);
+  assert.strictEqual(m.project.rows.find(r => r.key === 'k-main').claude.bytes, null);
+  const v = D.view(D.withPayload(D.emptyState(), { model: m, status: {}, machine: m.machine, chipOn: true }));
+  assert.match(v.machine.memLegend, /claude-custom — · everything else —/);
+  assert.strictEqual(v.machine.memBar, null);
+  assert.strictEqual(v.project.rows[0].memFig, '—');
+});
+
+test('D4: one measured process is enough for a total: the figure is the sum of what WAS measured', () => {
+  const list = procs();
+  const perf = new Map([[22, { cpu: 0n, ts: T0, ws: 5e6 }]]);
+  const m = M.buildModel({ ...base, sample: { ...sampleOf(list, every(list, () => 0), T0), perf }, prev: null });
+  assert.strictEqual(m.project.rows.find(r => r.key === 'k-main').bytes, 5e6);
+  assert.strictEqual(m.project.rows.find(r => r.key === 'k-feat').bytes, null, 'nothing measured under that tab');
+});
+
+test('I3: the full command line (the hover text) is clipped to 1000 characters with an ellipsis before it crosses IPC', () => {
+  const long = `node C:\\work\\server.js ${'--token=secret '.repeat(200)}`;
+  const list = procs();
+  list.find(p => p.pid === 23).cmd = long;
+  const main = M.buildModel({ ...base, sample: sampleOf(list, every(list, () => 0), T0), prev: null }).project.rows.find(r => r.key === 'k-main');
+  const full = main.children.find(c => c.pid === 23).full;
+  assert.strictEqual(full.length, 1000);
+  assert.ok(full.endsWith('…'));
+  assert.ok(long.startsWith(full.slice(0, 999)));
+  const short = M.childrenOf(procs(), [23], null, 99).children[0];
+  assert.strictEqual(short.full, '"C:\\Program Files\\nodejs\\node.exe" C:\\work\\server.js --port 80', 'a short one is untouched');
+});
+
 test('property: nothing the model sums is counted twice, and no figure is ever NaN', () => {
   const pctArb = fc.integer({ min: 0, max: 100 });
   fc.assert(fc.property(fc.array(pctArb, { minLength: 17, maxLength: 17 }), (pcts) => {
@@ -222,9 +260,9 @@ test('property: nothing the model sums is counted twice, and no figure is ever N
     const { prev, next } = twoSamples(cpu);
     const m = M.buildModel({ ...base, sample: next, prev });
     const rows = [...m.project.rows, m.project.self, ...m.windows, ...(m.background ? [m.background] : [])];
-    const bytes = rows.reduce((a, r) => a + r.bytes, 0);
+    const bytes = rows.reduce((a, r) => a + (r.bytes === null ? 0 : r.bytes), 0);
     assert.strictEqual(bytes, m.machine.ours.bytes);
-    for (const r of rows) assert.ok(Number.isFinite(r.bytes) && (r.cpu === null || Number.isFinite(r.cpu)));
+    for (const r of rows) assert.ok((r.bytes === null || Number.isFinite(r.bytes)) && (r.cpu === null || Number.isFinite(r.cpu)));
   }));
 });
 
