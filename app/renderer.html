@@ -1159,6 +1159,7 @@
     #tb-resources[hidden] { display: none; }
     #tb-resources .hs { flex: none; stroke: currentColor; fill: currentColor; stroke-width: 1; stroke-linejoin: round; opacity: .85; }
     #tb-resources .hs polyline { fill: none; }
+    #tb-resources .tbr-n { white-space: nowrap; }
     #res-popover { position: fixed; z-index: 60; box-sizing: border-box; width: 336px; padding: 10px 12px; background: var(--chrome); color: var(--text);
       border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.45); font-size: 11px; }
     #res-popover[hidden] { display: none; }
@@ -1167,7 +1168,8 @@
     .hg-plot { position: relative; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 4px; overflow: hidden; }
     .hg-plot svg { display: block; }
     .hg-rest { fill: color-mix(in srgb, var(--text) 38%, var(--border)); }
-    .hg-ours { fill: var(--accent); }
+    .hg-ours, .hg-dot-ours { fill: var(--accent); }
+    .hg-dot-rest { fill: color-mix(in srgb, var(--text) 38%, var(--border)); }
     .hg-latest { fill: var(--text); stroke: var(--chrome); stroke-width: 1; }
     .hg-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--text); opacity: .6; pointer-events: none; }
     .hg-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--dim); margin-top: 2px; }
@@ -1564,7 +1566,7 @@
       <span id="top-bar">
         <!-- BACKLOG #63: the machine total (app/resources-display.js chipView) with a one-hour sparkline after each figure
              (app/resources-history-display.js). A click opens the popover with the larger graphs. -->
-        <button type="button" id="tb-resources" class="tb-chip" aria-haspopup="dialog" aria-expanded="false" title="Machine total and the last hour. Click for the graphs.">CPU —  — / —</button>
+        <button type="button" id="tb-resources" class="tb-chip" aria-controls="res-popover" aria-expanded="false" title="Machine total and the last hour. Click for the graphs.">CPU —  — / —</button>
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
         <span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span>
@@ -1829,7 +1831,7 @@
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
   <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
-  <div id="res-popover" hidden role="dialog" aria-label="CPU and memory over the last hour"></div>
+  <div id="res-popover" hidden role="region" aria-label="CPU and memory over the last hour"></div>
   <script src="./resources-display.js"></script>
   <script src="./resources-history-display.js"></script>
   <script src="./top-bar-display.js"></script>

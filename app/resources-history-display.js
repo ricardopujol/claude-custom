@@ -125,6 +125,26 @@ function readout(points, nowAt, minutes, kind) {
   return `${when(minutes)} · memory ${R.fmtBytes(f.memUsed)}, ours ${f.memOurs !== null ? R.fmtBytes(f.memOurs) : '—'}`;
 }
 
+/** A graph's name for a screen reader: "CPU, last hour: now 42%, peak 71% 23 min ago". */
+function describe(points, nowAt, kind) {
+  const name = kind === 'cpu' ? 'CPU' : 'Memory';
+  const key = kind === 'cpu' ? 'cpu' : 'memUsed';
+  const fmt = kind === 'cpu' ? R.fmtCpu : R.fmtBytes;
+  let latest = null;
+  let peak = null;
+  for (const p of Array.isArray(points) ? points : []) {
+    if (!isNum(p && p.at) || p.at < nowAt - HOUR_MS || p.at > nowAt + STEP_MS) continue;
+    const v = figuresOf(p)[key];
+    if (v === null) continue;
+    if (latest === null || p.at >= latest.at) latest = { at: p.at, v };
+    if (peak === null || v >= peak.v) peak = { at: p.at, v };
+  }
+  if (!latest) return `${name}, last hour: collecting data`;
+  const ago = at => Math.max(0, Math.round((nowAt - at) / 60000));
+  const l = ago(latest.at) === 0 ? `now ${fmt(latest.v)}` : `${fmt(latest.v)} ${when(ago(latest.at))}`;
+  return `${name}, last hour: ${l}, peak ${fmt(peak.v)} ${when(ago(peak.at))}`;
+}
+
 const areaPath = (run, nowAt, w, h) => {
   const yOf = v => (h - 2) - v * (h - 4) + 1;
   const first = xOf(run[0].at, nowAt, w);
@@ -158,7 +178,7 @@ function graph(points, kind, nowAt, { w = 300, h = 64, hover = null } = {}) {
   }
   const cursor = isNum(hover) ? `<div class="hg-cursor" style="left:${f1((1 - hover / 60) * 100)}%"></div>` : '';
   return `<div class="hg" data-hist-graph="${kind}"><div class="hg-name">${name}</div>`
-    + `<div class="hg-plot" style="width:${w}px;height:${h}px"><svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${svg}</svg>${cursor}</div>`
+    + `<div class="hg-plot" role="img" aria-label="${esc(describe(points, nowAt, kind))}" style="width:${w}px;height:${h}px"><svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${svg}</svg>${cursor}</div>`
     + '<div class="hg-axis"><span>60 min</span><span>30</span><span>now</span></div>'
     + `<div class="hg-readout">${esc(readout(points, nowAt, minutes, kind))}</div></div>`;
 }
@@ -176,7 +196,52 @@ function chipHtml(cpuText, memText, points, nowAt) {
     + `<span class="tbr-n">${esc(memText)}</span>${sparkline(points, 'mem', nowAt)}`;
 }
 
-const API = { chipHtml, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
+// ---- the popover's state machine ------------------------------------------------------------------------------------
+
+/**
+ * The chip popover's open/hover state, as pure steps (the renderer only wires events to it, so this is what is unit-tested):
+ * `popoverStep(state, event) -> { state, consumed }`. Events: `chip-click`, `key {key}`, `pointerdown {inside}`, `blur`,
+ * `hidden` (the page is hidden), `chip-off`, `hover {kind, minutes}`, `leave` (the pointer is anywhere but on a graph's plot).
+ * `consumed` is true when the event was Esc that closed it, so the caller keeps it from reaching anything else (an Esc that leaks
+ * to the terminal interrupts a running turn). A state that did not change is returned as the same object.
+ */
+const popoverInit = () => ({ open: false, hover: { cpu: null, mem: null } });
+
+function popoverStep(state, ev) {
+  const st = state && typeof state === 'object' ? state : popoverInit();
+  const same = { state: st, consumed: false };
+  const close = () => ({ state: st.open ? popoverInit() : st, consumed: false });
+  switch (ev && ev.type) {
+    case 'chip-click': return { state: st.open ? popoverInit() : { open: true, hover: { cpu: null, mem: null } }, consumed: false };
+    case 'key': {
+      if (ev.key !== 'Escape' || !st.open) return same;
+      return { state: popoverInit(), consumed: true };
+    }
+    case 'pointerdown': return ev.inside === true ? same : close();
+    case 'blur': case 'hidden': case 'chip-off': return close();
+    case 'hover': {
+      if (!st.open || (ev.kind !== 'cpu' && ev.kind !== 'mem') || !isNum(ev.minutes)) return same;
+      return { state: { open: true, hover: { cpu: null, mem: null, [ev.kind]: ev.minutes } }, consumed: false };
+    }
+    case 'leave': {
+      if (!st.open || (st.hover.cpu === null && st.hover.mem === null)) return same;
+      return { state: { open: true, hover: { cpu: null, mem: null } }, consumed: false };
+    }
+    default: return same;
+  }
+}
+
+/** What each graph shows for a hover state: `{ cpu: { cursor (% across | null), readout }, mem: ... }`; "now" when not hovered. */
+function hoverView(points, nowAt, hover) {
+  const h = hover || {};
+  const one = kind => ({
+    cursor: isNum(h[kind]) ? (1 - h[kind] / 60) * 100 : null,
+    readout: readout(points, nowAt, isNum(h[kind]) ? h[kind] : 0, kind),
+  });
+  return { cpu: one('cpu'), mem: one('mem') };
+}
+
+const API = { popoverInit, popoverStep, hoverView, describe, chipHtml, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesHistoryDisplay = API;

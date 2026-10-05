@@ -31,7 +31,7 @@ test('the Resources panel is an ordinary module: one TABS entry, one panel, one 
 });
 
 test('the chip is in the top bar, and says what it is before the first sample', () => {
-  assert.match(HTML, /<span id="top-bar">\s*(?:<!--[\s\S]*?-->\s*)?<button type="button" id="tb-resources" class="tb-chip" aria-haspopup="dialog" aria-expanded="false" title="Machine total and the last hour\. Click for the graphs\.">CPU —  — \/ —<\/button>/);
+  assert.match(HTML, /<span id="top-bar">\s*(?:<!--[\s\S]*?-->\s*)?<button type="button" id="tb-resources" class="tb-chip" aria-controls="res-popover" aria-expanded="false" title="Machine total and the last hour\. Click for the graphs\.">CPU —  — \/ —<\/button>/);
 });
 
 test('the glue is findable, and reads nothing from the OS', () => {
@@ -50,18 +50,23 @@ test('a click is read through actionOf, so a hand-edited attribute is refused', 
   assert.match(BLOCK, /window\.resourcesDisplay\.actionOf\(el\.dataset\)/);
 });
 
-test('the chip opens a popover with the graphs (it no longer opens the panel), and the popover closes on a second click, Esc and an outside click', () => {
+test('the chip opens a popover with the graphs (it no longer opens the panel); every event goes through the state machine', () => {
   assert.doesNotMatch(BLOCK, /commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\)/);
-  assert.match(BLOCK, /tbResourcesEl\.addEventListener\('click', \(\) => \{\s*if \(resHistOpen\) closeHistory\(\); else openHistory\(\);/);
-  assert.match(BLOCK, /document\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key === 'Escape' && resHistOpen\)/);
-  assert.match(BLOCK, /document\.addEventListener\('pointerdown', \(e\) => \{[^}]*resHistOpen[^}]*contains\(e\.target\)/);
+  assert.match(BLOCK, /tbResourcesEl\.addEventListener\('click', \(\) => \{ resPopStep\(\{ type: 'chip-click' \}\); \}\)/);
+  assert.match(BLOCK, /document\.addEventListener\('keydown'[\s\S]*?resPopStep\(\{ type: 'key', key: e\.key \}\)[\s\S]*?e\.preventDefault\(\); e\.stopPropagation\(\)/);
+  assert.match(BLOCK, /document\.addEventListener\('pointerdown'[\s\S]*?resPopStep\(\{ type: 'pointerdown', inside:/);
+  assert.match(BLOCK, /window\.addEventListener\('blur', \(\) => \{ resPopStep\(\{ type: 'blur' \}\); \}\)/);
+  assert.match(BLOCK, /document\.addEventListener\('visibilitychange'[\s\S]*?resPopStep\(\{ type: 'hidden' \}\)/);
+  assert.match(BLOCK, /resPopoverEl\.addEventListener\('mouseleave'/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.popoverStep\(/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.popover\(/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.chipHtml\(/);
 });
 
-test('the popover is hidden with the chip (the Window menu toggle), and the markup and script are in the page', () => {
-  assert.match(BLOCK, /if \(!resChipOn\) closeHistory\(\)/);
-  assert.match(HTML, /<div id="res-popover" hidden role="dialog"/);
+test('the popover is closed with the chip (the Window menu toggle), is a labelled region, and the markup and script are in the page', () => {
+  assert.match(BLOCK, /if \(!resChipOn\) resPopStep\(\{ type: 'chip-off' \}\)/);
+  assert.match(HTML, /<div id="res-popover" hidden role="region" aria-label=/);
+  assert.doesNotMatch(HTML, /aria-haspopup/);
   const at = HTML.indexOf('<script src="./resources-history-display.js"></script>');
   assert.ok(at > HTML.indexOf('<script src="./resources-display.js"></script>') && at < HTML.indexOf('<script src="./renderer.js"></script>'), 'after resources-display.js, before renderer.js');
 });

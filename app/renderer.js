@@ -1115,8 +1115,9 @@ let resChipOn = !(resBridge && typeof resBridge.chipOn === 'function' && resBrid
 const resRoot = document.getElementById('resources-root');
 const tbResourcesEl = document.getElementById('tb-resources');
 const resPopoverEl = document.getElementById('res-popover');
-let resHistOpen = false;            // is the chip's one-hour graph window open
-const resHover = { cpu: null, mem: null };   // minutes ago the pointer is on, per graph
+// The chip's one-hour graph window: its open/hover state is app/resources-history-display.js's popoverStep (pure, unit-tested);
+// everything below only turns DOM events into steps and draws the result.
+let resPop = window.resourcesHistoryDisplay.popoverInit();
 
 // Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
 function resourceChipRow() {
@@ -1129,7 +1130,7 @@ function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
   // each figure with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
-  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), Date.now());
+  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow());
   tbResourcesEl.setAttribute('aria-label', c.text);
   tbResourcesEl.title = c.title;
   tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
@@ -1137,16 +1138,19 @@ function renderResourcesChip() {
   tbResourcesEl.classList.toggle('res-dim', c.dim === true);
   // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
   tbResourcesEl.hidden = !resChipOn;
-  if (!resChipOn) closeHistory();
+  if (!resChipOn) resPopStep({ type: 'chip-off' });
   else renderHistory();
 }
 
 // ---- the chip's popover: the larger graphs of the last hour ----
 const resHistory = () => (resPayload && Array.isArray(resPayload.history) ? resPayload.history : []);
+// the points' own (monotonic) clock: main sends its "now" with them. Without one (no history yet) nothing is drawn anyway.
+const resHistoryNow = () => (resPayload && Number.isFinite(resPayload.historyNow) ? resPayload.historyNow : 0);
 
 function renderHistory() {
-  if (!resHistOpen || !resPopoverEl) return;
-  resPopoverEl.innerHTML = window.resourcesHistoryDisplay.popover(resHistory(), Date.now(), resHover);
+  if (!resPop.open || !resPopoverEl) return;
+  resPopoverEl.innerHTML = window.resourcesHistoryDisplay.popover(resHistory(), resHistoryNow(), resPop.hover);
+  placeHistory();   // the chip can have changed width since it opened
 }
 function placeHistory() {
   // under the chip, right edges aligned, and never off the left edge of the window
@@ -1155,43 +1159,36 @@ function placeHistory() {
   resPopoverEl.style.top = `${Math.round(r.bottom + 6)}px`;
   resPopoverEl.style.left = `${Math.max(8, Math.round(Math.min(r.right - w, window.innerWidth - w - 8)))}px`;
 }
-const placeHistoryIfOpen = () => { if (resHistOpen) placeHistory(); };
-function openHistory() {
-  if (!resPopoverEl || resHistOpen) return;
-  resHistOpen = true;
-  resHover.cpu = null; resHover.mem = null;
-  renderHistory();
-  resPopoverEl.hidden = false;
-  placeHistory();
-  tbResourcesEl.setAttribute('aria-expanded', 'true');
+// The cursor and the readout follow the pointer in place (a re-draw under the pointer would drop the hover).
+function syncHover() {
+  const view = window.resourcesHistoryDisplay.hoverView(resHistory(), resHistoryNow(), resPop.hover);
+  for (const g of resPopoverEl.querySelectorAll('.hg[data-hist-graph]')) {
+    const v = view[g.dataset.histGraph];
+    const plot = g.querySelector('.hg-plot');
+    const readout = g.querySelector('.hg-readout');
+    if (!v || !plot || !readout) continue;
+    let cursor = plot.querySelector('.hg-cursor');
+    if (v.cursor === null) { if (cursor) cursor.remove(); } else {
+      if (!cursor) { cursor = document.createElement('div'); cursor.className = 'hg-cursor'; plot.appendChild(cursor); }
+      cursor.style.left = `${v.cursor}%`;
+    }
+    readout.textContent = v.readout;
+  }
 }
-function closeHistory() {
-  if (!resHistOpen) return;
-  resHistOpen = false;
-  if (resPopoverEl) resPopoverEl.hidden = true;
-  tbResourcesEl.setAttribute('aria-expanded', 'false');
+// One door for every event: step the state, then make the page match it. Returns whether the event was consumed.
+function resPopStep(ev) {
+  const was = resPop;
+  const out = window.resourcesHistoryDisplay.popoverStep(was, ev);
+  resPop = out.state;
+  if (resPop.open !== was.open) {
+    if (resPop.open) { renderHistory(); resPopoverEl.hidden = false; placeHistory(); } else resPopoverEl.hidden = true;
+    tbResourcesEl.setAttribute('aria-expanded', resPop.open ? 'true' : 'false');
+  } else if (resPop.hover !== was.hover) syncHover();
+  return out.consumed;
 }
-// The readout and the cursor follow the pointer in place (a re-draw under the pointer would drop the hover).
-function hoverHistory(e) {
+function plotUnder(e) {
   const plot = e.target && e.target.closest ? e.target.closest('.hg-plot') : null;
-  if (!plot) return;
-  const kind = plot.parentElement.dataset.histGraph;
-  if (kind !== 'cpu' && kind !== 'mem') return;
-  const box = plot.getBoundingClientRect();
-  const minutes = window.resourcesHistoryDisplay.minutesAgo(box.width > 0 ? (e.clientX - box.left) / box.width : NaN);
-  if (minutes === null) return;
-  resHover[kind] = minutes;
-  let cursor = plot.querySelector('.hg-cursor');
-  if (!cursor) { cursor = document.createElement('div'); cursor.className = 'hg-cursor'; plot.appendChild(cursor); }
-  cursor.style.left = `${(1 - minutes / 60) * 100}%`;
-  plot.parentElement.querySelector('.hg-readout').textContent = window.resourcesHistoryDisplay.readout(resHistory(), Date.now(), minutes, kind);
-}
-function leaveHistory(e) {
-  const plot = e.target && e.target.closest ? e.target.closest('.hg-plot') : null;
-  if (!plot) return;
-  const kind = plot.parentElement.dataset.histGraph;
-  if (kind === 'cpu' || kind === 'mem') resHover[kind] = null;
-  renderHistory();
+  return plot && plot.parentElement && plot.parentElement.dataset ? plot : null;
 }
 
 function renderResources() {
@@ -1253,22 +1250,27 @@ if (resRoot) {
   });
 }
 // The chip opens the one-hour popover (Ricardo picked option B: this replaces "the chip opens the Resources panel", which
-// stays one click away in the Window menu / side tabs). A second click, Esc and a click outside close it.
-if (tbResourcesEl) {
-  tbResourcesEl.addEventListener('click', () => {
-    if (resHistOpen) closeHistory(); else openHistory();
+// stays one click away in the Window menu / side tabs). A second click, Esc, an outside click, the window losing focus and the
+// page hiding close it. The chip is a button, so Enter and Space toggle it natively.
+if (tbResourcesEl && resPopoverEl) {
+  tbResourcesEl.addEventListener('click', () => { resPopStep({ type: 'chip-click' }); });
+  resPopoverEl.addEventListener('mousemove', (e) => {
+    const plot = plotUnder(e);
+    if (!plot) { resPopStep({ type: 'leave' }); return; }
+    const box = plot.getBoundingClientRect();
+    const minutes = window.resourcesHistoryDisplay.minutesAgo(box.width > 0 ? (e.clientX - box.left) / box.width : NaN);
+    if (minutes !== null) resPopStep({ type: 'hover', kind: plot.parentElement.dataset.histGraph, minutes });
   });
-  if (resPopoverEl) {
-    resPopoverEl.addEventListener('mousemove', hoverHistory);
-    resPopoverEl.addEventListener('mouseout', (e) => { if (!resPopoverEl.contains(e.relatedTarget)) leaveHistory(e); });
-  }
+  resPopoverEl.addEventListener('mouseleave', () => { resPopStep({ type: 'leave' }); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && resHistOpen) { closeHistory(); tbResourcesEl.focus(); }
+    if (resPopStep({ type: 'key', key: e.key })) { e.preventDefault(); e.stopPropagation(); tbResourcesEl.focus(); }
   });
   document.addEventListener('pointerdown', (e) => {
-    if (resHistOpen && !resPopoverEl.contains(e.target) && !tbResourcesEl.contains(e.target)) closeHistory();
+    resPopStep({ type: 'pointerdown', inside: resPopoverEl.contains(e.target) || tbResourcesEl.contains(e.target) });
   });
-  window.addEventListener('resize', placeHistoryIfOpen);
+  window.addEventListener('blur', () => { resPopStep({ type: 'blur' }); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) resPopStep({ type: 'hidden' }); });
+  window.addEventListener('resize', () => { if (resPop.open) placeHistory(); });
 }
 // RESOURCES-END
 

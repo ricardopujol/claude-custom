@@ -198,3 +198,80 @@ test('S1: the readout is escaped where it enters the markup', () => {
   assert.match(html, /<div class="hg-readout">now · CPU 40%, ours 10%<\/div>/);
   assert.strictEqual(D.esc('<&>'), '&lt;&amp;&gt;');
 });
+
+// ---- the popover's state machine (Miguel, PR #114 Y2 Y3 Y6 S4) --------------------------------------------------------------
+
+const step = (s, ev) => D.popoverStep(s, ev);
+const opened = () => step(D.popoverInit(), { type: 'chip-click' }).state;
+
+test('popover: the chip toggles it, and opening starts with no hover', () => {
+  const s0 = D.popoverInit();
+  assert.deepStrictEqual(s0, { open: false, hover: { cpu: null, mem: null } });
+  const s1 = step(s0, { type: 'chip-click' }).state;
+  assert.strictEqual(s1.open, true);
+  assert.strictEqual(step(s1, { type: 'chip-click' }).state.open, false);
+});
+
+test('popover: Esc, an outside pointer-down, the window losing focus, the page hiding and the chip going off all close it', () => {
+  for (const ev of [{ type: 'key', key: 'Escape' }, { type: 'pointerdown', inside: false }, { type: 'blur' }, { type: 'hidden' }, { type: 'chip-off' }]) {
+    assert.strictEqual(step(opened(), ev).state.open, false, ev.type);
+  }
+});
+
+test('popover: a pointer-down inside it, another key, and any event while closed change nothing', () => {
+  const o = opened();
+  assert.strictEqual(step(o, { type: 'pointerdown', inside: true }).state, o);
+  assert.strictEqual(step(o, { type: 'key', key: 'a' }).state, o);
+  const c = D.popoverInit();
+  for (const ev of [{ type: 'key', key: 'Escape' }, { type: 'pointerdown', inside: false }, { type: 'blur' }, { type: 'hover', kind: 'cpu', minutes: 3 }]) {
+    assert.strictEqual(step(c, ev).state, c, ev.type);
+  }
+});
+
+test('S4: Esc is consumed only when it closed the popover (otherwise it reaches whoever wanted it)', () => {
+  assert.strictEqual(step(opened(), { type: 'key', key: 'Escape' }).consumed, true);
+  assert.strictEqual(step(D.popoverInit(), { type: 'key', key: 'Escape' }).consumed, false);
+  assert.strictEqual(step(opened(), { type: 'key', key: 'x' }).consumed, false);
+});
+
+test('Y2: hovering one graph clears the other; leaving the plot (padding, between graphs, out of the popover) clears it', () => {
+  let s = step(opened(), { type: 'hover', kind: 'cpu', minutes: 12 }).state;
+  assert.deepStrictEqual(s.hover, { cpu: 12, mem: null });
+  s = step(s, { type: 'hover', kind: 'mem', minutes: 40 }).state;
+  assert.deepStrictEqual(s.hover, { cpu: null, mem: 40 });
+  s = step(s, { type: 'leave' }).state;
+  assert.deepStrictEqual(s.hover, { cpu: null, mem: null });
+  assert.strictEqual(step(s, { type: 'hover', kind: 'bogus', minutes: 3 }).state, s, 'only the two graphs');
+  assert.strictEqual(step(s, { type: 'hover', kind: 'cpu', minutes: NaN }).state, s);
+});
+
+test('Y2: closing forgets the hover, so a reopened popover never shows an old cursor', () => {
+  let s = step(opened(), { type: 'hover', kind: 'cpu', minutes: 12 }).state;
+  s = step(s, { type: 'chip-click' }).state;
+  s = step(s, { type: 'chip-click' }).state;
+  assert.deepStrictEqual(s.hover, { cpu: null, mem: null });
+});
+
+test('hoverView: the cursor and readout for each graph from the hover state (now when not hovered)', () => {
+  const pts = [pt(NOW, { cpu: 42, cpuOurs: 5 }), pt(NOW - 12 * 60000, { cpu: 54, cpuOurs: 41 })];
+  const v = D.hoverView(pts, NOW, { cpu: 12, mem: null });
+  assert.strictEqual(v.cpu.cursor, 80);
+  assert.strictEqual(v.cpu.readout, '12 min ago · CPU 54%, ours 41%');
+  assert.strictEqual(v.mem.cursor, null);
+  assert.match(v.mem.readout, /^now · memory /);
+});
+
+// ---- accessible names (Miguel Y4) -----------------------------------------------------------------------------------------
+
+test('describe: each graph says its latest and peak figures in words', () => {
+  const pts = [pt(NOW - 23 * 60000, { cpu: 71 }), pt(NOW - 60000, { cpu: 30 }), pt(NOW, { cpu: 42 })];
+  assert.strictEqual(D.describe(pts, NOW, 'cpu'), 'CPU, last hour: now 42%, peak 71% 23 min ago');
+  assert.strictEqual(D.describe([pt(NOW - 3 * 60000, { cpu: 30 })], NOW, 'cpu'), 'CPU, last hour: 30% 3 min ago, peak 30% 3 min ago');
+  assert.strictEqual(D.describe([], NOW, 'mem'), 'Memory, last hour: collecting data');
+  assert.strictEqual(D.describe([nul(NOW)], NOW, 'cpu'), 'CPU, last hour: collecting data');
+});
+
+test('graph: the plot is an image with that name, and the popover is a labelled region', () => {
+  const html = D.graph([pt(NOW)], 'cpu', NOW);
+  assert.match(html, /<div class="hg-plot" role="img" aria-label="CPU, last hour: now 40%, peak 40% now"/);
+});
