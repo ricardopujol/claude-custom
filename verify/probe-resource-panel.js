@@ -284,7 +284,7 @@ async function main() {
   check('3: the burner is named in the session\'s top children, with a real CPU figure and its memory', !!named, named ? '' : `${fmtState(await rs())} TREE: ${await dumpTree(hostPid)}`);
   if (named) {
     const row = named.children.find(c => /burn\.js/.test(c.cmd));
-    check('3: its row shows the process name and the arguments, not the executable path', row.name === 'node.exe' && !/Program Files/i.test(row.cmd), JSON.stringify([row.name, row.cmd]));
+    check('3: its row shows what it runs (the script), the command is not the executable path', row.name === 'burn.js' && !/Program Files/i.test(row.cmd), JSON.stringify([row.name, row.cmd]));
     check('3: it can be stopped (a Stop button for exactly its pid)', row.stop === String(burnPid), JSON.stringify(row.stop));
   }
 
@@ -336,7 +336,7 @@ async function main() {
   if (!stopBtn) { check('5: the burner row is still there to stop', false, fmtState(before)); return; }
   await view(app, 'resourcesClick', { act: 'ask-stop', pid: burnPid });
   const asked = await waitFor(async () => { const s = await rs(); return s.confirm ? s : null; }, 5000, 150);
-  check('5: Stop asks inline, naming the process and PID and what stops with it', !!asked && new RegExp(`Stop node\\.exe, PID ${burnPid}\\? Only this process stops, and anything it started stops with it\\.`).test(asked.confirm), JSON.stringify(asked && asked.confirm));
+  check('5: Stop asks inline, naming the process and PID and what stops with it', !!asked && new RegExp(`Stop burn\\.js, PID ${burnPid}\\? Only this process stops, and anything it started stops with it\\.`).test(asked.confirm), JSON.stringify(asked && asked.confirm));
   await view(app, 'resourcesClick', { act: 'cancel-stop' });
   await sleep(600);
   const cancelled = await rs();
