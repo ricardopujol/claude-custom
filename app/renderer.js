@@ -5798,7 +5798,9 @@ function bindAvatarSection() {
 
 // Layout pass L2 (#27, #28): main's install-wide window settings, followed
 // across windows. Until main answers, statusInHeader is unknown and the header
-// fields stay hidden: the CLI's own row is still showing them.
+// fields stay hidden, and the page asks again every second. The CLI's own row
+// is only quiet when the file says an explicit true, which main writes as the
+// default, so a gap with the fields nowhere is a moment, never a state.
 let chromeSettings = { statusInHeader: null, framelessWindow: null };
 function applyChromeSettings(settings) {
   if (!settings || typeof settings !== 'object') return;
