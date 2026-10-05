@@ -130,8 +130,8 @@ function view(state) {
   const mem = m.mem && isNum(m.mem.usedBytes) && isNum(m.mem.totalBytes) && m.mem.totalBytes > 0 ? m.mem : null;
   const cpuKnown = !expired && isNum(m.cpu);
   const restCpu = cpuKnown && isNum(ours.cpu) ? Math.max(0, m.cpu - ours.cpu) : null;
-  // claude-custom's figure is PRIVATE (commit) bytes and the machine's is physical in use: when ours is the bigger one
-  // (a lot of it paged out) the two are not the same unit and a difference means nothing, so it is "—", never 0 B.
+  // Both are physical RAM in use (the machine's total minus free; ours the sum of private working sets), but they come from
+  // different counters read a moment apart, so ours can come out the bigger: then the difference means nothing, "—", never 0 B.
   const restMem = mem && isNum(ours.bytes) && ours.bytes <= mem.usedBytes ? mem.usedBytes - ours.bytes : null;
   const machine = {
     cpuFig: cpuFig(m.cpu),

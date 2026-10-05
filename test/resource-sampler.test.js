@@ -199,7 +199,7 @@ test('the real script, run once on this machine: it parses, has this process in 
   const me = s.procs.find(p => p.pid === process.pid);
   assert.ok(me, 'this process is not in the table');
   assert.match(me.start, /^\d{17,19}$/, 'a FILETIME start');
-  assert.ok(typeof me.priv === 'number' && me.priv > 0);
+  assert.ok(typeof s.perf.get(process.pid).ws === 'number' && s.perf.get(process.pid).ws > 0, 'its private working set is there');
   assert.ok(s.perf.has(process.pid), 'its CPU counter is there');
   assert.ok(s.cpuTotal && s.os && s.os.totalBytes > 0);
   const m = parseSample(await exec(R.scriptFor('machine')), 2);

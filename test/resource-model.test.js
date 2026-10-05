@@ -41,7 +41,7 @@ function procs() {
 }
 const sampleOf = (list, cpuByPid, ts, extra = {}) => ({
   at: 0, procs: list,
-  perf: new Map(Object.entries(cpuByPid).map(([pid, cpu]) => [Number(pid), { cpu: BigInt(cpu), ts }])),
+  perf: new Map(Object.entries(cpuByPid).map(([pid, cpu]) => [Number(pid), { cpu: BigInt(cpu), ts, ws: (list.find(p => p.pid === Number(pid)) || {}).priv }])),
   cpuTotal: { idle: 1000n, ts }, os: { totalBytes: 32e9, freeBytes: 10e9 }, ...extra,
 });
 // cores = 4; a process that burned `pct`% of the machine over 10 s used pct/100 * 4 * 10 s of processor time.
@@ -229,7 +229,7 @@ test('property: nothing the model sums is counted twice, and no figure is ever N
 test('D9: a child whose private bytes are unknown has bytes null ("—" on screen), never 0', () => {
   const list = procs();
   list.find(p => p.pid === 23).priv = null;
-  const { children } = M.childrenOf(list, [23, 24], null, 99);
+  const { children } = M.childrenOf(list, [23, 24], null, 99, undefined, new Map([[24, 1e6]]));
   assert.strictEqual(children.find(c => c.pid === 23).bytes, null);
   assert.strictEqual(children.find(c => c.pid === 24).bytes, 1e6);
 });

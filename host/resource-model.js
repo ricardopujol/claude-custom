@@ -13,7 +13,7 @@
  *   child:   { pid, name, cmd, cpu, bytes, start, canStop }
  *
  * `cpu` is `null` when nothing in it was measured (the first sample): the view says "measuring…", never 0.
- * `bytes` is private bytes, always a number. `tabs` is [{ key, label, hostPid | null }]; `hosts` the proven
+ * `bytes` is the private working set (physical RAM, Task Manager's Memory column), always a number on a row; null on a child with no figure. `tabs` is [{ key, label, hostPid | null }]; `hosts` the proven
  * session hosts [{ pid, cwd }]; `labelOf(cwd)` names a project folder.
  */
 
@@ -69,15 +69,17 @@ function sumCpu(pids, cpus) {
   }
   return any ? total : null;
 }
-function sumBytes(pids, byPid) {
+// Memory is each process's PRIVATE WORKING SET (Task Manager's Memory column, `WorkingSetPrivate` in the perf row): physical
+// RAM, the same unit as the machine's "in use". `mem` maps pid -> bytes; a pid with no figure adds nothing (and shows "—" alone).
+function sumBytes(pids, mem) {
   let total = 0;
   for (const pid of pids) {
-    const p = byPid.get(pid);
-    if (p && typeof p.priv === 'number') total += p.priv;
+    const v = mem.get(pid);
+    if (typeof v === 'number') total += v;
   }
   return total;
 }
-const figures = (pids, cpus, byPid) => ({ cpu: sumCpu(pids, cpus), bytes: sumBytes(pids, byPid) });
+const figures = (pids, cpus, mem) => ({ cpu: sumCpu(pids, cpus), bytes: sumBytes(pids, mem) });
 
 const cpuOf = (cpus, pid) => (cpus && cpus.has(pid) ? cpus.get(pid) : null);
 
@@ -86,13 +88,13 @@ const cpuOf = (cpus, pid) => (cpus && cpus.has(pid) ? cpus.get(pid) : null);
  * verdict (host/resource-tree.js stopBlock) so a button is offered only where Stop can succeed; the default is the
  * image-name rule alone. An unknown memory figure is null ("—"), never 0.
  */
-function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECTED(tree.roleOf(p))) {
+function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECTED(tree.roleOf(p)), mem = new Map()) {
   const byPid = new Map(procs.map(p => [p.pid, p]));
   const rows = pids.filter(pid => pid !== claudePid && byPid.has(pid)).map((pid) => {
     const p = byPid.get(pid);
     return {
       pid, name: p.name, cmd: shortCmd(p.cmd, p.name), cpu: cpuOf(cpus, pid),
-      bytes: typeof p.priv === 'number' ? p.priv : null, start: p.start,
+      bytes: typeof mem.get(pid) === 'number' ? mem.get(pid) : null, start: p.start,
     };
   });
   rows.sort((a, b) => {
@@ -112,7 +114,7 @@ const PARTS = [['main', 'Electron main'], ['renderers', 'Renderers'], ['hosts', 
 
 function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], installDirs = [], ownPid, labelOf = basename }) {
   const procs = next.procs;
-  const byPid = new Map(procs.map(p => [p.pid, p]));
+  const mem = new Map([...next.perf].filter(([, v]) => typeof v.ws === 'number').map(([pid, v]) => [pid, v.ws]));
   const cpus = sample.cpuPercents(prev, next, cores);
   const tabList = Array.isArray(tabs) ? tabs : [];
   const tabHosts = new Set(tabList.map(t => t && t.hostPid).filter(Number.isInteger));
@@ -127,10 +129,10 @@ function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], i
   const sessionRow = (s, key, label, stoppable) => {
     const pids = pidsOf(`session:${s.hostPid}`);
     const canStop = stoppable ? (pid) => tree.stopBlock(procs, pid, [s.hostPid]) === null : () => false;
-    const { children, more } = childrenOf(procs, pids, cpus, s.claudePid, canStop);
+    const { children, more } = childrenOf(procs, pids, cpus, s.claudePid, canStop, mem);
     const claude = s.claudePid === null ? null
-      : { pid: s.claudePid, cpu: cpuOf(cpus, s.claudePid), bytes: sumBytes([s.claudePid], byPid) };
-    return { key, label, hostPid: s.hostPid, ...figures(pids, cpus, byPid), claude, children, more };
+      : { pid: s.claudePid, cpu: cpuOf(cpus, s.claudePid), bytes: sumBytes([s.claudePid], mem) };
+    return { key, label, hostPid: s.hostPid, ...figures(pids, cpus, mem), claude, children, more };
   };
 
   // This window: a row per tab whose host is in the table, then any session it owns that has no tab.
@@ -151,29 +153,29 @@ function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], i
 
   const parts = PARTS.map(([id, label]) => {
     const pids = pidsOf(`win:${ownPid}:${id}`);
-    return { id, label, count: pids.length, ...figures(pids, cpus, byPid) };
+    return { id, label, count: pids.length, ...figures(pids, cpus, mem) };
   });
   const selfPids = parts.flatMap(p => pidsOf(`win:${ownPid}:${p.id}`));
-  const self = { ...figures(selfPids, cpus, byPid), parts };
+  const self = { ...figures(selfPids, cpus, mem), parts };
 
   const projectPids = [...rows.flatMap(r => pidsOf(`session:${r.hostPid}`)), ...selfPids];
-  const project = { ...figures(projectPids, cpus, byPid), rows, self };
+  const project = { ...figures(projectPids, cpus, mem), rows, self };
 
   const windows = a.windows.filter(w => w.rootPid !== ownPid).map((w) => {
     const owned = a.sessions.filter(s => s.owner === w.rootPid);
     const pids = [...PARTS.flatMap(([id]) => pidsOf(`win:${w.rootPid}:${id}`)), ...owned.flatMap(s => pidsOf(`session:${s.hostPid}`))];
     const names = [...new Set(owned.map(s => cwdOf.get(s.hostPid)).filter(Boolean).map(labelOf))];
-    return { rootPid: w.rootPid, label: names.length ? names.join(', ') : `claude-custom (pid ${w.rootPid})`, sessions: owned.length, ...figures(pids, cpus, byPid) };
+    return { rootPid: w.rootPid, label: names.length ? names.join(', ') : `claude-custom (pid ${w.rootPid})`, sessions: owned.length, ...figures(pids, cpus, mem) };
   });
 
   const orphans = a.sessions.filter(s => s.owner === null);
   const bgPids = [...pidsOf('background:hosts'), ...orphans.flatMap(s => pidsOf(`session:${s.hostPid}`))];
-  const background = orphans.length ? { sessions: orphans.length, ...figures(bgPids, cpus, byPid) } : null;
+  const background = orphans.length ? { sessions: orphans.length, ...figures(bgPids, cpus, mem) } : null;
 
   const everyPid = [...a.pidBucket.keys()];
   return {
     measuring: !prev,
-    machine: { cpu: sample.machineCpu(prev, next), mem: sample.machineMemory(next), ours: figures(everyPid, cpus, byPid) },
+    machine: { cpu: sample.machineCpu(prev, next), mem: sample.machineMemory(next), ours: figures(everyPid, cpus, mem) },
     project, windows, background,
   };
 }

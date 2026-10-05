@@ -136,3 +136,10 @@ test('property: a process percentage is null or finite and not negative, and an 
     for (const v of S.cpuPercents(null, b, cores).values()) assert.strictEqual(v, null);
   }));
 });
+
+test('Q4: the perf row carries the private working set in bytes (wsp); a row without one has ws null, never 0', () => {
+  const s = S.parseSample(raw({ perf: [{ pid: 4, cpu: '1', ts: BASE, wsp: '206094336' }, { pid: 5, cpu: '1', ts: BASE }, { pid: 6, cpu: '1', ts: BASE, wsp: 'x' }] }), 1);
+  assert.strictEqual(s.perf.get(4).ws, 206094336);
+  assert.strictEqual(s.perf.get(5).ws, null);
+  assert.strictEqual(s.perf.get(6).ws, null);
+});

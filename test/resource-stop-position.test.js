@@ -61,7 +61,7 @@ test('D2/D11: the view model offers Stop exactly where the guard allows it, and 
   const procs = [win(10), host(20, 10), row(21, 20, 'conhost.exe', 'conhost.exe --headless'), row(22, 20, 'cmd.exe', 'cmd.exe --dangerously-skip-permissions'),
     row(23, 22, 'node.exe', 'node server.js'), row(30, 10, 'electron.exe', `${EXE} --type=renderer`),
     host(60, 10), row(62, 60, 'claude.exe', 'claude.exe'), row(63, 62, 'node.exe', 'node other.js')];
-  const perf = new Map(procs.map(p => [p.pid, { cpu: 0n, ts: 1n }]));
+  const perf = new Map(procs.map(p => [p.pid, { cpu: 0n, ts: 1n, ws: 1 }]));
   const sample = { at: 0, procs, perf, cpuTotal: null, os: null };
   const m = M.buildModel({ sample, prev: null, cores: 4, tabs: [{ key: 'k', label: 'main', hostPid: 20 }],
     hosts: [{ pid: 20, cwd: 'C:\\r\\dev' }, { pid: 60, cwd: 'C:\\r\\old' }], installDirs: [INSTALL], ownPid: 10 });

@@ -8,8 +8,8 @@
  * samples: each is `null`. The view shows "—" or "measuring…" for it, never a confident zero.
  *
  * The sample (host/resource-sampler.js's script) is one JSON document plus an `END` line:
- *   { procs: [{ pid, ppid, name, cmd, start, priv }],      start = FILETIME string, priv = private bytes
- *     perf:  [{ pid, cpu, ts }],                          cpu = processor time, ts = Timestamp_Sys100NS (100 ns)
+ *   { procs: [{ pid, ppid, name, cmd, start }],            start = FILETIME string
+ *     perf:  [{ pid, cpu, ts, wsp }],                     wsp = WorkingSetPrivate: the private working set in bytes (RAM)                          cpu = processor time, ts = Timestamp_Sys100NS (100 ns)
  *     cpu:   { idle, ts },                                PerfOS_Processor _Total: the IDLE counter, core-averaged
  *     os:    { totalKb, freeKb } }
  * `Timestamp_Sys100NS` is about 1.3e17, past 2^53, so the counters travel as strings and are BigInt here: a plain
@@ -48,7 +48,8 @@ function parseSample(text, at) {
   const perf = new Map();
   for (const r of doc.perf) {
     if (isObject(r) && Number.isInteger(r.pid) && r.pid >= 0 && digits(r.cpu) && digits(r.ts)) {
-      perf.set(r.pid, { cpu: big(r.cpu), ts: big(r.ts) });
+      // ws: the process's private working set in bytes (WorkingSetPrivate), or null when the row carries none
+      perf.set(r.pid, { cpu: big(r.cpu), ts: big(r.ts), ws: digits(r.wsp) ? Number(r.wsp) : null });
     }
   }
   const c = doc.cpu;

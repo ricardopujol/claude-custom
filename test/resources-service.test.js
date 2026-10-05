@@ -25,7 +25,7 @@ function world() {
 }
 const sampleAt = (procs, cpu23, n) => ({
   at: 0, procs,
-  perf: new Map(procs.map(p => [p.pid, { cpu: p.pid === 23 ? BigInt(Math.round(cpu23 * n)) : 0n, ts: T0 + BigInt(n) * 10n * SEC }])),
+  perf: new Map(procs.map(p => [p.pid, { cpu: p.pid === 23 ? BigInt(Math.round(cpu23 * n)) : 0n, ts: T0 + BigInt(n) * 10n * SEC, ws: p.priv }])),
   cpuTotal: { idle: BigInt(n) * 5n * SEC, ts: T0 + BigInt(n) * 10n * SEC }, os: { totalBytes: 1000, freeBytes: 400 },
 });
 // pid 23 burns `pct`% of a 4-core machine: pct/100 * 4 cores * 10 s per sample
