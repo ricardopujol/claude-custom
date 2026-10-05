@@ -103,3 +103,13 @@ test('sweep: the cap keeps the newest and reports each removal', async () => {
   const r = await createSummaryStore({ dir }).sweep({ now: NOW, maxAgeMs: 1e12, maxFiles: 2 });
   assert.deepStrictEqual(r.removed, ['old.json']);
 });
+
+test('sweep: only names shaped like this store\'s temp files are swept (the temp-name pattern is anchored at both ends)', async () => {
+  const dir = tmpDir('sumstore-bounds-');
+  const names = ['x.json.1.abc.tmp', 'x.json.1.abc.tmpx', 'xx.json.1.abc.tmp.bak', '.x.json.1.abc.tmp', 'x.json.1.xyz.tmp', 'x.json.a.abc.tmp'];
+  for (const n of names) { fs.writeFileSync(path.join(dir, n), 'z'); setAge(path.join(dir, n), 10_000); }
+  const s = createSummaryStore({ dir });
+  const r = await s.sweep({ now: NOW, maxAgeMs: 1e12, tmpMaxAgeMs: 1, maxFiles: 100 });
+  assert.deepStrictEqual(r.removed, ['x.json.1.abc.tmp']);
+  for (const n of names.slice(1)) assert.strictEqual(fs.existsSync(path.join(dir, n)), true, `${n} is not ours to remove`);
+});
