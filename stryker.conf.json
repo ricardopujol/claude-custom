@@ -51,7 +51,8 @@
     "not survivors by design: only the ${...} expressions in them are mutated. The script text is pinned only by the fast tests",
     "that assert on it and by the skipped real-process tests; say so when quoting those two files' numbers.",
     "The only survivors by design are the ones in createExec (host/resource-sampler.js: the execFile call, its options, the",
-    "err && !stdout reject, done.kill): only the skipped real-process tests can reach them. Numeric literals are not mutated either."
+    "err && !stdout reject, done.kill): only the skipped real-process tests can reach them. Numeric literals are not mutated either.",
+    "Also unkillable on Windows: the mode 0o600 option of the identity file write in host/host-identity.js (a chmod mutant). Node honours only the read-only bit there, so its test (host-identity-token-port.test.js) runs on POSIX only."
   ],
   "_comment_rule_is_enforced": [
     "THE RULE ABOVE IS NOW A TEST, because I broke it by hand twice in the two",

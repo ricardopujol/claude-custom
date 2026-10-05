@@ -49,7 +49,7 @@ test('readIdentity: a file that is not JSON, is JSON null, or is not an object r
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('writeIdentity: the published file is private to its owner on POSIX', { skip: process.platform === 'win32' }, () => {
+test('writeIdentity: the published file is private to its owner on POSIX', { skip: process.platform === 'win32' && 'file mode bits are not meaningful on Windows (Node honours only the read-only bit)' }, () => {
   const dir = tmpDir();
   try {
     const file = H.writeIdentity({ dir, port: 7002, cwd: 'C:\\x', pid: 42 });
