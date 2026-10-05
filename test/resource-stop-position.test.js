@@ -56,6 +56,16 @@ test('D2c: a plain build or server in the session, with ordinary children, may b
   assert.deepStrictEqual(r.kill.map(k => k.pid), [30, 31]);
 });
 
+test('N3: a console host of the target own (a child started with a hidden console) does not make it unstoppable; the session ConPTY still is', () => {
+  n = 1000;
+  const procs = [win(10), host(20, 10), row(21, 20, 'conhost.exe', 'conhost.exe --headless'), row(22, 20, 'claude.exe', 'claude.exe'),
+    row(40, 22, 'node.exe', 'node pool.js'), row(41, 40, 'node.exe', 'node burn.js'), row(42, 41, 'conhost.exe', 'conhost.exe 0xffffffff -ForceV1')];
+  assert.strictEqual(ask(procs, 41).ok, true);
+  assert.strictEqual(ask(procs, 40).ok, true);
+  assert.deepStrictEqual(ask(procs, 40).kill.map(k => k.pid), [40, 41, 42]);
+  assert.deepStrictEqual(ask(procs, 21), { ok: false, reason: 'protected' }, 'the ConPTY of a session is protected by position');
+});
+
 test('D2/D11: the view model offers Stop exactly where the guard allows it, and never on a session with no tab', () => {
   n = 1000;
   const procs = [win(10), host(20, 10), row(21, 20, 'conhost.exe', 'conhost.exe --headless'), row(22, 20, 'cmd.exe', 'cmd.exe --dangerously-skip-permissions'),

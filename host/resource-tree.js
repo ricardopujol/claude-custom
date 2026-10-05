@@ -221,7 +221,9 @@ function stopBlock(procs, pid, hostPids) {
   const directOfHosts = new Set();
   for (const h of hosts) for (const k of ix.kids.get(h) || []) directOfHosts.add(k.pid);
   const sub = walkFrom(ix, pid);
-  if (sub.some(p => isProtectedRole(roleOf(p)) || hosts.has(p.pid) || directOfHosts.has(p.pid))) return 'protected';
+  // A console host BELOW the target is just the hidden console of something it started (windowsHide, execa's default), so it
+  // does not count: the session's own ConPTY is protected by position (a direct child of the host), not by its image name.
+  if (sub.some(p => (isProtectedRole(roleOf(p)) && roleOf(p) !== 'conpty') || hosts.has(p.pid) || directOfHosts.has(p.pid))) return 'protected';
   return null;
 }
 
