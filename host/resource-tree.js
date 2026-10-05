@@ -87,7 +87,8 @@ function namesInstall(cmd, installDirs) {
  *   { buckets: Map<id, pid[]>, pidBucket: Map<pid, id>,
  *     sessions: [{ hostPid, owner: rootPid | null, claudePid | null }], windows: [{ rootPid }] }
  * `hosts` are the host pids the caller has proven (identity file + start time); one that is not a host process in
- * this table is ignored.
+ * this table is ignored. A host may name its `owner` (a window's root pid): a tab attached to a host an EARLIER
+ * window started has no parent link to this window, but it is this window's session all the same.
  */
 function attribute(procs, { hosts = [], installDirs = [], ownPids = [] } = {}) {
   const ix = indexOf(procs);
@@ -100,6 +101,10 @@ function attribute(procs, { hosts = [], installDirs = [], ownPids = [] } = {}) {
   };
   const ensure = (id) => { if (!buckets.has(id)) buckets.set(id, []); };
 
+  const forced = new Map();
+  for (const h of Array.isArray(hosts) ? hosts : []) {
+    if (h && Number.isInteger(h.owner) && !forced.has(h.pid)) forced.set(h.pid, h.owner);
+  }
   const hostPids = [...new Set((Array.isArray(hosts) ? hosts : []).map(h => h && h.pid))]
     .filter(pid => ix.byPid.has(pid) && roleOf(ix.byPid.get(pid)) === 'host')
     .sort((a, b) => a - b);
@@ -128,7 +133,8 @@ function attribute(procs, { hosts = [], installDirs = [], ownPids = [] } = {}) {
     const tree = walkFrom(ix, rootPid);
     const inTree = new Set(tree.map(p => p.pid));
     for (const hostPid of hostPids) {
-      if (inTree.has(hostPid) && !pidBucket.has(hostPid)) claimSession(hostPid, rootPid, `win:${rootPid}:hosts`);
+      if (pidBucket.has(hostPid)) continue;
+      if (inTree.has(hostPid) || forced.get(hostPid) === rootPid) claimSession(hostPid, rootPid, `win:${rootPid}:hosts`);
     }
     for (const p of tree) {
       if (pidBucket.has(p.pid)) continue;

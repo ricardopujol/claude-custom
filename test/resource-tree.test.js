@@ -156,3 +156,14 @@ test('property: every pid lands in at most one bucket, and the buckets add up to
     for (const pid of seen.keys()) assert.ok(live.has(pid));
   }));
 });
+
+test('attribute: a host a window\'s tab is attached to counts as that window\'s, though an earlier window started it', () => {
+  const p = table([win(10), host(20, 999), conhost(21, 20), claude(22, 20)]);
+  assert.strictEqual(T.attribute(p, opts([20])).sessions[0].owner, null);
+  const a = T.attribute(p, { hosts: [{ pid: 20, owner: 10 }], installDirs: [INSTALL] });
+  assert.deepStrictEqual(a.sessions, [{ hostPid: 20, owner: 10, claudePid: 22 }]);
+  assert.deepStrictEqual(a.buckets.get('win:10:hosts').sort(), [20, 21]);
+  assert.strictEqual(a.buckets.has('background:hosts'), false);
+  const noWindow = T.attribute(p, { hosts: [{ pid: 20, owner: 77 }], installDirs: [INSTALL] });
+  assert.strictEqual(noWindow.sessions[0].owner, null, 'an owner that is not a window in this table owns nothing');
+});

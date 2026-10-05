@@ -1,0 +1,163 @@
+'use strict';
+/**
+ * The Resources panel's view model (BACKLOG #63, documentation/DESIGN_RESOURCE_PANEL.md "What it shows"): one
+ * sample, the CPU deltas against the one before it, the attribution (host/resource-tree.js) and this window's tab
+ * list, joined into the shape app/resources-display.js draws. Pure.
+ *
+ *   buildModel({ sample, prev, cores, tabs, hosts, installDirs, ownPid, labelOf }) ->
+ *     { measuring, machine: { cpu, mem, ours: { cpu, bytes } },
+ *       project: { cpu, bytes, rows: [session], self: { cpu, bytes, parts: [{ id, label, cpu, bytes, count }] } },
+ *       windows: [{ rootPid, label, cpu, bytes, sessions }],
+ *       background: { cpu, bytes, sessions } | null }
+ *   session: { key, label, hostPid, cpu, bytes, claude: { pid, cpu, bytes } | null, children: [child], more: { count, underOnePct } }
+ *   child:   { pid, name, cmd, cpu, bytes, start, canStop }
+ *
+ * `cpu` is `null` when nothing in it was measured (the first sample): the view says "measuring…", never 0.
+ * `bytes` is private bytes, always a number. `tabs` is [{ key, label, hostPid | null }]; `hosts` the proven
+ * session hosts [{ pid, cwd }]; `labelOf(cwd)` names a project folder.
+ */
+
+const sample = require('./resource-sample');
+const tree = require('./resource-tree');
+
+const CMD_MAX = 60;
+const CHILDREN_SHOWN = 3;
+const PROTECTED = role => role === 'host' || role === 'claude' || role === 'conpty' || role.startsWith('electron:');
+
+const basename = (cwd) => {
+  const parts = String(cwd).split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(cwd);
+};
+
+/** The command line without the executable (quoted or not); the process name when there are no arguments. Clipped. */
+function shortCmd(cmd, name) {
+  const fallback = typeof name === 'string' && name !== '' ? name : '?';
+  if (typeof cmd !== 'string' || cmd.trim() === '') return fallback;
+  const text = cmd.trim();
+  let rest;
+  if (text.startsWith('"')) {
+    const close = text.indexOf('"', 1);
+    rest = close < 0 ? '' : text.slice(close + 1);
+  } else {
+    const space = text.search(/\s/);
+    rest = space < 0 ? '' : text.slice(space);
+  }
+  rest = rest.trim();
+  if (rest === '') return fallback;
+  return rest.length > CMD_MAX ? `${rest.slice(0, CMD_MAX - 1)}…` : rest;
+}
+
+// A figure that is null when none of its parts was measured; the sum of the ones that were otherwise.
+function sumCpu(pids, cpus) {
+  let total = 0;
+  let any = false;
+  for (const pid of pids) {
+    const v = cpus.get(pid);
+    if (typeof v === 'number' && Number.isFinite(v)) { total += v; any = true; }
+  }
+  return any ? total : null;
+}
+function sumBytes(pids, byPid) {
+  let total = 0;
+  for (const pid of pids) {
+    const p = byPid.get(pid);
+    if (p && typeof p.priv === 'number') total += p.priv;
+  }
+  return total;
+}
+const figures = (pids, cpus, byPid) => ({ cpu: sumCpu(pids, cpus), bytes: sumBytes(pids, byPid) });
+
+const cpuOf = (cpus, pid) => (cpus && cpus.has(pid) ? cpus.get(pid) : null);
+
+/** The top 3 of `pids` (minus claude) by CPU, then memory, and what is left over. */
+function childrenOf(procs, pids, cpus, claudePid) {
+  const byPid = new Map(procs.map(p => [p.pid, p]));
+  const rows = pids.filter(pid => pid !== claudePid && byPid.has(pid)).map((pid) => {
+    const p = byPid.get(pid);
+    return {
+      pid, name: p.name, cmd: shortCmd(p.cmd, p.name), cpu: cpuOf(cpus, pid),
+      bytes: typeof p.priv === 'number' ? p.priv : 0, start: p.start,
+      canStop: !PROTECTED(tree.roleOf(p)),
+    };
+  });
+  rows.sort((a, b) => {
+    const an = a.cpu === null ? 1 : 0;
+    const bn = b.cpu === null ? 1 : 0;
+    return (an - bn) || ((b.cpu || 0) - (a.cpu || 0)) || (b.bytes - a.bytes) || (a.pid - b.pid);
+  });
+  const rest = rows.slice(CHILDREN_SHOWN);
+  return {
+    children: rows.slice(0, CHILDREN_SHOWN),
+    more: { count: rest.length, underOnePct: rest.every(r => typeof r.cpu === 'number' && r.cpu < 1) },
+  };
+}
+
+const PARTS = [['main', 'Electron main'], ['renderers', 'Renderers'], ['hosts', 'Session hosts']];
+
+function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], installDirs = [], ownPid, labelOf = basename }) {
+  const procs = next.procs;
+  const byPid = new Map(procs.map(p => [p.pid, p]));
+  const cpus = sample.cpuPercents(prev, next, cores);
+  const tabList = Array.isArray(tabs) ? tabs : [];
+  const tabHosts = new Set(tabList.map(t => t && t.hostPid).filter(Number.isInteger));
+  const cwdOf = new Map((Array.isArray(hosts) ? hosts : []).map(h => [h.pid, h.cwd]));
+  const a = tree.attribute(procs, {
+    hosts: (Array.isArray(hosts) ? hosts : []).map(h => (tabHosts.has(h.pid) ? { pid: h.pid, owner: ownPid } : { pid: h.pid })),
+    installDirs, ownPids: [ownPid],
+  });
+  const pidsOf = id => a.buckets.get(id) || [];
+
+  const sessionRow = (s, key, label) => {
+    const pids = pidsOf(`session:${s.hostPid}`);
+    const { children, more } = childrenOf(procs, pids, cpus, s.claudePid);
+    const claude = s.claudePid === null ? null
+      : { pid: s.claudePid, cpu: cpuOf(cpus, s.claudePid), bytes: sumBytes([s.claudePid], byPid) };
+    return { key, label, hostPid: s.hostPid, ...figures(pids, cpus, byPid), claude, children, more };
+  };
+
+  // This window: a row per tab whose host is in the table, then any session it owns that has no tab.
+  const mine = a.sessions.filter(s => s.owner === ownPid);
+  const rows = [];
+  const used = new Set();
+  for (const t of tabList) {
+    const s = t && mine.find(x => x.hostPid === t.hostPid);
+    if (!s || used.has(s.hostPid)) continue;
+    used.add(s.hostPid);
+    rows.push(sessionRow(s, t.key, t.label));
+  }
+  for (const s of mine) {
+    if (used.has(s.hostPid)) continue;
+    const cwd = cwdOf.get(s.hostPid);
+    rows.push(sessionRow(s, `host:${s.hostPid}`, cwd ? labelOf(cwd) : `session ${s.hostPid}`));
+  }
+
+  const parts = PARTS.map(([id, label]) => {
+    const pids = pidsOf(`win:${ownPid}:${id}`);
+    return { id, label, count: pids.length, ...figures(pids, cpus, byPid) };
+  });
+  const selfPids = parts.flatMap(p => pidsOf(`win:${ownPid}:${p.id}`));
+  const self = { ...figures(selfPids, cpus, byPid), parts };
+
+  const projectPids = [...rows.flatMap(r => pidsOf(`session:${r.hostPid}`)), ...selfPids];
+  const project = { ...figures(projectPids, cpus, byPid), rows, self };
+
+  const windows = a.windows.filter(w => w.rootPid !== ownPid).map((w) => {
+    const owned = a.sessions.filter(s => s.owner === w.rootPid);
+    const pids = [...PARTS.flatMap(([id]) => pidsOf(`win:${w.rootPid}:${id}`)), ...owned.flatMap(s => pidsOf(`session:${s.hostPid}`))];
+    const names = [...new Set(owned.map(s => cwdOf.get(s.hostPid)).filter(Boolean).map(labelOf))];
+    return { rootPid: w.rootPid, label: names.length ? names.join(', ') : `claude-custom (pid ${w.rootPid})`, sessions: owned.length, ...figures(pids, cpus, byPid) };
+  });
+
+  const orphans = a.sessions.filter(s => s.owner === null);
+  const bgPids = [...pidsOf('background:hosts'), ...orphans.flatMap(s => pidsOf(`session:${s.hostPid}`))];
+  const background = orphans.length ? { sessions: orphans.length, ...figures(bgPids, cpus, byPid) } : null;
+
+  const everyPid = [...a.pidBucket.keys()];
+  return {
+    measuring: !prev,
+    machine: { cpu: sample.machineCpu(prev, next), mem: sample.machineMemory(next), ours: figures(everyPid, cpus, byPid) },
+    project, windows, background,
+  };
+}
+
+module.exports = { buildModel, shortCmd, childrenOf, CHILDREN_SHOWN };
