@@ -661,3 +661,11 @@ test('#63 paint: a malformed warning draws no chip (absence is not a zero)', () 
   paint(doc, { model: bad.map((w, i) => entry({ key: `k${i}`, resourceWarn: w })) }, bridgeSpy());
   for (const t of doc.byId.tabs.children) assert.strictEqual(child(t, 'res-warn'), undefined);
 });
+
+test('#63 paint (kill, #70): the refusal is `pct < 0`, so exactly 0 still draws its chip and anything below 0 does not', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ key: 'zero', resourceWarn: { pct: 0, level: 'amber' } }), entry({ key: 'below', resourceWarn: { pct: -0.4, level: 'red' } })] }, bridgeSpy());
+  const [zero, below] = doc.byId.tabs.children;
+  assert.strictEqual(child(zero, 'res-warn').textContent, '0%');
+  assert.strictEqual(child(below, 'res-warn'), undefined);
+});
