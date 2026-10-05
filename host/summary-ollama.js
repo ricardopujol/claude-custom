@@ -9,6 +9,8 @@
  *     .check()           -> health, then the model: the first failure, with `model` named
  *     .summarize(prompt) -> { ok: true, text, ms } | { ok: false, reason: 'timeout' | 'unreachable' | 'model-missing'
  *                                                                  | 'bad-reply' | 'http', status? }
+ *     .generate(prompt, { format: 'json'?, numPredict?, temperature? }) -> the same, with the reply as the model wrote it
+ *                        (backlog #66, the indexing assistant: it parses its own JSON)
  *
  * WHY THE RETRIES. On the real machine the first /api/tags call timed out at 5 s and the next answered in under a
  * second: one miss is not "Ollama is off". A health check is GET / (3 s) and a model check GET /api/tags (5 s), each
@@ -32,6 +34,8 @@ const KEEP_ALIVE = '5m';
 const HEALTH_TIMEOUT_MS = 3_000;
 const TAGS_TIMEOUT_MS = 5_000;
 const GENERATE_TIMEOUT_MS = 40_000;
+const SUMMARY_PREDICT = 200;
+const SUMMARY_TEMPERATURE = 0.2;
 // A real reply is about 1 KB (stream:false, num_predict 200) and /api/tags a few KB. Whatever is listening on the port
 // can send more, for as long as the timeout lets it: nothing over this is read (Miguel I2, PR #105).
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -118,25 +122,39 @@ function createOllamaClient({
     return m.ok ? m : { ...m, model };
   }
 
-  async function summarize(prompt) {
+  /** One generate exchange; `shape(response)` turns the model's words into the text, or null for a bad reply. */
+  async function ask(prompt, { format, numPredict, temperature }, shape) {
     const started = now();
-    const r = await twice('/api/generate', {
-      method: 'POST',
-      timeoutMs: generateMs,
-      json: { model, prompt, stream: false, keep_alive: KEEP_ALIVE, options: { num_ctx: NUM_CTX, temperature: 0.2, num_predict: 200 } },
-    });
+    const json = { model, prompt, stream: false, keep_alive: KEEP_ALIVE };
+    if (format !== undefined) json.format = format;
+    json.options = { num_ctx: NUM_CTX, temperature, num_predict: numPredict };
+    const r = await twice('/api/generate', { method: 'POST', timeoutMs: generateMs, json });
     if (!r.ok) return { ok: false, reason: r.reason === 'timeout' ? 'timeout' : 'unreachable' };
     if (r.status === 404) return { ok: false, reason: 'model-missing' };
     if (r.status < 200 || r.status > 299) return { ok: false, reason: 'http', status: r.status };
     if (r.tooBig) return { ok: false, reason: 'bad-reply' };
     let parsed;
     try { parsed = JSON.parse(r.text); } catch { return { ok: false, reason: 'bad-reply' }; }
-    const text = isObject(parsed) && typeof parsed.response === 'string' ? cleanReply(parsed.response) : null;
+    const text = isObject(parsed) && typeof parsed.response === 'string' ? shape(parsed.response) : null;
     if (text === null) return { ok: false, reason: 'bad-reply' };
     return { ok: true, text, ms: Math.max(0, now() - started) };
   }
 
-  return { health, hasModel, check, summarize };
+  const summarize = (prompt) => ask(prompt, { numPredict: SUMMARY_PREDICT, temperature: SUMMARY_TEMPERATURE }, cleanReply);
+
+  /**
+   * The model's reply as it wrote it (backlog #66: the indexing assistant asks for JSON and parses it itself). Only
+   * `format: 'json'` is passed on; a length or temperature that isn't a usable number is the summary's.
+   */
+  function generate(prompt, { format, numPredict, temperature } = {}) {
+    return ask(prompt, {
+      format: format === 'json' ? 'json' : undefined,
+      numPredict: Number.isInteger(numPredict) && numPredict > 0 ? numPredict : SUMMARY_PREDICT,
+      temperature: typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 ? temperature : SUMMARY_TEMPERATURE,
+    }, (text) => (text.trim() === '' ? null : text));
+  }
+
+  return { health, hasModel, check, summarize, generate };
 }
 
 module.exports = { createOllamaClient, MAX_BODY_BYTES, DEFAULT_URL, DEFAULT_MODEL, NUM_CTX, KEEP_ALIVE, GENERATE_TIMEOUT_MS };
