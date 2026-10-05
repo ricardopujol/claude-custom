@@ -266,3 +266,25 @@ test('D13: a minimised window does not keep the process tree sampled even if its
   r.svc.setMinimised(false);
   assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
 });
+
+test('D14: the probe seam is parsed strictly', () => {
+  assert.strictEqual(S.parseWarnAt('15'), 15);
+  assert.strictEqual(S.parseWarnAt('1'), 1);
+  assert.strictEqual(S.parseWarnAt('99'), 99);
+  for (const bad of ['0x1E', ' 40', '40 ', '4e1', '1.5', '1e1', '', '0', '100', '-5', '015x', undefined, null, 15]) {
+    assert.strictEqual(S.parseWarnAt(bad), undefined, String(bad));
+  }
+});
+
+test('S5: the full payload (command lines) goes to the page showing the panel; a light one, machine figures only, to the rest', () => {
+  const calls = [];
+  const r = rig({ send: (full, light) => calls.push([full, light]) });
+  r.svc.onUpdate(fullSnap(2, 50));
+  const [full, light] = calls.at(-1);
+  assert.ok(full.model);
+  assert.strictEqual(light.model, null);
+  assert.deepStrictEqual(light.machine, full.machine);
+  assert.deepStrictEqual(light.status, full.status);
+  assert.strictEqual(r.svc.get(true), full);
+  assert.strictEqual(r.svc.get(false), light);
+});

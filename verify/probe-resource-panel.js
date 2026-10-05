@@ -131,7 +131,18 @@ function command(app, cmd, timeoutMs = 30000) {
 }
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
 
-const seenPids = new Set();
+// pid -> the start time (FILETIME) it had when this probe first saw it. A pid is killed at the end ONLY while it is still
+// the process that had that start time: Windows reuses pids fast, and a probe that re-kills a recorded pid minutes later
+// can end somebody else's process with its whole tree (Miguel, PR #113 I4).
+const seenPids = new Map();
+const startOf = (pid) => {
+  try {
+    return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToFileTimeUtc()`], { encoding: 'utf8', windowsHide: true }).trim() || null;
+  } catch { return null; }
+};
+const sameStart = (a, b) => !!a && !!b && /^\d+$/.test(a) && /^\d+$/.test(b) && Math.abs(Number(BigInt(a) - BigInt(b))) <= 100000;
+const track = (pid, start) => { if (Number.isInteger(pid) && pid > 0 && !seenPids.has(pid)) seenPids.set(pid, start || startOf(pid)); };
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -144,15 +155,18 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { killPidTree(pid); } catch { /* gone */ } }
+  for (const id of hostsOfThisRun()) track(id.pid, id.processStartedAt);
+  for (const [pid, start] of seenPids) {
+    // still the same process? (a dead pid, or one reused since, is left alone). The tree is ours: a host this window spawned.
+    if (sameStart(startOf(pid), start)) { try { killPidTree(pid); } catch { /* gone */ } }
+  }
 }
 hygiene.addCleanup(killEverything);
 
 async function viewReady(app) {
   return waitFor(async () => {
     const st = await command(app, { cmd: 'state' });
-    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) track(h.pid);
     const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
     if (!sel || !sel.started) return null;
     const v = await view(app, 'state');
@@ -258,7 +272,7 @@ async function main() {
   const burnPid = await waitFor(() => readPid(burnPidFile), 15000, 200);
   check(`3: the burner (${workers} spinning threads on ${cores} cores, ${process.env.RES_PROBE_NORMAL === '1' ? 'normal priority' : 'BelowNormal'}, self-ending) is running`, !!burnPid && alive(burnPid), String(burnPid));
   if (!burnPid) return;
-  if (burnPid) seenPids.add(burnPid);
+  // the burner is NOT tracked for the final kill: it ends itself after 100 s, and Stop ends it in this probe
 
   const named = await waitFor(async () => {
     const s = await rs();

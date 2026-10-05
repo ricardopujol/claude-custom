@@ -36,6 +36,7 @@ function createResourcesService({
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
   let lastPayload = null;
+  let lastLight = null;        // the same payload with no process model: what a page that is not showing the panel gets
   let lastSignature = '';
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
 
@@ -108,7 +109,9 @@ function createResourcesService({
     }
 
     lastPayload = { model: built, status, machine };
-    send(lastPayload);
+    lastLight = { model: null, status, machine };
+    // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
+    send(lastPayload, lastLight);
   }
 
   async function stop(request) {
@@ -128,7 +131,7 @@ function createResourcesService({
     setMinimised(on) { minimised = on === true; refresh(); },
     refresh,
     onUpdate,
-    get: () => lastPayload,
+    get: (full = true) => (full ? lastPayload : lastLight),
     warnFor(key) {
       const s = warnings.get(key);
       return s && s.on ? { pct: s.pct, level: s.level } : null;
@@ -137,4 +140,14 @@ function createResourcesService({
   };
 }
 
-module.exports = { createResourcesService };
+/**
+ * The probe seam's value (CLAUDE_CUSTOM_RESOURCE_WARN_AT), parsed STRICTLY: one to three digits and between 1 and 99, or
+ * undefined (the default 40). `Number()` alone would take '0x1E', ' 4e1 ' and '1.5' (Dexter, PR #113 finding 14).
+ */
+function parseWarnAt(raw) {
+  if (typeof raw !== 'string' || !/^\d{1,3}$/.test(raw)) return undefined;
+  const n = Number(raw);
+  return n >= 1 && n <= 99 ? n : undefined;
+}
+
+module.exports = { createResourcesService, parseWarnAt };

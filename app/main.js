@@ -92,7 +92,7 @@ const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/b
 // The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
 const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
 const { killVerified } = require('../host/resource-kill');
-const { createResourcesService } = require('./resources-service');
+const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
@@ -797,7 +797,9 @@ function registerIpc() {
     if (!isTabView(e.sender) || !resources) return;
     resources.setShown(e.sender.id, on === true);
   });
-  ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources ? resources.get() : null));
+  ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
+    ? resources.get(!!selectedView() && selectedView().webContents === e.sender)
+    : null));
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
@@ -1539,6 +1541,9 @@ app.whenReady().then(async () => {
   // each is proven against the process table (host/resource-tree.js provenHosts) before anything is attributed.
   const resourceInstalls = () => { try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; } };
   const cpuCores = require('os').cpus().length;
+  // Read once and REMOVED from the environment, so it never reaches a host, a claude or a window started from them.
+  const warnAtSeam = parseWarnAt(process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT);
+  delete process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT;
   resourceSampler = createSampler({ cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
   resources = createResourcesService({
     sampler: resourceSampler,
@@ -1561,13 +1566,13 @@ app.whenReady().then(async () => {
     cores: cpuCores,
     // a worktree's cwd names its PROJECT (the folder that holds `dev\`), the way the window title does
     labelOf: (cwd) => { const p = projectOf(cwd); return projectLabel(p ? p.root : cwd); },
-    send: (payload) => forEachView((v) => v.webContents.send('resources:state', payload)),
+    send: (full, light) => { const sel = selectedView(); forEachView((v) => v.webContents.send('resources:state', v === sel ? full : light)); },
     isSelectedView: (id) => { const v = selectedView(); return !!v && !v.webContents.isDestroyed() && v.webContents.id === id; },
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
-    warnAt: (() => { const n = Number(process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT); return Number.isFinite(n) && n > 0 && n < 100 ? n : undefined; })(),
+    warnAt: warnAtSeam,
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },
     log: (...a) => console.log(...a),
   });

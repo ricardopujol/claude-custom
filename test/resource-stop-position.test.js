@@ -147,3 +147,30 @@ test('property: whatever the table, an accepted Stop never has a protected proce
     assert.strictEqual(d.kill.at(-1).pid, pid, 'the target is last');
   }));
 });
+
+// ---- the real script, against processes this test starts itself (Windows only) ----
+const { spawn, execFileSync } = require('child_process');
+test('D4/D5 real PowerShell: kills a process with the right start time, refuses a wrong one, and reports a dead pid as gone', { skip: process.platform !== 'win32', timeout: 90000 }, async () => {
+  const { createExec } = require('../host/resource-sampler');
+  const exec = createExec(30000);
+  const mk = () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
+  const startOf = (pid) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `(Get-Process -Id ${pid}).StartTime.ToFileTimeUtc()`], { encoding: 'utf8', windowsHide: true }).trim();
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const a = mk(); const b = mk();
+  try {
+    await new Promise(r => setTimeout(r, 400));
+    const sa = startOf(a.pid);
+    const sb = startOf(b.pid);
+    const wrong = String(BigInt(sb) + 50000000n);         // 5 s off: "a different process now holds this pid"
+    const res = await K.killVerified([{ pid: a.pid, start: sa }, { pid: b.pid, start: wrong }, { pid: 2147483000, start: sa }], { exec });
+    assert.deepStrictEqual(res.map(r => r.status), ['killed', 'reused', 'gone'], JSON.stringify(res));
+    await new Promise(r => setTimeout(r, 300));
+    assert.strictEqual(alive(a.pid), false, 'the right start time: ended');
+    assert.strictEqual(alive(b.pid), true, 'the wrong start time: left alone');
+    const again = await K.killVerified([{ pid: a.pid, start: sa }], { exec });
+    assert.strictEqual(again[0].status, 'gone', 'already dead: "Already exited"');
+  } finally {
+    for (const c of [a, b]) { try { process.kill(c.pid); } catch { /* gone */ } }
+  }
+});

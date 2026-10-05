@@ -68,8 +68,9 @@ test('the bridge exposes what the page calls, and main answers it behind the tab
   assert.match(PRELOAD, /ipcRenderer\.invoke\('resources:stop', req\)/);
   assert.match(MAIN, /ipcMain\.on\('resources:shown', \(e, on\) => \{\s*if \(!isTabView\(e\.sender\) \|\| !resources\) return;/);
   assert.match(MAIN, /ipcMain\.handle\('resources:get', \(e\) => \(isTabView\(e\.sender\)/);
+  // S5: only the SELECTED page gets the process model (command lines); every other page gets the machine figures alone
+  assert.match(MAIN, /v\.webContents\.send\('resources:state', v === sel \? full : light\)/);
   assert.match(MAIN, /ipcMain\.handle\('resources:stop', \(e, req\) => \(isTabView\(e\.sender\)/);
-  assert.match(MAIN, /webContents\.send\('resources:state', payload\)/);
 });
 
 test('main kills by pid through the vetted path, and the strip learns of a warning through the shell\'s refresh', () => {
