@@ -78,6 +78,7 @@ test('kills: the PowerShell -File, -Command, -EncodedCommand and value options a
     ['pwsh -cx C:\\t\\x.cmd', 'pwsh.exe', 'x.cmd'],              // `-cx` is not -Command
     ['pwsh a-c C:\\t\\x.cmd', 'pwsh.exe', 'a-c'],
     ['pwsh -Command', 'pwsh.exe', 'pwsh'],
+    ['cmd /c pwsh -Command', 'cmd.exe', 'pwsh'],                 // nested, an empty -Command tail names pwsh, not the outer cmd
     ['pwsh -ec AAAA', 'pwsh.exe', 'pwsh'],
     ['pwsh -ex C:\\t\\x.cmd', 'pwsh.exe', 'x.cmd'],              // `-ex` is not -EncodedCommand
     ['pwsh C:\\t\\x.cmd', 'pwsh.exe', 'x.cmd'],                  // a script keeps its extension
