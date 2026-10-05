@@ -37,8 +37,11 @@ function createResourcesService({
   let warnings = new Map();    // tab key -> host/resource-warning.js state
   let lastPayload = null;
   let lastSignature = '';
+  let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
 
-  const panelWanted = () => [...shown].some(([id, v]) => v === true && isSelectedView(id));
+  // A minimised window wants nothing: the page's visibility is a second witness the app does not trust alone
+  // (app/playback-bridge.js), so a page that still says "showing" does not keep the process tree sampled.
+  const panelWanted = () => !minimised && [...shown].some(([id, v]) => v === true && isSelectedView(id));
   function refresh() { sampler.setWanted({ panel: panelWanted(), chip: !minimised }); }
 
   const tabList = () => (typeof tabs === 'function' ? tabs() : []).map(t => ({
@@ -82,12 +85,25 @@ function createResourcesService({
     }
 
     if (built && snap.expired !== true) {
-      const next = new Map();
-      for (const row of built.project.rows) {
-        next.set(row.key, warning.step(warnings.get(row.key) || warning.initial(), row.cpu, { threshold: warnAt }));
+      // Only a FRESH sample steps the counters. After a failed sample the sampler re-sends the last good one, and
+      // stepping on it would count one real 50% reading three times (Dexter, PR #113 finding 3).
+      if (snap.sample !== lastStepped) {
+        lastStepped = snap.sample;
+        const next = new Map();
+        const present = new Set();
+        for (const row of built.project.rows) {
+          present.add(row.key);
+          next.set(row.key, warning.step(warnings.get(row.key) || warning.initial(), row.cpu, { threshold: warnAt }));
+        }
+        // A tab with no row in THIS sample (its host could not be proven for one read) is neither over nor under: it
+        // keeps its count. Only a tab that is gone from the strip loses it (finding 8).
+        for (const t of tabList()) {
+          if (!present.has(t.key) && warnings.has(t.key)) next.set(t.key, warnings.get(t.key));
+        }
+        setWarnings(next);
       }
-      setWarnings(next);
     } else {
+      lastStepped = null;
       setWarnings(new Map());
     }
 

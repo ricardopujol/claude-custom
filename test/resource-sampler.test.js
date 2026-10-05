@@ -207,3 +207,89 @@ test('the real script, run once on this machine: it parses, has this process in 
   assert.strictEqual(m.procs.length, 0);
   console.log(`# real CIM sample: ${took} ms, ${s.procs.length} processes`);
 });
+
+// ---- PR #113 review round 1 (Dexter 6 and 7, Miguel S4) ----
+
+function manual() {
+  const timers = fakeTimers();
+  const pending = [];
+  const updates = [];
+  let killed = 0;
+  const sampler = R.createSampler({
+    exec: (s) => { const p = new Promise(r => pending.push({ s, resolve: r })); p.kill = () => { killed++; }; return p; },
+    cores: 4, setTimer: timers.setTimer, clearTimer: timers.clearTimer, onUpdate: u => updates.push(u),
+  });
+  return { sampler, timers, pending, updates, killed: () => killed };
+}
+
+test('D6: hiding the panel while a full sample is in flight drops it, so showing it again starts at "measuring…"', async () => {
+  const { sampler, pending, updates } = manual();
+  sampler.start();
+  sampler.setWanted({ panel: true, chip: true });
+  await settle();
+  assert.strictEqual(pending.length, 1);
+  sampler.setWanted({ panel: false, chip: true });          // hidden mid-sample
+  pending[0].resolve(text(1, { procs: P }));
+  await settle(); await settle();
+  assert.ok(updates.every(u => u.sample === null), 'the dropped sample did not come back as `last`');
+  sampler.setWanted({ panel: true, chip: true });
+  await settle();
+  const next = pending.at(-1);
+  next.resolve(text(9, { procs: P }));
+  await settle(); await settle();
+  assert.strictEqual(updates.at(-1).prev, null, 'the first sample after re-showing has nothing before it');
+  assert.ok(updates.at(-1).sample);
+});
+
+test('D7: a pause (nothing wanted) forgets the machine pair, so the first sample after it has no delta', async () => {
+  const { sampler, pending, updates } = manual();
+  sampler.start();
+  sampler.setWanted({ panel: false, chip: true });
+  await settle();
+  pending.at(-1).resolve(text(1));
+  await settle(); await settle();
+  sampler.setWanted({ panel: false, chip: false });          // minimised
+  sampler.setWanted({ panel: false, chip: true });           // restored
+  await settle();
+  pending.at(-1).resolve(text(50));
+  await settle(); await settle();
+  const u = updates.at(-1);
+  assert.strictEqual(u.machine.prev, null, 'no 2-hour average dressed up as "now"');
+  assert.ok(u.machine.last);
+});
+
+test('a sample that finishes after stop() is dropped without an update or a failure count', async () => {
+  const { sampler, pending, updates } = manual();
+  sampler.start();
+  sampler.setWanted({ panel: true, chip: true });
+  await settle();
+  sampler.stop();
+  pending[0].resolve(text(1, { procs: P }));
+  await settle(); await settle();
+  assert.strictEqual(updates.length, 0);
+});
+
+test('S4: stop() ends the powershell that is running, by its own handle', async () => {
+  const { sampler, pending, killed } = manual();
+  sampler.start();
+  sampler.setWanted({ panel: true, chip: true });
+  await settle();
+  assert.strictEqual(killed(), 0);
+  sampler.stop();
+  assert.strictEqual(killed(), 1);
+  pending[0].resolve('');
+});
+
+test('sampleNow answers null when its own sample was dropped, never the older one', async () => {
+  const { sampler, pending } = manual();
+  sampler.start();
+  sampler.setWanted({ panel: true, chip: true });
+  await settle();
+  pending[0].resolve(text(1, { procs: P }));
+  await settle(); await settle();
+  const asked = sampler.sampleNow();
+  await settle();
+  sampler.setWanted({ panel: false, chip: true });
+  pending.at(-1).resolve(text(2, { procs: P }));
+  assert.strictEqual(await asked, null);
+});

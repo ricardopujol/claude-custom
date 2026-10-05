@@ -208,3 +208,61 @@ test('warnAt moves the threshold (the probe seam), and unset it is 40', () => {
   for (let n = 2; n <= 4; n++) explicitUndefined.svc.onUpdate(fullSnap(n, 20));
   assert.strictEqual(explicitUndefined.svc.warnFor('k'), null);
 });
+
+// ---- PR #113 review round 1 (Dexter 3, 8, 13) ----
+
+test('D3: a failed sample re-sends the last good one; it must not step the counters again (one real 50% is one over)', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 50));                       // the one real over-threshold measurement
+  const good = fullSnap(3, 50);
+  r.svc.onUpdate(good);                                  // over = 2
+  r.svc.onUpdate({ ...good, failures: 1, stale: true }); // timeout: the same sample, re-sent
+  r.svc.onUpdate({ ...good, failures: 2, stale: true });
+  assert.strictEqual(r.svc.warnFor('k'), null, 'two real overs and two timeouts is not three overs');
+  r.svc.onUpdate(fullSnap(4, 50));                       // a third REAL sample
+  assert.deepStrictEqual(r.svc.warnFor('k'), { pct: 50, level: 'amber' });
+});
+
+test('D3: after the chip is on, a failed sample does not clear it either (nothing measured is not "under")', () => {
+  const r = rig();
+  for (let n = 2; n <= 4; n++) r.svc.onUpdate(fullSnap(n, 60));
+  const last = fullSnap(5, 60);
+  r.svc.onUpdate(last);
+  r.svc.onUpdate({ ...last, failures: 1, stale: true });
+  assert.ok(r.svc.warnFor('k'));
+});
+
+test('D8: a tab with no row for one sample keeps its count, and only a tab gone from the strip loses it', () => {
+  let proven = true;
+  const r = rig({ claims: () => (proven ? [{ pid: 20, port: 7701, cwd: 'C:\r\dev', processStartedAt: world()[1].start }] : []) });
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.svc.onUpdate(fullSnap(3, 50));                       // over = 2
+  proven = false;                                        // one read could not prove the host: no row
+  r.svc.onUpdate(fullSnap(4, 50));
+  assert.strictEqual(r.sent.at(-1).model.project.rows.length, 0);
+  proven = true;
+  r.svc.onUpdate(fullSnap(5, 50));                       // over = 3: on
+  assert.deepStrictEqual(r.svc.warnFor('k'), { pct: 50, level: 'amber' });
+});
+
+test('D8: a tab that left the strip loses its count', () => {
+  let tabs = [{ key: 'k', cwd: 'C:\r\dev', branch: 'main', port: 7701 }];
+  const r = rig({ tabs: () => tabs });
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.svc.onUpdate(fullSnap(3, 50));
+  tabs = [];
+  r.svc.onUpdate(fullSnap(4, 50));
+  tabs = [{ key: 'k', cwd: 'C:\r\dev', branch: 'main', port: 7701 }];
+  r.svc.onUpdate(fullSnap(5, 50));
+  r.svc.onUpdate(fullSnap(6, 50));
+  assert.strictEqual(r.svc.warnFor('k'), null, 'it started again from zero: two overs, not on');
+});
+
+test('D13: a minimised window does not keep the process tree sampled even if its page still says "showing"', () => {
+  const r = rig();
+  r.svc.setShown('v1', true);
+  r.svc.setMinimised(true);
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: false });
+  r.svc.setMinimised(false);
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
+});

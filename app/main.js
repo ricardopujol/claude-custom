@@ -1572,6 +1572,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   resourceSampler.start();
+  resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on

@@ -47,14 +47,18 @@ $os = Get-CimInstance Win32_OperatingSystem | ForEach-Object { [pscustomobject]@
 /** `exec(script) -> Promise<string>`: powershell.exe with its own timeout. The END sentinel, not the exit code, says it finished. */
 function createExec(timeoutMs = TIMEOUT_MS) {
   return function exec(script) {
-    return new Promise((resolve, reject) => {
-      execFile(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script],
+    let child = null;
+    const done = new Promise((resolve, reject) => {
+      child = execFile(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script],
         { encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1048576 },
         (err, stdout) => {
           if (err && !stdout) reject(err);
           else resolve(String(stdout || ''));
         });
     });
+    // Ends THIS powershell.exe by its own handle (sampler.stop() on quit), never by name.
+    done.kill = () => { try { if (child) child.kill(); } catch { /* already gone */ } };
+    return done;
   };
 }
 
@@ -87,6 +91,7 @@ function createSampler({
   let lastAny = null;   // the latest sample of either mode (machine CPU is a delta of these)
   let prevAny = null;
   let lastMode = null;
+  let inFlight = null;  // the exec promise running now (it can be killed by its own pid on stop)
 
   const snapshot = () => ({
     mode: lastMode, sample: last, prev, machine: { last: lastAny, prev: prevAny },
@@ -98,21 +103,30 @@ function createSampler({
   function take(mode) {
     if (running) return running;
     running = (async () => {
+      let dropped = false;
       try {
-        const s = parseSample(await exec(scriptFor(mode)), now());
+        inFlight = exec(scriptFor(mode));
+        const s = parseSample(await inFlight, now());
         if (!s) throw new Error('the sample did not parse');
-        failures = 0;
-        lastGoodAt = s.at;
-        lastMode = mode;
-        if (mode === 'full') { prev = last; last = s; }
-        prevAny = lastAny;
-        lastAny = s;
+        // A sample that finishes after what it was for stopped being wanted is DROPPED (Dexter, PR #113 finding 6):
+        // written back it would resurrect `last` while hidden, and the next show would draw the whole hidden period's
+        // average as the current figure instead of starting at "measuring...".
+        const now_ = policy(wanted);
+        if (!started || now_ === null) { dropped = true; } else {
+          failures = 0;
+          lastGoodAt = s.at;
+          lastMode = mode;
+          if (mode === 'full' && now_ === 'full') { prev = last; last = s; }
+          prevAny = lastAny;
+          lastAny = s;
+        }
       } catch {
-        failures++;
+        if (started && policy(wanted) !== null) failures++; else dropped = true;
       } finally {
         running = null;
+        inFlight = null;
       }
-      emit();
+      if (!dropped) emit();
     })();
     return running;
   }
@@ -145,20 +159,29 @@ function createSampler({
 
   return {
     start() { started = true; wake(); },
-    stop() { started = false; if (timer) clearTimer(timer); timer = null; },
+    stop() {
+      started = false;
+      if (timer) clearTimer(timer);
+      timer = null;
+      if (inFlight && typeof inFlight.kill === 'function') inFlight.kill();
+    },
     setWanted(next) {
       const before = policy(wanted);
       wanted = { panel: !!(next && next.panel), chip: !!(next && next.chip) };
       const after = policy(wanted);
       if (after !== 'full') { prev = null; last = null; }
+      // Nothing is being sampled: the machine pair is forgotten too, so the first sample after a pause (a minimised
+      // window) is "—", not the average of the whole gap shown as the machine's CPU now (Dexter finding 7).
+      if (after === null) { prevAny = null; lastAny = null; }
       if (after === before && timer) return;
       wake();
     },
     // Stop's re-read: a sample taken after the click, never one already in flight.
     async sampleNow() {
       if (running) await running;
+      const before = last;
       await take('full');
-      return failures === 0 && last ? last.procs : null;
+      return failures === 0 && last && last !== before ? last.procs : null;
     },
     snapshot,
   };
