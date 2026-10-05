@@ -7,6 +7,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
 const path = require('path');
 
 const {
@@ -50,27 +51,45 @@ test('Dexter L2 #3: focus mode covers the strip only in a framed window', () => 
   assert.strictEqual(viewTop({ focusMode: false, frameless: true, stripHeight: 34 }), 34);
 });
 
-test('both settings default to OFF when nothing has been saved', () => {
-  assert.deepStrictEqual(readChromeSettings(fakeStore()), OFF);
+const DEFAULTS = { statusInHeader: true, framelessWindow: false };
+
+test('#67: nothing saved -> the status row is in the header (on), the title bar stays (off)', () => {
+  assert.deepStrictEqual(readChromeSettings(fakeStore()), DEFAULTS);
 });
 
-test('only a real boolean true turns a setting on; garbage reads as OFF', () => {
-  for (const bad of [null, 1, 'true', undefined, {}, []]) {
+test('#67: only a real boolean false turns the header off; frameless needs a real true; garbage reads as the defaults', () => {
+  for (const bad of [null, 1, 'true', 'false', 0, undefined, {}, []]) {
     assert.deepStrictEqual(
-      readChromeSettings(fakeStore({ [CHROME_KEY]: { statusInHeader: bad, framelessWindow: bad } })), OFF, String(bad));
+      readChromeSettings(fakeStore({ [CHROME_KEY]: { statusInHeader: bad, framelessWindow: bad } })), DEFAULTS, String(bad));
   }
-  assert.deepStrictEqual(readChromeSettings(fakeStore({ [CHROME_KEY]: { statusInHeader: true } })),
-    { statusInHeader: true, framelessWindow: false });
-  for (const rec of [null, 'x', [true]]) assert.deepStrictEqual(readChromeSettings(fakeStore({ [CHROME_KEY]: rec })), OFF);
+  assert.deepStrictEqual(readChromeSettings(fakeStore({ [CHROME_KEY]: { statusInHeader: false } })),
+    { statusInHeader: false, framelessWindow: false });
+  assert.deepStrictEqual(readChromeSettings(fakeStore({ [CHROME_KEY]: { framelessWindow: true } })),
+    { statusInHeader: true, framelessWindow: true });
+  for (const rec of [null, 'x', [true]]) assert.deepStrictEqual(readChromeSettings(fakeStore({ [CHROME_KEY]: rec })), DEFAULTS);
 });
 
-test('a store that throws reads as OFF, not as a crash', () => {
-  assert.deepStrictEqual(readChromeSettings({ read: () => { throw new Error('disk'); } }), OFF);
+test('#67: a store that throws reads as the defaults for a frame decision, not as a crash', () => {
+  assert.deepStrictEqual(readChromeSettings({ read: () => { throw new Error('disk'); } }), DEFAULTS);
+});
+
+test('#67: main and the relay agree on every record, so the fields show in the header exactly when the CLI row is quiet', () => {
+  const dir = tmpDir('chrome-agree');
+  const file = path.join(dir, `${CHROME_KEY}.json`);
+  const records = [{ statusInHeader: false }, { statusInHeader: true }, {}, { framelessWindow: true },
+    { statusInHeader: 'false' }, null, 'x', [true]];
+  for (const rec of records) {
+    fs.writeFileSync(file, JSON.stringify(rec));
+    const main = readChromeSettings(createStore({ dir })).statusInHeader;
+    assert.strictEqual(quiet(file), main, JSON.stringify(rec));
+  }
+  fs.rmSync(file);
+  assert.strictEqual(quiet(file), true, 'missing file');
 });
 
 test('get answers the stored settings to a tab view; a stranger gets OFF and changes nothing', async () => {
   const { call, ipcMain, store } = setup({ store: fakeStore({ [CHROME_KEY]: { framelessWindow: true } }) });
-  assert.deepStrictEqual(await call(GET_CHANNEL), { statusInHeader: false, framelessWindow: true });
+  assert.deepStrictEqual(await call(GET_CHANNEL), { statusInHeader: true, framelessWindow: true });
   const stranger = { sender: {} };
   assert.deepStrictEqual(await ipcMain.handlers.get(GET_CHANNEL)(stranger), OFF);
   assert.strictEqual(ipcMain.handlers.get(SET_STATUS_CHANNEL)(stranger, true), null);
@@ -127,7 +146,7 @@ test('Dexter L2 #1: one unreadable poll is retried, so another window\'s change 
   const sent = [];
   watchChromeSettings({ store, file: 'x', sync: {}, send: (ch, v) => sent.push([ch, v]),
     watchFile: (f, o, fn) => { listener = fn; }, unwatchFile: () => {}, setTimer: (fn) => timers.push(fn) });
-  store.data[CHROME_KEY] = { statusInHeader: true };   // window B's write...
+  store.data[CHROME_KEY] = { statusInHeader: false };  // window B's write...
   store.fail = 'unreadable';                           // ...lands while A's read is busy
   listener();                                          // the ONE poll watchFile gives for it
   assert.deepStrictEqual(sent, []);
@@ -136,7 +155,7 @@ test('Dexter L2 #1: one unreadable poll is retried, so another window\'s change 
   assert.strictEqual(timers.length, 1, 'retries never stack');
   store.fail = null;
   timers.shift()();
-  assert.deepStrictEqual(sent, [[PUSH_CHANNEL, { statusInHeader: true, framelessWindow: false }]]);
+  assert.deepStrictEqual(sent, [[PUSH_CHANNEL, { statusInHeader: false, framelessWindow: false }]]);
 });
 
 test('Dexter L2 #1: the watcher decides on the value it just read, not on a second read', () => {
@@ -173,14 +192,14 @@ test('the watcher pushes a change made by another window, once, and skips unread
     watchFile: (f, o, fn) => { listener = fn; }, unwatchFile: () => {} });
   listener();
   assert.deepStrictEqual(sent, [], 'nothing changed');
-  store.data[CHROME_KEY] = { statusInHeader: true };
+  store.data[CHROME_KEY] = { statusInHeader: false };
   readStatus = 'unreadable';
   listener();
   assert.deepStrictEqual(sent, [], 'an unreadable read says nothing about the choice');
   readStatus = 'ok';
   listener();
   listener();
-  assert.deepStrictEqual(sent, [[PUSH_CHANNEL, { statusInHeader: true, framelessWindow: false }]]);
+  assert.deepStrictEqual(sent, [[PUSH_CHANNEL, { statusInHeader: false, framelessWindow: false }]]);
 });
 
 test('the file the real store writes is the file the relay reads (BACKLOG #27)', () => {
@@ -194,7 +213,7 @@ test('the file the real store writes is the file the relay reads (BACKLOG #27)',
     return { ipcMain: ipc };
   })();
   const file = path.join(dir, `${CHROME_KEY}.json`);
-  assert.strictEqual(quiet(file), false, 'nothing saved yet: the row prints');
+  assert.strictEqual(quiet(file), true, 'nothing saved yet: the row is hidden (#67 default)');
   // The real store's update returns nothing: the setter must still answer the
   // settings it saved, not OFF (the fake store above returned the value).
   assert.deepStrictEqual(ipcMain.call(SET_STATUS_CHANNEL, true), { statusInHeader: true, framelessWindow: false });

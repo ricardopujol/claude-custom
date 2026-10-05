@@ -15,10 +15,12 @@
  * (avatar-bridge.js has the reasoning): install-wide personal preferences. Its
  * own key, `chrome-global`, in the same store.
  *
- * Both default OFF, and only a real boolean `true` turns one on: a missing or
- * corrupt record must never hide the user's title bar or status row. Setters
- * take the DESIRED state and refuse anything that isn't a boolean (the string
- * 'false' is truthy; favourites-bridge, Dexter PR #60 F6/N5).
+ * statusInHeader defaults ON (BACKLOG #67): only a real boolean `false` turns
+ * it off, so a missing record means the row is hidden and the header shows the
+ * fields. framelessWindow still defaults OFF and needs a real `true`: a
+ * missing record must never hide the user's title bar. Setters take the
+ * DESIRED state and refuse anything that isn't a boolean (the string 'false'
+ * is truthy; favourites-bridge, Dexter PR #60 F6/N5).
  *
  * Its own module so it can be tested without booting Electron.
  */
@@ -32,16 +34,18 @@ const SET_FRAMELESS_CHANNEL = 'chrome:setFrameless';
 const PUSH_CHANNEL = 'chrome-settings';
 const OFF = Object.freeze({ statusInHeader: false, framelessWindow: false });
 
+const DEFAULTS = Object.freeze({ statusInHeader: true, framelessWindow: false });
+
 function settingsOf(rec) {
-  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return { ...OFF };
-  return { statusInHeader: rec.statusInHeader === true, framelessWindow: rec.framelessWindow === true };
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return { ...DEFAULTS };
+  return { statusInHeader: rec.statusInHeader !== false, framelessWindow: rec.framelessWindow === true };
 }
 
 // For createWindow: a frame must be decided now, and the framed window is the
 // safe answer when the file can't say.
 function readChromeSettings(store) {
   const known = readChromeState(store);
-  return known || { ...OFF };
+  return known || { ...DEFAULTS };
 }
 
 /**
@@ -56,7 +60,7 @@ function readChromeState(store) {
     if (typeof store.readState === 'function') {
       const st = store.readState(CHROME_KEY);
       if (st.status === 'ok') return settingsOf(st.value);
-      if (st.status === 'missing') return { ...OFF };
+      if (st.status === 'missing') return { ...DEFAULTS };
       return null;
     }
     return settingsOf(store.read(CHROME_KEY, {}));

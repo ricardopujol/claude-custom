@@ -8,8 +8,8 @@
  *   node status-relay.js --pipe <bare pipe name> [--then <base64 command>]
  *                        [--quiet-when <chrome-global.json>]
  *
- * --quiet-when (BACKLOG #27): when that file says `statusInHeader: true`, the
- * user's command doesn't run and nothing is printed, so the CLI drops its
+ * --quiet-when (BACKLOG #27, default flipped by #67): unless that file says
+ * `statusInHeader: false`, the user's command doesn't run and nothing is printed, so the CLI drops its
  * status row (MEASURED, verify/probe-footer-rows.js) and the tab header draws
  * the fields instead. The document is still forwarded either way.
  *
@@ -58,18 +58,20 @@ function parseArgs(argv) {
   return out;
 }
 
-// BACKLOG #27: the person moved the status line into the tab header. Read on
-// EVERY fire, so the toggle needs no session restart. Only an exact `true`
-// quiets the row: a missing, unreadable or corrupt file prints the row as
-// before, because failing toward a duplicate row beats failing toward a
-// missing one.
+// BACKLOG #27 / #67: the status line lives in the tab header unless the person
+// turned that off. Read on EVERY fire, so the toggle needs no session restart.
+// Hidden is the DEFAULT: a missing file, or a record that never chose, is
+// quiet, and only an exact `statusInHeader: false` prints the row. An
+// unreadable or corrupt file still prints it, because failing toward a
+// duplicate row beats failing toward a missing one (main reads the same file
+// and answers "unknown" for those, so the header shows nothing either).
 function quiet(file) {
   if (!file) return false;
   try {
     const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return !!value && value.statusInHeader === true;
-  } catch {
-    return false;
+    return !(value && typeof value === 'object' && !Array.isArray(value) && value.statusInHeader === false);
+  } catch (err) {
+    return !!err && err.code === 'ENOENT';
   }
 }
 
