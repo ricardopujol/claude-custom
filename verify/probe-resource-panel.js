@@ -286,6 +286,13 @@ async function main() {
     const row = named.children.find(c => /burn\.js/.test(c.cmd));
     check('3: its row shows what it runs (the script), the command is not the executable path', row.name === 'burn.js' && !/Program Files/i.test(row.cmd), JSON.stringify([row.name, row.cmd]));
     check('3: it can be stopped (a Stop button for exactly its pid)', row.stop === String(burnPid), JSON.stringify(row.stop));
+    // The name column takes every leftover pixel at the dock's real width: what a child runs shows in full, and no row's first word is cut.
+    const fitNow = await rs();
+    const kids = fitNow.children.filter(c => /^(burn|bystander)\.js$/.test(c.name));
+    check('3: "burn.js" and "bystander.js" are not truncated at the dock width', kids.length === 2 && kids.every(c => c.fit && c.fit.clipped === false), JSON.stringify(kids.map(c => [c.name, c.fit])));
+    const cut = fitNow.rows.filter(r => r.fit && r.fit.firstWordFits !== true);
+    check('3: every session, self and window row shows at least its whole first word (e.g. "claude-custom")', cut.length === 0, JSON.stringify(cut.map(r => [r.name, r.fit])));
+    console.log(`     name widths: ${JSON.stringify(fitNow.rows.map(r => [r.name, r.fit && r.fit.width, r.fit && r.fit.clipped]))}`);
   }
 
   // The panel's CPU figure against an independent measurement: this process's own TotalProcessorTime, read twice 10 s

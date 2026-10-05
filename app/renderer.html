@@ -1097,7 +1097,7 @@
        button is a skill that no longer exists; the flash is "typed", never "ran". */
     /* The Resources panel (BACKLOG #63) and its top-bar chip. Markup from app/resources-display.js; the bars are
        two segments, claude-custom in the accent colour and everything else neutral. */
-    #resources-body { padding: 8px 10px; }
+    #resources-body { padding: 8px 4px; }
     #resources-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; }
     .zone[data-shape="wide"] .panel.on > #resources-root { flex: 1 1 auto; min-width: 260px; max-width: none; }
     .res.res-dim .res-fig, .res.res-dim .res-bar, .res.res-dim .res-meter { opacity: .5; }
@@ -1115,23 +1115,25 @@
     .res-fig { flex: none; min-width: 34px; text-align: right; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     /* The panel is narrow (a dock column), so a row wraps: name and the two figures on the first line, the CPU meter on
        its own thin line under them. A name that shared one line with the meter and both figures got no width at all. */
-    .res-row { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 3px; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
+    .res-row { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; row-gap: 3px; padding: 3px 1px; border-radius: 4px; cursor: pointer; }
     .res-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
     .res-row:focus-visible { outline: 1px solid var(--accent); }
     .res-row.res-plain { cursor: default; }
     .res-row.res-plain:hover { background: transparent; }
-    .res-name { flex: 1 1 40px; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* The NAME takes every leftover pixel; the figures size to their content (Ricardo's picked row: `burn.js   27%  126 MB  [stop]`). */
+    .res-row .res-fig, .res-child .res-fig { min-width: 0; }
+    .res-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-row.open .res-name::before { content: '\25BE '; }
     .res-row:not(.open):not(.res-plain) .res-name::before { content: '\25B8 '; }
     .res-meter { order: 9; flex: 1 0 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
     .res-meter-empty { background: repeating-linear-gradient(135deg, var(--border) 0 4px, transparent 4px 8px); }
     .res-meter > i { display: block; height: 100%; background: var(--accent); }
-    .res-kids { margin: 0 0 4px 16px; border-left: 1px solid var(--border); padding-left: 6px; }
+    .res-kids { margin: 0 0 4px 8px; border-left: 1px solid var(--border); padding-left: 4px; }
     /* ONE line per child: the name gives way first (ellipsis), then CPU, memory and a small square Stop at the end. The
        command line is the row's tooltip. */
-    .res-child { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
+    .res-child { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; }
     .res-cname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .res-stop, .res-stop-gap { flex: none; width: 18px; height: 18px; box-sizing: border-box; }
+    .res-stop, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
     .res-stop { font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
       border: 1px solid var(--border); border-radius: 3px; }
     .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);

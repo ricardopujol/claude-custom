@@ -2520,14 +2520,26 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'resourcesState': {
         const q = s => [...document.querySelectorAll('#resources-root ' + s)];
         const chip = document.getElementById('tb-resources');
+        // Is a name cell clipped, and does at least its first word (with the open/closed arrow in front) fit?
+        const cellFit = (cell, arrow) => {
+          if (!cell) return { clipped: false, firstWordFits: true, width: 0 };
+          const probe = document.createElement('span');
+          probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + getComputedStyle(cell).font;
+          probe.textContent = (arrow ? '▸ ' : '') + (cell.textContent.split(/\s+/)[0] || '');
+          document.body.appendChild(probe);
+          const need = probe.offsetWidth;
+          probe.remove();
+          return { clipped: cell.scrollWidth > cell.clientWidth, firstWordFits: cell.clientWidth >= need, width: cell.clientWidth };
+        };
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
           chip: chip ? { hidden: chip.hidden, text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
           rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
+            fit: cellFit(r.querySelector('.res-name'), !r.classList.contains('res-plain')),
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
-          children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '',
+          children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
             figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
             stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
