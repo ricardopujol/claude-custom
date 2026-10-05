@@ -143,6 +143,25 @@ test('when the panel is hidden the process tree is not sampled, so warnings and 
   assert.strictEqual(r.refreshed.length, quiet, 'nothing to clear: the strip is not told again');
 });
 
+test('N4: a minimise gap forgets the warning counts and clears a lit chip (the strip is told), so one reading after it is not the third', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.svc.onUpdate(fullSnap(3, 50));          // two over: one more would light it
+  r.svc.setMinimised(true);
+  r.svc.setMinimised(false);
+  r.svc.onUpdate(fullSnap(1, 50));          // the first sample after the gap has no CPU
+  r.svc.onUpdate(fullSnap(4, 50));
+  assert.strictEqual(r.svc.warnFor('k'), null, 'the count did not carry across the gap');
+
+  const lit = rig();
+  for (let n = 2; n <= 4; n++) lit.svc.onUpdate(fullSnap(n, 60));
+  assert.ok(lit.svc.warnFor('k'));
+  const before = lit.refreshed.length;
+  lit.svc.setMinimised(true);
+  assert.strictEqual(lit.svc.warnFor('k'), null, 'the chip does not stay lit with an hour-old percentage');
+  assert.ok(lit.refreshed.length > before, 'the strip is told');
+});
+
 test('three failed samples in a row clear the warnings: a number nobody could measure is not a warning', () => {
   const r = rig();
   for (let n = 2; n <= 4; n++) r.svc.onUpdate(fullSnap(n, 60));

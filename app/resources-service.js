@@ -130,7 +130,13 @@ function createResourcesService({
   }
 
   return {
-    setMinimised(on) { minimised = on === true; refresh(); },
+    // A minimised window samples nothing, so no `onUpdate` would ever clear the counters: do it here, or the count (and a lit
+    // chip) would carry across the gap and one reading after it could be "the third" (Dexter, PR #113 N4).
+    setMinimised(on) {
+      minimised = on === true;
+      if (minimised) { lastStepped = null; setWarnings(new Map()); }
+      refresh();
+    },
     refresh,
     onUpdate,
     chipOn: () => chipOn,
