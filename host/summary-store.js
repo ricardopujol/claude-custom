@@ -129,4 +129,4 @@ function createSummaryStore({ dir, rename = renameWithRetry } = {}) {
   return { get, put, sweep };
 }
 
-module.exports = { createSummaryStore, TEXT_MAX, MAX_AGE_MS, MAX_FILES };
+module.exports = { createSummaryStore, TEXT_MAX, FILE_MAX, MAX_AGE_MS, MAX_FILES };
