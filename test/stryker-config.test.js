@@ -255,57 +255,137 @@ test('the modules that decide what the Resources panel kills are mutated (#63)',
   for (const rel of fixed) {
     assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
   }
-  // And any module added under host/resource-*.js later must join, not be forgotten.
-  const onDisk = fs.readdirSync(path.join(ROOT, 'host')).filter(f => /^resource-.+\.js$/.test(f)).map(f => `host/${f}`);
-  assert.ok(onDisk.length >= 9, 'the scan must find the resource modules');
-  for (const rel of onDisk) {
+  // And any module added later under host/resource-*.js or app/resources-*.js must join, not be forgotten.
+  const scan = (dir, re) => fs.readdirSync(path.join(ROOT, dir)).filter(f => re.test(f)).map(f => `${dir}/${f}`);
+  const hostOnDisk = scan('host', /^resource-.+\.js$/);
+  const appOnDisk = scan('app', /^resources-.+\.js$/);
+  assert.ok(hostOnDisk.length >= 9, `the scan must find the host resource modules (${hostOnDisk.length})`);
+  assert.ok(appOnDisk.length >= 3, `the scan must find the app resources modules (${appOnDisk.length})`);
+  for (const rel of [...hostOnDisk, ...appOnDisk]) {
     assert.ok(conf.mutate.includes(rel), `${rel} is a resource module and must be in stryker.conf.json's mutate`);
   }
 });
 
-test('the real-process tests are skipped by NAME, and the exemption is exact and cannot rot', () => {
+// ---- the real-process tests: skipped by NAME, classified by CONTENT ---------------------------------------------------
+
+// What "this runs a real process" looks like: child_process spawn/exec of node, powershell or a shell, or the repo's own
+// PowerShell helper (createExec). git is deliberately not here: a git call is milliseconds, PowerShell is seconds.
+const SPAWN = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\(\s*(?:process\.execPath|['"`](?:powershell|pwsh|node|bash|sh)\b)|\bcreateExec\(/;
+
+// Every test/it/describe title in a source, at any indentation.
+const titlesOf = (src) => [...src.matchAll(/^\s*(?:test|it|describe)\((['"`])((?:\\.|(?!\1).)*)\1(?:,\s*\{([^}\n]*)\})?/gm)]
+  .map(t => ({ title: t[2].replace(/\\(.)/g, '$1'), opts: t[3] || '' }));
+
+// Column-0 test blocks (`test(` ... the next column-0 `});`) with their titles and bodies; the rest is the preamble.
+function blocksOf(src) {
+  const blocks = [];
+  const preamble = src.replace(/^(?:test|it)\((['"`])((?:\\.|(?!\1).)*)\1[\s\S]*?^\}\);/gm, (all, q, title) => {
+    blocks.push({ title: title.replace(/\\(.)/g, '$1'), body: all });
+    return '';
+  });
+  return { blocks, preamble };
+}
+
+// The titles of the tests that spawn a real process: directly, or through a file-level helper that does.
+function spawningTitles(src) {
+  const { blocks, preamble } = blocksOf(src);
+  const helpers = [];
+  const stmts = preamble.split(/^(?=(?:async\s+)?function\s|const\s|let\s|var\s)/m);
+  // A helper spawns if its statement does, or if it calls a helper that does (to a fixed point).
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const stmt of stmts) {
+      const name = /^(?:async\s+)?function\s+(\w+)|^(?:const|let|var)\s+(\w+)\s*=/.exec(stmt);
+      const id = name && (name[1] || name[2]);
+      if (!id || helpers.includes(id)) continue;
+      if (SPAWN.test(stmt) || helpers.some(h => new RegExp(`\\b${h}\\b`).test(stmt))) { helpers.push(id); grew = true; }
+    }
+  }
+  return blocks
+    .filter(b => SPAWN.test(b.body) || helpers.some(h => new RegExp(`\\b${h}\\b`).test(b.body)))
+    .map(b => b.title);
+}
+
+test('the real-process tests are skipped by NAME, classified by CONTENT, and the exemption cannot rot', () => {
   // Tests that spawn real PowerShell cost seconds each and re-run for every mutant. The command's --test-skip-pattern
-  // drops them; their FILES stay in the command because the fast tests beside them kill the script mutants. This list
-  // is the machine-readable half: each entry must still exist, still spawn real processes, and every test in it that is
-  // gated on Windows (`{ skip: ... }`) must be matched by the pattern. It must only SHRINK.
+  // drops them by title (an UNANCHORED SUBSTRING regex over every test title in the whole command); their FILES stay
+  // because the fast tests beside them kill the script mutants. Whether a test is "real" is decided by what it DOES (it
+  // spawns), not by a `skip:` option, so a real test that nobody gated is caught and named.
   const REAL_PROCESS_TEST_FILES = [
     'resource-stop-position.test.js', // one real-PowerShell kill test (D4/D5)
     'resource-stop-respawn.test.js',  // N1/N2 real supervisor trees
+    'resource-sampler.test.js',       // one real CIM sample
   ];
+  // Command files that spawn real processes and are NOT skipped. Every one predates #63 and was accepted by earlier gate
+  // runs (node -e children are tens of ms; the two PowerShell ones are one call each). Adding here is a decision, and
+  // each entry must still spawn, so the list can only shrink.
+  const TOLERATED_REAL_SPAWNERS = new Set([
+    'loadout-hook.test.js',        // runs the hook script as a node child
+    'branch-ledger-days.test.js',  // node -e children for day-boundary clocks
+    'summary-slot-kills.test.js',  // one node -e child whose pid is then free
+    'proc-start.test.js',          // one real powershell holder (pre-#63)
+    'window-count.test.js',        // the real proc-start exec (pre-#63)
+  ]);
+
   const cmd = conf.commandRunner.command;
   const m = cmd.match(/--test-skip-pattern="([^"]+)"/);
   assert.ok(m, 'the command must carry --test-skip-pattern for the real-process tests');
   const skip = new RegExp(m[1]);
+  const inCommand = [...cmd.matchAll(/test\/([a-z0-9-]+\.test\.js)/g)].map(x => x[1]);
+  const read = (file) => fs.readFileSync(path.join(ROOT, 'test', file), 'utf8');
 
-  const titlesOf = (src) => [...src.matchAll(/^test\((['"`])((?:\\.|(?!\1).)*)\1(?:,\s*\{([^}\n]*)\})?/gm)]
-    .map(t => ({ title: t[2].replace(/\\(.)/g, '$1'), opts: t[3] || '' }));
-  const titlesIn = (file) => titlesOf(fs.readFileSync(path.join(ROOT, 'test', file), 'utf8'));
+  // POSITIVE CONTROLS, so a scan that sees nothing cannot pass. The title scan finds test/it/describe at any indent...
+  const seen = titlesOf("test('a', () => {});\ndescribe('b', () => {\n  it(\"c\", () => {});\n});").map(t => t.title);
+  assert.deepStrictEqual(seen, ['a', 'b', 'c']);
+  // ...and the spawn classifier finds a direct spawn and a spawn through a helper, and leaves a fast test alone.
+  const fixture = [
+    "const { spawn } = require('child_process');",
+    "const mk = () => spawn(process.execPath, ['-e', '0']);",
+    "function viaHelper() { return mk(); }",
+    "test('direct', () => {\n  spawn('powershell', []);\n});",
+    "test('helper', () => {\n  viaHelper();\n});",
+    "test('fast', () => {\n  assert.ok(1);\n});",
+    '',
+  ].join('\n');
+  assert.deepStrictEqual(spawningTitles(fixture), ['direct', 'helper']);
 
-  // Positive control: the title scan must find tests at all, or "matches nothing" would pass vacuously.
-  assert.ok(titlesOf("test('a b', { skip: !WIN, timeout: 1 }, async () => {})")[0].opts.includes('skip'));
+  // The title scan sees the whole command, with a floor (the suite is ~5,700 tests) and a known title from each side.
+  const all = inCommand.flatMap(file => titlesOf(read(file)).map(t => ({ file, ...t })));
+  assert.ok(all.length > 4000, `the title scan must see the command's tests (${all.length})`);
+  const respawn = all.filter(t => t.file === 'resource-stop-respawn.test.js').map(t => t.title);
+  assert.ok(respawn.some(t => skip.test(t)) && respawn.some(t => !skip.test(t)),
+    'the scan must see both a skipped (N1 real) and a kept (N2 kill script) title in resource-stop-respawn.test.js');
 
+  // A. Every named real-process file exists, still spawns, stays in the command, and its spawning tests (and only those)
+  //    are matched by the pattern.
   for (const file of REAL_PROCESS_TEST_FILES) {
     assert.ok(fs.existsSync(path.join(ROOT, 'test', file)), `${file} is exempted but no longer exists -- remove it`);
-    const src = fs.readFileSync(path.join(ROOT, 'test', file), 'utf8');
-    assert.ok(/spawn\(/.test(src), `${file} no longer spawns real processes -- remove it from REAL_PROCESS_TEST_FILES`);
-    assert.ok(cmd.includes(`test/${file}`), `${file} must stay in the command: its fast tests kill mutants`);
-    const real = titlesIn(file).filter(t => /\bskip:/.test(t.opts));
-    assert.ok(real.length > 0, `${file} has no skip-gated real test left -- remove it from REAL_PROCESS_TEST_FILES`);
-    for (const t of real) {
-      assert.ok(skip.test(t.title), `real-process test "${t.title}" in ${file} is not matched by --test-skip-pattern`);
+    assert.ok(inCommand.includes(file), `${file} must stay in the command: its fast tests kill mutants`);
+    const src = read(file);
+    const real = spawningTitles(src);
+    assert.ok(real.length > 0, `${file} no longer spawns real processes -- remove it from REAL_PROCESS_TEST_FILES`);
+    for (const t of real) assert.ok(skip.test(t), `${file}: the spawning test "${t}" is not matched by --test-skip-pattern`);
+    const { blocks } = blocksOf(src);
+    for (const b of blocks.filter(x => !real.includes(x.title))) {
+      assert.ok(!skip.test(b.title), `${file}: the fast test "${b.title}" would be skipped by the pattern`);
     }
-    // ...and the fast tests beside them are NOT skipped.
-    for (const t of titlesIn(file).filter(x => !/\bskip:/.test(x.opts))) {
-      assert.ok(!skip.test(t.title), `fast test "${t.title}" in ${file} would be skipped by the pattern`);
-    }
+    assert.strictEqual(titlesOf(src).length, blocks.length,
+      `${file} has tests this guard cannot classify (nested or non-column-0)`);
   }
 
-  // The pattern must not silently narrow any other test in the command.
-  const inCommand = [...cmd.matchAll(/test\/([a-z0-9-]+\.test\.js)/g)].map(x => x[1]);
-  const hit = [];
+  // B. Any OTHER command file that spawns real processes is a named, still-true exception, or this fails naming it.
+  const unnamed = [];
   for (const file of inCommand) {
     if (REAL_PROCESS_TEST_FILES.includes(file)) continue;
-    for (const t of titlesIn(file)) if (skip.test(t.title)) hit.push(`${file}: ${t.title}`);
+    const spawns = SPAWN.test(read(file));
+    if (spawns && !TOLERATED_REAL_SPAWNERS.has(file)) unnamed.push(file);
   }
+  assert.deepStrictEqual(unnamed, [], 'these command files spawn real processes and are neither gated by --test-skip-pattern '
+    + `nor named in TOLERATED_REAL_SPAWNERS: ${unnamed.join(', ')}`);
+  const staleTolerated = [...TOLERATED_REAL_SPAWNERS].filter(f => !inCommand.includes(f) || !SPAWN.test(read(f)));
+  assert.deepStrictEqual(staleTolerated, [], `these no longer spawn (or left the command) -- remove them: ${staleTolerated.join(', ')}`);
+
+  // C. The pattern must not silently narrow any test outside the named real files.
+  const hit = all.filter(t => !REAL_PROCESS_TEST_FILES.includes(t.file) && skip.test(t.title)).map(t => `${t.file}: ${t.title}`);
   assert.deepStrictEqual(hit, [], `--test-skip-pattern would skip tests outside the named files: ${hit.join('; ')}`);
 });
