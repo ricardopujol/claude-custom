@@ -4,18 +4,19 @@
  * accent push at LOAD time (backlog #64's whole path into the strip), and paintAccent takes only a real #rrggbb string.
  *
  * The load-time lines only run when the module is NOT a CommonJS module, i.e. as a plain <script>, so the module is
- * evaluated in a vm context with a fake `strip` bridge. It is read by `require.resolve` and run under a name that does
- * not end in .js: test/stryker-config.test.js refuses tests that read a mutated module as text under its own file name.
+ * evaluated in a vm context with a fake `strip` bridge. That means reading it as text, which test/stryker-config.test.js
+ * refuses by default, so this file is a named exception (TOLERATED there): it runs the text, it asserts no code shape.
  * `process` is passed in because Stryker's instrumentation looks for it on the global.
  */
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
+const path = require('path');
 const vm = require('node:vm');
 
 const { paintAccent } = require('../app/tab-strip');
 
-const SOURCE = fs.readFileSync(require.resolve('../app/tab-strip'), 'utf8');
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.js'), 'utf8');
 
 function fakeDoc() {
   const props = {};
@@ -32,7 +33,7 @@ function fakeDoc() {
 /** Run the strip page's script as a plain <script> in a fresh global. */
 function load(globals) {
   const ctx = vm.createContext({ process, ...globals });
-  vm.runInContext(SOURCE, ctx, { filename: 'tab-strip.vm' });
+  vm.runInContext(SOURCE, ctx, { filename: 'tab-strip.js' });
   return ctx;
 }
 

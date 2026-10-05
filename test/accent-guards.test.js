@@ -37,11 +37,16 @@ test('accent-preview previewChrome: only a whole #rrggbb previews; a valid hex e
 });
 
 test('accent-preview previewChrome: a surface that is not a whole #rrggbb is ignored, not read as a colour', () => {
-  const plain = previewChrome('#00ff88', { bg: '#11131a', panel: '#171a23' });
-  assert.deepStrictEqual(previewChrome('#00ff88', { bg: '#11131a', panel: 'x#171a23' }), previewChrome('#00ff88', { bg: '#11131a' }));
-  assert.doesNotThrow(() => previewChrome('#00ff88', { bg: 'x#11131a', panel: 5 }));
-  assert.doesNotThrow(() => previewChrome('#00ff88', { bg: '#11131a ', panel: null }));
-  assert.ok(plain.accent);
+  const P = '#171a23';
+  const B = '#11131a';
+  // a bad surface is the same as an absent one, whichever of the two it is
+  assert.deepStrictEqual(previewChrome('#00ff88', { bg: B, panel: 'x#171a23' }), previewChrome('#00ff88', { bg: B }));
+  assert.deepStrictEqual(previewChrome('#00ff88', { bg: 'x#11131a', panel: P }), previewChrome('#00ff88', { panel: P }));
+  assert.deepStrictEqual(previewChrome('#00ff88', { bg: B, panel: 5 }), previewChrome('#00ff88', { bg: B }));
+  assert.deepStrictEqual(previewChrome('#00ff88', { bg: B + ' ', panel: null }), previewChrome('#00ff88', {}));
+  assert.deepStrictEqual(previewChrome('#00ff88', { bg: 'x#11131a', panel: 5 }), previewChrome('#00ff88', null));
+  // ... and a good surface is not ignored: a dark accent on a dark surface is moved to a readable one only when it is seen
+  assert.notDeepStrictEqual(previewChrome('#12141c', { bg: B }), previewChrome('#12141c', { bg: 'x' + B }));
 });
 
 test('top-bar withChosenAccent: a hex embedded in a string is no colour, and the theme comes back as it was', () => {
