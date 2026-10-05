@@ -26,13 +26,12 @@ const basename = (p) => {
 };
 
 function createResourcesService({
-  sampler, tabs, claims, installDirs, ownPid, cores, labelOf = basename, send, isSelectedView, kill,
+  sampler, tabs, claims, installDirs, ownPid, cores, labelOf = basename, send, kill,
   refreshStrip = () => {}, now = Date.now, log = () => {},
   // The warning's CPU threshold, 40 by default. A verification seam (CLAUDE_CUSTOM_RESOURCE_WARN_AT in app/main.js), so a
   // probe on a busy machine can show the chip without pinning 40% of it; nothing in the UI sets it.
   warnAt = warning.THRESHOLD,
 }) {
-  const shown = new Map();     // webContents id -> its page says the panel is showing
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
   let lastPayload = null;
@@ -42,7 +41,9 @@ function createResourcesService({
 
   // A minimised window wants nothing: the page's visibility is a second witness the app does not trust alone
   // (app/playback-bridge.js), so a page that still says "showing" does not keep the process tree sampled.
-  const panelWanted = () => !minimised && [...shown].some(([id, v]) => v === true && isSelectedView(id));
+  // Q1 (Ricardo, PR #113): the process tree is sampled ALWAYS, panel open or not, so the tab warning works with it closed.
+  // The one exception is a minimised window.
+  const panelWanted = () => !minimised;
   function refresh() { sampler.setWanted({ panel: panelWanted(), chip: !minimised }); }
 
   const tabList = () => (typeof tabs === 'function' ? tabs() : []).map(t => ({
@@ -126,8 +127,6 @@ function createResourcesService({
   }
 
   return {
-    setShown(id, on) { shown.set(id, on === true); refresh(); },
-    forget(id) { shown.delete(id); refresh(); },
     setMinimised(on) { minimised = on === true; refresh(); },
     refresh,
     onUpdate,

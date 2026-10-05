@@ -90,7 +90,7 @@ test('the panel: machine bars, this project with a row per tab and claude-custom
   assert.match(h, /Other windows/);
   assert.match(h, />proj</);
   assert.match(h, /background sessions/);
-  assert.match(h, /Every 10 s while this panel is shown · paused when hidden/);
+  assert.match(h, /Every 10 s · paused while minimised/);
 });
 
 test('the legend gives both figures: claude-custom and everything else', () => {

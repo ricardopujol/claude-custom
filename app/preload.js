@@ -220,11 +220,10 @@ contextBridge.exposeInMainWorld('harness', {
       }), () => ipcRenderer.removeAllListeners('playback-state')),
   },
   // The Resources panel and the top bar's machine chip (BACKLOG #63). Main owns the sampler (host/resource-sampler.js
-  // through app/resources-service.js); the page only says whether its panel is showing, hears each payload
+  // through app/resources-service.js); the page hears each payload
   // `{ model, status, machine }` (onState replaces its one listener), and asks for a Stop by pid and start time:
   // main re-reads the process list and refuses anything that is not a child of this window's own sessions.
   resources: {
-    setShown: (on) => ipcRenderer.send('resources:shown', on === true),
     get: () => ipcRenderer.invoke('resources:get'),
     stop: (req) => ipcRenderer.invoke('resources:stop', req),
     onState: (fn) => (ipcRenderer.removeAllListeners('resources:state'), ipcRenderer.on('resources:state',

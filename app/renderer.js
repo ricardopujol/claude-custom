@@ -1105,12 +1105,11 @@ function onModuleShown(id) {
 // --- the Resources panel and the top-bar chip (BACKLOG #63) ----------------------------------------------------
 // RESOURCES-BEGIN
 // app/resources-display.js decides what is drawn. The figures come from main's sampler (app/resources-service.js),
-// which also decides WHEN it samples: the process tree only while this page says its panel is showing (the selected
-// tab, this window visible), the machine totals for the chip otherwise. Nothing here reads the OS.
+// which also decides WHEN it samples: always, every 10 s, panel open or not (Ricardo, PR #113), except while the window is
+// minimised. Nothing here reads the OS.
 const resBridge = window.harness && window.harness.resources;
 let resState = window.resourcesDisplay.emptyState();
 let resPayload = null;              // the last payload main pushed: the chip draws from it, the panel from resState
-let resReportedShown = null;        // what this page last told main, so it says it once per change
 const resRoot = document.getElementById('resources-root');
 const tbResourcesEl = document.getElementById('tb-resources');
 
@@ -1135,16 +1134,6 @@ function renderResources() {
     && el.dataset.resKey === keep.key && el.dataset.resPid === keep.pid);
   if (again) again.focus();
 }
-
-// Tell main whether this page's panel is on screen. Sent on a change only: main starts and stops the sample on it.
-function syncResourcesShown() {
-  if (!resBridge) return;
-  const want = shownModules.has('resources') && document.visibilityState === 'visible';
-  if (want === resReportedShown) return;
-  resReportedShown = want;
-  try { resBridge.setShown(want); } catch { /* main is gone: the window is closing */ }
-}
-document.addEventListener('visibilitychange', syncResourcesShown);
 
 function onResourcesState(payload) {
   resPayload = payload;
@@ -1228,7 +1217,6 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
   for (const id of fx.newlyShown) onModuleShown(id);
-  syncResourcesShown();
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
   if (fx.focus === 'term') term.focus();
@@ -2525,7 +2513,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
-          reportedShown: resReportedShown,
           chip: chip ? { text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
           rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),

@@ -44,7 +44,7 @@ function rig(extra = {}) {
     sampler: { setWanted: w => wanted.push(w), sampleNow: async () => reread, snapshot: () => null },
     tabs: () => [{ key: 'k', cwd: 'C:\\r\\dev', branch: 'main', port: 7701 }, { key: 'k2', cwd: 'C:\\r\\feat', branch: null, port: 7702 }],
     claims: () => claims, installDirs: () => [INSTALL], ownPid: 10, cores: 4, labelOf: c => c.split('\\').pop(),
-    send: payload => sent.push(payload), isSelectedView: id => selected.has(id),
+    send: payload => sent.push(payload),
     kill: async (targets) => { killed.push(...targets.map(t => t.pid)); return targets.map(t => ({ pid: t.pid, status: 'killed' })); },
     refreshStrip: () => refreshed.push(1), now: () => 5000, ...extra,
   });
@@ -54,18 +54,11 @@ const snap = (over = {}) => ({ mode: 'full', sample: null, prev: null, machine: 
 const fullSnap = (n, pct, procs = world()) => snap({ sample: sampleAt(procs, burn(pct), n), prev: n > 1 ? sampleAt(procs, burn(pct), n - 1) : null,
   machine: { last: sampleAt(procs, burn(pct), n), prev: n > 1 ? sampleAt(procs, burn(pct), n - 1) : null } });
 
-test('the panel is wanted only while the SELECTED tab\'s page says it is showing it', () => {
+test('Q1: the process tree is sampled ALWAYS, with the panel open or closed, so the tab warning works with it closed', () => {
   const r = rig();
-  r.svc.setShown('v1', true);
-  assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
-  r.svc.setShown('v2', true);
-  r.svc.setShown('v1', false);
-  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: true }, 'v2 reports shown but is not the selected tab');
-  r.setSelected(['v2']);
   r.svc.refresh();
   assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
-  r.svc.forget('v2');
-  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: true });
+  assert.strictEqual(typeof r.svc.setShown, 'undefined', 'what a page says about its panel no longer decides anything');
 });
 
 test('a minimised window stops the chip\'s sampling too', () => {
@@ -73,12 +66,11 @@ test('a minimised window stops the chip\'s sampling too', () => {
   r.svc.setMinimised(true);
   assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: false });
   r.svc.setMinimised(false);
-  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: true });
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
 });
 
 test('a full sample is pushed to every page: the model, the status, and the machine figures for the chip', () => {
   const r = rig();
-  r.svc.setShown('v1', true);
   r.svc.onUpdate(fullSnap(2, 50));
   const p = r.sent.at(-1);
   assert.ok(p.model, 'the model is there');
@@ -115,7 +107,6 @@ test('get returns the last payload for a page that just opened, or null', () => 
 
 test('the tab warning: three samples over 40% turn it on and tell the strip; one under clears it', () => {
   const r = rig();
-  r.svc.setShown('v1', true);
   r.svc.onUpdate(fullSnap(2, 50));
   r.svc.onUpdate(fullSnap(3, 50));
   assert.strictEqual(r.svc.warnFor('k'), null, 'two samples are not 30 s');
@@ -258,9 +249,8 @@ test('D8: a tab that left the strip loses its count', () => {
   assert.strictEqual(r.svc.warnFor('k'), null, 'it started again from zero: two overs, not on');
 });
 
-test('D13: a minimised window does not keep the process tree sampled even if its page still says "showing"', () => {
+test('D13/Q1: a minimised window wants nothing, whatever else; restoring it wants everything again', () => {
   const r = rig();
-  r.svc.setShown('v1', true);
   r.svc.setMinimised(true);
   assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: false });
   r.svc.setMinimised(false);

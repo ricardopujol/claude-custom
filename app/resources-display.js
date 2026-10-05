@@ -226,7 +226,7 @@ function html(v) {
     + `<div class="res-legend">${esc(v.machine.cpuLegend)}</div><div class="res-legend">${esc(v.machine.memLegend)}</div></section>`
     + `<section class="res-sec"><h3>This project <span class="res-sum">${esc(v.project.sum.cpuFig)} · ${esc(v.project.sum.memFig)}</span></h3>${sessionRowsHtml}${selfHtml}</section>`
     + (others.length ? `<section class="res-sec"><h3>Other windows</h3>${others.join('')}</section>` : '')
-    + '<div class="res-footer">Every 10 s while this panel is shown · paused when hidden</div></div>';
+    + '<div class="res-footer">Every 10 s · paused while minimised</div></div>';
 }
 
 const API = { fmtCpu, fmtBytes, chipView, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, actionOf, view, html };

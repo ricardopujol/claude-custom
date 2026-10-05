@@ -21,8 +21,7 @@
  *   5  Stop: Cancel leaves the process alone; "Stop it" ends exactly that PID, the row reads "Stopped (PID n)", a
  *      bystander process in the same session, the session's shell and the host all stay alive, and the row is gone
  *      at the next sample
- *   6  hiding the panel stops the process-tree sample: the page reports "not showing" and the payload loses its
- *      model, while the chip keeps its machine figures; the warning chip is cleared with it
+ *   6  hiding the panel does not stop the sampling: the payload keeps its model and the chip keeps its figures
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills and no prompt is ever sent;
  * ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable of an enclosing tab are stripped; the project is a temp
@@ -239,14 +238,15 @@ async function main() {
   check('1: the chip shows the machine total from the machine sample, with the panel never opened',
     !!chip0 && /^CPU (\d+(\.\d)?%|—)  \d+(\.\d)? GB \/ \d+(\.\d)? GB$/.test(chip0.chip.text), JSON.stringify(chip0 && chip0.chip));
   check('1: the chip says what it is on hover', !!chip0 && /Machine total\. Open the Resources panel/.test(chip0.chip.title));
-  check('1: nothing samples the process tree while the panel is not showing', !!chip0 && chip0.reportedShown !== true && chip0.payloadHasModel === false, JSON.stringify({ r: chip0 && chip0.reportedShown, m: chip0 && chip0.payloadHasModel }));
+  // Q1 (Ricardo): the process tree is sampled with the panel CLOSED, so the tab warning works with it closed.
+  const closedFull = await waitFor(async () => { const s = await rs(); return s.payloadHasModel ? s : null; }, 40000, 500);
+  check('1: the process tree is sampled with the panel never opened (the full model arrives)', !!closedFull && closedFull.shown === false, JSON.stringify(closedFull && closedFull.shown));
 
   // The chip opens and focuses the panel (the design's Claude's-call item).
   const clicked = await view(app, 'resourcesClick', { chip: true });
   const opened = await waitFor(async () => { const s = await rs(); return s && s.shown ? s : null; }, 10000, 200);
   check('1: clicking the chip opens the Resources panel', clicked.ok === true && !!opened, JSON.stringify(clicked));
   check('1: resources-display.js loaded in the shared plain-script scope', !!opened && opened.scope === true);
-  check('1: the page tells main its panel is showing (that is what starts the process-tree sample)', !!opened && (await waitFor(async () => (await rs()).reportedShown === true, 5000)) === true);
   const measuring = await rs();
   check('1: until the first full sample the panel reads "measuring…"', /measuring…/.test(measuring.text) || measuring.payloadHasModel === true, JSON.stringify(measuring.text.slice(0, 80)));
 
@@ -255,7 +255,7 @@ async function main() {
   check('2: the full sample arrives and the tab\'s session has a row', !!full, JSON.stringify(full ? full.rows : await rs()).slice(0, 700));
   if (!full) { console.log(app.out.slice(-800)); return; }
   check('2: the panel has its sections: machine, this project, claude-custom itself', /Machine/.test(full.text) && /This project/.test(full.text) && full.rows.some(r => /claude-custom itself/.test(r.name)));
-  check('2: the footer says how often it samples and that it pauses when hidden', /Every 10 s while this panel is shown · paused when hidden/.test(full.text));
+  check('2: the footer says how often it samples and that it pauses while minimised', /Every 10 s · paused while minimised/.test(full.text));
   const second = await waitFor(async () => { const s = await rs(); return s && s.payloadHasModel && !/measuring…/.test(s.text) ? s : null; }, 40000, 500);
   check('2: after the second sample every CPU figure is real: no "measuring…", and nothing prints a bare NaN or undefined', !!second && !/NaN|undefined|null/.test(second.text), JSON.stringify(second && second.text.slice(0, 160)));
   check('2: the chip reads `CPU n%  x GB / y GB`', !!second && /^CPU \d+(\.\d)?%  \d+(\.\d)? GB \/ \d+(\.\d)? GB$/.test(second.chip.text), JSON.stringify(second && second.chip));
@@ -366,10 +366,11 @@ async function main() {
 
   // 6 -----------------------------------------------------------------------------
   await view(app, 'select', { id: 'agents' });
-  const hidden = await waitFor(async () => { const s = await rs(); return s.reportedShown === false ? s : null; }, 10000, 200);
-  check('6: hiding the panel tells main it is not showing', !!hidden);
-  const noModel = await waitFor(async () => { const s = await rs(); return s.payloadHasModel === false && s.hasPayload ? s : null; }, 30000, 500);
-  check('6: the process-tree sample stops: the payload loses its model', !!noModel);
+  const before6 = Date.now();
+  // two more samples arrive WITH the model while the panel is hidden: hiding it does not stop the sampling
+  let seen6 = 0; let lastText6 = null;
+  const noModel = await waitFor(async () => { const s = await rs(); if (s.payloadHasModel && s.machine && JSON.stringify(s.machine) !== lastText6) { lastText6 = JSON.stringify(s.machine); seen6++; } return seen6 >= 2 && s.payloadHasModel ? s : null; }, 40000, 500);
+  check('6: hiding the panel does NOT stop the process-tree sample: the model keeps arriving', !!noModel, String(Date.now() - before6));
   check('6: the chip keeps its machine figures', !!noModel && /^CPU .* GB \/ .* GB$/.test(noModel.chip.text) && !/NaN|undefined/.test(noModel.chip.text), JSON.stringify(noModel && noModel.chip));
 
   const errors = (app.out.match(/\[renderer:[a-z]+\].*/g) || []).filter(l => /error|not defined|undefined is not|cannot read/i.test(l));

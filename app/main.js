@@ -545,8 +545,6 @@ function createTabView(tab) {
 
   const wc = view.webContents;
   registerShortcuts(wc);
-  const viewId = wc.id;
-  wc.once('destroyed', () => { if (resources) resources.forget(viewId); });
   wc.on('did-finish-load', () => {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
@@ -791,12 +789,8 @@ async function showBackgroundMenu() {
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
-  // The Resources panel (#63). `shown` is the page saying its panel is on screen; `stop` is the Stop button, which
-  // main re-checks in full (host/resource-stop.js) however the page asks.
-  ipcMain.on('resources:shown', (e, on) => {
-    if (!isTabView(e.sender) || !resources) return;
-    resources.setShown(e.sender.id, on === true);
-  });
+  // The Resources panel (#63). `get` hands a page the last payload; `stop` is the Stop button, which main re-checks in
+  // full (host/resource-stop.js) however the page asks.
   ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
     ? resources.get(!!selectedView() && selectedView().webContents === e.sender)
     : null));
@@ -1567,7 +1561,6 @@ app.whenReady().then(async () => {
     // a worktree's cwd names its PROJECT (the folder that holds `dev\`), the way the window title does
     labelOf: (cwd) => { const p = projectOf(cwd); return projectLabel(p ? p.root : cwd); },
     send: (full, light) => { const sel = selectedView(); forEachView((v) => v.webContents.send('resources:state', v === sel ? full : light)); },
-    isSelectedView: (id) => { const v = selectedView(); return !!v && !v.webContents.isDestroyed() && v.webContents.id === id; },
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),

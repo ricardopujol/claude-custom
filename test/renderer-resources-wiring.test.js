@@ -39,13 +39,6 @@ test('the glue is findable, and reads nothing from the OS', () => {
   assert.doesNotMatch(BLOCK, /require\(|child_process|taskkill|process\./);
 });
 
-test('the page reports "showing" on a change only, from the layout and from visibility', () => {
-  assert.match(BLOCK, /const want = shownModules\.has\('resources'\) && document\.visibilityState === 'visible';\s*if \(want === resReportedShown\) return;/);
-  assert.match(BLOCK, /document\.addEventListener\('visibilitychange', syncResourcesShown\)/);
-  const layout = RAW.slice(RAW.indexOf('function renderLayout('), RAW.indexOf('// A selection change (tab click, Ctrl+B)'));
-  assert.match(layout, /for \(const id of fx\.newlyShown\) onModuleShown\(id\);\s*syncResourcesShown\(\);/);
-});
-
 test('Stop sends the pid and the start time the row was drawn with, and nothing that names a process', () => {
   assert.match(BLOCK, /resBridge\.stop\(\{ pid: req\.pid, startTime: req\.start \}\)/);
   assert.doesNotMatch(BLOCK, /stop\([^)]*name/);
@@ -63,10 +56,8 @@ test('the chip opens and focuses the panel: shows it when hidden, selects it oth
 });
 
 test('the bridge exposes what the page calls, and main answers it behind the tab-view gate', () => {
-  for (const m of ['setShown', 'get', 'stop', 'onState']) assert.match(PRELOAD, new RegExp(`resources: \\{[\\s\\S]*?\\b${m}:`), m);
-  assert.match(PRELOAD, /ipcRenderer\.send\('resources:shown'/);
+  for (const m of ['get', 'stop', 'onState']) assert.match(PRELOAD, new RegExp(`resources: \\{[\\s\\S]*?\\b${m}:`), m);
   assert.match(PRELOAD, /ipcRenderer\.invoke\('resources:stop', req\)/);
-  assert.match(MAIN, /ipcMain\.on\('resources:shown', \(e, on\) => \{\s*if \(!isTabView\(e\.sender\) \|\| !resources\) return;/);
   assert.match(MAIN, /ipcMain\.handle\('resources:get', \(e\) => \(isTabView\(e\.sender\)/);
   // S5: only the SELECTED page gets the process model (command lines); every other page gets the machine figures alone
   assert.match(MAIN, /v\.webContents\.send\('resources:state', v === sel \? full : light\)/);
@@ -80,9 +71,8 @@ test('main kills by pid through the vetted path, and the strip learns of a warni
   assert.doesNotMatch(MAIN, /taskkill|killPidTree/);
 });
 
-test('the sampler follows the SELECTED tab: a selection change refreshes the policy, a destroyed view is forgotten', () => {
+test('the sampler always runs, and only a minimised window pauses it', () => {
   assert.match(MAIN, /if \(resources\) resources\.refresh\(\);/);
-  assert.match(MAIN, /wc\.once\('destroyed', \(\) => \{ if \(resources\) resources\.forget\(viewId\); \}\);/);
   assert.match(MAIN, /win\.on\('minimize', \(\) => \{ focused = false; if \(resources\) resources\.setMinimised\(true\); \}\);/);
 });
 
