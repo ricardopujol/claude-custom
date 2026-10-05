@@ -167,3 +167,19 @@ test('attribute: a host a window\'s tab is attached to counts as that window\'s,
   const noWindow = T.attribute(p, { hosts: [{ pid: 20, owner: 77 }], installDirs: [INSTALL] });
   assert.strictEqual(noWindow.sessions[0].owner, null, 'an owner that is not a window in this table owns nothing');
 });
+
+test('provenHosts: a claim is a host only when its pid is a host process in this table, with the start time it recorded', () => {
+  const p = table([win(10), host(20, 10), kid(21, 10), host(22, 10)]);
+  const start = pid => p.find(x => x.pid === pid).start;
+  const claims = [
+    { pid: 20, port: 7701, cwd: 'C:\a', processStartedAt: start(20) },   // exact
+    { pid: 21, port: 7702, cwd: 'C:\b' },                                 // not a host process
+    { pid: 22, port: 7703, cwd: 'C:\c' },                                 // an older file: no start time, the role is enough
+    { pid: 99, port: 7704, cwd: 'C:\d' },                                 // not running
+    { pid: 20, port: 7701, cwd: 'C:\a', processStartedAt: start(20) },   // the same host named twice
+  ];
+  assert.deepStrictEqual(T.provenHosts(p, claims), [{ pid: 20, port: 7701, cwd: 'C:\a' }, { pid: 22, port: 7703, cwd: 'C:\c' }]);
+  assert.deepStrictEqual(T.provenHosts(p, [{ pid: 20, port: 1, cwd: 'x', processStartedAt: '1' }]), [], 'a reused pid: the start time differs');
+  assert.deepStrictEqual(T.provenHosts(p, null), []);
+  assert.deepStrictEqual(T.provenHosts(null, claims), []);
+});

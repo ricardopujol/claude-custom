@@ -146,3 +146,10 @@ test('property: ok is never returned for a protected role, a pid outside the ses
       assert.ok(under, 'not under a session host');
     }));
 });
+
+test('stop: the session hosts are worked out from the table it just read, not an older one', async () => {
+  let seen = null;
+  const procs = world();
+  await S.stop({ pid: 23, startTime: '5000' }, { readProcs: async () => procs, hostPids: (p) => { seen = p; return [20]; }, kill: () => {} });
+  assert.strictEqual(seen, procs);
+});

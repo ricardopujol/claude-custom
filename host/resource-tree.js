@@ -155,4 +155,24 @@ function attribute(procs, { hosts = [], installDirs = [], ownPids = [] } = {}) {
   };
 }
 
-module.exports = { roleOf, descendants, attribute, namesInstall };
+/**
+ * The claims (identity files: { pid, port, cwd, processStartedAt? }) that are a live host in THIS table. A file
+ * outlives its host and Windows reuses pids (host/background-hosts.js), so a claim is only a claim: its pid must be
+ * a host process here, and when the file carries the host's OS start time (`processStartedAt`, a FILETIME) the
+ * process must have started then. A claim older than that field is accepted on the role alone.
+ */
+function provenHosts(procs, claims) {
+  const byPid = new Map((Array.isArray(procs) ? procs : []).map(p => [p.pid, p]));
+  const out = [];
+  const seen = new Set();
+  for (const c of Array.isArray(claims) ? claims : []) {
+    const p = c && byPid.get(c.pid);
+    if (!p || seen.has(c.pid) || roleOf(p) !== 'host') continue;
+    if (c.processStartedAt !== undefined && c.processStartedAt !== p.start) continue;
+    seen.add(c.pid);
+    out.push({ pid: c.pid, port: c.port, cwd: c.cwd });
+  }
+  return out;
+}
+
+module.exports = { roleOf, descendants, attribute, namesInstall, provenHosts };

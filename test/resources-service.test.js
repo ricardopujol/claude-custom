@@ -1,0 +1,198 @@
+'use strict';
+/**
+ * app/resources-service.js (BACKLOG #63): what main does with the sampler. Which views want the panel, the
+ * payload every tab page gets, the per-tab warning counters, and the Stop IPC. Everything it touches is handed in.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+
+const S = require('../app/resources-service');
+
+const INSTALL = 'C:\\r\\dev';
+const EXE = `${INSTALL}\\node_modules\\electron\\dist\\electron.exe`;
+const T0 = 134000000000000000n;
+const SEC = 10000000n;
+
+function world() {
+  let c = 1000;
+  const p = (pid, ppid, name, cmd, priv) => ({ pid, ppid, name, cmd, priv, start: String(c += 10) });
+  return [
+    p(10, 1, 'electron.exe', `${EXE} ${INSTALL}`, 100),
+    p(20, 10, 'electron.exe', `${EXE} ${INSTALL}\\host\\host.js`, 50),
+    p(22, 20, 'claude.exe', 'claude.exe', 300),
+    p(23, 22, 'node.exe', 'node server.js', 400),
+  ];
+}
+const sampleAt = (procs, cpu23, n) => ({
+  at: 0, procs,
+  perf: new Map(procs.map(p => [p.pid, { cpu: p.pid === 23 ? BigInt(Math.round(cpu23 * n)) : 0n, ts: T0 + BigInt(n) * 10n * SEC }])),
+  cpuTotal: { idle: BigInt(n) * 5n * SEC, ts: T0 + BigInt(n) * 10n * SEC }, os: { totalBytes: 1000, freeBytes: 400 },
+});
+// pid 23 burns `pct`% of a 4-core machine: pct/100 * 4 cores * 10 s per sample
+const burn = pct => (pct / 100) * 4 * 10 * 1e7;
+
+function rig(extra = {}) {
+  const sent = [];
+  const refreshed = [];
+  const wanted = [];
+  const killed = [];
+  const procs = world();
+  const claims = [{ pid: 20, port: 7701, cwd: 'C:\\r\\dev' }];
+  let selected = new Set(['v1']);
+  let reread = procs;
+  const svc = S.createResourcesService({
+    sampler: { setWanted: w => wanted.push(w), sampleNow: async () => reread, snapshot: () => null },
+    tabs: () => [{ key: 'k', cwd: 'C:\\r\\dev', branch: 'main', port: 7701 }, { key: 'k2', cwd: 'C:\\r\\feat', branch: null, port: 7702 }],
+    claims: () => claims, installDirs: () => [INSTALL], ownPid: 10, cores: 4, labelOf: c => c.split('\\').pop(),
+    send: (ch, payload) => sent.push([ch, payload]), isSelectedView: id => selected.has(id), kill: pid => killed.push(pid),
+    refreshStrip: () => refreshed.push(1), now: () => 5000, ...extra,
+  });
+  return { svc, sent, refreshed, wanted, killed, procs, setSelected: (s) => { selected = new Set(s); }, setReread: (r) => { reread = r; } };
+}
+const snap = (over = {}) => ({ mode: 'full', sample: null, prev: null, machine: { last: null, prev: null }, failures: 0, lastGoodAt: 4000, stale: false, expired: false, ...over });
+const fullSnap = (n, pct, procs = world()) => snap({ sample: sampleAt(procs, burn(pct), n), prev: n > 1 ? sampleAt(procs, burn(pct), n - 1) : null,
+  machine: { last: sampleAt(procs, burn(pct), n), prev: n > 1 ? sampleAt(procs, burn(pct), n - 1) : null } });
+
+test('the panel is wanted only while the SELECTED tab\'s page says it is showing it', () => {
+  const r = rig();
+  r.svc.setShown('v1', true);
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
+  r.svc.setShown('v2', true);
+  r.svc.setShown('v1', false);
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: true }, 'v2 reports shown but is not the selected tab');
+  r.setSelected(['v2']);
+  r.svc.refresh();
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
+  r.svc.forget('v2');
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: true });
+});
+
+test('a minimised window stops the chip\'s sampling too', () => {
+  const r = rig();
+  r.svc.setMinimised(true);
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: false });
+  r.svc.setMinimised(false);
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: false, chip: true });
+});
+
+test('a full sample is pushed to every page: the model, the status, and the machine figures for the chip', () => {
+  const r = rig();
+  r.svc.setShown('v1', true);
+  r.svc.onUpdate(fullSnap(2, 50));
+  const [channel, p] = r.sent.at(-1);
+  assert.strictEqual(channel, 'resources:state');
+  assert.ok(p.model, 'the model is there');
+  assert.strictEqual(p.model.project.rows[0].key, 'k');
+  assert.strictEqual(p.model.project.rows[0].label, 'main');
+  assert.ok(Math.abs(p.model.project.rows[0].cpu - 50) < 1e-6);
+  assert.ok(Math.abs(p.machine.cpu - 50) < 1e-6);
+  assert.deepStrictEqual(p.machine.mem, { usedBytes: 600, totalBytes: 1000 });
+  assert.deepStrictEqual(p.status, { stale: false, expired: false, ageMs: 1000 });
+});
+
+test('a machine-only sample pushes the chip\'s figures and no model', () => {
+  const r = rig();
+  r.svc.onUpdate(snap({ mode: 'machine', machine: { last: sampleAt(world(), 0, 2), prev: sampleAt(world(), 0, 1) } }));
+  const p = r.sent.at(-1)[1];
+  assert.strictEqual(p.model, null);
+  assert.ok(Math.abs(p.machine.cpu - 50) < 1e-6);
+});
+
+test('before any sample the chip has no machine figures: null, not zeros', () => {
+  const r = rig();
+  r.svc.onUpdate(snap({ mode: 'machine', failures: 1, stale: true, lastGoodAt: null }));
+  const p = r.sent.at(-1)[1];
+  assert.strictEqual(p.machine, null);
+  assert.deepStrictEqual(p.status, { stale: true, expired: false, ageMs: null });
+});
+
+test('get returns the last payload for a page that just opened, or null', () => {
+  const r = rig();
+  assert.strictEqual(r.svc.get(), null);
+  r.svc.onUpdate(fullSnap(2, 10));
+  assert.strictEqual(r.svc.get(), r.sent.at(-1)[1]);
+});
+
+test('the tab warning: three samples over 40% turn it on and tell the strip; one under clears it', () => {
+  const r = rig();
+  r.svc.setShown('v1', true);
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.svc.onUpdate(fullSnap(3, 50));
+  assert.strictEqual(r.svc.warnFor('k'), null, 'two samples are not 30 s');
+  r.svc.onUpdate(fullSnap(4, 50));
+  assert.deepStrictEqual(r.svc.warnFor('k'), { pct: 50, level: 'amber' });
+  assert.ok(r.refreshed.length >= 1, 'the strip is told');
+  const before = r.refreshed.length;
+  r.svc.onUpdate(fullSnap(5, 80));
+  assert.deepStrictEqual(r.svc.warnFor('k'), { pct: 80, level: 'red' });
+  assert.ok(r.refreshed.length > before);
+  r.svc.onUpdate(fullSnap(6, 5));
+  assert.strictEqual(r.svc.warnFor('k'), null);
+  assert.strictEqual(r.svc.warnFor('k2'), null);
+});
+
+test('the first sample has no CPU, so it counts toward nothing', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(1, 90));
+  r.svc.onUpdate(fullSnap(2, 90));
+  r.svc.onUpdate(fullSnap(3, 90));
+  assert.strictEqual(r.svc.warnFor('k'), null);
+});
+
+test('when the panel is hidden the process tree is not sampled, so warnings and their chips are cleared, not left stale', () => {
+  const r = rig();
+  for (let n = 2; n <= 4; n++) r.svc.onUpdate(fullSnap(n, 60));
+  assert.ok(r.svc.warnFor('k'));
+  const before = r.refreshed.length;
+  r.svc.onUpdate(snap({ mode: 'machine', machine: { last: sampleAt(world(), 0, 5), prev: sampleAt(world(), 0, 4) } }));
+  assert.strictEqual(r.svc.warnFor('k'), null);
+  assert.ok(r.refreshed.length > before);
+  const quiet = r.refreshed.length;
+  r.svc.onUpdate(snap({ mode: 'machine', machine: { last: sampleAt(world(), 0, 6), prev: sampleAt(world(), 0, 5) } }));
+  assert.strictEqual(r.refreshed.length, quiet, 'nothing to clear: the strip is not told again');
+});
+
+test('three failed samples in a row clear the warnings: a number nobody could measure is not a warning', () => {
+  const r = rig();
+  for (let n = 2; n <= 4; n++) r.svc.onUpdate(fullSnap(n, 60));
+  assert.ok(r.svc.warnFor('k'));
+  r.svc.onUpdate({ ...fullSnap(4, 60), failures: 3, stale: true, expired: true });
+  assert.strictEqual(r.svc.warnFor('k'), null);
+});
+
+test('a tab whose host is not proven has no row and no warning, and a host with a reused pid is not believed', () => {
+  const r = rig({ claims: () => [{ pid: 20, port: 7701, cwd: 'C:\\r\\dev', processStartedAt: '1' }] });
+  r.svc.onUpdate(fullSnap(2, 60));
+  assert.deepStrictEqual(r.sent.at(-1)[1].model.project.rows, []);
+});
+
+test('stop: forwards to the guard with this window\'s session hosts, kills that pid only, and says what happened', async () => {
+  const r = rig();
+  const procs = world();
+  r.setReread(procs);
+  const res = await r.svc.stop({ pid: 23, startTime: procs[3].start });
+  assert.deepStrictEqual(res, { ok: true, pid: 23, name: 'node.exe' });
+  assert.deepStrictEqual(r.killed, [23]);
+});
+
+test('stop: refuses claude, and anything when the request is malformed, and kills nothing', async () => {
+  const r = rig();
+  const procs = world();
+  const a = await r.svc.stop({ pid: 22, startTime: procs[2].start });
+  assert.strictEqual(a.ok, false);
+  assert.strictEqual(a.reason, 'protected');
+  const b = await r.svc.stop({ pid: '23', startTime: procs[3].start });
+  assert.strictEqual(b.reason, 'invalid');
+  const c = await r.svc.stop(null);
+  assert.strictEqual(c.reason, 'invalid');
+  assert.deepStrictEqual(r.killed, []);
+});
+
+test('stop: a process list that cannot be read stops nothing', async () => {
+  const r = rig();
+  r.setReread(null);
+  const res = await r.svc.stop({ pid: 23, startTime: '1' });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.reason, 'unreadable');
+  assert.deepStrictEqual(r.killed, []);
+});

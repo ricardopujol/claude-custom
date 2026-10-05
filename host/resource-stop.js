@@ -47,14 +47,14 @@ function stopDecision(request, procs, { sessionHostPids = [] } = {}) {
 }
 
 /**
- * stop(request, { readProcs: async () -> procs | null, hostPids: () -> [pid], kill: (pid) -> void })
+ * stop(request, { readProcs: async () -> procs | null, hostPids: (procs) -> [pid], kill: (pid) -> void })
  *   -> { ok: true, pid, name } | { ok: false, reason, text }
  */
 async function stop(request, { readProcs, hostPids, kill }) {
   let procs;
   try { procs = await readProcs(); } catch { procs = null; }
   if (!Array.isArray(procs)) return { ok: false, reason: 'unreadable', text: reasonText('unreadable') };
-  const d = stopDecision(request, procs, { sessionHostPids: hostPids() });
+  const d = stopDecision(request, procs, { sessionHostPids: hostPids(procs) });
   if (!d.ok) return { ok: false, reason: d.reason, text: reasonText(d.reason) };
   try { kill(d.target.pid); } catch (err) {
     return { ok: false, reason: 'kill-failed', text: `${reasonText('kill-failed')}: ${(err && err.message) || err}` };
