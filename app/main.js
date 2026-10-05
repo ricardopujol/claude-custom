@@ -21,7 +21,7 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
@@ -63,6 +63,7 @@ const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
@@ -157,6 +158,13 @@ const PROBE_LINE_MAX = 64 * 1024;
 if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
+
+// BACKLOG #71 (Claude's panel): Chromium in this app resolves NO name but loopback. The page the running Claude builds is
+// untrusted, and `<link rel=dns-prefetch>` is a DNS query that carries a name of the page's choosing; a CSP and a dead proxy
+// both leave it open (verify/probe-canvas-sandbox.js measured it). This rule is the only thing that shuts it. It costs
+// nothing today: the app makes no external request of its own through Chromium (the host and this process use Node's
+// networking, which this does not touch), and the panel reaches approved hosts through main (app/canvas-fetch.js).
+app.commandLine.appendSwitch('host-resolver-rules', HOST_RESOLVER_RULES);
 
 // `hosts/<port>.token`, and nothing else: written only by the host that won
 // that port's bind (PR #75 F2), so it names whoever is listening. Null when it
@@ -386,6 +394,7 @@ function layoutView(view) {
   const [width, height] = win.getContentSize();
   const top = viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
   view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
+  canvasViews.relayout(view.webContents);     // its panel's offset moved with it (focus mode, a frameless toggle)
 }
 
 function setFocusMode(on) {
@@ -587,9 +596,33 @@ function createTabView(tab) {
   return view;
 }
 
+// --- Claude's panel (BACKLOG #71) -------------------------------------------------------------
+// One sealed WebContentsView per tab, laid over the dock panel's body (app/canvas-views.js). The tab's page is the trusted
+// controller: it says when to show, where, and with which page, and relays the person's answer about a host.
+const canvasAsks = new Map();      // id -> { owner, resolve }: a host question waiting on the tab's page
+let canvasAskSeq = 0;
+const CANVAS_ASK_TIMEOUT_MS = 5 * 60 * 1000;
+const canvasViews = createCanvasViews({
+  WebContentsView, session,
+  addChild: (v) => win.contentView.addChildView(v),
+  removeChild: (v) => win.contentView.removeChildView(v),
+  ownerBounds: (owner) => { for (const v of liveViews) { if (v.webContents === owner) return v.getBounds(); } return null; },
+  preloadPath: path.join(__dirname, 'canvas-panel-preload.js'),
+  ask: (owner, origin) => new Promise((resolve) => {
+    if (owner.isDestroyed()) { resolve('deny'); return; }
+    const id = ++canvasAskSeq;
+    const timer = setTimeout(() => { canvasAsks.delete(id); resolve('deny'); }, CANVAS_ASK_TIMEOUT_MS);
+    canvasAsks.set(id, { owner, resolve: (answer) => { clearTimeout(timer); resolve(answer); } });
+    owner.send('canvas:need-host', { id, origin });
+  }),
+  onMessage: (owner, msg) => { if (!owner.isDestroyed()) owner.send('canvas:message', msg); },
+  log: (line) => console.log(line),
+});
+
 function destroyTabView(tab) {
   const view = tab.view;
   if (!view) return;
+  canvasViews.destroyFor(view.webContents);
   liveViews.delete(view);
   try { win.contentView.removeChildView(view); } catch { /* the window is going away */ }
   try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* already gone */ }
@@ -616,7 +649,11 @@ function pushStripAccent() {
 
 function applySelection(snapshot) {
   for (const tab of snapshot.tabs) {
-    if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.setVisible(tab.key === snapshot.selectedKey);
+    if (tab.view && !tab.view.webContents.isDestroyed()) {
+      tab.view.setVisible(tab.key === snapshot.selectedKey);
+      // A tab's panel is its own native view: it must leave with its tab, or it floats over whichever tab is selected.
+      canvasViews.setOwnerVisible(tab.view.webContents, tab.key === snapshot.selectedKey);
+    }
   }
   // Keyed on the VIEW, not on a changed selection: a view created for the
   // already-selected tab has never had the keyboard (Dexter F4 / Miguel M1),
@@ -795,6 +832,21 @@ async function showBackgroundMenu() {
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
+  // Claude's panel (#71). The panel's own page talks on canvas:fetch / canvas:send only (registerCanvasIpc: main answers a
+  // contents it made, nothing else). The channels below are the TAB's page, the trusted controller, and are gated on it.
+  registerCanvasIpc(ipcMain, canvasViews);
+  ipcMain.handle('canvas:show', (e, req) => (isTabView(e.sender) && req && typeof req === 'object'
+    ? canvasViews.show(e.sender, req) : { ok: false, error: 'refused' }));
+  ipcMain.on('canvas:bounds', (e, rect) => { if (isTabView(e.sender)) canvasViews.setBounds(e.sender, rect); });
+  ipcMain.on('canvas:cover', (e, on) => { if (isTabView(e.sender)) canvasViews.setCovered(e.sender, on === true); });
+  ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
+  ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
+  ipcMain.on('canvas:host-answer', (e, a) => {
+    const pending = a && canvasAsks.get(a.id);
+    if (!pending || pending.owner !== e.sender) return;      // only the tab that was asked can answer
+    canvasAsks.delete(a.id);
+    pending.resolve(a.answer === 'allow' ? 'allow' : 'deny');
+  });
   // The Resources panel (#63). `get` hands a page the last payload; `stop` is the Stop button, which main re-checks in
   // full (host/resource-stop.js) however the page asks.
   ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
