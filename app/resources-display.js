@@ -197,9 +197,9 @@ function childHtml(c) {
   let h = `<div class="res-child"><span class="res-cname">${esc(c.name)}</span><span class="res-ccmd" title="${esc(c.cmd)}">${esc(c.cmd)}</span>`
     + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop}</div>`;
   if (c.confirm) {
-    const off = c.pending ? ' disabled' : '';
+    const lock = c.pending ? ' disabled' : '';
     h += `<div class="res-confirm" role="alert">Stop ${esc(c.name)}, PID ${esc(c.pid)}? Only this process stops, and anything it started stops with it. `
-      + `<button type="button" data-res-act="confirm-stop"${off}>${c.pending ? 'Stopping…' : 'Stop it'}</button> <button type="button" data-res-act="cancel-stop"${off}>Cancel</button></div>`;
+      + `<button type="button" data-res-act="confirm-stop"${lock}>${c.pending ? 'Stopping…' : 'Stop it'}</button> <button type="button" data-res-act="cancel-stop"${lock}>Cancel</button></div>`;
   }
   if (c.outcome) h += `<div class="res-note res-refused">${esc(c.outcome.text)}</div>`;
   return h;
