@@ -19,9 +19,13 @@ const START_SLACK = 100000;      // 10 ms in 100 ns ticks: CIM and Get-Process s
 const validTarget = t => !!t && Number.isInteger(t.pid) && t.pid > 0 && typeof t.start === 'string' && /^\d+$/.test(t.start);
 
 function killScript(targets) {
-  const calls = targets.map(t => `K ${t.pid} ${t.start}`).join('\n');
+  const [root, ...rest] = targets;
+  const calls = rest.map(t => `K ${t.pid} ${t.start}`).join('\n');
+  // The protected roles by image, as host/resource-tree.js roleOf names them (claude, Electron, a session host's host.js).
   return `$ErrorActionPreference='SilentlyContinue'
+$done = @{}
 function K($id, [long]$want) {
+  $script:done[$id] = $want
   $p = Get-Process -Id $id
   if (-not $p) { return "$id gone" }
   try { $null = $p.Handle } catch { return "$id failed could not open it: $($_.Exception.Message)" }
@@ -33,11 +37,46 @@ function K($id, [long]$want) {
   if ($p.HasExited) { return "$id killed" }
   return "$id failed it is still running"
 }
+function Below($seeds) {
+  $t = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ id=[int]$_.ProcessId; pp=[int]$_.ParentProcessId; name=[string]$_.Name; cmd=[string]$_.CommandLine; st=$(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { [long]0 }) } })
+  $queue = New-Object System.Collections.ArrayList
+  $seen = @{}
+  foreach ($k in $seeds.Keys) { [void]$queue.Add(@([int]$k, [long]$seeds[$k])); $seen[[int]$k] = 1 }
+  $found = @()
+  for ($i = 0; $i -lt $queue.Count; $i++) {
+    $cur = $queue[$i][0]; $curStart = $queue[$i][1]
+    foreach ($c in $t) {
+      if ($c.pp -ne $cur -or $c.id -eq $cur -or $seen.ContainsKey($c.id)) { continue }
+      if ($curStart -le 0 -or $c.st -lt $curStart) { continue }
+      $seen[$c.id] = 1
+      [void]$queue.Add(@($c.id, $c.st))
+      $found += $c
+    }
+  }
+  $found
+}
+function Prot($c) { ($c.name -like 'claude*') -or ($c.name -eq 'electron.exe') -or ($c.cmd -match 'host[\\\\/]host\\.js') }
+function Own($c) { ($c.name -eq 'conhost.exe') -or ($c.name -eq 'OpenConsole.exe') }
+$rootId = ${root.pid}
+$bad = @(Below @{ ${root.pid} = ${root.start} } | Where-Object { Prot $_ })
+if ($bad.Count -gt 0) {
+  "$rootId failed a protected process (PID $($bad[0].id)) was started under it since the list was read"
+} else {
+  $r = K ${root.pid} ${root.start}
+  $r
 ${calls}
+  if ($r -like '* killed') {
+    for ($pass = 0; $pass -lt 3; $pass++) {
+      $more = @(Below $done | Where-Object { -not (Own $_) -and -not (Prot $_) -and -not $done.ContainsKey($_.id) })
+      if ($more.Count -eq 0) { break }
+      foreach ($c in $more) { if (-not $done.ContainsKey($c.id)) { K $c.id $c.st } }
+    }
+  }
+}
 'END'`;
 }
 
-/** [{ pid, status: 'killed' | 'gone' | 'reused' | 'failed', text? }] in the order asked; anything not reported is a failure. */
+/** [{ pid, status: 'killed' | 'gone' | 'reused' | 'failed', text? }] in the order asked, then any `extra: true` ones the script found; anything not reported is a failure. */
 function parseKillOutput(text, targets) {
   const lines = String(text || '').split(/\r?\n/).map(l => l.trim());
   const finished = lines.includes('END');
@@ -46,11 +85,17 @@ function parseKillOutput(text, targets) {
     const m = /^(\d+) (killed|gone|reused|failed)(?: (.*))?$/.exec(l);
     if (m) said.set(Number(m[1]), { status: m[2], text: m[3] || '' });
   }
-  return targets.map((t) => {
+  const asked = new Set(targets.map(t => t.pid));
+  const out = targets.map((t) => {
     const s = said.get(t.pid);
     if (!s || !finished) return { pid: t.pid, status: 'failed', text: 'no answer from the kill' };
     return { pid: t.pid, status: s.status, ...(s.text ? { text: s.text } : {}) };
   });
+  // Processes the script found itself (started since the list was read) and ended or failed to end: said, never dropped.
+  if (finished) {
+    for (const [pid, s] of said) if (!asked.has(pid)) out.push({ pid, status: s.status, extra: true, ...(s.text ? { text: s.text } : {}) });
+  }
+  return out;
 }
 
 /** killVerified(targets, { exec }) -> results. `exec(script)` runs it and resolves with stdout. Never throws. */
