@@ -19,6 +19,7 @@ const model = require('../host/resource-model');
 const tree = require('../host/resource-tree');
 const warning = require('../host/resource-warning');
 const stopper = require('../host/resource-stop');
+const { createHistory } = require('../host/resource-history');
 
 const basename = (p) => {
   const parts = String(p).split(/[\\/]+/).filter(Boolean);
@@ -40,6 +41,8 @@ function createResourcesService({
   let chipOn = chipStore.read() !== false;   // ON by default: only a stored real `false` turns it off
   let lastLight = null;        // the same payload with no process model: what a page that is not showing the panel gets
   let lastSignature = '';
+  const history = createHistory();   // the one-hour sparklines' data: in memory only, starts empty after a restart
+  let lastRecordedAt = null;
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
 
   // A minimised window wants nothing: the page's visibility is a second witness the app does not trust alone
@@ -67,6 +70,21 @@ function createResourcesService({
     if (sig === lastSignature) return;
     lastSignature = sig;
     try { refreshStrip(); } catch (err) { log('[resources] refreshStrip threw:', err && err.message); }
+  }
+
+  // One point per fresh sample; a failed one is a null point (a break in the line, never a 0). Stop's off-cadence re-read and a
+  // re-sent old sample add nothing. A minimised window records nothing, and the view breaks the line on that time gap.
+  function record(snap, built, machine) {
+    if (snap.adhoc === true) return;
+    if (snap.failures > 0) { history.recordFailure(now()); return; }
+    if (typeof snap.lastGoodAt !== 'number' || snap.lastGoodAt === lastRecordedAt || !machine) return;
+    lastRecordedAt = snap.lastGoodAt;
+    const ours = built && built.machine ? built.machine.ours : null;
+    history.record({
+      at: snap.lastGoodAt, cpu: machine.cpu,
+      cpuOurs: ours ? ours.cpu : null, memOurs: ours ? ours.bytes : null,
+      memUsed: machine.mem ? machine.mem.usedBytes : null, memTotal: machine.mem ? machine.mem.totalBytes : null,
+    });
   }
 
   function onUpdate(snap) {
@@ -113,8 +131,9 @@ function createResourcesService({
       setWarnings(new Map());
     }
 
-    lastPayload = { model: built, status, machine, chipOn };
-    lastLight = { model: null, status, machine, chipOn };
+    record(snap, built, machine);
+    lastPayload = { model: built, status, machine, chipOn, history: history.points() };
+    lastLight = { model: null, status, machine, chipOn, history: history.points() };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
     send(lastPayload, lastLight);
   }
@@ -123,8 +142,8 @@ function createResourcesService({
   // machine) carries it.
   function push() {
     const bare = { model: null, status: { stale: false, expired: false, ageMs: null }, machine: null };
-    lastPayload = { ...(lastPayload || bare), chipOn };
-    lastLight = { ...(lastLight || bare), chipOn };
+    lastPayload = { ...(lastPayload || bare), chipOn, history: history.points() };
+    lastLight = { ...(lastLight || bare), chipOn, history: history.points() };
     send(lastPayload, lastLight);
   }
 

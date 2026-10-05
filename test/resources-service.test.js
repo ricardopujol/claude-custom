@@ -383,3 +383,76 @@ test('Q2: a store that throws on save is logged, not raised, and the setting sti
   assert.strictEqual(r.svc.setChip(false), false);
   assert.match(logged.join(), /disk/);
 });
+
+// ---- the one-hour history (#63 follow-up) -----------------------------------------------------------------------
+
+test('history: each fresh sample adds one point (machine and ours) and rides in both payloads', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  const p = r.sent.at(-1);
+  assert.strictEqual(p.history.length, 1);
+  const pt = p.history[0];
+  assert.strictEqual(pt.at, 4000);
+  assert.ok(Math.abs(pt.cpu - 50) < 1e-6);
+  assert.ok(Math.abs(pt.cpuOurs - 50) < 1e-6);
+  assert.strictEqual(pt.memUsed, 600);
+  assert.strictEqual(pt.memTotal, 1000);
+  assert.strictEqual(pt.memOurs, 850, 'ours: the private working sets of the process tree');
+});
+
+test('history: the light payload carries it too (the chip needs it on every page)', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  assert.strictEqual(r.sent.length, 1);
+  assert.strictEqual(r.svc.get(false).history.length, 1);
+  assert.strictEqual(r.svc.get(true).history.length, 1);
+});
+
+test('history: the first sample has no CPU yet, so cpu is null (not 0) and memory is there', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(1, 50));
+  const pt = r.sent.at(-1).history[0];
+  assert.strictEqual(pt.cpu, null);
+  assert.strictEqual(pt.memUsed, 600);
+});
+
+test('history: a machine-only sample records the machine and no "ours"', () => {
+  const r = rig();
+  r.svc.onUpdate(snap({ mode: 'machine', machine: { last: sampleAt(world(), 0, 2), prev: sampleAt(world(), 0, 1) } }));
+  const pt = r.sent.at(-1).history[0];
+  assert.ok(Math.abs(pt.cpu - 50) < 1e-6);
+  assert.strictEqual(pt.cpuOurs, null);
+  assert.strictEqual(pt.memOurs, null);
+});
+
+test('history: a re-sent old sample, or Stop\'s ad-hoc re-read, adds no point', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.svc.onUpdate(fullSnap(2, 50));                       // the same lastGoodAt: nothing new was measured
+  r.svc.onUpdate({ ...fullSnap(3, 50), lastGoodAt: 5000, adhoc: true });
+  assert.strictEqual(r.sent.at(-1).history.length, 1);
+});
+
+test('history: a failed sample is a null point, a break in the line and never a 0', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.svc.onUpdate({ ...fullSnap(2, 50), failures: 1, stale: true });
+  const h = r.sent.at(-1).history;
+  assert.strictEqual(h.length, 2);
+  assert.deepStrictEqual([h[1].cpu, h[1].memUsed, h[1].cpuOurs, h[1].memOurs], [null, null, null, null]);
+});
+
+test('history: minimising keeps it (the time gap is the break); a chip toggle keeps it too', () => {
+  const r = rig();
+  r.svc.onUpdate(fullSnap(2, 50));
+  r.svc.setMinimised(true);
+  r.svc.setMinimised(false);
+  r.svc.setChip(false);
+  assert.strictEqual(r.sent.at(-1).history.length, 1);
+});
+
+test('history: a bare push before any sample carries an empty history', () => {
+  const r = rig();
+  r.svc.setChip(false);
+  assert.deepStrictEqual(r.sent.at(-1).history, []);
+});
