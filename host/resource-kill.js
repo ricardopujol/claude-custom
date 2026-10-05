@@ -16,7 +16,13 @@
 
 const START_SLACK = 100000;      // 10 ms in 100 ns ticks: CIM and Get-Process start times differ by a tick (host/resource-tree.js)
 
-const validTarget = t => !!t && Number.isInteger(t.pid) && t.pid > 0 && typeof t.start === 'string' && /^\d+$/.test(t.start);
+const PID_MAX = 2147483647;                    // Get-Process -Id and the script's [int] casts are Int32
+const START_MAX = '9223372036854775807';       // the script casts the start to [long]; FILETIMEs are 18 digits
+// `pid` and `start` are written raw into PowerShell source, so each must be exactly a number the script can read back:
+// digits only, in range (1e21 is an integer to JS but prints as 1e+21), and a start that fits a signed 64-bit integer.
+// A start of zero is refused: the script reads `$curStart -le 0` as "start unknown" and skips the protected-process scan.
+const startFits = s => /^\d{1,19}$/.test(s) && /[1-9]/.test(s) && (s.length < START_MAX.length || s <= START_MAX);
+const validTarget = t => !!t && Number.isInteger(t.pid) && t.pid > 0 && t.pid <= PID_MAX && typeof t.start === 'string' && startFits(t.start);
 
 function killScript(targets) {
   const [root, ...rest] = targets;
@@ -24,8 +30,9 @@ function killScript(targets) {
   // The protected roles by image, as host/resource-tree.js roleOf names them (claude, Electron, a session host's host.js).
   return `$ErrorActionPreference='SilentlyContinue'
 $done = @{}
+$tried = @{}
 function K($id, [long]$want) {
-  $script:done[$id] = $want
+  $script:tried[$id] = 1
   $p = Get-Process -Id $id
   if (-not $p) { return "$id gone" }
   try { $null = $p.Handle } catch { return "$id failed could not open it: $($_.Exception.Message)" }
@@ -34,7 +41,7 @@ function K($id, [long]$want) {
   if ([math]::Abs($got - $want) -gt ${START_SLACK}) { return "$id reused" }
   try { $p.Kill() } catch { return "$id failed $($_.Exception.Message)" }
   [void]$p.WaitForExit(3000)
-  if ($p.HasExited) { return "$id killed" }
+  if ($p.HasExited) { $script:done[$id] = $want; return "$id killed" }
   return "$id failed it is still running"
 }
 function Below($seeds) {
@@ -67,9 +74,9 @@ if ($bad.Count -gt 0) {
 ${calls}
   if ($r -like '* killed') {
     for ($pass = 0; $pass -lt 3; $pass++) {
-      $more = @(Below $done | Where-Object { -not (Own $_) -and -not (Prot $_) -and -not $done.ContainsKey($_.id) })
+      $more = @(Below $done | Where-Object { -not (Own $_) -and -not (Prot $_) -and -not $tried.ContainsKey($_.id) })
       if ($more.Count -eq 0) { break }
-      foreach ($c in $more) { if (-not $done.ContainsKey($c.id)) { K $c.id $c.st } }
+      foreach ($c in $more) { if (-not $tried.ContainsKey($c.id)) { K $c.id $c.st } }
     }
   }
 }
