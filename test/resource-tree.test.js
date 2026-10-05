@@ -174,11 +174,11 @@ test('provenHosts: a claim is a host only when its pid is a host process in this
   const claims = [
     { pid: 20, port: 7701, cwd: 'C:\a', processStartedAt: start(20) },   // exact
     { pid: 21, port: 7702, cwd: 'C:\b' },                                 // not a host process
-    { pid: 22, port: 7703, cwd: 'C:\c' },                                 // an older file: no start time, the role is enough
+    { pid: 22, port: 7703, cwd: 'C:\c' },                                 // an older file: no start time proves nothing about WHICH process holds the pid
     { pid: 99, port: 7704, cwd: 'C:\d' },                                 // not running
     { pid: 20, port: 7701, cwd: 'C:\a', processStartedAt: start(20) },   // the same host named twice
   ];
-  assert.deepStrictEqual(T.provenHosts(p, claims), [{ pid: 20, port: 7701, cwd: 'C:\a' }, { pid: 22, port: 7703, cwd: 'C:\c' }]);
+  assert.deepStrictEqual(T.provenHosts(p, claims), [{ pid: 20, port: 7701, cwd: 'C:\a' }]);
   assert.deepStrictEqual(T.provenHosts(p, [{ pid: 20, port: 1, cwd: 'x', processStartedAt: String(BigInt(start(20)) + 50000000n) }]), [], 'a reused pid: the start time differs by seconds');
   assert.deepStrictEqual(T.provenHosts(p, null), []);
   assert.deepStrictEqual(T.provenHosts(null, claims), []);

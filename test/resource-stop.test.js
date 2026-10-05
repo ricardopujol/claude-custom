@@ -32,7 +32,9 @@ const ask = (pid, startTime, procs = world(), hostPids = [20]) => S.stopDecision
 
 test('a live child of this window\'s session, with its start time, may be stopped', () => {
   const r = ask(23, '5000');
-  assert.deepStrictEqual(r, { ok: true, target: { pid: 23, name: 'node.exe', start: '5000' } });
+  assert.deepStrictEqual(r.target, { pid: 23, name: 'node.exe', start: '5000' });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.kill.map(k => k.pid), [24, 23], 'the subtree that dies with it, LEAF FIRST, target last');
 });
 
 test('a grandchild may be stopped too: anything the session started', () => {
@@ -93,20 +95,21 @@ test('reasonText words every refusal, and an unknown one still says something', 
 });
 
 test('stop: re-reads the table, kills exactly that pid through the vetted path, and says what it did', async () => {
-  const killed = [];
+  const asked = [];
   const procs = world();
   let reads = 0;
   const r = await S.stop({ pid: 23, startTime: '5000' }, {
-    readProcs: async () => { reads++; return procs; }, hostPids: () => [20], kill: pid => killed.push(pid),
+    readProcs: async () => { reads++; return procs; }, hostPids: () => [20],
+    kill: async (targets) => { asked.push(targets.map(t => t.pid)); return targets.map(t => ({ pid: t.pid, status: 'killed' })); },
   });
   assert.deepStrictEqual(r, { ok: true, pid: 23, name: 'node.exe' });
-  assert.deepStrictEqual(killed, [23]);
+  assert.deepStrictEqual(asked, [[24, 23]]);
   assert.strictEqual(reads, 1);
 });
 
 test('stop: a refusal kills nothing and names its reason', async () => {
   const killed = [];
-  const r = await S.stop({ pid: 22, startTime: world()[3].start }, { readProcs: async () => world(), hostPids: () => [20], kill: pid => killed.push(pid) });
+  const r = await S.stop({ pid: 22, startTime: world()[3].start }, { readProcs: async () => world(), hostPids: () => [20], kill: async (t) => { killed.push(t); return []; } });
   assert.deepStrictEqual(r, { ok: false, reason: 'protected', text: S.reasonText('protected') });
   assert.deepStrictEqual(killed, []);
 });
@@ -114,7 +117,7 @@ test('stop: a refusal kills nothing and names its reason', async () => {
 test('stop: when the table cannot be read nothing is stopped', async () => {
   const killed = [];
   for (const readProcs of [async () => null, async () => { throw new Error('boom'); }]) {
-    const r = await S.stop({ pid: 23, startTime: '5000' }, { readProcs, hostPids: () => [20], kill: pid => killed.push(pid) });
+    const r = await S.stop({ pid: 23, startTime: '5000' }, { readProcs, hostPids: () => [20], kill: async (t) => { killed.push(t); return []; } });
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.reason, 'unreadable');
   }
@@ -122,7 +125,7 @@ test('stop: when the table cannot be read nothing is stopped', async () => {
 });
 
 test('stop: a kill that throws is reported, not raised', async () => {
-  const r = await S.stop({ pid: 23, startTime: '5000' }, { readProcs: async () => world(), hostPids: () => [20], kill: () => { throw new Error('denied'); } });
+  const r = await S.stop({ pid: 23, startTime: '5000' }, { readProcs: async () => world(), hostPids: () => [20], kill: async () => { throw new Error('denied'); } });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, 'kill-failed');
   assert.match(r.text, /denied/);
@@ -150,6 +153,6 @@ test('property: ok is never returned for a protected role, a pid outside the ses
 test('stop: the session hosts are worked out from the table it just read, not an older one', async () => {
   let seen = null;
   const procs = world();
-  await S.stop({ pid: 23, startTime: '5000' }, { readProcs: async () => procs, hostPids: (p) => { seen = p; return [20]; }, kill: () => {} });
+  await S.stop({ pid: 23, startTime: '5000' }, { readProcs: async () => procs, hostPids: (p) => { seen = p; return [20]; }, kill: async () => [] });
   assert.strictEqual(seen, procs);
 });

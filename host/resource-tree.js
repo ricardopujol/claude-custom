@@ -114,12 +114,15 @@ function attribute(procs, { hosts = [], installDirs = [], ownPids = [] } = {}) {
     const id = `session:${hostPid}`;
     ensure(id);
     let claudePid = null;
+    let launched = null;       // the first thing the pty launched: the CLI's root by POSITION, whatever its image is called
     for (const p of walkFrom(ix, hostPid)) {
       if (pidBucket.has(p.pid)) continue;
       if (p.pid === hostPid || roleOf(p) === 'conpty') { add(hostsBucket, p.pid); continue; }
       add(id, p.pid);
       if (claudePid === null && roleOf(p) === 'claude') claudePid = p.pid;
+      if (launched === null && p.ppid === hostPid) launched = p.pid;
     }
+    if (claudePid === null) claudePid = launched;
     sessions.push({ hostPid, owner, claudePid });
   };
 
@@ -158,8 +161,9 @@ function attribute(procs, { hosts = [], installDirs = [], ownPids = [] } = {}) {
 /**
  * The claims (identity files: { pid, port, cwd, processStartedAt? }) that are a live host in THIS table. A file
  * outlives its host and Windows reuses pids (host/background-hosts.js), so a claim is only a claim: its pid must be
- * a host process here, and when the file carries the host's OS start time (`processStartedAt`, a FILETIME) the
- * process must have started then. A claim older than that field is accepted on the role alone.
+ * a host process here AND the process must have started when the file says (`processStartedAt`, a FILETIME). A claim
+ * with no start time (written before that field existed) proves nothing about WHICH process now holds its pid, and a
+ * reused pid would be believed (Dexter, PR #113 finding 12), so it is not accepted.
  *
  * The two start times come from different queries (the identity file's from Get-Process, this table's from CIM
  * CreationDate) and MEASURED to differ by one 100 ns tick for the same process (134355977388659781 against
@@ -179,11 +183,51 @@ function provenHosts(procs, claims) {
   for (const c of Array.isArray(claims) ? claims : []) {
     const p = c && byPid.get(c.pid);
     if (!p || seen.has(c.pid) || roleOf(p) !== 'host') continue;
-    if (c.processStartedAt !== undefined && !sameStart(c.processStartedAt, p.start)) continue;
+    if (!sameStart(c.processStartedAt, p.start)) continue;
     seen.add(c.pid);
     out.push({ pid: c.pid, port: c.port, cwd: c.cwd });
   }
   return out;
 }
 
-module.exports = { roleOf, descendants, attribute, namesInstall, provenHosts };
+const isProtectedRole = role => role === 'host' || role === 'claude' || role === 'conpty' || role.startsWith('electron:');
+
+/**
+ * Why `pid` must not be stopped from the panel, or null when it may be (BACKLOG #63, PR #113 Dexter findings 2 and 11).
+ * Protection is by POSITION as well as by image name:
+ *   'gone'       not in the table
+ *   'not-ours'   not a (guarded) descendant of one of `hostPids`, the session hosts of this window's tabs
+ *   'protected'  the process IS claude, a host, a ConPTY or Electron; or it is a DIRECT child of a session host (the
+ *                process the pty launched: claude.exe in production, `cmd.exe ...` under CLAUDE_CUSTOM_BIN, a
+ *                launcher in front of the CLI); or anything that dies with it is protected: its subtree holds
+ *                Electron, a host, claude, a ConPTY or a direct child of a host (an `npm start` that runs a window).
+ */
+function stopBlock(procs, pid, hostPids) {
+  const ix = indexOf(procs);
+  const me = ix.byPid.get(pid);
+  if (!me) return 'gone';
+  if (isProtectedRole(roleOf(me))) return 'protected';
+  let under = false;
+  let direct = false;
+  const hosts = new Set(Array.isArray(hostPids) ? hostPids : []);
+  for (const h of hosts) {
+    if (h === pid || !ix.byPid.has(h)) continue;
+    if (!walkFrom(ix, h).some(p => p.pid === pid)) continue;
+    under = true;
+    if ((ix.kids.get(h) || []).some(k => k.pid === pid)) direct = true;
+  }
+  if (!under) return 'not-ours';
+  if (direct) return 'protected';
+  const directOfHosts = new Set();
+  for (const h of hosts) for (const k of ix.kids.get(h) || []) directOfHosts.add(k.pid);
+  const sub = walkFrom(ix, pid);
+  if (sub.some(p => isProtectedRole(roleOf(p)) || hosts.has(p.pid) || directOfHosts.has(p.pid))) return 'protected';
+  return null;
+}
+
+/** The processes that die with `pid`, LEAF FIRST, each with the start time to re-prove it by: exactly the guarded subtree, never a bare tree kill. */
+function killSet(procs, pid) {
+  return walkFrom(indexOf(procs), pid).reverse().map(p => ({ pid: p.pid, start: p.start, name: p.name }));
+}
+
+module.exports = { roleOf, descendants, attribute, namesInstall, provenHosts, stopBlock, killSet, isProtectedRole, sameStart };

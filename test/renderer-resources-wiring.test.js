@@ -73,10 +73,10 @@ test('the bridge exposes what the page calls, and main answers it behind the tab
 });
 
 test('main kills by pid through the vetted path, and the strip learns of a warning through the shell\'s refresh', () => {
-  assert.match(MAIN, /kill: \(pid\) => killPidTree\(pid\)/);
+  assert.match(MAIN, /kill: \(targets\) => killVerified\(targets, \{ exec: createPowerShellExec\(20000\) \}\)/);
   assert.match(MAIN, /refreshStrip: \(\) => \{ if \(tabShell\) tabShell\.refresh\(\); \}/);
   assert.match(MAIN, /resources: \{ warnFor: \(key\) => \(resources \? resources\.warnFor\(key\) : null\) \}/);
-  assert.doesNotMatch(MAIN, /taskkill/);
+  assert.doesNotMatch(MAIN, /taskkill|killPidTree/);
 });
 
 test('the sampler follows the SELECTED tab: a selection change refreshes the policy, a destroyed view is forgotten', () => {

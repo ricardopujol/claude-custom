@@ -81,25 +81,29 @@ const figures = (pids, cpus, byPid) => ({ cpu: sumCpu(pids, cpus), bytes: sumByt
 
 const cpuOf = (cpus, pid) => (cpus && cpus.has(pid) ? cpus.get(pid) : null);
 
-/** The top 3 of `pids` (minus claude) by CPU, then memory, and what is left over. */
-function childrenOf(procs, pids, cpus, claudePid) {
+/**
+ * The top 3 of `pids` (minus claude) by CPU, then memory, and what is left over. `canStop(pid)` is the Stop guard's own
+ * verdict (host/resource-tree.js stopBlock) so a button is offered only where Stop can succeed; the default is the
+ * image-name rule alone. An unknown memory figure is null ("—"), never 0.
+ */
+function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECTED(tree.roleOf(p))) {
   const byPid = new Map(procs.map(p => [p.pid, p]));
   const rows = pids.filter(pid => pid !== claudePid && byPid.has(pid)).map((pid) => {
     const p = byPid.get(pid);
     return {
       pid, name: p.name, cmd: shortCmd(p.cmd, p.name), cpu: cpuOf(cpus, pid),
-      bytes: typeof p.priv === 'number' ? p.priv : 0, start: p.start,
-      canStop: !PROTECTED(tree.roleOf(p)),
+      bytes: typeof p.priv === 'number' ? p.priv : null, start: p.start,
     };
   });
   rows.sort((a, b) => {
     const an = a.cpu === null ? 1 : 0;
     const bn = b.cpu === null ? 1 : 0;
-    return (an - bn) || ((b.cpu || 0) - (a.cpu || 0)) || (b.bytes - a.bytes) || (a.pid - b.pid);
+    return (an - bn) || ((b.cpu || 0) - (a.cpu || 0)) || ((b.bytes || 0) - (a.bytes || 0)) || (a.pid - b.pid);
   });
   const rest = rows.slice(CHILDREN_SHOWN);
+  const shown = rows.slice(0, CHILDREN_SHOWN).map(r => ({ ...r, canStop: canStop(r.pid, byPid.get(r.pid)) === true }));
   return {
-    children: rows.slice(0, CHILDREN_SHOWN),
+    children: shown,
     more: { count: rest.length, underOnePct: rest.every(r => typeof r.cpu === 'number' && r.cpu < 1) },
   };
 }
@@ -119,9 +123,11 @@ function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], i
   });
   const pidsOf = id => a.buckets.get(id) || [];
 
-  const sessionRow = (s, key, label) => {
+  // Stop is offered only on a tab's own session, and only where the guard would allow it (the same predicate).
+  const sessionRow = (s, key, label, stoppable) => {
     const pids = pidsOf(`session:${s.hostPid}`);
-    const { children, more } = childrenOf(procs, pids, cpus, s.claudePid);
+    const canStop = stoppable ? (pid) => tree.stopBlock(procs, pid, [s.hostPid]) === null : () => false;
+    const { children, more } = childrenOf(procs, pids, cpus, s.claudePid, canStop);
     const claude = s.claudePid === null ? null
       : { pid: s.claudePid, cpu: cpuOf(cpus, s.claudePid), bytes: sumBytes([s.claudePid], byPid) };
     return { key, label, hostPid: s.hostPid, ...figures(pids, cpus, byPid), claude, children, more };
@@ -135,12 +141,12 @@ function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], i
     const s = t && mine.find(x => x.hostPid === t.hostPid);
     if (!s || used.has(s.hostPid)) continue;
     used.add(s.hostPid);
-    rows.push(sessionRow(s, t.key, t.label));
+    rows.push(sessionRow(s, t.key, t.label, true));
   }
   for (const s of mine) {
     if (used.has(s.hostPid)) continue;
     const cwd = cwdOf.get(s.hostPid);
-    rows.push(sessionRow(s, `host:${s.hostPid}`, cwd ? labelOf(cwd) : `session ${s.hostPid}`));
+    rows.push(sessionRow(s, `host:${s.hostPid}`, cwd ? labelOf(cwd) : `session ${s.hostPid}`, false));
   }
 
   const parts = PARTS.map(([id, label]) => {

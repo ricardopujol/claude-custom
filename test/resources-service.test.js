@@ -37,14 +37,15 @@ function rig(extra = {}) {
   const wanted = [];
   const killed = [];
   const procs = world();
-  const claims = [{ pid: 20, port: 7701, cwd: 'C:\\r\\dev' }];
+  const claims = [{ pid: 20, port: 7701, cwd: 'C:\\r\\dev', processStartedAt: world()[1].start }];
   let selected = new Set(['v1']);
   let reread = procs;
   const svc = S.createResourcesService({
     sampler: { setWanted: w => wanted.push(w), sampleNow: async () => reread, snapshot: () => null },
     tabs: () => [{ key: 'k', cwd: 'C:\\r\\dev', branch: 'main', port: 7701 }, { key: 'k2', cwd: 'C:\\r\\feat', branch: null, port: 7702 }],
     claims: () => claims, installDirs: () => [INSTALL], ownPid: 10, cores: 4, labelOf: c => c.split('\\').pop(),
-    send: payload => sent.push(payload), isSelectedView: id => selected.has(id), kill: pid => killed.push(pid),
+    send: payload => sent.push(payload), isSelectedView: id => selected.has(id),
+    kill: async (targets) => { killed.push(...targets.map(t => t.pid)); return targets.map(t => ({ pid: t.pid, status: 'killed' })); },
     refreshStrip: () => refreshed.push(1), now: () => 5000, ...extra,
   });
   return { svc, sent, refreshed, wanted, killed, procs, setSelected: (s) => { selected = new Set(s); }, setReread: (r) => { reread = r; } };

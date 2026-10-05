@@ -90,9 +90,9 @@ const repoActions = createRepoActions({
 });
 const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
 // The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
-const { createSampler } = require('../host/resource-sampler');
+const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
+const { killVerified } = require('../host/resource-kill');
 const { createResourcesService } = require('./resources-service');
-const { killPidTree } = require('../host/kill-tree');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
@@ -1563,7 +1563,9 @@ app.whenReady().then(async () => {
     labelOf: (cwd) => { const p = projectOf(cwd); return projectLabel(p ? p.root : cwd); },
     send: (payload) => forEachView((v) => v.webContents.send('resources:state', payload)),
     isSelectedView: (id) => { const v = selectedView(); return !!v && !v.webContents.isDestroyed() && v.webContents.id === id; },
-    kill: (pid) => killPidTree(pid),
+    // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
+    // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
+    kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
     warnAt: (() => { const n = Number(process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT); return Number.isFinite(n) && n > 0 && n < 100 ? n : undefined; })(),
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },
