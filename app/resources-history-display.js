@@ -187,7 +187,8 @@ function graph(points, kind, nowAt, { w = 300, h = 64, hover = null } = {}) {
 function popover(points, nowAt, hover = {}) {
   const h = hover || {};
   return graph(points, 'cpu', nowAt, { hover: h.cpu }) + graph(points, 'mem', nowAt, { hover: h.mem })
-    + '<div class="hg-key"><i class="hg-sw hg-sw-ours"></i>claude-custom <i class="hg-sw hg-sw-rest"></i>everything else</div>';
+    + '<div class="hg-key"><i class="hg-sw hg-sw-ours"></i>claude-custom <i class="hg-sw hg-sw-rest"></i>everything else</div>'
+    + '<button type="button" class="hg-link" data-hist-act="open-panel">Open Resources panel →</button>';
 }
 
 /** The chip's inside: the CPU figure and its sparkline, then the memory figure and its sparkline. */
@@ -201,7 +202,7 @@ function chipHtml(cpuText, memText, points, nowAt) {
 /**
  * The chip popover's open/hover state, as pure steps (the renderer only wires events to it, so this is what is unit-tested):
  * `popoverStep(state, event) -> { state, consumed }`. Events: `chip-click`, `key {key}`, `pointerdown {inside}`, `blur`,
- * `hidden` (the page is hidden), `chip-off`, `hover {kind, minutes}`, `leave` (the pointer is anywhere but on a graph's plot).
+ * `hidden` (the page is hidden), `chip-off`, `panel-link` (the "Open Resources panel" button), `hover {kind, minutes}`, `leave` (the pointer is anywhere but on a graph's plot).
  * `consumed` is true when the event was Esc that closed it, so the caller keeps it from reaching anything else (an Esc that leaks
  * to the terminal interrupts a running turn). A state that did not change is returned as the same object.
  */
@@ -218,7 +219,7 @@ function popoverStep(state, ev) {
       return { state: popoverInit(), consumed: true };
     }
     case 'pointerdown': return ev.inside === true ? same : close();
-    case 'blur': case 'hidden': case 'chip-off': return close();
+    case 'blur': case 'hidden': case 'chip-off': case 'panel-link': return close();
     case 'hover': {
       if (!st.open || (ev.kind !== 'cpu' && ev.kind !== 'mem') || !isNum(ev.minutes)) return same;
       return { state: { open: true, hover: { cpu: null, mem: null, [ev.kind]: ev.minutes } }, consumed: false };

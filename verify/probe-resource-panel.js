@@ -464,6 +464,17 @@ async function main() {
   const chipBack = await waitFor(async () => { const s = await rs(); return s.chip && s.chip.hidden === false ? s : null; }, 10000, 200);
   check('7: ticking it again brings the chip back', retick.ok === true && retick.before === false && !!chipBack, JSON.stringify(retick));
 
+
+  // Ricardo's Q1: a link under the legend opens the Resources panel (showing and focusing it) and closes the popover.
+  await view(app, 'select', { id: 'agents' });
+  await waitFor(async () => (await rs()).shown === false, 5000, 150);
+  await view(app, 'resourcesClick', { chip: true });
+  const withLink = await waitFor(async () => { const s = await rs(); return s.hist.open ? s : null; }, 5000, 150);
+  check('8: the popover has an "Open Resources panel" link under the legend, reachable by keyboard (a real button)', !!withLink && withLink.hist.link === true, JSON.stringify(withLink && withLink.hist.link));
+  await view(app, 'resourcesHistoryDo', { op: 'link' });
+  const viaLink = await waitFor(async () => { const s = await rs(); return s.shown && s.hist.open === false && s.panelFocused ? s : null; }, 8000, 200);
+  check('8: clicking it closes the popover and opens and focuses the Resources panel', !!viaLink, JSON.stringify(await rs().then(s => [s.shown, s.hist.open, s.panelFocused])));
+
   // 8 (gap) a minimised stretch is a break in the line ----------------------------------
   // Main marks a break the moment the window is minimised, so a short minimise proves it. The MEMORY sparkline is counted
   // (its first sample after the restore already has a value; the CPU one needs two): runs = lines + lone dots, and exactly one

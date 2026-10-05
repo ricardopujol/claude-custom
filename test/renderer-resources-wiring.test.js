@@ -51,7 +51,7 @@ test('a click is read through actionOf, so a hand-edited attribute is refused', 
 });
 
 test('the chip opens a popover with the graphs (it no longer opens the panel); every event goes through the state machine', () => {
-  assert.doesNotMatch(BLOCK, /commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\)/);
+  // the chip's own click only toggles the popover (the one-liner below); the panel is reached through the popover's button
   assert.match(BLOCK, /tbResourcesEl\.addEventListener\('click', \(\) => \{ resPopStep\(\{ type: 'chip-click' \}\); \}\)/);
   assert.match(BLOCK, /document\.addEventListener\('keydown'[\s\S]*?resPopStep\(\{ type: 'key', key: e\.key \}\)[\s\S]*?e\.preventDefault\(\); e\.stopPropagation\(\)/);
   assert.match(BLOCK, /document\.addEventListener\('pointerdown'[\s\S]*?resPopStep\(\{ type: 'pointerdown', inside:/);
@@ -111,4 +111,8 @@ test('Q2: the Window menu has the chip toggle, the page hides the chip on a payl
 
 test('the history goes to the selected page only: a newly selected page is re-sent the last payloads at once', () => {
   assert.match(MAIN, /if \(resources && live !== resHistoryView\) \{ resHistoryView = live; resources\.resend\(\); \}/);
+});
+
+test('the popover Open Resources panel button closes it, shows the panel when hidden, selects and focuses it', () => {
+  assert.match(BLOCK, /closest\('\[data-hist-act="open-panel"\]'\)[\s\S]*?resPopStep\(\{ type: 'panel-link' \}\);\s*if \(placementLayout\(\)\.hidden\.includes\('resources'\)\) commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\), \{ select: 'resources' \}\);\s*else selectModule\('resources'\);[\s\S]*?resRoot\.focus\(\)/);
 });

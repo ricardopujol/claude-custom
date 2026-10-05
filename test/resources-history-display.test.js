@@ -275,3 +275,17 @@ test('graph: the plot is an image with that name, and the popover is a labelled 
   const html = D.graph([pt(NOW)], 'cpu', NOW);
   assert.match(html, /<div class="hg-plot" role="img" aria-label="CPU, last hour: now 40%, peak 40% now"/);
 });
+
+// ---- the link to the Resources panel (Ricardo, 2026-10-05) -----------------------------------------------------------------
+
+test('the popover ends with a keyboard-reachable "Open Resources panel" button under the legend', () => {
+  const html = D.popover([pt(NOW)], NOW);
+  assert.match(html, /<button type="button" class="hg-link" data-hist-act="open-panel">Open Resources panel →<\/button>\s*$/);
+  assert.ok(html.indexOf('hg-key') < html.indexOf('hg-link'), 'under the legend');
+});
+
+test('popover: the panel link closes it (the page then opens the panel)', () => {
+  assert.strictEqual(step(opened(), { type: 'panel-link' }).state.open, false);
+  const c = D.popoverInit();
+  assert.strictEqual(step(c, { type: 'panel-link' }).state, c);
+});

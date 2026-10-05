@@ -1261,6 +1261,15 @@ if (tbResourcesEl && resPopoverEl) {
     const minutes = window.resourcesHistoryDisplay.minutesAgo(box.width > 0 ? (e.clientX - box.left) / box.width : NaN);
     if (minutes !== null) resPopStep({ type: 'hover', kind: plot.parentElement.dataset.histGraph, minutes });
   });
+  // "Open Resources panel": close the popover, then show the panel if hidden (as the Window menu does), select it and focus it.
+  resPopoverEl.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-hist-act="open-panel"]') : null;
+    if (!btn) return;
+    resPopStep({ type: 'panel-link' });
+    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(placementLayout(), 'resources'), { select: 'resources' });
+    else selectModule('resources');
+    setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
+  });
   resPopoverEl.addEventListener('mouseleave', () => { resPopStep({ type: 'leave' }); });
   document.addEventListener('keydown', (e) => {
     if (resPopStep({ type: 'key', key: e.key })) { e.preventDefault(); e.stopPropagation(); tbResourcesEl.focus(); }
@@ -2634,6 +2643,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
               chipClipped: chip ? chip.scrollWidth > chip.clientWidth : null,
               barClipped: bar ? bar.scrollWidth > bar.clientWidth : null,
               winW: window.innerWidth,
+              link: !!(pop && pop.querySelector('button.hg-link[data-hist-act="open-panel"]')),
               open: !!pop && !pop.hidden, expanded: chip ? chip.getAttribute('aria-expanded') : null,
               popRect: pop && !pop.hidden ? rect(pop) : null,
               graphs: pop ? [...pop.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, ours: g.querySelectorAll('.hg-ours').length,
@@ -2641,6 +2651,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
                 empty: !!g.querySelector('.hg-empty'), cursor: !!g.querySelector('.hg-cursor') })) : [],
             };
           })(),
+          panelFocused: document.activeElement === document.getElementById('resources-root'),
           hasPayload: resPayload !== null,
           payloadHasModel: !!(resPayload && resPayload.model),
           machine: resPayload && resPayload.machine ? resPayload.machine : null,
@@ -2660,6 +2671,12 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'resourcesHistoryDo': {
         if (a.op === 'esc') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return JSON.stringify({ ok: true }); }
         if (a.op === 'outside') { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); return JSON.stringify({ ok: true }); }
+        if (a.op === 'link') {
+          const btn = document.querySelector('#res-popover [data-hist-act="open-panel"]');
+          if (!btn) return JSON.stringify({ ok: false, error: 'no panel link' });
+          btn.click();
+          return JSON.stringify({ ok: true });
+        }
         if (a.op === 'hover') {
           const plot = document.querySelector('#res-popover .hg[data-hist-graph="' + String(a.kind) + '"] .hg-plot');
           if (!plot) return JSON.stringify({ ok: false, error: 'no graph to hover' });
