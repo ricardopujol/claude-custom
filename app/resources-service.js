@@ -28,6 +28,9 @@ const basename = (p) => {
 function createResourcesService({
   sampler, tabs, claims, installDirs, ownPid, cores, labelOf = basename, send, isSelectedView, kill,
   refreshStrip = () => {}, now = Date.now, log = () => {},
+  // The warning's CPU threshold, 40 by default. A verification seam (CLAUDE_CUSTOM_RESOURCE_WARN_AT in app/main.js), so a
+  // probe on a busy machine can show the chip without pinning 40% of it; nothing in the UI sets it.
+  warnAt = warning.THRESHOLD,
 }) {
   const shown = new Map();     // webContents id -> its page says the panel is showing
   let minimised = false;
@@ -81,7 +84,7 @@ function createResourcesService({
     if (built && snap.expired !== true) {
       const next = new Map();
       for (const row of built.project.rows) {
-        next.set(row.key, warning.step(warnings.get(row.key) || warning.initial(), row.cpu));
+        next.set(row.key, warning.step(warnings.get(row.key) || warning.initial(), row.cpu, { threshold: warnAt }));
       }
       setWarnings(next);
     } else {

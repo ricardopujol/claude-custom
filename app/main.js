@@ -1564,6 +1564,8 @@ app.whenReady().then(async () => {
     send: (payload) => forEachView((v) => v.webContents.send('resources:state', payload)),
     isSelectedView: (id) => { const v = selectedView(); return !!v && !v.webContents.isDestroyed() && v.webContents.id === id; },
     kill: (pid) => killPidTree(pid),
+    // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
+    warnAt: (() => { const n = Number(process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT); return Number.isFinite(n) && n > 0 && n < 100 ? n : undefined; })(),
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },
     log: (...a) => console.log(...a),
   });

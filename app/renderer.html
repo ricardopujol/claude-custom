@@ -1103,7 +1103,7 @@
     .res.res-dim .res-fig, .res.res-dim .res-bar, .res.res-dim .res-meter { opacity: .5; }
     .res-sec { margin-bottom: 12px; }
     .res h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: normal;
-      display: flex; justify-content: space-between; gap: 8px; }
+      display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; }
     .res-sum { text-transform: none; letter-spacing: 0; font-variant-numeric: tabular-nums; }
     .res-bar-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
     .res-bl { width: 46px; flex: none; font-size: 11px; color: var(--dim); }
@@ -1111,22 +1111,27 @@
     .res-bar .res-ours { background: var(--accent); height: 100%; }
     .res-bar .res-rest { background: color-mix(in srgb, var(--text) 38%, var(--border)); height: 100%; }
     .res-bar-empty { background: repeating-linear-gradient(135deg, var(--border) 0 4px, transparent 4px 8px); }
-    .res-legend { font-size: 10.5px; color: var(--dim); margin-left: 52px; font-variant-numeric: tabular-nums; }
-    .res-fig { flex: none; min-width: 52px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
-    .res-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
+    .res-legend { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+    .res-fig { flex: none; min-width: 34px; text-align: right; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    /* The panel is narrow (a dock column), so a row wraps: name and the two figures on the first line, the CPU meter on
+       its own thin line under them. A name that shared one line with the meter and both figures got no width at all. */
+    .res-row { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 3px; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
     .res-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
     .res-row:focus-visible { outline: 1px solid var(--accent); }
     .res-row.res-plain { cursor: default; }
     .res-row.res-plain:hover { background: transparent; }
-    .res-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-name { flex: 1 1 40px; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-row.open .res-name::before { content: '\25BE '; }
     .res-row:not(.open):not(.res-plain) .res-name::before { content: '\25B8 '; }
-    .res-meter { flex: none; width: 46px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .res-meter { order: 9; flex: 1 0 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+    .res-meter-empty { background: repeating-linear-gradient(135deg, var(--border) 0 4px, transparent 4px 8px); }
     .res-meter > i { display: block; height: 100%; background: var(--accent); }
     .res-kids { margin: 0 0 4px 16px; border-left: 1px solid var(--border); padding-left: 6px; }
-    .res-child { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
-    .res-cname { flex: none; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .res-ccmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+    .res-child { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 1px; padding: 2px 0; font-size: 11px; }
+    .res-cname { flex: 1 1 40px; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* the command line gets a line of its own, so the name and the figures never fight it for width */
+    .res-ccmd { order: 9; flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; }
+    .res-ccmd:empty { display: none; }
     .res-stop, .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);
       border: 1px solid var(--border); border-radius: 4px; }
     .res-stop:hover, .res-confirm button:hover { border-color: var(--bad); color: var(--bad); }

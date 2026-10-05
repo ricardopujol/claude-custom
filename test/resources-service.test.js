@@ -195,3 +195,15 @@ test('stop: a process list that cannot be read stops nothing', async () => {
   assert.strictEqual(res.reason, 'unreadable');
   assert.deepStrictEqual(r.killed, []);
 });
+
+test('warnAt moves the threshold (the probe seam), and unset it is 40', () => {
+  const low = rig({ warnAt: 15 });
+  for (let n = 2; n <= 4; n++) low.svc.onUpdate(fullSnap(n, 20));
+  assert.deepStrictEqual(low.svc.warnFor('k'), { pct: 20, level: 'amber' }, '20% is over a 15% threshold');
+  const std = rig();
+  for (let n = 2; n <= 4; n++) std.svc.onUpdate(fullSnap(n, 20));
+  assert.strictEqual(std.svc.warnFor('k'), null, '20% is under the default 40%');
+  const explicitUndefined = rig({ warnAt: undefined });
+  for (let n = 2; n <= 4; n++) explicitUndefined.svc.onUpdate(fullSnap(n, 20));
+  assert.strictEqual(explicitUndefined.svc.warnFor('k'), null);
+});

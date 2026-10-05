@@ -100,6 +100,8 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+    // the warning's threshold, lowered so a busy machine still shows the chip (default 40; see app/main.js)
+    CLAUDE_CUSTOM_RESOURCE_WARN_AT: process.env.RES_PROBE_WARN_AT || '15',
   };
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
@@ -177,7 +179,7 @@ const { Worker, isMainThread, workerData } = require('worker_threads');
 const os = require('os');
 const fs = require('fs');
 if (isMainThread) {
-  try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* keep normal */ }
+  if (process.env.RES_PROBE_NORMAL !== '1') { try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* keep normal */ } }
   fs.writeFileSync(process.argv[3], String(process.pid));
   const secs = Number(process.argv[4]);
   for (let i = 0; i < Number(process.argv[2]); i++) new Worker(__filename, { workerData: { until: Date.now() + secs * 1000 } });
@@ -203,7 +205,9 @@ async function main() {
   fs.writeFileSync(burnJs, BURN);
   fs.writeFileSync(byJs, BYSTANDER);
   const cores = os.cpus().length;
-  const workers = Math.max(2, Math.ceil(cores * 0.45));
+  // 45% of the cores by default, BelowNormal. RES_PROBE_WORKERS and RES_PROBE_NORMAL=1 turn it up when a busy machine
+  // would not otherwise give the session 40% (the warning chip's threshold).
+  const workers = Number(process.env.RES_PROBE_WORKERS) > 0 ? Number(process.env.RES_PROBE_WORKERS) : Math.max(2, Math.ceil(cores * 0.45));
 
   const app = await launchApp(dev);
   const ready = await viewReady(app);
@@ -252,7 +256,7 @@ async function main() {
   check('3: the bystander (a second idle process in the same session) is running', !!byPid && alive(byPid), String(byPid));
   await send(`start /b node "${burnJs}" ${workers} "${burnPidFile}" 100\r`);
   const burnPid = await waitFor(() => readPid(burnPidFile), 15000, 200);
-  check(`3: the burner (${workers} spinning threads on ${cores} cores, BelowNormal, self-ending) is running`, !!burnPid && alive(burnPid), String(burnPid));
+  check(`3: the burner (${workers} spinning threads on ${cores} cores, ${process.env.RES_PROBE_NORMAL === '1' ? 'normal priority' : 'BelowNormal'}, self-ending) is running`, !!burnPid && alive(burnPid), String(burnPid));
   if (!burnPid) return;
   if (burnPid) seenPids.add(burnPid);
 
@@ -268,18 +272,44 @@ async function main() {
     check('3: it can be stopped (a Stop button for exactly its pid)', row.stop === String(burnPid), JSON.stringify(row.stop));
   }
 
+  // The panel's CPU figure against an independent measurement: this process's own TotalProcessorTime, read twice 10 s
+  // apart through Get-Process (not CIM, not the panel's script), turned into a share of the machine the same way.
+  const cpuSeconds = () => Number(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `(Get-Process -Id ${burnPid}).TotalProcessorTime.TotalSeconds`], { encoding: 'utf8', windowsHide: true }).trim());
+  const cpuA = cpuSeconds();
+  const wallA = Date.now();           // each wall time is taken as its reading returns: the power-shell start-up is outside it
+  await sleep(10000);
+  const cpuB = cpuSeconds();
+  const wallB = Date.now();
+  const independent = ((cpuB - cpuA) / ((wallB - wallA) / 1000) / cores) * 100;
+  const panelFig = await waitFor(async () => {
+    const row = (await rs()).children.find(c => /burn\.js/.test(c.cmd));
+    const m = row && /^(\d+(\.\d)?)%$/.exec(row.figs[0]);
+    return m ? Number(m[1]) : null;
+  }, 15000, 500);
+  check('3: the panel CPU figure for the burner agrees with an independent measurement of the same process', panelFig !== null && Math.abs(panelFig - independent) <= 8,
+    `panel ${panelFig}%, Get-Process over 10 s ${independent.toFixed(1)}% of ${cores} cores`);
+
   // 4 -----------------------------------------------------------------------------
+  // Waits for the chip for up to 75 s, but gives up at 40 s when the session never got near 40% of the machine.
+  const warnStart = Date.now();
   const warned = await waitFor(async () => {
     const tabs = await strip();
     const t = tabs.find(x => x.selected);
-    return t && /^\d+%$/.test(t.resWarn || '') ? t : null;
+    if (t && /^\d+%$/.test(t.resWarn || '')) return t;
+    if (Date.now() - warnStart > 40000) {
+      const fig = ((await rs()).rows.find(r => r.key === sessionKey) || { figs: [] }).figs[0];
+      if (!(parseFloat(fig) >= 35)) return { hopeless: true };
+    }
+    return null;
   }, 75000, 1000);
   const mid = await rs();
-  if (warned) {
-    check('4: the tab\'s warning chip appeared on the strip (over 40% CPU for three samples)', true, warned.resWarn);
+  if (warned && !warned.hopeless) {
+    check('4: the tab\'s warning chip appeared on the strip (three samples over the threshold: the probe lowers it to 15%, the default is 40%)', true, warned.resWarn);
   } else {
-    const fig = (mid.rows.find(r => r.key === sessionKey) || {}).name;
-    note(`4: SKIPPED the warning chip: this machine never gave the session 40% of its CPU (${cores} cores, ${workers} spinners at BelowNormal). The counter itself is pinned by test/resource-warning.test.js and test/resources-service.test.js. Row: ${fig}`);
+    const sessionFigs = (mid.rows.find(r => r.key === sessionKey) || { figs: [] }).figs;
+    const burnFigs = (mid.children.find(c => /burn/.test(c.cmd)) || { figs: [] }).figs;
+    note(`4: SKIPPED the warning chip: this machine never gave the session 40% of its CPU (${cores} cores, ${workers} spinners, ${process.env.RES_PROBE_NORMAL === '1' ? 'normal priority' : 'BelowNormal'}; the session row read ${JSON.stringify(sessionFigs)}, the burner ${JSON.stringify(burnFigs)}). The counter itself is pinned by test/resource-warning.test.js and test/resources-service.test.js.`);
   }
   await sleep(500);
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'panel-burning.png') });
@@ -300,8 +330,17 @@ async function main() {
   await waitFor(async () => (await rs()).confirm, 5000, 150);
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'panel-confirm.png') });
   await view(app, 'resourcesClick', { act: 'confirm-stop' });
-  const stopped = await waitFor(async () => { const s = await rs(); return s.children.some(c => new RegExp(`Stopped \\(PID ${burnPid}\\)`).test(c.text)) ? s : null; }, 15000, 150);
-  check('5: the row reads "Stopped (PID n)"', !!stopped, JSON.stringify((await rs()).children.map(c => c.text)));
+  // Every distinct thing the panel said after the click, with the time: "Stopped" lasts one sample, and a probe that
+  // only polls for it cannot tell "never shown" from "shown between two polls".
+  const timeline = [];
+  const t0 = Date.now();
+  const stopped = await waitFor(async () => {
+    const s = await rs();
+    const said = JSON.stringify([s.children.map(c => c.text.slice(0, 40)), s.notes]);
+    if (timeline.length === 0 || timeline[timeline.length - 1].said !== said) timeline.push({ at: Date.now() - t0, said });
+    return s.children.some(c => new RegExp(`Stopped \\(PID ${burnPid}\\)`).test(c.text)) ? s : null;
+  }, 20000, 80);
+  check('5: the row reads "Stopped (PID n)"', !!stopped, JSON.stringify(timeline).slice(0, 900));
   const gone = await waitFor(() => !alive(burnPid), 10000, 200);
   check('5: exactly that PID ended', gone === true);
   check('5: the bystander in the same session is still running', !!byPid && alive(byPid));
