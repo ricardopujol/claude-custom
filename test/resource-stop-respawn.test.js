@@ -27,58 +27,69 @@ async function killSetOf(exec, pid) {
   return T.killSet(s.procs, pid);
 }
 
+// Polls instead of sleeping: true as soon as `f()` is truthy, and a failure naming `what` only after a generous deadline.
+async function waitFor(f, what, ms = 90000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (f()) return; await sleep(100); }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
 // The supervisor is a PowerShell script, not node: a node parent's children are in libuv's kill-on-close job and die with it,
-// which is not what a shell loop, a make or a Python supervisor does. `mode` 'respawn': one child, started again every time
-// it exits. 'spawn': a new child every 300 ms (up to 20).
+// which is not what a shell loop, a make or a Python supervisor does. Every child's pid is appended to `file`.
+//   'respawn': one child, started again every time it exits.
+//   'gated':   one child at once, then THREE MORE only once the `go` file exists, so a test decides exactly when "late" is.
 const JS = 'setTimeout(function(){},90000)';
-function supervisor(file, mode) {
+function supervisor(file, mode, go) {
   const start = `$p=Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','${JS}' -PassThru -WindowStyle Hidden;Add-Content '${file}' $p.Id`;
   const body = mode === 'respawn'
     ? `while($true){${start};$p.WaitForExit()}`
-    : `1..20|ForEach-Object{${start};Start-Sleep -Milliseconds 300};Start-Sleep 90`;
+    : `${start};while(-not (Test-Path '${go}')){Start-Sleep -Milliseconds 100};1..3|ForEach-Object{${start}};Start-Sleep 90`;
   return spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', body], { stdio: 'ignore', windowsHide: true });
 }
 const pidsIn = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\s+/).filter(Boolean).map(Number) : []);
 
-test('N1 real: Stop on a supervisor that restarts its child leaves NO process of that tree running', { skip: !WIN, timeout: 120000 }, async () => {
+test('N1 real: Stop on a supervisor that restarts its child leaves NO process of that tree running', { skip: !WIN, timeout: 240000 }, async () => {
   const file = path.join(tmpDir('cc-respawn-'), 'pids.txt');
   const sup = supervisor(file, 'respawn');
   const mine = new Set([sup.pid]);
   try {
-    await sleep(3000);
+    await waitFor(() => pidsIn(file).length >= 1, 'the supervisor\'s first child');
     const set = await killSetOf(createExec(60000), sup.pid);
     assert.strictEqual(set[0].pid, sup.pid, 'the supervisor is killed first');
     assert.ok(set.length >= 2, 'the table saw its child');
-    for (const p of pidsIn(file)) mine.add(p);
     const res = await K.killVerified(set, { exec: createExec(60000) });
     assert.strictEqual(res[0].status, 'killed', JSON.stringify(res));
-    await sleep(1500);
     for (const p of pidsIn(file)) mine.add(p);
-    const survivors = [...mine].filter(alive);
-    assert.deepStrictEqual(survivors, [], 'nothing the supervisor started is still running (a respawned child was orphaned)');
+    await waitFor(() => [...mine].every(p => !alive(p)), 'every process of the tree to be gone', 30000);
+    await sleep(1000);                       // a respawn, if the parent were still alive, would land in this second
+    for (const p of pidsIn(file)) mine.add(p);
+    assert.deepStrictEqual([...mine].filter(alive), [], 'nothing the supervisor started is still running (a respawned child was orphaned)');
   } finally {
     for (const p of mine) { try { process.kill(p); } catch { /* gone */ } }
   }
 });
 
-test('N2 real: children the target started AFTER the table was read are ended too', { skip: !WIN, timeout: 120000 }, async () => {
-  const file = path.join(tmpDir('cc-late-'), 'pids.txt');
-  const sup = supervisor(file, 'spawn');
+test('N2 real: children the target started AFTER the table was read are ended too', { skip: !WIN, timeout: 240000 }, async () => {
+  const dir = tmpDir('cc-late-');
+  const file = path.join(dir, 'pids.txt');
+  const go = path.join(dir, 'go');
+  const sup = supervisor(file, 'gated', go);
   const mine = new Set([sup.pid]);
   try {
-    await sleep(2000);
-    const set = await killSetOf(createExec(60000), sup.pid);
-    await sleep(1500);
+    await waitFor(() => pidsIn(file).length >= 1, 'the first child');
+    const set = await killSetOf(createExec(60000), sup.pid);      // the table is read BEFORE the late children exist
     const known = new Set(set.map(t => t.pid));
-    const late = pidsIn(file).filter(p => !known.has(p));
-    assert.ok(late.length > 0, 'the fixture must start children after the table read');
+    assert.ok(known.has(pidsIn(file)[0]), 'the first child is in the set');
+    fs.writeFileSync(go, 'go');
+    await waitFor(() => pidsIn(file).length >= 4, 'the three late children to be started');
+    const late = pidsIn(file).filter(x => !known.has(x));
+    assert.strictEqual(late.length, 3, 'the fixture started three children the set does not hold');
+    for (const x of pidsIn(file)) mine.add(x);
     const res = await K.killVerified(set, { exec: createExec(60000) });
     assert.strictEqual(res[0].status, 'killed', JSON.stringify(res));
-    await sleep(1500);
-    for (const p of pidsIn(file)) mine.add(p);
-    assert.deepStrictEqual([...mine].filter(alive), [], 'a child started after the table read survived the Stop');
+    await waitFor(() => [...mine].every(x => !alive(x)), 'a child started after the table read to be ended', 30000);
   } finally {
-    for (const p of mine) { try { process.kill(p); } catch { /* gone */ } }
+    for (const x of mine) { try { process.kill(x); } catch { /* gone */ } }
   }
 });
 
@@ -103,13 +114,13 @@ test('N2: processes the script found and ended (or could not end) are reported a
   assert.deepStrictEqual(K.parseKillOutput('40 killed\n77 killed', [{ pid: 40 }]).map(x => x.status), ['failed'], 'no END: nothing believed, no extras');
 });
 
-test('N2 real: a protected process (a host by its command line) started under the target refuses the whole Stop, nothing ends', { skip: !WIN, timeout: 120000 }, async () => {
+test('N2 real: a protected process (a host by its command line) started under the target refuses the whole Stop, nothing ends', { skip: !WIN, timeout: 240000 }, async () => {
   const file = path.join(tmpDir('cc-prot-'), 'pids.txt');
   const body = `$p=Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','${JS}','host/host.js' -PassThru -WindowStyle Hidden;Add-Content '${file}' $p.Id;Start-Sleep 90`;
   const sup = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', body], { stdio: 'ignore', windowsHide: true });
   const mine = new Set([sup.pid]);
   try {
-    await sleep(3000);
+    await waitFor(() => pidsIn(file).length >= 1, 'the child');
     const parent = { pid: sup.pid, start: String((await killSetOf(createExec(60000), sup.pid))[0].start) };
     const res = await K.killVerified([parent], { exec: createExec(60000) });
     for (const p of pidsIn(file)) mine.add(p);
