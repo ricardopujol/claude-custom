@@ -13,7 +13,7 @@ const path = require('path');
 const { tmpDir } = require('./tmp-dir');
 
 const {
-  createSummaryService, readTailFile, readFromFile, TAIL_SIZES, CHECK_REUSE_MS, RETRY_MS, SLOT_RETRY_MS,
+  createSummaryService, readTailFile, readFromFile, TAIL_SIZES, CHECK_REUSE_MS, RETRY_MS,
 } = require('../host/summary-service');
 const { createScheduler, QUIET_MS } = require('../host/summary-scheduler');
 const { createSummaryStore } = require('../host/summary-store');
@@ -195,7 +195,7 @@ test('the next job of a session starts at the size that was enough last time, an
   r.calls.tail.length = 0;
   r.grow(jl(userLine('u3', 'one more')));
   r.advance(200_000); await r.svc.tick();
-  r.advance(200_000); await r.svc.tick(); console.log("DBG", r.calls, r.deps.scheduler.state(SID), r.deps.scheduler.ready(r.clock.t, {}));
+  r.advance(200_000); await r.svc.tick();
   assert.strictEqual(r.calls.summarize, 2);
   assert.deepStrictEqual(r.calls.tail, [TAIL_SIZES[TAIL_SIZES.length - 1]]);
 });
@@ -256,13 +256,12 @@ test('a transcript that shrank is activity; one that only changed in time is not
 });
 
 test('the reachability answer is asked again at exactly CHECK_REUSE_MS, and shared inside the same tick', async () => {
-  assert.strictEqual(CHECK_REUSE_MS, SLOT_RETRY_MS);              // the slot-busy retry lands exactly on the boundary
   const r = rig({ slot: false });
   await r.settle();                                               // check 1 (start) and check 2 (the job's, 25 s later)
   assert.strictEqual(r.calls.check, 2);
-  r.advance(SLOT_RETRY_MS - 1); await r.svc.tick();               // still held off
+  r.advance(CHECK_REUSE_MS - 1); await r.svc.tick();              // still held off
   assert.strictEqual(r.calls.check, 2);
-  r.advance(1); await r.svc.tick();                               // the retry: the last answer is exactly CHECK_REUSE_MS old
+  r.advance(1); await r.svc.tick();                               // the slot retry (5 s hold): the last answer is exactly CHECK_REUSE_MS old
   assert.strictEqual(r.calls.check, 3, 'an answer exactly CHECK_REUSE_MS old is not reused');
 
   const down = rig({ check: { ok: false, reason: 'unreachable' } });

@@ -10,11 +10,10 @@ const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
 
-const { createSlot } = require('../host/summary-slot');
+const { createSlot, CLAIM_STALE_MS } = require('../host/summary-slot');
 
 const tmp = () => tmpDir('slot-bounds-');
 const STALE = 1000;
-const CLAIM_STALE_MS = 10_000;   // the module's constant, not exported
 
 const setAge = (file, ms, at) => { const s = (at - ms) / 1000; fs.utimesSync(file, s, s); };
 

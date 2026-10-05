@@ -10,9 +10,8 @@ const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
 
-const { createSummaryStore, TEXT_MAX } = require('../host/summary-store');
+const { createSummaryStore, TEXT_MAX, FILE_MAX } = require('../host/summary-store');
 
-const FILE_MAX = 64 * 1024;                                       // the module's constant, not exported
 const REC = { text: 'Working on: x', model: 'llama3.2:3b', turnsSeen: 3, newestKey: 'k1' };
 const rec = (extra = {}) => ({ ...REC, at: 5000, ...extra });
 const body = (o = rec()) => JSON.stringify(o) + '\n';
@@ -87,10 +86,12 @@ test('sweep: a temp file exactly tmpMaxAgeMs old is kept, an older one goes, and
   assert.strictEqual(fs.existsSync(t1), true, 'exactly at the temp limit: kept, and not ranked as a summary');
 });
 
-test('sweep: equal ages are ranked by name, so the cap keeps the alphabetically first', async () => {
+test('sweep: equal ages are ranked by name whatever order the directory lists them in, so the cap keeps the alphabetically first', async (t) => {
   const dir = tmpDir('sumstore-bounds-');
   for (const n of ['a', 'b', 'c', 'd', 'e', 'f']) { fs.writeFileSync(path.join(dir, n + '.json'), body()); setAge(path.join(dir, n + '.json'), 1_000); }
   const s = createSummaryStore({ dir });
+  const real = fs.promises.readdir;
+  t.mock.method(fs.promises, 'readdir', async (...a) => (await real(...a)).reverse());   // NTFS lists alphabetically; do not rely on it
   const r = await s.sweep({ now: NOW, maxAgeMs: 1e12, maxFiles: 1 });
   assert.deepStrictEqual(r.removed.sort(), ['b.json', 'c.json', 'd.json', 'e.json', 'f.json']);
   assert.strictEqual(fs.existsSync(path.join(dir, 'a.json')), true);

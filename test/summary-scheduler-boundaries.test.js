@@ -26,7 +26,7 @@ test('a failed job holds the tab for exactly holdMs: due again at the last ms of
 });
 
 test('a hold of 0 or less is no hold at all, and so is one that is not a number', () => {
-  for (const hold of [0, -1, -5000, NaN, Infinity * 0, '5000', null, undefined]) {
+  for (const hold of [0, -1, -5000, NaN, '5000', null, undefined]) {
     const s = failed(hold);
     assert.strictEqual(s.state('a').holdUntil, null, `holdMs ${String(hold)}`);
     assert.strictEqual(s.ready(QUIET_MS), 'a', `holdMs ${String(hold)} is due at once`);
