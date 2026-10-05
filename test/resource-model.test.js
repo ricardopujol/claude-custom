@@ -190,6 +190,17 @@ test('shortCmd cuts the executable and keeps the arguments, quoted or not, and c
   assert.ok(M.shortCmd('x.exe ' + 'a'.repeat(200), 'x.exe').endsWith('…'));
 });
 
+test('shortCmd: a line too long for the row keeps the FILE NAME of its first path, which is what tells processes apart', () => {
+  const long = 'node  "C:\\Users\\ricar\\AppData\\Local\\Temp\\cc-probe-res-gB5rwB\\burn.js" 8 "C:\\x\\burn.pid" 100';
+  assert.strictEqual(M.shortCmd(long, 'node.exe'), '…\\burn.js 8 "C:\\x\\burn.pid" 100');
+  assert.match(M.shortCmd('node C:\\Users\\ricar\\AppData\\Local\\Temp\\cc-probe-res-gB5rwB\\server\\burn.js --port 80', 'node.exe'), /^…\\burn\.js --port 80$/);
+  // short enough: untouched, folders and all
+  assert.strictEqual(M.shortCmd('node C:\\w\\a.js -x', 'node.exe'), 'C:\\w\\a.js -x');
+  // only the FIRST argument is shortened, and one with no folder in it is left alone
+  assert.ok(M.shortCmd(`node ${'a'.repeat(70)} C:\\deep\\er\\file.js`, 'node.exe').startsWith('aaaa'));
+  assert.ok(M.shortCmd('node C:/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/long.js', 'node.exe').startsWith('…\\long.js'));
+});
+
 test('stop is offered for ordinary children and not for Electron, a host, a ConPTY or claude', () => {
   const list = procs();
   list.push(proc(28, 23, 'electron.exe', `${EXE} --type=renderer`, 1e6));

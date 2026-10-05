@@ -73,7 +73,7 @@ function policy(wanted) {
  */
 function createSampler({
   exec = createExec(), cores, onUpdate = () => {}, intervalMs = INTERVAL_MS,
-  now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout,
+  now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {},
 } = {}) {
   let wanted = { panel: false, chip: false };
   let started = false;
@@ -92,7 +92,8 @@ function createSampler({
     mode: lastMode, sample: last, prev, machine: { last: lastAny, prev: prevAny },
     failures, lastGoodAt, stale: failures > 0, expired: failures >= EXPIRE_AFTER,
   });
-  const emit = () => { try { onUpdate(snapshot()); } catch { /* a listener must not stop sampling */ } };
+  // A listener that throws must not stop sampling, and must not go unseen either.
+  const emit = () => { try { onUpdate(snapshot()); } catch (err) { log('[resources] update listener threw:', (err && err.stack) || err); } };
 
   function take(mode) {
     if (running) return running;

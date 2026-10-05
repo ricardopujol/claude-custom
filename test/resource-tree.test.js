@@ -179,7 +179,19 @@ test('provenHosts: a claim is a host only when its pid is a host process in this
     { pid: 20, port: 7701, cwd: 'C:\a', processStartedAt: start(20) },   // the same host named twice
   ];
   assert.deepStrictEqual(T.provenHosts(p, claims), [{ pid: 20, port: 7701, cwd: 'C:\a' }, { pid: 22, port: 7703, cwd: 'C:\c' }]);
-  assert.deepStrictEqual(T.provenHosts(p, [{ pid: 20, port: 1, cwd: 'x', processStartedAt: '1' }]), [], 'a reused pid: the start time differs');
+  assert.deepStrictEqual(T.provenHosts(p, [{ pid: 20, port: 1, cwd: 'x', processStartedAt: String(BigInt(start(20)) + 50000000n) }]), [], 'a reused pid: the start time differs by seconds');
   assert.deepStrictEqual(T.provenHosts(p, null), []);
   assert.deepStrictEqual(T.provenHosts(null, claims), []);
+});
+
+test('provenHosts: the identity file\'s start time (Get-Process) and the table\'s (CIM) may differ by a tick, not by a reused pid\'s distance', () => {
+  const p = [{ pid: 20, ppid: 10, name: 'electron.exe', cmd: `${EXE} ${INSTALL}\\host\\host.js`, start: '134355977388659780', priv: 1 }];
+  const claim = (processStartedAt) => [{ pid: 20, port: 7701, cwd: 'C:\a', processStartedAt }];
+  assert.strictEqual(T.provenHosts(p, claim('134355977388659781')).length, 1, 'one tick (100 ns) apart: measured on this machine');
+  assert.strictEqual(T.provenHosts(p, claim('134355977388659779')).length, 1, 'the other way round');
+  assert.strictEqual(T.provenHosts(p, claim(String(134355977388659780n + 100000n))).length, 1, 'exactly 10 ms: still the same process');
+  assert.strictEqual(T.provenHosts(p, claim(String(134355977388659780n + 100001n))).length, 0, 'just past 10 ms is another process');
+  assert.strictEqual(T.provenHosts(p, claim('134355977388659780x')).length, 0, 'not a FILETIME: not proof');
+  assert.strictEqual(T.provenHosts(p, claim('')).length, 0);
+  assert.strictEqual(T.provenHosts(p, claim(null)).length, 0);
 });

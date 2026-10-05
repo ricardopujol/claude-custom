@@ -160,7 +160,7 @@ test('three failed samples in a row clear the warnings: a number nobody could me
 });
 
 test('a tab whose host is not proven has no row and no warning, and a host with a reused pid is not believed', () => {
-  const r = rig({ claims: () => [{ pid: 20, port: 7701, cwd: 'C:\\r\\dev', processStartedAt: '1' }] });
+  const r = rig({ claims: () => [{ pid: 20, port: 7701, cwd: 'C:\\r\\dev', processStartedAt: '99999999999' }] });
   r.svc.onUpdate(fullSnap(2, 60));
   assert.deepStrictEqual(r.sent.at(-1).model.project.rows, []);
 });

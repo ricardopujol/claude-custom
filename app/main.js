@@ -1277,7 +1277,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1539,7 +1539,7 @@ app.whenReady().then(async () => {
   // each is proven against the process table (host/resource-tree.js provenHosts) before anything is attributed.
   const resourceInstalls = () => { try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; } };
   const cpuCores = require('os').cpus().length;
-  resourceSampler = createSampler({ cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); } });
+  resourceSampler = createSampler({ cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
   resources = createResourcesService({
     sampler: resourceSampler,
     tabs: () => tabShell.snapshot().tabs,

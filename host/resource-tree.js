@@ -160,7 +160,18 @@ function attribute(procs, { hosts = [], installDirs = [], ownPids = [] } = {}) {
  * outlives its host and Windows reuses pids (host/background-hosts.js), so a claim is only a claim: its pid must be
  * a host process here, and when the file carries the host's OS start time (`processStartedAt`, a FILETIME) the
  * process must have started then. A claim older than that field is accepted on the role alone.
+ *
+ * The two start times come from different queries (the identity file's from Get-Process, this table's from CIM
+ * CreationDate) and MEASURED to differ by one 100 ns tick for the same process (134355977388659781 against
+ * ...780), so they are compared within 10 ms, not for equality. A reused pid starts far later than that.
  */
+const START_SLACK = 100000n;      // 10 ms in 100 ns ticks
+function sameStart(a, b) {
+  if (!isStr(a) || !isStr(b) || !/^\d+$/.test(a) || !/^\d+$/.test(b)) return false;
+  const d = BigInt(a) - BigInt(b);
+  return (d < 0n ? -d : d) <= START_SLACK;
+}
+
 function provenHosts(procs, claims) {
   const byPid = new Map((Array.isArray(procs) ? procs : []).map(p => [p.pid, p]));
   const out = [];
@@ -168,7 +179,7 @@ function provenHosts(procs, claims) {
   for (const c of Array.isArray(claims) ? claims : []) {
     const p = c && byPid.get(c.pid);
     if (!p || seen.has(c.pid) || roleOf(p) !== 'host') continue;
-    if (c.processStartedAt !== undefined && c.processStartedAt !== p.start) continue;
+    if (c.processStartedAt !== undefined && !sameStart(c.processStartedAt, p.start)) continue;
     seen.add(c.pid);
     out.push({ pid: c.pid, port: c.port, cwd: c.cwd });
   }

@@ -44,7 +44,19 @@ function shortCmd(cmd, name) {
   }
   rest = rest.trim();
   if (rest === '') return fallback;
+  if (rest.length > CMD_MAX) rest = shortenFirstPath(rest);
   return rest.length > CMD_MAX ? `${rest.slice(0, CMD_MAX - 1)}…` : rest;
+}
+
+// A line too long for the row: its first argument is usually a script path, and what tells two processes apart is the
+// file name at the END of it ("…\burn.js"), not the folders in front. Only the first argument is touched.
+function shortenFirstPath(rest) {
+  const m = /^(?:"([^"]+)"|(\S+))([\s\S]*)$/.exec(rest);
+  if (!m) return rest;
+  const token = m[1] !== undefined ? m[1] : m[2];
+  const base = token.split(/[\\/]/).filter(Boolean).pop();
+  if (!/[\\/]/.test(token) || !base || base === token) return rest;
+  return `…\\${base}${m[3]}`;
 }
 
 // A figure that is null when none of its parts was measured; the sum of the ones that were otherwise.

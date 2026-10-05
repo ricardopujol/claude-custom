@@ -2527,17 +2527,20 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           text: (document.getElementById('resources-root') || {}).textContent || '',
           rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open') })),
           children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: (c.querySelector('.res-ccmd') || {}).textContent || '',
+            figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
             stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
           notes: q('.res-note').map(n => n.textContent),
           hasPayload: resPayload !== null,
+          payloadHasModel: !!(resPayload && resPayload.model),
           machine: resPayload && resPayload.machine ? resPayload.machine : null,
         });
       }
       case 'resourcesClick': {
-        const sel = a.chip === true ? '#tb-resources' : '#resources-root [data-res-act="' + String(a.act) + '"]'
-          + (a.key !== undefined ? '[data-res-key="' + String(a.key) + '"]' : '') + (a.pid !== undefined ? '[data-res-pid="' + String(a.pid) + '"]' : '');
-        const el = document.querySelector(sel);
+        // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape
+        const el = a.chip === true ? document.getElementById('tb-resources')
+          : [...document.querySelectorAll('#resources-root [data-res-act]')].find(e => e.dataset.resAct === String(a.act)
+            && (a.key === undefined || e.dataset.resKey === String(a.key)) && (a.pid === undefined || e.dataset.resPid === String(a.pid)));
         if (!el) return JSON.stringify({ ok: false, error: 'no resources control ' + JSON.stringify(a) });
         el.click();
         return JSON.stringify({ ok: true });
