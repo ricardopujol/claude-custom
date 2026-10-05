@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
+const { tmpDir } = require('./tmp-dir');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -41,7 +41,7 @@ function supervisor(file, mode) {
 const pidsIn = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\s+/).filter(Boolean).map(Number) : []);
 
 test('N1 real: Stop on a supervisor that restarts its child leaves NO process of that tree running', { skip: !WIN, timeout: 120000 }, async () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-respawn-')), 'pids.txt');
+  const file = path.join(tmpDir('cc-respawn-'), 'pids.txt');
   const sup = supervisor(file, 'respawn');
   const mine = new Set([sup.pid]);
   try {
@@ -62,7 +62,7 @@ test('N1 real: Stop on a supervisor that restarts its child leaves NO process of
 });
 
 test('N2 real: children the target started AFTER the table was read are ended too', { skip: !WIN, timeout: 120000 }, async () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-late-')), 'pids.txt');
+  const file = path.join(tmpDir('cc-late-'), 'pids.txt');
   const sup = supervisor(file, 'spawn');
   const mine = new Set([sup.pid]);
   try {
@@ -104,7 +104,7 @@ test('N2: processes the script found and ended (or could not end) are reported a
 });
 
 test('N2 real: a protected process (a host by its command line) started under the target refuses the whole Stop, nothing ends', { skip: !WIN, timeout: 120000 }, async () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-prot-')), 'pids.txt');
+  const file = path.join(tmpDir('cc-prot-'), 'pids.txt');
   const body = `$p=Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','${JS}','host/host.js' -PassThru -WindowStyle Hidden;Add-Content '${file}' $p.Id;Start-Sleep 90`;
   const sup = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', body], { stdio: 'ignore', windowsHide: true });
   const mine = new Set([sup.pid]);
