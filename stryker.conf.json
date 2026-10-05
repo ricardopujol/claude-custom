@@ -46,9 +46,12 @@
     "",
     "FOR MORTIMER (timeouts): the node test runner is capped at 2 per mutant run, so a mutant run is slower than the plain",
     "suite; timeoutMS (60 s) is the ceiling and STRYKER SCORES A TIMEOUT AS KILLED, so read the timeout count in the report.",
-    "FOR MORTIMER (survivors by design): the PowerShell script bodies in host/resource-kill.js and host/resource-sampler.js are",
-    "strings only the skipped real-process tests can really execute; script-text mutants that no fast test pins will survive",
-    "by design. Judge those as accepted survivors, not as missing tests."
+    "FOR MORTIMER (what the score does NOT cover): Stryker makes NO mutants inside template-literal text. The PowerShell",
+    "script bodies in host/resource-kill.js and host/resource-sampler.js are template literals, so they are OUTSIDE the score,",
+    "not survivors by design: only the ${...} expressions in them are mutated. The script text is pinned only by the fast tests",
+    "that assert on it and by the skipped real-process tests; say so when quoting those two files' numbers.",
+    "The only survivors by design are the ones in createExec (host/resource-sampler.js: the execFile call, its options, the",
+    "err && !stdout reject, done.kill): only the skipped real-process tests can reach them. Numeric literals are not mutated either."
   ],
   "_comment_rule_is_enforced": [
     "THE RULE ABOVE IS NOW A TEST, because I broke it by hand twice in the two",
