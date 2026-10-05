@@ -202,7 +202,7 @@ function childHtml(c) {
   // ONE line per child: name (truncated first), CPU, memory, then a small square Stop at the end. The command line is the
   // row's hover tooltip, not a line of its own.
   let h = `<div class="res-child" title="${esc(c.full)}"><span class="res-cname">${esc(c.name)}</span>`
-    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop || '<span class="res-stop-gap"></span>'}</div>`;
+    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop || '<span class="res-stop-gap" aria-hidden="true"></span>'}</div>`;
   if (c.confirm) {
     const lock = c.pending ? ' disabled' : '';
     h += `<div class="res-confirm" role="alert">Stop ${esc(c.name)}, PID ${esc(c.pid)}? Only this process stops, and anything it started stops with it. `

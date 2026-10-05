@@ -1122,6 +1122,9 @@
     .res-row.res-plain:hover { background: transparent; }
     /* The NAME takes every leftover pixel; the figures size to their content (Ricardo's picked row: `burn.js   27%  126 MB  [stop]`). */
     .res-row .res-fig, .res-child .res-fig { min-width: 0; }
+    /* CPU and memory sit in fixed columns (tabular figures) so they line up from row to row; the name still takes every leftover pixel */
+    .res-child > .res-fig:nth-child(2), .res-row > .res-fig:nth-child(3) { min-width: 4ch; }
+    .res-child > .res-fig:nth-child(3), .res-row > .res-fig:nth-child(4) { width: 6.4ch; }
     .res-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-row.open .res-name::before { content: '\25BE '; }
     .res-row:not(.open):not(.res-plain) .res-name::before { content: '\25B8 '; }
@@ -1134,8 +1137,11 @@
     .res-child { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; }
     .res-cname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-stop, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
-    .res-stop { font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
+    .res-stop { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
       border: 1px solid var(--border); border-radius: 3px; }
+    /* the square stays small (Ricardo's pick) but the target is 24 x 24 (WCAG 2.2 AA 2.5.8), and a keyboard user sees where they are */
+    .res-stop::after { content: ''; position: absolute; inset: -5px; }
+    .res-stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);
       border: 1px solid var(--border); border-radius: 4px; }
     .res-stop:hover, .res-confirm button:hover { border-color: var(--bad); color: var(--bad); }

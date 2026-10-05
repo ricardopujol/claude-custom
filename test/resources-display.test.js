@@ -338,3 +338,9 @@ test('D8: the page\'s chip on/off: a payload with a real boolean wins, anything 
     assert.strictEqual(D.nextChipOn(true, p), true, JSON.stringify(p));
   }
 });
+
+test('S5: the empty spacer that keeps the Stop column aligned is hidden from assistive tech', () => {
+  const s = stateWith(payload({ model: model({ project: { ...model().project, rows: [session({ children: [child({ pid: 5, name: 'bash.exe', start: '9', canStop: false })] })] } }) }));
+  const h = D.html(D.view(D.toggle(s, 's:k-main')));
+  assert.match(h, /<span class="res-stop-gap" aria-hidden="true"><\/span>/);
+});

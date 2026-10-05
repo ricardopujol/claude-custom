@@ -2546,6 +2546,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
             figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
             stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
+          // the Stop button's hit area (its ::after) and where its figures sit, for the layout checks
+          stopHit: (() => { const b = q('.res-stop')[0]; if (!b) return null; const a = getComputedStyle(b, '::after'); return { w: parseFloat(a.width), h: parseFloat(a.height), box: b.getBoundingClientRect().width }; })(),
+          figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
           notes: q('.res-note').map(n => n.textContent),
           hasPayload: resPayload !== null,

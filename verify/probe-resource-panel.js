@@ -292,6 +292,8 @@ async function main() {
     check('3: "burn.js" and "bystander.js" are not truncated at the dock width', kids.length === 2 && kids.every(c => c.fit && c.fit.clipped === false), JSON.stringify(kids.map(c => [c.name, c.fit])));
     const cut = fitNow.rows.filter(r => r.fit && r.fit.firstWordFits !== true);
     check('3: every session, self and window row shows at least its whole first word (e.g. "claude-custom")', cut.length === 0, JSON.stringify(cut.map(r => [r.name, r.fit])));
+    check('3: the Stop square is small but its hit area is at least 24 x 24', !!fitNow.stopHit && fitNow.stopHit.box <= 18 && fitNow.stopHit.w >= 24 && fitNow.stopHit.h >= 24, JSON.stringify(fitNow.stopHit));
+    check('3: CPU and memory line up from row to row (the same right edge in every child row)', fitNow.figX.length >= 2 && fitNow.figX.every(x => x[0] === fitNow.figX[0][0] && x[1] === fitNow.figX[0][1]), JSON.stringify(fitNow.figX));
     console.log(`     name widths: ${JSON.stringify(fitNow.rows.map(r => [r.name, r.fit && r.fit.width, r.fit && r.fit.clipped]))}`);
   }
 
