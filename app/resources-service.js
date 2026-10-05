@@ -5,13 +5,13 @@
  * it touches (the sampler, the tab list, the identity files, the IPC send, the kill) is handed in, so the whole
  * of it is tested without Electron; app/main.js only builds those and registers the IPC.
  *
- * WHO WANTS WHAT (the design's polling rule). The full sample, the process tree, runs only while the SELECTED
- * tab's page says its Resources panel is showing: a page for another tab is hidden, and nobody is looking. The
- * machine-only sample feeds the top bar's chip, and stops only when the window is minimised.
+ * WHO WANTS WHAT (Round 3 Q1, Ricardo, PR #113: this supersedes the design's "only while the panel is shown"). The full
+ * sample, the process tree, runs ALWAYS, every 10 s, panel open or not, so the tab warning works with the panel closed.
+ * It stops only while the window is minimised. What a page says about its own panel decides nothing.
  *
- * THE WARNING needs the process tree, so it only exists while the panel is showing. When the full sample stops
- * (the panel is hidden, or three samples in a row failed) the counters are cleared and the strip told, rather than
- * leaving a chip with an old percentage on it: a number nobody can measure any more is not a warning.
+ * THE WARNING needs the process tree. When the full sample stops (the window is minimised, or three samples in a row
+ * failed) the counters are cleared and the strip told, rather than leaving a chip with an old percentage on it: a number
+ * nobody can measure any more is not a warning.
  */
 
 const sample = require('../host/resource-sample');

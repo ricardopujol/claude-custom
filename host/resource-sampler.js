@@ -7,10 +7,12 @@
  * JSON; the one cold call took 11.4 s. So the timeout is 20 s, and the cadence is a GAP after a sample ends, not
  * a fixed rate: a slow sample can never be piled on by the next.
  *
- * Two modes, by what is being looked at (`policy`): the full sample (process table, per-process CPU counters,
- * machine) runs only while the panel is shown; the machine-only sample (the idle counter, memory) runs for the top
- * bar's chip. Neither starts while another is in flight. Hiding the panel forgets the process-tree samples, so
- * showing it again starts at "measuring…" instead of drawing a stale tree.
+ * Two modes, by what is wanted (`policy`): the full sample (process table, per-process CPU counters, machine) when
+ * `panel` is wanted; the machine-only sample (the idle counter, memory) when only `chip` is. Neither starts while another
+ * is in flight. Since Round 3 Q1 (PR #113) app/resources-service.js asks for both together (the tree is sampled always, and
+ * stops only while minimised), so it never asks for the machine-only mode today. That mode stays on purpose: it is this
+ * component's tested contract (the cheaper sample: no process table), and a caller that wants only the chip needs
+ * no change here. Withdrawing the want forgets the samples, so the next one starts at "measuring…" instead of drawing a stale tree.
  *
  * A failed sample (timeout, a bad document) keeps the last good one and counts. `stale` is "last updated N s
  * ago"; after three in a row `expired` is true and the view shows "—". A good sample resets it.
