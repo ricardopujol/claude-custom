@@ -35,6 +35,8 @@ const APP = path.join(__dirname, '..', 'app');
 // Every global the renderer's scripts are permitted to define. Anything else
 // showing up here is a leak waiting to collide with the next file added.
 const ALLOWED_GLOBALS = new Set([
+  // app/resources-history-display.js (#63 follow-up): one namespace, reached through `window.`.
+  'resourcesHistoryDisplay',
   // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.

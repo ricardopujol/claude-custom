@@ -54,7 +54,7 @@ test('the chip opens a popover with the graphs (it no longer opens the panel), a
   assert.doesNotMatch(BLOCK, /commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\)/);
   assert.match(BLOCK, /tbResourcesEl\.addEventListener\('click', \(\) => \{\s*if \(resHistOpen\) closeHistory\(\); else openHistory\(\);/);
   assert.match(BLOCK, /document\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key === 'Escape' && resHistOpen\)/);
-  assert.match(BLOCK, /document\.addEventListener\('mousedown', \(e\) => \{[^}]*resHistOpen[^}]*contains\(e\.target\)/);
+  assert.match(BLOCK, /document\.addEventListener\('pointerdown', \(e\) => \{[^}]*resHistOpen[^}]*contains\(e\.target\)/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.popover\(/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.chipHtml\(/);
 });

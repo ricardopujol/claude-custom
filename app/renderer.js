@@ -1115,7 +1115,7 @@ let resChipOn = !(resBridge && typeof resBridge.chipOn === 'function' && resBrid
 const resRoot = document.getElementById('resources-root');
 const tbResourcesEl = document.getElementById('tb-resources');
 const resPopoverEl = document.getElementById('res-popover');
-let resHistOpen = false;            // the chip's popover (the one-hour graphs)
+let resHistOpen = false;            // is the chip's one-hour graph window open
 const resHover = { cpu: null, mem: null };   // minutes ago the pointer is on, per graph
 
 // Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
@@ -1155,6 +1155,7 @@ function placeHistory() {
   resPopoverEl.style.top = `${Math.round(r.bottom + 6)}px`;
   resPopoverEl.style.left = `${Math.max(8, Math.round(Math.min(r.right - w, window.innerWidth - w - 8)))}px`;
 }
+const placeHistoryIfOpen = () => { if (resHistOpen) placeHistory(); };
 function openHistory() {
   if (!resPopoverEl || resHistOpen) return;
   resHistOpen = true;
@@ -1264,10 +1265,10 @@ if (tbResourcesEl) {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && resHistOpen) { closeHistory(); tbResourcesEl.focus(); }
   });
-  document.addEventListener('mousedown', (e) => {
+  document.addEventListener('pointerdown', (e) => {
     if (resHistOpen && !resPopoverEl.contains(e.target) && !tbResourcesEl.contains(e.target)) closeHistory();
   });
-  window.addEventListener('resize', () => { if (resHistOpen) placeHistory(); });
+  window.addEventListener('resize', placeHistoryIfOpen);
 }
 // RESOURCES-END
 
