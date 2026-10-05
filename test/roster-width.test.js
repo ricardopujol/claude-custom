@@ -157,8 +157,11 @@ test('persistence fails CLOSED: only an explicit choice is stored', () => {
   assert.ok(move < up && !/commitPlacement|\.set\(/.test(grips.slice(move, up)), 'the move path only draws');
 
   // And the window resize only draws.
-  const at = src.indexOf("window.addEventListener('resize', () => {");
-  assert.ok(at !== -1, 'the resize listener must be findable');
+  // The LAYOUT's resize listener, found by what it is (it coalesces through `resizePending`), not by being the first `resize`
+  // listener in the file: another one (the chip popover's, which only repositions) must not be mistaken for it.
+  const at = [...src.matchAll(/window\.addEventListener\('resize', \(\) => \{/g)].map(m => m.index)
+    .find(i => /^[^]{0,60}resizePending/.test(src.slice(i + 41)));
+  assert.ok(at !== undefined, 'the layout resize listener must be findable');
   const onResize = src.slice(at, src.indexOf('});', src.indexOf('requestAnimationFrame', at)));
   assert.match(onResize, /renderLayout\(\)/);
   assert.doesNotMatch(onResize, /commitPlacement|layout\.set|localStorage\.setItem/);

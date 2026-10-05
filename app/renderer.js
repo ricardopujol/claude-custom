@@ -1114,6 +1114,10 @@ let resPayload = null;              // the last payload main pushed: the chip dr
 let resChipOn = !(resBridge && typeof resBridge.chipOn === 'function' && resBridge.chipOn() === false);
 const resRoot = document.getElementById('resources-root');
 const tbResourcesEl = document.getElementById('tb-resources');
+const resPopoverEl = document.getElementById('res-popover');
+// The chip's one-hour graph window: its open/hover state is app/resources-history-display.js's popoverStep (pure, unit-tested);
+// everything below only turns DOM events into steps and draws the result.
+let resPop = window.resourcesHistoryDisplay.popoverInit();
 
 // Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
 function resourceChipRow() {
@@ -1125,13 +1129,66 @@ function resourceChipRow() {
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
-  tbResourcesEl.textContent = c.text;
+  // each figure with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
+  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow());
+  tbResourcesEl.setAttribute('aria-label', c.text);
   tbResourcesEl.title = c.title;
   tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
   tbResourcesEl.classList.toggle('res-red', c.level === 'red');
   tbResourcesEl.classList.toggle('res-dim', c.dim === true);
   // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
   tbResourcesEl.hidden = !resChipOn;
+  if (!resChipOn) resPopStep({ type: 'chip-off' });
+  else renderHistory();
+}
+
+// ---- the chip's popover: the larger graphs of the last hour ----
+const resHistory = () => (resPayload && Array.isArray(resPayload.history) ? resPayload.history : []);
+// the points' own (monotonic) clock: main sends its "now" with them. Without one (no history yet) nothing is drawn anyway.
+const resHistoryNow = () => (resPayload && Number.isFinite(resPayload.historyNow) ? resPayload.historyNow : 0);
+
+function renderHistory() {
+  if (!resPop.open || !resPopoverEl) return;
+  resPopoverEl.innerHTML = window.resourcesHistoryDisplay.popover(resHistory(), resHistoryNow(), resPop.hover);
+  placeHistory();   // the chip can have changed width since it opened
+}
+function placeHistory() {
+  // under the chip, right edges aligned, and never off the left edge of the window
+  const r = tbResourcesEl.getBoundingClientRect();
+  const w = resPopoverEl.offsetWidth || 336;
+  resPopoverEl.style.top = `${Math.round(r.bottom + 6)}px`;
+  resPopoverEl.style.left = `${Math.max(8, Math.round(Math.min(r.right - w, window.innerWidth - w - 8)))}px`;
+}
+// The cursor and the readout follow the pointer in place (a re-draw under the pointer would drop the hover).
+function syncHover() {
+  const view = window.resourcesHistoryDisplay.hoverView(resHistory(), resHistoryNow(), resPop.hover);
+  for (const g of resPopoverEl.querySelectorAll('.hg[data-hist-graph]')) {
+    const v = view[g.dataset.histGraph];
+    const plot = g.querySelector('.hg-plot');
+    const readout = g.querySelector('.hg-readout');
+    if (!v || !plot || !readout) continue;
+    let cursor = plot.querySelector('.hg-cursor');
+    if (v.cursor === null) { if (cursor) cursor.remove(); } else {
+      if (!cursor) { cursor = document.createElement('div'); cursor.className = 'hg-cursor'; plot.appendChild(cursor); }
+      cursor.style.left = `${v.cursor}%`;
+    }
+    readout.textContent = v.readout;
+  }
+}
+// One door for every event: step the state, then make the page match it. Returns whether the event was consumed.
+function resPopStep(ev) {
+  const was = resPop;
+  const out = window.resourcesHistoryDisplay.popoverStep(was, ev);
+  resPop = out.state;
+  if (resPop.open !== was.open) {
+    if (resPop.open) { renderHistory(); resPopoverEl.hidden = false; placeHistory(); } else resPopoverEl.hidden = true;
+    tbResourcesEl.setAttribute('aria-expanded', resPop.open ? 'true' : 'false');
+  } else if (resPop.hover !== was.hover) syncHover();
+  return out.consumed;
+}
+function plotUnder(e) {
+  const plot = e.target && e.target.closest ? e.target.closest('.hg-plot') : null;
+  return plot && plot.parentElement && plot.parentElement.dataset ? plot : null;
 }
 
 function renderResources() {
@@ -1192,13 +1249,37 @@ if (resRoot) {
     resourcesAct(a);
   });
 }
-// The chip opens the panel and takes the keyboard to it.
-if (tbResourcesEl) {
-  tbResourcesEl.addEventListener('click', () => {
+// The chip opens the one-hour popover (Ricardo picked option B: this replaces "the chip opens the Resources panel", which
+// stays one click away in the Window menu / side tabs). A second click, Esc, an outside click, the window losing focus and the
+// page hiding close it. The chip is a button, so Enter and Space toggle it natively.
+if (tbResourcesEl && resPopoverEl) {
+  tbResourcesEl.addEventListener('click', () => { resPopStep({ type: 'chip-click' }); });
+  resPopoverEl.addEventListener('mousemove', (e) => {
+    const plot = plotUnder(e);
+    if (!plot) { resPopStep({ type: 'leave' }); return; }
+    const box = plot.getBoundingClientRect();
+    const minutes = window.resourcesHistoryDisplay.minutesAgo(box.width > 0 ? (e.clientX - box.left) / box.width : NaN);
+    if (minutes !== null) resPopStep({ type: 'hover', kind: plot.parentElement.dataset.histGraph, minutes });
+  });
+  // "Open Resources panel": close the popover, then show the panel if hidden (as the Window menu does), select it and focus it.
+  resPopoverEl.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-hist-act="open-panel"]') : null;
+    if (!btn) return;
+    resPopStep({ type: 'panel-link' });
     if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(placementLayout(), 'resources'), { select: 'resources' });
     else selectModule('resources');
     setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
   });
+  resPopoverEl.addEventListener('mouseleave', () => { resPopStep({ type: 'leave' }); });
+  document.addEventListener('keydown', (e) => {
+    if (resPopStep({ type: 'key', key: e.key })) { e.preventDefault(); e.stopPropagation(); tbResourcesEl.focus(); }
+  });
+  document.addEventListener('pointerdown', (e) => {
+    resPopStep({ type: 'pointerdown', inside: resPopoverEl.contains(e.target) || tbResourcesEl.contains(e.target) });
+  });
+  window.addEventListener('blur', () => { resPopStep({ type: 'blur' }); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) resPopStep({ type: 'hidden' }); });
+  window.addEventListener('resize', () => { if (resPop.open) placeHistory(); });
 }
 // RESOURCES-END
 
@@ -2538,7 +2619,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
-          chip: chip ? { hidden: chip.hidden, text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
+          chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
           rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
             fit: cellFit(r.querySelector('.res-name'), !r.classList.contains('res-plain')),
@@ -2551,6 +2632,26 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
           notes: q('.res-note').map(n => n.textContent),
+          hist: (() => {
+            const pop = document.getElementById('res-popover');
+            const rect = el => { const b = el.getBoundingClientRect(); return { x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height) }; };
+            const bar = document.getElementById('top-bar');
+            return {
+              points: resPayload && Array.isArray(resPayload.history) ? resPayload.history.length : 0,
+              spark: chip ? [...chip.querySelectorAll('svg.hs')].map(s => ({ polylines: s.querySelectorAll('polyline').length, dots: s.querySelectorAll('circle').length, w: s.width.baseVal.value, h: s.height.baseVal.value })) : [],
+              chipRect: chip && !chip.hidden ? rect(chip) : null,
+              chipClipped: chip ? chip.scrollWidth > chip.clientWidth : null,
+              barClipped: bar ? bar.scrollWidth > bar.clientWidth : null,
+              winW: window.innerWidth,
+              link: !!(pop && pop.querySelector('button.hg-link[data-hist-act="open-panel"]')),
+              open: !!pop && !pop.hidden, expanded: chip ? chip.getAttribute('aria-expanded') : null,
+              popRect: pop && !pop.hidden ? rect(pop) : null,
+              graphs: pop ? [...pop.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, ours: g.querySelectorAll('.hg-ours').length,
+                latest: g.querySelectorAll('.hg-latest').length, dots: g.querySelectorAll('.hg-dot-rest').length, axis: (g.querySelector('.hg-axis') || {}).textContent || '', readout: (g.querySelector('.hg-readout') || {}).textContent || '',
+                empty: !!g.querySelector('.hg-empty'), cursor: !!g.querySelector('.hg-cursor') })) : [],
+            };
+          })(),
+          panelFocused: document.activeElement === document.getElementById('resources-root'),
           hasPayload: resPayload !== null,
           payloadHasModel: !!(resPayload && resPayload.model),
           machine: resPayload && resPayload.machine ? resPayload.machine : null,
@@ -2565,6 +2666,25 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const before = input.checked;
         input.click();
         return JSON.stringify({ ok: true, before, after: input.checked });
+      }
+      // #63 follow-up: the popover's other ways to close, and the hover readout, as the page would see them
+      case 'resourcesHistoryDo': {
+        if (a.op === 'esc') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return JSON.stringify({ ok: true }); }
+        if (a.op === 'outside') { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); return JSON.stringify({ ok: true }); }
+        if (a.op === 'link') {
+          const btn = document.querySelector('#res-popover [data-hist-act="open-panel"]');
+          if (!btn) return JSON.stringify({ ok: false, error: 'no panel link' });
+          btn.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.op === 'hover') {
+          const plot = document.querySelector('#res-popover .hg[data-hist-graph="' + String(a.kind) + '"] .hg-plot');
+          if (!plot) return JSON.stringify({ ok: false, error: 'no graph to hover' });
+          const b = plot.getBoundingClientRect();
+          plot.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: b.left + b.width * Number(a.frac), clientY: b.top + b.height / 2 }));
+          return JSON.stringify({ ok: true });
+        }
+        return JSON.stringify({ ok: false, error: 'unknown op' });
       }
       case 'resourcesClick': {
         // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape

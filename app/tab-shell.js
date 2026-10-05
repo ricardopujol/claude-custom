@@ -1171,7 +1171,7 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #51: verify/probe-wand.js reads the wand and operates its controls
   'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
-  'resourcesState', 'resourcesClick', 'resourcesChipMenu',
+  'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn

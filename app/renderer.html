@@ -1153,6 +1153,35 @@
     #tb-resources.res-amber { border-color: #e6c34a; color: #e6c34a; }
     #tb-resources.res-red { border-color: var(--bad); color: var(--bad); }
     #tb-resources.res-dim { opacity: .55; }
+    /* The one-hour history (#63 follow-up, design option B): a sparkline after each figure, and a popover with two larger graphs.
+       The accent is claude-custom's share, the neutral colour is everything else (the same two colours as the panel's bars). */
+    #tb-resources { display: inline-flex; align-items: center; gap: 4px; }
+    #tb-resources[hidden] { display: none; }
+    #tb-resources .hs { flex: none; stroke: currentColor; fill: currentColor; stroke-width: 1; stroke-linejoin: round; opacity: .85; }
+    #tb-resources .hs polyline { fill: none; }
+    #tb-resources .tbr-n { white-space: nowrap; }
+    #res-popover { position: fixed; z-index: 60; box-sizing: border-box; width: 336px; padding: 10px 12px; background: var(--chrome); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.45); font-size: 11px; }
+    #res-popover[hidden] { display: none; }
+    .hg { margin-bottom: 10px; }
+    .hg-name { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin-bottom: 3px; }
+    .hg-plot { position: relative; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 4px; overflow: hidden; }
+    .hg-plot svg { display: block; }
+    .hg-rest { fill: color-mix(in srgb, var(--text) 38%, var(--border)); }
+    .hg-ours, .hg-dot-ours { fill: var(--accent); }
+    .hg-dot-rest { fill: color-mix(in srgb, var(--text) 38%, var(--border)); }
+    .hg-latest { fill: var(--text); stroke: var(--chrome); stroke-width: 1; }
+    .hg-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--text); opacity: .6; pointer-events: none; }
+    .hg-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--dim); margin-top: 2px; }
+    .hg-readout { min-height: 14px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .hg-empty { color: var(--dim); padding: 14px 0; }
+    .hg-key { color: var(--dim); font-size: 10.5px; }
+    .hg-link { display: block; margin-top: 8px; padding: 0; font: inherit; font-size: 10.5px; color: var(--accent); background: none; border: 0; cursor: pointer; }
+    .hg-link:hover { text-decoration: underline; }
+    .hg-link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    .hg-sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 0; vertical-align: baseline; }
+    .hg-sw-ours { background: var(--accent); }
+    .hg-sw-rest { background: color-mix(in srgb, var(--text) 38%, var(--border)); margin-left: 8px; }
     #wand-body { padding: 8px 10px; }
     .wand-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     #wand-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
@@ -1538,8 +1567,9 @@
            behaves. Working directory is FF3 (window title); spend/quota are
            status, not controls, and stay in #usage/#quota below. -->
       <span id="top-bar">
-        <!-- BACKLOG #63: the machine total (app/resources-display.js chipView). A click opens the Resources panel. -->
-        <button type="button" id="tb-resources" class="tb-chip" title="Machine total. Open the Resources panel for who's using it.">CPU —  — / —</button>
+        <!-- BACKLOG #63: the machine total (app/resources-display.js chipView) with a one-hour sparkline after each figure
+             (app/resources-history-display.js). A click opens the popover with the larger graphs. -->
+        <button type="button" id="tb-resources" class="tb-chip" aria-controls="res-popover" aria-expanded="false" title="Machine total and the last hour. Click for the graphs.">CPU —  — / —</button>
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
         <span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span>
@@ -1803,7 +1833,10 @@
   <script src="./loadout-display.js"></script>
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
+  <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
+  <div id="res-popover" hidden role="region" aria-label="CPU and memory over the last hour"></div>
   <script src="./resources-display.js"></script>
+  <script src="./resources-history-display.js"></script>
   <script src="./top-bar-display.js"></script>
   <script src="./accent-preview.js"></script>
   <script src="./context-fill-display.js"></script>

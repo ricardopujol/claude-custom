@@ -31,7 +31,7 @@ test('the Resources panel is an ordinary module: one TABS entry, one panel, one 
 });
 
 test('the chip is in the top bar, and says what it is before the first sample', () => {
-  assert.match(HTML, /<span id="top-bar">\s*(?:<!--[\s\S]*?-->\s*)?<button type="button" id="tb-resources" class="tb-chip" title="Machine total\. Open the Resources panel for who's using it\.">CPU —  — \/ —<\/button>/);
+  assert.match(HTML, /<span id="top-bar">\s*(?:<!--[\s\S]*?-->\s*)?<button type="button" id="tb-resources" class="tb-chip" aria-controls="res-popover" aria-expanded="false" title="Machine total and the last hour\. Click for the graphs\.">CPU —  — \/ —<\/button>/);
 });
 
 test('the glue is findable, and reads nothing from the OS', () => {
@@ -50,9 +50,25 @@ test('a click is read through actionOf, so a hand-edited attribute is refused', 
   assert.match(BLOCK, /window\.resourcesDisplay\.actionOf\(el\.dataset\)/);
 });
 
-test('the chip opens and focuses the panel: shows it when hidden, selects it otherwise', () => {
-  assert.match(BLOCK, /placementLayout\(\)\.hidden\.includes\('resources'\)\) commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\), \{ select: 'resources' \}\);\s*else selectModule\('resources'\);/);
-  assert.match(BLOCK, /resRoot\.focus\(\)/);
+test('the chip opens a popover with the graphs (it no longer opens the panel); every event goes through the state machine', () => {
+  // the chip's own click only toggles the popover (the one-liner below); the panel is reached through the popover's button
+  assert.match(BLOCK, /tbResourcesEl\.addEventListener\('click', \(\) => \{ resPopStep\(\{ type: 'chip-click' \}\); \}\)/);
+  assert.match(BLOCK, /document\.addEventListener\('keydown'[\s\S]*?resPopStep\(\{ type: 'key', key: e\.key \}\)[\s\S]*?e\.preventDefault\(\); e\.stopPropagation\(\)/);
+  assert.match(BLOCK, /document\.addEventListener\('pointerdown'[\s\S]*?resPopStep\(\{ type: 'pointerdown', inside:/);
+  assert.match(BLOCK, /window\.addEventListener\('blur', \(\) => \{ resPopStep\(\{ type: 'blur' \}\); \}\)/);
+  assert.match(BLOCK, /document\.addEventListener\('visibilitychange'[\s\S]*?resPopStep\(\{ type: 'hidden' \}\)/);
+  assert.match(BLOCK, /resPopoverEl\.addEventListener\('mouseleave'/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.popoverStep\(/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.popover\(/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.chipHtml\(/);
+});
+
+test('the popover is closed with the chip (the Window menu toggle), is a labelled region, and the markup and script are in the page', () => {
+  assert.match(BLOCK, /if \(!resChipOn\) resPopStep\(\{ type: 'chip-off' \}\)/);
+  assert.match(HTML, /<div id="res-popover" hidden role="region" aria-label=/);
+  assert.doesNotMatch(HTML, /aria-haspopup/);
+  const at = HTML.indexOf('<script src="./resources-history-display.js"></script>');
+  assert.ok(at > HTML.indexOf('<script src="./resources-display.js"></script>') && at < HTML.indexOf('<script src="./renderer.js"></script>'), 'after resources-display.js, before renderer.js');
 });
 
 test('the bridge exposes what the page calls, and main answers it behind the tab-view gate', () => {
@@ -78,7 +94,7 @@ test('the sampler always runs, and only a minimised window pauses it', () => {
 
 test('the probe may read and click the Resources panel, by name only', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['resourcesState', 'resourcesClick']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  for (const a of ['resourcesState', 'resourcesClick', 'resourcesHistoryDo']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
 test('Q2: the Window menu has the chip toggle, the page hides the chip on a payload that says off, and main answers it gated', () => {
@@ -91,4 +107,12 @@ test('Q2: the Window menu has the chip toggle, the page hides the chip on a payl
   assert.match(MAIN, /ipcMain\.on\('resources:chipOn'/);
   assert.match(PRELOAD, /setChip: \(on\) => ipcRenderer\.invoke\('resources:setChip', on === true\)/);
   assert.match(MAIN, /ipcMain\.handle\('resources:setChip', \(e, on\) => \(isTabView\(e\.sender\) && resources \? resources\.setChip\(on\) : null\)\);/);
+});
+
+test('the history goes to the selected page only: a newly selected page is re-sent the last payloads at once', () => {
+  assert.match(MAIN, /if \(resources && live !== resHistoryView\) \{ resHistoryView = live; resources\.resend\(\); \}/);
+});
+
+test('the popover Open Resources panel button closes it, shows the panel when hidden, selects and focuses it', () => {
+  assert.match(BLOCK, /closest\('\[data-hist-act="open-panel"\]'\)[\s\S]*?resPopStep\(\{ type: 'panel-link' \}\);\s*if \(placementLayout\(\)\.hidden\.includes\('resources'\)\) commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\), \{ select: 'resources' \}\);\s*else selectModule\('resources'\);[\s\S]*?resRoot\.focus\(\)/);
 });

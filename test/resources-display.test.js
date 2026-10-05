@@ -60,7 +60,16 @@ test('chipView: the machine total, amber from 40%, red from 75%', () => {
   assert.strictEqual(D.chipView(payload({ machine: { cpu: 74.9, mem: null } })).level, 'amber');
   assert.strictEqual(D.chipView(payload({ machine: { cpu: 39.9, mem: null } })).level, null);
   assert.strictEqual(D.chipView(payload({ machine: { cpu: 40, mem: null } })).level, 'amber');
-  assert.match(D.chipView(payload()).title, /Machine total\. Open the Resources panel for who's using it\./);
+  assert.match(D.chipView(payload()).title, /Machine total and the last hour\. Click for the graphs\./);
+});
+
+test('chipView: the two figures come apart (a sparkline sits after each), and an unmeasured one is a dash', () => {
+  const c = D.chipView(payload());
+  assert.strictEqual(c.cpuText, 'CPU 71%');
+  assert.strictEqual(c.memText, '21.4 GB / 32.0 GB');
+  assert.strictEqual(D.chipView(null).cpuText, 'CPU —');
+  assert.strictEqual(D.chipView(null).memText, '— / —');
+  assert.strictEqual(D.chipView(payload({ machine: { cpu: null, mem: { usedBytes: 4 * GB, totalBytes: 8 * GB } } })).cpuText, 'CPU —');
 });
 
 test('chipView: before anything is measured, and with a missing part, the chip says so with dashes, never 0', () => {

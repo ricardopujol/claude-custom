@@ -362,6 +362,7 @@ function markSubmenu(branch) {
 
 let win = null;
 let tabShell = null;
+let resHistoryView = null;         // the view the Resources service last re-sent the history to (#63 follow-up)
 let resources = null;              // the Resources panel's service (#63), built once the shell exists
 let resourceSampler = null;
 let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
@@ -635,6 +636,9 @@ function applySelection(snapshot) {
   pushStripAccent();
   // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
   if (resources) resources.refresh();
+  // Only the selected page's payload carries the one-hour history, so a page that has just been selected is sent it now,
+  // not up to 10 s later (#63 follow-up).
+  if (resources && live !== resHistoryView) { resHistoryView = live; resources.resend(); }
 }
 
 // Ctrl+Alt+T. A form that is ALREADY open is not a transition, so neither

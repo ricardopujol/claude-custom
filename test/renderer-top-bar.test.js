@@ -178,10 +178,11 @@ test('opening the model menu focuses its field WITHOUT scrolling the header', ()
 });
 
 test('a click inside a detached menu does not count as "outside"', () => {
-  const i = JS.indexOf("document.addEventListener('mousedown'");
-  assert.ok(i !== -1);
-  const handler = JS.slice(i, JS.indexOf('});', i));
-  assert.match(handler, /\.tb-menu/);
+  // The menus' own outside-click handler: found by what it is about (it mentions `.tb-menu`), not by being the first
+  // `mousedown` listener in the file, so another listener added above it cannot be mistaken for it.
+  const starts = [...JS.matchAll(/document\.addEventListener\('mousedown'/g)].map(m => m.index);
+  const handlers = starts.map(i => JS.slice(i, JS.indexOf('});', i)));
+  assert.ok(handlers.some(h => /\.tb-menu/.test(h)), 'a mousedown handler that treats a click inside .tb-menu as inside');
 });
 
 // --- vim, the read-back and stale notices (Dexter r2 N2, N5; Miguel r2) -----
