@@ -192,10 +192,12 @@ function childHtml(c) {
     return `<div class="res-child res-note">Stopped (PID ${esc(c.pid)})</div>`;
   }
   const stop = c.canStop
-    ? `<button type="button" class="res-stop" data-res-act="ask-stop" data-res-pid="${esc(c.pid)}" data-res-start="${esc(c.start)}" data-res-name="${esc(c.name)}">Stop</button>`
+    ? `<button type="button" class="res-stop" data-res-act="ask-stop" data-res-pid="${esc(c.pid)}" data-res-start="${esc(c.start)}" data-res-name="${esc(c.name)}" aria-label="Stop ${esc(c.name)}, PID ${esc(c.pid)}" title="Stop ${esc(c.name)}, PID ${esc(c.pid)}">■</button>`
     : '';
-  let h = `<div class="res-child"><span class="res-cname">${esc(c.name)}</span><span class="res-ccmd" title="${esc(c.cmd)}">${esc(c.cmd)}</span>`
-    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop}</div>`;
+  // ONE line per child: name (truncated first), CPU, memory, then a small square Stop at the end. The command line is the
+  // row's hover tooltip, not a line of its own.
+  let h = `<div class="res-child" title="${esc(c.cmd)}"><span class="res-cname">${esc(c.name)}</span>`
+    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop || '<span class="res-stop-gap"></span>'}</div>`;
   if (c.confirm) {
     const lock = c.pending ? ' disabled' : '';
     h += `<div class="res-confirm" role="alert">Stop ${esc(c.name)}, PID ${esc(c.pid)}? Only this process stops, and anything it started stops with it. `
@@ -215,7 +217,7 @@ function html(v) {
   const sessionRowsHtml = v.project.rows.map((r) => rowHtml(r,
     `<div class="res-kids">${r.children.map(childHtml).join('')}${r.moreText ? `<div class="res-note">${esc(r.moreText)}</div>` : ''}</div>`)).join('');
   const s = v.project.self;
-  const selfHtml = rowHtml(s, `<div class="res-kids">${s.parts.map(x => `<div class="res-child"><span class="res-cname">${esc(x.label)}</span><span class="res-ccmd"></span><span class="res-fig">${esc(x.cpuFig)}</span><span class="res-fig">${esc(x.memFig)}</span></div>`).join('')}</div>`);
+  const selfHtml = rowHtml(s, `<div class="res-kids">${s.parts.map(x => `<div class="res-child"><span class="res-cname">${esc(x.label)}</span><span class="res-fig">${esc(x.cpuFig)}</span><span class="res-fig">${esc(x.memFig)}</span></div>`).join('')}</div>`);
   const plain = x => `<div class="res-row res-plain"><span class="res-name">${esc(x.label)}</span>${meterHtml(x.meter)}<span class="res-fig">${esc(x.cpuFig)}</span><span class="res-fig">${esc(x.memFig)}</span></div>`;
   const others = [...v.windows.map(plain), ...(v.background ? [plain(v.background)] : [])];
   return `<div class="res${v.stale.dim ? ' res-dim' : ''}">`

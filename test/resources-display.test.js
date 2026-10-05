@@ -293,3 +293,21 @@ test('S2: a quote in a process name or command cannot break out of an attribute'
   assert.match(h, /title="&quot; onmouseover=&quot;alert\(1\)"/);
   assert.doesNotMatch(h, /"\s+onmouseover="/);
 });
+
+test('Q5: a child is ONE line: name, CPU, memory, then a small square Stop with its accessible label; the command is the hover text', () => {
+  const h = D.html(D.view(D.toggle(stateWith(), 's:k-main')));
+  const row = /<div class="res-child" title="server\.js --port 80">(.*?)<\/div>/.exec(h);
+  assert.ok(row, 'the command line is the row\'s title');
+  const order = [...row[1].matchAll(/class="(res-cname|res-fig|res-stop)"/g)].map(m => m[1]);
+  assert.deepStrictEqual(order, ['res-cname', 'res-fig', 'res-fig', 'res-stop']);
+  assert.match(row[1], /aria-label="Stop node\.exe, PID 18432" title="Stop node\.exe, PID 18432">■<\/button>/);
+  assert.doesNotMatch(h, /res-ccmd/, 'no line of its own for the command');
+  assert.doesNotMatch(row[1], />server\.js/, 'and not repeated as text');
+});
+
+test('Q5: a child that may not be stopped keeps the line\'s shape (an empty slot, no button)', () => {
+  const s = stateWith(payload({ model: model({ project: { ...model().project, rows: [session({ children: [child({ canStop: false })] })] } }) }));
+  const h = D.html(D.view(D.toggle(s, 's:k-main')));
+  assert.match(h, /res-stop-gap/);
+  assert.doesNotMatch(h, /ask-stop/);
+});

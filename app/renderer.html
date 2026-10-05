@@ -1127,12 +1127,14 @@
     .res-meter-empty { background: repeating-linear-gradient(135deg, var(--border) 0 4px, transparent 4px 8px); }
     .res-meter > i { display: block; height: 100%; background: var(--accent); }
     .res-kids { margin: 0 0 4px 16px; border-left: 1px solid var(--border); padding-left: 6px; }
-    .res-child { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 1px; padding: 2px 0; font-size: 11px; }
-    .res-cname { flex: 1 1 40px; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    /* the command line gets a line of its own, so the name and the figures never fight it for width */
-    .res-ccmd { order: 9; flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; }
-    .res-ccmd:empty { display: none; }
-    .res-stop, .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);
+    /* ONE line per child: the name gives way first (ellipsis), then CPU, memory and a small square Stop at the end. The
+       command line is the row's tooltip. */
+    .res-child { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
+    .res-cname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-stop, .res-stop-gap { flex: none; width: 18px; height: 18px; box-sizing: border-box; }
+    .res-stop { font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 3px; }
+    .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);
       border: 1px solid var(--border); border-radius: 4px; }
     .res-stop:hover, .res-confirm button:hover { border-color: var(--bad); color: var(--bad); }
     .res-confirm { font-size: 11px; margin: 2px 0 4px; padding: 5px 6px; border: 1px solid var(--bad); border-radius: 4px; }

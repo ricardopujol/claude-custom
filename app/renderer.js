@@ -2517,7 +2517,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           text: (document.getElementById('resources-root') || {}).textContent || '',
           rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
-          children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: (c.querySelector('.res-ccmd') || {}).textContent || '',
+          children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '',
             figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
             stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
