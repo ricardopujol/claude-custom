@@ -104,6 +104,7 @@ const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail }
 // its own key, so neither side can clobber the other's file.
 const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state') });
 const UI_KEY = 'look-global';
+const RESOURCE_CHIP_KEY = 'resource-chip';
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -794,6 +795,7 @@ function registerIpc() {
   ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
     ? resources.get(!!selectedView() && selectedView().webContents === e.sender)
     : null));
+  ipcMain.handle('resources:setChip', (e, on) => (isTabView(e.sender) && resources ? resources.setChip(on) : null));
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
@@ -1567,6 +1569,11 @@ app.whenReady().then(async () => {
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
     warnAt: warnAtSeam,
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },
+    // Q2: install-wide, in the same store as the other window-wide UI state
+    chipStore: {
+      read: () => { const v = uiStore.read(RESOURCE_CHIP_KEY, {}); return v && typeof v.show === 'boolean' ? v.show : null; },
+      write: (on) => { uiStore.update(RESOURCE_CHIP_KEY, {}, () => ({ show: on })); },
+    },
     log: (...a) => console.log(...a),
   });
   resourceSampler.start();

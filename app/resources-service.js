@@ -28,6 +28,8 @@ const basename = (p) => {
 function createResourcesService({
   sampler, tabs, claims, installDirs, ownPid, cores, labelOf = basename, send, kill,
   refreshStrip = () => {}, now = Date.now, log = () => {},
+  // Q2: the top-bar chip's on/off, kept install-wide. `read()` -> true | false | null (null: never set or unreadable), `write(on)`.
+  chipStore = { read: () => null, write: () => {} },
   // The warning's CPU threshold, 40 by default. A verification seam (CLAUDE_CUSTOM_RESOURCE_WARN_AT in app/main.js), so a
   // probe on a busy machine can show the chip without pinning 40% of it; nothing in the UI sets it.
   warnAt = warning.THRESHOLD,
@@ -35,6 +37,7 @@ function createResourcesService({
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
   let lastPayload = null;
+  let chipOn = chipStore.read() !== false;   // ON by default: only a stored real `false` turns it off
   let lastLight = null;        // the same payload with no process model: what a page that is not showing the panel gets
   let lastSignature = '';
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
@@ -109,8 +112,8 @@ function createResourcesService({
       setWarnings(new Map());
     }
 
-    lastPayload = { model: built, status, machine };
-    lastLight = { model: null, status, machine };
+    lastPayload = { model: built, status, machine, chipOn };
+    lastLight = { model: null, status, machine, chipOn };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
     send(lastPayload, lastLight);
   }
@@ -130,6 +133,19 @@ function createResourcesService({
     setMinimised(on) { minimised = on === true; refresh(); },
     refresh,
     onUpdate,
+    chipOn: () => chipOn,
+    /** Q2: "Show CPU and memory in the top bar". Only a real boolean counts; saved, then every page is told at once. */
+    setChip(on) {
+      if (typeof on !== 'boolean') return chipOn;
+      chipOn = on;
+      try { chipStore.write(on); } catch (err) { log('[resources] could not save the chip setting:', err && err.message); }
+      if (lastPayload) {
+        lastPayload = { ...lastPayload, chipOn };
+        lastLight = { ...lastLight, chipOn };
+        send(lastPayload, lastLight);
+      }
+      return chipOn;
+    },
     get: (full = true) => (full ? lastPayload : lastLight),
     warnFor(key) {
       const s = warnings.get(key);

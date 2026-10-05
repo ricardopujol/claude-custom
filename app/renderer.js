@@ -1113,6 +1113,13 @@ let resPayload = null;              // the last payload main pushed: the chip dr
 const resRoot = document.getElementById('resources-root');
 const tbResourcesEl = document.getElementById('tb-resources');
 
+// Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
+function resourceChipRow() {
+  const box = node('input', { type: 'checkbox', checked: !(resPayload && resPayload.chipOn === false) });
+  box.addEventListener('change', () => { if (resBridge) resBridge.setChip(box.checked); });
+  return node('label', { title: 'The machine CPU and memory chip in the top bar' }, [box, node('span', { text: 'Show CPU and memory in the top bar' })]);
+}
+
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
@@ -1121,6 +1128,8 @@ function renderResourcesChip() {
   tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
   tbResourcesEl.classList.toggle('res-red', c.level === 'red');
   tbResourcesEl.classList.toggle('res-dim', c.dim === true);
+  // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
+  tbResourcesEl.hidden = !!resPayload && resPayload.chipOn === false;
 }
 
 function renderResources() {
@@ -1398,6 +1407,7 @@ function openLayoutMenu() {
     });
     layoutMenu.appendChild(node('label', {}, [box, node('span', { text: row.label })]));
   }
+  layoutMenu.appendChild(resourceChipRow());
   appendPresetSection(check);
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
@@ -2513,7 +2523,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
-          chip: chip ? { text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
+          chip: chip ? { hidden: chip.hidden, text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
           rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
@@ -2526,6 +2536,16 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           payloadHasModel: !!(resPayload && resPayload.model),
           machine: resPayload && resPayload.machine ? resPayload.machine : null,
         });
+      }
+      // Q2: open the Window menu and press the chip's check, as a pointer would
+      case 'resourcesChipMenu': {
+        if (document.getElementById('layout-menu').hidden) document.getElementById('layout-btn').click();
+        const box = [...document.querySelectorAll('#layout-menu label')].find(l => /Show CPU and memory in the top bar/.test(l.textContent));
+        if (!box) return JSON.stringify({ ok: false, error: 'no chip row in the Window menu' });
+        const input = box.querySelector('input');
+        const before = input.checked;
+        input.click();
+        return JSON.stringify({ ok: true, before, after: input.checked });
       }
       case 'resourcesClick': {
         // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape

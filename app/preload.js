@@ -225,6 +225,7 @@ contextBridge.exposeInMainWorld('harness', {
   // main re-reads the process list and refuses anything that is not a child of this window's own sessions.
   resources: {
     get: () => ipcRenderer.invoke('resources:get'),
+    setChip: (on) => ipcRenderer.invoke('resources:setChip', on === true),
     stop: (req) => ipcRenderer.invoke('resources:stop', req),
     onState: (fn) => (ipcRenderer.removeAllListeners('resources:state'), ipcRenderer.on('resources:state',
       (_e, payload) => {

@@ -278,3 +278,48 @@ test('S5: the full payload (command lines) goes to the page showing the panel; a
   assert.strictEqual(r.svc.get(true), full);
   assert.strictEqual(r.svc.get(false), light);
 });
+
+// ---- Q2: the top-bar chip's Window-menu toggle ----
+
+test('Q2: the chip is ON by default, off only for a stored real false; a payload carries it', () => {
+  assert.strictEqual(rig().svc.chipOn(), true);
+  for (const stored of [null, true, 'false', 0, undefined]) assert.strictEqual(rig({ chipStore: { read: () => stored, write: () => {} } }).svc.chipOn(), true, String(stored));
+  const off = rig({ chipStore: { read: () => false, write: () => {} } });
+  assert.strictEqual(off.svc.chipOn(), false);
+  off.svc.onUpdate(fullSnap(2, 10));
+  assert.strictEqual(off.sent.at(-1).chipOn, false);
+});
+
+test('Q2: setChip saves the answer, tells every page at once, and refuses anything that is not a boolean', () => {
+  const written = [];
+  const calls = [];
+  const r = rig({ chipStore: { read: () => null, write: v => written.push(v) }, send: (full, light) => calls.push([full, light]) });
+  assert.strictEqual(r.svc.setChip('false'), true, 'a string is not a boolean: unchanged');
+  assert.strictEqual(r.svc.setChip(1), true);
+  assert.deepStrictEqual(written, []);
+  r.svc.onUpdate(fullSnap(2, 10));
+  assert.strictEqual(r.svc.setChip(false), false);
+  assert.deepStrictEqual(written, [false]);
+  const [full, light] = calls.at(-1);
+  assert.strictEqual(full.chipOn, false);
+  assert.strictEqual(light.chipOn, false);
+  assert.ok(full.model, 'the model is not lost by a toggle');
+  assert.strictEqual(r.svc.setChip(true), true);
+  assert.deepStrictEqual(written, [false, true]);
+});
+
+test('Q2: the toggle never stops the sampling (the warning needs it with the chip off and the panel closed)', () => {
+  const r = rig({ chipStore: { read: () => false, write: () => {} } });
+  r.svc.refresh();
+  assert.deepStrictEqual(r.wanted.at(-1), { panel: true, chip: true });
+  r.svc.setChip(false);
+  for (let n = 2; n <= 4; n++) r.svc.onUpdate(fullSnap(n, 60));
+  assert.ok(r.svc.warnFor('k'));
+});
+
+test('Q2: a store that throws on save is logged, not raised, and the setting still holds for this run', () => {
+  const logged = [];
+  const r = rig({ chipStore: { read: () => null, write: () => { throw new Error('disk'); } }, log: (...a) => logged.push(a.join(' ')) });
+  assert.strictEqual(r.svc.setChip(false), false);
+  assert.match(logged.join(), /disk/);
+});

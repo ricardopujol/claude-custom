@@ -80,3 +80,12 @@ test('the probe may read and click the Resources panel, by name only', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['resourcesState', 'resourcesClick']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
+
+test('Q2: the Window menu has the chip toggle, the page hides the chip on a payload that says off, and main answers it gated', () => {
+  assert.match(RAW, /function resourceChipRow\(\)/);
+  assert.match(RAW, /node\('span', \{ text: 'Show CPU and memory in the top bar' \}\)/);
+  assert.match(RAW, /layoutMenu\.appendChild\(resourceChipRow\(\)\);\s*appendPresetSection\(check\);/);
+  assert.match(BLOCK, /tbResourcesEl\.hidden = !!resPayload && resPayload\.chipOn === false;/);
+  assert.match(PRELOAD, /setChip: \(on\) => ipcRenderer\.invoke\('resources:setChip', on === true\)/);
+  assert.match(MAIN, /ipcMain\.handle\('resources:setChip', \(e, on\) => \(isTabView\(e\.sender\) && resources \? resources\.setChip\(on\) : null\)\);/);
+});

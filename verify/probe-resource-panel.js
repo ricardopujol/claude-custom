@@ -81,9 +81,11 @@ const freePort = () => new Promise((resolve, reject) => {
 
 const LAYOUT_FILE = path.join(STATE_DIR, 'layout-global.json');
 const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
+const CHIP_FILE = path.join(STATE_DIR, 'resource-chip.json');
 const layoutSnap = snapshotFile(LAYOUT_FILE);
 const treeSnap = snapshotFile(TREE_FILE);
-hygiene.addCleanup(() => { layoutSnap.restore(); treeSnap.restore(); });
+const chipSnap = snapshotFile(CHIP_FILE);
+hygiene.addCleanup(() => { layoutSnap.restore(); treeSnap.restore(); chipSnap.restore(); });
 hygiene.install();
 
 async function launchApp(cwd) {
@@ -210,7 +212,7 @@ async function main() {
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
-  for (const f of [LAYOUT_FILE, TREE_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
+  for (const f of [LAYOUT_FILE, TREE_FILE, CHIP_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
   const burnJs = path.join(tmp, 'burn.js');
   const byJs = path.join(tmp, 'bystander.js');
   const burnPidFile = path.join(tmp, 'burn.pid');
@@ -373,6 +375,19 @@ async function main() {
   check('6: hiding the panel does NOT stop the process-tree sample: the model keeps arriving', !!noModel, String(Date.now() - before6));
   check('6: the chip keeps its machine figures', !!noModel && /^CPU .* GB \/ .* GB$/.test(noModel.chip.text) && !/NaN|undefined/.test(noModel.chip.text), JSON.stringify(noModel && noModel.chip));
 
+  // 7 (Q2) the Window menu's chip toggle -----------------------------------------------
+  const untick = await view(app, 'resourcesChipMenu');
+  check('7: the Window menu has "Show CPU and memory in the top bar", ticked by default', untick.ok === true && untick.before === true, JSON.stringify(untick));
+  const chipGone = await waitFor(async () => { const s = await rs(); return s.chip && s.chip.hidden === true ? s : null; }, 10000, 200);
+  check('7: unticking it hides the chip', !!chipGone);
+  const saved = await waitFor(() => { try { return JSON.parse(fs.readFileSync(CHIP_FILE, 'utf8')).show === false ? true : null; } catch { return null; } }, 5000, 200);
+  check('7: and the choice is saved (install-wide)', saved === true);
+  const stillSampling = await waitFor(async () => { const s = await rs(); return s.payloadHasModel && s.chip.hidden ? s : null; }, 25000, 500);
+  check('7: with the chip off the process tree is still sampled (the warning needs it)', !!stillSampling);
+  const retick = await view(app, 'resourcesChipMenu');
+  const chipBack = await waitFor(async () => { const s = await rs(); return s.chip && s.chip.hidden === false ? s : null; }, 10000, 200);
+  check('7: ticking it again brings the chip back', retick.ok === true && retick.before === false && !!chipBack, JSON.stringify(retick));
+
   const errors = (app.out.match(/\[renderer:[a-z]+\].*/g) || []).filter(l => /error|not defined|undefined is not|cannot read/i.test(l));
   check('the renderer reported no errors', errors.length === 0, errors.slice(0, 3).join(' | '));
   console.log(`screenshots: ${shots}`);
@@ -386,6 +401,7 @@ main()
     killEverything();
     layoutSnap.restore();
     treeSnap.restore();
+    chipSnap.restore();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);
