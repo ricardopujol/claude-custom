@@ -244,3 +244,68 @@ test('no test in the command reads a MUTATED module as text', () => {
     'these are exempted but no longer read a mutated module -- remove them from '
     + `TOLERATED, which must only shrink: ${stale.join(', ')}`);
 });
+
+test('the modules that decide what the Resources panel kills are mutated (#63)', () => {
+  // Same blind spot as the stop-holder guard: a module never added to `mutate` is invisible to the scan above. These
+  // pick the kill set and end the processes, so a wrong verdict ends somebody's live work.
+  const fixed = ['host/resource-kill.js', 'host/resource-stop.js', 'host/resource-tree.js', 'host/resource-model.js',
+    'host/resource-sampler.js', 'host/resource-sample.js', 'host/resource-warning.js', 'host/resource-label.js',
+    'host/resource-history.js', 'host/chip-store.js', 'app/resources-service.js', 'app/resources-display.js',
+    'app/resources-history-display.js'];
+  for (const rel of fixed) {
+    assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
+  }
+  // And any module added under host/resource-*.js later must join, not be forgotten.
+  const onDisk = fs.readdirSync(path.join(ROOT, 'host')).filter(f => /^resource-.+\.js$/.test(f)).map(f => `host/${f}`);
+  assert.ok(onDisk.length >= 9, 'the scan must find the resource modules');
+  for (const rel of onDisk) {
+    assert.ok(conf.mutate.includes(rel), `${rel} is a resource module and must be in stryker.conf.json's mutate`);
+  }
+});
+
+test('the real-process tests are skipped by NAME, and the exemption is exact and cannot rot', () => {
+  // Tests that spawn real PowerShell cost seconds each and re-run for every mutant. The command's --test-skip-pattern
+  // drops them; their FILES stay in the command because the fast tests beside them kill the script mutants. This list
+  // is the machine-readable half: each entry must still exist, still spawn real processes, and every test in it that is
+  // gated on Windows (`{ skip: ... }`) must be matched by the pattern. It must only SHRINK.
+  const REAL_PROCESS_TEST_FILES = [
+    'resource-stop-position.test.js', // one real-PowerShell kill test (D4/D5)
+    'resource-stop-respawn.test.js',  // N1/N2 real supervisor trees
+  ];
+  const cmd = conf.commandRunner.command;
+  const m = cmd.match(/--test-skip-pattern="([^"]+)"/);
+  assert.ok(m, 'the command must carry --test-skip-pattern for the real-process tests');
+  const skip = new RegExp(m[1]);
+
+  const titlesOf = (src) => [...src.matchAll(/^test\((['"`])((?:\\.|(?!\1).)*)\1(?:,\s*\{([^}\n]*)\})?/gm)]
+    .map(t => ({ title: t[2].replace(/\\(.)/g, '$1'), opts: t[3] || '' }));
+  const titlesIn = (file) => titlesOf(fs.readFileSync(path.join(ROOT, 'test', file), 'utf8'));
+
+  // Positive control: the title scan must find tests at all, or "matches nothing" would pass vacuously.
+  assert.ok(titlesOf("test('a b', { skip: !WIN, timeout: 1 }, async () => {})")[0].opts.includes('skip'));
+
+  for (const file of REAL_PROCESS_TEST_FILES) {
+    assert.ok(fs.existsSync(path.join(ROOT, 'test', file)), `${file} is exempted but no longer exists -- remove it`);
+    const src = fs.readFileSync(path.join(ROOT, 'test', file), 'utf8');
+    assert.ok(/spawn\(/.test(src), `${file} no longer spawns real processes -- remove it from REAL_PROCESS_TEST_FILES`);
+    assert.ok(cmd.includes(`test/${file}`), `${file} must stay in the command: its fast tests kill mutants`);
+    const real = titlesIn(file).filter(t => /\bskip:/.test(t.opts));
+    assert.ok(real.length > 0, `${file} has no skip-gated real test left -- remove it from REAL_PROCESS_TEST_FILES`);
+    for (const t of real) {
+      assert.ok(skip.test(t.title), `real-process test "${t.title}" in ${file} is not matched by --test-skip-pattern`);
+    }
+    // ...and the fast tests beside them are NOT skipped.
+    for (const t of titlesIn(file).filter(x => !/\bskip:/.test(x.opts))) {
+      assert.ok(!skip.test(t.title), `fast test "${t.title}" in ${file} would be skipped by the pattern`);
+    }
+  }
+
+  // The pattern must not silently narrow any other test in the command.
+  const inCommand = [...cmd.matchAll(/test\/([a-z0-9-]+\.test\.js)/g)].map(x => x[1]);
+  const hit = [];
+  for (const file of inCommand) {
+    if (REAL_PROCESS_TEST_FILES.includes(file)) continue;
+    for (const t of titlesIn(file)) if (skip.test(t.title)) hit.push(`${file}: ${t.title}`);
+  }
+  assert.deepStrictEqual(hit, [], `--test-skip-pattern would skip tests outside the named files: ${hit.join('; ')}`);
+});
