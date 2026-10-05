@@ -1095,11 +1095,112 @@ function onModuleShown(id) {
   if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
+  if (id === 'resources') renderResources();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
   if (id === 'vault') renderVault();
 }
+
+// --- the Resources panel and the top-bar chip (BACKLOG #63) ----------------------------------------------------
+// RESOURCES-BEGIN
+// app/resources-display.js decides what is drawn. The figures come from main's sampler (app/resources-service.js),
+// which also decides WHEN it samples: always, every 10 s, panel open or not (Ricardo, PR #113), except while the window is
+// minimised. Nothing here reads the OS.
+const resBridge = window.harness && window.harness.resources;
+let resState = window.resourcesDisplay.emptyState();
+let resPayload = null;              // the last payload main pushed: the chip draws from it, the panel from resState
+// The chip's on/off is read from main's saved setting synchronously, BEFORE the first paint, so "off" never flashes the chip.
+let resChipOn = !(resBridge && typeof resBridge.chipOn === 'function' && resBridge.chipOn() === false);
+const resRoot = document.getElementById('resources-root');
+const tbResourcesEl = document.getElementById('tb-resources');
+
+// Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
+function resourceChipRow() {
+  const box = node('input', { type: 'checkbox', checked: resChipOn });
+  box.addEventListener('change', () => { if (resBridge) resBridge.setChip(box.checked); });
+  return node('label', { title: 'The machine CPU and memory chip in the top bar' }, [box, node('span', { text: 'Show CPU and memory in the top bar' })]);
+}
+
+function renderResourcesChip() {
+  if (!tbResourcesEl) return;
+  const c = window.resourcesDisplay.chipView(resPayload);
+  tbResourcesEl.textContent = c.text;
+  tbResourcesEl.title = c.title;
+  tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
+  tbResourcesEl.classList.toggle('res-red', c.level === 'red');
+  tbResourcesEl.classList.toggle('res-dim', c.dim === true);
+  // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
+  tbResourcesEl.hidden = !resChipOn;
+}
+
+function renderResources() {
+  if (!resRoot || !shownModules.has('resources')) return;
+  // The markup is replaced on every draw: keep the keyboard on the same row or button.
+  const focused = document.activeElement && resRoot.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focused && focused.dataset ? { act: focused.dataset.resAct, key: focused.dataset.resKey, pid: focused.dataset.resPid } : null;
+  resRoot.innerHTML = window.resourcesDisplay.html(window.resourcesDisplay.view(resState));
+  if (!keep) return;
+  const again = [...resRoot.querySelectorAll('[data-res-act]')].find(el => el.dataset.resAct === keep.act
+    && el.dataset.resKey === keep.key && el.dataset.resPid === keep.pid);
+  if (again) again.focus();
+}
+
+function onResourcesState(payload) {
+  resPayload = payload;
+  resChipOn = window.resourcesDisplay.nextChipOn(resChipOn, payload);
+  resState = window.resourcesDisplay.withPayload(resState, payload);
+  renderResourcesChip();
+  renderResources();
+}
+renderResourcesChip();
+if (resBridge) {
+  resBridge.onState(onResourcesState);
+  // A page that opens between two pushes asks for the last one instead of waiting up to 10 s.
+  resBridge.get().then((p) => { if (p && !resPayload) onResourcesState(p); }, () => {});
+}
+
+async function resourcesAct(a) {
+  const D = window.resourcesDisplay;
+  if (a.act === 'toggle') resState = D.toggle(resState, a.key);
+  else if (a.act === 'ask-stop') resState = D.askStop(resState, a);
+  else if (a.act === 'cancel-stop') resState = D.cancelStop(resState);
+  else if (a.act === 'confirm-stop') {
+    const req = resState.confirm;
+    // one Stop, one answer: a second press while it is in flight does nothing
+    if (!req || !resBridge || resState.pending) return;
+    resState = D.beginStop(resState);
+    renderResources();
+    let result;
+    try { result = await resBridge.stop({ pid: req.pid, startTime: req.start }); } catch { result = null; }
+    resState = D.stopResult(resState, req, result || { ok: false, reason: 'unreadable', text: 'the request did not get through' });
+  }
+  renderResources();
+}
+if (resRoot) {
+  resRoot.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-res-act]') : null;
+    const a = el ? window.resourcesDisplay.actionOf(el.dataset) : null;
+    if (a) resourcesAct(a);
+  });
+  // A row is a role=button div: Enter and Space work it like a button.
+  resRoot.addEventListener('keydown', (e) => {
+    if ((e.key !== 'Enter' && e.key !== ' ') || !e.target || e.target.tagName === 'BUTTON') return;
+    const a = window.resourcesDisplay.actionOf(e.target.dataset);
+    if (!a) return;
+    e.preventDefault();
+    resourcesAct(a);
+  });
+}
+// The chip opens the panel and takes the keyboard to it.
+if (tbResourcesEl) {
+  tbResourcesEl.addEventListener('click', () => {
+    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(placementLayout(), 'resources'), { select: 'resources' });
+    else selectModule('resources');
+    setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
+  });
+}
+// RESOURCES-END
 
 // Leaving the vault puts every revealed secret back out of sight -- both the
 // listed ones and whatever is half-typed in the field. A value left on screen
@@ -1310,6 +1411,7 @@ function openLayoutMenu() {
     });
     layoutMenu.appendChild(node('label', {}, [box, node('span', { text: row.label })]));
   }
+  layoutMenu.appendChild(resourceChipRow());
   appendPresetSection(check);
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
@@ -2417,6 +2519,61 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           focus: (() => { const d = document.activeElement && document.activeElement.dataset; return d && root.contains(document.activeElement)
             ? { act: d.wandAct || null, id: d.wandId || null, field: d.wandField || null } : null; })(),
         });
+      }
+      // backlog #63: verify/probe-resource-panel.js reads the Resources panel and the chip, and clicks as a pointer would
+      case 'resourcesState': {
+        const q = s => [...document.querySelectorAll('#resources-root ' + s)];
+        const chip = document.getElementById('tb-resources');
+        // Is a name cell clipped, and does at least its first word (with the open/closed arrow in front) fit?
+        const cellFit = (cell, arrow) => {
+          if (!cell) return { clipped: false, firstWordFits: true, width: 0 };
+          const probe = document.createElement('span');
+          probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + getComputedStyle(cell).font;
+          probe.textContent = (arrow ? '▸ ' : '') + (cell.textContent.split(/\s+/)[0] || '');
+          document.body.appendChild(probe);
+          const need = probe.offsetWidth;
+          probe.remove();
+          return { clipped: cell.scrollWidth > cell.clientWidth, firstWordFits: cell.clientWidth >= need, width: cell.clientWidth };
+        };
+        return JSON.stringify({
+          scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
+          shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
+          chip: chip ? { hidden: chip.hidden, text: chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
+          text: (document.getElementById('resources-root') || {}).textContent || '',
+          rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
+            fit: cellFit(r.querySelector('.res-name'), !r.classList.contains('res-plain')),
+            figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
+          children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
+            figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
+            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
+          // the Stop button's hit area (its ::after) and where its figures sit, for the layout checks
+          stopHit: (() => { const b = q('.res-stop')[0]; if (!b) return null; const a = getComputedStyle(b, '::after'); return { w: parseFloat(a.width), h: parseFloat(a.height), box: b.getBoundingClientRect().width }; })(),
+          figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
+          confirm: (q('.res-confirm')[0] || {}).textContent || null,
+          notes: q('.res-note').map(n => n.textContent),
+          hasPayload: resPayload !== null,
+          payloadHasModel: !!(resPayload && resPayload.model),
+          machine: resPayload && resPayload.machine ? resPayload.machine : null,
+        });
+      }
+      // Q2: open the Window menu and press the chip's check, as a pointer would
+      case 'resourcesChipMenu': {
+        if (document.getElementById('layout-menu').hidden) document.getElementById('layout-btn').click();
+        const box = [...document.querySelectorAll('#layout-menu label')].find(l => /Show CPU and memory in the top bar/.test(l.textContent));
+        if (!box) return JSON.stringify({ ok: false, error: 'no chip row in the Window menu' });
+        const input = box.querySelector('input');
+        const before = input.checked;
+        input.click();
+        return JSON.stringify({ ok: true, before, after: input.checked });
+      }
+      case 'resourcesClick': {
+        // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape
+        const el = a.chip === true ? document.getElementById('tb-resources')
+          : [...document.querySelectorAll('#resources-root [data-res-act]')].find(e => e.dataset.resAct === String(a.act)
+            && (a.key === undefined || e.dataset.resKey === String(a.key)) && (a.pid === undefined || e.dataset.resPid === String(a.pid)));
+        if (!el) return JSON.stringify({ ok: false, error: 'no resources control ' + JSON.stringify(a) });
+        el.click();
+        return JSON.stringify({ ok: true });
       }
       case 'wandClick': {
         const btn = [...document.querySelectorAll('#wand-root button[data-wand-act]')].find(b => b.dataset.wandAct === a.act

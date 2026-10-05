@@ -83,6 +83,8 @@ const ALLOWED_GLOBALS = new Set([
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
   'wandDisplay',
+  // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
+  'resourcesDisplay',
   // app/submit-gate.js (BACKLOG #61): the wand / Run /merged submit gate. ONE name leaves its IIFE.
   'submitGate',
   // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object

@@ -75,6 +75,10 @@
     .win-btn[hidden] { display: none; }
     .win-btn:hover { color: var(--text); background: var(--border); }
     #win-close:hover { color: #fff; background: #c42b1c; }
+    /* #63: a session tree over 40% CPU for 30 s. Amber, red from 75%. A chip, never animated. */
+    .res-warn { font-size: 10px; line-height: 1; padding: 1px 4px; border-radius: 3px; font-variant-numeric: tabular-nums; }
+    .res-warn.amber { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); }
+    .res-warn.red { color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 55%, transparent); }
     .badge { font-size: 10px; padding: 0 4px; border-radius: 3px; }
     .badge.merged { color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); }
     .badge.warn { color: var(--bad); font-size: 11px; }

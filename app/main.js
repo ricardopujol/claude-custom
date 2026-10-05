@@ -88,7 +88,12 @@ const repoActions = createRepoActions({
     return repoDragIcon;
   },
 });
-const { listBackgroundHosts } = require('../host/background-hosts');
+const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
+// The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
+const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
+const { killVerified } = require('../host/resource-kill');
+const { createResourcesService, parseWarnAt } = require('./resources-service');
+const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
@@ -100,6 +105,7 @@ const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail }
 // its own key, so neither side can clobber the other's file.
 const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state') });
 const UI_KEY = 'look-global';
+const resourceChip = createChipStore(uiStore);
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -356,6 +362,8 @@ function markSubmenu(branch) {
 
 let win = null;
 let tabShell = null;
+let resources = null;              // the Resources panel's service (#63), built once the shell exists
+let resourceSampler = null;
 let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
 let transcriptOccupancy = null;    // ...and the fallback producer: claims read off the subagent transcripts
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
@@ -453,8 +461,8 @@ function createWindow() {
     focusSelected();
   });
   win.on('blur', () => { focused = false; sendFocus(); });
-  win.on('minimize', () => { focused = false; });
-  win.on('restore', () => { focused = win.isFocused(); sendFocus(); });
+  win.on('minimize', () => { focused = false; if (resources) resources.setMinimised(true); });
+  win.on('restore', () => { focused = win.isFocused(); sendFocus(); if (resources) resources.setMinimised(false); });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
     win.on(ev, () => forEachView(layoutView));
   }
@@ -625,6 +633,8 @@ function applySelection(snapshot) {
   if (step.focus) live.webContents.focus();
   lastFocusedView = step.lastFocused;
   pushStripAccent();
+  // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
+  if (resources) resources.refresh();
 }
 
 // Ctrl+Alt+T. A form that is ALREADY open is not a transition, so neither
@@ -781,6 +791,16 @@ async function showBackgroundMenu() {
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
+  // The Resources panel (#63). `get` hands a page the last payload; `stop` is the Stop button, which main re-checks in
+  // full (host/resource-stop.js) however the page asks.
+  ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
+    ? resources.get(!!selectedView() && selectedView().webContents === e.sender)
+    : null));
+  ipcMain.on('resources:chipOn', (e) => { e.returnValue = isTabView(e.sender) ? resourceChip.read() !== false : true; });
+  ipcMain.handle('resources:setChip', (e, on) => (isTabView(e.sender) && resources ? resources.setChip(on) : null));
+  ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
+    ? resources.stop(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
   // The strip page's own channels: gated on the window's OWN webContents, so a
   // tab's page (which has the other preload) cannot use them.
   ipcMain.on('strip:select', (e, key) => {
@@ -1257,7 +1277,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1474,6 +1494,8 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
+    // #63: each tab's "over 40% CPU for 30 s" chip, from the Resources service (cleared while the panel is hidden).
+    resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
     // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
     occupancy: { claims: () => occupancyService.current() },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
@@ -1513,6 +1535,51 @@ app.whenReady().then(async () => {
     },
   });
 
+  // The Resources panel (#63). Identity files of every build beside this one say which pids are session hosts;
+  // each is proven against the process table (host/resource-tree.js provenHosts) before anything is attributed.
+  const resourceInstalls = () => { try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; } };
+  const cpuCores = require('os').cpus().length;
+  // Read once and REMOVED from the environment, so it never reaches a host, a claude or a window started from them.
+  const warnAtSeam = parseWarnAt(process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT);
+  delete process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT;
+  resourceSampler = createSampler({ cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
+  resources = createResourcesService({
+    sampler: resourceSampler,
+    tabs: () => tabShell.snapshot().tabs,
+    claims: () => {
+      const out = [];
+      for (const install of resourceInstalls()) {
+        let entries;
+        try { entries = identitiesIn(install); } catch { continue; }
+        for (const { port, parsed } of entries) {
+          if (parsed && Number.isInteger(parsed.pid) && parsed.pid > 0 && parsed.port === port && typeof parsed.cwd === 'string') {
+            out.push({ pid: parsed.pid, port, cwd: parsed.cwd, processStartedAt: parsed.processStartedAt });
+          }
+        }
+      }
+      return out;
+    },
+    installDirs: resourceInstalls,
+    ownPid: process.pid,
+    cores: cpuCores,
+    // a worktree's cwd names its PROJECT (the folder that holds `dev\`), the way the window title does
+    labelOf: (cwd) => { const p = projectOf(cwd); return projectLabel(p ? p.root : cwd); },
+    send: (full, light) => { const sel = selectedView(); forEachView((v) => v.webContents.send('resources:state', v === sel ? full : light)); },
+    // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
+    // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
+    kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
+    warnAt: warnAtSeam,
+    refreshStrip: () => { if (tabShell) tabShell.refresh(); },
+    // Q2: install-wide, in the same store as the other window-wide UI state
+    chipStore: resourceChip,
+    log: (...a) => console.log(...a),
+  });
+  // Other project windows are other mains sharing the saved file: follow their change of the chip, live, as the panels do.
+  watchChip({ file: path.join(__dirname, '..', '.harness', 'state', `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
+  resourceSampler.start();
+  resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
+
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
@@ -1551,4 +1618,4 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('will-quit', () => { if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
+app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
