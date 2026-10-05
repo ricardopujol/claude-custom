@@ -79,7 +79,8 @@ test('kill guard: pid 1 and a one-digit start are the smallest accepted values',
 // pid is a Windows DWORD and start is cast to [long] in the script: a value past either range is not a process.
 const OUT_OF_RANGE = [
   ['pid 1e21 (an integer to JS, written as 1e+21 into the script)', { pid: 1e21, start: '1' }],
-  ['pid one past a DWORD', { pid: 4294967296, start: '1' }],
+  ['pid one past an Int32 (Get-Process -Id and the script [int] casts)', { pid: 2147483648, start: '1' }],
+  ['pid at the DWORD maximum, past what the script can read', { pid: 4294967295, start: '1' }],
   ['start of 20 digits', { pid: 5, start: '12345678901234567890' }],
   ['start with leading zeros past 19 digits', { pid: 5, start: '00000000000000000001' }],
   ['start one past a signed 64-bit integer', { pid: 5, start: '9223372036854775808' }],
@@ -95,7 +96,7 @@ for (const [name, target] of OUT_OF_RANGE) {
 }
 
 for (const [name, target] of [
-  ['the largest DWORD pid', { pid: 4294967295, start: '1' }],
+  ['the largest Int32 pid', { pid: 2147483647, start: '1' }],
   ['the largest signed 64-bit start', { pid: 5, start: '9223372036854775807' }],
   ['a real FILETIME start (18 digits)', { pid: 5, start: '134355977388659781' }],
   ['a short start that starts with a 9 (length decides, not the leading digit)', { pid: 5, start: '999999999999999999' }],

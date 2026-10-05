@@ -16,7 +16,7 @@
 
 const START_SLACK = 100000;      // 10 ms in 100 ns ticks: CIM and Get-Process start times differ by a tick (host/resource-tree.js)
 
-const PID_MAX = 4294967295;                    // a Windows pid is a DWORD
+const PID_MAX = 2147483647;                    // Get-Process -Id and the script's [int] casts are Int32
 const START_MAX = '9223372036854775807';       // the script casts the start to [long]; FILETIMEs are 18 digits
 // `pid` and `start` are written raw into PowerShell source, so each must be exactly a number the script can read back:
 // digits only, in range (1e21 is an integer to JS but prints as 1e+21), and a start that fits a signed 64-bit integer.
