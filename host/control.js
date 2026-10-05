@@ -66,6 +66,8 @@ const CONTROL_TYPES = new Set([
   'loadout-equip', 'loadout-unequip',
   // The wand (BACKLOG #51): favourites edits and the skill rescan. Same hole if left off.
   'wand-add', 'wand-update', 'wand-delete', 'wand-move', 'wand-skills', 'wand-reset',
+  // Claude's panel (BACKLOG #71): the window asks for the page and answers a host question. Same hole if left off.
+  'canvas-get', 'canvas-hosts',
   // BACKLOG #14: {type:'roster', action:'hide'|'unhide', agent}. Absent from
   // this list, a hide click would be typed into the session as JSON.
   'roster',
