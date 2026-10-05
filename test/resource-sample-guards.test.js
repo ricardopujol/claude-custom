@@ -5,6 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const S = require('../host/resource-sample');
 
+const BOM = String.fromCharCode(0xfeff);
 const good = () => ({ pid: 5, ppid: 2, name: 'node.exe', cmd: 'node a.js', start: '133000000000000000', priv: 1024 });
 const parse = (procs, extra = {}) => S.parseSample(JSON.stringify({ procs, perf: [], cpu: null, os: null, ...extra }) + 'END', 0);
 const one = (over) => parse([{ ...good(), ...over }]).procs;
@@ -88,9 +89,9 @@ test('parseSample: a sample that is not the script\'s output is null', () => {
   assert.strictEqual(S.parseSample('{"perf":[]}END', 0), null);
   assert.strictEqual(S.parseSample('[]END', 0), null);
   assert.strictEqual(S.parseSample('{"procs":[],"perf":[]}END', 0).at, 0);
-  const bom = '﻿{"procs":[],"perf":[]}END\r\n';
+  const bom = `${BOM}{"procs":[],"perf":[]}END\r\n`;
   assert.ok(S.parseSample(bom, 0), 'a leading BOM is stripped');
-  assert.strictEqual(S.parseSample(`x﻿{"procs":[],"perf":[]}END`, 0), null, 'a BOM that is not at the start is not');
+  assert.strictEqual(S.parseSample(`x${BOM}{"procs":[],"perf":[]}END`, 0), null, 'a BOM that is not at the start is not');
 });
 
 test('machineMemory: used is total minus free; the boundaries free === total and free === 0 are accepted, one over is refused', () => {
