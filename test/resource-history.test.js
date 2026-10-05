@@ -131,7 +131,7 @@ test('a wall-clock jump of either sign, against the monotonic spacing, breaks th
   assert.deepStrictEqual(h.points().map(p => p.brk), [undefined, undefined, true, true, undefined]);
 });
 
-test('D1: the exact counterexample, T+4h then T+10s, keeps every point when time is the monotonic clock', () => {
+test('the ring keeps every point it is given in monotonic order, whatever wall times ride along (the real D1 regression is in resources-service.test.js)', () => {
   const h = H.createHistory();
   h.record(good(1000, { wall: 1000 }));
   h.record(good(11000, { wall: 4 * 3600000 + 11000 }));
