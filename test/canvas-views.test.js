@@ -283,3 +283,22 @@ test('setHosts replaces the lists; a host removed from the approved list is aske
   assert.strictEqual((await r.m.fetchFor(panel, { url: 'https://a.example.com/' })).ok, false);
   assert.deepStrictEqual(r.asked, ['https://a.example.com']);
 });
+
+const { HOST_RESOLVER_RULES, registerCanvasIpc } = require('../app/canvas-views');
+
+test('the process-wide resolver rule refuses every name but loopback (this is what shuts DNS prefetch)', () => {
+  assert.strictEqual(HOST_RESOLVER_RULES, 'MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost');
+});
+
+test('registerCanvasIpc: a panel contents is answered by the module, and nothing else is, on exactly two channels', async () => {
+  const handlers = {}; const listeners = {};
+  const ipc = { handle: (ch, fn) => { handlers[ch] = fn; }, on: (ch, fn) => { listeners[ch] = fn; } };
+  const calls = [];
+  const m = { fetchFor: async (s, req) => { calls.push(['fetch', s.id, req]); return { ok: true }; }, messageFrom: (s, msg) => { calls.push(['send', s.id, msg]); return true; } };
+  registerCanvasIpc(ipc, m);
+  assert.deepStrictEqual(Object.keys(handlers), ['canvas:fetch']);
+  assert.deepStrictEqual(Object.keys(listeners), ['canvas:send']);
+  assert.deepStrictEqual(await handlers['canvas:fetch']({ sender: { id: 5 } }, { url: 'u' }), { ok: true });
+  listeners['canvas:send']({ sender: { id: 6 } }, { kind: 'send', text: 't' });
+  assert.deepStrictEqual(calls, [['fetch', 5, { url: 'u' }], ['send', 6, { kind: 'send', text: 't' }]]);
+});

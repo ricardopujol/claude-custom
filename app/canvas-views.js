@@ -170,4 +170,15 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
   return { show, setBounds, setCovered, setOwnerVisible, setHosts, relayout, hide, destroyFor, has, fetchFor, messageFrom };
 }
 
-module.exports = { createCanvasViews, PANEL_LIMITS, DEAD_PROXY };
+// Process-wide, set before the app is ready (app/main.js): Chromium resolves nothing but loopback. This is the only thing
+// that shuts DNS prefetch, which a proxy and a CSP both leave open (measured). It costs nothing today: the app makes no
+// external request of its own through Chromium (the host and the Electron main process use Node's networking).
+const HOST_RESOLVER_RULES = 'MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost';
+
+/** The two channels the panel's preload talks on. `ipc` is Electron's ipcMain; `views` is a createCanvasViews result. */
+function registerCanvasIpc(ipc, views) {
+  ipc.handle('canvas:fetch', (e, req) => views.fetchFor(e.sender, req));
+  ipc.on('canvas:send', (e, msg) => { views.messageFrom(e.sender, msg); });
+}
+
+module.exports = { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES, PANEL_LIMITS, DEAD_PROXY };
