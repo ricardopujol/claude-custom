@@ -790,3 +790,45 @@ test('F5: a stored group named "term" is renamed, so the terminal and the group 
   assert.ok(next.root.kids.some(k => k.type === 'term'), 'the terminal is still a direct kid of the root');
   assert.ok(T.groups(next).some(x => x.id === gr.id && x.tabs.includes('git')));
 });
+
+
+// --- hidden until used (BACKLOG #71: Claude's panel) -----------------------------------------------------------
+
+test('Claude\'s panel starts hidden: it is in no group of a default layout, only in the hidden list', () => {
+  const ids = [...IDS, 'canvas'];
+  const l = T.defaultLayout(ids);
+  assert.deepEqual(modulesOf(l).sort(), [...ids].sort(), 'it is still a module of the layout');
+  assert.deepEqual(l.hidden, ['canvas']);
+  assert.ok(!T.groups(l).some(gr => gr.tabs.includes('canvas')));
+});
+
+test('a saved layout that predates the panel gets it hidden, not as a new tab in someone\'s first group', () => {
+  const old = v2(row([term, g('right', ...IDS)], [0, 180]));
+  const l = T.normalize(old, [...IDS, 'canvas']);
+  assert.deepEqual(l.hidden, ['canvas']);
+  assert.ok(!T.groups(l).some(gr => gr.tabs.includes('canvas')));
+  assert.deepEqual(T.groups(l)[0].tabs, IDS, 'everything else is untouched');
+});
+
+test('once the person has the panel in a group, normalize keeps it there', () => {
+  const placed = v2(row([term, g('right', ...IDS, 'canvas')], [0, 180]));
+  const l = T.normalize(placed, [...IDS, 'canvas']);
+  assert.deepEqual(l.hidden, []);
+  assert.ok(T.groups(l)[0].tabs.includes('canvas'));
+});
+
+test('show() docks the hidden panel on the right when nothing says where it was', () => {
+  const l = T.defaultLayout([...IDS, 'canvas']);
+  const shown = T.show(l, 'canvas');
+  assert.deepEqual(shown.hidden, []);
+  assert.ok(modulesOf(shown).includes('canvas'));
+  assert.ok(T.groups(shown).some(gr => gr.tabs.includes('canvas')));
+});
+
+test('other modules a newer build adds still land in the first group; only the opt-in ones start hidden', () => {
+  const old = v2(row([term, g('right', ...IDS)], [0, 180]));
+  const l = T.normalize(old, [...IDS, 'brand-new']);
+  assert.deepEqual(l.hidden, []);
+  assert.ok(T.groups(l)[0].tabs.includes('brand-new'));
+  assert.deepEqual(T.HIDDEN_UNTIL_USED, ['canvas']);
+});

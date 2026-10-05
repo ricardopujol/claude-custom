@@ -1095,6 +1095,36 @@
 
     /* The wand (BACKLOG #51): favourite skills as emoji buttons. Markup comes from app/wand-display.js. A dimmed
        button is a skill that no longer exists; the flash is "typed", never "ran". */
+    /* Claude's panel (BACKLOG #71). Markup from app/canvas-display.js. The page Claude wrote is NOT in this document: it is a
+       sealed native view main lays over #canvas-slot (app/canvas-views.js), so the slot takes all the room it can get and
+       nothing in it is styled here. A question or the host list REPLACES the slot (a native view paints above the page). */
+    #canvas-body { padding: 0; }
+    #canvas-root { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
+    .zone[data-shape="wide"] .panel.on > #canvas-root { flex: 1 1 auto; min-width: 280px; max-width: none; }
+    .cv-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; }
+    .cv-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .cv-badge { font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer; background: transparent; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 10px; }
+    .cv-badge:hover, .cv-badge[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
+    .cv-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .cv-slot { flex: 1; min-height: 0; }
+    .cv-empty, .cv-note, .cv-ask, .cv-list { padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--dim); overflow-y: auto; }
+    .cv-empty ul { margin: 6px 0 10px; padding-left: 18px; color: var(--text); }
+    .cv-sandbox { font-size: 11px; opacity: .8; }
+    .cv-error { flex: 0 0 auto; margin: 0 8px; font-size: 11px; color: var(--bad); }
+    .cv-ask p, .cv-ask code { color: var(--text); }
+    .cv-ask code { padding: 1px 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; word-break: break-all; }
+    .cv-ask-btns { display: flex; gap: 8px; margin-top: 10px; }
+    .cv-ask-btns button, .cv-close, .cv-remove { font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .cv-allow { border-color: var(--accent); }
+    .cv-ask-btns button:hover, .cv-close:hover, .cv-remove:hover { border-color: var(--accent); }
+    .cv-more { margin-top: 8px; font-size: 11px; }
+    .cv-list h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: normal; }
+    .cv-hosts { list-style: none; margin: 0 0 10px; padding: 0; }
+    .cv-host { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .cv-host-name { flex: 1; min-width: 0; color: var(--text); word-break: break-all; }
+    .cv-host-state { font-size: 11px; }
     /* The Resources panel (BACKLOG #63) and its top-bar chip. Markup from app/resources-display.js; the bars are
        two segments, claude-custom in the accent colour and everything else neutral. */
     #resources-body { padding: 8px 4px; }
@@ -1791,6 +1821,11 @@
                that is replaced is not read out). Visually hidden; the visible copy is in the panel. -->
           <div id="wand-live" class="wand-live" role="status" aria-live="polite" aria-atomic="true"></div>
         </div>
+        <!-- BACKLOG #71: Claude's panel. app/canvas-display.js draws its frame from the host's `canvas` frames; the page Claude
+             wrote is a sealed native view main lays over #canvas-slot (app/canvas-views.js), never part of this document. -->
+        <div class="panel" data-panel="canvas" id="canvas-body">
+          <div id="canvas-root" tabindex="-1"></div>
+        </div>
         <!-- BACKLOG #63: the Resources panel. app/resources-display.js draws it from main's payload. -->
         <div class="panel" data-panel="resources" id="resources-body">
           <div id="resources-root" tabindex="-1"><div class="res-note">measuring…</div></div>
@@ -1835,6 +1870,7 @@
   <script src="./wand-display.js"></script>
   <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
   <div id="res-popover" hidden role="region" aria-label="CPU and memory over the last hour"></div>
+  <script src="./canvas-display.js"></script>
   <script src="./resources-display.js"></script>
   <script src="./resources-history-display.js"></script>
   <script src="./top-bar-display.js"></script>

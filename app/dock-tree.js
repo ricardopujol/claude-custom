@@ -54,12 +54,19 @@ const isNum = v => typeof v === 'number' && Number.isFinite(v);
 const isSize = v => isNum(v) && v > 0;
 const TERM = () => ({ type: 'term' });
 
+// Modules that start HIDDEN rather than as a tab in the first group, until something puts them on screen (BACKLOG #71:
+// Claude's panel appears when Claude is first asked to build something in it, never on its own). A saved layout that
+// predates one gets it hidden too, instead of a new tab in the person's first group. Once it is placed anywhere, it stays
+// where the person put it.
+const HIDDEN_UNTIL_USED = ['canvas'];
+
 function defaultLayout(ids) {
-  const tabs = [...ids];
+  const tabs = ids.filter(id => !HIDDEN_UNTIL_USED.includes(id));
+  const away = ids.filter(id => HIDDEN_UNTIL_USED.includes(id));
   const rootNode = tabs.length
     ? { type: 'split', dir: 'row', kids: [TERM(), { type: 'group', id: 'right', tabs }], sizes: [0, DEFAULT_SIZE.row] }
     : TERM();
-  return { version: VERSION, root: rootNode, floats: [], hidden: [], seat: {} };
+  return { version: VERSION, root: rootNode, floats: [], hidden: away, seat: {} };
 }
 
 const hasTerm = n => n.type === 'term' || (n.type === 'split' && n.kids.some(hasTerm));
@@ -178,7 +185,8 @@ function normalize(raw, ids) {
   }
 
   const hiddenIds = (Array.isArray(raw.hidden) ? raw.hidden : []).filter(id => st.claim(id));
-  const missing = [...known].filter(id => !placed.has(id));
+  const missing = [...known].filter(id => !placed.has(id) && !HIDDEN_UNTIL_USED.includes(id));
+  for (const id of known) if (!placed.has(id) && HIDDEN_UNTIL_USED.includes(id)) hiddenIds.push(id);
   if (missing.length) {
     let first = null;
     walk(r, (n) => { if (!first && n.type === 'group') first = n; });
@@ -739,7 +747,7 @@ function fit(layout, selection, viewport) {
 }
 
 const API = {
-  VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
+  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
   cleanSelection, selectTab, raiseFloat, toggleFoldAll, activeOf, fit,
 };
