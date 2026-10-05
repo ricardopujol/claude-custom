@@ -371,7 +371,8 @@ async function main() {
     if (live) {
       const shown = displayName(live, 'bash.exe');
       note(`live Bash-tool line labels as ${JSON.stringify(shown)}`);
-      check('3: a live Bash-tool line gives a sensible label (not a flag, not blank, not the shell)', shown !== '' && !/^[-/]/.test(shown) && shown !== 'bash', JSON.stringify([live.slice(0, 120), shown]));
+      // 'bash' is allowed: it is the deliberate label for a payload that starts with shell syntax (c4308fd).
+      check('3: a live Bash-tool line gives a sensible label (not blank, not a flag or path, no shell syntax in it)', shown !== '' && !/^[-/]/.test(shown) && !/[$`(){}'"]/.test(shown), JSON.stringify([live.slice(0, 120), shown]));
     }
   }
 
