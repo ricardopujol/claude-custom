@@ -63,6 +63,7 @@ const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const { allowFrameNavigation } = require('./frame-guard');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
@@ -553,6 +554,11 @@ function createTabView(tab) {
     wc.send('window-focus', { focused, dim: readDim() });
     if (cueOn) wc.send('attention-cue', true);
     if (focusMode) wc.send('focus-mode', true);
+  });
+  // BACKLOG #71: Claude's panel is a sandboxed iframe, and CSP cannot stop a frame setting its own location. A subframe
+  // may only load its own srcdoc (app/frame-guard.js; verify/probe-canvas-sandbox.js measures the leak this closes).
+  wc.on('will-frame-navigate', (d) => {
+    if (!allowFrameNavigation(d)) d.preventDefault();
   });
   wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
