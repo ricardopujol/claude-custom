@@ -134,4 +134,4 @@ function createSlot({ file, now = Date.now, pid = process.pid, isAlive = process
   return { tryAcquire, release, lastError: () => error };
 }
 
-module.exports = { createSlot, STALE_MS };
+module.exports = { createSlot, STALE_MS, CLAIM_STALE_MS };

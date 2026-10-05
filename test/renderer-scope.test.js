@@ -35,6 +35,8 @@ const APP = path.join(__dirname, '..', 'app');
 // Every global the renderer's scripts are permitted to define. Anything else
 // showing up here is a leak waiting to collide with the next file added.
 const ALLOWED_GLOBALS = new Set([
+  // app/resources-history-display.js (#63 follow-up): one namespace, reached through `window.`.
+  'resourcesHistoryDisplay',
   // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.
@@ -83,6 +85,8 @@ const ALLOWED_GLOBALS = new Set([
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
   'wandDisplay',
+  // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
+  'resourcesDisplay',
   // app/submit-gate.js (BACKLOG #61): the wand / Run /merged submit gate. ONE name leaves its IIFE.
   'submitGate',
   // app/portrait-media-display.js (BACKLOG C #13, #18): ONE namespace object

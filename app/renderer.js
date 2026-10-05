@@ -1095,11 +1095,193 @@ function onModuleShown(id) {
   if (id === 'git') requestGitTree();
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
+  if (id === 'resources') renderResources();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
   if (id === 'vault') renderVault();
 }
+
+// --- the Resources panel and the top-bar chip (BACKLOG #63) ----------------------------------------------------
+// RESOURCES-BEGIN
+// app/resources-display.js decides what is drawn. The figures come from main's sampler (app/resources-service.js),
+// which also decides WHEN it samples: always, every 10 s, panel open or not (Ricardo, PR #113), except while the window is
+// minimised. Nothing here reads the OS.
+const resBridge = window.harness && window.harness.resources;
+let resState = window.resourcesDisplay.emptyState();
+let resPayload = null;              // the last payload main pushed: the chip draws from it, the panel from resState
+// The chip's on/off is read from main's saved setting synchronously, BEFORE the first paint, so "off" never flashes the chip.
+let resChipOn = !(resBridge && typeof resBridge.chipOn === 'function' && resBridge.chipOn() === false);
+const resRoot = document.getElementById('resources-root');
+const tbResourcesEl = document.getElementById('tb-resources');
+const resPopoverEl = document.getElementById('res-popover');
+// The chip's one-hour graph window: its open/hover state is app/resources-history-display.js's popoverStep (pure, unit-tested);
+// everything below only turns DOM events into steps and draws the result.
+let resPop = window.resourcesHistoryDisplay.popoverInit();
+
+// Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
+function resourceChipRow() {
+  const box = node('input', { type: 'checkbox', checked: resChipOn });
+  box.addEventListener('change', () => { if (resBridge) resBridge.setChip(box.checked); });
+  return node('label', { title: 'The machine CPU and memory chip in the top bar' }, [box, node('span', { text: 'Show CPU and memory in the top bar' })]);
+}
+
+function renderResourcesChip() {
+  if (!tbResourcesEl) return;
+  const c = window.resourcesDisplay.chipView(resPayload);
+  // each figure with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
+  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow());
+  tbResourcesEl.setAttribute('aria-label', c.text);
+  tbResourcesEl.title = c.title;
+  tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
+  tbResourcesEl.classList.toggle('res-red', c.level === 'red');
+  tbResourcesEl.classList.toggle('res-dim', c.dim === true);
+  // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
+  tbResourcesEl.hidden = !resChipOn;
+  if (!resChipOn) resPopStep({ type: 'chip-off' });
+  else renderHistory();
+}
+
+// ---- the chip's popover: the larger graphs of the last hour ----
+const resHistory = () => (resPayload && Array.isArray(resPayload.history) ? resPayload.history : []);
+// the points' own (monotonic) clock: main sends its "now" with them. Without one (no history yet) nothing is drawn anyway.
+const resHistoryNow = () => (resPayload && Number.isFinite(resPayload.historyNow) ? resPayload.historyNow : 0);
+
+function renderHistory() {
+  if (!resPop.open || !resPopoverEl) return;
+  resPopoverEl.innerHTML = window.resourcesHistoryDisplay.popover(resHistory(), resHistoryNow(), resPop.hover);
+  placeHistory();   // the chip can have changed width since it opened
+}
+function placeHistory() {
+  // under the chip, right edges aligned, and never off the left edge of the window
+  const r = tbResourcesEl.getBoundingClientRect();
+  const w = resPopoverEl.offsetWidth || 336;
+  resPopoverEl.style.top = `${Math.round(r.bottom + 6)}px`;
+  resPopoverEl.style.left = `${Math.max(8, Math.round(Math.min(r.right - w, window.innerWidth - w - 8)))}px`;
+}
+// The cursor and the readout follow the pointer in place (a re-draw under the pointer would drop the hover).
+function syncHover() {
+  const view = window.resourcesHistoryDisplay.hoverView(resHistory(), resHistoryNow(), resPop.hover);
+  for (const g of resPopoverEl.querySelectorAll('.hg[data-hist-graph]')) {
+    const v = view[g.dataset.histGraph];
+    const plot = g.querySelector('.hg-plot');
+    const readout = g.querySelector('.hg-readout');
+    if (!v || !plot || !readout) continue;
+    let cursor = plot.querySelector('.hg-cursor');
+    if (v.cursor === null) { if (cursor) cursor.remove(); } else {
+      if (!cursor) { cursor = document.createElement('div'); cursor.className = 'hg-cursor'; plot.appendChild(cursor); }
+      cursor.style.left = `${v.cursor}%`;
+    }
+    readout.textContent = v.readout;
+  }
+}
+// One door for every event: step the state, then make the page match it. Returns whether the event was consumed.
+function resPopStep(ev) {
+  const was = resPop;
+  const out = window.resourcesHistoryDisplay.popoverStep(was, ev);
+  resPop = out.state;
+  if (resPop.open !== was.open) {
+    if (resPop.open) { renderHistory(); resPopoverEl.hidden = false; placeHistory(); } else resPopoverEl.hidden = true;
+    tbResourcesEl.setAttribute('aria-expanded', resPop.open ? 'true' : 'false');
+  } else if (resPop.hover !== was.hover) syncHover();
+  return out.consumed;
+}
+function plotUnder(e) {
+  const plot = e.target && e.target.closest ? e.target.closest('.hg-plot') : null;
+  return plot && plot.parentElement && plot.parentElement.dataset ? plot : null;
+}
+
+function renderResources() {
+  if (!resRoot || !shownModules.has('resources')) return;
+  // The markup is replaced on every draw: keep the keyboard on the same row or button.
+  const focused = document.activeElement && resRoot.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focused && focused.dataset ? { act: focused.dataset.resAct, key: focused.dataset.resKey, pid: focused.dataset.resPid } : null;
+  resRoot.innerHTML = window.resourcesDisplay.html(window.resourcesDisplay.view(resState));
+  if (!keep) return;
+  const again = [...resRoot.querySelectorAll('[data-res-act]')].find(el => el.dataset.resAct === keep.act
+    && el.dataset.resKey === keep.key && el.dataset.resPid === keep.pid);
+  if (again) again.focus();
+}
+
+function onResourcesState(payload) {
+  resPayload = payload;
+  resChipOn = window.resourcesDisplay.nextChipOn(resChipOn, payload);
+  resState = window.resourcesDisplay.withPayload(resState, payload);
+  renderResourcesChip();
+  renderResources();
+}
+renderResourcesChip();
+if (resBridge) {
+  resBridge.onState(onResourcesState);
+  // A page that opens between two pushes asks for the last one instead of waiting up to 10 s.
+  resBridge.get().then((p) => { if (p && !resPayload) onResourcesState(p); }, () => {});
+}
+
+async function resourcesAct(a) {
+  const D = window.resourcesDisplay;
+  if (a.act === 'toggle') resState = D.toggle(resState, a.key);
+  else if (a.act === 'ask-stop') resState = D.askStop(resState, a);
+  else if (a.act === 'cancel-stop') resState = D.cancelStop(resState);
+  else if (a.act === 'confirm-stop') {
+    const req = resState.confirm;
+    // one Stop, one answer: a second press while it is in flight does nothing
+    if (!req || !resBridge || resState.pending) return;
+    resState = D.beginStop(resState);
+    renderResources();
+    let result;
+    try { result = await resBridge.stop({ pid: req.pid, startTime: req.start }); } catch { result = null; }
+    resState = D.stopResult(resState, req, result || { ok: false, reason: 'unreadable', text: 'the request did not get through' });
+  }
+  renderResources();
+}
+if (resRoot) {
+  resRoot.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-res-act]') : null;
+    const a = el ? window.resourcesDisplay.actionOf(el.dataset) : null;
+    if (a) resourcesAct(a);
+  });
+  // A row is a role=button div: Enter and Space work it like a button.
+  resRoot.addEventListener('keydown', (e) => {
+    if ((e.key !== 'Enter' && e.key !== ' ') || !e.target || e.target.tagName === 'BUTTON') return;
+    const a = window.resourcesDisplay.actionOf(e.target.dataset);
+    if (!a) return;
+    e.preventDefault();
+    resourcesAct(a);
+  });
+}
+// The chip opens the one-hour popover (Ricardo picked option B: this replaces "the chip opens the Resources panel", which
+// stays one click away in the Window menu / side tabs). A second click, Esc, an outside click, the window losing focus and the
+// page hiding close it. The chip is a button, so Enter and Space toggle it natively.
+if (tbResourcesEl && resPopoverEl) {
+  tbResourcesEl.addEventListener('click', () => { resPopStep({ type: 'chip-click' }); });
+  resPopoverEl.addEventListener('mousemove', (e) => {
+    const plot = plotUnder(e);
+    if (!plot) { resPopStep({ type: 'leave' }); return; }
+    const box = plot.getBoundingClientRect();
+    const minutes = window.resourcesHistoryDisplay.minutesAgo(box.width > 0 ? (e.clientX - box.left) / box.width : NaN);
+    if (minutes !== null) resPopStep({ type: 'hover', kind: plot.parentElement.dataset.histGraph, minutes });
+  });
+  // "Open Resources panel": close the popover, then show the panel if hidden (as the Window menu does), select it and focus it.
+  resPopoverEl.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-hist-act="open-panel"]') : null;
+    if (!btn) return;
+    resPopStep({ type: 'panel-link' });
+    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(placementLayout(), 'resources'), { select: 'resources' });
+    else selectModule('resources');
+    setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
+  });
+  resPopoverEl.addEventListener('mouseleave', () => { resPopStep({ type: 'leave' }); });
+  document.addEventListener('keydown', (e) => {
+    if (resPopStep({ type: 'key', key: e.key })) { e.preventDefault(); e.stopPropagation(); tbResourcesEl.focus(); }
+  });
+  document.addEventListener('pointerdown', (e) => {
+    resPopStep({ type: 'pointerdown', inside: resPopoverEl.contains(e.target) || tbResourcesEl.contains(e.target) });
+  });
+  window.addEventListener('blur', () => { resPopStep({ type: 'blur' }); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) resPopStep({ type: 'hidden' }); });
+  window.addEventListener('resize', () => { if (resPop.open) placeHistory(); });
+}
+// RESOURCES-END
 
 // Leaving the vault puts every revealed secret back out of sight -- both the
 // listed ones and whatever is half-typed in the field. A value left on screen
@@ -1310,6 +1492,7 @@ function openLayoutMenu() {
     });
     layoutMenu.appendChild(node('label', {}, [box, node('span', { text: row.label })]));
   }
+  layoutMenu.appendChild(resourceChipRow());
   appendPresetSection(check);
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
@@ -2417,6 +2600,100 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           focus: (() => { const d = document.activeElement && document.activeElement.dataset; return d && root.contains(document.activeElement)
             ? { act: d.wandAct || null, id: d.wandId || null, field: d.wandField || null } : null; })(),
         });
+      }
+      // backlog #63: verify/probe-resource-panel.js reads the Resources panel and the chip, and clicks as a pointer would
+      case 'resourcesState': {
+        const q = s => [...document.querySelectorAll('#resources-root ' + s)];
+        const chip = document.getElementById('tb-resources');
+        // Is a name cell clipped, and does at least its first word (with the open/closed arrow in front) fit?
+        const cellFit = (cell, arrow) => {
+          if (!cell) return { clipped: false, firstWordFits: true, width: 0 };
+          const probe = document.createElement('span');
+          probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + getComputedStyle(cell).font;
+          probe.textContent = (arrow ? '▸ ' : '') + (cell.textContent.split(/\s+/)[0] || '');
+          document.body.appendChild(probe);
+          const need = probe.offsetWidth;
+          probe.remove();
+          return { clipped: cell.scrollWidth > cell.clientWidth, firstWordFits: cell.clientWidth >= need, width: cell.clientWidth };
+        };
+        return JSON.stringify({
+          scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
+          shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
+          chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
+          text: (document.getElementById('resources-root') || {}).textContent || '',
+          rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
+            fit: cellFit(r.querySelector('.res-name'), !r.classList.contains('res-plain')),
+            figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
+          children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
+            figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
+            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
+          // the Stop button's hit area (its ::after) and where its figures sit, for the layout checks
+          stopHit: (() => { const b = q('.res-stop')[0]; if (!b) return null; const a = getComputedStyle(b, '::after'); return { w: parseFloat(a.width), h: parseFloat(a.height), box: b.getBoundingClientRect().width }; })(),
+          figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
+          confirm: (q('.res-confirm')[0] || {}).textContent || null,
+          notes: q('.res-note').map(n => n.textContent),
+          hist: (() => {
+            const pop = document.getElementById('res-popover');
+            const rect = el => { const b = el.getBoundingClientRect(); return { x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height) }; };
+            const bar = document.getElementById('top-bar');
+            return {
+              points: resPayload && Array.isArray(resPayload.history) ? resPayload.history.length : 0,
+              spark: chip ? [...chip.querySelectorAll('svg.hs')].map(s => ({ polylines: s.querySelectorAll('polyline').length, dots: s.querySelectorAll('circle').length, w: s.width.baseVal.value, h: s.height.baseVal.value })) : [],
+              chipRect: chip && !chip.hidden ? rect(chip) : null,
+              chipClipped: chip ? chip.scrollWidth > chip.clientWidth : null,
+              barClipped: bar ? bar.scrollWidth > bar.clientWidth : null,
+              winW: window.innerWidth,
+              link: !!(pop && pop.querySelector('button.hg-link[data-hist-act="open-panel"]')),
+              open: !!pop && !pop.hidden, expanded: chip ? chip.getAttribute('aria-expanded') : null,
+              popRect: pop && !pop.hidden ? rect(pop) : null,
+              graphs: pop ? [...pop.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, ours: g.querySelectorAll('.hg-ours').length,
+                latest: g.querySelectorAll('.hg-latest').length, dots: g.querySelectorAll('.hg-dot-rest').length, axis: (g.querySelector('.hg-axis') || {}).textContent || '', readout: (g.querySelector('.hg-readout') || {}).textContent || '',
+                empty: !!g.querySelector('.hg-empty'), cursor: !!g.querySelector('.hg-cursor') })) : [],
+            };
+          })(),
+          panelFocused: document.activeElement === document.getElementById('resources-root'),
+          hasPayload: resPayload !== null,
+          payloadHasModel: !!(resPayload && resPayload.model),
+          machine: resPayload && resPayload.machine ? resPayload.machine : null,
+        });
+      }
+      // Q2: open the Window menu and press the chip's check, as a pointer would
+      case 'resourcesChipMenu': {
+        if (document.getElementById('layout-menu').hidden) document.getElementById('layout-btn').click();
+        const box = [...document.querySelectorAll('#layout-menu label')].find(l => /Show CPU and memory in the top bar/.test(l.textContent));
+        if (!box) return JSON.stringify({ ok: false, error: 'no chip row in the Window menu' });
+        const input = box.querySelector('input');
+        const before = input.checked;
+        input.click();
+        return JSON.stringify({ ok: true, before, after: input.checked });
+      }
+      // #63 follow-up: the popover's other ways to close, and the hover readout, as the page would see them
+      case 'resourcesHistoryDo': {
+        if (a.op === 'esc') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return JSON.stringify({ ok: true }); }
+        if (a.op === 'outside') { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); return JSON.stringify({ ok: true }); }
+        if (a.op === 'link') {
+          const btn = document.querySelector('#res-popover [data-hist-act="open-panel"]');
+          if (!btn) return JSON.stringify({ ok: false, error: 'no panel link' });
+          btn.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.op === 'hover') {
+          const plot = document.querySelector('#res-popover .hg[data-hist-graph="' + String(a.kind) + '"] .hg-plot');
+          if (!plot) return JSON.stringify({ ok: false, error: 'no graph to hover' });
+          const b = plot.getBoundingClientRect();
+          plot.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: b.left + b.width * Number(a.frac), clientY: b.top + b.height / 2 }));
+          return JSON.stringify({ ok: true });
+        }
+        return JSON.stringify({ ok: false, error: 'unknown op' });
+      }
+      case 'resourcesClick': {
+        // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape
+        const el = a.chip === true ? document.getElementById('tb-resources')
+          : [...document.querySelectorAll('#resources-root [data-res-act]')].find(e => e.dataset.resAct === String(a.act)
+            && (a.key === undefined || e.dataset.resKey === String(a.key)) && (a.pid === undefined || e.dataset.resPid === String(a.pid)));
+        if (!el) return JSON.stringify({ ok: false, error: 'no resources control ' + JSON.stringify(a) });
+        el.click();
+        return JSON.stringify({ ok: true });
       }
       case 'wandClick': {
         const btn = [...document.querySelectorAll('#wand-root button[data-wand-act]')].find(b => b.dataset.wandAct === a.act

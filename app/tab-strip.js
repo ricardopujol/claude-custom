@@ -101,6 +101,17 @@ function occupancyOf(o) {
   };
 }
 
+/**
+ * #63: the CPU warning chip -- `{ pct, level }` when this tab's session tree held over 40% CPU for 30 s, else
+ * null. Strict: a percentage that is not a finite number, or a level that is not amber or red, draws nothing.
+ */
+function resourceWarnOf(w) {
+  if (!w || typeof w !== 'object' || Array.isArray(w)) return null;
+  if (typeof w.pct !== 'number' || !Number.isFinite(w.pct) || w.pct < 0) return null;
+  if (w.level !== 'amber' && w.level !== 'red') return null;
+  return { pct: Math.round(w.pct), level: w.level };
+}
+
 function paintTab(doc, entry, bridge) {
   const cls = ['tab'];
   if (entry.selected) cls.push('selected');
@@ -137,6 +148,10 @@ function paintTab(doc, entry, bridge) {
     const tags = tab.appendChild(el(doc, 'span', 'agent-tags'));
     for (const t of occ.tags) tags.appendChild(el(doc, 'span', 'agent-tag', t));
     if (occ.more > 0) tags.appendChild(el(doc, 'span', 'agent-tag', `+${occ.more}`));
+  }
+  const warn = resourceWarnOf(entry.resourceWarn);
+  if (warn) {
+    tab.appendChild(el(doc, 'span', `res-warn ${warn.level}`, `${warn.pct}%`)).title = 'Over 40% CPU for 30 s. Open Resources for details.';
   }
   if (night) tab.appendChild(el(doc, 'span', 'moon', '🌙')).title = 'An overnight (/bedtime) run is going in this session';
   if (entry.lockGlyph && GLYPHS[entry.lockGlyph]) {
@@ -273,7 +288,7 @@ function paintAccent(doc, hex) {
   return true;
 }
 
-const api = { paneFor, alertFor, paint, paintAccent, windowChrome, GLYPHS };
+const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, windowChrome, GLYPHS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

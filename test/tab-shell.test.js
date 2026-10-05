@@ -39,7 +39,7 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 
 /** A shell whose every effect is a recording fake. */
-function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy } = {}) {
+function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy, resources } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
@@ -156,6 +156,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
   } };
   if (marks !== undefined) deps.marks = marks;
   if (occupancy !== undefined) deps.occupancy = occupancy;
+  if (resources !== undefined) deps.resources = resources;
   deps.now = () => 1_000_000_000;
   h.shell = createShell(deps);
   return h;
@@ -2393,4 +2394,40 @@ test("occupancy: a reopened tab's fresh page is pushed again even though nothing
   await flush();
   h.shell.refresh();
   assert.strictEqual(h.sent.filter(([k, ch]) => ch === 'occupancy' && k === key('feat-a')).length, 2);
+});
+
+// --- #63 resource warning chip ---------------------------------------------------
+
+test('each strip entry carries its CPU warning ({ pct, level }) or null', async () => {
+  const warn = { pct: 52.4, level: 'amber' };
+  const h = harness({ resources: { warnFor: k => (k === key('feat-a') ? warn : null) } });
+  await h.shell.open();
+  const byLabel = Object.fromEntries(h.shell.snapshot().model.map(e => [e.label, e.resourceWarn]));
+  assert.deepStrictEqual(byLabel, { develop: null, 'feat/a': warn, 'feat/b': null });
+});
+
+test('no resources reader: no tab has a warning', async () => {
+  const h = harness();
+  await h.shell.open();
+  assert.ok(h.shell.model().every(e => e.resourceWarn === null));
+});
+
+test('a warning reader that throws, or answers oddly, draws none and never breaks the strip', async () => {
+  for (const answer of [() => { throw new Error('boom'); }, () => ({ pct: 'x', level: 'amber' }), () => ({ pct: 50, level: 'purple' }), () => 7, () => null]) {
+    const h = harness({ resources: { warnFor: answer } });
+    await h.shell.open();
+    assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+    assert.ok(h.shell.model().every(e => e.resourceWarn === null));
+  }
+});
+
+test('refresh() republishes the strip, so a warning that came or went reaches it', async () => {
+  let warn = null;
+  const h = harness({ resources: { warnFor: () => warn } });
+  await h.shell.open();
+  const before = h.changes.length;
+  warn = { pct: 61, level: 'red' };
+  h.shell.refresh();
+  assert.ok(h.changes.length > before);
+  assert.deepStrictEqual(h.changes.at(-1).model[0].resourceWarn, { pct: 61, level: 'red' });
 });

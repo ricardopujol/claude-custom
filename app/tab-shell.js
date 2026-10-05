@@ -200,6 +200,8 @@ function createShell(deps) {
     git, hosts, ops, views, ui, log = () => {},
     // #40: `markFor(branch)` -> { id, emoji, meaning } | null. Optional.
     marks = null,
+    // #63: `warnFor(key)` -> { pct, level } | null, the tab's "over 40% CPU for 30 s" chip. Optional.
+    resources = null,
     // Worktree occupancy (#44 + #47): `claims()` -> the live claims. Optional; a reader that fails draws none.
     occupancy = null,
     now = Date.now,
@@ -275,6 +277,18 @@ function createShell(deps) {
     }
   }
 
+  // The CPU warning chip is decoration too: a reader that fails or answers oddly draws none.
+  function readResourceWarn(key) {
+    if (!resources || typeof resources.warnFor !== 'function') return null;
+    try {
+      const w = resources.warnFor(key);
+      return w && Number.isFinite(w.pct) && (w.level === 'amber' || w.level === 'red') ? { pct: w.pct, level: w.level } : null;
+    } catch (err) {
+      log('[shell] resources.warnFor threw:', err && err.message);
+      return null;
+    }
+  }
+
   // The live claims, or none: decoration, so a reader that fails or answers oddly never takes the strip down.
   function readClaims() {
     if (!occupancy || typeof occupancy.claims !== 'function') return [];
@@ -305,6 +319,8 @@ function createShell(deps) {
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
         badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(branchOf(e.key)),
+        // #63: the CPU warning chip ({ pct, level } or null).
+        resourceWarn: readResourceWarn(e.key),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
         occupancy: occupancyDisplay.tabOccupancy(claims, e.key, { keyOf, turn: t && t.status ? t.status.turn : null, now: at }),
         // Backlog #39: the hover card's lines for this tab's local-model summary ([] when it has none).
@@ -1154,6 +1170,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'repoProbe',
   // backlog #51: verify/probe-wand.js reads the wand and operates its controls
   'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
+  // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
+  'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn

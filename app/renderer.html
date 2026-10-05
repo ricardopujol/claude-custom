@@ -1095,6 +1095,93 @@
 
     /* The wand (BACKLOG #51): favourite skills as emoji buttons. Markup comes from app/wand-display.js. A dimmed
        button is a skill that no longer exists; the flash is "typed", never "ran". */
+    /* The Resources panel (BACKLOG #63) and its top-bar chip. Markup from app/resources-display.js; the bars are
+       two segments, claude-custom in the accent colour and everything else neutral. */
+    #resources-body { padding: 8px 4px; }
+    #resources-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; }
+    .zone[data-shape="wide"] .panel.on > #resources-root { flex: 1 1 auto; min-width: 260px; max-width: none; }
+    .res.res-dim .res-fig, .res.res-dim .res-bar, .res.res-dim .res-meter { opacity: .5; }
+    .res-sec { margin-bottom: 12px; }
+    .res h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: normal;
+      display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; }
+    .res-sum { text-transform: none; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+    .res-bar-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+    .res-bl { width: 46px; flex: none; font-size: 11px; color: var(--dim); }
+    .res-bar { flex: 1; height: 8px; display: flex; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .res-bar .res-ours { background: var(--accent); height: 100%; }
+    .res-bar .res-rest { background: color-mix(in srgb, var(--text) 38%, var(--border)); height: 100%; }
+    .res-bar-empty { background: repeating-linear-gradient(135deg, var(--border) 0 4px, transparent 4px 8px); }
+    .res-legend { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+    .res-fig { flex: none; min-width: 34px; text-align: right; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    /* The panel is narrow (a dock column), so a row wraps: name and the two figures on the first line, the CPU meter on
+       its own thin line under them. A name that shared one line with the meter and both figures got no width at all. */
+    .res-row { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; row-gap: 3px; padding: 3px 1px; border-radius: 4px; cursor: pointer; }
+    .res-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .res-row:focus-visible { outline: 1px solid var(--accent); }
+    .res-row.res-plain { cursor: default; }
+    .res-row.res-plain:hover { background: transparent; }
+    /* The NAME takes every leftover pixel; the figures size to their content (Ricardo's picked row: `burn.js   27%  126 MB  [stop]`). */
+    .res-row .res-fig, .res-child .res-fig { min-width: 0; }
+    /* CPU and memory sit in fixed columns (tabular figures) so they line up from row to row; the name still takes every leftover pixel */
+    .res-child > .res-fig:nth-child(2), .res-row > .res-fig:nth-child(3) { min-width: 4ch; }
+    .res-child > .res-fig:nth-child(3), .res-row > .res-fig:nth-child(4) { width: 6.4ch; }
+    .res-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-row.open .res-name::before { content: '\25BE '; }
+    .res-row:not(.open):not(.res-plain) .res-name::before { content: '\25B8 '; }
+    .res-meter { order: 9; flex: 1 0 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+    .res-meter-empty { background: repeating-linear-gradient(135deg, var(--border) 0 4px, transparent 4px 8px); }
+    .res-meter > i { display: block; height: 100%; background: var(--accent); }
+    .res-kids { margin: 0 0 4px 8px; border-left: 1px solid var(--border); padding-left: 4px; }
+    /* ONE line per child: the name gives way first (ellipsis), then CPU, memory and a small square Stop at the end. The
+       command line is the row's tooltip. */
+    .res-child { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; }
+    .res-cname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-stop, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
+    .res-stop { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 3px; }
+    /* the square stays small (Ricardo's pick) but the target is 24 x 24 (WCAG 2.2 AA 2.5.8), and a keyboard user sees where they are */
+    .res-stop::after { content: ''; position: absolute; inset: -5px; }
+    .res-stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .res-stop:hover, .res-confirm button:hover { border-color: var(--bad); color: var(--bad); }
+    .res-confirm { font-size: 11px; margin: 2px 0 4px; padding: 5px 6px; border: 1px solid var(--bad); border-radius: 4px; }
+    .res-note { font-size: 10.5px; color: var(--dim); padding: 2px 0; }
+    .res-refused { color: var(--bad); }
+    .res-footer { font-size: 10px; color: var(--dim); margin-top: 6px; }
+    #tb-resources { font-variant-numeric: tabular-nums; border-color: var(--border); }
+    #tb-resources.res-amber { border-color: #e6c34a; color: #e6c34a; }
+    #tb-resources.res-red { border-color: var(--bad); color: var(--bad); }
+    #tb-resources.res-dim { opacity: .55; }
+    /* The one-hour history (#63 follow-up, design option B): a sparkline after each figure, and a popover with two larger graphs.
+       The accent is claude-custom's share, the neutral colour is everything else (the same two colours as the panel's bars). */
+    #tb-resources { display: inline-flex; align-items: center; gap: 4px; }
+    #tb-resources[hidden] { display: none; }
+    #tb-resources .hs { flex: none; stroke: currentColor; fill: currentColor; stroke-width: 1; stroke-linejoin: round; opacity: .85; }
+    #tb-resources .hs polyline { fill: none; }
+    #tb-resources .tbr-n { white-space: nowrap; }
+    #res-popover { position: fixed; z-index: 60; box-sizing: border-box; width: 336px; padding: 10px 12px; background: var(--chrome); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.45); font-size: 11px; }
+    #res-popover[hidden] { display: none; }
+    .hg { margin-bottom: 10px; }
+    .hg-name { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin-bottom: 3px; }
+    .hg-plot { position: relative; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 4px; overflow: hidden; }
+    .hg-plot svg { display: block; }
+    .hg-rest { fill: color-mix(in srgb, var(--text) 38%, var(--border)); }
+    .hg-ours, .hg-dot-ours { fill: var(--accent); }
+    .hg-dot-rest { fill: color-mix(in srgb, var(--text) 38%, var(--border)); }
+    .hg-latest { fill: var(--text); stroke: var(--chrome); stroke-width: 1; }
+    .hg-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--text); opacity: .6; pointer-events: none; }
+    .hg-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--dim); margin-top: 2px; }
+    .hg-readout { min-height: 14px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .hg-empty { color: var(--dim); padding: 14px 0; }
+    .hg-key { color: var(--dim); font-size: 10.5px; }
+    .hg-link { display: block; margin-top: 8px; padding: 0; font: inherit; font-size: 10.5px; color: var(--accent); background: none; border: 0; cursor: pointer; }
+    .hg-link:hover { text-decoration: underline; }
+    .hg-link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    .hg-sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 0; vertical-align: baseline; }
+    .hg-sw-ours { background: var(--accent); }
+    .hg-sw-rest { background: color-mix(in srgb, var(--text) 38%, var(--border)); margin-left: 8px; }
     #wand-body { padding: 8px 10px; }
     .wand-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     #wand-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
@@ -1480,6 +1567,9 @@
            behaves. Working directory is FF3 (window title); spend/quota are
            status, not controls, and stay in #usage/#quota below. -->
       <span id="top-bar">
+        <!-- BACKLOG #63: the machine total (app/resources-display.js chipView) with a one-hour sparkline after each figure
+             (app/resources-history-display.js). A click opens the popover with the larger graphs. -->
+        <button type="button" id="tb-resources" class="tb-chip" aria-controls="res-popover" aria-expanded="false" title="Machine total and the last hour. Click for the graphs.">CPU —  — / —</button>
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
         <span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span>
@@ -1701,6 +1791,10 @@
                that is replaced is not read out). Visually hidden; the visible copy is in the panel. -->
           <div id="wand-live" class="wand-live" role="status" aria-live="polite" aria-atomic="true"></div>
         </div>
+        <!-- BACKLOG #63: the Resources panel. app/resources-display.js draws it from main's payload. -->
+        <div class="panel" data-panel="resources" id="resources-body">
+          <div id="resources-root" tabindex="-1"><div class="res-note">measuring…</div></div>
+        </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
         </div>
@@ -1739,6 +1833,10 @@
   <script src="./loadout-display.js"></script>
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
+  <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
+  <div id="res-popover" hidden role="region" aria-label="CPU and memory over the last hour"></div>
+  <script src="./resources-display.js"></script>
+  <script src="./resources-history-display.js"></script>
   <script src="./top-bar-display.js"></script>
   <script src="./accent-preview.js"></script>
   <script src="./context-fill-display.js"></script>

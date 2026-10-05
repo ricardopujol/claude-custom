@@ -636,3 +636,28 @@ test('hover: the lines are set as title text, never markup', () => {
   paint(doc, { model: [entry({ summaryLines: ['<img src=x onerror=alert(1)>'] })] }, bridgeSpy());
   assert.strictEqual(doc.byId.tabs.children[0].title, 'feat/a\n<img src=x onerror=alert(1)>');
 });
+
+// --- #63 the CPU warning chip -------------------------------------------------------
+
+test('#63 paint: a tab with a CPU warning gets a chip with its percentage and level, and its hover words', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [
+    entry({ key: 'plain' }),
+    entry({ key: 'hot', resourceWarn: { pct: 52.4, level: 'amber' } }),
+    entry({ key: 'hotter', resourceWarn: { pct: 80, level: 'red' } }),
+  ] }, bridgeSpy());
+  const [plain, hot, hotter] = doc.byId.tabs.children;
+  assert.strictEqual(child(plain, 'res-warn'), undefined);
+  const chip = child(hot, 'res-warn');
+  assert.strictEqual(chip.textContent, '52%');
+  assert.match(chip.className, /\bamber\b/);
+  assert.strictEqual(chip.title, 'Over 40% CPU for 30 s. Open Resources for details.');
+  assert.match(child(hotter, 'res-warn').className, /\bred\b/);
+});
+
+test('#63 paint: a malformed warning draws no chip (absence is not a zero)', () => {
+  const doc = fakeDoc();
+  const bad = [null, undefined, 7, 'x', [], {}, { pct: null, level: 'amber' }, { pct: NaN, level: 'amber' }, { pct: '50', level: 'amber' }, { pct: -1, level: 'red' }, { pct: 50, level: 'purple' }];
+  paint(doc, { model: bad.map((w, i) => entry({ key: `k${i}`, resourceWarn: w })) }, bridgeSpy());
+  for (const t of doc.byId.tabs.children) assert.strictEqual(child(t, 'res-warn'), undefined);
+});
