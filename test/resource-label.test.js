@@ -124,6 +124,8 @@ test('D10: the result never starts with a dash or slash, never holds a quote, an
 // `pwd -P` around it. (`-c -l` forms exist too; those are covered above.)
 const BASH_TOOL = String.raw`"C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/ricar/.claude/shell-snapshots/snapshot-bash-1791203932202-9fw7k5.sh 2>/dev/null || true && export TEMP='C:\Users\ricar\AppData\Local\Temp' TMP='C:\Users\ricar\AppData\Local\Temp' && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'CMD' < /dev/null && pwd -P >| /c/Users/ricar/AppData/Local/Temp/claude-cfc0-cwd"`;
 const bashTool = c => BASH_TOOL.replace('CMD', () => c);
+// the way the tool really embeds a command that holds double quotes: escaped inside the outer -c "..."
+const bashToolQ = c => bashTool(c.replace(/"/g, '\\"'));
 
 test('a REAL Claude Code Bash-tool command line labels as the command it runs', () => {
   assert.strictEqual(displayName(bashTool('node C:/w/burn.js 8'), 'bash.exe'), 'burn.js');
@@ -212,5 +214,40 @@ test('property: a program that is not an interpreter, shell or wrapper shows exa
 test('a compound Bash-tool command (cd && env ... && node script) labels as the program that does the work', () => {
   assert.strictEqual(displayName(bashTool('cd /c/proj && env -u ELECTRON_RUN_AS_NODE -u X=1 FOO=bar node verify/probe-x.js 2>&1 | tail -3'), 'bash.exe'), 'probe-x.js');
   assert.strictEqual(displayName(bashTool('cd /c/proj && npm test'), 'bash.exe'), 'npm test');
-  assert.strictEqual(displayName(bashTool('cd /c/proj'), 'bash.exe'), 'cd');
+  assert.strictEqual(displayName(bashTool('cd /c/proj'), 'bash.exe'), 'bash', 'a lone cd has no program to name');
+});
+
+test('an eval\'d command whose first word is not a plain program word shows the shell\'s own name, never a fragment', () => {
+  const L = c => displayName(bashToolQ(c), 'bash.exe');
+  for (const c of ['$(env | grep X) node a.js', '`date` x', '(cd /x && npm test)', '{ npm test; }', '[[ -f x ]] && npm test', '! npm test', '"$HOME/x" a', '$X', '> out.txt', '']) {
+    assert.strictEqual(L(c), 'bash', JSON.stringify(c));
+  }
+  assert.strictEqual(displayName(`bash -c ${JSON.stringify('$(env | grep X)')}`, 'bash.exe'), 'bash');
+  assert.strictEqual(displayName(`sh -c ${JSON.stringify('(a; b)')}`, 'sh.exe'), 'sh', 'the shell is named by what it is');
+});
+
+test('an eval\'d command skips assignments and time/env/exec/nohup, and a leading cd, to the program that does the work', () => {
+  const L = c => displayName(bashToolQ(c), 'bash.exe');
+  assert.strictEqual(L('FOO=1 npm test'), 'npm test');
+  assert.strictEqual(L('FOO=1 BAR="a b" node C:/w/burn.js'), 'burn.js');
+  assert.strictEqual(L('FOO=1'), 'bash', 'an assignment alone has no command');
+  assert.strictEqual(L('cd /x && npx stryker run'), 'stryker run');
+  assert.strictEqual(L('cd /x; npm run build'), 'npm run build');
+  assert.strictEqual(L('cd /x && $(which node) a.js'), 'bash', 'the command after cd is not a plain word');
+  assert.strictEqual(L('time npm test'), 'npm test');
+  assert.strictEqual(L('nohup node /c/w/a.js &'), 'a.js');
+  assert.strictEqual(L('exec node /c/w/a.js'), 'a.js');
+  assert.strictEqual(L('time env FOO=1 nohup npm test'), 'npm test');
+  assert.strictEqual(L('env -u X FOO=1 node /c/w/a.js'), 'a.js');
+});
+
+test('property: no label contains $, a backtick, a parenthesis, a brace or a quote', () => {
+  const shellish = fc.array(fc.constantFrom('$(', ')', '`', '{', '}', '(', 'eval', "'", '"', 'npm', 'test', 'cd', '/x', '&&', ';', '|', 'FOO=1', 'time', 'env', 'exec', 'nohup', '$X', 'node', 'a.js', '[[', ']]', '!', '-u', 'X', '2>&1'), { maxLength: 14 }).map(a => a.join(' '));
+  fc.assert(fc.property(fc.oneof(shellish, fc.string()), fc.constantFrom('bash -c', 'bash -lc', 'sh -c', 'cmd /c', 'powershell -Command', 'node -e', 'node'), (body, head) => {
+    for (const cmd of [`${head} ${JSON.stringify(body)}`, bashToolQ(body), `${head} ${body}`]) {
+      const s = displayName(cmd, 'bash.exe');
+      assert.ok(!/[$`(){}"']/.test(s), JSON.stringify([cmd, s]));
+      assert.ok(s.trim() !== '' && !/^[-/]/.test(s));
+    }
+  }), { numRuns: 1500 });
 });

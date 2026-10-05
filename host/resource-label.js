@@ -143,24 +143,39 @@ function interpreterLabel(shown, args, { value, evals, pyModule = false }) {
   return [shown, ...args.filter(a => a.startsWith('-')).slice(0, 2)].join(' ');
 }
 
-/** A shell payload (what `-c` runs): Claude Code's `source <snapshot> && eval '<cmd>' < /dev/null && pwd -P >| <file>`, or a plain command. */
-function payloadLabel(payload, depth) {
+// A word that can name a program. Anything else first (`$(...)`, a backtick, `(`, `{`, `[[`, `!`, a variable, a redirect) is shell
+// syntax, and a fragment of it is not a label: the row shows the shell's own name instead.
+const PLAIN_WORD = /^[A-Za-z0-9_.\/\\:~][^\s$`(){}[\]!"'<>|&;*?]*$/;
+const PREFIX_WORDS = new Set(['time', 'nohup', 'exec', 'command', 'sudo', 'builtin']);
+const isAssignment = t => /^[A-Za-z_][A-Za-z0-9_]*=/.test(t);
+
+/** A shell payload (what `-c` runs): Claude Code's `source <snapshot> && eval '<cmd>' < /dev/null && pwd -P >| <file>`, or a plain command. `shell` is the shell's name. */
+function payloadLabel(payload, depth, shell) {
   const text = isStr(payload) ? payload : '';
   const ev = /(?:^|[\s;&|])eval\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/.exec(text);
-  if (ev && depth < DEPTH) return payloadLabel((ev[1] !== undefined ? ev[1] : ev[2]).replace(/\\(["\\$`])/g, '$1'), depth + 1);
+  if (ev && depth < DEPTH) return payloadLabel((ev[1] !== undefined ? ev[1] : ev[2]).replace(/\\(["\\$`])/g, '$1'), depth + 1, shell);
   const segs = text.split(/\s*(?:&&|\|\||;|\|)\s*/).map(s => s.trim()).filter(Boolean);
-  const pick = segs.find((s) => {
-    const w = s.split(/\s+/)[0];
-    return !SHELL_SKIP_FIRST.has(w);
-  }) || segs[0] || '';
-  const stripped = tokens(pick, { posix: true }).filter(t => !/^\d*[<>]/.test(t));
-  while (stripped.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(stripped[0])) stripped.shift();
-  if (stripped[0] === 'exec' || stripped[0] === 'command' || stripped[0] === 'sudo') stripped.shift();
-  if (stripped[0] === 'env') {
-    stripped.shift();
-    while (stripped.length && (/^-/.test(stripped[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(stripped[0]))) stripped.splice(0, /^-[uC]$/.test(stripped[0]) ? 2 : 1);
+  const pick = segs.find(sg => !SHELL_SKIP_FIRST.has(sg.split(/\s+/)[0]));
+  if (pick === undefined) return shell;
+  const toks = [];
+  const raw = tokens(pick, { posix: true });
+  for (let i = 0; i < raw.length; i++) {
+    if (/^\d*[<>]+&?$/.test(raw[i])) { i++; continue; }      // a bare redirect operator takes the next word with it
+    if (/^\d*[<>]/.test(raw[i])) continue;
+    toks.push(raw[i]);
   }
-  return labelOfCommand(stripped.map(t => (/\s/.test(t) ? `"${t}"` : t)).join(' '), '', depth + 1, true);
+  for (let moved = true; moved && toks.length;) {
+    moved = false;
+    while (toks.length && (isAssignment(toks[0]) || PREFIX_WORDS.has(toks[0]))) { toks.shift(); moved = true; }
+    if (toks[0] === 'env') {
+      toks.shift();
+      moved = true;
+      while (toks.length && (/^-/.test(toks[0]) || isAssignment(toks[0]))) toks.splice(0, /^-[uC]$/.test(toks[0]) ? 2 : 1);
+    }
+  }
+  if (!toks.length || !PLAIN_WORD.test(toks[0])) return shell;
+  const out = labelOfCommand(toks.map(t => (/\s/.test(t) ? `"${t}"` : t)).join(' '), '', depth + 1, true);
+  return out === '' ? shell : out;
 }
 
 function posixShellLabel(shown, rest, depth) {
@@ -172,7 +187,7 @@ function posixShellLabel(shown, rest, depth) {
     if (BASH_VALUE.has(a)) { i++; continue; }
     if (a.startsWith('--')) continue;
     if (/^[-+][A-Za-z]+$/.test(a)) { if (a.startsWith('-') && a.includes('c')) wantsCommand = true; continue; }
-    if (wantsCommand) return payloadLabel(a, depth);
+    if (wantsCommand) return payloadLabel(a, depth, shown);
     return scriptLabel(a, args.slice(i + 1));
   }
   return shown;
@@ -231,7 +246,7 @@ function displayName(cmd, imageName) {
   try {
     if (!isStr(cmd) || cmd.trim() === '') return clip(fallback);
     const out = clean(labelOfCommand(cmd, imageName, 0, false));
-    if (out === '' || /^[-/]/.test(out)) return clip(fallback);
+    if (out === '' || /^[-/]/.test(out) || /[$`(){}]/.test(out)) return clip(fallback);
     return clip(out);
   } catch {
     return clip(fallback);
