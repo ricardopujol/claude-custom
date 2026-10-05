@@ -153,6 +153,12 @@ test('classifyNote: a failed model call is passed on, so the note waits (the rea
   assert.deepStrictEqual(r2, { ok: false, reason: 'timeout' });
 });
 
+test('a whole classification (two calls, each tried twice) fits inside the GPU slot\'s staleness, or another tab could take the slot mid-job', () => {
+  const { STALE_MS } = require('../host/summary-slot');
+  assert.ok(Number.isInteger(c.GENERATE_TIMEOUT_MS) && c.GENERATE_TIMEOUT_MS > 0);
+  assert.ok(2 * 2 * c.GENERATE_TIMEOUT_MS < STALE_MS, `${4 * c.GENERATE_TIMEOUT_MS} >= ${STALE_MS}`);
+});
+
 // --- the picker's candidates -----------------------------------------------------------------------------------------
 
 test('candidates: the items sharing the most words with the note, newest first on a tie, at most k', () => {

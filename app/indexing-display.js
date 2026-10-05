@@ -176,14 +176,206 @@ function short(text, max = 64) {
   return cut + '…';
 }
 
+// --- the painters (verify/probe-indexing-strip.js runs them in a real window) -----------------------------------------
+
+function el(doc, tag, cls, text) {
+  const e = doc.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function button(doc, text, cls, onClick) {
+  const b = el(doc, 'button', cls, text);
+  b.type = 'button';
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+/** A <select> whose first option is the prompt; picking anything else calls onPick(value). */
+function picker(doc, prompt, options, onPick) {
+  const s = el(doc, 'select');
+  s.setAttribute('aria-label', prompt);
+  s.appendChild(new doc.defaultView.Option(prompt, ''));
+  for (const o of options) s.appendChild(new doc.defaultView.Option(o.guess ? `${o.label} (best guess)` : o.label, o.value));
+  s.addEventListener('change', () => { if (s.value) onPick(s.value); });
+  return s;
+}
+
+/** The strip's field, chip and counter (app/tab-strip.html). */
+function mountStrip(doc, bridge) {
+  const input = doc.getElementById('index-note');
+  const chip = doc.getElementById('index-chip');
+  const count = doc.getElementById('index-count');
+  const form = doc.getElementById('index');
+  if (!input || !chip || !count || !form || !bridge || typeof bridge.indexSubmit !== 'function') return false;
+  form.addEventListener('submit', (ev) => ev.preventDefault());
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); input.blur(); bridge.indexLeave(); return; }
+    if (ev.key !== 'Enter' || ev.isComposing) return;
+    ev.preventDefault();
+    const v = input.value;
+    if (v.trim() === '') { bridge.indexConfirm(); return; }
+    Promise.resolve(bridge.indexSubmit(v)).then((r) => {
+      if (r && r.ok && input.value === v) input.value = '';
+    }, () => {});
+  });
+  input.addEventListener('focus', () => bridge.indexFocus(true));
+  input.addEventListener('blur', () => bridge.indexFocus(false));
+  chip.addEventListener('click', () => bridge.indexChip());
+  count.addEventListener('click', () => bridge.indexList());
+  bridge.onIndex((state) => paintStrip(doc, state));
+  bridge.onIndexFocus(() => { input.focus(); input.select(); });
+  return true;
+}
+
+function paintStrip(doc, state) {
+  const s = state && typeof state === 'object' ? state : {};
+  const chip = doc.getElementById('index-chip');
+  const count = doc.getElementById('index-count');
+  const input = doc.getElementById('index-note');
+  const label = typeof s.label === 'string' && s.label !== '' ? s.label : 'this project';
+  chip.textContent = label;
+  chip.title = `Files into ${label}. Click to switch project.`;
+  count.textContent = counterText(s.counts);
+  count.setAttribute('aria-expanded', String(s.listOpen === true));
+  const c = s.counts && typeof s.counts === 'object' ? s.counts : {};
+  count.classList.toggle('pending', num(c.waiting) > 0 || num(c.asking) > 0);
+  input.title = s.mode === 'direct'
+    ? 'Type a note and press Enter: it is filed in the docs (Ctrl+Alt+N, Esc to leave)'
+    : 'Type a note and press Enter: it asks where it goes before anything is written (Ctrl+Alt+N, Esc to leave)';
+}
+
+/** The toast or the list (app/indexing-overlay.html?part=toast|list). */
+function mountOverlay(doc, bridge, part) {
+  const rootEl = doc.getElementById('root');
+  if (!rootEl || !bridge || typeof bridge.onState !== 'function') return false;
+  let state = null;
+  let timerKey = null;
+  let timer = null;
+  const report = () => {
+    const h = rootEl.firstElementChild ? Math.ceil(rootEl.getBoundingClientRect().height) : 0;
+    bridge.size(part, h);
+  };
+  if (typeof doc.defaultView.ResizeObserver === 'function') new doc.defaultView.ResizeObserver(report).observe(rootEl);
+  doc.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || !state) return;
+    if (part === 'list') bridge.closeList();
+    else if (state.toast) bridge.dismiss(state.toast.seq);
+  });
+  const accent = (hex) => {
+    if (typeof hex === 'string' && /^#[0-9a-f]{6}$/i.test(hex)) doc.documentElement.style.setProperty('--accent', hex);
+    else doc.documentElement.style.removeProperty('--accent');
+  };
+  bridge.onState((s) => {
+    state = s;
+    accent(s && s.accent);
+    rootEl.replaceChildren();
+    const node = part === 'list' ? listNode(doc, s, bridge) : toastNode(doc, s, bridge);
+    if (node) rootEl.appendChild(node);
+    if (part === 'toast') {
+      const kind = node ? node.dataset.kind : null;
+      const key = s && s.toast && kind ? `${s.toast.seq}:${kind}` : null;
+      if (key !== timerKey) {
+        clearTimeout(timer);
+        timerKey = key;
+        const ms = kind ? toastMs(kind) : null;
+        if (ms !== null) { const seqNow = s.toast.seq; timer = setTimeout(() => bridge.dismiss(seqNow), ms); }
+      }
+    }
+    report();
+  });
+  bridge.ready(part);
+  return true;
+}
+
+function rowsOf(s) {
+  return s && s.snapshot && Array.isArray(s.snapshot.list) ? s.snapshot.list : [];
+}
+
+function toastNode(doc, s, bridge) {
+  if (!s || !s.toast) return null;
+  const titles = s.snapshot ? s.snapshot.titles : {};
+  const row = rowsOf(s).find(n => n.id === s.toast.id) || null;
+  const failed = resultToast(s.toast.result);
+  const m = failed || (row ? toastModel(row, titles) : null);
+  if (!m) return null;
+  const box = el(doc, 'div', `toast ${m.kind}`);
+  box.dataset.kind = m.kind;
+  const head = box.appendChild(el(doc, 'div', 't1'));
+  if (m.kind === 'filing') head.appendChild(el(doc, 'span', 'spin'));
+  if (m.kind === 'filed') {
+    head.appendChild(el(doc, 'span', null, 'Filed:'));
+    head.appendChild(el(doc, 'span', 'dest', placeText(row.where)));
+  } else {
+    head.appendChild(el(doc, 'span', m.kind === 'asking' ? 'ask' : null, m.line));
+  }
+  if (!failed && row) box.appendChild(el(doc, 'div', 'note', short(row.text, 90))).title = row.text;
+  const acts = el(doc, 'div', 'acts');
+  if (m.kind === 'filed') {
+    if (m.undo) acts.appendChild(button(doc, 'Undo', null, () => bridge.undo(row.id)));
+    acts.appendChild(picker(doc, 'Move to…', pickerOptions(row, titles, { moving: true }), (v) => bridge.move(row.id, v)));
+  } else if (m.kind === 'asking') {
+    const opts = m.options || [];
+    if (opts.length) acts.appendChild(button(doc, `File it (Enter)`, 'primary', () => bridge.choose(row.id, opts[0].value)));
+    acts.appendChild(picker(doc, 'Put it in…', opts, (v) => bridge.choose(row.id, v)));
+    acts.appendChild(button(doc, 'Not now', null, () => bridge.dismiss(s.toast.seq)));
+  } else if (m.kind === 'cant-undo') {
+    acts.appendChild(button(doc, 'Open', null, () => bridge.open(m.open)));
+  }
+  if (acts.childElementCount) box.appendChild(acts);
+  const ms = toastMs(m.kind);
+  if (ms !== null) {
+    const bar = box.appendChild(el(doc, 'div', 'bar'));
+    const fill = bar.appendChild(el(doc, 'i'));
+    fill.style.animationDuration = `${ms}ms`;
+  }
+  return box;
+}
+
+function listNode(doc, s, bridge) {
+  if (!s || s.listOpen !== true) return null;
+  const titles = s.snapshot ? s.snapshot.titles : {};
+  const box = el(doc, 'div', 'pop');
+  const head = box.appendChild(el(doc, 'div', 'head'));
+  head.appendChild(el(doc, 'span', null, `Today · ${typeof s.label === 'string' ? s.label : ''}`));
+  head.appendChild(button(doc, '✕', 'x', () => bridge.closeList())).title = 'Close (Esc)';
+  const rows = rowsOf(s);
+  if (rows.length === 0) box.appendChild(el(doc, 'div', 'empty', 'Nothing filed today.'));
+  for (const r of rows) {
+    const lr = listRow(r);
+    const line = box.appendChild(el(doc, 'div', `row ${r.state}`));
+    line.appendChild(el(doc, 'span', 'what', short(lr.text, 70))).title = lr.text;
+    line.appendChild(el(doc, 'span', 'when', lr.time));
+    line.appendChild(el(doc, 'span', 'where', lr.where));
+    const acts = el(doc, 'span', 'mini');
+    if (lr.undo) acts.appendChild(button(doc, 'Undo', null, () => bridge.undo(r.id)));
+    if (lr.move) acts.appendChild(picker(doc, 'Move to…', pickerOptions(r, titles, { moving: true }), (v) => bridge.move(r.id, v)));
+    if (lr.pick) {
+      const opts = pickerOptions(r, titles);
+      if (opts.length) acts.appendChild(button(doc, 'File it', 'primary', () => bridge.choose(r.id, opts[0].value))).title = opts[0].label;
+      acts.appendChild(picker(doc, 'Put it in…', opts, (v) => bridge.choose(r.id, v)));
+    }
+    if (acts.childElementCount) line.appendChild(acts);
+  }
+  return box;
+}
+
 const api = {
   counterText, placeText, reasonText, pickerOptions, choiceOf, toastModel, resultToast, toastMs, listRow, short, timeOf,
+  mountStrip, paintStrip, mountOverlay,
 };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
 } else {
   root.indexingDisplay = api;
+  if (root.strip && typeof root.strip.indexSubmit === 'function') mountStrip(root.document, root.strip);
+  if (root.indexing && typeof root.indexing.onState === 'function') {
+    let part = 'toast';
+    try { part = new URLSearchParams(root.location.search).get('part') === 'list' ? 'list' : 'toast'; } catch { /* toast */ }
+    mountOverlay(root.document, root.indexing, part);
+  }
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

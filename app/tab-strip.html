@@ -95,6 +95,28 @@
     #create-branch:disabled { color: var(--dim); }
     #create-cancel { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
     #create-cancel:hover { color: var(--text); }
+    /* Backlog #66, the indexing field (DESIGN_INDEXING_ASSISTANT.md pick A): a note typed here never goes into a
+       session; the chip names the project it files into, the counter opens today's list. STATIC, outside #tabs, so a
+       repaint never wipes what is being typed. Its toast and list are app/indexing-overlay.html, over the tab views. */
+    #index ~ #bg { margin-left: 0; }
+    #index { margin-left: auto; flex: 0 1 340px; min-width: 150px; align-self: center; display: flex; align-items: center; gap: 6px;
+      margin-right: 4px; height: 24px; box-sizing: border-box; padding: 0 3px 0 8px; border-radius: 6px;
+      background: var(--bg); border: 1px solid var(--border); }
+    #index:focus-within { border-color: var(--accent); }
+    #index-note { flex: 1 1 auto; min-width: 0; height: 100%; border: 0; outline: none; background: transparent;
+      color: var(--text); font: inherit; font-size: 12px; padding: 0; user-select: text; }
+    #index-note::placeholder { color: var(--dim); }
+    #index-chip { flex: 0 1 auto; min-width: 0; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      border: 1px solid var(--border); background: transparent; color: var(--dim); border-radius: 4px; cursor: pointer;
+      font: 11px/16px Consolas, "Cascadia Mono", monospace; padding: 0 6px; }
+    #index-chip:hover { color: var(--text); border-color: var(--dim); }
+    #index-count { flex: 0 0 auto; align-self: center; margin-right: 6px; height: 20px; border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--accent) 6%, var(--chrome)); color: var(--text); border-radius: 4px; cursor: pointer;
+      font: 11px/18px Consolas, "Cascadia Mono", monospace; padding: 0 6px; white-space: nowrap; }
+    #index-count:hover { border-color: var(--dim); }
+    #index-count.pending { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+    #index-count[aria-expanded="true"] { border-color: var(--accent); }
+    #index-chip:focus-visible, #index-count:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     @keyframes pulse { 50% { opacity: 0.35; } }
     /* #31: an UNSELECTED tab whose session needs you (urgent: the accent, quick)
        or finished (calm: green, slow). The model never marks the selected tab,
@@ -151,7 +173,11 @@
       title="New branch, or reopen a tab you closed (Ctrl+Shift+T)">+</button><form id="create" hidden><input
       id="create-branch" placeholder="feat/…" spellcheck="false" autocomplete="off"
       aria-label="New branch name" /><button type="button" id="create-cancel" title="Cancel (Esc)">✕</button></form><div
-      id="strip-alert" hidden></div><button type="button" id="bg" title="Running sessions">▾</button><button
+      id="strip-alert" hidden></div><form id="index" autocomplete="off"><input id="index-note"
+      placeholder="Note an idea, a bug, a fix…" spellcheck="false" maxlength="10000"
+      aria-label="Note for the indexing assistant (Ctrl+Alt+N)" /><button type="button" id="index-chip"
+      title="Files into this project. Click to switch project.">…</button></form><button type="button" id="index-count"
+      aria-expanded="false" title="Today's notes: where each went, Undo, Move">0 filed</button><button type="button" id="bg" title="Running sessions">▾</button><button
       type="button" id="win-min" class="win-btn" title="Minimise" aria-label="Minimise" hidden>&#x2013;</button><button
       type="button" id="win-close" class="win-btn" title="Close window (sessions keep running)" aria-label="Close window"
       hidden>&#x2715;</button></div>
@@ -159,6 +185,7 @@
     <div id="pane-text"></div>
     <button type="button" id="pane-retry" hidden>Retry</button>
   </div>
+  <script src="./indexing-display.js"></script>
   <script src="./tab-strip.js"></script>
 </body>
 </html>

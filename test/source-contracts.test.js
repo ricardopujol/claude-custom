@@ -217,9 +217,17 @@ test('the tab strip never uses innerHTML: a branch name is text, not markup', ()
   assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
 
-test('tab-strip.html loads only its own script', () => {
+test('tab-strip.html loads only its own scripts: the indexing field\'s (#66) and the strip\'s', () => {
   const html = read('app/tab-strip.html');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './tab-strip.js']);
+});
+
+test('the indexing overlay loads only its display script, and neither page uses innerHTML: a note is text (#66)', () => {
+  const html = read('app/indexing-overlay.html');
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js']);
+  assert.match(html, /script-src 'self'/);
+  const src = read('app/indexing-display.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
 
 // PR #93 Miguel I5 (here, not in probe-seams.test.js: that file is in the mutation command, and reading a

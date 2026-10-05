@@ -39,6 +39,10 @@ const TITLE_MAX = 80;
 const FALLBACK_WORDS = 8;
 // How the model is asked (host/summary-ollama.js generate): a JSON reply, no sampling noise, room for a title.
 const GENERATE_OPTIONS = Object.freeze({ format: 'json', numPredict: 120, temperature: 0 });
+// The indexing client's per-try timeout. A classification is up to two calls (kind, then a new item's title), each tried
+// twice by the client, all inside one hold of the shared GPU slot: 4 x this must stay under host/summary-slot.js's
+// STALE_MS or another tab could take the slot mid-job. Measured: ~0.3 s a note warm; a cold model load is seconds.
+const GENERATE_TIMEOUT_MS = 20_000;
 
 function buildKindPrompt(note) {
   return [
@@ -166,5 +170,5 @@ async function classifyNote({ note, backlogText, generate }) {
 
 module.exports = {
   classifyNote, buildKindPrompt, parseKindReply, matchTarget, buildTitlePrompt, parseTitleReply,
-  candidates, overlap, fallbackTitle, titleLines, KINDS, BACKLOG_KINDS, MATCH_MIN, GENERATE_OPTIONS,
+  candidates, overlap, fallbackTitle, titleLines, KINDS, BACKLOG_KINDS, MATCH_MIN, GENERATE_OPTIONS, GENERATE_TIMEOUT_MS,
 };
