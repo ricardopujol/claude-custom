@@ -20,7 +20,8 @@ const PID_MAX = 2147483647;                    // Get-Process -Id and the script
 const START_MAX = '9223372036854775807';       // the script casts the start to [long]; FILETIMEs are 18 digits
 // `pid` and `start` are written raw into PowerShell source, so each must be exactly a number the script can read back:
 // digits only, in range (1e21 is an integer to JS but prints as 1e+21), and a start that fits a signed 64-bit integer.
-const startFits = s => /^\d{1,19}$/.test(s) && (s.length < START_MAX.length || s <= START_MAX);
+// A start of zero is refused: the script reads `$curStart -le 0` as "start unknown" and skips the protected-process scan.
+const startFits = s => /^\d{1,19}$/.test(s) && /[1-9]/.test(s) && (s.length < START_MAX.length || s <= START_MAX);
 const validTarget = t => !!t && Number.isInteger(t.pid) && t.pid > 0 && t.pid <= PID_MAX && typeof t.start === 'string' && startFits(t.start);
 
 function killScript(targets) {
