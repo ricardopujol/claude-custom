@@ -293,29 +293,26 @@ test('#27: statusInHeader true -> the user command does not run and nothing is p
   assert.strictEqual(res.code, 0);
 });
 
-test('#67: only an explicit statusInHeader false -> the user row prints', async () => {
-  const file = writeChrome(tmpDir('relay-loud'), { statusInHeader: false });
-  const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
-  assert.strictEqual(res.out, 'USER-ROW');
-});
-
-test('#67: hidden is the default -> a missing file, or a record that never chose, stays quiet', async () => {
-  const dir = tmpDir('relay-default');
-  const files = [path.join(dir, 'nope.json')];
-  for (const value of [{}, { framelessWindow: true }, { statusInHeader: 'false' }, { statusInHeader: 0 }, null, [false]]) {
-    files.push(writeChrome(dir, value));
-    const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', files[files.length - 1]], DOC);
-    assert.strictEqual(res.out, '', JSON.stringify(value));
+test('#27: statusInHeader false, missing, or not exactly true -> the user row prints as before', async () => {
+  const dir = tmpDir('relay-loud');
+  for (const value of [{ statusInHeader: false }, {}, { statusInHeader: 'true' }, { statusInHeader: 1 }, null, [true]]) {
+    const file = writeChrome(dir, value);
+    const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
+    assert.strictEqual(res.out, 'USER-ROW', JSON.stringify(value));
   }
-  const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', files[0]], DOC);
-  assert.strictEqual(res.out, '', 'missing file');
 });
 
-test('#67: a corrupt toggle file -> the user row prints (fail toward showing)', async () => {
-  const corrupt = path.join(tmpDir('relay-bad'), 'chrome-global.json');
+test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (fail toward showing)', async () => {
+  const dir = tmpDir('relay-bad');
+  const corrupt = path.join(dir, 'chrome-global.json');
   fs.writeFileSync(corrupt, '{not json');
-  const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', corrupt], DOC);
-  assert.strictEqual(res.out, 'USER-ROW');
+  const unreadable = path.join(dir, 'a-directory.json');   // exists, but reading it throws EISDIR
+  fs.mkdirSync(unreadable);
+  // #67: the DEFAULT is main's to write into the file, never the relay's guess.
+  for (const file of [path.join(dir, 'nope.json'), corrupt, unreadable]) {
+    const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
+    assert.strictEqual(res.out, 'USER-ROW', file);
+  }
 });
 
 test('#27: quiet still forwards the document to the host', async () => {
