@@ -50,6 +50,9 @@ const REPO_SCANNING = new Set([
   // renderer.js source text, plus a run of its submit path against stubs; it requires submit-gate only to feed
   // those stubs the real gate, which submit-gate.test.js and submit-gate-properties.test.js pin themselves.
   'renderer-wand-wiring.test.js',
+  // renderer.js / renderer.html / main.js / preload.js source text (#63); it requires tab-shell only for the probe-action
+  // whitelist, which tab-shell.test.js pins itself.
+  'renderer-resources-wiring.test.js',
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
