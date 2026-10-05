@@ -297,6 +297,17 @@ async function main() {
   check('8: a click outside closes it', (await waitFor(async () => { const s = await rs(); return s.hist.open === false ? s : null; }, 5000, 150)) !== null);
   check('8: and the panel was not opened by any of it (the chip no longer does that)', (await rs()).shown === true);
 
+
+  // Ricardo's Q1: a link under the legend opens the Resources panel (showing and focusing it) and closes the popover.
+  await view(app, 'select', { id: 'agents' });
+  await waitFor(async () => (await rs()).shown === false, 5000, 150);
+  await view(app, 'resourcesClick', { chip: true });
+  const withLink = await waitFor(async () => { const s = await rs(); return s.hist.open ? s : null; }, 5000, 150);
+  check('8: the popover has an "Open Resources panel" link under the legend, reachable by keyboard (a real button)', !!withLink && withLink.hist.link === true, JSON.stringify(withLink && withLink.hist.link));
+  await view(app, 'resourcesHistoryDo', { op: 'link' });
+  const viaLink = await waitFor(async () => { const s = await rs(); return s.shown && s.hist.open === false && s.panelFocused ? s : null; }, 8000, 200);
+  check('8: clicking it closes the popover and opens and focuses the Resources panel', !!viaLink, JSON.stringify(await rs().then(s => [s.shown, s.hist.open, s.panelFocused])));
+
   // 3 -----------------------------------------------------------------------------
   const send = (data) => view(app, 'gitTermInput', { data });
   await waitFor(async () => { const r = await view(app, 'gitScreen'); return r && />\s*$/m.test(r.text || '') ? r : null; }, 15000, 300);
@@ -362,6 +373,18 @@ async function main() {
       note(`live Bash-tool line labels as ${JSON.stringify(shown)}`);
       check('3: a live Bash-tool line gives a sensible label (not a flag, not blank, not the shell)', shown !== '' && !/^[-/]/.test(shown) && shown !== 'bash', JSON.stringify([live.slice(0, 120), shown]));
     }
+  }
+
+  // The link flow with a live burner (the path Ricardo takes): another module is selected so the panel is hidden, the popover's
+  // "Open Resources panel" link is clicked, and the burner's row must be in the panel within one cadence (12 s).
+  if (named) {
+    await view(app, 'select', { id: 'agents' });
+    await waitFor(async () => (await rs()).shown === false, 5000, 150);
+    await view(app, 'resourcesClick', { chip: true });
+    await waitFor(async () => (await rs()).hist.open, 5000, 150);
+    await view(app, 'resourcesHistoryDo', { op: 'link' });
+    const linked = await waitFor(async () => { const s = await rs(); return s.shown && s.children.some(c => /burn\.js/.test(c.cmd) && /^(\d+(\.\d)?|<1)%$/.test(c.figs[0])) ? s : null; }, 12000, 300);
+    check('3: opened through the popover link, the panel shows the burner row within one cadence (12 s)', !!linked, linked ? '' : fmtState(await rs()));
   }
 
   // The panel's CPU figure against an independent measurement: this process's own TotalProcessorTime, read twice 10 s
@@ -465,15 +488,6 @@ async function main() {
   check('7: ticking it again brings the chip back', retick.ok === true && retick.before === false && !!chipBack, JSON.stringify(retick));
 
 
-  // Ricardo's Q1: a link under the legend opens the Resources panel (showing and focusing it) and closes the popover.
-  await view(app, 'select', { id: 'agents' });
-  await waitFor(async () => (await rs()).shown === false, 5000, 150);
-  await view(app, 'resourcesClick', { chip: true });
-  const withLink = await waitFor(async () => { const s = await rs(); return s.hist.open ? s : null; }, 5000, 150);
-  check('8: the popover has an "Open Resources panel" link under the legend, reachable by keyboard (a real button)', !!withLink && withLink.hist.link === true, JSON.stringify(withLink && withLink.hist.link));
-  await view(app, 'resourcesHistoryDo', { op: 'link' });
-  const viaLink = await waitFor(async () => { const s = await rs(); return s.shown && s.hist.open === false && s.panelFocused ? s : null; }, 8000, 200);
-  check('8: clicking it closes the popover and opens and focuses the Resources panel', !!viaLink, JSON.stringify(await rs().then(s => [s.shown, s.hist.open, s.panelFocused])));
 
   // 8 (gap) a minimised stretch is a break in the line ----------------------------------
   // Main marks a break the moment the window is minimised, so a short minimise proves it. The MEMORY sparkline is counted
