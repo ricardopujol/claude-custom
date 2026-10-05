@@ -1,0 +1,373 @@
+{
+  "_comment": "Backlog #66 accuracy gate (DESIGN_INDEXING_ASSISTANT.md). Title lines snapshotted read-only from CLAUDECUSTOM_BACKLOG.md on 2026-10-05. Notes are Ricardo's real words from backlog items (target new: that item is left out of the titles the model sees, as it did not exist yet; target N: a later addition to item N) and real history decisions/learnings, shortened. Each is labelled with the kind and target it actually got.",
+  "titles": [
+    "## 1. Focus-mode shortcut",
+    "## 2. Git tree view",
+    "## 3. Default agent avatar",
+    "## 4. Local models for agents",
+    "## 5. Model list: freshness + favourites",
+    "## 6. Context-fill indicator",
+    "## 7. Agent \"working\" while its delegated task runs",
+    "## 8. Paste images from the clipboard",
+    "## 9. Right-panel space",
+    "## 10. Agent activity log on click",
+    "## 11. Clickable choice menus",
+    "## 12. Ctrl+V pastes text into the CLI",
+    "## 13. Per-agent, per-state animated avatars",
+    "## 14. Hide sleeping agents",
+    "## 15. Random theme for new projects",
+    "## 16. Agents list: Active + Inactive tabs",
+    "## 17. Tool belt: items as spawn modifiers",
+    "## 18. Global \"disable agent images\" toggle",
+    "## 19. Pause / resume agents and running tasks",
+    "## 20. Memory footprint (high priority)",
+    "## 25. Per-project light mode (probe first)",
+    "## 21. Header shows \"project/branch\" instead of \"claude-custom\"",
+    "## 26. Worktree tabs extension: lock, setup, env, health, lazy (spec 2026-09-29)",
+    "## 27. Move the CLI's footer lines into the tab strip (captured 2026-09-30)",
+    "## 28. Option to hide the window's title bar (captured 2026-09-30)",
+    "## 29. The header's \"session\" token count vs the context circle (captured 2026-09-30)",
+    "## 30. Voice to text: talk to Claude (captured 2026-09-30)",
+    "## 31. Pulse a worktree tab that finished or needs you (captured 2026-10-01)",
+    "## 32. See and edit the code Claude writes, in its own tab (captured 2026-09-30)",
+    "## 33. Ask a local model about the repo, in its own tab (captured 2026-10-01)",
+    "## 34. Animated project backgrounds: video, not just GIF (captured 2026-10-01)",
+    "## 35. Ctrl+T opens *New branch…* (captured 2026-10-01, PR #80 hand check)",
+    "## 36. A reconnect moves focus out of the vault (captured 2026-10-01, PR #82 Dexter R2)",
+    "## 37. Click a local file path in the terminal to open it (captured 2026-10-01)",
+    "## 38. Git tree: one day for both clocks (captured 2026-10-02, PR #85 Dexter F10)",
+    "## 39. \"Slave\" mode: a local model that works in the background all the time (captured 2026-10-02)",
+    "## 40. A mark on a tab, chosen from ~10 emoji (captured 2026-10-02)",
+    "## 41. Three minigames to play while Claude works (captured 2026-10-02)",
+    "## 42. Slim the tab header: it's over-full at 1200px (captured 2026-10-02, PR L2 Miguel Y1)",
+    "## 43. A hidden page that lists every shortcut (captured 2026-10-02, PR #90)",
+    "## 44. An agent's card says which worktree it's working in (captured 2026-10-02)",
+    "## 45. Replace the Map with a browser of the whole repo (captured 2026-10-02)",
+    "## 46. Enhance the git tree further: two brainstorming rounds first (captured 2026-10-02)",
+    "## 47. A worktree in use by an agent shows it, on the tab strip and in its window (captured 2026-10-02)",
+    "## 48. Run /merged presses Enter by itself, once a turn's end can be measured (captured 2026-10-02)",
+    "## 49. The last message Ricardo sent stays visible at the top of the terminal (captured 2026-10-03)",
+    "## 50. Edit mode for the code reader (captured 2026-10-03, split out of #32)",
+    "## 51. The wand: favourite skills as emoji buttons you can add, delete and edit (captured 2026-10-03)",
+    "## 52. A clear sign on the harness while /bedtime is running (captured 2026-10-03)",
+    "## 53. Dockable panels, Photoshop-style: resize, attach anywhere, show or hide each (captured 2026-10-03)",
+    "## 54. `window-count` real-shell tests time out under full-suite load (captured 2026-10-03, PR #94 Miguel 9)",
+    "## 55. Livelier agents: more states, and speech bubbles written by a local model (captured 2026-10-03)",
+    "## 56. A Content-Security-Policy for the tab page (captured 2026-10-03, PR #95 Miguel 8)",
+    "## 57. Occupancy follow-ups from PR #96's review (captured 2026-10-03)",
+    "## 58. Kill the release-#101 mutation survivors, and fix the full-config Stryker abort (captured 2026-10-03)",
+    "## 59. Presets: a stale confirm can act on a different preset that took the same name (captured 2026-10-03, PR #103 Dexter r2 A)",
+    "## 60. Kill the release-#101 part-2 mutation survivors (captured 2026-10-03)",
+    "## 61. Wand buttons run the skill, not just type it (captured 2026-10-04)",
+    "## 62. Autonomous mode: a lean claude-custom for unattended runs (captured 2026-10-04)",
+    "## 63. A resource panel: CPU and memory per session, per project and in total (captured 2026-10-04)",
+    "## 64. The accent colour doesn't reach everywhere: some places stay yellow (captured 2026-10-04)",
+    "## 65. One \"agent\" colour: blue, never the accent (captured 2026-10-04)",
+    "## 66. The indexing assistant: type anything, a local model files it in the docs (captured 2026-10-04)",
+    "## 67. Remove the CLI's footer block: it repeats what claude-custom already shows (captured 2026-10-05)",
+    "## 68. host-identity's rename can fail with EPERM on Windows (captured 2026-10-05)",
+    "## 69. The N2 real-process Stop test still flakes under full-suite load (captured 2026-10-05)",
+    "## 70. Release-#117 Medium survivors left after PR #118 (captured 2026-10-05)",
+    "## 71. A panel the running Claude builds itself, live (captured 2026-10-05)"
+  ],
+  "cases": [
+    {
+      "id": "new-49",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 49,
+      "text": "The last message I sent to claude should always be visible on the top of the CLI."
+    },
+    {
+      "id": "new-51",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 51,
+      "text": "I want the 'wand section' with my favorite skills represented as emojis. I should be able to add, delete and modify those skills."
+    },
+    {
+      "id": "new-52",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 52,
+      "text": "When the bedtime skill is running there should be a clear indication on the harness."
+    },
+    {
+      "id": "new-53",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 53,
+      "text": "I want to modularize the tabs now, something like Adobe Photoshop tabs where I can resize them and attach them anywhere, so I can really set the layout as I want"
+    },
+    {
+      "id": "new-55",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 55,
+      "text": "We need to enhance the agents, add a few more states and also use a local model to make them display some dialogue bubbles with short, funny text according to whatever they are working on"
+    },
+    {
+      "id": "new-61",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 61,
+      "text": "wand skills should be triggered, not only written on the CLI."
+    },
+    {
+      "id": "new-62",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 62,
+      "text": "we need an autonomous mode that reduces memory usage at maximum by also disabling most features of claude-custom, so I can let it run autonomously"
+    },
+    {
+      "id": "new-63",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 63,
+      "text": "include a section that displays CPU and memory usage per session, per project and in total."
+    },
+    {
+      "id": "new-64",
+      "kind": "bug",
+      "target": "new",
+      "exclude": 64,
+      "text": "the accent color of claude custom remains yellow despite changing it. It changes almost everywhere but in some places it remains yellow."
+    },
+    {
+      "id": "new-71",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 71,
+      "text": "There should be a section that's completely personalized in real time by the instance that's running it, for example to save all the artifacts it creates or to display the time."
+    },
+    {
+      "id": "new-45",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 45,
+      "text": "Map is kinda useless. I should be able to access the folders of the whole repo from there by clicking."
+    },
+    {
+      "id": "new-47",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 47,
+      "text": "When a worktree is being used by an agent there should be something that signalizes it on the bar and on the window."
+    },
+    {
+      "id": "new-44",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 44,
+      "text": "do agents work on other worktrees? if so, the worktree they are working on should be displayed in their cards."
+    },
+    {
+      "id": "new-43",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 43,
+      "text": "we need to have a place where all the shortcuts are documented, inside the app but kinda hidden"
+    },
+    {
+      "id": "new-40",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 40,
+      "text": "a mark on a tab, chosen from about 10 emoji, so each one means something to me, like one for review this code"
+    },
+    {
+      "id": "new-66",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 66,
+      "text": "a field where I can input anything and a local model will index this information where it belongs in the documentation"
+    },
+    {
+      "id": "new-68",
+      "kind": "bug",
+      "target": "new",
+      "exclude": 68,
+      "text": "host-identity's rename fails with EPERM on Windows sometimes, so the host can't publish its identity file"
+    },
+    {
+      "id": "new-69",
+      "kind": "bug",
+      "target": "new",
+      "exclude": 69,
+      "text": "the N2 real-process Stop test still flakes when the full suite runs, it passes alone"
+    },
+    {
+      "id": "new-29",
+      "kind": "bug",
+      "target": "new",
+      "exclude": 29,
+      "text": "the context circle's hover looks much more accurate than the token figure next to session in the header, one of them is wrong"
+    },
+    {
+      "id": "new-36",
+      "kind": "bug",
+      "target": "new",
+      "exclude": 36,
+      "text": "after a reconnect the focus jumps out of the vault while I'm typing a secret"
+    },
+    {
+      "id": "new-34",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 34,
+      "text": "can project backgrounds be animated videos and not just GIFs?"
+    },
+    {
+      "id": "new-30",
+      "kind": "idea",
+      "target": "new",
+      "exclude": 30,
+      "text": "I want to talk to Claude: voice to text into the input box"
+    },
+    {
+      "id": "add-66",
+      "kind": "idea",
+      "target": 66,
+      "text": "the indexing assistant is not slave mode, it's more like an indexing assistant, I'd use it mostly for adding ideas to the backlog"
+    },
+    {
+      "id": "add-1",
+      "kind": "idea",
+      "target": 1,
+      "text": "focus mode needs a button and a command too, not only a shortcut: hide all tabs so I see only the CLI"
+    },
+    {
+      "id": "add-46",
+      "kind": "idea",
+      "target": 46,
+      "text": "git tree rings: the rotation should be a sine wave, it goes forward and back slowly, never a full turn"
+    },
+    {
+      "id": "add-61",
+      "kind": "idea",
+      "target": 61,
+      "text": "wand buttons: a click should submit even mid-turn, the CLI's own queue takes the command"
+    },
+    {
+      "id": "add-63",
+      "kind": "idea",
+      "target": 63,
+      "text": "the resource panel's CPU warning should work even when the panel is closed"
+    },
+    {
+      "id": "add-67",
+      "kind": "idea",
+      "target": 67,
+      "text": "the permission-mode line under the input box should go too, check if a CLI setting hides it"
+    },
+    {
+      "id": "add-71",
+      "kind": "idea",
+      "target": 71,
+      "text": "for the live panel the running Claude builds: an artifact shelf with every artifact URL the session publishes, with title and time"
+    },
+    {
+      "id": "add-64",
+      "kind": "bug",
+      "target": 64,
+      "text": "the accent is still yellow on the agent count and the tool-belt glyphs on hover"
+    },
+    {
+      "id": "add-69",
+      "kind": "bug",
+      "target": 69,
+      "text": "the N2 real-process Stop test failed again in a full run on another branch, took 94 s"
+    },
+    {
+      "id": "add-52",
+      "kind": "idea",
+      "target": 52,
+      "text": "the bedtime sign on a tab should be a still deep blue, never animated, movement means needs you"
+    },
+    {
+      "id": "add-55",
+      "kind": "idea",
+      "target": 55,
+      "text": "agent speech bubbles: add a sleeping state with a snoring bubble"
+    },
+    {
+      "id": "add-62",
+      "kind": "idea",
+      "target": 62,
+      "text": "autonomous mode should also switch off the resource sampler, it costs CPU every 10 s"
+    },
+    {
+      "id": "his-1",
+      "kind": "decision",
+      "target": "history",
+      "text": "the file link hover says 'Opens X in its default app' because Electron has no API for the default app's name"
+    },
+    {
+      "id": "his-2",
+      "kind": "learning",
+      "target": "history",
+      "text": "Bash-mode ! commands trigger a model turn too, they aren't free"
+    },
+    {
+      "id": "his-3",
+      "kind": "learning",
+      "target": "history",
+      "text": "Bash heredocs collapse backslashes, write test files with Edit or Write instead"
+    },
+    {
+      "id": "his-4",
+      "kind": "learning",
+      "target": "history",
+      "text": "a squash merge breaks merged-finish's ancestry check, merge lane PRs with --merge"
+    },
+    {
+      "id": "his-5",
+      "kind": "decision",
+      "target": "history",
+      "text": "Run /merged ships type-only: it types /merged and I press Enter myself"
+    },
+    {
+      "id": "his-6",
+      "kind": "learning",
+      "target": "history",
+      "text": "Get-Process still lists an exited process while anyone holds a handle to it"
+    },
+    {
+      "id": "his-7",
+      "kind": "learning",
+      "target": "history",
+      "text": "Stryker makes no mutants inside template-literal text, so the PowerShell script bodies are outside the mutation score"
+    },
+    {
+      "id": "his-8",
+      "kind": "decision",
+      "target": "history",
+      "text": "one agent colour: blue #6aa5d8, defined once in agent-colour.css, never the accent"
+    },
+    {
+      "id": "his-9",
+      "kind": "decision",
+      "target": "history",
+      "text": "mutation runs are CPU-throttled unless bedtime: one run at a time on the machine, concurrency 2"
+    },
+    {
+      "id": "his-10",
+      "kind": "learning",
+      "target": "history",
+      "text": "Get-Process and CIM start times for the same process differ by one 100 ns tick, compare them with a tolerance"
+    },
+    {
+      "id": "his-11",
+      "kind": "decision",
+      "target": "history",
+      "text": "dock panels are hand-rolled on our own split tree, no docking library"
+    },
+    {
+      "id": "his-12",
+      "kind": "learning",
+      "target": "history",
+      "text": "a transcript line's cwd follows a cd in Bash, it's not the launching folder"
+    }
+  ]
+}

@@ -1,57 +1,54 @@
 'use strict';
 /**
- * The indexing assistant's classifier: the prompt and the reply (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md
- * "Claude's call" 3 and 4). Pure: no network, no files; host/indexing-service.js asks the model.
+ * The indexing assistant's classifier (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md "Claude's call" 3 and 4).
+ * Pure apart from `classifyNote`, which calls the model through an injected `generate` (host/summary-ollama.js).
  *
- *   buildPrompt(note, backlogText)  -> the whole prompt: the backlog's `## N. title` lines, the note, the instruction last
- *   parseReply(raw, items)          -> { sure, kind, target, title }   items: host/indexing-doc.js parseBacklog().items
- *   candidates(note, items, k)      -> up to k item numbers for the "Where should this go?" picker
- *   fallbackTitle(note)             -> a title made from the note's first words, for a new item picked by hand
+ *   classifyNote({ note, backlogText, generate }) -> { ok: true, result: { sure, kind, target, title } }
+ *                                                  | { ok: false, reason }   (the model call failed: the note waits)
+ *   buildKindPrompt(note) / parseKindReply(raw)        the kind: idea | bug | decision | learning | null
+ *   matchTarget(note, items)                           -> { target: N | 'new', score, next }
+ *   buildTitlePrompt(note, backlogText) / parseTitleReply(raw)   a new item's title
+ *   candidates(note, items, k), overlap(note, title), fallbackTitle(note)   the picker's helpers
  *
- * WHAT THE MODEL SEES: the note and the title lines only (about 70 lines, inside the 8k context), never an item's body.
- * WHAT IT ANSWERS: `{ kind, target: "new" | N | "history", title?, sure }`. Kinds: idea and bug go to the backlog,
- * decision and learning to the history. Not sure, with the guess kept where it can be, when:
- *   - the reply has no JSON object in it, or the object has no known kind and no usable target (no guess at all)
- *   - `sure` is anything but a real `true`
- *   - the target is an item that doesn't exist, or exists twice (then there is no target guess)
- *   - the kind doesn't go where the target is (a decision on a backlog item, an idea in the history): the swap the
- *     accuracy gate counts as wrong is never filed without asking
- *   - a new item has no usable title
- * The item number of a NEW item is never the model's: host/indexing-doc.js computes it.
+ * WHY IT'S SPLIT THIS WAY (measured, verify/probe-indexing-accuracy.js on 2026-10-05, 46 real notes): asked for the
+ * design's one JSON reply `{kind, target, title, sure}` with the title lines, llama3.2:3b scored 15% with 12
+ * history/backlog swaps (it said "learning, new" to almost everything). Sorting the note from four LETTERED choices is
+ * what it does well; deciding whether a note is "the same item" as a title it can't do at all (every phrasing either
+ * always attached the note to some item or never did), and shared words did better. So:
+ *   1. the model answers the KIND (the note only, nothing from the backlog);
+ *   2. decision and learning go to the history, by code: the swap the gate forbids can't come from a target answer;
+ *   3. idea and bug go to the item sharing at least MATCH_MIN meaningful words with the note, if exactly one leads, else
+ *      to a new item (code: matchTarget);
+ *   4. a new item's title is the model's (the note and five recent titles as examples of the style).
+ * The item number of a new item is never the model's: host/indexing-doc.js computes it.
+ *
+ * NOT SURE (it then asks, "Claude's call" 4) when the kind can't be read (no guess at all), or a new item has no
+ * usable title (the note's first words stand in). The kind call's reply carries no confidence the 3B model can be
+ * trusted with, so "sure" here means "every answer was usable".
  */
 
-const { titleLines } = require('./indexing-doc');
+const { parseBacklog, titleLines } = require('./indexing-doc');
 
 const KINDS = ['idea', 'bug', 'decision', 'learning'];
 const BACKLOG_KINDS = ['idea', 'bug'];
-const KIND_ALIASES = { problem: 'bug', fix: 'bug' };
+const LETTERS = { a: 'idea', b: 'bug', c: 'decision', d: 'learning' };
+const KIND_ALIASES = { problem: 'bug', fix: 'bug', feature: 'idea', lesson: 'learning' };
+const MATCH_MIN = 3;
+const TITLE_EXAMPLES = 5;
 const TITLE_MAX = 80;
 const FALLBACK_WORDS = 8;
+// How the model is asked (host/summary-ollama.js generate): a JSON reply, no sampling noise, room for a title.
+const GENERATE_OPTIONS = Object.freeze({ format: 'json', numPredict: 120, temperature: 0 });
 
-const INSTRUCTION = [
-  '---',
-  'You file notes into a software project\'s documentation. Above are the backlog\'s items (number and title) and one note.',
-  'Decide what the note is and where it belongs.',
-  'kind: "idea" (a feature or change someone wants), "bug" (something broken or wrong), "decision" (a choice that was made), or "learning" (something found out, a lesson).',
-  'target: the number of an existing item when the note adds to that item; "new" when it is an idea or bug that no item covers; "history" for a decision or a learning.',
-  'title: only when target is "new": a short title, at most 8 words, in the style of the item titles.',
-  'sure: true only when you are confident of both kind and target.',
-  'Answer with JSON only, in exactly this shape:',
-  '{"kind": "idea", "target": "new", "title": "...", "sure": true}',
-].join('\n');
-
-function buildPrompt(note, backlogText) {
-  const titles = titleLines(backlogText);
+function buildKindPrompt(note) {
   return [
-    'Backlog items:',
-    titles.length ? titles.join('\n') : '(none yet)',
-    '',
-    'Note:',
-    '"""',
-    String(note == null ? '' : note).trim(),
-    '"""',
-    '',
-    INSTRUCTION,
+    `A developer wrote this note: "${String(note == null ? '' : note).trim()}"`,
+    'Which describes it best?',
+    'A) A feature or change they want added to the app.',
+    'B) A bug: something in the app is broken or wrong.',
+    'C) A decision: how something is done was settled (a choice, a rule).',
+    'D) A lesson: a fact or gotcha they found out about a tool, a library, the OS or the process.',
+    'Answer with JSON only: {"answer": "A"} (or B, C, D)',
   ].join('\n');
 }
 
@@ -70,48 +67,15 @@ function objectIn(raw) {
   return null;
 }
 
-function kindOf(v) {
-  if (typeof v !== 'string') return null;
-  const k = v.trim().toLowerCase();
-  if (KINDS.includes(k)) return k;
-  return KIND_ALIASES[k] || null;
-}
-
-/** 'new' | 'history' | an item number as written (not yet checked against the items) | null. */
-function targetOf(v) {
-  if (Number.isInteger(v) && v > 0) return v;
-  if (typeof v !== 'string') return null;
-  const s = v.trim().toLowerCase();
-  if (s === 'new' || s === 'history') return s;
-  const m = /^#?\s*(\d{1,6})$/.exec(s);
-  return m && Number(m[1]) > 0 ? Number(m[1]) : null;
-}
-
-function cleanTitle(v) {
-  if (typeof v !== 'string') return null;
-  let s = v.replace(/\s+/g, ' ').trim();
-  s = s.replace(/^#+\s*/, '').replace(/^\d{1,6}\.\s*/, '').trim();
-  s = s.replace(/^["'`]+|["'`]+$/g, '').trim();
-  if (s.length > TITLE_MAX) s = s.slice(0, TITLE_MAX - 1).trimEnd() + '…';
-  return s === '' ? null : s;
-}
-
-function parseReply(raw, items) {
-  const none = { sure: false, kind: null, target: null, title: null };
+function parseKindReply(raw) {
   const o = objectIn(raw);
-  if (!o) return none;
-  const kind = kindOf(o.kind);
-  let target = targetOf(o.target);
-  if (Number.isInteger(target)) {
-    const found = (Array.isArray(items) ? items : []).filter(i => i && i.n === target);
-    if (found.length !== 1) target = null;
-  }
-  if (kind === null && target === null) return none;
-  const title = target === 'new' ? cleanTitle(o.title) : null;
-  const goesThere = kind !== null && target !== null
-    && (target === 'history' ? !BACKLOG_KINDS.includes(kind) : BACKLOG_KINDS.includes(kind));
-  const sure = o.sure === true && goesThere && (target !== 'new' || title !== null);
-  return { sure, kind, target, title };
+  if (!o) return null;
+  const v = typeof o.answer === 'string' ? o.answer : o.kind;
+  if (typeof v !== 'string') return null;
+  const s = v.trim().toLowerCase().replace(/\)$/, '').trim();
+  if (Object.prototype.hasOwnProperty.call(LETTERS, s)) return LETTERS[s];
+  if (KINDS.includes(s)) return s;
+  return Object.prototype.hasOwnProperty.call(KIND_ALIASES, s) ? KIND_ALIASES[s] : null;
 }
 
 const STOP = new Set(('the a an and or but of to in on at for with from by as is are was were be been it its this that these '
@@ -128,16 +92,54 @@ function wordsOf(text) {
   return out;
 }
 
-function candidates(note, items, k = 3) {
-  const unique = (Array.isArray(items) ? items : []).filter(i => i && !i.dup);
+/** How many meaningful words a note and a title share. */
+function overlap(note, title) {
   const want = wordsOf(note);
-  const scored = unique.map(i => {
-    let score = 0;
-    for (const w of wordsOf(i.title)) if (want.has(w)) score += 1;
-    return { n: i.n, score };
-  });
-  scored.sort((x, y) => (y.score - x.score) || (y.n - x.n));
-  return scored.slice(0, Math.max(0, k)).map(s => s.n);
+  let score = 0;
+  for (const w of wordsOf(title)) if (want.has(w)) score += 1;
+  return score;
+}
+
+/** Unique items by shared words, the most first, the newer first on a tie. */
+function ranked(note, items) {
+  const unique = (Array.isArray(items) ? items : []).filter(i => i && Number.isInteger(i.n) && !i.dup);
+  return unique.map(i => ({ n: i.n, score: overlap(note, i.title) })).sort((x, y) => (y.score - x.score) || (y.n - x.n));
+}
+
+function matchTarget(note, items) {
+  const r = ranked(note, items);
+  const score = r.length ? r[0].score : 0;
+  const next = r.length > 1 ? r[1].score : 0;
+  return { target: score >= MATCH_MIN && score > next ? r[0].n : 'new', score, next };
+}
+
+const candidates = (note, items, k = 3) => ranked(note, items).slice(0, Math.max(0, k)).map(s => s.n);
+
+function buildTitlePrompt(note, backlogText) {
+  const unique = parseBacklog(backlogText).items.filter(i => !i.dup);
+  const examples = unique.slice(-TITLE_EXAMPLES).map(i => `- ${i.title}`);
+  const style = examples.length ? ['Titles of other items, for the style:', ...examples] : [];
+  return [
+    'Write a short title, at most 8 words, for a new backlog item made from this note.',
+    ...style,
+    '',
+    `Note: "${String(note == null ? '' : note).trim()}"`,
+    'Answer with JSON only: {"title": "..."}',
+  ].join('\n');
+}
+
+function cleanTitle(v) {
+  if (typeof v !== 'string') return null;
+  let s = v.replace(/\s+/g, ' ').trim();
+  s = s.replace(/^#+\s*/, '').replace(/^\d{1,6}\.\s*/, '').trim();
+  s = s.replace(/^["'`]+|["'`]+$/g, '').trim();
+  if (s.length > TITLE_MAX) s = s.slice(0, TITLE_MAX - 1).trimEnd() + '…';
+  return s === '' ? null : s;
+}
+
+function parseTitleReply(raw) {
+  const o = objectIn(raw);
+  return o ? cleanTitle(o.title) : null;
 }
 
 function fallbackTitle(note) {
@@ -146,4 +148,23 @@ function fallbackTitle(note) {
   return words.length > FALLBACK_WORDS ? head + '…' : head;
 }
 
-module.exports = { buildPrompt, parseReply, candidates, fallbackTitle, KINDS, BACKLOG_KINDS, INSTRUCTION };
+async function classifyNote({ note, backlogText, generate }) {
+  const k = await generate(buildKindPrompt(note), GENERATE_OPTIONS);
+  if (!k || k.ok !== true) return { ok: false, reason: (k && k.reason) || 'failed' };
+  const kind = parseKindReply(k.text);
+  if (kind === null) return { ok: true, result: { sure: false, kind: null, target: null, title: null } };
+  if (!BACKLOG_KINDS.includes(kind)) return { ok: true, result: { sure: true, kind, target: 'history', title: null } };
+  const { target } = matchTarget(note, parseBacklog(backlogText).items);
+  if (target !== 'new') return { ok: true, result: { sure: true, kind, target, title: null } };
+  const t = await generate(buildTitlePrompt(note, backlogText), GENERATE_OPTIONS);
+  if (!t || t.ok !== true) return { ok: false, reason: (t && t.reason) || 'failed' };
+  const title = parseTitleReply(t.text);
+  return { ok: true, result: title === null
+    ? { sure: false, kind, target: 'new', title: fallbackTitle(note) }
+    : { sure: true, kind, target: 'new', title } };
+}
+
+module.exports = {
+  classifyNote, buildKindPrompt, parseKindReply, matchTarget, buildTitlePrompt, parseTitleReply,
+  candidates, overlap, fallbackTitle, titleLines, KINDS, BACKLOG_KINDS, MATCH_MIN, GENERATE_OPTIONS,
+};
