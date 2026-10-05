@@ -122,6 +122,58 @@ test('a failed identity write leaves no temp file behind', () => {
   assert.deepStrictEqual(leftovers, [], `orphaned temps: ${leftovers.join(', ')}`);
 });
 
+// Backlog #68: on Windows a scanner or indexer can hold the fresh temp file for
+// a moment, and the bare renameSync then threw EPERM and the host never
+// published its identity. The rename goes through host/atomic-write.js.
+function withRename(fake, body) {
+  const real = fs.renameSync;
+  fs.renameSync = fake;
+  try { return body(); } finally { fs.renameSync = real; }
+}
+
+test('a transient rename failure (EPERM, EACCES, EBUSY) is retried and the identity lands', () => {
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    for (const failures of [1, 2]) {
+      const dir = tmp();
+      const real = fs.renameSync;
+      let calls = 0;
+      withRename((a, b) => {
+        if (++calls <= failures) throw Object.assign(new Error(`${code}: busy`), { code });
+        real(a, b);
+      }, () => writeIdentity({ dir, port: 7700, cwd: 'C:/proj', pid: 4242 }));
+      assert.strictEqual(calls, failures + 1, `${code} x${failures}`);
+      assert.strictEqual(readIdentity({ dir, port: 7700, isAlive: ALIVE }).cwd, 'C:/proj');
+      const temps = fs.readdirSync(path.join(dir, 'hosts')).filter(f => f.includes('.tmp'));
+      assert.deepStrictEqual(temps, []);
+    }
+  }
+});
+
+test('a rename that never succeeds gives up: the error surfaces, no temp is left, the old identity is untouched', () => {
+  const dir = tmp();
+  writeIdentity({ dir, port: 7700, cwd: 'C:/original', pid: 4242 });
+  let calls = 0;
+  assert.throws(() => withRename(() => {
+    calls++;
+    throw Object.assign(new Error('EPERM: locked'), { code: 'EPERM' });
+  }, () => writeIdentity({ dir, port: 7700, cwd: 'C:/replacement', pid: 9999 })),
+  /EPERM/);
+  assert.ok(calls > 1, 'it retried before giving up');
+  assert.ok(calls <= 5, 'and the retry is bounded');
+  assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'hosts')).filter(f => f.includes('.tmp')), []);
+  assert.strictEqual(readIdentity({ dir, port: 7700, isAlive: ALIVE }).cwd, 'C:/original');
+});
+
+test('a non-transient rename error is not retried', () => {
+  const dir = tmp();
+  let calls = 0;
+  assert.throws(() => withRename(() => {
+    calls++;
+    throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+  }, () => writeIdentity({ dir, port: 7700, cwd: 'C:/x', pid: 1 })), /ENOSPC/);
+  assert.strictEqual(calls, 1);
+});
+
 test('the REAL liveness check recognises this process and rejects a free pid', () => {
   // Miguel: every other test injects `isAlive`, so `defaultIsAlive` -- the one
   // piece of this module with real OS semantics, and the thing the whole

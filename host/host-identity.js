@@ -29,6 +29,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { renameWithRetry } = require('./atomic-write');
 
 const fileFor = (dir, port) => path.join(dir, 'hosts', `${port}.json`);
 
@@ -80,7 +81,10 @@ function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, cl
   try {
     fs.writeFileSync(tmp, JSON.stringify(doc),
       { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tmp, file);
+    // Not a bare renameSync: on Windows a scanner or indexer can hold the fresh
+    // temp for a moment and the rename throws EPERM, so the host never
+    // published its identity (backlog #68). Bounded, ~300 ms worst case.
+    renameWithRetry(tmp, file);
   } catch (err) {
     // Best effort, and it can fail for the same reason the write did.
     try { fs.unlinkSync(tmp); } catch { /* nothing more to do */ }
