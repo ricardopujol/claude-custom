@@ -1114,6 +1114,9 @@ let resPayload = null;              // the last payload main pushed: the chip dr
 let resChipOn = !(resBridge && typeof resBridge.chipOn === 'function' && resBridge.chipOn() === false);
 const resRoot = document.getElementById('resources-root');
 const tbResourcesEl = document.getElementById('tb-resources');
+const resPopoverEl = document.getElementById('res-popover');
+let resHistOpen = false;            // the chip's popover (the one-hour graphs)
+const resHover = { cpu: null, mem: null };   // minutes ago the pointer is on, per graph
 
 // Q2: one more check in the Window menu, beside the panels'. Install-wide, on by default; main saves it and tells every page.
 function resourceChipRow() {
@@ -1125,13 +1128,69 @@ function resourceChipRow() {
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
-  tbResourcesEl.textContent = c.text;
+  // each figure with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
+  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), Date.now());
+  tbResourcesEl.setAttribute('aria-label', c.text);
   tbResourcesEl.title = c.title;
   tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
   tbResourcesEl.classList.toggle('res-red', c.level === 'red');
   tbResourcesEl.classList.toggle('res-dim', c.dim === true);
   // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
   tbResourcesEl.hidden = !resChipOn;
+  if (!resChipOn) closeHistory();
+  else renderHistory();
+}
+
+// ---- the chip's popover: the larger graphs of the last hour ----
+const resHistory = () => (resPayload && Array.isArray(resPayload.history) ? resPayload.history : []);
+
+function renderHistory() {
+  if (!resHistOpen || !resPopoverEl) return;
+  resPopoverEl.innerHTML = window.resourcesHistoryDisplay.popover(resHistory(), Date.now(), resHover);
+}
+function placeHistory() {
+  // under the chip, right edges aligned, and never off the left edge of the window
+  const r = tbResourcesEl.getBoundingClientRect();
+  const w = resPopoverEl.offsetWidth || 336;
+  resPopoverEl.style.top = `${Math.round(r.bottom + 6)}px`;
+  resPopoverEl.style.left = `${Math.max(8, Math.round(Math.min(r.right - w, window.innerWidth - w - 8)))}px`;
+}
+function openHistory() {
+  if (!resPopoverEl || resHistOpen) return;
+  resHistOpen = true;
+  resHover.cpu = null; resHover.mem = null;
+  renderHistory();
+  resPopoverEl.hidden = false;
+  placeHistory();
+  tbResourcesEl.setAttribute('aria-expanded', 'true');
+}
+function closeHistory() {
+  if (!resHistOpen) return;
+  resHistOpen = false;
+  if (resPopoverEl) resPopoverEl.hidden = true;
+  tbResourcesEl.setAttribute('aria-expanded', 'false');
+}
+// The readout and the cursor follow the pointer in place (a re-draw under the pointer would drop the hover).
+function hoverHistory(e) {
+  const plot = e.target && e.target.closest ? e.target.closest('.hg-plot') : null;
+  if (!plot) return;
+  const kind = plot.parentElement.dataset.histGraph;
+  if (kind !== 'cpu' && kind !== 'mem') return;
+  const box = plot.getBoundingClientRect();
+  const minutes = window.resourcesHistoryDisplay.minutesAgo(box.width > 0 ? (e.clientX - box.left) / box.width : NaN);
+  if (minutes === null) return;
+  resHover[kind] = minutes;
+  let cursor = plot.querySelector('.hg-cursor');
+  if (!cursor) { cursor = document.createElement('div'); cursor.className = 'hg-cursor'; plot.appendChild(cursor); }
+  cursor.style.left = `${(1 - minutes / 60) * 100}%`;
+  plot.parentElement.querySelector('.hg-readout').textContent = window.resourcesHistoryDisplay.readout(resHistory(), Date.now(), minutes, kind);
+}
+function leaveHistory(e) {
+  const plot = e.target && e.target.closest ? e.target.closest('.hg-plot') : null;
+  if (!plot) return;
+  const kind = plot.parentElement.dataset.histGraph;
+  if (kind === 'cpu' || kind === 'mem') resHover[kind] = null;
+  renderHistory();
 }
 
 function renderResources() {
@@ -1192,13 +1251,23 @@ if (resRoot) {
     resourcesAct(a);
   });
 }
-// The chip opens the panel and takes the keyboard to it.
+// The chip opens the one-hour popover (Ricardo picked option B: this replaces "the chip opens the Resources panel", which
+// stays one click away in the Window menu / side tabs). A second click, Esc and a click outside close it.
 if (tbResourcesEl) {
   tbResourcesEl.addEventListener('click', () => {
-    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(placementLayout(), 'resources'), { select: 'resources' });
-    else selectModule('resources');
-    setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
+    if (resHistOpen) closeHistory(); else openHistory();
   });
+  if (resPopoverEl) {
+    resPopoverEl.addEventListener('mousemove', hoverHistory);
+    resPopoverEl.addEventListener('mouseout', (e) => { if (!resPopoverEl.contains(e.relatedTarget)) leaveHistory(e); });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && resHistOpen) { closeHistory(); tbResourcesEl.focus(); }
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (resHistOpen && !resPopoverEl.contains(e.target) && !tbResourcesEl.contains(e.target)) closeHistory();
+  });
+  window.addEventListener('resize', () => { if (resHistOpen) placeHistory(); });
 }
 // RESOURCES-END
 

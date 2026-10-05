@@ -148,3 +148,9 @@ test('property: a null never becomes a point at 0 (the number of drawn points eq
     assert.strictEqual(drawn, vals.filter(v => v !== null).length);
   }));
 });
+
+test('chipHtml: each figure is followed by its own sparkline, and a figure is escaped text', () => {
+  const html = D.chipHtml('CPU 71%', '21.4 GB / 32.0 GB', run(NOW - 60000, 4), NOW);
+  assert.match(html, /^<span class="tbr-n">CPU 71%<\/span><svg class="hs"[\s\S]*<\/svg><span class="tbr-n">21\.4 GB \/ 32\.0 GB<\/span><svg class="hs"/);
+  assert.match(D.chipHtml('<b>', '&', [], NOW), /<span class="tbr-n">&lt;b&gt;<\/span>[\s\S]*<span class="tbr-n">&amp;<\/span>/);
+});

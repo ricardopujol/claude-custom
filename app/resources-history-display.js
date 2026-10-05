@@ -149,7 +149,16 @@ function popover(points, nowAt, hover = {}) {
     + '<div class="hg-key"><i class="hg-sw hg-sw-ours"></i>claude-custom <i class="hg-sw hg-sw-rest"></i>everything else</div>';
 }
 
-const API = { fractions, segments, sparkline, minutesAgo, readout, graph, popover, GAP_MS };
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = t => String(t).replace(/[&<>"']/g, c => ESCAPES[c]);
+
+/** The chip's inside: the CPU figure and its sparkline, then the memory figure and its sparkline. */
+function chipHtml(cpuText, memText, points, nowAt) {
+  return `<span class="tbr-n">${esc(cpuText)}</span>${sparkline(points, 'cpu', nowAt)}`
+    + `<span class="tbr-n">${esc(memText)}</span>${sparkline(points, 'mem', nowAt)}`;
+}
+
+const API = { chipHtml, fractions, segments, sparkline, minutesAgo, readout, graph, popover, GAP_MS };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesHistoryDisplay = API;

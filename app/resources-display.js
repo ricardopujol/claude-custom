@@ -48,14 +48,18 @@ const levelOf = pct => (!isNum(pct) ? null : pct >= RED ? 'red' : pct >= AMBER ?
 
 // ---- the top-bar chip -------------------------------------------------------------------------------------
 
-/** `{ text, level, dim, title }` for the chip: `CPU 71%  21.4 GB / 32.0 GB`, amber from 40%, red from 75%. */
+/**
+ * `{ text, cpuText, memText, level, dim, title }` for the chip: `CPU 71%  21.4 GB / 32.0 GB`, amber from 40%, red from 75%.
+ * The two figures also come apart, because a one-hour sparkline sits after each (app/resources-history-display.js).
+ */
 function chipView(payload) {
-  const title = 'Machine total. Open the Resources panel for who\'s using it.';
+  const title = 'Machine total and the last hour. Click for the graphs.';
   const status = payload && payload.status ? payload.status : {};
   const m = payload && payload.machine ? payload.machine : null;
-  if (!m || status.expired === true) return { text: 'CPU —  — / —', level: null, dim: status.stale === true, title };
+  if (!m || status.expired === true) return { text: 'CPU —  — / —', cpuText: 'CPU —', memText: '— / —', level: null, dim: status.stale === true, title };
   const mem = m.mem && isNum(m.mem.usedBytes) && isNum(m.mem.totalBytes) ? `${fmtBytes(m.mem.usedBytes)} / ${fmtBytes(m.mem.totalBytes)}` : '— / —';
-  return { text: `CPU ${fmtCpu(m.cpu)}  ${mem}`, level: levelOf(m.cpu), dim: status.stale === true, title };
+  const cpuText = `CPU ${fmtCpu(m.cpu)}`;
+  return { text: `${cpuText}  ${mem}`, cpuText, memText: mem, level: levelOf(m.cpu), dim: status.stale === true, title };
 }
 
 // ---- state --------------------------------------------------------------------------------------------------

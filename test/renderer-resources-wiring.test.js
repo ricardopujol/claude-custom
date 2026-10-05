@@ -31,7 +31,7 @@ test('the Resources panel is an ordinary module: one TABS entry, one panel, one 
 });
 
 test('the chip is in the top bar, and says what it is before the first sample', () => {
-  assert.match(HTML, /<span id="top-bar">\s*(?:<!--[\s\S]*?-->\s*)?<button type="button" id="tb-resources" class="tb-chip" title="Machine total\. Open the Resources panel for who's using it\.">CPU —  — \/ —<\/button>/);
+  assert.match(HTML, /<span id="top-bar">\s*(?:<!--[\s\S]*?-->\s*)?<button type="button" id="tb-resources" class="tb-chip" aria-haspopup="dialog" aria-expanded="false" title="Machine total and the last hour\. Click for the graphs\.">CPU —  — \/ —<\/button>/);
 });
 
 test('the glue is findable, and reads nothing from the OS', () => {
@@ -50,9 +50,20 @@ test('a click is read through actionOf, so a hand-edited attribute is refused', 
   assert.match(BLOCK, /window\.resourcesDisplay\.actionOf\(el\.dataset\)/);
 });
 
-test('the chip opens and focuses the panel: shows it when hidden, selects it otherwise', () => {
-  assert.match(BLOCK, /placementLayout\(\)\.hidden\.includes\('resources'\)\) commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\), \{ select: 'resources' \}\);\s*else selectModule\('resources'\);/);
-  assert.match(BLOCK, /resRoot\.focus\(\)/);
+test('the chip opens a popover with the graphs (it no longer opens the panel), and the popover closes on a second click, Esc and an outside click', () => {
+  assert.doesNotMatch(BLOCK, /commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\)/);
+  assert.match(BLOCK, /tbResourcesEl\.addEventListener\('click', \(\) => \{\s*if \(resHistOpen\) closeHistory\(\); else openHistory\(\);/);
+  assert.match(BLOCK, /document\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key === 'Escape' && resHistOpen\)/);
+  assert.match(BLOCK, /document\.addEventListener\('mousedown', \(e\) => \{[^}]*resHistOpen[^}]*contains\(e\.target\)/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.popover\(/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.chipHtml\(/);
+});
+
+test('the popover is hidden with the chip (the Window menu toggle), and the markup and script are in the page', () => {
+  assert.match(BLOCK, /if \(!resChipOn\) closeHistory\(\)/);
+  assert.match(HTML, /<div id="res-popover" hidden role="dialog"/);
+  const at = HTML.indexOf('<script src="./resources-history-display.js"></script>');
+  assert.ok(at > HTML.indexOf('<script src="./resources-display.js"></script>') && at < HTML.indexOf('<script src="./renderer.js"></script>'), 'after resources-display.js, before renderer.js');
 });
 
 test('the bridge exposes what the page calls, and main answers it behind the tab-view gate', () => {
