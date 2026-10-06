@@ -290,3 +290,33 @@ test('a note filed seconds before midnight can still be undone just after it (De
   assert.deepStrictEqual(t.svc.undo(id, t.project), { ok: true });
   assert.ok(!read(t.backlog).includes('near midnight'));
 });
+
+test('a retry does not adopt another note\'s identical entry: two same-minute same-text notes end with two entries (Dexter F3, PR #121)', async () => {
+  let conflict = false;
+  const w = { ...writer, fileNote: (a) => (conflict ? (conflict = false, { ok: false, reason: 'conflict' }) : writer.fileNote(a)) };
+  const t = setup({ writerImpl: w });
+  const a = t.svc.submit(t.project, 'fix x');
+  assert.strictEqual(a.filed, true);
+  conflict = true;
+  const b = t.svc.submit(t.project, 'fix x');                       // same minute, same words: its first write is refused
+  assert.strictEqual(b.filed, false);
+  t.advance(RETRY_MS);                                              // still 09:07 + 15 s
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog).split('· fix x').length - 1, 2, 'both notes are in the inbox');
+  assert.deepStrictEqual(t.svc.undo(b.id, t.project), { ok: true });
+  assert.strictEqual(read(t.backlog).split('· fix x').length - 1, 1, 'Undo of B leaves A');
+  assert.strictEqual(t.svc.snapshot(t.project).list.find(n => n.id === a.id).undoable, true);
+});
+
+test('a retry still adopts its own entry when an identical one belongs to another filed note (one entry each)', async () => {
+  const t = setup();
+  const a = t.svc.submit(t.project, 'fix x');                       // A filed: one entry
+  // B: its write landed (two entries now) but `filed` never reached the journal.
+  t.journal.append({ ev: 'note', id: 'b', project: t.project, text: 'fix x', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  t.journal.append({ ev: 'filing', id: 'b', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  fs.writeFileSync(t.backlog, read(t.backlog).replace('- 2026-10-05 09:07 · fix x\n', '- 2026-10-05 09:07 · fix x\n- 2026-10-05 09:07 · fix x\n'));
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog).split('· fix x').length - 1, 2, 'B was found, not written a third time');
+  assert.ok(t.svc.snapshot(t.project).list.every(n => n.state === 'filed'));
+  assert.ok(a.filed);
+});

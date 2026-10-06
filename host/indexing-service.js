@@ -52,7 +52,11 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
       } else {
         // Journal the intent BEFORE the write; a note that has one may already be in the doc (the write landed and
         // `filed` didn't), so it is looked for first and never written twice (Dexter F3 / Miguel I2, PR #121).
-        const found = n.intent ? writer.findNote({ docs, stamp: stampOf(n.at), text: n.text }) : null;
+        const others = n.intent
+          ? [...fold(read()).values()].filter(o => o.id !== id && o.state === 'filed' && o.record && o.where
+            && samePath(o.where.file, docs.backlog)).map(o => o.record)
+          : [];
+        const found = n.intent ? writer.findNote({ docs, stamp: stampOf(n.at), text: n.text, others }) : null;
         if (found && !found.ok) {
           // The look couldn't read the backlog: that is not "the entry isn't there" (Dexter F1, PR #121). Writing now
           // could put the note in twice, so this attempt ends here and the tick looks again later.
