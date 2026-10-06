@@ -80,6 +80,9 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     const ses = session.fromPartition(partition);
     const view = new WebContentsView({ webPreferences: {
       sandbox: true, contextIsolation: true, nodeIntegration: false, devTools: false, preload: preloadPath, partition,
+      // alert/confirm/prompt are native message boxes parented to the app's window: a page looping on confirm() would lock the
+      // whole window (and a single one carries text the page chose, under the app's title). Both set: disableDialogs wins.
+      disableDialogs: true, safeDialogs: true,
     } });
     const wc = view.webContents;
     const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: true, html: null, approved: new Set(), denied: new Set(),

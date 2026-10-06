@@ -91,6 +91,7 @@ const pad = (s, n) => String(s).padEnd(n);
   check(!/^read:/.test(answer('clipboard-read')), `the clipboard is unreadable (got ${answer('clipboard-read')})`);
   check(!/^(wrote|set|opened)/.test(answer('local-storage')) && !/^(set|opened)/.test(answer('cookie')) && !/^opened/.test(answer('indexed-db')), 'storage, cookies and indexedDB are unusable');
   check(answer('geolocation-camera') === 'rejected/rejected', `geolocation and camera are refused (got ${answer('geolocation-camera')})`);
+  check(answer('dialog-loop') === 'past the dialogs', `alert, confirm and prompt return at once with no native dialog, so the page cannot lock the app's window (got ${answer('dialog-loop')})`);
   check(s.rtc.stunDatagrams === 0, 'WebRTC STUN over UDP: 0 datagrams');
   check(s.rtc.turnTcpConnections === 0, 'WebRTC TURN over TCP to a loopback port: 0 connections');
   check(s.dns.queries === 0, `DNS prefetch / preconnect of a hinted name: 0 queries (saw ${s.dns.queries} ${JSON.stringify(s.dns.kinds)})`);

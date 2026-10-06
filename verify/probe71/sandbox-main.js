@@ -85,6 +85,8 @@ const VECTORS = {
   'cookie': { code: `try { document.cookie = 'k=1'; report('set, reads back: ' + document.cookie); } catch (e) { report('blocked ' + e.name); }` },
   'indexed-db': { code: `try { const r = indexedDB.open('x'); r.onsuccess = () => report('opened'); r.onerror = () => report('blocked'); } catch (e) { report('blocked ' + e.name); }` },
   'geolocation-camera': { code: `Promise.allSettled([navigator.geolocation ? new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej)) : Promise.reject('none'), navigator.mediaDevices ? navigator.mediaDevices.getUserMedia({ video: true }) : Promise.reject('none')]).then(r => report(r.map(x => x.status).join('/')))` },
+  // --- the page's own dialogs: a native message box parented to the app's window (PR #122 Dexter F1) -----------------------------------
+  'dialog-loop': { code: `alert('a'); confirm('b'); try { prompt('c'); } catch (e) { /* Electron has no prompt() */ } setTimeout(() => report('past the dialogs'), 300)` },
   // --- the one thing the page may do: a button ----------------------------------------------------------------------------------------
   'send-without-click': { code: `claudePanel.send('typed by a script'); setTimeout(() => report('sent'), 300)` },
   'send-with-click': { code: `document.body.innerHTML = '<button id="b" style="position:fixed;left:0;top:0;width:200px;height:100px">go</button>'; document.getElementById('b').addEventListener('click', () => { claudePanel.send('hello from a click'); report('clicked'); });` },

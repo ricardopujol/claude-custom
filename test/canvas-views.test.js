@@ -67,6 +67,8 @@ test('the panel view is sandboxed, isolated, bridge-less except its own preload,
   assert.strictEqual(p.nodeIntegration, false);
   assert.ok(!p.webviewTag && !p.nodeIntegrationInWorker && !p.nodeIntegrationInSubFrames);
   assert.strictEqual(p.devTools, false);
+  assert.strictEqual(p.disableDialogs, true, "alert/confirm/prompt are native boxes on the app's window: a page looping on confirm() would lock it (PR #122 Dexter F1)");
+  assert.strictEqual(p.safeDialogs, true);
   assert.strictEqual(p.preload, 'C:/app/canvas-panel-preload.js');
   assert.ok(typeof p.partition === 'string' && !p.partition.startsWith('persist:'), 'in memory, nothing survives the view');
   assert.ok(r.children.has(r.views[0]));
