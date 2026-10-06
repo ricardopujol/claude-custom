@@ -68,6 +68,9 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     if (typeof ses.setDevicePermissionHandler === 'function') ses.setDevicePermissionHandler(() => false);
     if (typeof ses.setSpellCheckerEnabled === 'function') ses.setSpellCheckerEnabled(false);
     ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: !String(d.url).startsWith('data:') }));
+    // `<a download href="data:...">` is not a navigation, so the guards below never see it, and a `data:` request is allowed:
+    // with no handler Electron raises a Save-As box for a file name and content the page chose (measured: verify/probe-canvas-sandbox.js).
+    if (typeof ses.on === 'function') ses.on('will-download', (e) => e.preventDefault());
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
     for (const ev of ['will-navigate', 'will-frame-navigate', 'will-redirect', 'will-attach-webview']) wc.on(ev, (e) => e.preventDefault());
     try { wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch { /* a destroyed contents has nothing left to protect */ }

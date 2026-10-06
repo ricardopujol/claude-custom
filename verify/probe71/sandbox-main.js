@@ -87,6 +87,10 @@ const VECTORS = {
   'geolocation-camera': { code: `Promise.allSettled([navigator.geolocation ? new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej)) : Promise.reject('none'), navigator.mediaDevices ? navigator.mediaDevices.getUserMedia({ video: true }) : Promise.reject('none')]).then(r => report(r.map(x => x.status).join('/')))` },
   // --- the page's own dialogs: a native message box parented to the app's window (PR #122 Dexter F1) -----------------------------------
   'dialog-loop': { code: `alert('a'); confirm('b'); try { prompt('c'); } catch (e) { /* Electron has no prompt() */ } setTimeout(() => report('past the dialogs'), 300)` },
+  // --- a download the page starts itself: Electron's default is a Save-As box with a name and content the page chose (PR #122 Dexter F2)
+  // (once from a script on load, and once more on a real click, so a download that needs a user gesture is seen too)
+  'data-download': { code: `const dl = () => { const a = document.createElement('a'); a.href = 'data:application/octet-stream;base64,QGVjaG8gb2Zm'; a.download = 'claude-quota-fix.bat'; document.body.appendChild(a); a.click(); };
+    document.body.innerHTML = '<div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; dl(); document.addEventListener('click', dl); setTimeout(() => report('clicked'), 2500)` },
   // --- the one thing the page may do: a button ----------------------------------------------------------------------------------------
   'send-without-click': { code: `claudePanel.send('typed by a script'); setTimeout(() => report('sent'), 300)` },
   'send-with-click': { code: `document.body.innerHTML = '<button id="b" style="position:fixed;left:0;top:0;width:200px;height:100px">go</button>'; document.getElementById('b').addEventListener('click', () => { claudePanel.send('hello from a click'); report('clicked'); });` },
@@ -128,7 +132,7 @@ app.whenReady().then(async () => {
 
   const owner = new BrowserWindow({ show: false, width: 1000, height: 800 });
   await owner.loadURL('data:text/html,<p>owner</p>');
-  let windowOpens = 0; const navAttempts = []; const delivered = []; const asked = [];
+  let windowOpens = 0; const navAttempts = []; const delivered = []; const asked = []; const downloads = [];
   owner.webContents.setWindowOpenHandler(() => { windowOpens += 1; return { action: 'deny' }; });
   owner.webContents.on('will-navigate', (_e, url) => navAttempts.push(url));
   const panels = new Map();   // owner id -> the panel contents the manager made for it, to read titles from
@@ -165,6 +169,12 @@ app.whenReady().then(async () => {
       const approved = name === 'fetch-approved (control)' || name.startsWith('fetch-redirect') ? [approvedOrigin] : [];
       await views.show(fakeOwner, { html, hosts: { approved, denied: [] }, rect: { x: 0, y: 0, width: 400, height: 300 } });
       wc = panels.get(fakeOwner.id);
+      // A download the panel's own lock-down did not cancel would raise a Save-As box: save it to a temp file instead, and record it.
+      wc.session.on('will-download', (e, item) => {
+        const rec = { name: item.getFilename(), prevented: e.defaultPrevented === true, written: false };
+        downloads.push(rec);
+        if (!rec.prevented) { rec.file = path.join(os.tmpdir(), `probe-canvas-dl-${process.pid}-${downloads.length}`); item.setSavePath(rec.file); item.once('done', () => { rec.written = fs.existsSync(rec.file); try { fs.unlinkSync(rec.file); } catch { /* none */ } }); }
+      });
     } else {
       // The control: the same page and preload, but a default session and nothing locked.
       naiveView = new WebContentsView({ webPreferences: { sandbox: process.env.PROBE_NAIVE_SANDBOX !== '0', contextIsolation: true, nodeIntegration: false, preload: PRELOAD } });
@@ -179,7 +189,7 @@ app.whenReady().then(async () => {
       const finish = (r) => { if (!done) { done = true; resolve(r); } };
       wc.on('page-title-updated', (_e, title) => { if (title.startsWith('R:')) finish(JSON.parse(title.slice(2))); });
       setTimeout(() => finish('no report'), 5000);
-      if (name === 'send-with-click') {
+      if (name === 'send-with-click' || name === 'data-download') {
         setTimeout(() => { for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); }, 1200);
       }
     });
@@ -205,7 +215,7 @@ app.whenReady().then(async () => {
   } catch { dnsQueries = -1; }
   const out = { electron: process.versions.electron, chrome: process.versions.chrome, mode: MODE, results, names: NAMES,
     hits, approvedHits: allowedRec.requests, rtc, dns: { queries: dnsQueries, kinds: [...dnsKinds] }, windowOpens,
-    ownerNavigations: navAttempts, delivered, asked: [...new Set(asked)] };
+    ownerNavigations: navAttempts, delivered, asked: [...new Set(asked)], downloads };
   const text = JSON.stringify(out);
   if (OUT) fs.writeFileSync(OUT, text); else console.log('RESULT ' + text);
   try { fs.unlinkSync(netlogFile); } catch { /* temp */ }

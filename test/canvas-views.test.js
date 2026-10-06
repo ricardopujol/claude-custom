@@ -22,8 +22,8 @@ class FakeContents extends EventEmitter {
 }
 FakeContents.next = 100;
 
-class FakeSession {
-  constructor(name) { this.name = name; this.proxy = null; this.permissionRequest = null; this.permissionCheck = null; this.requestFilter = null; this.order = []; }
+class FakeSession extends EventEmitter {
+  constructor(name) { super(); this.name = name; this.proxy = null; this.permissionRequest = null; this.permissionCheck = null; this.requestFilter = null; this.order = []; }
   async setProxy(c) { this.order.push('proxy'); this.proxy = c; }
   setPermissionRequestHandler(fn) { this.permissionRequest = fn; }
   setPermissionCheckHandler(fn) { this.permissionCheck = fn; }
@@ -92,6 +92,16 @@ test('the session is shut BEFORE anything loads: a dead proxy that takes loopbac
   const loadAt = view.webContents.calls.findIndex(c => c[0] === 'load');
   assert.ok(loadAt >= 0);
   assert.ok(ses.proxy !== null, 'set before the load below happened');
+});
+
+test('a download the page starts is cancelled: no Save-As box with a file name and content the page chose (PR #122 Dexter F2 / Miguel Y4)', async () => {
+  const r = rig();
+  await show(r);
+  const ses = Object.values(r.sessions)[0];
+  assert.ok(ses.listenerCount('will-download') >= 1, 'the panel session listens for downloads');
+  let prevented = false;
+  ses.emit('will-download', { preventDefault() { prevented = true; } }, { getFilename: () => 'claude-quota-fix.bat' });
+  assert.strictEqual(prevented, true);
 });
 
 test('the contents never navigate, never open a window and get no WebRTC route', async () => {
