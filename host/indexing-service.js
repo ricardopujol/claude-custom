@@ -24,7 +24,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { fold, listFor, counts } = require('./indexing-journal');
+const { fold, listFor, counts, isCurrent } =require('./indexing-journal');
 const { stampOf, removeEntry } = require('./indexing-doc');
 const { samePath } = require('./project-layout');
 const realWriter = require('./indexing-writer');
@@ -101,7 +101,7 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
   function rotate(t) {
     const day = new Date(t).toDateString();
     if (day === rotatedDay) return;
-    journal.compact((n) => n.state === 'unfiled' || new Date(n.at).toDateString() === day);
+    journal.compact((n) => n.state === 'unfiled' || isCurrent(n, t));
     rotatedDay = day;
   }
 

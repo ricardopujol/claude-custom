@@ -257,3 +257,36 @@ test('a retry whose look at the backlog fails (busy) does not write: a failed lo
   assert.strictEqual(read(t.backlog).split('· mine').length - 1, 1);
   assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'filed');
 });
+
+const MIN = 60 * 1000;
+const HOUR = 60 * MIN;
+
+test('a note typed one day and filed the next shows as filed today, with its Undo, and the rotation keeps it (Dexter F2, PR #121)', async () => {
+  let conflict = true;
+  const w = { ...writer, fileNote: (a) => (conflict ? { ok: false, reason: 'conflict' } : writer.fileNote(a)) };
+  const t = setup({ writerImpl: w });
+  t.advance(14 * HOUR + 52 * MIN);                                  // 23:59 on the 5th
+  assert.strictEqual(t.svc.submit(t.project, 'late one').filed, false);
+  t.advance(9 * HOUR);                                              // 08:59 on the 6th
+  conflict = false;
+  await t.svc.tick();                                               // rotates (it's unfiled: kept), then files it
+  const { list, counts } = t.svc.snapshot(t.project);
+  assert.deepStrictEqual(list.map(n => [n.text, n.state, n.undoable]), [['late one', 'filed', true]]);
+  assert.deepStrictEqual(counts, { filed: 1, unfiled: 0 });
+  t.advance(24 * HOUR);                                             // and the day after, it is yesterday's
+  await t.svc.tick();
+  assert.deepStrictEqual(t.svc.snapshot(t.project).list, []);
+});
+
+test('a note filed seconds before midnight can still be undone just after it (Dexter F2, PR #121)', async () => {
+  const t = setup();
+  t.advance(14 * HOUR + 52 * MIN + 55 * 1000);                      // 23:59:55 on the 5th
+  const { id, filed } = t.svc.submit(t.project, 'near midnight');
+  assert.strictEqual(filed, true);
+  t.advance(6 * 1000);                                              // 00:00:01 on the 6th: the first tick of the new day
+  await t.svc.tick();
+  assert.deepStrictEqual(t.svc.snapshot(t.project).list.map(n => [n.id, n.state, n.undoable]), [[id, 'filed', true]]);
+  t.advance(2 * 1000);
+  assert.deepStrictEqual(t.svc.undo(id, t.project), { ok: true });
+  assert.ok(!read(t.backlog).includes('near midnight'));
+});
