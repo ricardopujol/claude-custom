@@ -86,6 +86,18 @@ test("the host's start time arriving after the first claim is a change too: writ
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r.dir, 'ag1.json'), 'utf8')).hostStartedAt, '1000');
 });
 
+test('the session arriving after the first claim is a change too: written at once, not in 30 s (PR #124 Dexter F1)', () => {
+  const r = rig();
+  assert.strictEqual(r.writer.write(record({ sessionId: null })).wrote, true);
+  r.clock.t += 1000;
+  assert.strictEqual(r.writer.write(record({ sessionId: 'S' })).wrote, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r.dir, 'ag1.json'), 'utf8')).sessionId, 'S');
+  // and the same session again inside the window is throttled like any other unchanged claim
+  assert.strictEqual(r.writer.write(record({ sessionId: 'S' })).wrote, false);
+  // a /clear: another session id for the same agent id is a change as well
+  assert.strictEqual(r.writer.write(record({ sessionId: 'T' })).wrote, true);
+});
+
 test('two agents are throttled independently', () => {
   const r = rig();
   r.writer.write(record({ agentId: 'a' }));

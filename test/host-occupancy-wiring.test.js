@@ -48,6 +48,17 @@ test('the hook handler gives every event to the producer, and keeps the file-too
   assert.ok(body.indexOf("if (ev.event === 'Status')") < give);
 });
 
+test('the page learns this session\'s id: in `hello`, and as a `session` message when SessionStart names one (backlog #57)', () => {
+  const hello = HOST.slice(HOST.indexOf("type: 'hello',"), HOST.indexOf('});', HOST.indexOf("type: 'hello',")));
+  assert.match(hello, /\n\s+sessionId,/);
+  const body = handlerBody();
+  const start = body.indexOf("if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {");
+  assert.ok(start !== -1, 'the SessionStart branch');
+  const branch = body.slice(start, body.indexOf('\n    }', start));
+  assert.match(branch, /sessionId = ev\.payload\.session_id;/);
+  assert.match(branch, /broadcastControl\(\{ type: 'session', sessionId \}\);/);
+});
+
 test('hook debug prints the occupancy-only events too, before the early return hides them from the debug lines below', () => {
   // verify/probe-teammate-occupancy.js reads `[hook:full]` to see what a teammate's Read and Grep really send.
   const body = handlerBody();

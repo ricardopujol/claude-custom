@@ -95,6 +95,7 @@ function createOccupancyProducer({
 } = {}) {
   const book = new Map();      // agentId -> Map(normPath(worktree) -> { worktree, firstAt, lastAt, count })
   const idle = new Set();      // teammates that ended a turn and have not touched anything since
+  const sessionOf = new Map(); // agentId -> the session its calls came from (the hook payload's session_id)
   // When each agent last stopped and when the session last ended, as a count of such events: a retry that
   // comes back from git AFTER its agent stopped must not claim for it (PR #96 Dexter F8).
   let seq = 0;
@@ -104,6 +105,7 @@ function createOccupancyProducer({
   function drop(id) {
     book.delete(id);
     idle.delete(id);
+    sessionOf.delete(id);
     writer.remove(id);
   }
 
@@ -123,7 +125,9 @@ function createOccupancyProducer({
     if (!touches) touches = new Map();
     book.set(claim.agentId, touches);
     idle.delete(claim.agentId);                    // a touch: it is working again
-    while (book.size > AGENTS_MAX) { const oldest = book.keys().next().value; book.delete(oldest); idle.delete(oldest); }
+    while (book.size > AGENTS_MAX) { const oldest = book.keys().next().value; book.delete(oldest); idle.delete(oldest); sessionOf.delete(oldest); }
+    // a call that names no session doesn't forget the one an earlier call proved
+    if (claim.sessionId) sessionOf.set(claim.agentId, claim.sessionId);
 
     const key = normPath(claim.worktree);
     const prev = touches.get(key);
@@ -143,6 +147,7 @@ function createOccupancyProducer({
       agent: claim.agent || nameOf(claim.agentId) || null,
       fromBranch: fromBranch(),
       fromRoot: ownRoot,
+      sessionId: sessionOf.get(claim.agentId) || null,
       hostPid,
       hostStartedAt: started,
       touches: [...touches.values()],
@@ -172,6 +177,7 @@ function createOccupancyProducer({
       endedAt = ++seq;
       book.clear();
       idle.clear();
+      sessionOf.clear();
       writer.removeAll();
       return;
     }

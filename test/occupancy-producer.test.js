@@ -35,7 +35,7 @@ function rig(over = {}) {
 }
 
 const ev = (event, payload) => ({ event, payload });
-const edit = (file, extra = {}) => ev('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: file }, agent_id: 'ag1', agent_type: 'electron-pro', ...extra });
+const edit = (file, extra = {}) => ev('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: file }, agent_id: 'ag1', agent_type: 'electron-pro', session_id: 'sess-1', ...extra });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test('an agent\'s Edit in another worktree writes its claim, with the host\'s facts', () => {
@@ -44,8 +44,65 @@ test('an agent\'s Edit in another worktree writes its claim, with the host\'s fa
   assert.strictEqual(r.writes.length, 1);
   assert.deepStrictEqual(r.writes[0], {
     agentId: 'ag1', agent: 'electron-pro', worktree: FEAT, also: [], fromBranch: 'develop', fromRoot: DEV,
-    hostPid: 4242, hostStartedAt: '1000', firstAt: 1000, lastAt: 1000, count: 1,
+    sessionId: 'sess-1', hostPid: 4242, hostStartedAt: '1000', firstAt: 1000, lastAt: 1000, count: 1,
   });
+});
+
+test('the claim names the session its call came from, so a hub card matches its OWN session\'s run (backlog #57, Dexter F5)', () => {
+  const r = rig();
+  r.p.handle(edit(path.join(FEAT, 'a.js'), { session_id: 'sess-2' }));
+  assert.strictEqual(r.writes[0].sessionId, 'sess-2');
+  // a later call that names no session doesn't forget the one already proven
+  r.clock = 2000;
+  r.p.handle(edit(path.join(FEAT, 'b.js'), { session_id: undefined }));
+  assert.strictEqual(r.writes[1].sessionId, 'sess-2');
+});
+
+test('a session learned on a later call reaches the file at once, through the real writer (PR #124 Dexter F1)', () => {
+  const fs = require('fs');
+  const { tmpDir } = require('./tmp-dir');
+  const { createClaimWriter, occupancyDir } = require('../host/occupancy-store');
+  const state = tmpDir('occ-prod-sess-');
+  const r = rig({ writer: createClaimWriter({ stateRoot: state, now: () => r.clock }) });
+  r.p.handle(edit(path.join(FEAT, 'a.js'), { session_id: undefined }));
+  r.clock = 6000;   // 5 s later: inside the writer's 30 s window
+  r.p.handle(edit(path.join(FEAT, 'a.js'), { session_id: 'S' }));
+  const onDisk = JSON.parse(fs.readFileSync(path.join(occupancyDir(state), 'ag1.json'), 'utf8'));
+  assert.strictEqual(onDisk.sessionId, 'S');
+});
+
+const sessionOnWrite = (r, extra = {}) => {
+  r.p.handle(edit(path.join(FEAT, 'a.js'), { session_id: undefined, ...extra }));
+  return r.writes[r.writes.length - 1].sessionId;
+};
+
+test('a stopped agent\'s session is forgotten: a reused agent id that names none gets none (PR #124 Miguel M1)', () => {
+  const r = rig();
+  r.p.handle(edit(path.join(FEAT, 'a.js')));
+  r.p.handle(ev('SubagentStop', { agent_id: 'ag1', agent_type: 'electron-pro' }));
+  assert.strictEqual(sessionOnWrite(r), null);
+});
+
+test('SessionEnd forgets every agent\'s session (PR #124 Miguel M1)', () => {
+  const r = rig();
+  r.p.handle(edit(path.join(FEAT, 'a.js')));
+  r.p.handle(ev('SessionEnd', {}));
+  assert.strictEqual(sessionOnWrite(r), null);
+});
+
+test('an agent evicted from the touch book takes its session with it (PR #124 Miguel M1)', () => {
+  const r = rig();
+  r.p.handle(edit(path.join(FEAT, 'a.js'), { agent_id: 'old0' }));
+  for (let i = 0; i < AGENTS_MAX; i++) r.p.handle(edit(path.join(FEAT, 'a.js'), { agent_id: `new${i}` }));
+  assert.strictEqual(sessionOnWrite(r, { agent_id: 'old0' }), null);
+});
+
+test('an idle teammate that expires forgets its session too (PR #124 Miguel M1)', () => {
+  const r = rig({ isTeammate: () => true, idleMs: 1000 });
+  r.p.handle(edit(path.join(FEAT, 'a.js')));
+  r.clock += 5000;
+  r.p.handle(ev('SubagentStop', { agent_id: 'ag1' }));
+  assert.strictEqual(sessionOnWrite(r), null);
 });
 
 test('more calls in the same worktree: the count grows, firstAt stays, lastAt moves', () => {
