@@ -60,7 +60,7 @@ function setup({ snapshot } = {}) {
     submit: (root, text) => { calls.submit.push([root, text]); return text.trim() ? { ok: true, id: 'n1', filed: true } : { ok: false, reason: 'empty' }; },
     undo: (id, root) => { calls.undo.push([id, root]); return { ok: false, reason: 'changed', file: 'C:\\p\\dev\\documentation\\P_BACKLOG.md' }; },
     tick: async () => { calls.tick += 1; },
-    snapshot: () => snap,
+    snapshot: () => { if (snap instanceof Error) throw snap; return snap; },
   };
   const bridge = createIndexingBridge({
     ipcMain,
@@ -264,4 +264,20 @@ test('the chip pops the projects; picking one adds there from then on, and Undo 
   assert.strictEqual(t.calls.submit[0][0], 'C:\\q');
   await t.ipcMain.invoke('indexing:undo', overlayOf(t, 'toast').webContents, 'n1');
   assert.strictEqual(t.calls.undo[0][1], 'C:\\q');
+});
+
+test('a snapshot that throws (the journal unreadable for a moment) leaves the toast as it was: it still comes back once its note is filed (Dexter F5, PR #121)', async () => {
+  const t = setup();
+  await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
+  const toast = overlayOf(t, 'toast');
+  t.setSnap({ counts: {}, list: [ROW({ state: 'unfiled', reason: 'busy', undoable: false })] });
+  t.bridge.push(true);
+  const seq = lastOverlay(toast).toast.seq;
+  t.ipcMain.emit('indexing:dismiss', toast.webContents, seq);
+  t.setSnap(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
+  t.bridge.push(true);
+  t.setSnap({ counts: {}, list: [ROW()] });
+  t.bridge.push();
+  const back = lastOverlay(toast).toast;
+  assert.ok(back && back.id === 'n1' && back.seq > seq, JSON.stringify(back));
 });
