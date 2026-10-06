@@ -1561,8 +1561,24 @@ function sendPresetOp(req, onAnswer) {
     else presetsState = { ...presetsState, busy: false };
     if (!r.ok && r.reason === 'failed') flashAttention({ urgent: false, title: 'Couldn\'t save the presets' });
     onAnswer(r);
+    if (!r.ok && window.dockPresets.needsResync(r.reason)) resyncPresets();
   };
   presetBridge.op(req).then(finish, () => finish(null));
+}
+
+// A refusal of `changed` or `missing` means this window's list is out of date (a lost poll, a push that never came):
+// ask main for the list again, or the next question would be built from the same stale row and be refused the same way.
+// The read also gives any preset an older build wrote its id, so a question about it can be answered.
+async function resyncPresets() {
+  const bridge = window.harness && window.harness.layoutPresets;
+  if (!bridge) return;
+  let answer = null;
+  try { answer = await bridge.get(); } catch { return; }
+  const next = window.dockPresets.afterGet(answer);
+  if (!next.usable) return;
+  presetsState = { loaded: true, ...next, busy: presetsState.busy === true };
+  dispatchPreset({ type: 'list', list: presetsState.list });
+  refreshPresetMenu();
 }
 
 // Redraw the open Window menu in place. A push never skips it: the field being typed in lives in presetUi.

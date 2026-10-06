@@ -327,10 +327,14 @@ const nameIn = (list, name) => (Array.isArray(list) ? list.find(p => isObject(p)
 const gone = name => `'${name}' no longer exists`;
 const IDLE_AT = focus => ({ mode: 'idle', focus, select: false });
 const CLOSED = error => ({ mode: 'idle', error, focus: { kind: 'save-open' }, select: false });
-// The id a question remembers, only when the event brought one (a caller that sends none asks by name, as before).
+// The id a question remembers, only when the event brought one (none: the question can't be proven to be about one
+// preset, which main refuses when it is confirmed).
 const withId = (state, id) => (id === undefined ? state : { ...state, id });
 // The preset a question is about has passed to another one: its name now belongs to a preset with another id.
-const swapped = (state, list) => { const p = nameIn(list, state.name); return state.id !== undefined && !!p && (isId(p.id) ? p.id : null) !== state.id; };
+// Only a question that holds a real id can say so: one opened with none (null) is refused by main when confirmed, and a
+// preset that merely gained its first id (another window's op, a get's write-back, this window's own case-only rename)
+// is the same preset, so it isn't read as a swap.
+const swapped = (state, list) => { const p = nameIn(list, state.name); return isId(state.id) && !!p && p.id !== state.id; };
 const rowFocus = (list, name) => { const p = nameIn(list, name); return p ? { kind: 'row', name: p.name } : { kind: 'save-open' }; };
 
 // The row focus lands on once `name` is deleted: the one after it, else the one before, else Save this layout.
@@ -381,15 +385,19 @@ function afterAnswer(state, { req, result, before, after }) {
   if (result.reason === 'missing') return CLOSED(gone(req.name));
   if (result.reason === 'changed') return CLOSED(changedText(state.mode));
   // A save under a name that exists asks to replace it, naming the preset that would go (its own spelling is kept),
-  // and remembering which one that is. One this window never saw is asked about as id-less (null), so main refuses
+  // and remembering which one that is: the one the window shows now (`after`, the list when the answer arrived, so a
+  // push that landed in flight counts). One this window never saw is asked about as id-less (null), so main refuses
   // the replace as `changed` rather than overwrite a preset nobody here was shown.
   if (result.reason === 'taken' && state.mode === 'save' && req.op === 'save') {
-    const have = nameIn(before, req.name);
+    const have = nameIn(after, req.name);
     return reduceMenu(state, { type: 'taken', name: have ? have.name : req.name, text: req.name, id: have && isId(have.id) ? have.id : null });
   }
   const back = state.mode === 'save' || state.mode === 'rename' ? { kind: 'field' } : { kind: 'confirm' };
   return { ...state, error: refusalText(result.reason), focus: back, select: false };
 }
+
+/** True for a refusal that means this window's list is out of date (`changed`, `missing`): the page asks main for the list again, so the next question is about what is really there. */
+const needsResync = reason => reason === 'changed' || reason === 'missing';
 
 /** An unreadable list is asked for again every time the Window menu opens; a usable or still-loading one is not. */
 function needsRetry(presets) {
@@ -428,7 +436,7 @@ function presetLayout(layout, ids, readAny) {
 const API = {
   NAME_MAX, MAX_PRESETS, MAX_PRESET_BYTES, MAX_LIST_BYTES, ID_MAX, THUMB, checkName, nameKey: keyOf, cleanPresets, describe, find,
   needsIds, withIds, savePreset, renamePreset, deletePreset, applyOp,
-  thumbBoxes, afterGet, afterOp, keptText, refusalText, changedText, reduceMenu, needsRetry, labelFor, presetLayout,
+  thumbBoxes, afterGet, afterOp, keptText, refusalText, changedText, reduceMenu, needsRetry, needsResync, labelFor, presetLayout,
 };
 
 // One namespace on the page (`window.dockPresets`), not loose globals.

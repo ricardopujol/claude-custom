@@ -110,3 +110,38 @@ test('the list is loaded once the layout is, and a push from another window repl
   assert.match(body, /bridge\.onChange\(/);
   assert.match(JS, /loadLayout\(\)\.then\([\s\S]*?\n  \}\);\r?\n  loadPresets\(\);/);
 });
+
+// --- which preset a question is about (BACKLOG #59, PR #127) ----------------------------------------------------
+// The rule is tested as behaviour in dock-presets-identity.test.js; these pin the plumbing that makes it real. Drop
+// one `id` below and main sees a request with none, which it refuses as `changed`: every action would say "changed".
+
+test('PR #127 Miguel I1: every preset question is opened with the id of its preset, and every confirm sends it back', () => {
+  const row = fnBody('presetRow');
+  assert.match(row, /type: 'open', mode: 'rename', name: p\.name, id: presetId\(p\)/);
+  assert.match(row, /type: 'open', mode: 'delete', name: p\.name, id: presetId\(p\)/);
+  assert.match(row, /runPresetOp\(\{ op: 'rename', name: p\.name, to: text, id: presetUi\.id \}\)/);
+  assert.match(row, /runPresetOp\(\{ op: 'delete', name: p\.name, id: presetUi\.id \}\)/);
+  assert.match(fnBody('appendPresetSection'), /runPresetOp\(\{ op: 'save', name: presetUi\.name, layout: committedLayout\(\), replace: true, id: presetUi\.id \}\)/);
+  // a stored preset with no (usable) id is asked about as null, never as undefined, which would drop off the wire
+  assert.match(JS, /const presetId = p => \(typeof p\.id === 'string' \? p\.id : null\);/);
+});
+
+test('PR #127 Miguel I1: no rename, delete or replace goes out without an id', () => {
+  const sends = [...JS.matchAll(/runPresetOp\(\{[^}]*\}\)/g)].map(m => m[0]);
+  const acting = sends.filter(t => /op: 'rename'|op: 'delete'|replace: true/.test(t));
+  assert.strictEqual(acting.length, 3, 'rename, delete and replace are the only three');
+  for (const t of acting) assert.match(t, /\bid: presetUi\.id\b/, t);
+  assert.strictEqual(sends.length, 4, 'and the one plain save');
+});
+
+test('PR #127 Dexter F2: a refusal that means the list is out of date reads the list again, after the answer is shown', () => {
+  const send = fnBody('sendPresetOp');
+  assert.match(send, /!r\.ok && window\.dockPresets\.needsResync\(r\.reason\)\) resyncPresets\(\);/);
+  assert.ok(send.indexOf('onAnswer(r)') < send.indexOf('resyncPresets()'), 'the refusal is shown first');
+  const body = fnBody('resyncPresets');
+  assert.match(body, /bridge\.get\(\)/);
+  assert.match(body, /window\.dockPresets\.afterGet\(answer\)/);
+  assert.match(body, /if \(!next\.usable\) return;/);
+  assert.match(body, /dispatchPreset\(\{ type: 'list', list: presetsState\.list \}\);/);
+  assert.match(body, /refreshPresetMenu\(\);/);
+});

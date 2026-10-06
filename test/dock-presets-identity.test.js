@@ -87,6 +87,22 @@ test('#59: a confirm about the preset that is still there goes through, renamed 
   assert.deepStrictEqual(store.data[PRESET_NAMES.key], []);
 });
 
+test('PR #127 Dexter F1/F2: after a `changed` refusal the re-read gives it the preset that is really there, with an id, and the retry goes through', async () => {
+  const { store, A } = await staleFocus();          // A's list says Focus(f1); the Focus now there is the ex-Debug
+  const stale = await A.op({ op: 'delete', name: 'Focus', id: 'whatever-A-was-shown' });
+  assert.strictEqual(P.needsResync(stale.reason), true);
+  const now = P.describe((await A.get()).layout).list.find(p => p.name === 'Focus');
+  assert.ok(typeof now.id === 'string');
+  assert.strictEqual((await A.op({ op: 'delete', name: 'Focus', id: now.id })).ok, true);
+  assert.deepStrictEqual(P.cleanPresets(store.data[PRESET_NAMES.key]), []);
+  // and an id-less one an older build wrote: refused with null, given its id by the re-read, then answered
+  const old = fakeStore([{ name: 'Old', layout: L('o') }]);
+  const W = windowOn(old, counter('g'));
+  assert.deepStrictEqual(await W.op({ op: 'delete', name: 'Old', id: null }), { ok: false, reason: 'changed' });
+  const mended = P.describe((await W.get()).layout).list[0];
+  assert.strictEqual((await W.op({ op: 'delete', name: 'Old', id: mended.id })).ok, true);
+});
+
 // --- the rule, in the pure module -----------------------------------------------------------------------------
 
 const two = () => [{ name: 'Review', layout: L('r'), id: 'r1' }, { name: 'Write', layout: L('w'), id: 'w1' }];
@@ -303,6 +319,33 @@ test('#59: a push that puts another preset under the name an open question is ab
   }
   const same = { mode: 'delete', name: 'Focus', id: 'f1' };
   assert.strictEqual(step(same, { type: 'list', list: list(['FOCUS', 'f1']) }), same, 'the same preset, in another case, keeps the question');
+});
+
+test('PR #127 Dexter F4 / Miguel I2: a preset gaining its first id is not "another preset": a question opened with no id stays open, one with an id still closes on a swap', () => {
+  for (const mode of ['rename', 'delete', 'replace']) {
+    const open = { mode, name: 'Focus', id: null, text: 'x' };
+    assert.strictEqual(step(open, { type: 'list', list: list(['Focus', 'g1']) }), open, `${mode}: migrated ids arrive`);
+    assert.strictEqual(step(open, { type: 'list', list: [{ name: 'Focus', layout: L() }] }), open, `${mode}: null against null`);
+    const noKey = { mode, name: 'Focus', text: 'x' };
+    assert.strictEqual(step(noKey, { type: 'list', list: list(['Focus', 'g1']) }), noKey, `${mode}: no id remembered at all`);
+    assert.strictEqual(step({ mode, name: 'Focus', id: 'f1' }, { type: 'list', list: [{ name: 'Focus', layout: L() }] }).mode, 'idle', `${mode}: a preset that had an id and now shows none is another one`);
+  }
+  assert.strictEqual(step({ mode: 'rename', name: 'focus', id: null, text: 'Focus' }, { type: 'list', list: list(['Focus', 'g1']) }).mode, 'rename', 'own case-only rename of an id-less preset: no false alert');
+});
+
+test('PR #127 Dexter F3: a taken save asks about the preset the window shows NOW (the list at answer time), with its id', () => {
+  const answer = (before, after) => step({ mode: 'save', text: 'focus' }, { type: 'answer', req: { op: 'save', name: 'focus' }, result: { ok: false, reason: 'taken' }, before, after });
+  const s = answer([], list(['Focus', 'n1']));
+  assert.strictEqual(s.mode, 'replace');
+  assert.strictEqual(s.id, 'n1');
+  assert.strictEqual(s.name, 'Focus');
+  assert.strictEqual(answer(list(['Focus', 'f1']), list(['Focus', 'n1'])).id, 'n1', 'a push that landed in flight wins over the pre-click list');
+});
+
+test('PR #127 Dexter F2: only a refusal that means the list on the page is out of date asks for the list again', () => {
+  assert.strictEqual(P.needsResync('changed'), true);
+  assert.strictEqual(P.needsResync('missing'), true);
+  for (const reason of ['taken', 'name', 'full', 'layout', 'unreadable', 'failed', 'op', undefined, null]) assert.strictEqual(P.needsResync(reason), false, String(reason));
 });
 
 test('#59: main answering `changed` closes the question and says nothing was done', () => {
