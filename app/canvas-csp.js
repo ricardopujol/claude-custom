@@ -13,26 +13,10 @@
  * panel / Deny" the moment the page first reaches for a new host, with no reload.
  */
 
+const { hostOrigin } = require('../host/canvas-origin');      // one origin rule for the panel and the host (PR #122 Miguel G8)
+
 // The policy's directive count: the property test holds the CSP to it.
 const CSP_DIRECTIVES = 8;
-
-const HOST_NAME = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])$/;
-
-/**
- * A plain http(s) origin from whatever string the page or the list gave, else null. A bare host is https. Credentials,
- * wildcards, other schemes, anything with a space or a quote: refused. Default ports fold away (URL does it).
- */
-function hostOrigin(input) {
-  if (typeof input !== 'string') return null;
-  const raw = input.trim();
-  if (!raw) return null;
-  let u;
-  try { u = new URL(raw.includes('://') ? raw : 'https://' + raw); } catch { return null; }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-  if (u.username || u.password) return null;
-  if (!HOST_NAME.test(u.hostname)) return null;
-  return `${u.protocol}//${u.host}`;
-}
 
 /** The policy text. No input: nothing the panel is shown can add a source. */
 function buildCsp() {
@@ -76,7 +60,12 @@ function shim() {
           body: typeof opts.body === 'string' ? opts.body : undefined,
         }).then((r) => {
           if (!r || r.ok !== true) { reject(new TypeError('Failed to fetch: ' + (r && r.error ? r.error : 'refused'))); return; }
-          resolve(new Response(NO_BODY[r.status] ? null : toBytes(r.bodyBase64), { status: r.status, statusText: r.statusText, headers: r.headers }));
+          // A status, status text or header value the Response class refuses throws HERE, inside a promise callback: uncaught, the page's fetch
+          // would never settle (PR #122 Miguel Y3). It is a failed fetch, as in a browser.
+          let response;
+          try { response = new Response(NO_BODY[r.status] ? null : toBytes(r.bodyBase64), { status: r.status, statusText: r.statusText, headers: r.headers }); }
+          catch (err) { reject(new TypeError('Failed to fetch: the answer could not be read (' + (err && err.message ? err.message : 'bad response') + ')')); return; }
+          resolve(response);
         }, (err) => reject(new TypeError('Failed to fetch: ' + (err && err.message ? err.message : 'refused'))));
       } catch (err) { reject(err); }
     });

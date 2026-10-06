@@ -259,3 +259,83 @@ test('the line sent to the session is "(from Claude\'s panel) <text>", one line'
   assert.strictEqual(D.sessionLine('  padded  '), "(from Claude's panel) padded");
   for (const bad of ['', '   ', 5, null, undefined, 'two\nlines', 'tab\there', 'x'.repeat(2001)]) assert.strictEqual(D.sessionLine(bad), null, JSON.stringify(bad));
 });
+
+
+// ---- anything else drawn over the slot (PR #122 Dexter F5) ---------------------------------------------------------------------------
+
+test('samplePoints: a grid inside the slot, none for a slot with no room', () => {
+  const pts = D.samplePoints({ x: 100, y: 50, width: 400, height: 300 });
+  assert.ok(pts.length >= 4);
+  for (const p of pts) assert.ok(p.x >= 101 && p.x <= 499 && p.y >= 51 && p.y <= 349, JSON.stringify(p));
+  assert.ok(pts.some(p => p.x === 101 && p.y === 51) && pts.some(p => p.x === 499 && p.y === 349), 'the corners are sampled');
+  for (const bad of [null, undefined, 'x', {}, { x: 0, y: 0, width: 2, height: 100 }, { x: 0, y: 0, width: 100, height: 0 }, { x: NaN, y: 0, width: 100, height: 100 }]) {
+    assert.deepStrictEqual(D.samplePoints(bad), [], JSON.stringify(bad));
+  }
+  assert.ok(D.samplePoints({ x: 0, y: 0, width: 5000, height: 5000 }).length <= 144, 'a huge slot costs a bounded number of hit tests');
+});
+
+test('slotObstructed: nothing over the slot is not obstructed; a float, menu or popover over any part of it is', () => {
+  const slot = { x: 300, y: 100, width: 400, height: 500 };
+  assert.strictEqual(D.slotObstructed(slot, () => true), false);
+  const over = (box) => (x, y) => !(x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height);
+  assert.strictEqual(D.slotObstructed(slot, over({ x: 600, y: 450, width: 300, height: 300 })), true, 'a float over a corner');
+  assert.strictEqual(D.slotObstructed(slot, over({ x: 0, y: 0, width: 5000, height: 50 })), false, 'a bar above the slot is not over it');
+  assert.strictEqual(D.slotObstructed(slot, over({ x: 400, y: 0, width: 150, height: 300 })), true, 'a menu dropping into the top');
+  assert.strictEqual(D.slotObstructed(null, () => false), false, 'no slot, nothing to cover');
+});
+
+test('property: any overlay big enough to see over the slot hides it, wherever it sits inside it', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(
+    fc.record({ x: fc.integer({ min: -500, max: 2000 }), y: fc.integer({ min: -500, max: 2000 }), width: fc.integer({ min: 10, max: 3000 }), height: fc.integer({ min: 10, max: 3000 }) }),
+    fc.double({ min: 0, max: 1, noNaN: true }), fc.double({ min: 0, max: 1, noNaN: true }),
+    (slot, fx, fy) => {
+      const pts = D.samplePoints(slot);
+      const xs = [...new Set(pts.map(p => p.x))].sort((a, b) => a - b); const ys = [...new Set(pts.map(p => p.y))].sort((a, b) => a - b);
+      const gapX = Math.max(...xs.slice(1).map((v, i) => v - xs[i])); const gapY = Math.max(...ys.slice(1).map((v, i) => v - ys[i]));
+      const box = { width: gapX + 0.001, height: gapY + 0.001 };
+      box.x = slot.x + 1 + fx * (slot.width - 2 - box.width > 0 ? slot.width - 2 - box.width : 0);
+      box.y = slot.y + 1 + fy * (slot.height - 2 - box.height > 0 ? slot.height - 2 - box.height : 0);
+      const inside = (x, y) => x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height;
+      assert.strictEqual(D.slotObstructed(slot, (x, y) => !inside(x, y)), true, JSON.stringify({ slot, box }));
+      assert.strictEqual(D.slotObstructed(slot, () => true), false);
+    }), { numRuns: 400 });
+});
+
+// ---- a refused show is said on screen; questions go with their view (PR #122 Dexter F9, Miguel G4) ----------------------------------
+
+const withPage = () => D.withFrame(D.withFrame(D.emptyState(), frame()), frame({ html: '<p>x</p>' }));
+
+test('a refusal from main is a note and a blank slot, not a view the renderer believes in', () => {
+  let s = withPage();
+  assert.strictEqual(D.canShow(s), true);
+  s = D.withRefusal(s, s.htmlSig, 'the page is too big');
+  assert.strictEqual(D.canShow(s), false, 'so the renderer stops asking main to show it');
+  const v = D.view(s);
+  assert.strictEqual(v.note, "Couldn't show Claude's page: the page is too big.");
+  assert.strictEqual(v.loading, false, 'not "Loading..." forever');
+  assert.match(D.html(v), /cv-error[^>]*>Couldn&#39;t show Claude&#39;s page: the page is too big\.</);
+});
+
+test('a refusal holds for that page only: a new page, a new session or a refusal for a stale page changes nothing', () => {
+  const s = D.withRefusal(withPage(), '20:aaa', 'x');
+  const next = D.withFrame(D.withFrame(s, frame({ signature: '30:bbb' })), frame({ signature: '30:bbb', html: '<p>y</p>' }));
+  assert.strictEqual(D.canShow(next), true);
+  assert.strictEqual(D.view(next).note, null);
+  assert.strictEqual(D.canShow(D.withFrame(s, frame({ sessionId: 'other', signature: '9:z' }))), false, 'no page yet in the new session');
+  assert.strictEqual(D.withRefusal(withPage(), '99:stale', 'x').refusal, null);
+  assert.strictEqual(D.withRefusal(withPage(), null, 'x').refusal, null);
+  assert.strictEqual(D.view(D.withRefusal(withPage(), '20:aaa', '')).note, "Couldn't show Claude's page: it was refused.");
+  assert.ok(D.view(D.withRefusal(withPage(), '20:aaa', 'x'.repeat(500))).note.length < 200, 'the reason is capped');
+});
+
+test('withoutAsks drops the pending questions and leaves everything else alone', () => {
+  let s = D.withAsk(D.withAsk(withPage(), { id: 1, origin: 'https://a.example' }), { id: 2, origin: 'https://b.example' });
+  s = D.toggleHosts(s, true);
+  const cleared = D.withoutAsks(s);
+  assert.deepStrictEqual(cleared.asks, []);
+  assert.strictEqual(cleared.hostsOpen, true);
+  assert.strictEqual(cleared.html, s.html);
+  const none = withPage();
+  assert.strictEqual(D.withoutAsks(none), none, 'same object when there is nothing to clear');
+});

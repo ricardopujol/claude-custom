@@ -22,6 +22,7 @@ const { spawn } = require('child_process');
 const { buildHarnessSettings, findUserStatusLine } = require('../host/settings-writer');
 const { createHookBridge } = require('../host/hook-bridge');
 const { tmpDir } = require('./tmp-dir');
+const { posixShell } = require('./posix-shell');
 
 const RELAY = path.join(__dirname, '..', 'host', 'status-relay.js');
 const opts = { helperPath: 'C:/h/hook-helper.exe', pipeName: '\\\\.\\pipe\\claude-custom-abc' };
@@ -77,14 +78,17 @@ test('the relay command carries no backslash, quote or $ for a shell to eat', ()
   assert.ok(!/[$`'"]/.test(unquoted), unquoted);
 });
 
-test('the relay command survives a real POSIX shell with its arguments intact', () => {
+test('the relay command survives a real POSIX shell with its arguments intact', (t) => {
   const { spawnSync } = require('child_process');
+  // Not spawnSync('bash'): from PowerShell that is the WSL launcher, which fails without an error (BACKLOG #72).
+  const sh = posixShell();
+  if (!sh) { t.skip('no POSIX shell on this machine'); return; }
   const user = { type: 'command', command: 'node "C:\\a b\\s.js"', padding: 0 };
   const cmd = buildHarnessSettings(relayOpts(user)).statusLine.command;
   // Replace the program with printf so the shell shows what it would pass.
   const argsOnly = cmd.replace(/^"[^"]*"/, 'printf "%s\\n"');
-  const r = spawnSync('bash', ['-c', argsOnly], { encoding: 'utf8' });
-  if (r.error) return;
+  const r = spawnSync(sh, ['-c', argsOnly], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
   const argv = r.stdout.trim().split('\n');
   assert.strictEqual(argv[0], 'C:/cc/host/status-relay.js');
   assert.strictEqual(argv[argv.indexOf('--pipe') + 1], 'claude-custom-abc');
@@ -224,19 +228,28 @@ test('unparseable stdin is not forwarded, and the user command still runs', asyn
 const { runUser, forward } = require('../host/status-relay');
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// A pid file read mid-write must not become a truncated pid that process.kill then aims at some other process (Miguel G1).
+const readPid = (file) => { const s = fs.readFileSync(file, 'utf8'); return /^\d+$/.test(s) ? Number(s) : false; };
 
-test("a hung user statusLine is killed, grandchild and all, and the relay still exits", async () => {
+test("a hung user statusLine is killed, grandchild and all, and the relay still exits", { timeout: 120000 }, async (t) => {
   // shell:true puts a shell between the relay and the user's command. Killing
   // only the shell (child.kill) leaves the real command running, one more
   // orphan every time the status line re-fires.
+  //
+  // BACKLOG #72: the timeout is fired by hand, once the command has written its
+  // pid. On the wall clock a loaded machine took longer than the 1.5 s timeout
+  // to get it started, the kill landed on a cmd.exe that had not created it
+  // yet, and the test failed reading a pid file nobody wrote (ENOENT).
   const dir = tmpDir('relay-hang');
   const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
   const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
-  const t0 = Date.now();
-  const code = await runUser(b64(hang), DOC, { timeoutMs: 1500 });
-  assert.ok(Date.now() - t0 < 6000, 'the relay must not wait on a hung command');
-  assert.notStrictEqual(code, 0, 'a killed command is not a success');
-  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const ran = runUser(b64(hang), DOC, { timeoutMs: 1500 });
+  const pid = await waitUntil(() => readPid(pidFile), 'the user command to start', 60000);
+  t.mock.timers.tick(1500);
+  // Resolving at all is "the relay does not wait on a hung command": it never exits by itself.
+  assert.notStrictEqual(await ran, 0, 'a killed command is not a success');
+  t.mock.timers.reset();
   let gone = false;
   for (let i = 0; i < 20 && !gone; i++) { gone = !alive(pid); if (!gone) await new Promise(r => setTimeout(r, 150)); }
   if (!gone) try { process.kill(pid); } catch {}
@@ -248,19 +261,176 @@ test('a user command that finishes in time is not killed', async () => {
   assert.strictEqual(await runUser(b64(quick), DOC, { timeoutMs: 5000 }), 0);
 });
 
-test('the whole relay SCRIPT exits promptly on a hung user command (Miguel #51 1)', async () => {
+test('the whole relay SCRIPT exits promptly on a hung user command (Miguel #51 1)', { timeout: 120000 }, async () => {
+  // "Promptly" is the relay ending, with the command's output closed: a relay
+  // stuck on a hung command, or an orphan holding its stdout open (the #72
+  // race, MEASURED at 685 s), never closes. The bound is generous on purpose:
+  // the worst legitimate path is the 5 s timeout plus the sweep (6.4 s measured
+  // under one full-suite run, a 20 s sweep timeout at worst), and a tight
+  // bound flaked (Miguel Y3). 60 s still tells that from a 685 s hold.
   const dir = tmpDir('relay-hang-script');
   const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
   const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
   const t0 = Date.now();
   const res = await runRelay(['--pipe', pipeName(), '--then', b64(hang)], DOC);
-  assert.ok(Date.now() - t0 < 12000, `the relay took ${Date.now() - t0}ms`);
+  assert.ok(Date.now() - t0 < 60000, `the relay took ${Date.now() - t0} ms to exit on a hung command`);
   assert.notStrictEqual(res.code, 0);
-  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  const pid = readPid(pidFile);
+  assert.ok(pid, 'the user command never wrote its pid');
   let gone = false;
   for (let i = 0; i < 20 && !gone; i++) { gone = !alive(pid); if (!gone) await new Promise(r => setTimeout(r, 150)); }
   if (!gone) try { process.kill(pid); } catch {}
   assert.ok(gone, `the user's command (pid ${pid}) outlived the relay`);
+});
+
+// BACKLOG #72. Polls with setInterval, which the tests that mock setTimeout leave real.
+function waitUntil(f, what, ms = 30000) {
+  return new Promise((resolve, reject) => {
+    const end = Date.now() + ms;
+    const iv = setInterval(() => {
+      let v; try { v = f(); } catch { v = false; }
+      if (v) { clearInterval(iv); resolve(v); } else if (Date.now() > end) { clearInterval(iv); reject(new Error(`timed out waiting for ${what}`)); }
+    }, 50);
+  });
+}
+
+// Every live node.exe whose command line carries `marker` (a table read, so it sees orphans whose parent is gone).
+function markedPids(marker) {
+  const ps = `Get-CimInstance Win32_Process -Filter "Name='node.exe' AND CommandLine LIKE '%${marker}%'" | ForEach-Object { $_.ProcessId }`;
+  const r = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  // A failed or timed-out read is an EMPTY list, which would read as "nothing left running" (Miguel Y2).
+  if (r.error || r.status !== 0) throw new Error(`could not list the processes: ${r.error ? r.error.message : `exit ${r.status}`}`);
+  return (r.stdout || '').split(/\s+/).filter(Boolean).map(Number);
+}
+
+test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+  // taskkill /T reads the tree once and then ends it. A process the tree started after that read (cmd.exe still
+  // creating the user's command, under load) outlived the kill, and kept the relay's stdout open: MEASURED, a relay
+  // whose grandchild was created during the kill was waited on for 685 s. This command starts a new process every
+  // 25 ms, so a kill that reads the tree only once loses one every time.
+  const dir = tmpDir('relay-spawner');
+  const marker = `cc72-${process.pid}-${Date.now()}`;
+  const ready = path.join(dir, 'ready').replace(/\\/g, '/');
+  const spawner = path.join(dir, 'spawner.js');
+  fs.writeFileSync(spawner, `const { spawn } = require('child_process');
+let n = 0;
+setInterval(() => {
+  spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', ${JSON.stringify(marker)}], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  if (++n === 3) require('fs').writeFileSync(${JSON.stringify(ready)}, 'ok');
+}, 25);
+`);
+  const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${marker}`;
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const ran = runUser(b64(cmd), DOC, { timeoutMs: 1500 });
+    await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 60000);
+    // Positive control: the same read must SEE the spawned processes before the kill, or "none left" proves nothing.
+    assert.ok(markedPids(marker).length > 0, 'the marker scan finds none of the running spawned processes');
+    t.mock.timers.tick(1500);                         // the timeout fires now, mid-spawning
+    assert.strictEqual(await ran, 1, 'a killed command is not a success');
+    t.mock.timers.reset();
+    let left = markedPids(marker);
+    for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = markedPids(marker); }
+    assert.deepStrictEqual(left, [], 'processes the user command started are still running after the kill');
+  } finally {
+    try { for (const pid of markedPids(marker)) { try { process.kill(pid); } catch { /* gone */ } } } catch { /* cleanup only */ }
+  }
+});
+
+// --- the sweep itself, broken on purpose (PR #126 Dexter F1/F2/F4/F5, Miguel Y1) ----
+const { killTree, sweepPids } = require('../host/status-relay');
+const { spawnSync } = require('child_process');
+const onWin = process.platform === 'win32';
+
+// A cmd.exe -> node tree that hangs, as the relay's user command does.
+async function hangTree(dir) {
+  const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
+  const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
+  const since = Date.now();
+  const child = spawn(hang, { shell: true, stdio: 'ignore', windowsHide: true });
+  const grandchild = await waitUntil(() => readPid(pidFile), 'the hung command to start', 60000);
+  return { child, since, grandchild };
+}
+// killTree's `run`, with the sweep script edited: `from` must be in it, so a rename of the script cannot make this vacuous.
+function sabotaged(from, to, seen) {
+  return (cmd, args, o) => {
+    if (cmd !== 'powershell.exe') return spawnSync(cmd, args, o);
+    assert.ok(args[3].includes(from), `the sweep script no longer contains ${from}`);
+    seen.sweep = spawnSync(cmd, [...args.slice(0, 3), args[3].replace(from, () => to)], o);
+    return seen.sweep;
+  };
+}
+async function gone(pid) {
+  for (let i = 0; i < 30 && alive(pid); i++) await new Promise(r => setTimeout(r, 150));
+  return !alive(pid);
+}
+
+test('#72 Dexter F1 / Miguel Y1: the sweep fails after the first kill, and the grandchild still dies', { skip: !onWin, timeout: 120000 }, async () => {
+  // The root cmd.exe is already dead when the children read fails, so `taskkill /pid <root> /T` finds nothing:
+  // the fallback must end the pids the sweep had seen.
+  const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-fail'));
+  const seen = {};
+  try {
+    killTree(child, since, { run: sabotaged('$rows=@(ReadProcs)', '$rows=@(Get-CimInstance Win32_NoSuchClassForTheTest)', seen) });
+    assert.strictEqual(seen.sweep.status, 4, 'the sweep did not fail where the test broke it');
+    assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived a failed sweep`);
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#72 Dexter F1: the sweep stalls after the first kill until it is cut off, and the grandchild still dies', { skip: !onWin, timeout: 120000 }, async () => {
+  const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-stall'));
+  const seen = {};
+  try {
+    killTree(child, since, { sweepTimeoutMs: 8000, run: sabotaged('$rows=@(ReadProcs)', '$rows=@(Start-Sleep -Seconds 120)', seen) });
+    assert.ok(seen.sweep.error, 'the stalled sweep was not cut off by its timeout');
+    assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived a stalled sweep`);
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#72 Dexter F2: a sweep that hits its level cap with the tree alive does not exit 0, and the tree still dies', { skip: !onWin, timeout: 120000 }, async () => {
+  const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-cap'));
+  const seen = {};
+  try {
+    killTree(child, since, { run: sabotaged('$i -lt 50', '$i -lt 1', seen) });
+    assert.strictEqual(seen.sweep.status, 5, 'a capped sweep reported success');
+    assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived a capped sweep`);
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#72 Dexter F4: the root is killed even when the wall clock says it started after the kill was begun', { skip: !onWin, timeout: 120000 }, async () => {
+  // A clock stepped back reads every start time as "before since". The root's pid is held by libuv, so it needs no bound.
+  const { child, grandchild } = await hangTree(tmpDir('relay-sweep-clock'));
+  try {
+    killTree(child, Date.now() + 3600 * 1000);
+    assert.ok(await gone(child.pid), `the root (pid ${child.pid}) survived`);
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#72 Dexter F5: a command that already exited leaves its background child alone, as taskkill /T always did', { skip: !onWin, timeout: 120000 }, async () => {
+  // The timer can fire in the same tick the command finishes. Its `start /b` refresher is meant to outlive it.
+  const dir = tmpDir('relay-sweep-exited');
+  const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
+  const bg = `start "" /b "${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
+  const since = Date.now();
+  const child = spawn(bg, { shell: true, stdio: 'ignore', windowsHide: true });
+  const exited = new Promise(r => child.on('exit', r));
+  const refresher = await waitUntil(() => readPid(pidFile), 'the background refresher to start', 60000);
+  try {
+    await exited;
+    killTree(child, since);
+    assert.ok(alive(refresher), `the background child (pid ${refresher}) was killed with a command that had already exited`);
+  } finally { try { process.kill(refresher); } catch { /* gone */ } }
+});
+
+test('sweepPids reads the last cumulative ALIVE line, digits only, even from a sweep that was cut short', () => {
+  assert.deepStrictEqual(sweepPids('ALIVE 10 11\r\nALIVE 10 11 12\r\n'), [10, 11, 12]);
+  // A line cut short mid-pid ("ALIVE 10 1") would name some other process: only complete lines count.
+  assert.deepStrictEqual(sweepPids('ALIVE 10 11\r\nALIVE 10 1'), [10, 11]);
+  assert.deepStrictEqual(sweepPids('ALIVE 10 1'), []);
+  assert.deepStrictEqual(sweepPids('ALIVE 5 & calc'), []);
+  assert.deepStrictEqual(sweepPids(''), []);
+  assert.deepStrictEqual(sweepPids(undefined), []);
+  assert.deepStrictEqual(sweepPids('ALIVE '), []);
 });
 
 const RELAY_SRC = fs.readFileSync(RELAY, 'utf8');
@@ -302,11 +472,14 @@ test('#27: statusInHeader false, missing, or not exactly true -> the user row pr
   }
 });
 
-test('#27: a missing or corrupt toggle file -> the user row prints (fail toward showing)', async () => {
+test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (fail toward showing)', async () => {
   const dir = tmpDir('relay-bad');
   const corrupt = path.join(dir, 'chrome-global.json');
   fs.writeFileSync(corrupt, '{not json');
-  for (const file of [path.join(dir, 'nope.json'), corrupt]) {
+  const unreadable = path.join(dir, 'a-directory.json');   // exists, but reading it throws EISDIR
+  fs.mkdirSync(unreadable);
+  // #67: the DEFAULT is main's to write into the file, never the relay's guess.
+  for (const file of [path.join(dir, 'nope.json'), corrupt, unreadable]) {
     const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
     assert.strictEqual(res.out, 'USER-ROW', file);
   }

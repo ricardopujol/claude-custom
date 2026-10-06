@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 
 const { buildHarnessSettings, writeHarnessSettings, OCCUPANCY_MATCHER, BEDTIME_MATCHER } = require('../host/settings-writer');
+const { posixShell } = require('./posix-shell');
 
 const HELPER = 'C:/tools/claude-custom-hook.exe';
 const PIPE = '\\\\.\\pipe\\claude-custom-abc123';
@@ -219,15 +220,18 @@ test('the pipe argument carries no backslashes for a shell to eat', () => {
   assert.ok(!pipeArg.includes('\\'), `pipe argument still has backslashes: ${pipeArg}`);
 });
 
-test('the bare pipe name survives a POSIX shell unchanged', () => {
+test('the bare pipe name survives a POSIX shell unchanged', (t) => {
   // Ask a real shell what it would hand the helper, rather than reasoning about
   // escaping rules -- reasoning about them is how this shipped broken.
   const { spawnSync } = require('child_process');
+  // Not spawnSync('bash'): from PowerShell that is the WSL launcher, which fails without an error (BACKLOG #72).
+  const sh = posixShell();
+  if (!sh) { t.skip('no POSIX shell on this machine'); return; }
   const s = buildHarnessSettings({ helperPath: 'C:\\h\\hook-helper.exe', pipeName: '\\\\.\\pipe\\claude-custom-42' });
   const cmd = s.hooks.PreToolUse[0].hooks[0].command;
   const pipeArg = /--pipe\s+("[^"]*"|\S+)/.exec(cmd)[1];
-  const r = spawnSync('bash', ['-c', `printf %s ${pipeArg}`], { encoding: 'utf8' });
-  if (r.error) return;   // no POSIX shell here; the assertion above still holds
+  const r = spawnSync(sh, ['-c', `printf %s ${pipeArg}`], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
   assert.strictEqual(r.stdout, 'claude-custom-42');
 });
 
@@ -363,17 +367,18 @@ test('a half-specified loadoutHook adds nothing rather than a broken command', (
   }
 });
 
-test('F7/S5: a $, backtick or quote in the install path reaches node verbatim under a POSIX hook shell', () => {
+test('F7/S5: a $, backtick or quote in the install path reaches node verbatim under a POSIX hook shell', (t) => {
   // Inside double quotes a POSIX shell expands $work and `cmd` and ends the
   // string at a bare ". `slashes` fixes the backslash trap but not these.
   const { spawnSync } = require('child_process');
-  const probe = spawnSync('bash', ['-c', 'printf ok'], { encoding: 'utf8' });
-  if (probe.status !== 0 || probe.stdout !== 'ok') return;          // no POSIX shell here: nothing to be an oracle
+  // From PowerShell `bash` is the WSL launcher, so this used to pass vacuously there (BACKLOG #72).
+  const sh = posixShell();
+  if (!sh) { t.skip('no POSIX shell here: nothing to be an oracle'); return; }
   const hard = 'D:\\$work\\`id`\\a"b\\claude-custom';
   const entry = buildHarnessSettings({ ...opts, loadoutHook: {
     nodePath: 'node', scriptPath: `${hard}\\host\\loadout-hook.js`, stateDir: `${hard}\\.harness\\state`,
   } }).hooks.PreToolUse[1];
-  const r = spawnSync('bash', ['-c', `printf '%s\\n' ${entry.hooks[0].command}`], { encoding: 'utf8' });
+  const r = spawnSync(sh, ['-c', `printf '%s\\n' ${entry.hooks[0].command}`], { encoding: 'utf8' });
   assert.strictEqual(r.status, 0, r.stderr);
   const words = r.stdout.split('\n').slice(0, 4);
   assert.deepStrictEqual(words, [

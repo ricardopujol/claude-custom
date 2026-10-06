@@ -73,6 +73,11 @@ function emptyRecord() {
 const inProject = (cwd, root) => typeof cwd === 'string' && (samePath(cwd, root) || isInside(cwd, root));
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 const sameDirName = process.platform === 'win32' ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
+// A transcript folder is named after the cwd AS TYPED: a session started from `c:\...` files under `c--...` (backlog #57).
+const makeDirNameStartsWith = win => (win
+  ? (name, prefix) => name.toLowerCase().startsWith(prefix.toLowerCase())
+  : (name, prefix) => name.startsWith(prefix));
+const dirNameStartsWith = makeDirNameStartsWith(process.platform === 'win32');
 
 const two = n => String(n).padStart(2, '0');
 
@@ -357,7 +362,7 @@ async function updateLedger(ledger, { projectsDir, projectRoot, worktrees, now =
   const prefix = projectDirName(projectRoot);
   let waiting = false;
   for (const d of dirs) {
-    if (!d.isDirectory() || !d.name.startsWith(prefix)) continue;
+    if (!d.isDirectory() || !dirNameStartsWith(d.name, prefix)) continue;
     // the worktree this folder's sessions were launched from: the one whose encoded name the folder carries
     // (on Windows in any case: the folder is named after the cwd as it was typed, git lists it as it is on disk)
     const launcher = Array.isArray(worktrees) ? worktrees.find(w => w && sameDirName(projectDirName(w.root), d.name)) : null;
@@ -450,5 +455,5 @@ async function saveLedger(file, ledger, { rename = renameWithRetryAsync } = {}) 
 
 module.exports = {
   addLines, localDay, emptyRecord, spendOf, mergeLedgers, totals,
-  emptyLedger, updateLedger, loadLedger, saveLedger,
+  emptyLedger, updateLedger, loadLedger, saveLedger, makeDirNameStartsWith,
 };

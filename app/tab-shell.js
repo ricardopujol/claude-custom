@@ -1125,6 +1125,8 @@ function shortcutFor(input) {
   // #35: a new tab is a new worktree. Ctrl+Alt+T, not Ctrl+T: the CLI owns that
   // one (it toggles its task list), and every key not named here reaches it.
   if (key === 't' && input.control && input.alt && !input.shift) return 'new-branch';
+  // #66: the indexing assistant's field, from anywhere in the window. The CLI binds no Ctrl+Alt+N.
+  if (key === 'n' && input.control && input.alt && !input.shift) return 'index-note';
   if (!input.control || input.alt) return null;
   if (key === 'tab') return input.shift ? 'prev-tab' : 'next-tab';
   if (key === 'i' && input.shift) return 'devtools';
@@ -1173,7 +1175,7 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
-  'canvasState', 'canvasClick',
+  'canvasState', 'canvasClick', 'canvasOverlay',
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn

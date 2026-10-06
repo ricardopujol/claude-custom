@@ -73,3 +73,35 @@ test('the tab preload and main agree on every canvas channel, in both directions
 test('an address the panel asks to open goes to the real browser through openInBrowser, so only http(s) ever leaves the app', () => {
   assert.match(CODE, /openUrl: \(url\) => openInBrowser\(url, "Claude's panel"\),/);
 });
+
+
+test("a panel made for a tab asks main whether that tab is the selected one, so it never starts visible over another tab (PR #122 Dexter F4)", () => {
+  assert.match(CODE, /isOwnerVisible: \(owner\) => \{ const sel = selectedView\(\); return !!sel && sel\.webContents === owner; \},/);
+});
+
+test("the broker's transport is its own pinned one, never the engine's: main must not hand it net.fetch, session.fetch or the global fetch (PR #122 Dexter F6 / F10)", () => {
+  const block = CODE.slice(CODE.indexOf('const canvasViews = createCanvasViews({'), CODE.indexOf('function destroyTabView('));
+  assert.doesNotMatch(block, /fetchImpl/, "main takes the broker's pinned transport (app/canvas-fetch.js)");
+  assert.deepStrictEqual([...block.matchAll(/resolveHost: (\w+)/g)].map(m => m[1]), ['canvasProbeResolve'], "the only resolver main may pass is the probe seam's, which is undefined in a normal run");
+  assert.doesNotMatch(CODE, /\bnet\.fetch\b|\bsession\.fetch\b|\bdefaultSession\.fetch\b/, 'Chromium networking resolves for itself, under host-resolver-rules, and cannot be pinned');
+  const views = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'canvas-views.js'), 'utf8'));
+  const fetchSrc = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'canvas-fetch.js'), 'utf8'));
+  assert.doesNotMatch(views, /fetchImpl\s*=\s*fetch\b/);
+  assert.match(fetchSrc, /fetchImpl = createPinnedFetch\(\)/);
+});
+
+test("the probe's name map exists only behind the probe driver's port AND token, and never marks anything it did not map as vouched (PR #122 Dexter F10)", () => {
+  const at = CODE.indexOf('const CANVAS_PROBE_HOSTS = (() => {');
+  assert.ok(at !== -1);
+  const seam = CODE.slice(at, CODE.indexOf('const canvasViews = createCanvasViews({'));
+  assert.match(seam, /if \(!PROBE_PORT \|\| !PROBE_TOKEN\) return null;/);
+  assert.match(seam, /CANVAS_PROBE_HOSTS === null \? undefined/);
+  assert.match(seam, /typeof CANVAS_PROBE_HOSTS\[name\] === 'string' \? \[\{ address: CANVAS_PROBE_HOSTS\[name\], family: 4, trusted: true \}\] : require\('dns'\)\.promises\.lookup\(name, \{ all: true \}\)/);
+});
+
+test('host/canvas-store.js depends on no app/ module: the origin rule lives on the host side, and the panel and the host apply ONE rule (PR #122 Miguel G8)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'host', 'canvas-store.js'), 'utf8');
+  assert.doesNotMatch(src, /require\(['"]\.\.\/app\//);
+  assert.match(src, /require\('\.\/canvas-origin'\)/);
+  assert.strictEqual(require('../app/canvas-csp').hostOrigin, require('../host/canvas-origin').hostOrigin);
+});

@@ -841,3 +841,33 @@ test('Claude\'s panel is hidden after the L1 migration too (a layout from before
   assert.deepEqual(T.groups(l)[0].tabs, IDS);
   assert.deepEqual(T.readAny(DL.defaultLayout(IDS), ids).hidden, ['canvas'], 'readAny migrates the same way');
 });
+
+// Ricardo, 2026-10-06 (#71 open question 1, "keep all" = the recommendation): Claude's panel docks itself 320 px wide, not the 180 every
+// new cell gets (the question card is cramped at 180). Only its OWN default: a size the person dragged to is kept, other modules stay 180.
+const sizeOfCell = (layout, id) => {
+  let out = null;
+  const visit = (n) => { if (n.type === 'split') n.kids.forEach((k, i) => { if (k.type === 'group' && k.tabs.includes(id)) out = { dir: n.dir, size: n.sizes[i] }; visit(k); }); };
+  visit(layout.root);
+  return out;
+};
+
+test("Claude's panel docks itself 320 px wide when it is shown from hidden (the old 180 was cramped for the question card)", () => {
+  const l = T.show(T.defaultLayout([...IDS, 'canvas']), 'canvas');
+  assert.deepEqual(sizeOfCell(l, 'canvas'), { dir: 'row', size: 320 });
+});
+
+test('320 is the panel\'s own default only: the module before it keeps its size, and another hidden module still docks at 180', () => {
+  const start = T.defaultLayout([...IDS, 'canvas']);
+  const withPanel = T.show(start, 'canvas');
+  assert.equal(sizeOfCell(withPanel, 'agents').size, 180);
+  const hiddenStyle = T.hide(start, 'style');
+  assert.deepEqual(sizeOfCell(T.show(hiddenStyle, 'style'), 'agents'), { dir: 'row', size: 180 });
+  const shownStyle = T.show(T.hide(T.show(start, 'canvas'), 'style'), 'style');
+  assert.ok(T.groups(shownStyle).some(gr => gr.tabs.includes('style')));
+});
+
+test('a column default is unchanged for the panel (320 is a width): docked under the terminal it gets the usual height', () => {
+  const l = T.dock(T.show(T.defaultLayout([...IDS, 'canvas']), 'canvas'), 'canvas', { cell: 'term', side: 'bottom' });
+  assert.equal(sizeOfCell(l, 'canvas').dir, 'col');
+  assert.equal(sizeOfCell(l, 'canvas').size, T.DEFAULT_SIZE.col);
+});

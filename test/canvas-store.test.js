@@ -118,3 +118,21 @@ test('setHostDecision: each list is capped, so a page cannot fill the disk with 
   assert.strictEqual(setHostDecision(dir, 'https://over.example.com', 'deny'), null);
   assert.ok(setHostDecision(dir, 'https://h0.example.com', 'remove'), 'removing still works at the cap');
 });
+
+test('readPage: a file under the cap that DECODES to more than the cap is "toobig" (invalid UTF-8 grows to three bytes a character), so main never refuses an "ok" page (PR #122 Dexter F9)', () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'index.html'), Buffer.alloc(600000, 0xe9));
+  const r = readPage(dir);
+  assert.strictEqual(r.status, 'toobig');
+  assert.strictEqual(r.bytes, 1800000);
+  assert.strictEqual(r.html, undefined);
+});
+
+test('property: whatever the bytes, an "ok" page decodes to no more than the cap', () => {
+  const dir = tmp();
+  fc.assert(fc.property(fc.uint8Array({ maxLength: 4000 }), fc.integer({ min: 0, max: 2 }), (bytes, mult) => {
+    fs.writeFileSync(path.join(dir, 'index.html'), Buffer.concat(Array(1 + mult * 100).fill(Buffer.from(bytes))).subarray(0, MAX_HTML_BYTES + 5000));
+    const r = readPage(dir);
+    if (r.status === 'ok') assert.ok(Buffer.byteLength(r.html) <= MAX_HTML_BYTES);
+  }), { numRuns: 60 });
+});

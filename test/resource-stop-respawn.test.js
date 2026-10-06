@@ -28,10 +28,10 @@ async function killSetOf(exec, pid) {
 }
 
 // Polls instead of sleeping: true as soon as `f()` is truthy, and a failure naming `what` only after a generous deadline.
-async function waitFor(f, what, ms = 90000) {
+async function waitFor(f, what, ms = 90000, file = null) {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (f()) return; await sleep(100); }
-  assert.fail(`timed out waiting for ${what}`);
+  assert.fail(`timed out waiting for ${what}${file ? fixtureErr(file) : ''}`);
 }
 
 // The supervisor is a PowerShell script, not node: a node parent's children are in libuv's kill-on-close job and die with it,
@@ -39,21 +39,47 @@ async function waitFor(f, what, ms = 90000) {
 //   'respawn': one child, started again every time it exits.
 //   'gated':   one child at once, then THREE MORE only once the `go` file exists, so a test decides exactly when "late" is.
 const JS = 'setTimeout(function(){},90000)';
+// BACKLOG #69: each pid is appended with .NET's AppendAllText, never Add-Content. Windows PowerShell 5.1's Add-Content
+// opens the file sharing only WRITE, so when waitFor's read lands on the same moment the append FAILS, silently (a
+// non-terminating error with stdio ignored): the pid never reaches the file, the 90 s wait for it runs out, and the test
+// failed at ~94 s under full-suite load. AppendAllText shares READ, and the append retries if the open is still refused.
+const append = (file, value) => `$n=0;while($true){try{[IO.File]::AppendAllText('${file}',"$(${value})\`r\`n");break}catch{if(++$n -ge 100){[IO.File]::AppendAllText('${file}.err',"$_\`r\`n");throw};Start-Sleep -Milliseconds 20}}`;
 function supervisor(file, mode, go) {
-  const start = `$p=Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','${JS}' -PassThru -WindowStyle Hidden;Add-Content '${file}' $p.Id`;
+  const start = `$p=Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','${JS}' -PassThru -WindowStyle Hidden;${append(file, '$p.Id')}`;
   const body = mode === 'respawn'
     ? `while($true){${start};$p.WaitForExit()}`
     : `${start};while(-not (Test-Path '${go}')){Start-Sleep -Milliseconds 100};1..3|ForEach-Object{${start}};Start-Sleep 90`;
   return spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', body], { stdio: 'ignore', windowsHide: true });
 }
+// A bounded append that still failed leaves its error in <file>.err, so a timeout names the cause instead of just the wait.
+const fixtureErr = file => (fs.existsSync(`${file}.err`) ? ` (fixture: ${fs.readFileSync(`${file}.err`, 'utf8').trim()})` : '');
 const pidsIn = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\s+/).filter(Boolean).map(Number) : []);
+
+test('N2 real: the fixture\'s pid log loses no line while the test is reading it (BACKLOG #69)', { skip: !WIN, timeout: 120000 }, async () => {
+  const file = path.join(tmpDir('cc-pidlog-'), 'pids.txt');
+  const N = 300;
+  const writer = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `1..${N}|ForEach-Object{${append(file, '$_')}}`], { stdio: 'ignore', windowsHide: true });
+  let done = false;
+  writer.on('close', () => { done = true; });
+  try {
+    let readErrors = 0;
+    while (!done) {                        // read as waitFor does, only far more often, so a collision is certain
+      try { pidsIn(file); } catch { readErrors++; }
+      await new Promise(r => setImmediate(r));
+    }
+    assert.strictEqual(pidsIn(file).length, N, `every append landed${fixtureErr(file)}`);
+    assert.strictEqual(readErrors, 0, 'no read was refused by the writer');
+  } finally {
+    try { process.kill(writer.pid); } catch { /* gone */ }
+  }
+});
 
 test('N1 real: Stop on a supervisor that restarts its child leaves NO process of that tree running', { skip: !WIN, timeout: 240000 }, async () => {
   const file = path.join(tmpDir('cc-respawn-'), 'pids.txt');
   const sup = supervisor(file, 'respawn');
   const mine = new Set([sup.pid]);
   try {
-    await waitFor(() => pidsIn(file).length >= 1, 'the supervisor\'s first child');
+    await waitFor(() => pidsIn(file).length >= 1, 'the supervisor\'s first child', 90000, file);
     const set = await killSetOf(createExec(60000), sup.pid);
     assert.strictEqual(set[0].pid, sup.pid, 'the supervisor is killed first');
     assert.ok(set.length >= 2, 'the table saw its child');
@@ -76,12 +102,12 @@ test('N2 real: children the target started AFTER the table was read are ended to
   const sup = supervisor(file, 'gated', go);
   const mine = new Set([sup.pid]);
   try {
-    await waitFor(() => pidsIn(file).length >= 1, 'the first child');
+    await waitFor(() => pidsIn(file).length >= 1, 'the first child', 90000, file);
     const set = await killSetOf(createExec(60000), sup.pid);      // the table is read BEFORE the late children exist
     const known = new Set(set.map(t => t.pid));
     assert.ok(known.has(pidsIn(file)[0]), 'the first child is in the set');
     fs.writeFileSync(go, 'go');
-    await waitFor(() => pidsIn(file).length >= 4, 'the three late children to be started');
+    await waitFor(() => pidsIn(file).length >= 4, 'the three late children to be started', 90000, file);
     const late = pidsIn(file).filter(x => !known.has(x));
     assert.strictEqual(late.length, 3, 'the fixture started three children the set does not hold');
     for (const x of pidsIn(file)) mine.add(x);
@@ -116,11 +142,11 @@ test('N2: processes the script found and ended (or could not end) are reported a
 
 test('N2 real: a protected process (a host by its command line) started under the target refuses the whole Stop, nothing ends', { skip: !WIN, timeout: 240000 }, async () => {
   const file = path.join(tmpDir('cc-prot-'), 'pids.txt');
-  const body = `$p=Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','${JS}','host/host.js' -PassThru -WindowStyle Hidden;Add-Content '${file}' $p.Id;Start-Sleep 90`;
+  const body = `$p=Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','${JS}','host/host.js' -PassThru -WindowStyle Hidden;${append(file, '$p.Id')};Start-Sleep 90`;
   const sup = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', body], { stdio: 'ignore', windowsHide: true });
   const mine = new Set([sup.pid]);
   try {
-    await waitFor(() => pidsIn(file).length >= 1, 'the child');
+    await waitFor(() => pidsIn(file).length >= 1, 'the child', 90000, file);
     const parent = { pid: sup.pid, start: String((await killSetOf(createExec(60000), sup.pid))[0].start) };
     const res = await K.killVerified([parent], { exec: createExec(60000) });
     for (const p of pidsIn(file)) mine.add(p);

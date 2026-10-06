@@ -217,9 +217,17 @@ test('the tab strip never uses innerHTML: a branch name is text, not markup', ()
   assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
 
-test('tab-strip.html loads only its own script', () => {
+test('tab-strip.html loads only its own scripts: the indexing field\'s (#66) and the strip\'s', () => {
   const html = read('app/tab-strip.html');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './tab-strip.js']);
+});
+
+test('the indexing overlay loads only its display script, and neither page uses innerHTML: a note is text (#66)', () => {
+  const html = read('app/indexing-overlay.html');
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js']);
+  assert.match(html, /script-src 'self'/);
+  const src = read('app/indexing-display.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
 
 // PR #93 Miguel I5 (here, not in probe-seams.test.js: that file is in the mutation command, and reading a
@@ -411,4 +419,19 @@ test('Miguel I4: a redraw puts the hover card back where it was, reading no layo
   assert.ok(at !== -1);
   assert.doesNotMatch(GIT_RINGS_SRC.slice(at, GIT_RINGS_SRC.indexOf('dial.textContent', at)), /getBoundingClientRect/);
   assert.match(GIT_RINGS_SRC, /fillCard\(dial, card, cardWas\.key\)/);
+});
+
+// (here, not in indexing-bridge.test.js: that file is in the mutation command, and reading a mutated module as text
+// aborts Stryker's dry run)
+test('#66 indexing: every channel the bridge listens on is used by a preload, and every push has a listener', () => {
+  const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const bridge = read('indexing-bridge.js');
+  const preloads = read('preload-strip.js') + read('preload-indexing.js');
+  const listened = [...bridge.matchAll(/ipcMain\.(?:on|handle)\('([^']+)'/g)].map(m => m[1]);
+  const pushed = [...bridge.matchAll(/\.send\('([^']+)'/g)].map(m => m[1]);
+  assert.ok(listened.length >= 12 && pushed.length >= 3);
+  assert.deepStrictEqual(listened.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a channel no page sends on');
+  assert.deepStrictEqual(pushed.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a push no page listens for');
+  const used = [...preloads.matchAll(/ipcRenderer\.(?:send|invoke)\('((?:strip:index|indexing:)[^']*)'/g)].map(m => m[1]);
+  assert.deepStrictEqual(used.filter(ch => !listened.includes(ch)), [], 'a page sends on a channel main never answers');
 });

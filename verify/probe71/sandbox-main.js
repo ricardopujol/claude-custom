@@ -36,7 +36,10 @@ const VECTORS = {
   // --- the approved path works: the control that proves a hit can be seen --------------------------------------------
   'fetch-approved (control)': { code: `fetch(A + '?v=' + V).then(r => report(r.status), e => report('blocked ' + e.message))` },
   // --- network the page may not have -----------------------------------------------------------------------------------
-  'fetch-denied-host (broker)': { code: `fetch(D()).then(r => report(r.status), e => report('blocked ' + e.message))` },
+  'fetch-denied-host (broker)': { code: `fetch(N('probe-denied.invalid')).then(r => report(r.status), e => report('blocked ' + e.message))` },
+  // an address on this machine is refused even when the person approved it, and so is an approved name that resolves there
+  'fetch-loopback-approved (broker)': { code: `fetch(D()).then(r => report(r.status), e => report('blocked ' + e.message))` },
+  'fetch-rebind-approved (broker)': { code: `fetch(N('probe-rebind.invalid')).then(r => report(r.status), e => report('blocked ' + e.message))` },
   'fetch-redirect-offsite (broker)': { code: `fetch(A + 'redirect?to=' + encodeURIComponent(D())).then(r => report(r.status), e => report('blocked ' + e.message))` },
   'fetch-fresh-realm (raw)': { code: `const f = document.createElement('iframe'); document.body.appendChild(f); f.contentWindow.fetch(D()).then(r => report(r.status), e => report('blocked ' + e.name))` },
   'fetch-no-cors': { code: `const f = document.createElement('iframe'); document.body.appendChild(f); f.contentWindow.fetch(D(), { mode: 'no-cors' }).then(() => report('sent'), e => report('blocked ' + e.name))` },
@@ -85,6 +88,15 @@ const VECTORS = {
   'cookie': { code: `try { document.cookie = 'k=1'; report('set, reads back: ' + document.cookie); } catch (e) { report('blocked ' + e.name); }` },
   'indexed-db': { code: `try { const r = indexedDB.open('x'); r.onsuccess = () => report('opened'); r.onerror = () => report('blocked'); } catch (e) { report('blocked ' + e.name); }` },
   'geolocation-camera': { code: `Promise.allSettled([navigator.geolocation ? new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej)) : Promise.reject('none'), navigator.mediaDevices ? navigator.mediaDevices.getUserMedia({ video: true }) : Promise.reject('none')]).then(r => report(r.map(x => x.status).join('/')))` },
+  // --- the page's own dialogs: a native message box parented to the app's window (PR #122 Dexter F1) -----------------------------------
+  'dialog-loop': { code: `alert('a'); confirm('b'); try { prompt('c'); } catch (e) { /* Electron has no prompt() */ } setTimeout(() => report('past the dialogs'), 300)` },
+  // --- a download the page starts itself: Electron's default is a Save-As box with a name and content the page chose (PR #122 Dexter F2)
+  // (once from a script on load, and once more on a real click, so a download that needs a user gesture is seen too)
+  'data-download': { code: `const dl = () => { const a = document.createElement('a'); a.href = 'data:application/octet-stream;base64,QGVjaG8gb2Zm'; a.download = 'claude-quota-fix.bat'; document.body.appendChild(a); a.click(); };
+    document.body.innerHTML = '<div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; dl(); document.addEventListener('click', dl); setTimeout(() => report('clicked'), 2500)` },
+  // --- a page that refuses to be left: its beforeunload handler cancels Claude's NEXT page (PR #122 Dexter F3). Phase one is this page and a
+  // real click (sticky user activation, which is what lets beforeunload act); phase two (SECOND_PAGES) is the page Claude writes next.
+  'beforeunload-pin': { code: `document.body.innerHTML = '<div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; return ''; }; document.addEventListener('click', () => report('armed'))` },
   // --- the one thing the page may do: a button ----------------------------------------------------------------------------------------
   'send-without-click': { code: `claudePanel.send('typed by a script'); setTimeout(() => report('sent'), 300)` },
   // --- the shelf: read-only, and open() only for an address that is on it, on a real click ---------------------------------------------
@@ -95,6 +107,7 @@ const VECTORS = {
   'send-with-click': { code: `document.body.innerHTML = '<button id="b" style="position:fixed;left:0;top:0;width:200px;height:100px">go</button>'; document.getElementById('b').addEventListener('click', () => { claudePanel.send('hello from a click'); report('clicked'); });` },
 };
 const SHELF_ITEM = { title: 'Roadmap', url: 'https://claude.ai/artifact/on-the-shelf', time: '2026-10-05T12:00:00.000Z' };
+const SECOND_PAGES = { 'beforeunload-pin': `report('replaced')` };
 const NAMES = Object.keys(VECTORS).filter(n => !process.env.PROBE_ONLY || process.env.PROBE_ONLY.split('|').includes(n));
 
 // A STUN server on the machine's LAN address too: Chromium may not send STUN to loopback, and a control that cannot see a
@@ -122,7 +135,9 @@ app.whenReady().then(async () => {
     res.writeHead(200, { 'access-control-allow-origin': '*' }); res.end('pong');
   });
   const approvedPort = await listen(approvedSrv); servers.push(approvedSrv);
-  const approvedOrigin = `http://127.0.0.1:${approvedPort}`;
+  // The broker refuses every loopback address (PR #122 F6), so the approved server is reached by a NAME that a stand-in resolver maps to
+  // loopback and vouches for; `probe-rebind` maps to loopback WITHOUT the vouch (what DNS rebinding looks like to the broker).
+  const approvedOrigin = `http://probe-approved.invalid:${approvedPort}`;
 
   const rtc = { stunDatagrams: 0, turnTcpConnections: 0 };
   const udp = dgram.createSocket('udp4'); udp.on('message', () => { rtc.stunDatagrams += 1; });
@@ -135,13 +150,23 @@ app.whenReady().then(async () => {
   const owner = new BrowserWindow({ show: false, width: 1000, height: 800, focusable: false, opacity: 0.01, skipTaskbar: true });
   owner.showInactive();
   await owner.loadURL('data:text/html,<p>owner</p>');
-  let windowOpens = 0; const navAttempts = []; const delivered = []; const asked = []; const opened = [];
+  let windowOpens = 0; const navAttempts = []; const delivered = []; const asked = []; const opened = []; const downloads = [];
   owner.webContents.setWindowOpenHandler(() => { windowOpens += 1; return { action: 'deny' }; });
   owner.webContents.on('will-navigate', (_e, url) => navAttempts.push(url));
   const panels = new Map();   // owner id -> the panel contents the manager made for it, to read titles from
+  // Titles are recorded from the moment the contents EXISTS (its constructor), so a page that reports at once is never missed by a listener
+  // that was attached a tick after its load began (a quiet machine hid that race; a busy one made half the vectors 'no report').
+  const seenTitles = new Map(); const titleWaiters = new Map();
 
   const views = createCanvasViews({
-    WebContentsView: class extends WebContentsView { constructor(o) { super(o); panels.set(Number(/^canvas-([0-9]+)-/.exec(o.webPreferences.partition)[1]), this.webContents); } },
+    resolveHost: async (name) => (name === 'probe-approved.invalid' || name === 'probe-denied.invalid' ? [{ address: '127.0.0.1', family: 4, trusted: true }]
+      : name === 'probe-rebind.invalid' ? [{ address: '127.0.0.1', family: 4 }] : []),
+    WebContentsView: class extends WebContentsView { constructor(o) {
+      super(o);
+      const id = Number(/^canvas-([0-9]+)$/.exec(o.webPreferences.partition)[1]);
+      panels.set(id, this.webContents);
+      this.webContents.on('page-title-updated', (_e, t) => { if (!seenTitles.has(id)) seenTitles.set(id, []); seenTitles.get(id).push(t); const w = titleWaiters.get(id); if (w) w(t); });
+    } },
     session,
     addChild: (v) => owner.contentView.addChildView(v), removeChild: (v) => owner.contentView.removeChildView(v),
     ownerBounds: () => ({ x: 0, y: 0, width: 1000, height: 800 }),
@@ -153,12 +178,13 @@ app.whenReady().then(async () => {
   });
   registerCanvasIpc(ipcMain, views);
 
-  const pageFor = (name) => {
-    const v = VECTORS[name];
+  const pageFor = (name, code) => {
+    const v = { code: code || VECTORS[name].code };
     const key = name.replace(' (control)', '');
     return `<script>
       const V = ${JSON.stringify(key)}, A = ${JSON.stringify(approvedOrigin + '/')}, UDP = ${udp.address().port}, TCP = ${tcpPort}, LAN = ${JSON.stringify(LAN)}, SHELF_URL = ${JSON.stringify(SHELF_ITEM.url)};
       const D = () => 'http://127.0.0.1:${ports[name]}/?v=' + encodeURIComponent(V);
+      const N = (host) => 'http://' + host + ':${ports[name]}/?v=' + encodeURIComponent(V);
       const report = (r) => { document.title = 'R:' + JSON.stringify(String(r)); };
       try { ${v.code} } catch (e) { report('threw ' + e.name); }
     <\/script>`;
@@ -170,9 +196,17 @@ app.whenReady().then(async () => {
     let wc; let fakeOwner = null; let naiveView = null;
     if (MODE === 'sealed') {
       fakeOwner = { id: 1000 + NAMES.indexOf(name), isDestroyed: () => false };
-      const approved = name === 'fetch-approved (control)' || name.startsWith('fetch-redirect') ? [approvedOrigin] : [];
+      const approved = name === 'fetch-approved (control)' || name.startsWith('fetch-redirect') ? [approvedOrigin]
+        : name === 'fetch-loopback-approved (broker)' ? [`http://127.0.0.1:${ports[name]}`]
+        : name === 'fetch-rebind-approved (broker)' ? [`http://probe-rebind.invalid:${ports[name]}`] : [];
       await views.show(fakeOwner, { html, hosts: { approved, denied: [] }, rect: { x: 0, y: 0, width: 400, height: 300 }, shelf: [SHELF_ITEM] });
       wc = panels.get(fakeOwner.id);
+      // A download the panel's own lock-down did not cancel would raise a Save-As box: save it to a temp file instead, and record it.
+      wc.session.on('will-download', (e, item) => {
+        const rec = { name: item.getFilename(), prevented: e.defaultPrevented === true, written: false };
+        downloads.push(rec);
+        if (!rec.prevented) { rec.file = path.join(os.tmpdir(), `probe-canvas-dl-${process.pid}-${downloads.length}`); item.setSavePath(rec.file); item.once('done', () => { rec.written = fs.existsSync(rec.file); try { fs.unlinkSync(rec.file); } catch { /* none */ } }); }
+      });
     } else {
       // The control: the same page and preload, but a default session and nothing locked.
       naiveView = new WebContentsView({ webPreferences: { sandbox: process.env.PROBE_NAIVE_SANDBOX !== '0', contextIsolation: true, nodeIntegration: false, preload: PRELOAD } });
@@ -185,18 +219,31 @@ app.whenReady().then(async () => {
     results[name] = await new Promise((resolve) => {
       let done = false;
       const finish = (r) => { if (!done) { done = true; resolve(r); } };
-      wc.on('page-title-updated', (_e, title) => { if (title.startsWith('R:')) finish(JSON.parse(title.slice(2))); });
-      setTimeout(() => finish('no report'), 15000);
-      if (name.endsWith('-with-click')) {
-        setTimeout(() => { for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); }, 1200);
+      const consider = (title) => { if (title.startsWith('R:')) finish(JSON.parse(title.slice(2))); };
+      if (MODE === 'sealed') { (seenTitles.get(fakeOwner.id) || []).forEach(consider); titleWaiters.set(fakeOwner.id, consider); }
+      else wc.on('page-title-updated', (_e, title) => consider(title));
+      setTimeout(() => finish('no report'), Number(process.env.PROBE_REPORT_MS) || 15000);
+      if (name.endsWith('-with-click') || name === 'data-download' || name === 'beforeunload-pin') {
+        const press = () => { if (!wc.isDestroyed()) for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); };
+        setTimeout(press, 1200);
+        // press again every second until the page has reported, so a page that loaded late on a busy machine is not missed (the report
+        // follows its first click within milliseconds, so send-with-click still delivers exactly one message)
+        const again = setInterval(() => { if (done) clearInterval(again); else press(); }, 1000);
       }
     });
+    if (SECOND_PAGES[name] && MODE === 'sealed' && results[name] === 'armed') {
+      results[name] = await new Promise((resolve) => {
+        const t = setTimeout(() => resolve('stuck on the first page'), 4000);
+        wc.on('page-title-updated', (_e, title) => { if (title === 'R:"replaced"') { clearTimeout(t); resolve('replaced'); } });
+        views.show(fakeOwner, { html: pageFor(name, SECOND_PAGES[name]), hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 400, height: 300 } });
+      });
+    }
     await new Promise(r => setTimeout(r, 400));        // a straggler request gets its moment to arrive
     if (MODE === 'sealed') views.hide(fakeOwner);
     else { try { owner.contentView.removeChildView(naiveView); naiveView.webContents.close(); } catch { /* gone */ } }
   }
 
-  const BATCH = 3;
+  const BATCH = Number(process.env.PROBE_BATCH) || 2;
   for (let i = 0; i < NAMES.length; i += BATCH) await Promise.all(NAMES.slice(i, i + BATCH).map(runOne));
   await new Promise(r => setTimeout(r, 1200));
 
@@ -213,7 +260,7 @@ app.whenReady().then(async () => {
   } catch { dnsQueries = -1; }
   const out = { electron: process.versions.electron, chrome: process.versions.chrome, mode: MODE, results, names: NAMES,
     hits, approvedHits: allowedRec.requests, rtc, dns: { queries: dnsQueries, kinds: [...dnsKinds] }, windowOpens,
-    ownerNavigations: navAttempts, delivered, opened, asked: [...new Set(asked)] };
+    ownerNavigations: navAttempts, delivered, opened, asked: [...new Set(asked)], downloads };
   const text = JSON.stringify(out);
   if (OUT) fs.writeFileSync(OUT, text); else console.log('RESULT ' + text);
   try { fs.unlinkSync(netlogFile); } catch { /* temp */ }

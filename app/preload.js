@@ -204,7 +204,7 @@ contextBridge.exposeInMainWorld('harness', {
     onChange: (fn) => (ipcRenderer.removeAllListeners('chrome-settings'), ipcRenderer.on('chrome-settings',
       (_e, settings) => {
         try {
-          fn({ statusInHeader: !!settings && settings.statusInHeader === true,
+          fn({ statusInHeader: !!settings && settings.statusInHeader !== false,
             framelessWindow: !!settings && settings.framelessWindow === true });
         } catch (err) { console.error('[preload] chrome-settings listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('chrome-settings')),

@@ -53,6 +53,11 @@ const REPO_SCANNING = new Set([
   // renderer.js / renderer.html / main.js / preload.js source text (#63); it requires tab-shell only for the probe-action
   // whitelist, which tab-shell.test.js pins itself.
   'renderer-resources-wiring.test.js',
+  // #71 Claude's panel: source assertions on host.js / main.js / renderer.js; they say "deliberately NOT in Stryker's command" themselves.
+  'canvas-wiring.test.js',
+  'canvas-main-wiring.test.js',
+  'renderer-canvas-wiring.test.js',
+  'canvas-mcp.test.js',            // #125: spawns the MCP server as a real process and reads its source; it requires canvas-store only to prepare a folder
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -388,4 +393,25 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
   // C. The pattern must not silently narrow any test outside the named real files.
   const hit = all.filter(t => !REAL_PROCESS_TEST_FILES.includes(t.file) && skip.test(t.title)).map(t => `${t.file}: ${t.title}`);
   assert.deepStrictEqual(hit, [], `--test-skip-pattern would skip tests outside the named files: ${hit.join('; ')}`);
+});
+
+test("every logic module of Claude's panel is mutated (Miguel, PR #122 Y5: six of them were never listed, and the consistency test above can't see a module that isn't)", () => {
+  // Derived from the tree, not restated: any app/canvas-*.js or host/canvas-*.js is logic-bearing and security-bearing unless it is named below.
+  const NOT_LOGIC = new Set([
+    'app/canvas-panel-preload.js',   // the two-function bridge: needs Electron's contextBridge, and test/canvas-panel-preload.test.js pins its surface
+    'host/canvas-mcp.js',            // an MCP stdio SERVER: test/canvas-mcp.test.js spawns it as a real process and reads its source text, both of which abort Stryker's dry run (the two rules above); NOT covered by a mutation score, which Mortimer's report must say
+  ]);
+  const found = [];
+  for (const dir of ['app', 'host']) {
+    for (const f of fs.readdirSync(path.join(ROOT, dir))) if (/^canvas-.*.js$/.test(f) && !NOT_LOGIC.has(`${dir}/${f}`)) found.push(`${dir}/${f}`);
+  }
+  assert.ok(found.length >= 7, `the scan must find the panel's modules (${found.join(', ')})`);
+  const mutated = new Set(conf.mutate);
+  const unlisted = found.filter(m => !mutated.has(m));
+  assert.deepStrictEqual(unlisted, [], `these panel modules are not in stryker.conf.json's mutate list, so no mutation score covers them: ${unlisted.join(', ')}`);
+  const cmd = conf.commandRunner.command;
+  for (const m of found) {
+    const own = `test/${path.basename(m, '.js')}.test.js`;
+    if (fs.existsSync(path.join(ROOT, own))) assert.ok(cmd.includes(own), `${own} must be in the command`);
+  }
 });

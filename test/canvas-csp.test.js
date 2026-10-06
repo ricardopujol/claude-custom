@@ -77,3 +77,61 @@ test("buildPage: a page that tries to close our script is after the shim's own c
   assert.ok(doc.indexOf('</script>') < doc.indexOf('window.fetch = 1'));
   assert.strictEqual(doc.split(PANEL_SHIM).length, 2);
 });
+
+// ---- the shim, run for real in a vm (PR #122 Miguel Y3): the tests above read its text, these run it ------------------------------------
+
+const vm = require('node:vm');
+
+function pageWith(answer) {
+  const calls = [];
+  const ctx = { Response, Request, atob, Uint8Array, TypeError, Promise, Object, Array, String, claudePanel: { fetch: (url, init) => { calls.push({ url, init }); return typeof answer === 'function' ? answer(url, init) : Promise.resolve(answer); } } };
+  ctx.window = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(PANEL_SHIM, ctx);
+  return { fetch: (...a) => vm.runInContext('window.fetch', ctx)(...a), calls, ctx };
+}
+const settles = (p) => Promise.race([p.then(() => 'resolved', (e) => 'rejected:' + (e && e.constructor && e.constructor.name)), new Promise(r => setTimeout(() => r('HUNG'), 300))]);
+const good = { ok: true, status: 200, statusText: 'OK', headers: { 'content-type': 'text/plain' }, bodyBase64: Buffer.from('pong').toString('base64') };
+
+test('the shim: an answer from main becomes a real Response with the status, headers and body', async () => {
+  const p = pageWith(good);
+  const res = await p.fetch('https://a.example.com/x', { method: 'POST', body: 'b', headers: { 'X-A': '1' } });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get('content-type'), 'text/plain');
+  assert.strictEqual(await res.text(), 'pong');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(p.calls[0])), { url: 'https://a.example.com/x', init: { method: 'POST', headers: { 'X-A': '1' }, body: 'b' } });
+});
+
+test('the shim: a response the Response class refuses rejects the fetch, it does not leave it pending forever', async () => {
+  for (const bad of [{ ...good, status: 600 }, { ...good, status: 99 }, { ...good, status: 1000 }, { ...good, statusText: 'bad\nstatus' }, { ...good, headers: { 'bad name': 'x' } },
+    { ...good, headers: { 'x-a': 'line\nbreak' } }, { ...good, bodyBase64: '%%%' }]) {
+    const out = await settles(pageWith(bad).fetch('https://a.example.com/'));
+    assert.match(out, /^rejected:/, JSON.stringify(bad).slice(0, 80));
+  }
+});
+
+test('the shim: a refusal or a failure from main is a TypeError, and a non-string body never reaches main', async () => {
+  assert.strictEqual(await settles(pageWith({ ok: false, error: 'not allowed' }).fetch('https://a.example.com/')), 'rejected:TypeError');
+  assert.strictEqual(await settles(pageWith(() => Promise.reject(new Error('gone'))).fetch('https://a.example.com/')), 'rejected:TypeError');
+  assert.strictEqual(await settles(pageWith(() => { throw new Error('sync'); }).fetch('https://a.example.com/')), 'rejected:Error');
+  const p = pageWith(good);
+  assert.strictEqual(await settles(p.fetch('https://a.example.com/', { method: 'POST', body: new Uint8Array(2) })), 'rejected:TypeError');
+  assert.strictEqual(p.calls.length, 0);
+});
+
+test('the shim: a 204 has no body', async () => {
+  const res = await pageWith({ ...good, status: 204, bodyBase64: '' }).fetch('https://a.example.com/');
+  assert.strictEqual(res.status, 204);
+  assert.strictEqual(await res.text(), '');
+});
+
+test('hostOrigin: a host name longer than DNS allows (253) is refused, so a page cannot fill the lists with huge origins (PR #122 Miguel G3)', () => {
+  const label = 'a'.repeat(60);
+  const ok = [label, label, label, 'com'].join('.');                 // 60+1+60+1+60+1+3 = 186
+  assert.strictEqual(hostOrigin(`https://${ok}`), `https://${ok}`);
+  const exactly = `${'b'.repeat(63)}.${'b'.repeat(63)}.${'b'.repeat(63)}.${'b'.repeat(61)}`;   // 253
+  assert.strictEqual(exactly.length, 253);
+  assert.strictEqual(hostOrigin(`https://${exactly}`), `https://${exactly}`);
+  assert.strictEqual(hostOrigin(`https://${exactly}b`), null);
+  assert.strictEqual(hostOrigin(`https://${'x'.repeat(5000)}.com`), null);
+});

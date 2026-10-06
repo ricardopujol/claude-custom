@@ -22,13 +22,15 @@ class FakeContents extends EventEmitter {
 }
 FakeContents.next = 100;
 
-class FakeSession {
-  constructor(name) { this.name = name; this.proxy = null; this.permissionRequest = null; this.permissionCheck = null; this.requestFilter = null; this.order = []; }
-  async setProxy(c) { this.order.push('proxy'); this.proxy = c; }
+class FakeSession extends EventEmitter {
+  constructor(name, gate) { super(); this.gate = gate; this.name = name; this.proxy = null; this.permissionRequest = null; this.permissionCheck = null; this.requestFilter = null; this.order = []; }
+  async setProxy(c) { this.order.push('proxy'); this.proxy = c; if (this.gate) await new Promise((res) => this.gate.push(res)); }
   setPermissionRequestHandler(fn) { this.permissionRequest = fn; }
   setPermissionCheckHandler(fn) { this.permissionCheck = fn; }
   setDevicePermissionHandler(fn) { this.devicePermission = fn; }
   setSpellCheckerEnabled() {}
+  async clearStorageData() { this.clears = (this.clears || 0) + 1; }
+  async clearCache() { this.clears = (this.clears || 0) + 1; }
   get webRequest() { return { onBeforeRequest: (fn) => { this.requestFilter = fn; } }; }
 }
 
@@ -39,21 +41,24 @@ class FakeView {
 }
 
 function rig(over = {}) {
-  const sessions = {}; const views = []; const children = new Set(); const messages = []; const asked = [];
+  const sessions = {}; const views = []; const children = new Set(); const messages = []; const asked = []; const gate = [];
   let clock = 1000;
   const owner = { id: 7, isDestroyed: () => false };
   const m = createCanvasViews({
     WebContentsView: class extends FakeView { constructor(o) { super(o); views.push(this); } },
-    session: { fromPartition: (p) => (sessions[p] = sessions[p] || new FakeSession(p)) },
+    session: { fromPartition: (p) => (sessions[p] = sessions[p] || new FakeSession(p, over.gateProxy ? gate : null)) },
+    isOwnerVisible: over.isOwnerVisible,
     addChild: (v) => children.add(v), removeChild: (v) => children.delete(v),
     ownerBounds: () => ({ x: 0, y: 40, width: 1200, height: 800 }),
     preloadPath: 'C:/app/canvas-panel-preload.js',
     ask: async (o, origin) => { asked.push(origin); return over.answer || 'deny'; },
     onMessage: (o, msg) => messages.push(msg),
     fetchImpl: over.fetchImpl || (async () => new Response('pong')),
+    resolveHost: over.resolveHost || (async () => [{ address: '93.184.216.34', family: 4 }]),
     now: () => clock, log: () => {},
   });
-  return { m, owner, views, sessions, children, messages, asked, tick: (ms) => { clock += ms; } };
+  const release = async () => { while (gate.length) { gate.shift()(); await new Promise((res) => setImmediate(res)); } };
+  return { m, owner, views, sessions, children, messages, asked, gate, release, tick: (ms) => { clock += ms; } };
 }
 const show = (r, extra = {}) => r.m.show(r.owner, { html: '<p>hi</p>', hosts: { approved: [], denied: [] }, rect: { x: 300, y: 100, width: 400, height: 500 }, ...extra });
 
@@ -67,6 +72,8 @@ test('the panel view is sandboxed, isolated, bridge-less except its own preload,
   assert.strictEqual(p.nodeIntegration, false);
   assert.ok(!p.webviewTag && !p.nodeIntegrationInWorker && !p.nodeIntegrationInSubFrames);
   assert.strictEqual(p.devTools, false);
+  assert.strictEqual(p.disableDialogs, true, "alert/confirm/prompt are native boxes on the app's window: a page looping on confirm() would lock it (PR #122 Dexter F1)");
+  assert.strictEqual(p.safeDialogs, true);
   assert.strictEqual(p.preload, 'C:/app/canvas-panel-preload.js');
   assert.ok(typeof p.partition === 'string' && !p.partition.startsWith('persist:'), 'in memory, nothing survives the view');
   assert.ok(r.children.has(r.views[0]));
@@ -90,6 +97,39 @@ test('the session is shut BEFORE anything loads: a dead proxy that takes loopbac
   const loadAt = view.webContents.calls.findIndex(c => c[0] === 'load');
   assert.ok(loadAt >= 0);
   assert.ok(ses.proxy !== null, 'set before the load below happened');
+});
+
+test('a download the page starts is cancelled: no Save-As box with a file name and content the page chose (PR #122 Dexter F2 / Miguel Y4)', async () => {
+  const r = rig();
+  await show(r);
+  const ses = Object.values(r.sessions)[0];
+  assert.ok(ses.listenerCount('will-download') >= 1, 'the panel session listens for downloads');
+  let prevented = false;
+  ses.emit('will-download', { preventDefault() { prevented = true; } }, { getFilename: () => 'claude-quota-fix.bat' });
+  assert.strictEqual(prevented, true);
+});
+
+test('a page whose beforeunload handler cancels leaving is overruled, so the next page replaces it (PR #122 Dexter F3)', async () => {
+  const r = rig();
+  await show(r);
+  const wc = r.views[0].webContents;
+  assert.ok(wc.listenerCount('will-prevent-unload') >= 1);
+  let prevented = false;
+  wc.emit('will-prevent-unload', { preventDefault() { prevented = true; } });
+  assert.strictEqual(prevented, true, 'preventDefault on will-prevent-unload ignores the beforeunload handler and lets the unload happen');
+});
+
+test('a load that failed is not remembered as shown: the same page is loaded again on the next show (PR #122 Dexter F3)', async () => {
+  const r = rig();
+  await show(r, { html: '<p>A</p>' });
+  const wc = r.views[0].webContents;
+  const realLoad = wc.loadURL.bind(wc);
+  wc.loadURL = (u) => { wc.calls.push(['load-failed', u]); return Promise.reject(new Error('ERR_ABORTED')); };
+  await show(r, { html: '<p>B</p>' });
+  await new Promise(res => setImmediate(res));
+  wc.loadURL = realLoad;
+  await show(r, { html: '<p>B</p>' });
+  assert.match(Buffer.from(wc.loaded.split(',')[1], 'base64').toString('utf8'), /<p>B<\/p>/, 'B was retried and is the page now');
 });
 
 test('the contents never navigate, never open a window and get no WebRTC route', async () => {
@@ -224,7 +264,7 @@ test('a page cannot flood the person with questions: past the cap, new hosts are
     session: { fromPartition: (p) => new FakeSession(p) }, addChild() {}, removeChild() {},
     ownerBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }), preloadPath: 'p.js',
     ask: (o, origin) => { asked.push(origin); return new Promise((res) => gate.push(res)); },
-    onMessage() {}, fetchImpl: async () => new Response('x'), now: () => 0, log() {},
+    onMessage() {}, fetchImpl: async () => new Response('x'), resolveHost: async () => [{ address: '93.184.216.34', family: 4 }], now: () => 0, log() {},
   });
   await m.show(owner, { html: '', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
   const panel = views[0].webContents;
@@ -242,7 +282,7 @@ test('messageFrom: a click is needed; the message is trimmed to text; the owner 
   await show(r);
   const panel = r.views[0].webContents;
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'hello' }), false, 'no real input yet: a script cannot press its own button');
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'hello' }), true);
   assert.deepStrictEqual(r.messages, [{ kind: 'send', text: 'hello' }]);
 });
@@ -251,10 +291,10 @@ test('messageFrom: input goes stale, one message per click, and bad shapes are d
   const r = rig();
   await show(r);
   const panel = r.views[0].webContents;
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true);
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false, 'a click is spent by one message');
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   r.tick(PANEL_LIMITS.inputWindowMs + 1);
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'late' }), false, 'a click from long ago is not a click now');
   panel.emit('input-event', {}, { type: 'keyDown' });
@@ -372,7 +412,7 @@ test('open: a real click and an address that is exactly on the shelf; nothing el
   await show(r, { shelf: [ITEM_A] });
   const panel = r.views[0].webContents;
   assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false, 'no real click yet: a script cannot open a link');
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   assert.strictEqual(r.m.openFrom(panel, { url: 'https://claude.ai/artifact/zzz' }), false, 'not on the shelf');
   assert.strictEqual(r.m.openFrom(panel, { url: 'https://evil.example/' }), false);
   assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url + '#x' }), false, 'exactly the shelf entry, not a variant of it');
@@ -385,7 +425,7 @@ test('open: a click is shared with send: it is spent by whichever uses it first'
   const r = shelfRig();
   await show(r, { shelf: [ITEM_A] });
   const panel = r.views[0].webContents;
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'hi' }), true);
   assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false);
   assert.deepStrictEqual(r.opened, []);
@@ -395,7 +435,7 @@ test('open: bad shapes and a stranger are refused', async () => {
   const r = shelfRig();
   await show(r, { shelf: [ITEM_A] });
   const panel = r.views[0].webContents;
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   for (const bad of [null, 'x', {}, { url: 5 }, { url: '' }]) assert.strictEqual(r.m.openFrom(panel, bad), false, JSON.stringify(bad));
   assert.strictEqual(r.m.openFrom({ id: 54321 }, { url: ITEM_A.url }), false);
   assert.deepStrictEqual(r.opened, []);
@@ -419,9 +459,240 @@ test('messageFrom: the C1 range and the Unicode line separators are refused like
   await show(r);
   const panel = r.views[0].webContents;
   for (const bad of ['a\u0085b', 'a\u009bb', 'a b', 'a b', 'a\u007fb']) {
-    panel.emit('input-event', {}, { type: 'mouseUp' });
+    panel.emit('input-event', {}, { type: 'mouseDown' });
     assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: bad }), false, JSON.stringify(bad));
   }
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'café ☃' }), true);
+});
+
+
+// ---- show / hide / tab-switch interleavings while the proxy is being set (PR #122 Dexter F4 / Miguel Y1) ----------------------------
+
+const live = (r) => r.views.filter(v => !v.webContents.closed);
+
+test('two shows before the first one resolves make one view, not two', async () => {
+  const r = rig({ gateProxy: true });
+  const a = show(r, { html: '<p>A</p>' });
+  const b = show(r, { html: '<p>B</p>' });
+  await r.release();
+  await Promise.all([a, b]);
+  assert.strictEqual(r.views.length, 1, 'one WebContentsView for the owner');
+  assert.strictEqual(r.children.size, 1);
+  assert.match(Buffer.from(r.views[0].webContents.loaded.split(',')[1], 'base64').toString('utf8'), /<p>B<\/p>/, 'the later page won');
+});
+
+test('a hide that lands while the proxy is being set stops the view from ever joining the window', async () => {
+  const r = rig({ gateProxy: true });
+  const pending = show(r);
+  r.m.hide(r.owner);
+  await r.release();
+  const out = await pending;
+  assert.strictEqual(r.children.size, 0, 'no view attached after a hide');
+  assert.strictEqual(r.views[0].webContents.closed, true, 'and its contents are closed');
+  assert.strictEqual(r.m.has(r.owner), false);
+  assert.strictEqual(out.ok, false);
+  assert.strictEqual(out.stale, true, 'the answer says it was overtaken, so the page does not show an error for it');
+  assert.deepStrictEqual(r.views[0].webContents.calls.filter(c => c[0] === 'load'), [], 'and nothing was loaded');
+});
+
+test('show, hide, show again before anything resolves: exactly one live view, the second', async () => {
+  const r = rig({ gateProxy: true });
+  const a = show(r, { html: '<p>A</p>' });
+  r.m.hide(r.owner);
+  const b = show(r, { html: '<p>B</p>' });
+  await r.release();
+  await Promise.all([a, b]);
+  assert.strictEqual(live(r).length, 1);
+  assert.strictEqual(r.children.size, 1);
+  assert.ok(r.children.has(live(r)[0]));
+  assert.strictEqual(r.views.length, 2);
+  assert.strictEqual(r.views[0].webContents.closed, true);
+});
+
+test('a tab switch away while the proxy is being set leaves the view hidden once it joins', async () => {
+  const r = rig({ gateProxy: true });
+  const pending = show(r);
+  r.m.setOwnerVisible(r.owner, false);
+  await r.release();
+  await pending;
+  assert.strictEqual(r.views[0].visible, false, 'the tab is in the background: its panel must not float over the selected tab');
+});
+
+test("a view made for a tab that is not selected starts hidden (the owner's visibility is asked, not assumed)", async () => {
+  const r = rig({ isOwnerVisible: () => false });
+  await show(r);
+  assert.strictEqual(r.views[0].visible, false);
+});
+
+test('an owner destroyed while the proxy is being set leaves no view behind', async () => {
+  const owner = Object.assign(new EventEmitter(), { id: 9, isDestroyed: () => false });
+  const r = rig({ gateProxy: true });
+  const pending = r.m.show(owner, { html: '<p>x</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+  owner.emit('destroyed');
+  await r.release();
+  await pending;
+  assert.strictEqual(r.children.size, 0);
+  assert.strictEqual(r.views[0].webContents.closed, true);
+});
+
+test('property: whatever the interleaving of show, hide, tab switches and proxy answers, at most one view is live per tab and the window matches', async () => {
+  const fc = require('fast-check');
+  const op = fc.oneof(fc.constant('show'), fc.constant('show'), fc.constant('hide'), fc.constant('release-one'), fc.constant('tick'),
+    fc.constant('visible'), fc.constant('hidden'));
+  await fc.assert(fc.asyncProperty(fc.array(op, { minLength: 1, maxLength: 14 }), async (ops) => {
+    const world = { visible: true };
+    const r = rig({ gateProxy: true, isOwnerVisible: () => world.visible });
+    const shows = [];
+    let n = 0;
+    const settle = () => new Promise((res) => setImmediate(res));
+    for (const o of ops) {
+      if (o === 'show') shows.push(show(r, { html: `<p>${++n}</p>` }));
+      else if (o === 'hide') r.m.hide(r.owner);
+      else if (o === 'visible' || o === 'hidden') { world.visible = o === 'visible'; r.m.setOwnerVisible(r.owner, world.visible); }
+      else if (o === 'release-one') { const g = r.gate; if (g && g.length) { g.shift()(); } await settle(); }
+      else await settle();
+      assert.ok(live(r).length <= 1, `at most one live view after ${o}`);
+    }
+    await r.release();
+    await Promise.all(shows);
+    assert.ok(live(r).length <= 1);
+    assert.strictEqual(r.children.size, r.m.has(r.owner) ? 1 : 0, 'the window holds a view exactly when the manager has a record');
+    for (const v of r.views) if (!r.children.has(v)) assert.strictEqual(v.webContents.closed, true, 'a view that is not in the window is closed, never leaked');
+    if (r.m.has(r.owner)) assert.strictEqual(live(r)[0].visible, world.visible, "it is visible exactly when the tab is the selected one");
+  }), { numRuns: 300 });
+});
+
+// ---- one session per tab, not one per show (PR #122 Dexter F8 / Miguel G2) -------------------------------------------------------
+
+test('showing, hiding and showing again 30 times uses one session for the tab, locked once, and clears it every time the view goes', async () => {
+  const owner = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false });
+  const r = rig();
+  for (let i = 0; i < 30; i++) {
+    await r.m.show(owner, { html: '<p>x</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+    r.m.hide(owner);
+  }
+  assert.deepStrictEqual(Object.keys(r.sessions), ['canvas-7'], 'one partition per tab, however often the panel is shown');
+  const ses = r.sessions['canvas-7'];
+  assert.strictEqual(ses.listenerCount('will-download'), 1, 'the session was locked once, not once per show');
+  assert.strictEqual(ses.order.filter(x => x === 'proxy').length, 1, 'and its proxy was set once');
+  assert.strictEqual(ses.clears, 30 * 2, 'storage and cache are cleared each time the view goes');
+  assert.strictEqual(owner.listenerCount('destroyed'), 1, 'one destroyed-listener per tab, not one per show');
+  assert.strictEqual(r.views.length, 30, 'a fresh view each time (hidden means stopped)');
+});
+
+test("a reused session still has the dead proxy in place before the second view loads, and a destroyed tab forgets its session", async () => {
+  const owner = Object.assign(new EventEmitter(), { id: 8, isDestroyed: () => false });
+  const r = rig();
+  await r.m.show(owner, { html: '<p>x</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+  r.m.hide(owner);
+  await r.m.show(owner, { html: '<p>y</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+  assert.ok(r.sessions['canvas-8'].proxy, 'the proxy is set');
+  assert.ok(r.views[1].webContents.calls.some(c => c[0] === 'load'));
+  owner.emit('destroyed');
+  assert.strictEqual(r.m.has(owner), false, 'the panel went with its tab');
+  assert.strictEqual(r.children.size, 0);
+});
+
+// ---- one gesture, one use (PR #122 Dexter F7 / Miguel G1) --------------------------------------------------------------------------
+
+test('one physical click is one use: the mouseUp of a click that already sent does not re-arm the gate', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: '/a' }), true, 'onmousedown');
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: '/b' }), false, 'onclick of the same gesture');
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: '/c' }), true, 'the next click is a new use');
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['/a', '/c']);
+});
+
+test('a click that sends only on its mouseUp (onclick) still works, even when the press was slow', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  r.tick(PANEL_LIMITS.inputWindowMs - 100);
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  r.tick(150);
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'ok' }), true, 'the release kept the gesture fresh');
+});
+
+test('a lone mouseUp (a press that began outside the panel) does not arm anything', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'x' }), false);
+});
+
+test('a key press is one use: the char that follows its keyDown does not re-arm', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'rawKeyDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true);
+  panel.emit('input-event', {}, { type: 'char' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false);
+});
+
+test('property: the messages let through never outnumber the gestures that began (a mouseDown or a key press)', async () => {
+  const fc = require('fast-check');
+  const ev = fc.constantFrom('mouseDown', 'mouseUp', 'mouseMove', 'keyDown', 'rawKeyDown', 'char', 'send', 'send', 'send');
+  await fc.assert(fc.asyncProperty(fc.array(ev, { maxLength: 40 }), async (events) => {
+    const r = rig();
+    await show(r);
+    const panel = r.views[0].webContents;
+    let began = 0; let accepted = 0; let armed = false;
+    for (const e of events) {
+      if (e === 'send') {
+        const ok = r.m.messageFrom(panel, { kind: 'send', text: 'x' });
+        assert.strictEqual(ok, armed, 'accepted exactly when a gesture began since the last accepted send');
+        if (ok) { accepted += 1; armed = false; }
+      } else {
+        panel.emit('input-event', {}, { type: e });
+        if (e === 'mouseDown' || e === 'keyDown' || e === 'rawKeyDown') { began += 1; armed = true; }
+      }
+    }
+    assert.ok(accepted <= began);
+  }), { numRuns: 200 });
+});
+
+test('fetchFor: an approved name that resolves to this machine or its network reaches nothing (PR #122 Dexter F6)', async () => {
+  const hits = [];
+  const r = rig({ fetchImpl: async (u) => { hits.push(u); return new Response('secret'); }, resolveHost: async () => [{ address: '127.0.0.1', family: 4 }] });
+  await show(r, { hosts: { approved: ['https://rebind.example.com'], denied: [] } });
+  const out = await r.m.fetchFor(r.views[0].webContents, { url: 'https://rebind.example.com/api/delete' });
+  assert.strictEqual(out.ok, false);
+  assert.deepStrictEqual(hits, []);
+  const lit = await r.m.fetchFor(r.views[0].webContents, { url: 'http://127.0.0.1:11434/api/tags' });
+  assert.strictEqual(lit.ok, false);
+  assert.deepStrictEqual(r.asked, [], 'a local address is never put to the person as a question');
+});
+
+test('a page cannot keep asking: past the per-view cap, new hosts are refused without a question (PR #122 Miguel G3)', async () => {
+  const r = rig({ answer: 'deny' });
+  await show(r);
+  const panel = r.views[0].webContents;
+  for (let i = 0; i < PANEL_LIMITS.totalAsks + 8; i++) {
+    const out = await r.m.fetchFor(panel, { url: `https://h${i}.example.com/` });
+    assert.strictEqual(out.ok, false);
+  }
+  assert.strictEqual(r.asked.length, PANEL_LIMITS.totalAsks, 'the person was asked totalAsks times and no more');
+  assert.deepStrictEqual(r.asked.slice(-1), [`https://h${PANEL_LIMITS.totalAsks - 1}.example.com`]);
+});
+
+test('the ask budget is per view: a hosts already approved or denied never spends it, and a new view starts afresh', async () => {
+  const r = rig({ answer: 'deny' });
+  await show(r, { hosts: { approved: ['https://ok.example.com'], denied: ['https://no.example.com'] } });
+  const panel = r.views[0].webContents;
+  for (let i = 0; i < 30; i++) { await r.m.fetchFor(panel, { url: 'https://ok.example.com/' }); await r.m.fetchFor(panel, { url: 'https://no.example.com/' }); }
+  assert.deepStrictEqual(r.asked, []);
+  for (let i = 0; i < PANEL_LIMITS.totalAsks; i++) await r.m.fetchFor(panel, { url: `https://h${i}.example.com/` });
+  r.m.hide(r.owner);
+  await show(r);
+  await r.m.fetchFor(r.views[1].webContents, { url: 'https://fresh.example.com/' });
+  assert.strictEqual(r.asked.length, PANEL_LIMITS.totalAsks + 1);
 });

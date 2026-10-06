@@ -38,7 +38,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ESCAPES[c]);
 const plural = (n, one, many) => (n === 1 ? one : many);
 const mb = (bytes) => { const n = bytes / MB; return Number.isInteger(n) ? String(n) : n.toFixed(1); };
 
-const emptyState = () => ({ payload: null, html: null, htmlSig: null, asks: [], hostsOpen: false, note: null, status: null });
+const emptyState = () => ({ payload: null, html: null, htmlSig: null, asks: [], hostsOpen: false, note: null, status: null, refusal: null });
 
 const isPayload = f => f !== null && typeof f === 'object' && (f.sessionId === null || isStr(f.sessionId)) && STATUSES.includes(f.status)
   && typeof f.signature === 'string';
@@ -81,11 +81,35 @@ function withFrame(state, frame) {
 const shouldDock = frame => isPayload(frame) && frame.changed === true && (frame.status === 'ok' || frame.status === 'toobig');
 
 const needsFetch = s => !!s.payload && s.payload.status === 'ok' && s.htmlSig !== s.payload.signature;
-const canShow = s => !!s.payload && s.payload.status === 'ok' && isStr(s.html) && s.htmlSig === s.payload.signature;
+// `refusal`: main said no to THIS page (PR #122 Dexter F9: it was swallowed, so the slot sat blank with no word). It holds for that signature only.
+const refused = s => !!s.refusal && s.refusal.sig === s.htmlSig;
+const canShow = s => !!s.payload && s.payload.status === 'ok' && isStr(s.html) && s.htmlSig === s.payload.signature && !refused(s);
+const withRefusal = (state, sig, error) => (isStr(sig) && sig === state.htmlSig ? { ...state, refusal: { sig, error: isStr(error) && error ? error.slice(0, 120) : 'it was refused' } } : state);
+// The questions belong to the view that asked them: when the view goes (hidden, or its page changed) they are stale, and answering one would persist a decision for a page that no longer exists.
+const withoutAsks = state => (state.asks.length ? { ...state, asks: [] } : state);
 const showRequest = s => (canShow(s) ? { html: s.html, hosts: s.payload.hosts, shelf: s.payload.shelf } : null);
 const shelfOf = s => (s.payload ? s.payload.shelf : []);
 const shelfKey = s => JSON.stringify(shelfOf(s));
 const covered = s => s.asks.length > 0 || s.hostsOpen;
+
+// ---- anything ELSE drawn over the slot (PR #122 Dexter F5) ---------------------------------------------------------------------
+// A native view paints above the whole page, so a floating dock panel, a menu or a popover that crosses the slot would be hidden behind
+// it, and a click meant for it would land in the untrusted panel (and arm a `send`). `covered` only knew the panel's own overlays. This asks
+// the page what is topmost at a grid of points over the slot instead of listing overlays, so one nobody thought of is caught too.
+const SAMPLE_GAP = 40;         // px between sample points: an overlay at least this big in both directions always contains one
+const SAMPLE_MAX = 12;         // per axis, so a big slot costs at most 144 hit tests
+const isBox = r => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
+const axis = (start, len) => {
+  const n = Math.min(SAMPLE_MAX, Math.max(2, Math.ceil(len / SAMPLE_GAP) + 1));
+  return Array.from({ length: n }, (_, i) => start + 1 + (i * (len - 2)) / (n - 1));    // 1px inside each edge: the edge pixel itself may belong to a neighbour
+};
+const samplePoints = (rect) => {
+  if (!isBox(rect) || rect.width < 3 || rect.height < 3) return [];
+  const xs = axis(rect.x, rect.width); const ys = axis(rect.y, rect.height);
+  return ys.flatMap(y => xs.map(x => ({ x, y })));
+};
+/** Is something other than the slot topmost anywhere over it? `isSlotAt(x, y)` answers for one point (true when the slot, or nothing the page can see, is on top). */
+const slotObstructed = (rect, isSlotAt) => samplePoints(rect).some(p => !isSlotAt(p.x, p.y));
 
 function withAsk(state, ask) {
   if (!ask || !Number.isInteger(ask.id) || ask.id < 0 || !isStr(ask.origin) || ask.origin === '') return state;
@@ -131,10 +155,10 @@ function view(state) {
   const kind = status === 'ok' ? 'page' : status;
   const first = state.asks[0] || null;
   return {
-    kind, badge, hosts, hostsOpen: state.hostsOpen, note: state.note,
+    kind, badge, hosts, hostsOpen: state.hostsOpen, note: state.note || (refused(state) ? `Couldn't show Claude's page: ${state.refusal.error}.` : null),
     status: state.status ? state.status.text : null, statusIsError: state.status ? state.status.bad === true : false,
     ask: first ? { id: first.id, origin: first.origin, more: state.asks.length - 1 } : null,
-    loading: kind === 'page' && !canShow(state),
+    loading: kind === 'page' && !canShow(state) && !refused(state),
     text: kind === 'toobig' ? `Claude's page is too big (${mb(p.bytes)} MB, the limit is ${mb(p.limitBytes)} MB)` : null,
   };
 }
@@ -195,7 +219,7 @@ function actionOf(data) {
   }
 }
 
-const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, shelfOf, shelfKey, covered, withAsk, answered, toggleHosts, typed, clearStatus, sessionLine, view, html, actionOf };
+const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, shelfOf, shelfKey, covered, samplePoints, slotObstructed, SAMPLE_GAP, withRefusal, withoutAsks, withAsk, answered, toggleHosts, typed, clearStatus, sessionLine, view, html, actionOf };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.canvasDisplay = API;
