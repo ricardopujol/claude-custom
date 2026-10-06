@@ -243,13 +243,16 @@ function presetSetup(store = fakeStore()) {
   const sent = [];
   const ipcMain = fakeIpc();
   const sync = {};
+  let n = 0;
   registerLayoutHandlers({
     ipcMain, store, sync, names: PRESET_NAMES, isSender: s => s === VIEW, send: (ch, v) => sent.push([ch, v]),
+    newId: () => `n${++n}`,
   });
   const call = (ch, ...args) => ipcMain.handlers.get(ch)({ sender: VIEW }, ...args);
   return { ipcMain, store, sent, call, sync };
 }
-const PRESETS = [{ name: 'Reviewing', layout: TREE }, { name: 'Writing', layout: { ...TREE, hidden: ['fog'] } }];
+// Every preset carries an id (BACKLOG #59, test/dock-presets-identity.test.js); a new one gets n1, n2... here.
+const PRESETS = [{ name: 'Reviewing', layout: TREE, id: 'r1' }, { name: 'Writing', layout: { ...TREE, hidden: ['fog'] }, id: 'w1' }];
 
 test('PRESET_NAMES is its own key and channels, none of them the layout ones: a list read by `get`, changed only by `op`', () => {
   assert.deepStrictEqual(PRESET_NAMES, {
@@ -280,7 +283,7 @@ const SAVE = (name, layout = TREE, extra = {}) => ({ op: 'save', name, layout, .
 test('an op saves into the fresh list, pushes the new list to every view, and answers { ok, list }', async () => {
   const { call, store, sent, sync } = presetSetup(fakeStore({ [TREE_NAMES.key]: TREE, [PRESET_NAMES.key]: PRESETS }));
   const answer = await call(PRESET_NAMES.op, SAVE('Plan'));
-  const want = [...PRESETS, { name: 'Plan', layout: TREE }];
+  const want = [...PRESETS, { name: 'Plan', layout: TREE, id: 'n1' }];
   assert.deepStrictEqual(answer, { ok: true, list: want });
   assert.deepStrictEqual(store.data[PRESET_NAMES.key], want);
   assert.deepStrictEqual(store.data[TREE_NAMES.key], TREE, 'the tree record is untouched');
@@ -290,11 +293,11 @@ test('an op saves into the fresh list, pushes the new list to every view, and an
 
 test('rename and delete go through the same op channel', async () => {
   const { call, store } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }));
-  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'rename', name: 'reviewing', to: 'Docs' })).ok, true);
+  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'rename', name: 'reviewing', to: 'Docs', id: 'r1' })).ok, true);
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Docs', 'Writing']);
-  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Writing' })).ok, true);
+  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Writing', id: 'w1' })).ok, true);
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Docs']);
-  assert.deepStrictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Docs' })).list, [], 'deleting the last one is stored, not refused');
+  assert.deepStrictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Docs', id: 'r1' })).list, [], 'deleting the last one is stored, not refused');
 });
 
 test('PR #103 Dexter 1: two windows, one store: a save in B does not erase what A saved, however stale B\'s copy is', async () => {
@@ -316,8 +319,8 @@ test('PR #103 Dexter 1: two windows, one store: a save in B does not erase what 
   assert.strictEqual((await opB(SAVE('Debug'))).ok, true);
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Reviewing', 'Focus', 'Debug']);
   // and a delete in B of something A has since renamed away is a refusal, not a silent write
-  assert.strictEqual((await opA({ op: 'rename', name: 'Focus', to: 'Focused' })).ok, true);
-  assert.deepStrictEqual(await opB({ op: 'delete', name: 'Focus' }), { ok: false, reason: 'missing' });
+  assert.strictEqual((await opA({ op: 'rename', name: 'Focus', to: 'Focused', id: store.data[PRESET_NAMES.key][1].id })).ok, true);
+  assert.deepStrictEqual(await opB({ op: 'delete', name: 'Focus', id: 'zzz' }), { ok: false, reason: 'missing' });
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Reviewing', 'Focused', 'Debug']);
 });
 
@@ -378,9 +381,10 @@ test('nothing this build cannot use is erased: foreign entries and fields ride t
   const stored = [{ name: 'Reviewing', layout: TREE, pinned: true }, 'junk', { name: 'x'.repeat(45), layout: TREE }, { shape: 'later' }];
   const { call, store } = presetSetup(fakeStore({ [PRESET_NAMES.key]: stored }));
   await call(PRESET_NAMES.op, SAVE('Plan'));
-  assert.deepStrictEqual(store.data[PRESET_NAMES.key], [...stored, { name: 'Plan', layout: TREE }]);
-  await call(PRESET_NAMES.op, { op: 'rename', name: 'Reviewing', to: 'Looked at' });
-  assert.deepStrictEqual(store.data[PRESET_NAMES.key][0], { name: 'Looked at', layout: TREE, pinned: true });
+  // the stored preset with no id gets one beside its unknown field; what this build can't use gets none
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key], [{ ...stored[0], id: 'n1' }, ...stored.slice(1), { name: 'Plan', layout: TREE, id: 'n2' }]);
+  await call(PRESET_NAMES.op, { op: 'rename', name: 'Reviewing', to: 'Looked at', id: 'n1' });
+  assert.deepStrictEqual(store.data[PRESET_NAMES.key][0], { name: 'Looked at', layout: TREE, pinned: true, id: 'n1' });
 });
 
 test('32 maximal presets, which the page\'s own rules allow, are stored: main\'s cap is the page\'s', async () => {

@@ -28,7 +28,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES } = require('./layout-bridge');
-const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
+const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
@@ -100,6 +100,14 @@ const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
+// The indexing assistant (#66): a field in the strip; Enter appends the note verbatim to the selected project's backlog
+// `## Inbox` (no model). The service is host/indexing-service.js; main's half (channels, the toast and list views over
+// the tabs) is app/indexing-bridge.js.
+const { createIndexingService } = require('../host/indexing-service');
+const { createJournal } = require('../host/indexing-journal');
+const indexWriter = require('../host/indexing-writer');
+const { projectChoices, readRecentsOffThread } = require('../host/indexing-projects');
+const { createIndexingBridge } = require('./indexing-bridge');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -385,6 +393,10 @@ const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.is
 // saved. The tab view covers the strip, and every view hides its own header
 // and zones when told.
 let focusMode = false;
+// The indexing assistant (#66): main's half (startIndexing), and whether its field has the keyboard (a publish must not
+// take it, as for the branch form).
+let indexing = null;
+let indexFieldFocused = false;
 // Layout pass L2 (#28): this window's frame, fixed at creation. A frameless
 // window keeps its strip in focus mode: it's the only title bar (Dexter L2 #3).
 let windowFrameless = false;
@@ -400,6 +412,7 @@ function layoutView(view) {
 function setFocusMode(on) {
   focusMode = !!on;
   forEachView(layoutView);
+  if (indexing) indexing.relayout();
   forEachView((v) => v.webContents.send('focus-mode', focusMode));
 }
 
@@ -413,6 +426,7 @@ let focused = false;
 function createWindow() {
   // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
   // an open window, so a later toggle applies to the next one.
+  ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
   const chrome = readChromeSettings(uiStore);
   windowFrameless = chrome.framelessWindow === true;
   win = new BrowserWindow({
@@ -459,6 +473,7 @@ function createWindow() {
     forEachView((v) => v.webContents.send('window-focus', payload));
   };
   const focusSelected = () => {
+    if (indexFieldFocused) return;          // #66: coming back to the window keeps a half-typed note's keyboard
     const sel = selectedView();
     if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
   };
@@ -474,7 +489,7 @@ function createWindow() {
   win.on('minimize', () => { focused = false; if (resources) resources.setMinimised(true); });
   win.on('restore', () => { focused = win.isFocused(); sendFocus(); if (resources) resources.setMinimised(false); });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
-    win.on(ev, () => forEachView(layoutView));
+    win.on(ev, () => { forEachView(layoutView); if (indexing) indexing.relayout(); });
   }
   // FF3: the page sets its own <title>, and a page title WINS over the one
   // given to BrowserWindow. Without this the window silently reverts to
@@ -487,6 +502,7 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     if (lastStripPayload) win.webContents.send('strip-model', lastStripPayload);
     win.webContents.send('strip-accent', lastStripAccent);
+    if (indexing) indexing.push(true);
   });
   // A click on the strip takes the keyboard from the view (Dexter, PR #75 R2-4),
   // so the next selection -- even of the same tab -- focuses its view again.
@@ -551,6 +567,7 @@ function createTabView(tab) {
     },
   });
   win.contentView.addChildView(view);
+  if (indexing) indexing.raise();    // #66: the toast and the list stay over every tab view
   layoutView(view);
   view.setVisible(false);       // shown by applySelection once it is the selected tab
   liveViews.add(view);
@@ -657,6 +674,7 @@ function pushStripAccent() {
   const sel = selectedView();
   lastStripAccent = sel && !sel.webContents.isDestroyed() ? stripAccent.show(sel.webContents) : null;
   win.webContents.send('strip-accent', lastStripAccent);
+  if (indexing) indexing.setAccent(lastStripAccent);
 }
 
 function applySelection(snapshot) {
@@ -676,7 +694,8 @@ function applySelection(snapshot) {
   // opens (and again when a creation fails), and keeps it while it takes
   // typing -- not while Contract A runs, so Ctrl+Tab meanwhile reaches a view
   // (PR #80 Dexter F7).
-  const stripBusy = !!snapshot.create && snapshot.create.phase !== 'running';
+  // #66: the same holds for the indexing field while it has the keyboard.
+  const stripBusy = (!!snapshot.create && snapshot.create.phase !== 'running') || indexFieldFocused;
   if (stripBusy && !stripWasBusy && win && !win.isDestroyed()) win.webContents.focus();
   stripWasBusy = stripBusy;
   const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live, stripBusy });
@@ -719,6 +738,7 @@ function registerShortcuts(wc) {
     else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
     else if (action === 'new-branch') openBranchForm();
     else if (action === 'focus-mode') setFocusMode(!focusMode);
+    else if (action === 'index-note') { if (indexing) indexing.focusField(); }
     else if (action === 'devtools') {
       const v = selectedView();
       if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();
@@ -1523,6 +1543,63 @@ function startProbeDriver(port) {
   server.listen(port, '127.0.0.1', () => console.log(`[main] probe driver listening on ${port}`));
 }
 
+// --- the indexing assistant (#66) ----------------------------------------------------------
+// One per window, sharing one install-wide journal with the others. The probe seam points it at a throwaway journal.
+function startIndexing(seams) {
+  const journalFile = seams.indexingJournal || path.join(HARNESS_DIR, 'state', 'indexing-notes.jsonl');
+  const docsFor = (root) => { const p = projectOf(root); return indexWriter.docsOf(p || { root, dev: root }); };
+  const service = createIndexingService({
+    journal: createJournal({ file: journalFile }),
+    docsFor,
+    log: (...a) => console.log(...a),
+  });
+  // The chip's projects: host/recent.js scans transcripts (2.7 s cold here), so it runs in a worker, kept 5 minutes.
+  let recents = null;
+  let recentsAt = 0;
+  const projects = async (current) => {
+    if (recents === null || Date.now() - recentsAt > 5 * 60_000) {
+      const r = await readRecentsOffThread({ projectsDir: seams.projectsDir || undefined });
+      if (r) { recents = r; recentsAt = Date.now(); }
+    }
+    return projectChoices({
+      current, recents, projectOf, labelOf: projectLabel,
+      hasBacklog: (p) => { const d = indexWriter.docsOf(p); return d.ok === true && fs.existsSync(d.backlog); },
+    });
+  };
+  indexing = createIndexingBridge({
+    ipcMain, Menu, shell,
+    copyText: (text) => clipboard.writeText(text),
+    makeView: () => {
+      const v = new WebContentsView({
+        webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload-indexing.js') },
+      });
+      v.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
+        v.webContents.on('console-message', (_e, level, message) => console.log(`[indexing-overlay] ${message}`));
+      }
+      return v;
+    },
+    overlayFile: path.join(__dirname, 'indexing-overlay.html'),
+    getWin: () => win,
+    isStrip: (sender) => fromStrip({ sender }),
+    service,
+    project: { root: PROJECT_ROOT, label: WINDOW_LABEL },
+    docsFor,
+    projects,
+    viewTop: () => viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT }),
+    focusSelected: () => {
+      const sel = selectedView();
+      if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
+    },
+    setFieldFocused: (on) => { indexFieldFocused = on; },
+    journalStamp: () => { try { const s = fs.statSync(journalFile); return `${s.size}:${s.mtimeMs}`; } catch { return 'none'; } },
+  });
+  indexing.start(3000);
+  indexing.push(true);
+  // Warm the chip's list off-thread, so the first click doesn't wait for it.
+  setTimeout(() => { projects(PROJECT_ROOT).catch(() => {}); }, 15_000).unref();
+}
+
 app.whenReady().then(async () => {
   console.log('[main] project       :', PROJECT_ROOT, `(${MODE})`);
   console.log('[main] launched on   :', LAUNCH_CWD);
@@ -1662,6 +1739,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   createWindow();
   registerIpc();
+  startIndexing(seams);
 
   reloadMarks();
   if (MODE === 'tabs') pruneGoneMarks();

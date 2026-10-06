@@ -217,7 +217,10 @@ document.getElementById('terminal-banner-dismiss').addEventListener('click', () 
 // initials for occupancy. Every decision is in app/terminal-bar.js, app/occupancy-display.js and
 // app/occupancy-confirm.js; this only paints what they return, and sends what the confirm releases. Nothing here
 // makes anything read-only, and nothing animates.
-const occupancy = { here: [], launched: [], confirm: null, jumpNote: '' };
+// `session` is this tab's session id, from the host (`hello`, then `session` on every SessionStart): a card's line is
+// only a claim of THIS session's run, never another session's agent of the same name in the same folder (backlog #57).
+const occupancy = { here: [], launched: [], confirm: null, jumpNote: '', session: null };
+const sessionIdOf = id => (typeof id === 'string' && id !== '' ? id : null);
 const occupancyEls = { confirm: document.getElementById('occupancy-confirm'), confirmText: document.getElementById('occupancy-confirm-text') };
 const barEls = {
   bar: document.getElementById('terminal-bar'),
@@ -1707,8 +1710,24 @@ function sendPresetOp(req, onAnswer) {
     else presetsState = { ...presetsState, busy: false };
     if (!r.ok && r.reason === 'failed') flashAttention({ urgent: false, title: 'Couldn\'t save the presets' });
     onAnswer(r);
+    if (!r.ok && window.dockPresets.needsResync(r.reason)) resyncPresets();
   };
   presetBridge.op(req).then(finish, () => finish(null));
+}
+
+// A refusal of `changed` or `missing` means this window's list is out of date (a lost poll, a push that never came):
+// ask main for the list again, or the next question would be built from the same stale row and be refused the same way.
+// The read also gives any preset an older build wrote its id, so a question about it can be answered.
+async function resyncPresets() {
+  const bridge = window.harness && window.harness.layoutPresets;
+  if (!bridge) return;
+  let answer = null;
+  try { answer = await bridge.get(); } catch { return; }
+  const next = window.dockPresets.afterGet(answer);
+  if (!next.usable) return;
+  presetsState = { loaded: true, ...next, busy: presetsState.busy === true };
+  dispatchPreset({ type: 'list', list: presetsState.list });
+  refreshPresetMenu();
 }
 
 // Redraw the open Window menu in place. A push never skips it: the field being typed in lives in presetUi.
@@ -1839,30 +1858,34 @@ function presetAskRow({ question, confirmText, action, confirmLabel, cancelLabel
   ])];
 }
 
+// The id a question remembers for the preset it is about (BACKLOG #59): its answer carries it (presetUi.id), so main
+// refuses it as `changed` if another window has since put a different preset under that name. None stored is null.
+const presetId = p => (typeof p.id === 'string' ? p.id : null);
+
 function presetRow(p, check) {
   const label = kind => window.dockPresets.labelFor(kind, p.name);
   if (presetUi.mode === 'rename' && presetUi.name === p.name) {
     return [...presetFieldRow({
       label: label('rename-field'), value: presetUi.text !== undefined ? presetUi.text : p.name, action: 'rename', commitText: 'Rename',
       commitLabel: label('rename-commit'), cancelLabel: label('rename-cancel'),
-      onCommit: (text) => runPresetOp({ op: 'rename', name: p.name, to: text }),
+      onCommit: (text) => runPresetOp({ op: 'rename', name: p.name, to: text, id: presetUi.id }),
     }), ...presetErrorLine()];
   }
   if (presetUi.mode === 'delete' && presetUi.name === p.name) {
     return [...presetAskRow({
       question: `Delete '${p.name}'?`, confirmText: 'Delete', action: 'delete-confirm',
       confirmLabel: label('delete-confirm'), cancelLabel: label('delete-cancel'),
-      onConfirm: () => runPresetOp({ op: 'delete', name: p.name }),
+      onConfirm: () => runPresetOp({ op: 'delete', name: p.name, id: presetUi.id }),
     }), ...presetErrorLine()];
   }
   const apply = node('button', { type: 'button', className: 'lm-apply', title: `Apply ${p.name}`, text: p.name, 'aria-label': label('apply'),
     on: { click: () => applyPreset(p, check.box.checked) } });
   apply.dataset.presetAct = 'apply';
   const rename = node('button', { type: 'button', className: 'lm-mini', text: '✎', title: 'Rename', 'aria-label': label('rename-open'),
-    on: { click: () => { dispatchPreset({ type: 'open', mode: 'rename', name: p.name }); openLayoutMenu(); } } });
+    on: { click: () => { dispatchPreset({ type: 'open', mode: 'rename', name: p.name, id: presetId(p) }); openLayoutMenu(); } } });
   rename.dataset.presetAct = 'rename';
   const del = node('button', { type: 'button', className: 'lm-mini', text: '✕', title: 'Delete', 'aria-label': label('delete-open'),
-    on: { click: () => { dispatchPreset({ type: 'open', mode: 'delete', name: p.name }); openLayoutMenu(); } } });
+    on: { click: () => { dispatchPreset({ type: 'open', mode: 'delete', name: p.name, id: presetId(p) }); openLayoutMenu(); } } });
   del.dataset.presetAct = 'delete';
   const row = node('div', { className: 'lm-row lm-preset' }, [presetThumb(p.layout), apply, rename, del]);
   row.dataset.preset = p.name;
@@ -1898,7 +1921,7 @@ function appendPresetSection(check) {
     for (const el of [...presetAskRow({
       question: `Replace '${presetUi.name}'?`, confirmText: 'Replace', action: 'replace-confirm',
       confirmLabel: label('replace-confirm'), cancelLabel: label('replace-cancel'),
-      onConfirm: () => runPresetOp({ op: 'save', name: presetUi.name, layout: committedLayout(), replace: true }),
+      onConfirm: () => runPresetOp({ op: 'save', name: presetUi.name, layout: committedLayout(), replace: true, id: presetUi.id }),
     }), ...presetErrorLine()]) section.appendChild(el);
   } else {
     if (presetUi.mode === 'idle') for (const el of presetErrorLine()) section.appendChild(el);     // rename and delete draw theirs on their own row
@@ -3804,7 +3827,7 @@ function beltClick(target) {
 // #44: where an agent launched from THIS session is working, when it has touched another worktree. Nothing at
 // all for an agent that hasn't. A button, so a click on it is never "open the log" (cardClickAgent skips them).
 function occupancyWhereHtml(agent) {
-  const line = window.occupancyDisplay ? window.occupancyDisplay.cardLine(occupancy.launched, agent) : null;
+  const line = window.occupancyDisplay ? window.occupancyDisplay.cardLine(occupancy.launched, agent, occupancy.session) : null;
   if (!line) return '';
   return `<button type="button" class="agent-where" data-where-root="${escapeHtml(line.root)}" title="${escapeHtml(line.title)}">` +
     `${escapeHtml(line.text)}${line.plus > 0 ? `<span class="agent-where-plus">+${line.plus}</span>` : ''}</button>`;
@@ -5990,7 +6013,9 @@ function bindAvatarSection() {
 
 // Layout pass L2 (#27, #28): main's install-wide window settings, followed
 // across windows. Until main answers, statusInHeader is unknown and the header
-// fields stay hidden: the CLI's own row is still showing them.
+// fields stay hidden, and the page asks again every second. The CLI's own row
+// is only quiet when the file says an explicit true, which main writes as the
+// default, so a gap with the fields nowhere is a moment, never a state.
 let chromeSettings = { statusInHeader: null, framelessWindow: null };
 function applyChromeSettings(settings) {
   if (!settings || typeof settings !== 'object') return;
@@ -6241,12 +6266,18 @@ function handleControl(msg) {
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
+    occupancy.session = sessionIdOf(msg.sessionId);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (msg.maxSeats) seatMax = msg.maxSeats;
     councilWarnings = [];
     renderSeats();
     if (!msg.hooks) console.warn('[renderer] host reports no hook helper — moods will not update');
+    return;
+  }
+  if (msg.type === 'session') {
+    occupancy.session = sessionIdOf(msg.sessionId);
+    renderRoster();
     return;
   }
   if (msg.type === 'loadout') {

@@ -131,6 +131,29 @@ test('a folder not sharing the prefix is never read', async () => {
   assert.deepStrictEqual(totals((await updateLedger(emptyLedger(), opts(dir))).ledger), {});
 });
 
+test('a folder whose name differs from the project\'s only in CASE is the project\'s on Windows (a session started from a c:\\ cwd); elsewhere it is not (backlog #57)', async () => {
+  // a projects dir holding ONLY the lowercase spelling, so nothing else could be what was counted
+  const dir = tmpDir('branch-ledger-');
+  const lower = path.join(dir, projectDirName('c:\\p\\dev'));
+  assert.ok(path.basename(lower).startsWith('c--p'), 'the folder is the lowercase spelling');
+  fs.mkdirSync(lower, { recursive: true });
+  fs.writeFileSync(path.join(lower, 's9.jsonl'), line('a', 'feat/x', 10, 'c:\\p\\dev'));
+  const t = totals((await updateLedger(emptyLedger(), opts(dir))).ledger);
+  if (process.platform === 'win32') assert.strictEqual(t['feat/x'].spend, 10);
+  else assert.deepStrictEqual(t, {});
+});
+
+test('the folder-name match is case-insensitive on Windows and exact elsewhere, whichever OS runs the suite (PR #124 Miguel M4)', () => {
+  const { makeDirNameStartsWith } = require('../host/branch-ledger');
+  const win = makeDirNameStartsWith(true);
+  const other = makeDirNameStartsWith(false);
+  assert.strictEqual(win('c--p-dev', 'C--p-dev'), true);
+  assert.strictEqual(win('C--P-DEV-x', 'c--p-dev'), true);
+  assert.strictEqual(win('C--q', 'C--p'), false);
+  assert.strictEqual(other('c--p-dev', 'C--p-dev'), false);
+  assert.strictEqual(other('C--p-dev-x', 'C--p-dev'), true);
+});
+
 test('a projects dir that does not exist is an error counted, not an empty project', async () => {
   const { ledger, errors } = await updateLedger(emptyLedger(), opts(path.join(tmpDir('branch-ledger-'), 'nope')));
   assert.strictEqual(errors, 1);

@@ -173,6 +173,7 @@ const claimRecord = fc.record({
   also: fc.array(root, { maxLength: O.ALSO_MAX }),
   fromBranch: fc.oneof(fc.constant(null), fc.constantFrom('develop', 'feat/x')),
   fromRoot: root,
+  sessionId: fc.oneof(fc.constant(null), fc.uuid(), fc.stringMatching(/^[A-Za-z0-9_-]{1,64}$/)),
   hostPid: fc.integer({ min: 1, max: 4000000 }),
   hostStartedAt: fc.oneof(fc.constant(null), fc.bigInt({ min: 1n, max: 9999999999999999999n }).map(String)),
   firstAt: fc.integer({ min: 0, max: 2 ** 40 }),

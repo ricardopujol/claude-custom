@@ -211,6 +211,10 @@ async function main() {
   await sleep(1500);   // its hook bridge binds a moment after its identity is written
   const devPid = devHost.pid;
 
+  // The session's id, as a real CLI's SessionStart names it: the card matches a claim on it (backlog #57). The
+  // stand-in `claude` (cmd.exe) never fires one.
+  hook(devPid, 'SessionStart', { session_id: 'probe', source: 'startup' });
+
   // 1 -----------------------------------------------------------------------------
   hook(devPid, 'PreToolUse', { session_id: 'probe', tool_name: 'Edit', tool_input: { file_path: path.join(featA, 'a.js') } });   // the MAIN session's own call
   hook(devPid, 'PreToolUse', editIn(dev, 'ownroot01', 'electron-pro'));

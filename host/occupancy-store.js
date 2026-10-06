@@ -12,7 +12,8 @@
  * WRITING (the launching host only):
  *   - temp file + rename, never the target opened with 'w' (a failed write leaves the old file whole);
  *   - `lastAt` is rewritten at most every REWRITE_MS (no write per tool call). A CHANGE -- a new worktree, a
- *     new `also`, who the agent is, the branch that launched it, the host's proof -- is written at once,
+ *     new `also`, who the agent is, the session it runs in, the branch that launched it, the host's proof --
+ *     is written at once,
  *     and a failed write doesn't start the window;
  *   - `.claude-custom` that is a link or junction to somewhere else is never written through
  *     (host/style.js lookDirState: a cloned repo can ship one pointing anywhere), and neither is an
@@ -57,8 +58,9 @@ function createClaimWriter({ stateRoot, fsImpl = fs, now = Date.now, log = () =>
     if (!parsed || !parsed.ok) return { ok: false, error: `not a claim: ${parsed ? parsed.reason : 'no record'}` };
     const name = claimFileName(record.agentId);
     // What a CHANGE is: where the agent is, who it is and where it came from (the name is often not known on
-    // the first touch), and the host's proof (its start time can arrive after the first claim).
-    const key = JSON.stringify([record.worktree, record.also, record.hostStartedAt, record.agent, record.fromBranch]);
+    // the first touch), which session it runs in (a hub card matches on it, and a call that names none can be
+    // followed by one that does), and the host's proof (its start time can arrive after the first claim).
+    const key = JSON.stringify([record.worktree, record.also, record.hostStartedAt, record.agent, record.fromBranch, record.sessionId || null]);
     const prev = written.get(record.agentId);
     if (prev && prev.key === key && now() - prev.at < REWRITE_MS) return { ok: true, wrote: false };
 

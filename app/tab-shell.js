@@ -1125,6 +1125,8 @@ function shortcutFor(input) {
   // #35: a new tab is a new worktree. Ctrl+Alt+T, not Ctrl+T: the CLI owns that
   // one (it toggles its task list), and every key not named here reaches it.
   if (key === 't' && input.control && input.alt && !input.shift) return 'new-branch';
+  // #66: the indexing assistant's field, from anywhere in the window. The CLI binds no Ctrl+Alt+N.
+  if (key === 'n' && input.control && input.alt && !input.shift) return 'index-note';
   if (!input.control || input.alt) return null;
   if (key === 'tab') return input.shift ? 'prev-tab' : 'next-tab';
   if (key === 'i' && input.shift) return 'devtools';

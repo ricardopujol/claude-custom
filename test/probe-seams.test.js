@@ -11,7 +11,7 @@ const { readSeams, announce, fixtureReader, SEAMS } = require('../host/probe-sea
 const { parseOpenPrs } = require('../host/open-prs');
 
 test('readSeams: unset in real use is no seam at all', () => {
-  assert.deepStrictEqual(readSeams({}), { openPrsFixture: null, projectsDir: null, reviewsDir: null, claudeHome: null, ollamaUrl: null, summaryDir: null, summaryPower: null, active: [] });
+  assert.deepStrictEqual(readSeams({}), { openPrsFixture: null, projectsDir: null, reviewsDir: null, claudeHome: null, ollamaUrl: null, summaryDir: null, summaryPower: null, indexingJournal: null, active: [] });
   assert.deepStrictEqual(readSeams({ CLAUDE_CUSTOM_REVIEWS_DIR: '' }).active, [], 'an empty value is unset');
 });
 
@@ -21,7 +21,7 @@ test('readSeams: each seam, and which are active', () => {
   assert.strictEqual(s.reviewsDir, 'C:/p/reviews');
   assert.strictEqual(s.projectsDir, null);
   assert.deepStrictEqual(s.active, ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_REVIEWS_DIR']);
-  assert.deepStrictEqual(SEAMS, ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME', 'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER']);
+  assert.deepStrictEqual(SEAMS, ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME', 'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER', 'CLAUDE_CUSTOM_INDEXING_JOURNAL']);
   assert.strictEqual(readSeams({ CLAUDE_CUSTOM_CLAUDE_HOME: 'C:/p/claude' }).claudeHome, 'C:/p/claude');
   // the where-are-we summary (verify/probe-where-summary.js): a fake Ollama, and a throwaway summaries/slot folder
   const sm = readSeams({ CLAUDE_CUSTOM_OLLAMA_URL: 'http://127.0.0.1:5555', CLAUDE_CUSTOM_SUMMARY_DIR: 'C:/p/sum' });
@@ -33,6 +33,12 @@ test('readSeams: each seam, and which are active', () => {
   assert.strictEqual(readSeams({ CLAUDE_CUSTOM_SUMMARY_POWER: 'battery' }).summaryPower, 'battery');
   assert.strictEqual(readSeams({ CLAUDE_CUSTOM_SUMMARY_POWER: 'solar' }).summaryPower, null);
   assert.deepStrictEqual(readSeams({ CLAUDE_CUSTOM_SUMMARY_POWER: 'solar' }).active, [], 'a value that means nothing is no seam');
+});
+
+test('the indexing journal seam (#66): a probe points the strip field at its own journal', () => {
+  const s = readSeams({ CLAUDE_CUSTOM_INDEXING_JOURNAL: 'C:/t/j.jsonl' });
+  assert.strictEqual(s.indexingJournal, 'C:/t/j.jsonl');
+  assert.deepStrictEqual(s.active, ['CLAUDE_CUSTOM_INDEXING_JOURNAL']);
 });
 
 test('Miguel I5: announce logs one line naming every active seam, and nothing when none is set', () => {

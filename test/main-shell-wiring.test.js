@@ -385,7 +385,8 @@ test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while o
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
   // Dexter F7 (PR #80): only while the field takes typing -- not during Contract A's fetch.
-  assert.match(MAIN, /const stripBusy = !!snapshot\.create && snapshot\.create\.phase !== 'running';/);
+  // #66: the indexing field holds the keyboard the same way while it has focus.
+  assert.match(MAIN, /const stripBusy = \(!!snapshot\.create && snapshot\.create\.phase !== 'running'\) \|\| indexFieldFocused;/);
   assert.match(MAIN, /create: snapshot\.create/);
 });
 

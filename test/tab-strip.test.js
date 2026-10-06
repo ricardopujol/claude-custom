@@ -247,13 +247,15 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its eleven members -- and nothing else', () => {
+test('the strip bridge exposes its eighteen members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose']);
+    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
+      // #66, the indexing field (app/indexing-bridge.js answers them)
+      'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus']);
   assert.match(src, /'strip:winMinimize'/);
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
@@ -660,4 +662,12 @@ test('#63 paint: a malformed warning draws no chip (absence is not a zero)', () 
   const bad = [null, undefined, 7, 'x', [], {}, { pct: null, level: 'amber' }, { pct: NaN, level: 'amber' }, { pct: '50', level: 'amber' }, { pct: -1, level: 'red' }, { pct: 50, level: 'purple' }];
   paint(doc, { model: bad.map((w, i) => entry({ key: `k${i}`, resourceWarn: w })) }, bridgeSpy());
   for (const t of doc.byId.tabs.children) assert.strictEqual(child(t, 'res-warn'), undefined);
+});
+
+test('#63 paint (kill, #70): the refusal is `pct < 0`, so exactly 0 still draws its chip and anything below 0 does not', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ key: 'zero', resourceWarn: { pct: 0, level: 'amber' } }), entry({ key: 'below', resourceWarn: { pct: -0.4, level: 'red' } })] }, bridgeSpy());
+  const [zero, below] = doc.byId.tabs.children;
+  assert.strictEqual(child(zero, 'res-warn').textContent, '0%');
+  assert.strictEqual(child(below, 'res-warn'), undefined);
 });
