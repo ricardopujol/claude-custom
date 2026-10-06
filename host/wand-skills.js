@@ -24,6 +24,7 @@
 
 const nodeFs = require('fs');
 const path = require('path');
+const { claudeConfigDir } = require('./claude-config-dir');
 
 // The terminal typing path accepts /[A-Za-z0-9:_-]+ (app/top-bar-display.js). A leading letter or
 // digit keeps `-x` (an option) and `:x` out. 128 covers a long plugin prefix plus a long skill name
@@ -178,9 +179,7 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
  */
 function claudeHomeOf({ seam, env, home } = {}) {
   if (isStr(seam) && seam !== '') return seam;
-  const fromEnv = env && env.CLAUDE_CONFIG_DIR;
-  if (isStr(fromEnv) && fromEnv !== '') return fromEnv;
-  return path.join(home || require('os').homedir(), '.claude');
+  return claudeConfigDir({ env, home });
 }
 
 /**

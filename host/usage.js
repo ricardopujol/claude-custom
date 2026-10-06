@@ -37,6 +37,7 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const { claudeProjectsDir } = require('./claude-config-dir');
 const os = require('os');
 const { projectDirName } = require('./project-dir');
 const { transcriptFiles } = require('./transcripts');
@@ -70,7 +71,7 @@ const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 // Claude Code encodes the cwd by replacing every path separator and colon with
 // a dash: C:\Users\x\proj -> C--Users-x-proj
 function defaultProjectsDir() {
-  return path.join(os.homedir(), '.claude', 'projects');
+  return claudeProjectsDir();
 }
 
 const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);

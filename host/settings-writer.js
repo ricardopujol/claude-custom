@@ -23,6 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { claudeConfigDir } = require('./claude-config-dir');
 
 // Hooks run synchronously in the critical path of tool execution, so the
 // matchers stay deliberately narrow. A '*' matcher would tax every Read, Grep
@@ -182,13 +183,15 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
  * project, then user). Null when none is a runnable command. An unreadable
  * layer is skipped -- the CLI reports its own settings errors.
  */
-function findUserStatusLine({ home, cwd } = {}) {
+function findUserStatusLine({ home, configDir, cwd } = {}) {
   const candidates = [];
   if (cwd) {
     candidates.push(path.join(cwd, '.claude', 'settings.local.json'));
     candidates.push(path.join(cwd, '.claude', 'settings.json'));
   }
-  if (home) candidates.push(path.join(home, '.claude', 'settings.json'));
+  // The CLI reads user settings from its config dir (CLAUDE_CONFIG_DIR when set), so that's where its statusLine is.
+  const userDir = configDir || (home ? claudeConfigDir({ env: {}, home }) : null);
+  if (userDir) candidates.push(path.join(userDir, 'settings.json'));
   for (const file of candidates) {
     let parsed;
     try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }

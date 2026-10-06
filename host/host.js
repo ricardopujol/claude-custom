@@ -21,6 +21,7 @@ const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
+const { claudeConfigDir } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
 const { killTree, killPidTree } = require('./kill-tree');
@@ -360,7 +361,7 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
-    userStatusLine: findUserStatusLine({ home: os.homedir(), cwd: CWD }),
+    userStatusLine: findUserStatusLine({ configDir: claudeConfigDir(), cwd: CWD }),
     // BACKLOG #27: "status line in the header" quiets the CLI's row. Written by
     // app/window-chrome-bridge.js into the same install-wide state dir.
     quietWhen: path.join(HARNESS_DIR, 'state', 'chrome-global.json'),

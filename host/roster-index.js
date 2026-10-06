@@ -58,12 +58,13 @@
 
 const fsp = require('fs/promises');
 const path = require('path');
+const { claudeConfigDir, claudeProjectsDir } = require('./claude-config-dir');
 const os = require('os');
 const { transcriptFiles } = require('./transcripts');
 const { identityTables, resolveAgent } = require('./agent-stats');
 
 function defaultHomeDir() { return os.homedir(); }
-function defaultProjectsDir() { return path.join(os.homedir(), '.claude', 'projects'); }
+function defaultProjectsDir() { return claudeProjectsDir(); }
 
 // A `readdir`/`readFile` failure that means "genuinely not there" vs. one that
 // means "something is wrong and we could not look". Shared by every ENOENT
@@ -152,8 +153,10 @@ async function readAgentDefDir(dir, { readFile = (p) => fsp.readFile(p, 'utf8') 
  * resolves by construction; `unreadable` is the sum of both directories' own
  * failures (Dexter N6 / F8).
  */
-async function agentDefinitions({ homeDir = defaultHomeDir(), cwd, readFile } = {}) {
-  const dirs = [path.join(homeDir, '.claude', 'agents')];
+async function agentDefinitions({ homeDir, configDir, cwd, readFile } = {}) {
+  // An explicit configDir wins; an explicit homeDir (a test seam) means <homeDir>/.claude; else the CLI's own.
+  const base = configDir || (homeDir ? claudeConfigDir({ env: {}, home: homeDir }) : claudeConfigDir());
+  const dirs = [path.join(base, 'agents')];
   if (cwd) dirs.push(path.join(cwd, '.claude', 'agents'));
   const names = new Set();
   let unreadable = 0;

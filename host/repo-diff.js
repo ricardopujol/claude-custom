@@ -24,6 +24,7 @@
  */
 const fsp = require('fs/promises');
 const path = require('path');
+const { claudeProjectsDir } = require('./claude-config-dir');
 const os = require('os');
 const childProcess = require('child_process');
 const { projectDirName } = require('./project-dir');
@@ -63,7 +64,7 @@ function callFrom(block, root, rel, at, doneAt) {
 }
 
 async function claudeCallsFor({ root, rel, projectsDir } = {}) {
-  const dir = path.join(projectsDir || path.join(os.homedir(), '.claude', 'projects'), projectDirName(String(root).replace(/\\/g, '/')));
+  const dir = path.join(projectsDir || claudeProjectsDir(), projectDirName(String(root).replace(/\\/g, '/')));
   const { files } = await transcriptFiles(dir);
   if (files === null) return { ok: true, calls: [], transcripts: false };
   const base = String(rel).split('/').pop().toLowerCase();

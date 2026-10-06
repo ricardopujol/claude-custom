@@ -23,6 +23,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { claudeConfigDir } = require('./claude-config-dir');
 const { resolveGitDir } = require('./git-branch');
 const { samePath } = require('./project-layout');
 const procStart = require('./proc-start');
@@ -32,7 +33,7 @@ const strOrNull = v => (typeof v === 'string' ? v : null);
 const finiteOrNull = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 function defaultRegistryDir() {
-  return path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'sessions');
+  return path.join(claudeConfigDir(), 'sessions');
 }
 
 const gitDirOf = p => (typeof p === 'string' && p ? resolveGitDir(path.resolve(p)) : null);

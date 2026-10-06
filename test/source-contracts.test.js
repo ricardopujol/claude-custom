@@ -435,3 +435,34 @@ test('#66 indexing: every channel the bridge listens on is used by a preload, an
   const used = [...preloads.matchAll(/ipcRenderer\.(?:send|invoke)\('((?:strip:index|indexing:)[^']*)'/g)].map(m => m[1]);
   assert.deepStrictEqual(used.filter(ch => !listened.includes(ch)), [], 'a page sends on a channel main never answers');
 });
+
+
+// BACKLOG #23 (here, not in claude-config-dir.test.js: that file is in the mutation command)
+test('fog, repo-diff and agent-stats-cache (no export to call): the default projects dir comes from the resolver', () => {
+  for (const f of ['fog', 'repo-diff', 'agent-stats-cache']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'host', f + '.js'), 'utf8');
+    assert.match(src, /claudeProjectsDir\(\)/, `${f} still builds ~/.claude/projects by hand`);
+  }
+});
+
+// Files whose `.claude` under the home is NOT the CLI's own state (or is the resolver itself).
+const ALLOWED = new Set([
+  'claude-config-dir.js', // the resolver
+  'review-reports.js',    // Ricardo's reviews folder
+  'worktree-ops.js',      // Ricardo's skill scripts
+  'drop.js',              // a deny-list name
+]);
+
+test('guard: no host module builds <home>/.claude by hand outside the allow-list', () => {
+  const dir = path.join(__dirname, '..', 'host');
+  const bad = [];
+  for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.js'))) {
+    if (ALLOWED.has(f)) continue;
+    const lines = fs.readFileSync(path.join(dir, f), 'utf8').split(/\r?\n/);
+    lines.forEach((l, i) => {
+      if (/^\s*(\/\/|\*)/.test(l)) return;
+      if (/(homedir\(\)|homeDir|\bhome)\s*,\s*'\.claude'/.test(l)) bad.push(`${f}:${i + 1}: ${l.trim()}`);
+    });
+  }
+  assert.deepStrictEqual(bad, [], 'route these through host/claude-config-dir.js');
+});
