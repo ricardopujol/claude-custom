@@ -20,6 +20,7 @@
  */
 const fs = require('fs');
 const { panelDir, validSessionId, readPage, readHosts, setHostDecision, MAX_HTML_BYTES } = require('./canvas-store');
+const { isShelfEvent, artifactFromPayload, readShelf, addToShelf } = require('./canvas-shelf');
 
 // Every message type this control answers. host/control.js CONTROL_TYPES must list each, or the frame is typed into the
 // pty as literal JSON (test/canvas-wiring.test.js checks both lists against each other).
@@ -42,7 +43,7 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
   function meta(page, id) {
     const dir = dirOf(id);
     return { sessionId: id, status: page.status, bytes: page.bytes, signature: page.signature,
-      hosts: dir ? readHosts(dir) : { approved: [], denied: [] }, limitBytes: MAX_HTML_BYTES };
+      hosts: dir ? readHosts(dir) : { approved: [], denied: [] }, shelf: dir ? readShelf(dir) : [], limitBytes: MAX_HTML_BYTES };
   }
   const pageOf = (id) => (id ? readPage(dirOf(id)) : { status: 'empty', bytes: 0, signature: 'empty' });
 
@@ -100,13 +101,27 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
     }
   }
 
+  const handlesShelfEvent = isShelfEvent;
+
+  // A publish the CLI's own PostToolUse hook reported: onto THIS session's shelf, and every window is told. Never a page change, so
+  // it never docks the panel. A failure, or a payload with no https address, adds nothing and says nothing.
+  function shelfEvent(ev) {
+    const id = currentId();
+    const dir = dirOf(id);
+    if (!dir || !isShelfEvent(ev)) return;
+    const item = artifactFromPayload(ev.payload);
+    if (!item) return;
+    try { addToShelf(dir, item); } catch (err) { log(`[canvas] could not save the shelf: ${err && err.message}`); return; }
+    emit({ type: 'canvas', ok: true, ...meta(pageOf(id), id), changed: false });
+  }
+
   function close() {
     if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
     pruneEmpty(armedId);
     armedId = null;
   }
 
-  return { payload, handles, handle, sessionChanged, close };
+  return { payload, handles, handle, handlesShelfEvent, shelfEvent, sessionChanged, close };
 }
 
 module.exports = { createCanvasControl, CANVAS_TYPES };

@@ -53,3 +53,13 @@ test("the CLI's session id (SessionStart) re-points the panel, and shutdown clos
 test('the panel folder is the state dir, which the host owns: only it is ever created by the canvas watch', () => {
   assert.doesNotMatch(HOST, /watchDir\(\{[^}]*CLAUDE_HOME[^}]*canvas/);
 });
+
+test('an Artifact hook event goes to the shelf and nowhere else: after the occupancy and bedtime exits, before the mood engine', () => {
+  const at = HOST.indexOf('if (canvasControl.handlesShelfEvent(ev)) {');
+  assert.ok(at !== -1, 'the shelf branch must be findable');
+  const block = HOST.slice(at, HOST.indexOf('\n    }', at));
+  assert.match(block, /canvasControl\.shelfEvent\(ev\);/);
+  assert.match(block, /return;/);
+  assert.ok(at > HOST.indexOf('if (isBedtimeOnly(ev)) return;'), 'after the bedtime exit');
+  assert.ok(at < HOST.indexOf("if (ev.event === 'SessionStart' && ev.payload"), 'before anything reads the event as work');
+});

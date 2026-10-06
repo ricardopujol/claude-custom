@@ -464,3 +464,13 @@ test('bedtime changes only PreToolUse and PostToolUse, and composes with occupan
   const all = buildHarnessSettings({ ...opts, loadoutHook, occupancy: true, bedtime: true });
   assert.deepStrictEqual(all.hooks.PreToolUse.map(e => e.matcher), ['Agent|Task|Bash', 'Agent|Task', OCCUPANCY_MATCHER, BEDTIME_MATCHER]);
 });
+
+// BACKLOG #71: the artifact shelf is filled from the Artifact tool's own PostToolUse (host/canvas-shelf.js). Result only: a
+// publish that is refused or fails has no address to put on the shelf, and PreToolUse is only intent.
+test('Artifact is hooked on its result (and its failure), never on PreToolUse', () => {
+  const s = buildHarnessSettings(opts);
+  assert.ok(/\bArtifact\b/.test(s.hooks.PostToolUse[0].matcher), s.hooks.PostToolUse[0].matcher);
+  assert.ok(/\bArtifact\b/.test(s.hooks.PostToolUseFailure[0].matcher));
+  assert.ok(!/\bArtifact\b/.test(s.hooks.PreToolUse[0].matcher));
+  assert.ok(!/\bArtifact\b/.test(String(OCCUPANCY_MATCHER)), 'not the occupancy entry either');
+});

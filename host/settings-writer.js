@@ -42,8 +42,12 @@ const path = require('path');
 // is denied or blocked never runs, so its intent opens nothing. And with no
 // PreToolUse, a message never shows as a running process. SendMessage calls
 // are rare, so the tax is negligible.
+//
+// Artifact (BACKLOG #71), on its RESULT only, for the same reason: a publish that fails has no address to keep. host/host.js
+// hands every Artifact event to the panel's shelf (host/canvas-shelf.js) and never to the mood engine or the Running panel.
+// One more ~23 ms hook per publish, which is rare.
 const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
-const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage';    // completion and error signals
+const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage|Artifact';    // completion and error signals
 // Backlog #44 + #47 (worktree occupancy): which worktree a SUBAGENT is working in is proven by its own file
 // and search tool calls, which the matchers above never saw. Opt-in (`occupancy: true`) and a SEPARATE entry,
 // so the mood engine's entry is untouched. It costs one ~23 ms hook per Read/Edit/Write/NotebookEdit/Grep/Glob

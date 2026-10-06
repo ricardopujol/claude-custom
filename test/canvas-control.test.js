@@ -36,7 +36,7 @@ test('the message types are exactly the two the window sends', () => {
 
 test('payload: no session yet is an empty panel, not an error', () => {
   const r = rig({ sessionId: null });
-  assert.deepStrictEqual(r.control.payload(), { sessionId: null, status: 'empty', bytes: 0, signature: 'empty', hosts: { approved: [], denied: [] }, limitBytes: 1048576 });
+  assert.deepStrictEqual(r.control.payload(), { sessionId: null, status: 'empty', bytes: 0, signature: 'empty', hosts: { approved: [], denied: [] }, shelf: [], limitBytes: 1048576 });
 });
 
 test('payload: a session with a page reports its status, size and signature, never the page', () => {
@@ -186,4 +186,36 @@ test('an unknown type is not handled', () => {
   const r = rig();
   assert.strictEqual(r.control.handles('wand-add'), false);
   assert.strictEqual(r.control.handles(undefined), false);
+});
+
+const ARTIFACT_URL = 'https://claude.ai/artifact/KMEhoNQin1Sp7g9TvQgnmZ';
+const artifactEvent = (over = {}) => ({ event: 'PostToolUse', payload: { tool_name: 'Artifact', tool_input: { file_path: 'a.html' },
+  tool_response: { url: ARTIFACT_URL, title: 'Live Panel Options' }, ...over } });
+
+test('shelfEvent: a published artifact goes on this session shelf and every window is told, with changed false', () => {
+  const r = rig();
+  assert.strictEqual(r.control.handlesShelfEvent(artifactEvent()), true);
+  r.control.shelfEvent(artifactEvent());
+  assert.strictEqual(r.frames.length, 1);
+  assert.strictEqual(r.frames[0].type, 'canvas');
+  assert.strictEqual(r.frames[0].changed, false, 'a shelf entry never docks the panel');
+  assert.deepStrictEqual(r.frames[0].shelf.map(i => [i.title, i.url]), [['Live Panel Options', ARTIFACT_URL]]);
+  assert.deepStrictEqual(r.control.payload().shelf.map(i => i.url), [ARTIFACT_URL], 'and it is on disk for the hello');
+});
+
+test('shelfEvent: a failure, an event with no address, or no session adds nothing and says nothing', () => {
+  const r = rig();
+  r.control.shelfEvent(artifactEvent({ tool_response: 'Error: not signed in' }));
+  r.control.shelfEvent({ event: 'PostToolUseFailure', payload: { tool_name: 'Artifact', error: 'nope' } });
+  assert.strictEqual(r.frames.length, 0);
+  assert.deepStrictEqual(r.control.payload().shelf, []);
+  const none = rig({ sessionId: null });
+  none.control.shelfEvent(artifactEvent());
+  assert.strictEqual(none.frames.length, 0);
+});
+
+test('handlesShelfEvent is only true for an Artifact post event', () => {
+  const r = rig();
+  assert.strictEqual(r.control.handlesShelfEvent({ event: 'PostToolUse', payload: { tool_name: 'Bash' } }), false);
+  assert.strictEqual(r.control.handlesShelfEvent(null), false);
 });
