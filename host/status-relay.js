@@ -38,16 +38,39 @@ const FORWARD_TIMEOUT_MS = 300;
 // a bound a hung command (a network call, say) was awaited forever, and each
 // re-fire left one more of it behind.
 const USER_TIMEOUT_MS = 5000;
+// A sweep that has not finished by then gives way to a plain taskkill: the
+// relay must exit, and a missed straggler beats a status line that never ends.
+const SWEEP_TIMEOUT_MS = 20000;
 
 // The whole tree on Windows: with shell:true the user's command runs UNDER
 // cmd.exe, and killing only cmd.exe leaves the command itself running. On
 // POSIX the child stays in the relay's own process group (Dexter #51 F7), so
 // a CLI that kills the group still reaches it; `sh -c` execs a single command,
 // so killing the child is killing the command.
-function killTree(child) {
+//
+// Not `taskkill /T` (BACKLOG #72): it reads the tree once and then ends it, so
+// a process the tree starts after that read -- cmd.exe still creating the
+// user's command, which a loaded machine stretches past the timeout -- outlives
+// the kill, holding the relay's stdout open, so the CLI waited on it (MEASURED:
+// 2 of 21 kills straddling the creation left it running, one relay was waited
+// on for 685 s). libuv's job doesn't catch it either: it lets grandchildren
+// break away. So each process is ended BEFORE its children are read: a dead
+// process starts nothing, so once a read finds no children the tree is gone.
+// The start-time bound keeps a reused pid's children out.
+const sweepScript = (pid, since) => `$since=[DateTimeOffset]::FromUnixTimeMilliseconds(${since}).UtcDateTime.AddSeconds(-1)
+function K($id){try{$p=[Diagnostics.Process]::GetProcessById($id);if($p.StartTime.ToUniversalTime() -ge $since){$p.Kill();[void]$p.WaitForExit(2000)}}catch{}}
+$kill=@(${pid})
+for($i=0;$i -lt 20 -and $kill.Count;$i++){
+  foreach($id in $kill){K $id}
+  $kill=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate | Where-Object { ($kill -contains [int]$_.ParentProcessId) -and ($_.CreationDate.ToUniversalTime() -ge $since) } | ForEach-Object { [int]$_.ProcessId })
+}`;
+
+function killTree(child, since) {
   try {
     if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', sweepScript(child.pid, since)],
+        { windowsHide: true, stdio: 'ignore', timeout: SWEEP_TIMEOUT_MS });
+      if (r.error || r.status !== 0) spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     } else {
       child.kill('SIGKILL');
     }
@@ -109,13 +132,14 @@ function runUser(encoded, input, { timeoutMs = USER_TIMEOUT_MS } = {}) {
     try { command = Buffer.from(encoded, 'base64').toString('utf8'); } catch { resolve(0); return; }
     if (!command) { resolve(0); return; }
     let child;
+    const since = Date.now();
     try {
       child = spawn(command, { shell: true, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true });
     } catch {
       resolve(1);
       return;
     }
-    const timer = setTimeout(() => { killTree(child); resolve(1); }, timeoutMs);
+    const timer = setTimeout(() => { killTree(child, since); resolve(1); }, timeoutMs);
     timer.unref();
     child.on('error', () => { clearTimeout(timer); resolve(1); });
     child.on('close', (code) => { clearTimeout(timer); resolve(typeof code === 'number' ? code : 1); });

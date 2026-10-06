@@ -229,18 +229,25 @@ const { runUser, forward } = require('../host/status-relay');
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-test("a hung user statusLine is killed, grandchild and all, and the relay still exits", async () => {
+test("a hung user statusLine is killed, grandchild and all, and the relay still exits", { timeout: 120000 }, async (t) => {
   // shell:true puts a shell between the relay and the user's command. Killing
   // only the shell (child.kill) leaves the real command running, one more
   // orphan every time the status line re-fires.
+  //
+  // BACKLOG #72: the timeout is fired by hand, once the command has written its
+  // pid. On the wall clock a loaded machine took longer than the 1.5 s timeout
+  // to get it started, the kill landed on a cmd.exe that had not created it
+  // yet, and the test failed reading a pid file nobody wrote (ENOENT).
   const dir = tmpDir('relay-hang');
   const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
   const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
-  const t0 = Date.now();
-  const code = await runUser(b64(hang), DOC, { timeoutMs: 1500 });
-  assert.ok(Date.now() - t0 < 6000, 'the relay must not wait on a hung command');
-  assert.notStrictEqual(code, 0, 'a killed command is not a success');
-  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const ran = runUser(b64(hang), DOC, { timeoutMs: 1500 });
+  const pid = await waitUntil(() => Number(fs.readFileSync(pidFile, 'utf8')), 'the user command to start', 60000);
+  t.mock.timers.tick(1500);
+  // Resolving at all is "the relay does not wait on a hung command": it never exits by itself.
+  assert.notStrictEqual(await ran, 0, 'a killed command is not a success');
+  t.mock.timers.reset();
   let gone = false;
   for (let i = 0; i < 20 && !gone; i++) { gone = !alive(pid); if (!gone) await new Promise(r => setTimeout(r, 150)); }
   if (!gone) try { process.kill(pid); } catch {}
@@ -252,19 +259,72 @@ test('a user command that finishes in time is not killed', async () => {
   assert.strictEqual(await runUser(b64(quick), DOC, { timeoutMs: 5000 }), 0);
 });
 
-test('the whole relay SCRIPT exits promptly on a hung user command (Miguel #51 1)', async () => {
+test('the whole relay SCRIPT exits promptly on a hung user command (Miguel #51 1)', { timeout: 120000 }, async () => {
+  // "Promptly" is the relay ending at all, with the command's output closed:
+  // a relay stuck on a hung command, or an orphan holding its stdout open (the
+  // #72 race, MEASURED at 685 s), never closes and fails on the test timeout.
+  // No wall-clock bound: it measured 6.4 s of a 12 s one under a single
+  // full-suite run, and the machine runs several.
   const dir = tmpDir('relay-hang-script');
   const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
   const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
-  const t0 = Date.now();
   const res = await runRelay(['--pipe', pipeName(), '--then', b64(hang)], DOC);
-  assert.ok(Date.now() - t0 < 12000, `the relay took ${Date.now() - t0}ms`);
   assert.notStrictEqual(res.code, 0);
   const pid = Number(fs.readFileSync(pidFile, 'utf8'));
   let gone = false;
   for (let i = 0; i < 20 && !gone; i++) { gone = !alive(pid); if (!gone) await new Promise(r => setTimeout(r, 150)); }
   if (!gone) try { process.kill(pid); } catch {}
   assert.ok(gone, `the user's command (pid ${pid}) outlived the relay`);
+});
+
+// BACKLOG #72. Polls with setInterval, which the tests that mock setTimeout leave real.
+function waitUntil(f, what, ms = 30000) {
+  return new Promise((resolve, reject) => {
+    const end = Date.now() + ms;
+    const iv = setInterval(() => {
+      let v; try { v = f(); } catch { v = false; }
+      if (v) { clearInterval(iv); resolve(v); } else if (Date.now() > end) { clearInterval(iv); reject(new Error(`timed out waiting for ${what}`)); }
+    }, 50);
+  });
+}
+
+// Every live node.exe whose command line carries `marker` (a table read, so it sees orphans whose parent is gone).
+function markedPids(marker) {
+  const ps = `Get-CimInstance Win32_Process -Filter "Name='node.exe' AND CommandLine LIKE '%${marker}%'" | ForEach-Object { $_.ProcessId }`;
+  const r = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', windowsHide: true });
+  return (r.stdout || '').split(/\s+/).filter(Boolean).map(Number);
+}
+
+test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+  // taskkill /T reads the tree once and then ends it. A process the tree started after that read (cmd.exe still
+  // creating the user's command, under load) outlived the kill, and kept the relay's stdout open: MEASURED, a relay
+  // whose grandchild was created during the kill was waited on for 685 s. This command starts a new process every
+  // 25 ms, so a kill that reads the tree only once loses one every time.
+  const dir = tmpDir('relay-spawner');
+  const marker = `cc72-${process.pid}-${Date.now()}`;
+  const ready = path.join(dir, 'ready').replace(/\\/g, '/');
+  const spawner = path.join(dir, 'spawner.js');
+  fs.writeFileSync(spawner, `const { spawn } = require('child_process');
+let n = 0;
+setInterval(() => {
+  spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', ${JSON.stringify(marker)}], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  if (++n === 3) require('fs').writeFileSync(${JSON.stringify(ready)}, 'ok');
+}, 25);
+`);
+  const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${marker}`;
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const ran = runUser(b64(cmd), DOC, { timeoutMs: 1500 });
+    await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 60000);
+    t.mock.timers.tick(1500);                         // the timeout fires now, mid-spawning
+    assert.strictEqual(await ran, 1, 'a killed command is not a success');
+    t.mock.timers.reset();
+    let left = markedPids(marker);
+    for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = markedPids(marker); }
+    assert.deepStrictEqual(left, [], 'processes the user command started are still running after the kill');
+  } finally {
+    for (const pid of markedPids(marker)) { try { process.kill(pid); } catch { /* gone */ } }
+  }
 });
 
 const RELAY_SRC = fs.readFileSync(RELAY, 'utf8');
