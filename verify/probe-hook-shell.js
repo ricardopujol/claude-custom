@@ -10,6 +10,8 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+const { posixShell } = require('../test/posix-shell');
+
 const REPO = path.join(__dirname, '..');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -44,14 +46,17 @@ const check = (label, ok, detail) => {
     // STARTS with a quoted path needs the whole line wrapped again. That is
     // cmd's calling convention, not a property of the command.
     ['cmd.exe',  ['/c', '"' + command + '"'], { windowsVerbatimArguments: true }],
-    ['bash',     ['-c', command], {}],
+    // Not a bare 'bash': from PowerShell that is the WSL launcher, which fails
+    // and would blame the command for a PATH problem (BACKLOG #72, #24).
+    ...(posixShell() ? [[posixShell(), ['-c', command], {}]] : []),
   ];
+  if (!posixShell()) console.log('SKIP  no POSIX shell on this machine');
   for (const [bin, args, extra] of shells) {
     const n = before();
     const r = spawnSync(bin, args, { input: payload, windowsHide: true, encoding: 'utf8', ...extra });
     await sleep(900);
     const delivered = before() > n;
-    check(`${bin} delivers the event`, delivered,
+    check(`${path.basename(bin)} delivers the event`, delivered,
       delivered ? '' : `exit=${r.status} err=${(r.stderr || '').trim().slice(0, 120)}`);
   }
 

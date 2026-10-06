@@ -23,9 +23,13 @@ function works(shell) {
   return !r.error && r.status === 0 && r.stdout === 'ok';
 }
 
-/** The first candidate that really runs a POSIX command, or null. */
+/** The first candidate that really runs a POSIX command, or null. A candidate is a path or a function returning one (tried only when reached). */
 function findPosixShell(candidates) {
-  return candidates.find(works) || null;
+  for (const c of candidates) {
+    const shell = typeof c === 'function' ? c() : c;
+    if (shell && works(shell)) return shell;
+  }
+  return null;
 }
 
 // Git for Windows: <root>\mingw64\libexec\git-core is the exec path, and <root>\bin\bash.exe its bash.
@@ -35,9 +39,10 @@ function gitBash() {
   return path.join(r.stdout.trim(), '..', '..', '..', 'bin', 'bash.exe');
 }
 
+// Lazy: each entry is a function, so `git --exec-path` is only spawned when the candidates before it failed.
 function candidates() {
-  if (process.platform !== 'win32') return ['bash'];
-  return [process.env.CLAUDE_CODE_GIT_BASH_PATH, gitBash(), 'bash'].filter(Boolean);
+  if (process.platform !== 'win32') return [() => 'bash'];
+  return [() => process.env.CLAUDE_CODE_GIT_BASH_PATH, gitBash, () => 'bash'];
 }
 
 let cached;

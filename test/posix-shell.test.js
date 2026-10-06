@@ -18,10 +18,28 @@ test('a candidate that starts but exits non-zero is not a POSIX shell (the WSL l
   assert.strictEqual(findPosixShell([startsButFails]), null);
 });
 
-test('a candidate that cannot be started at all is skipped, and the next one is tried', () => {
+test('a candidate that cannot be started at all is skipped, and the next one is tried', (t) => {
   const found = posixShell();
-  if (!found) return;   // nothing to be the "next one" on this machine; the test above still holds
+  if (!found) { t.skip('no POSIX shell on this machine to be the "next one"'); return; }
   assert.strictEqual(findPosixShell(['C:/no/such/bash.exe', startsButFails, found]), found);
+});
+
+test('candidates are lazy: a later candidate is not even asked for once an earlier one works (Miguel G3)', () => {
+  let asked = false;
+  const found = findPosixShell([() => process.execPath, process.execPath, () => { asked = true; return 'x'; }]);
+  assert.strictEqual(found, null);          // node is not a shell, so every candidate is reached
+  assert.ok(asked);
+  const sh = posixShell();
+  if (!sh) return;
+  asked = false;
+  assert.strictEqual(findPosixShell([() => sh, () => { asked = true; return 'x'; }]), sh);
+  assert.strictEqual(asked, false, 'a candidate after the working one was still evaluated');
+});
+
+test('verify/probe-hook-shell.js finds its bash through posixShell, never a bare spawn of bash (Dexter F7 / Miguel G4)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'probe-hook-shell.js'), 'utf8');
+  assert.doesNotMatch(src, /\[\s*'bash'\s*,/);
+  assert.match(src, /posixShell/);
 });
 
 test('what posixShell() returns really runs a POSIX command and prints its output', (t) => {
