@@ -37,9 +37,27 @@ const isText = (s) => typeof s === 'string' && s.trim() !== '';
 function createJournal({ file }) {
   const lockFile = file + '.lock';
 
+  /** Does the file end mid-line (a crash mid-append)? Then the next event must start on a line of its own. */
+  function endsTorn() {
+    let fd = null;
+    try {
+      fd = fs.openSync(file, 'r');
+      const size = fs.fstatSync(fd).size;
+      if (size === 0) return false;
+      const last = Buffer.alloc(1);
+      fs.readSync(fd, last, 0, 1, size - 1);
+      return last[0] !== 0x0a;
+    } catch {
+      return false;                        // no file yet
+    } finally {
+      if (fd !== null) { try { fs.closeSync(fd); } catch { /* nothing to do */ } }
+    }
+  }
+
   function appendUnlocked(event) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, JSON.stringify(event) + '\n', 'utf8');
+    // Glued onto a torn fragment, the event would be unreadable and the note lost (Miguel B1 / Dexter F2, PR #121).
+    fs.appendFileSync(file, (endsTorn() ? '\n' : '') + JSON.stringify(event) + '\n', 'utf8');
   }
 
   function withLock(fn) {

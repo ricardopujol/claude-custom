@@ -33,6 +33,17 @@ test('read: a torn last line and a garbage line are skipped, the rest is kept', 
   assert.deepStrictEqual(createJournal({ file }).read().map(e => e.id), ['n1']);
 });
 
+test('an append after a torn last line starts on its own line, so the new note is not lost (Miguel B1 / Dexter F2, PR #121)', () => {
+  const file = path.join(tmpDir('cc-ij-'), 'j.jsonl');
+  fs.writeFileSync(file, JSON.stringify({ ev: 'note', id: 'n1', project: P, text: 'a', at: 1 }) + '\n{"ev":"unfiled","id":"n1","rea');
+  const j = createJournal({ file });
+  j.append({ ev: 'note', id: 'n2', project: P, text: 'b', at: 2 });
+  assert.deepStrictEqual([...fold(j.read()).keys()], ['n1', 'n2']);
+  j.withLock(({ append }) => append({ ev: 'note', id: 'n3', project: P, text: 'c', at: 3 }));
+  assert.deepStrictEqual([...fold(j.read()).keys()], ['n1', 'n2', 'n3'], 'and a well-ended file gets no blank line');
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('\n\n'));
+});
+
 test('read: no file yet is no events', () => {
   assert.deepStrictEqual(createJournal({ file: path.join(tmpDir('cc-ij-'), 'none.jsonl') }).read(), []);
 });
