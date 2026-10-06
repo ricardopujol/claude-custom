@@ -167,9 +167,15 @@ function ofProject(notes, project) {
   return [...notes.values()].filter(n => key !== null && normPath(n.project) === key);
 }
 
+// A note belongs to the day it was FILED, not the day it was typed (one filed the next morning is today's; Dexter F2,
+// PR #121). A note filed in the last minute of yesterday still counts, so its toast's Undo survives midnight.
+const GRACE_MS = 60 * 1000;
+const dayOf = (n) => (isTime(n.filedAt) ? n.filedAt : n.at);
+const isCurrent = (n, now) => sameDay(dayOf(n), now) || (isTime(n.filedAt) && now - n.filedAt >= 0 && now - n.filedAt < GRACE_MS);
+
 function listFor(notes, project, now) {
   return ofProject(notes, project)
-    .filter(n => n.state === 'unfiled' || sameDay(n.at, now))
+    .filter(n => n.state === 'unfiled' || isCurrent(n, now))
     .sort((a, b) => b.at - a.at)
     .slice(0, LIST_MAX);
 }
@@ -177,9 +183,9 @@ function listFor(notes, project, now) {
 function counts(notes, project, now) {
   const mine = ofProject(notes, project);
   return {
-    filed: mine.filter(n => n.state === 'filed' && sameDay(n.at, now)).length,
+    filed: mine.filter(n => n.state === 'filed' && isCurrent(n, now)).length,
     unfiled: mine.filter(n => n.state === 'unfiled').length,
   };
 }
 
-module.exports = { createJournal, fold, listFor, counts, LIST_MAX };
+module.exports = { createJournal, fold, listFor, counts, isCurrent, LIST_MAX };

@@ -239,3 +239,95 @@ test('a journal that fails: submit says so and the backlog is untouched; a tick 
   assert.strictEqual(read(t.backlog), BACKLOG);
   await broken.tick();
 });
+
+test('a retry whose look at the backlog fails (busy) does not write: a failed look is not "not there" (Dexter F1, PR #121)', async () => {
+  let fileCalls = 0;
+  const w = { ...writer, findNote: () => ({ ok: false, reason: 'busy' }), fileNote: (a) => { fileCalls += 1; return writer.fileNote(a); } };
+  const t = setup({ writerImpl: w });
+  t.journal.append({ ev: 'note', id: 'n1', project: t.project, text: 'mine', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  t.journal.append({ ev: 'filing', id: 'n1', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  await t.svc.tick();
+  assert.strictEqual(fileCalls, 0, 'fileNote was not called');
+  assert.strictEqual(read(t.backlog), BACKLOG);
+  const n = t.svc.snapshot(t.project).list[0];
+  assert.deepStrictEqual([n.state, n.reason], ['unfiled', 'busy']);
+  w.findNote = writer.findNote;                                     // the backlog readable again: retried, filed once
+  t.advance(RETRY_MS);
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog).split('· mine').length - 1, 1);
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'filed');
+});
+
+const MIN = 60 * 1000;
+const HOUR = 60 * MIN;
+
+test('a note typed one day and filed the next shows as filed today, with its Undo, and the rotation keeps it (Dexter F2, PR #121)', async () => {
+  let conflict = true;
+  const w = { ...writer, fileNote: (a) => (conflict ? { ok: false, reason: 'conflict' } : writer.fileNote(a)) };
+  const t = setup({ writerImpl: w });
+  t.advance(14 * HOUR + 52 * MIN);                                  // 23:59 on the 5th
+  assert.strictEqual(t.svc.submit(t.project, 'late one').filed, false);
+  t.advance(9 * HOUR);                                              // 08:59 on the 6th
+  conflict = false;
+  await t.svc.tick();                                               // rotates (it's unfiled: kept), then files it
+  const { list, counts } = t.svc.snapshot(t.project);
+  assert.deepStrictEqual(list.map(n => [n.text, n.state, n.undoable]), [['late one', 'filed', true]]);
+  assert.deepStrictEqual(counts, { filed: 1, unfiled: 0 });
+  t.advance(24 * HOUR);                                             // and the day after, it is yesterday's
+  await t.svc.tick();
+  assert.deepStrictEqual(t.svc.snapshot(t.project).list, []);
+});
+
+test('a note filed seconds before midnight can still be undone just after it (Dexter F2, PR #121)', async () => {
+  const t = setup();
+  t.advance(14 * HOUR + 52 * MIN + 55 * 1000);                      // 23:59:55 on the 5th
+  const { id, filed } = t.svc.submit(t.project, 'near midnight');
+  assert.strictEqual(filed, true);
+  t.advance(6 * 1000);                                              // 00:00:01 on the 6th: the first tick of the new day
+  await t.svc.tick();
+  assert.deepStrictEqual(t.svc.snapshot(t.project).list.map(n => [n.id, n.state, n.undoable]), [[id, 'filed', true]]);
+  t.advance(2 * 1000);
+  assert.deepStrictEqual(t.svc.undo(id, t.project), { ok: true });
+  assert.ok(!read(t.backlog).includes('near midnight'));
+});
+
+test('a retry does not adopt another note\'s identical entry: two same-minute same-text notes end with two entries (Dexter F3, PR #121)', async () => {
+  let conflict = false;
+  const w = { ...writer, fileNote: (a) => (conflict ? (conflict = false, { ok: false, reason: 'conflict' }) : writer.fileNote(a)) };
+  const t = setup({ writerImpl: w });
+  const a = t.svc.submit(t.project, 'fix x');
+  assert.strictEqual(a.filed, true);
+  conflict = true;
+  const b = t.svc.submit(t.project, 'fix x');                       // same minute, same words: its first write is refused
+  assert.strictEqual(b.filed, false);
+  t.advance(RETRY_MS);                                              // still 09:07 + 15 s
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog).split('· fix x').length - 1, 2, 'both notes are in the inbox');
+  assert.deepStrictEqual(t.svc.undo(b.id, t.project), { ok: true });
+  assert.strictEqual(read(t.backlog).split('· fix x').length - 1, 1, 'Undo of B leaves A');
+  assert.strictEqual(t.svc.snapshot(t.project).list.find(n => n.id === a.id).undoable, true);
+});
+
+test('a retry still adopts its own entry when an identical one belongs to another filed note (one entry each)', async () => {
+  const t = setup();
+  const a = t.svc.submit(t.project, 'fix x');                       // A filed: one entry
+  // B: its write landed (two entries now) but `filed` never reached the journal.
+  t.journal.append({ ev: 'note', id: 'b', project: t.project, text: 'fix x', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  t.journal.append({ ev: 'filing', id: 'b', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  fs.writeFileSync(t.backlog, read(t.backlog).replace('- 2026-10-05 09:07 · fix x\n', '- 2026-10-05 09:07 · fix x\n- 2026-10-05 09:07 · fix x\n'));
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog).split('· fix x').length - 1, 2, 'B was found, not written a third time');
+  assert.ok(t.svc.snapshot(t.project).list.every(n => n.state === 'filed'));
+  assert.ok(a.filed);
+});
+
+test('snapshot of a journal that can\'t be read throws: it is not "no notes" (Dexter F5, PR #121)', () => {
+  const t = setup();
+  t.svc.submit(t.project, 'mine');
+  let fail = true;
+  const flaky = { ...t.journal, read: () => { if (fail) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return t.journal.read(); } };
+  const svc = createIndexingService({ journal: flaky, writer, docsFor: () => writer.docsOf({ root: t.project, dev: t.project }), now: () => new Date(2026, 9, 5, 9, 8).getTime() });
+  assert.throws(() => svc.snapshot(t.project), /EBUSY/);
+  fail = false;
+  assert.strictEqual(svc.snapshot(t.project).list.length, 1);
+});

@@ -11,7 +11,7 @@
  *     tick()                  -> Promise   tries one note again whose backlog was busy or kept changing
  *     undo(id, project)       -> { ok: true } | { ok: false, reason: 'changed', file } | { ok: false, reason }
  *                                project: the selected one; Undo only ever writes that project's own backlog
- *     snapshot(project)       -> { counts: { filed, unfiled }, list: [{ id, text, at, state, reason, undoable }] }
+ *     snapshot(project)       -> (throws when the journal can't be read) { counts: { filed, unfiled }, list: [{ id, text, at, state, reason, undoable }] }
  *
  * THE ORDER: the note is journaled first (nothing is lost), then the backlog is written, then `filed` is journaled.
  * Not filed: a project with no backlog file (or no documentation) gets nothing created and the note stays in the list
@@ -24,7 +24,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { fold, listFor, counts } = require('./indexing-journal');
+const { fold, listFor, counts, isCurrent } =require('./indexing-journal');
 const { stampOf, removeEntry } = require('./indexing-doc');
 const { samePath } = require('./project-layout');
 const realWriter = require('./indexing-writer');
@@ -52,8 +52,16 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
       } else {
         // Journal the intent BEFORE the write; a note that has one may already be in the doc (the write landed and
         // `filed` didn't), so it is looked for first and never written twice (Dexter F3 / Miguel I2, PR #121).
-        const found = n.intent ? writer.findNote({ docs, stamp: stampOf(n.at), text: n.text }) : null;
-        if (found && found.ok && found.record) {
+        const others = n.intent
+          ? [...fold(read()).values()].filter(o => o.id !== id && o.state === 'filed' && o.record && o.where
+            && samePath(o.where.file, docs.backlog)).map(o => o.record)
+          : [];
+        const found = n.intent ? writer.findNote({ docs, stamp: stampOf(n.at), text: n.text, others }) : null;
+        if (found && !found.ok) {
+          // The look couldn't read the backlog: that is not "the entry isn't there" (Dexter F1, PR #121). Writing now
+          // could put the note in twice, so this attempt ends here and the tick looks again later.
+          r = { ok: false, reason: found.reason };
+        } else if (found && found.record) {
           r = { ok: true, where: { file: docs.backlog }, record: found.record };
         } else {
           if (!n.intent) append({ ev: 'filing', id, at: now() });
@@ -97,7 +105,7 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
   function rotate(t) {
     const day = new Date(t).toDateString();
     if (day === rotatedDay) return;
-    journal.compact((n) => n.state === 'unfiled' || new Date(n.at).toDateString() === day);
+    journal.compact((n) => n.state === 'unfiled' || isCurrent(n, t));
     rotatedDay = day;
   }
 
@@ -142,8 +150,9 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
   }
 
   function snapshot(project) {
-    let notes;
-    try { notes = fold(journal.read()); } catch { notes = new Map(); }
+    // A journal that can't be read throws: a confident "no notes" would cancel a pending toast for good (Dexter F5,
+    // PR #121). The caller keeps what it last showed.
+    const notes = fold(journal.read());
     const t = now();
     let docs = null;
     try { docs = docsFor(project); } catch { docs = null; }

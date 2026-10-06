@@ -199,3 +199,25 @@ test('counts: today\'s filed, and every note not filed, for this project', () =>
   const notes = notesOf([['a', P, 0, 'filed'], ['b', P, 1, 'filed'], ['c', P, -3 * 24 * 60, 'unfiled'], ['e', 'C:\\x', 4, 'unfiled'], ['f', P, -24 * 60, 'filed']]);
   assert.deepStrictEqual(counts(notes, P, at(10)), { filed: 2, unfiled: 1 });
 });
+
+test('property: a filed note is listed and counted exactly when it was filed today, whatever day it was typed (Dexter F2, PR #121)', () => {
+  const fc = require('fast-check');
+  const { fold: foldEvents, listFor: list, counts: count } = require('../host/indexing-journal');
+  const DAY = 24 * 60 * 60 * 1000;
+  const base = new Date(2026, 9, 10, 12, 0).getTime();            // noon, so +-11 h stays on the same local day
+  fc.assert(fc.property(fc.integer({ min: -5, max: 0 }), fc.integer({ min: -11, max: 11 }), (typedDaysAgo, filedHours) => {
+    const at = base + typedDaysAgo * DAY - 3600000;
+    const filedAt = base + filedHours * 3600000;
+    const notes = foldEvents([
+      { ev: 'note', id: 'a', project: 'C:\p', text: 'x', at: Math.min(at, filedAt) },
+      { ev: 'filed', id: 'a', at: filedAt, where: { file: 'C:\p\B.md' }, record: null },
+    ]);
+    assert.strictEqual(list(notes, 'C:\p', base).length, 1);
+    assert.strictEqual(count(notes, 'C:\p', base).filed, 1);
+    const old = foldEvents([
+      { ev: 'note', id: 'a', project: 'C:\p', text: 'x', at: base - 3 * DAY },
+      { ev: 'filed', id: 'a', at: base - 2 * DAY, where: { file: 'C:\p\B.md' }, record: null },
+    ]);
+    assert.strictEqual(list(old, 'C:\p', base).length, 0);
+  }), { numRuns: 50 });
+});

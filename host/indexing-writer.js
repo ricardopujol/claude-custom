@@ -53,7 +53,9 @@ function readDoc(file, { readFile = fs.readFileSync, sleep = sleepSync } = {}) {
       return { ok: true, text: readFile(file, 'utf8') };
     } catch (err) {
       if (err && err.code === 'ENOENT') return { ok: false, reason: 'missing' };
-      if (!isTransient(err) || i >= READ_ATTEMPTS) return { ok: false, reason: isTransient(err) ? 'busy' : 'missing' };
+      // Only ENOENT is "missing". Any other failure (EMFILE, EIO) is a read that didn't happen, not an absent file
+      // (Dexter F4, PR #121): 'busy', which the tick retries; waiting out the backoff only helps the transient codes.
+      if (!isTransient(err) || i >= READ_ATTEMPTS) return { ok: false, reason: 'busy' };
       sleep(wait);
       wait = nextWait(wait);
     }
@@ -127,12 +129,16 @@ function fileNote({ docs, stamp, text, beforeRename, rename, sleep, readFile }) 
  * Is this note's entry already in the inbox? -> { ok: true, record | null } | { ok: false, reason: 'no-backlog' | 'busy' }.
  * For a retry after a write the journal never heard about (Dexter F3, PR #121): the record found is the one Undo uses.
  */
-function findNote({ docs, stamp, text, readFile, sleep }) {
+function findNote({ docs, stamp, text, others = [], readFile, sleep }) {
   const read = readDoc(docs.backlog, { readFile, sleep });
   if (!read.ok) return { ok: false, reason: read.reason === 'missing' ? 'no-backlog' : read.reason };
   const entry = doc.entryText(stamp, text, doc.newlineOf(read.text));
-  const at = doc.findEntry(read.text, entry);
-  return { ok: true, record: at < 0 ? null : { entry, offset: at, lead: '', sep: '' } };
+  // Identical entries are interchangeable bytes: one belongs to each other filed note that has the same one, and this
+  // note adopts only a copy beyond those (Dexter F3, PR #121). `others`: the records of the other filed notes.
+  const owned = others.filter(r => r && r.entry === entry).length;
+  const found = doc.findEntries(read.text, entry);
+  if (found.length <= owned) return { ok: true, record: null };
+  return { ok: true, record: { entry, offset: found[found.length - 1], lead: '', sep: '' } };
 }
 
 /** -> { ok: true } | { ok: false, reason: 'changed' | 'busy' | 'write-failed' }  ('changed' also for a file that's gone) */

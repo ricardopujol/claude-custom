@@ -220,3 +220,17 @@ test('a write that fails leaves the backlog as it was and no temp file behind', 
   assert.strictEqual(read(docs.backlog), BACKLOG);
   assert.deepStrictEqual(tempsIn(p.docs), []);
 });
+
+test('a read that fails for any reason but ENOENT (EMFILE, EIO) is "busy", retried later: never "no-backlog" or "changed" (Dexter F4, PR #121)', () => {
+  const p = project();
+  const docs = w.docsOf(p);
+  const filed = w.fileNote({ docs, stamp: STAMP, text: 'note' });
+  for (const code of ['EMFILE', 'EIO', 'UNKNOWN']) {
+    const readFile = () => { const e = new Error(code); e.code = code; throw e; };
+    assert.deepStrictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x', readFile, sleep: () => {} }), { ok: false, reason: 'busy' }, code);
+    assert.deepStrictEqual(w.undoNote(docs.backlog, filed.record, { readFile, sleep: () => {} }), { ok: false, reason: 'busy' }, code);
+    assert.deepStrictEqual(w.findNote({ docs, stamp: STAMP, text: 'note', readFile, sleep: () => {} }), { ok: false, reason: 'busy' }, code);
+  }
+  const gone = () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; };
+  assert.deepStrictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x', readFile: gone, sleep: () => {} }), { ok: false, reason: 'no-backlog' });
+});

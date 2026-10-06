@@ -105,6 +105,15 @@ function inboxOf(text) {
   for (let i = h + 1; i < lines.length; i++) {
     const l = lines[i].text;
     if (inEntry && CONTINUATION.test(l)) { last = lines[i]; continue; }
+    // A blank line of the note, stored as two spaces, may have been trimmed to nothing by an editor: it is still inside
+    // the entry when the next non-blank line is indented, or a fence in that note would open a section-long fence
+    // (Dexter F6, PR #121).
+    if (inEntry && l.trim() === '') {
+      let j = i + 1;
+      while (j < lines.length && lines[j].text.trim() === '') j++;
+      // (An indented heading still ends the section, as it always did.)
+      if (j < lines.length && CONTINUATION.test(lines[j].text) && headingLevel(lines[j].text) === 0) continue;
+    }
     const wasOpen = inner.isOpen();
     if (inner(l)) {
       if (!wasOpen) lastBeforeFence = last;
@@ -173,18 +182,24 @@ function recordOf(plan, entry) {
  * Where `entry` is in the inbox, as a whole entry at a line start, nearest `near`; -1 when it isn't there. Undo uses it,
  * and so does a retry that must not write a note twice (its write may have landed before the journal heard of it).
  */
-function findEntry(text, entry, near = 0) {
+function findEntries(text, entry) {
   const src = typeof text === 'string' ? text : '';
-  if (typeof entry !== 'string' || entry === '') return -1;
+  if (typeof entry !== 'string' || entry === '') return [];
   const box = inboxOf(src);
-  if (!box.found) return -1;
-  let best = -1;
+  if (!box.found) return [];
+  const out = [];
   for (let i = src.indexOf(entry, box.bodyStart); i >= 0 && i + entry.length <= box.end; i = src.indexOf(entry, i + 1)) {
     const atLineStart = i === 0 || src[i - 1] === '\n';
     // A whole entry: the next line isn't its continuation.
     const complete = !CONTINUATION.test(src.slice(i + entry.length, i + entry.length + 2));
-    if (atLineStart && complete && (best < 0 || Math.abs(i - near) < Math.abs(best - near))) best = i;
+    if (atLineStart && complete) out.push(i);
   }
+  return out;
+}
+
+function findEntry(text, entry, near = 0) {
+  let best = -1;
+  for (const i of findEntries(text, entry)) if (best < 0 || Math.abs(i - near) < Math.abs(best - near)) best = i;
   return best;
 }
 
@@ -208,5 +223,5 @@ function removeEntry(text, record) {
 }
 
 module.exports = {
-  stampOf, entryText, newlineOf, inboxOf, ensureInbox, planAppend, applyInsert, recordOf, findEntry, removeEntry,
+  stampOf, entryText, newlineOf, inboxOf, ensureInbox, planAppend, applyInsert, recordOf, findEntries, findEntry, removeEntry,
 };
