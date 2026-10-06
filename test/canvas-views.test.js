@@ -54,6 +54,7 @@ function rig(over = {}) {
     ask: async (o, origin) => { asked.push(origin); return over.answer || 'deny'; },
     onMessage: (o, msg) => messages.push(msg),
     fetchImpl: over.fetchImpl || (async () => new Response('pong')),
+    resolveHost: over.resolveHost || (async () => [{ address: '93.184.216.34', family: 4 }]),
     now: () => clock, log: () => {},
   });
   const release = async () => { while (gate.length) { gate.shift()(); await new Promise((res) => setImmediate(res)); } };
@@ -263,7 +264,7 @@ test('a page cannot flood the person with questions: past the cap, new hosts are
     session: { fromPartition: (p) => new FakeSession(p) }, addChild() {}, removeChild() {},
     ownerBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }), preloadPath: 'p.js',
     ask: (o, origin) => { asked.push(origin); return new Promise((res) => gate.push(res)); },
-    onMessage() {}, fetchImpl: async () => new Response('x'), now: () => 0, log() {},
+    onMessage() {}, fetchImpl: async () => new Response('x'), resolveHost: async () => [{ address: '93.184.216.34', family: 4 }], now: () => 0, log() {},
   });
   await m.show(owner, { html: '', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
   const panel = views[0].webContents;
@@ -549,4 +550,16 @@ test('property: the messages let through never outnumber the gestures that began
     }
     assert.ok(accepted <= began);
   }), { numRuns: 200 });
+});
+
+test('fetchFor: an approved name that resolves to this machine or its network reaches nothing (PR #122 Dexter F6)', async () => {
+  const hits = [];
+  const r = rig({ fetchImpl: async (u) => { hits.push(u); return new Response('secret'); }, resolveHost: async () => [{ address: '127.0.0.1', family: 4 }] });
+  await show(r, { hosts: { approved: ['https://rebind.example.com'], denied: [] } });
+  const out = await r.m.fetchFor(r.views[0].webContents, { url: 'https://rebind.example.com/api/delete' });
+  assert.strictEqual(out.ok, false);
+  assert.deepStrictEqual(hits, []);
+  const lit = await r.m.fetchFor(r.views[0].webContents, { url: 'http://127.0.0.1:11434/api/tags' });
+  assert.strictEqual(lit.ok, false);
+  assert.deepStrictEqual(r.asked, [], 'a local address is never put to the person as a question');
 });

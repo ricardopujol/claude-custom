@@ -85,6 +85,8 @@ const pad = (s, n) => String(s).padEnd(n);
   const answer = (n) => String(s.results[n]);
   check(/^blocked/.test(answer('fetch-denied-host (broker)')) && s.asked.length >= 1, 'a new host is asked about, and the answer "deny" makes the fetch fail');
   check(/^blocked/.test(answer('fetch-redirect-offsite (broker)')), 'a redirect from the approved host to another host is refused by the broker');
+  check(/^blocked/.test(answer('fetch-loopback-approved (broker)')) && /computer or its network/.test(answer('fetch-loopback-approved (broker)')), 'an APPROVED loopback address is still refused by the broker');
+  check(/^blocked/.test(answer('fetch-rebind-approved (broker)')) && /computer or its network/.test(answer('fetch-rebind-approved (broker)')), 'an approved name that resolves to loopback (rebinding) is refused by the broker');
   check(answer('app-bridge') === 'undefined/undefined/undefined/undefined/undefined', `the panel sees no app bridge, require, process or electron (got ${answer('app-bridge')})`);
   check(answer('bridge-surface') === 'fetch,send', `the panel's own bridge is exactly fetch and send (got ${answer('bridge-surface')})`);
   check(answer('window-open') === 'null', 'window.open returns null');

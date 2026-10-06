@@ -36,7 +36,10 @@ const VECTORS = {
   // --- the approved path works: the control that proves a hit can be seen --------------------------------------------
   'fetch-approved (control)': { code: `fetch(A + '?v=' + V).then(r => report(r.status), e => report('blocked ' + e.message))` },
   // --- network the page may not have -----------------------------------------------------------------------------------
-  'fetch-denied-host (broker)': { code: `fetch(D()).then(r => report(r.status), e => report('blocked ' + e.message))` },
+  'fetch-denied-host (broker)': { code: `fetch(N('probe-denied.invalid')).then(r => report(r.status), e => report('blocked ' + e.message))` },
+  // an address on this machine is refused even when the person approved it, and so is an approved name that resolves there
+  'fetch-loopback-approved (broker)': { code: `fetch(D()).then(r => report(r.status), e => report('blocked ' + e.message))` },
+  'fetch-rebind-approved (broker)': { code: `fetch(N('probe-rebind.invalid')).then(r => report(r.status), e => report('blocked ' + e.message))` },
   'fetch-redirect-offsite (broker)': { code: `fetch(A + 'redirect?to=' + encodeURIComponent(D())).then(r => report(r.status), e => report('blocked ' + e.message))` },
   'fetch-fresh-realm (raw)': { code: `const f = document.createElement('iframe'); document.body.appendChild(f); f.contentWindow.fetch(D()).then(r => report(r.status), e => report('blocked ' + e.name))` },
   'fetch-no-cors': { code: `const f = document.createElement('iframe'); document.body.appendChild(f); f.contentWindow.fetch(D(), { mode: 'no-cors' }).then(() => report('sent'), e => report('blocked ' + e.name))` },
@@ -126,7 +129,9 @@ app.whenReady().then(async () => {
     res.writeHead(200, { 'access-control-allow-origin': '*' }); res.end('pong');
   });
   const approvedPort = await listen(approvedSrv); servers.push(approvedSrv);
-  const approvedOrigin = `http://127.0.0.1:${approvedPort}`;
+  // The broker refuses every loopback address (PR #122 F6), so the approved server is reached by a NAME that a stand-in resolver maps to
+  // loopback and vouches for; `probe-rebind` maps to loopback WITHOUT the vouch (what DNS rebinding looks like to the broker).
+  const approvedOrigin = `http://probe-approved.invalid:${approvedPort}`;
 
   const rtc = { stunDatagrams: 0, turnTcpConnections: 0 };
   const udp = dgram.createSocket('udp4'); udp.on('message', () => { rtc.stunDatagrams += 1; });
@@ -145,6 +150,8 @@ app.whenReady().then(async () => {
   const seenTitles = new Map(); const titleWaiters = new Map();
 
   const views = createCanvasViews({
+    resolveHost: async (name) => (name === 'probe-approved.invalid' || name === 'probe-denied.invalid' ? [{ address: '127.0.0.1', family: 4, trusted: true }]
+      : name === 'probe-rebind.invalid' ? [{ address: '127.0.0.1', family: 4 }] : []),
     WebContentsView: class extends WebContentsView { constructor(o) {
       super(o);
       const id = Number(/^canvas-([0-9]+)$/.exec(o.webPreferences.partition)[1]);
@@ -167,6 +174,7 @@ app.whenReady().then(async () => {
     return `<script>
       const V = ${JSON.stringify(key)}, A = ${JSON.stringify(approvedOrigin + '/')}, UDP = ${udp.address().port}, TCP = ${tcpPort}, LAN = ${JSON.stringify(LAN)};
       const D = () => 'http://127.0.0.1:${ports[name]}/?v=' + encodeURIComponent(V);
+      const N = (host) => 'http://' + host + ':${ports[name]}/?v=' + encodeURIComponent(V);
       const report = (r) => { document.title = 'R:' + JSON.stringify(String(r)); };
       try { ${v.code} } catch (e) { report('threw ' + e.name); }
     <\/script>`;
@@ -178,7 +186,9 @@ app.whenReady().then(async () => {
     let wc; let fakeOwner = null; let naiveView = null;
     if (MODE === 'sealed') {
       fakeOwner = { id: 1000 + NAMES.indexOf(name), isDestroyed: () => false };
-      const approved = name === 'fetch-approved (control)' || name.startsWith('fetch-redirect') ? [approvedOrigin] : [];
+      const approved = name === 'fetch-approved (control)' || name.startsWith('fetch-redirect') ? [approvedOrigin]
+        : name === 'fetch-loopback-approved (broker)' ? [`http://127.0.0.1:${ports[name]}`]
+        : name === 'fetch-rebind-approved (broker)' ? [`http://probe-rebind.invalid:${ports[name]}`] : [];
       await views.show(fakeOwner, { html, hosts: { approved, denied: [] }, rect: { x: 0, y: 0, width: 400, height: 300 } });
       wc = panels.get(fakeOwner.id);
       // A download the panel's own lock-down did not cancel would raise a Save-As box: save it to a temp file instead, and record it.

@@ -42,7 +42,7 @@ const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width',
 const originList = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))];
 
 function createCanvasViews({ WebContentsView, session, addChild, removeChild, ownerBounds, preloadPath, ask, onMessage,
-  isOwnerVisible = () => true, fetchImpl = fetch, now = Date.now, log = () => {} } = {}) {
+  isOwnerVisible = () => true, fetchImpl, resolveHost, now = Date.now, log = () => {} } = {}) {
   const byOwner = new Map();          // owner contents id -> record
   const byPanel = new Map();          // panel contents id -> record
   // ONE in-memory session per tab, kept across hide/show: Electron never frees a session, so a fresh partition per show leaked a network
@@ -213,7 +213,8 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     const rec = sender ? byPanel.get(sender.id) : null;
     if (!rec) return { ok: false, error: 'not a panel' };
     return brokerFetch(req, {
-      fetchImpl,
+      fetchImpl,           // undefined: the broker's own pinned transport (app/canvas-net.js); never the engine's fetch, which resolves for itself
+      resolveHost,
       decide: (o) => (rec.approved.has(o) ? 'allow' : rec.denied.has(o) ? 'deny' : 'ask'),
       ask: (origin) => {
         if (rec.pending.has(origin)) return rec.pending.get(origin);

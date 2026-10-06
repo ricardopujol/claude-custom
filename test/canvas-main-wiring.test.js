@@ -73,3 +73,13 @@ test('the tab preload and main agree on every canvas channel, in both directions
 test("a panel made for a tab asks main whether that tab is the selected one, so it never starts visible over another tab (PR #122 Dexter F4)", () => {
   assert.match(CODE, /isOwnerVisible: \(owner\) => \{ const sel = selectedView\(\); return !!sel && sel\.webContents === owner; \},/);
 });
+
+test("the broker's transport is its own pinned one, never the engine's: main must not hand it net.fetch, session.fetch or the global fetch (PR #122 Dexter F6 / F10)", () => {
+  const block = CODE.slice(CODE.indexOf('const canvasViews = createCanvasViews({'), CODE.indexOf('function destroyTabView('));
+  assert.doesNotMatch(block, /fetchImpl|resolveHost/, "main takes the broker's defaults: app/canvas-fetch.js's pinned transport and its own resolver");
+  assert.doesNotMatch(CODE, /\bnet\.fetch\b|\bsession\.fetch\b|\bdefaultSession\.fetch\b/, 'Chromium networking resolves for itself, under host-resolver-rules, and cannot be pinned');
+  const views = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'canvas-views.js'), 'utf8'));
+  const fetchSrc = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'canvas-fetch.js'), 'utf8'));
+  assert.doesNotMatch(views, /fetchImpl\s*=\s*fetch\b/);
+  assert.match(fetchSrc, /fetchImpl = createPinnedFetch\(\)/);
+});
