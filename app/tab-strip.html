@@ -95,8 +95,8 @@
     #create-branch:disabled { color: var(--dim); }
     #create-cancel { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
     #create-cancel:hover { color: var(--text); }
-    /* Backlog #66, the indexing field (DESIGN_INDEXING_ASSISTANT.md pick A): a note typed here never goes into a
-       session; the chip names the project it files into, the counter opens today's list. STATIC, outside #tabs, so a
+    /* Backlog #66, the indexing field (DESIGN_INDEXING_ASSISTANT.md, revised: a verbatim inbox): a note typed here never
+       goes into a session; Enter adds it to the chip's project's backlog `## Inbox`; the counter opens today's list. STATIC, outside #tabs, so a
        repaint never wipes what is being typed. Its toast and list are app/indexing-overlay.html, over the tab views. */
     #index ~ #bg { margin-left: 0; }
     #index { margin-left: auto; flex: 0 1 340px; min-width: 150px; align-self: center; display: flex; align-items: center; gap: 6px;
@@ -176,8 +176,8 @@
       id="strip-alert" hidden></div><form id="index" autocomplete="off"><input id="index-note"
       placeholder="Note an idea, a bug, a fix…" spellcheck="false" maxlength="10000"
       aria-label="Note for the indexing assistant (Ctrl+Alt+N)" /><button type="button" id="index-chip"
-      title="Files into this project. Click to switch project.">…</button></form><button type="button" id="index-count"
-      aria-expanded="false" title="Today's notes: where each went, Undo, Move">0 filed</button><button type="button" id="bg" title="Running sessions">▾</button><button
+      title="Adds to this project's backlog inbox. Click to switch project.">…</button></form><button type="button" id="index-count"
+      aria-expanded="false" title="Today's notes: Undo, or Copy one that wasn't filed">0 filed</button><button type="button" id="bg" title="Running sessions">▾</button><button
       type="button" id="win-min" class="win-btn" title="Minimise" aria-label="Minimise" hidden>&#x2013;</button><button
       type="button" id="win-close" class="win-btn" title="Close window (sessions keep running)" aria-label="Close window"
       hidden>&#x2715;</button></div>

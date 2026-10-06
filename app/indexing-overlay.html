@@ -18,29 +18,23 @@
     html { overflow-x: hidden; overflow-y: auto; }
     html, body { margin: 0; background: transparent; color: var(--text);
       font: 12.5px/1.45 "Segoe UI", system-ui, sans-serif; }
-    select { max-width: 220px; text-overflow: ellipsis; }
     #root { display: block; }
-    button, select { font: inherit; font-size: 12px; background: var(--chrome); color: var(--text);
+    button { font: inherit; font-size: 12px; background: var(--chrome); color: var(--text);
       border: 1px solid var(--border); border-radius: 5px; padding: 2px 9px; cursor: pointer; }
-    button:hover, select:hover { border-color: var(--dim); }
-    button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-    button.primary { background: var(--accent); color: #1a1208; border-color: var(--accent); font-weight: 600; }
+    button:hover { border-color: var(--dim); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     /* the toast */
     .toast { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px 8px;
       display: grid; gap: 6px; box-sizing: border-box; width: 100%; }
-    .toast.asking { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
-    .toast.waiting .t1, .toast.cant-undo .t1 { color: var(--warn); }
+    .toast.unfiled .t1, .toast.cant-undo .t1 { color: var(--warn); }
+    .toast.added .t1 { color: var(--accent); }
     .toast.error .t1 { color: var(--bad); }
     .t1 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .dest { color: var(--accent); font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
     .note { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .bar { height: 2px; background: var(--border); border-radius: 2px; overflow: hidden; }
     .bar i { display: block; height: 100%; background: var(--dim); width: 100%; animation: drain linear forwards; }
     @keyframes drain { to { width: 0%; } }
-    .spin { width: 10px; height: 10px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%;
-      animation: s 0.8s linear infinite; display: inline-block; flex: 0 0 auto; }
-    @keyframes s { to { transform: rotate(360deg); } }
     /* the list */
     .pop { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px; display: grid; gap: 2px;
       box-sizing: border-box; width: 100%; }
@@ -54,12 +48,12 @@
     .row .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .row .when { font-family: Consolas, monospace; font-size: 11px; color: var(--dim); }
     .row .where { grid-column: 1 / -1; font-family: Consolas, monospace; font-size: 11px; color: var(--accent); }
-    .row.waiting .where, .row.asking .where { color: var(--warn); }
+    .row.unfiled .where { color: var(--warn); }
     .row.undone { opacity: .55; }
     .row.undone .where { color: var(--dim); }
     .row .mini { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
-    .row .mini button, .row .mini select { font-size: 11px; padding: 1px 8px; }
-    @media (prefers-reduced-motion: reduce) { .spin { animation: none; } .bar i { animation: none; } }
+    .row .mini button { font-size: 11px; padding: 1px 8px; }
+    @media (prefers-reduced-motion: reduce) { .bar i { animation: none; } }
   </style>
 </head>
 <body>

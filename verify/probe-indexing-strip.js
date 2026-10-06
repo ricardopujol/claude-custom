@@ -4,22 +4,25 @@
      node verify/probe-indexing-strip.js        (exit 0 = every check held; PORT=<n> optional)
      INDEXING_PROBE_SHOTS=<dir>                 keep the screenshots there (default: a temp folder, printed)
 
-   Unit tests can't see the shared-global-scope trap (CLAUDE.md), a view stacked over another, or the keyboard moving
-   between two documents, so this drives the real thing over the Chromium debugging port:
+   DESIGN_INDEXING_ASSISTANT.md "Revised 2026-10-05 (evening)": no model, a verbatim inbox. Unit tests can't see the
+   shared-global-scope trap (CLAUDE.md), a view stacked over another, or the keyboard moving between two documents, so
+   this drives the real thing over the Chromium debugging port:
 
      1  the strip page has the field, the chip names the project, the counter says "0 filed", and both scripts
         loaded (indexingDisplay and tabStrip are both defined: neither aborted the other)
-     2  a note typed into the field and Enter: the field clears, the note is journaled, and (propose mode, the shipped
-        mode) the toast view appears over the tab view asking where it goes, with the best guess named
-     3  "File it" writes exactly one new backlog item with the note verbatim; the counter says "1 filed"
-     4  Undo puts the backlog back byte for byte
-     5  the field keeps the keyboard across publishes; Esc hands it back; Ctrl+Alt+N in the tab view takes it again
-     6  the list opens from the counter, shows the note, and closes again
+     2  a note typed into the field and Enter: the field clears, the note is journaled, the toast over the tab view
+        says "Added to the inbox" with the note's first line and Undo, and the backlog has a `## Inbox` right after
+        the status block holding exactly `- YYYY-MM-DD HH:MM · <the note>`; the counter says "1 filed"
+     3  Undo takes exactly that entry out (the inbox heading it created stays)
+     4  the field keeps the keyboard across publishes; Esc hands it back; Ctrl+Alt+N in the tab view takes it again
+     5  with no backlog file, a note says "Not filed: This project has no backlog file" with Copy, and no file is made
+        (Copy itself isn't clicked: it would overwrite the real clipboard)
+     6  the list opens from the counter, shows both notes, and closes again
 
-   Safe: the host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing billable runs; Ollama is a fake one in this
-   process (verify/lib/fake-ollama.js), so the real model and its slot are untouched; the journal, the slot folder and
-   the project docs are temp files (CLAUDE_CUSTOM_INDEXING_JOURNAL, CLAUDE_CUSTOM_SUMMARY_DIR, a temp project). The real
-   documentation is never touched. ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are removed from the
+   Safe: the host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing billable runs; the journal and the project docs
+   are temp files (CLAUDE_CUSTOM_INDEXING_JOURNAL, a temp project), so the real documentation is never touched. The
+   host's own "where are we" summary is pointed at a fake Ollama (verify/lib/fake-ollama.js) and a temp slot folder, so
+   the real model is never asked anything. ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are removed from the
    children's environment first. Only the two processes started here are killed, by their own pid. */
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
@@ -28,6 +31,7 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 const { startFakeOllama } = require('./lib/fake-ollama');
+const { stampOf } = require('../host/indexing-doc');
 
 const REPO = path.join(__dirname, '..');
 const PORT = Number(process.env.PORT) || 7740 + Math.floor(Math.random() * 50);
@@ -45,10 +49,9 @@ const project = path.join(tmp, 'probeproj');
 const docs = path.join(project, 'documentation');
 fs.mkdirSync(docs, { recursive: true });
 const BACKLOG = path.join(docs, 'PROBE_BACKLOG.md');
-const BACKLOG_TEXT = '# probe — Backlog\n\n## 1. The wand runs skills\nbody\n\n## 2. A resource panel\nmore\n';
+const BACKLOG_TEXT = '# probe — Backlog\n\n**Status (2026-10-05):** a probe.\n\n## 1. The wand runs skills\nbody\n\n## 2. A resource panel\nmore\n';
 fs.writeFileSync(path.join(docs, 'PROBE_BUILD_LOG.md'), '# log\n');
 fs.writeFileSync(BACKLOG, BACKLOG_TEXT);
-fs.writeFileSync(path.join(docs, 'PROBE_HISTORY.md'), '# history\n');
 const JOURNAL = path.join(tmp, 'state', 'indexing-notes.jsonl');
 const shots = process.env.INDEXING_PROBE_SHOTS || fs.mkdtempSync(path.join(os.tmpdir(), 'cc-indexing-shots-'));
 fs.mkdirSync(shots, { recursive: true });
@@ -149,14 +152,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 
 (async () => {
   try {
-    fake = await startFakeOllama({
-      generate: (body) => {
-        const p = body && typeof body.prompt === 'string' ? body.prompt : '';
-        if (p.includes('Which describes it best?')) return { json: { response: '{"answer": "A"}' } };
-        if (p.includes('Write a short title')) return { json: { response: '{"title": "Tabs glow when a session needs me"}' } };
-        return { json: { response: 'Working on: the probe\nWhere it stands: running\nNext: done' } };
-      },
-    });
+    fake = await startFakeOllama({});              // the host's summary job only; the field asks no model
 
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
@@ -183,9 +179,12 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     if (!(await waitFor(() => /listening/i.test(hostLog), 15000))) { check('the host started', false, hostLog.slice(-400)); return; }
 
     const electron = spawn(path.join(REPO, 'node_modules', '.bin', 'electron.cmd'), ['.', `--remote-debugging-port=${CDP}`], {
-      cwd: REPO, env: electronEnv, stdio: 'ignore', shell: true,
+      cwd: REPO, env: electronEnv, stdio: ['ignore', 'pipe', 'pipe'], shell: true,
     });
     children.push(electron);
+    let electronLog = '';
+    electron.stdout.on('data', (d) => { electronLog += d; });
+    electron.stderr.on('data', (d) => { electronLog += d; });
     const both = await waitFor(async () => {
       const t = await pages();
       const s = t.find((x) => /tab-strip\.html/.test(x.url));
@@ -205,6 +204,12 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
         count: document.getElementById('index-count').textContent,
         scripts: typeof window.indexingDisplay === 'object' && typeof window.tabStrip === 'object',
       } : null; })()`), 45000);
+    if (!s1) {
+      const why = await evalIn(strip, "JSON.stringify({ href: location.href, ready: document.readyState, field: !!document.getElementById('index-note'), chip: (document.getElementById('index-chip') || {}).textContent, display: typeof window.indexingDisplay, bridge: typeof (window.strip && window.strip.indexSubmit) })").catch((e) => e.message);
+      console.log(`      strip page: ${why}
+      electron log (tail):
+${electronLog.slice(-3000)}`);
+    }
     check('1 the field is in the strip', !!(s1 && s1.field));
     check('1 the chip names the project', !!s1 && s1.chip === 'probeproj', s1 && s1.chip);
     check('1 the counter says 0 filed', !!s1 && s1.count === '0 filed', s1 && s1.count);
@@ -215,60 +220,77 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     const NOTE = 'tabs should glow when a session needs me';
     await evalIn(strip, "document.getElementById('index-note').focus()");
     await strip.send('Input.insertText', { text: NOTE });
+    const enterAt = Date.now();
     await key(strip, 'keyDown', 'Enter', 'Enter', 13);
     await key(strip, 'keyUp', 'Enter', 'Enter', 13);
     const cleared = await waitFor(() => evalIn(strip, "document.getElementById('index-note').value === ''"));
     check('2 Enter clears the field', !!cleared);
     const journaled = await waitFor(() => fs.existsSync(JOURNAL) && fs.readFileSync(JOURNAL, 'utf8').includes(NOTE));
-    check('2 the note is journaled first, verbatim', !!journaled);
+    check('2 the note is journaled, verbatim', !!journaled);
     const toastT = await waitFor(async () => (await pages()).find((x) => /indexing-overlay\.html\?part=toast/.test(x.url)));
     check('2 the toast view exists', !!toastT);
     if (!toastT) return;
     const toast = await cdpClient(toastT.webSocketDebuggerUrl);
-    const asking = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'asking'
-      ? { line: t.querySelector('.t1').textContent, w: innerWidth, h: innerHeight } : null; })()`), 45000);
-    check('2 propose mode: the toast asks where it goes', !!asking, asking && asking.line);
-    check('2 ...with the best guess named (a new item)', !!asking && /Best guess: New backlog item/.test(asking.line), asking && asking.line);
-    // Main sizes the view from the page's report, one round trip after the page draws: wait for it to settle.
+    const added = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'added'
+      ? { line: t.querySelector('.t1').textContent, note: t.querySelector('.note').textContent,
+          undo: [...t.querySelectorAll('button')].some(b => b.textContent === 'Undo') } : null; })()`), 45000);
+    console.log(`      the first toast showed ${Date.now() - enterAt} ms after Enter (its view's renderer starts with it)`);
+    if (!added) {
+      const why = await evalIn(toast, "JSON.stringify({ href: location.href, ready: document.readyState, root: (document.getElementById('root') || {}).innerHTML, w: innerWidth, h: innerHeight, display: typeof window.indexingDisplay, bridge: typeof (window.indexing && window.indexing.onState) })").catch((e) => e.message);
+      console.log(`      toast page: ${String(why).slice(0, 600)}`);
+    }
+    check('2 the toast says "Added to the inbox" with the note\'s first line and Undo',
+      !!added && added.line === 'Added to the inbox' && added.note === NOTE && added.undo, JSON.stringify(added));
     const sized = await waitFor(() => evalIn(toast, '(innerWidth === 420 && innerHeight > 40 && innerHeight < 300) ? `${innerWidth}x${innerHeight}` : null'), 10000);
     check('2 the toast view is sized to the toast (bottom right, 420 wide)', !!sized,
       sized || (await evalIn(toast, '`${innerWidth}x${innerHeight}`').catch(() => '?')));
-    check('2 nothing written yet', fs.readFileSync(BACKLOG, 'utf8') === BACKLOG_TEXT);
-    await shoot(toast, '2-toast-asking.png');
+    const stamp = stampOf(Date.now());
+    const after = fs.readFileSync(BACKLOG, 'utf8');
+    const WITH_INBOX = BACKLOG_TEXT.replace('## 1. The wand', '## Inbox\n- ENTRY\n\n## 1. The wand');
+    // The minute can turn between the Enter and this read: accept the stamp of the minute before as well.
+    const okAfter = [stamp, stampOf(Date.now() - 60_000)].some(s => after === WITH_INBOX.replace('- ENTRY', `- ${s} · ${NOTE}`));
+    check('2 the backlog has a ## Inbox right after the status block, holding exactly the note', okAfter, JSON.stringify(after.slice(0, 260)));
+    const count1 = await waitFor(() => evalIn(strip, "(() => { const c = document.getElementById('index-count').textContent; return c === '1 filed' ? c : null; })()"));
+    check('2 the counter says 1 filed', !!count1);
+    await shoot(toast, '2-toast-added.png');
 
     // 3 -------------------------------------------------------------------------------------------------------------
-    await evalIn(toast, "[...document.querySelectorAll('button')].find(b => /File it/.test(b.textContent)).click()");
-    const filed = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast');
-      return t && t.dataset.kind === 'filed' ? t.querySelector('.t1').textContent : null; })()`));
-    check('3 File it files it, and the toast says where', !!filed, filed);
-    const after = fs.readFileSync(BACKLOG, 'utf8');
-    check('3 exactly one new item, the note verbatim',
-      after === BACKLOG_TEXT + '\n## 3. Tabs glow when a session needs me (captured ' + new Date().toLocaleDateString('sv-SE') + ', indexing assistant)\nRicardo: "' + NOTE + '"\n',
-      JSON.stringify(after.slice(BACKLOG_TEXT.length)));
-    const count1 = await waitFor(() => evalIn(strip, "(() => { const c = document.getElementById('index-count').textContent; return c === '1 filed' ? c : null; })()"));
-    check('3 the counter says 1 filed', !!count1);
-    await shoot(toast, '3-toast-filed.png');
-
-    // 4 -------------------------------------------------------------------------------------------------------------
     await evalIn(toast, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Undo').click()");
     const undone = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast');
-      return t && t.dataset.kind === 'undone' ? t.textContent : null; })()`));
-    check('4 Undo says so', !!undone, undone);
-    check('4 the backlog is back byte for byte', fs.readFileSync(BACKLOG, 'utf8') === BACKLOG_TEXT);
+      return t && t.dataset.kind === 'undone' ? t.querySelector('.t1').textContent : null; })()`));
+    check('3 Undo says so', undone === 'Undone. Removed from the inbox.', undone);
+    check('3 the entry is gone and nothing else changed (the inbox heading stays)',
+      fs.readFileSync(BACKLOG, 'utf8') === WITH_INBOX.replace('- ENTRY\n', ''), JSON.stringify(fs.readFileSync(BACKLOG, 'utf8').slice(0, 200)));
 
-    // 5 -------------------------------------------------------------------------------------------------------------
+    // 4 -------------------------------------------------------------------------------------------------------------
     await evalIn(strip, "document.getElementById('index-note').focus()");
     await sleep(4000);
-    check('5 the field keeps the keyboard across publishes',
+    check('4 the field keeps the keyboard across publishes',
       (await evalIn(strip, "document.activeElement && document.activeElement.id")) === 'index-note');
     await key(strip, 'keyDown', 'Escape', 'Escape', 27);
     await key(strip, 'keyUp', 'Escape', 'Escape', 27);
     await sleep(500);
-    check('5 Esc leaves the field', (await evalIn(strip, "document.activeElement && document.activeElement.id")) !== 'index-note');
+    check('4 Esc leaves the field', (await evalIn(strip, "document.activeElement && document.activeElement.id")) !== 'index-note');
     const sent = await command({ cmd: 'key', key: 'n', modifiers: ['control', 'alt'] });
-    check('5 the driver sent Ctrl+Alt+N to the tab view', sent.ok === true, JSON.stringify(sent));
+    check('4 the driver sent Ctrl+Alt+N to the tab view', sent.ok === true, JSON.stringify(sent));
     const back = await waitFor(() => evalIn(strip, "document.activeElement && document.activeElement.id === 'index-note'"), 5000);
-    check('5 Ctrl+Alt+N in the tab view focuses the field', !!back);
+    check('4 Ctrl+Alt+N in the tab view focuses the field', !!back);
+
+    // 5 -------------------------------------------------------------------------------------------------------------
+    fs.unlinkSync(BACKLOG);
+    const NOTE2 = 'a note with nowhere to go';
+    await evalIn(strip, "document.getElementById('index-note').focus()");
+    await strip.send('Input.insertText', { text: NOTE2 });
+    await key(strip, 'keyDown', 'Enter', 'Enter', 13);
+    await key(strip, 'keyUp', 'Enter', 'Enter', 13);
+    const unfiled = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'unfiled'
+      ? { line: t.querySelector('.t1').textContent, copy: [...t.querySelectorAll('button')].some(b => b.textContent === 'Copy') } : null; })()`));
+    check('5 no backlog file: the toast says so, with Copy', !!unfiled && unfiled.line === 'Not filed: This project has no backlog file' && unfiled.copy,
+      JSON.stringify(unfiled));
+    check('5 ...and no backlog file was created', !fs.existsSync(BACKLOG));
+    const count2 = await waitFor(() => evalIn(strip, "(() => { const c = document.getElementById('index-count').textContent; return /1 not filed/.test(c) ? c : null; })()"));
+    check('5 the counter says 1 not filed', !!count2, count2);
+    await shoot(toast, '5-toast-not-filed.png');
 
     // 6 -------------------------------------------------------------------------------------------------------------
     await evalIn(strip, "document.getElementById('index-count').click()");
@@ -277,8 +299,11 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     if (listT) {
       const list = await cdpClient(listT.webSocketDebuggerUrl);
       const rows = await waitFor(() => evalIn(list, `(() => { const p = document.querySelector('.pop');
-        return p ? [...p.querySelectorAll('.row')].map(r => r.querySelector('.what').textContent + ' | ' + r.querySelector('.where').textContent) : null; })()`));
-      check('6 the list shows today\'s note, undone', !!rows && rows.length === 1 && /tabs should glow/.test(rows[0]) && /Undone/.test(rows[0]), JSON.stringify(rows));
+        return p ? [...p.querySelectorAll('.row')].map(r => r.querySelector('.what').textContent + ' | ' + r.querySelector('.where').textContent
+          + ' | ' + [...r.querySelectorAll('button')].map(b => b.textContent).join(',')) : null; })()`));
+      check('6 the list shows today\'s two notes: the one not filed (with Copy), the one undone',
+        !!rows && rows.length === 2 && /nowhere to go \| Not filed: This project has no backlog file \| Copy/.test(rows[0]) && /tabs should glow when a session needs me \| Undone \| ?$/.test(rows[1]),
+        JSON.stringify(rows));
       await shoot(list, '6-list.png');
       await evalIn(strip, "document.getElementById('index-count').click()");
       const closed = await waitFor(() => evalIn(list, "!document.querySelector('.pop')"), 5000);

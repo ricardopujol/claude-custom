@@ -429,7 +429,7 @@ test('#66 indexing: every channel the bridge listens on is used by a preload, an
   const preloads = read('preload-strip.js') + read('preload-indexing.js');
   const listened = [...bridge.matchAll(/ipcMain\.(?:on|handle)\('([^']+)'/g)].map(m => m[1]);
   const pushed = [...bridge.matchAll(/\.send\('([^']+)'/g)].map(m => m[1]);
-  assert.ok(listened.length >= 14 && pushed.length >= 3);
+  assert.ok(listened.length >= 12 && pushed.length >= 3);
   assert.deepStrictEqual(listened.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a channel no page sends on');
   assert.deepStrictEqual(pushed.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a push no page listens for');
   const used = [...preloads.matchAll(/ipcRenderer\.(?:send|invoke)\('((?:strip:index|indexing:)[^']*)'/g)].map(m => m[1]);

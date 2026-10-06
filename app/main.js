@@ -99,17 +99,13 @@ const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
-// The indexing assistant (#66): a field in the strip; a local model files each note in the project's backlog or
-// history. The service and its job rules are host/indexing-service.js; main's half (channels, the toast and list views
-// over the tabs) is app/indexing-bridge.js.
+// The indexing assistant (#66): a field in the strip; Enter appends the note verbatim to the selected project's backlog
+// `## Inbox` (no model). The service is host/indexing-service.js; main's half (channels, the toast and list views over
+// the tabs) is app/indexing-bridge.js.
 const { createIndexingService } = require('../host/indexing-service');
 const { createJournal } = require('../host/indexing-journal');
 const indexWriter = require('../host/indexing-writer');
-const { MEASURED: INDEXING_MEASURED, modeFor: indexingModeFor, readSettings: readIndexingSettings } = require('../host/indexing-mode');
-const { GENERATE_TIMEOUT_MS: INDEXING_TIMEOUT_MS } = require('../host/indexing-classify');
 const { projectChoices, readRecentsOffThread } = require('../host/indexing-projects');
-const { createOllamaClient } = require('../host/summary-ollama');
-const { createSlot } = require('../host/summary-slot');
 const { createIndexingBridge } = require('./indexing-bridge');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
@@ -1475,24 +1471,13 @@ function startProbeDriver(port) {
 }
 
 // --- the indexing assistant (#66) ----------------------------------------------------------
-// One per window. It shares #105's GPU slot file with every tab's summary job, so a classification never runs beside
-// one; power comes from Electron (main has powerMonitor; a host has to ask WMI). The probe seams point it at a fake
-// Ollama, a throwaway journal and slot folder, and a fixed power state.
+// One per window, sharing one install-wide journal with the others. The probe seam points it at a throwaway journal.
 function startIndexing(seams) {
-  const summaryDir = seams.summaryDir || path.join(HARNESS_DIR, 'state', 'summaries');
   const journalFile = seams.indexingJournal || path.join(HARNESS_DIR, 'state', 'indexing-notes.jsonl');
-  const settingsFile = path.join(HARNESS_DIR, 'state', 'indexing-settings.json');
   const docsFor = (root) => { const p = projectOf(root); return indexWriter.docsOf(p || { root, dev: root }); };
   const service = createIndexingService({
     journal: createJournal({ file: journalFile }),
-    ollama: createOllamaClient({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: INDEXING_TIMEOUT_MS }),
-    slot: createSlot({ file: path.join(summaryDir, '.job.lock') }),
-    onBattery: async () => {
-      if (seams.summaryPower) return seams.summaryPower === 'battery';
-      try { const b = powerMonitor.isOnBatteryPower(); return typeof b === 'boolean' ? b : null; } catch { return null; }
-    },
     docsFor,
-    mode: () => indexingModeFor(INDEXING_MEASURED, readIndexingSettings(settingsFile)),
     log: (...a) => console.log(...a),
   });
   // The chip's projects: host/recent.js scans transcripts (2.7 s cold here), so it runs in a worker, kept 5 minutes.
@@ -1510,6 +1495,7 @@ function startIndexing(seams) {
   };
   indexing = createIndexingBridge({
     ipcMain, Menu, shell,
+    copyText: (text) => clipboard.writeText(text),
     makeView: () => {
       const v = new WebContentsView({
         webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload-indexing.js') },

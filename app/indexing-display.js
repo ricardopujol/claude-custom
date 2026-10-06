@@ -1,22 +1,19 @@
 'use strict';
 /**
- * The indexing assistant's display (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md pick 1, A: a field in the
- * strip that files, Undo in a toast; the accuracy gate's propose mode; "Claude's call" 4, 5, 6 and 9).
+ * The indexing assistant's display (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md "Revised 2026-10-05
+ * (evening)": a field in the strip, Enter appends the note verbatim to the project's backlog `## Inbox`, Undo in a
+ * 10 s toast and in the "N filed" list).
  *
  * Two pages draw it. The strip (app/tab-strip.html) has the field, the project chip and the counter; the overlay
  * (app/indexing-overlay.html, a small view main stacks over the tab views, which cover everything under the strip) has
- * the toast and the "N filed" list. The decisions are the pure functions below; the painters only draw them.
+ * the toast and the list. The decisions are the pure functions below; the painters only draw them.
  *
- *   counterText(counts)                  '3 filed' | '1 waiting' | '2 filed · 1 to place' ...
- *   placeText(where)                     'New backlog item #72' | 'Added to #66' | 'History · learning'
- *   reasonText(reason)                   why a note waits, in words
- *   pickerOptions(row, titles, { moving })  [{ value, label, guess? }]  the guess first, then new, the closest items,
- *                                        the history (decision, learning); Move leaves out where it already is
- *   choiceOf(value)                      a picker value -> { target, kind? } for main, or null
- *   toastModel(row, titles) / resultToast(result) / toastMs(kind)   the toast
- *   listRow(row)                         one line of the list
+ *   counterText(counts)        '3 filed' | '1 not filed' | '2 filed · 1 not filed'
+ *   reasonText(reason)         why a note isn't filed, in words
+ *   toastModel(row) / resultToast(result) / toastMs(kind)   the toast
+ *   listRow(row)               one line of the list
  *
- * Somebody's words (the note, item titles, file names) only ever go in through textContent.
+ * Somebody's words (the note, file names) only ever go in through textContent.
  *
  * WRAPPED IN AN IIFE: plain <script> files share one global scope (CLAUDE.md's first trap). One name leaves it:
  * `indexingDisplay`.
@@ -24,126 +21,60 @@
 (function (root) {
 
 const num = (n) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0);
-const isItem = (t) => Number.isInteger(t) && t > 0;
-const HISTORY_KINDS = ['decision', 'learning'];
 
 function counterText(counts) {
   const c = counts && typeof counts === 'object' ? counts : {};
-  const filed = num(c.filed);
   const parts = [];
-  if (filed > 0) parts.push(`${filed} filed`);
-  if (num(c.waiting) > 0) parts.push(`${num(c.waiting)} waiting`);
-  if (num(c.asking) > 0) parts.push(`${num(c.asking)} to place`);
+  if (num(c.filed) > 0) parts.push(`${num(c.filed)} filed`);
+  if (num(c.unfiled) > 0) parts.push(`${num(c.unfiled)} not filed`);
   return parts.length ? parts.join(' · ') : '0 filed';
 }
 
-function placeText(where) {
-  if (!where || typeof where !== 'object') return '';
-  if (where.target === 'history') return `History · ${HISTORY_KINDS.includes(where.kind) ? where.kind : 'entry'}`;
-  if (where.target === 'new') return isItem(where.n) ? `New backlog item #${where.n}` : 'New backlog item';
-  if (isItem(where.target)) return `Added to #${where.target}`;
-  return '';
-}
-
 const REASONS = {
-  'ollama-down': "Ollama isn't answering",
-  'model-missing': "The local model isn't installed",
-  'model-error': "The model's answer was unusable",
-  battery: 'On battery',
-  busy: 'The local model is busy',
-  conflict: 'The backlog kept changing',
-  'write-failed': "The file couldn't be written",
-  'no-docs': 'This project has no documentation folder',
   'no-backlog': 'This project has no backlog file',
-  'no-history': 'This project has no history file',
+  'no-docs': 'This project has no documentation folder',
   'many-build-logs': 'Two build logs in documentation',
-  error: 'Something failed',
+  conflict: 'The backlog kept changing; it tries again',
+  busy: 'The backlog was busy; it tries again',
+  'write-failed': "The backlog couldn't be written; it tries again",
+  gone: "That note isn't in the journal any more",
 };
 
 function reasonText(reason) {
-  if (reason === null || reason === undefined) return 'Filing…';
-  return Object.prototype.hasOwnProperty.call(REASONS, reason) ? REASONS[reason] : 'Waiting';
+  if (reason === null || reason === undefined) return 'Not filed yet';
+  return Object.prototype.hasOwnProperty.call(REASONS, reason) ? REASONS[reason] : 'Not filed';
 }
 
-const itemLabel = (n, titles) => {
-  const t = titles && typeof titles === 'object' && typeof titles[n] === 'string' && titles[n] !== '' ? titles[n] : null;
-  return t ? `#${n} ${t}` : `#${n}`;
-};
+const firstLine = (text) => String(typeof text === 'string' ? text : '').split(/\r\n|\r|\n/)[0];
 
-/** The value a target has in the picker: 'new', '63', 'history:decision'. */
-function valueOf(target, kind) {
-  if (target === 'new') return 'new';
-  if (isItem(target)) return String(target);
-  if (target === 'history') return `history:${HISTORY_KINDS.includes(kind) ? kind : 'decision'}`;
-  return null;
-}
-
-function pickerOptions(row, titles, { moving = false } = {}) {
+function toastModel(row) {
   const r = row && typeof row === 'object' ? row : {};
-  const out = [];
-  const seen = new Set();
-  const here = moving && r.where ? valueOf(r.where.target, r.where.kind) : null;
-  const add = (value, label, guess) => {
-    if (value === null || seen.has(value) || value === here) return;
-    seen.add(value);
-    out.push(guess ? { value, label, guess: true } : { value, label });
-  };
-  const g = r.guess && typeof r.guess === 'object' ? r.guess : null;
-  if (g) {
-    const v = valueOf(g.target, g.kind);
-    if (v === 'new') add(v, typeof g.title === 'string' && g.title !== '' ? `New backlog item: ${g.title}` : 'New backlog item', true);
-    else if (v && v.startsWith('history:')) add(v, `History · ${v.slice(8)}`, true);
-    else if (v) add(v, itemLabel(g.target, titles), true);
-  }
-  add('new', 'New backlog item', false);
-  for (const n of Array.isArray(r.options) ? r.options : []) if (isItem(n)) add(String(n), itemLabel(n, titles), false);
-  for (const k of HISTORY_KINDS) add(`history:${k}`, `History · ${k}`, false);
-  return out;
+  const note = firstLine(r.text);
+  if (r.state === 'filed') return { kind: 'added', line: 'Added to the inbox', note, undo: r.undoable === true, copy: false };
+  if (r.state === 'undone') return { kind: 'undone', line: 'Undone. Removed from the inbox.', note, undo: false, copy: false };
+  return { kind: 'unfiled', line: `Not filed: ${reasonText(r.reason)}`, note, undo: false, copy: true };
 }
 
-function choiceOf(value) {
-  if (value === 'new') return { target: 'new' };
-  if (typeof value !== 'string') return null;
-  const h = /^history:(decision|learning)$/.exec(value);
-  if (h) return { target: 'history', kind: h[1] };
-  if (/^[1-9]\d{0,5}$/.test(value)) return { target: Number(value) };
-  return null;
-}
-
-function toastModel(row, titles) {
-  const r = row && typeof row === 'object' ? row : {};
-  const text = typeof r.text === 'string' ? r.text : '';
-  if (r.state === 'filed') return { kind: 'filed', text, line: `Filed: ${placeText(r.where)}`, undo: r.undoable === true, move: true };
-  if (r.state === 'undone') return { kind: 'undone', text, line: 'Undone. Nothing was kept.' };
-  if (r.state === 'asking') {
-    const best = pickerOptions(r, titles).find(o => o.guess);
-    return { kind: 'asking', text, line: best ? `Where should this go? Best guess: ${best.label}` : 'Where should this go?', options: pickerOptions(r, titles) };
-  }
-  if (r.reason === null || r.reason === undefined) return { kind: 'filing', text, line: 'Filing…' };
-  return { kind: 'waiting', text, line: `Waiting: ${reasonText(r.reason)}. It files when it can.` };
-}
-
-const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
 const RESULT_LINES = {
-  'no-item': "Couldn't file it: that item isn't in the backlog any more.",
-  'dup-item': "Couldn't file it: that item number is used twice in the backlog.",
-  'not-asking': 'That note already has a place.',
-  'not-filed': "That note isn't filed.",
+  'not-filed': "That note isn't in the inbox.",
+  'other-project': 'That note belongs to another project.',
+  'bad-record': "Can't undo: that note's place isn't this project's backlog.",
 };
 
-/** What a failed choose / undo / move says; null when it worked (the note's own state tells the rest). */
+/** What a failed Undo says; null when it worked (the note's own state tells the rest). */
 function resultToast(result) {
   if (!result || result.ok === true) return null;
-  if (result.reason === 'changed' && typeof result.file === 'string') {
-    return { kind: 'cant-undo', line: `Can't undo: ${baseName(result.file)} changed since. Open it?`, open: result.file };
+  if (result.reason === 'changed') {
+    return typeof result.file === 'string'
+      ? { kind: 'cant-undo', line: "Can't undo: the inbox changed since.", open: result.file }
+      : { kind: 'cant-undo', line: "Can't undo: the inbox changed since." };
   }
-  if (result.reason === 'changed') return { kind: 'error', line: "Can't undo: the file changed since." };
-  const line = RESULT_LINES[result.reason] || `Couldn't do it: ${reasonText(result.reason)}.`;
+  const line = RESULT_LINES[result.reason] || `Couldn't undo: ${reasonText(result.reason)}.`;
   return { kind: 'error', line };
 }
 
-const TOAST_MS = { filed: 10_000, undone: 2_500, waiting: 10_000, 'cant-undo': 10_000, error: 10_000 };
-const toastMs = (kind) => (Object.prototype.hasOwnProperty.call(TOAST_MS, kind) ? TOAST_MS[kind] : null);
+// The design's Undo window is 10 s; anything else said once stays as long. Undone only confirms.
+const toastMs = (kind) => (kind === 'undone' ? 2_500 : 10_000);
 
 function timeOf(at) {
   if (typeof at !== 'number' || !Number.isFinite(at)) return '';
@@ -153,18 +84,16 @@ function timeOf(at) {
 
 function listRow(row) {
   const r = row && typeof row === 'object' ? row : {};
-  let where = '';
-  if (r.state === 'filed') where = placeText(r.where);
+  let where;
+  if (r.state === 'filed') where = r.undoable === true ? 'In the inbox' : 'In the inbox (changed since)';
   else if (r.state === 'undone') where = 'Undone';
-  else if (r.state === 'asking') where = 'Needs a place';
-  else where = r.reason === null || r.reason === undefined ? 'Filing…' : `Waiting: ${reasonText(r.reason)}`;
+  else where = `Not filed: ${reasonText(r.reason)}`;
   return {
     text: typeof r.text === 'string' ? r.text : '',
     time: timeOf(r.at),
     where,
     undo: r.state === 'filed' && r.undoable === true,
-    move: r.state === 'filed',
-    pick: r.state === 'asking',
+    copy: r.state === 'unfiled',
   };
 }
 
@@ -192,16 +121,6 @@ function button(doc, text, cls, onClick) {
   return b;
 }
 
-/** A <select> whose first option is the prompt; picking anything else calls onPick(value). */
-function picker(doc, prompt, options, onPick) {
-  const s = el(doc, 'select');
-  s.setAttribute('aria-label', prompt);
-  s.appendChild(new doc.defaultView.Option(prompt, ''));
-  for (const o of options) s.appendChild(new doc.defaultView.Option(o.guess ? `${o.label} (best guess)` : o.label, o.value));
-  s.addEventListener('change', () => { if (s.value) onPick(s.value); });
-  return s;
-}
-
 /** The strip's field, chip and counter (app/tab-strip.html). */
 function mountStrip(doc, bridge) {
   const input = doc.getElementById('index-note');
@@ -215,7 +134,7 @@ function mountStrip(doc, bridge) {
     if (ev.key !== 'Enter' || ev.isComposing) return;
     ev.preventDefault();
     const v = input.value;
-    if (v.trim() === '') { bridge.indexConfirm(); return; }
+    if (v.trim() === '') return;
     Promise.resolve(bridge.indexSubmit(v)).then((r) => {
       if (r && r.ok && input.value === v) input.value = '';
     }, () => {});
@@ -233,17 +152,13 @@ function paintStrip(doc, state) {
   const s = state && typeof state === 'object' ? state : {};
   const chip = doc.getElementById('index-chip');
   const count = doc.getElementById('index-count');
-  const input = doc.getElementById('index-note');
   const label = typeof s.label === 'string' && s.label !== '' ? s.label : 'this project';
   chip.textContent = label;
-  chip.title = `Files into ${label}. Click to switch project.`;
+  chip.title = `Adds to ${label}'s backlog inbox. Click to switch project.`;
   count.textContent = counterText(s.counts);
   count.setAttribute('aria-expanded', String(s.listOpen === true));
   const c = s.counts && typeof s.counts === 'object' ? s.counts : {};
-  count.classList.toggle('pending', num(c.waiting) > 0 || num(c.asking) > 0);
-  input.title = s.mode === 'direct'
-    ? 'Type a note and press Enter: it is filed in the docs (Ctrl+Alt+N, Esc to leave)'
-    : 'Type a note and press Enter: it asks where it goes before anything is written (Ctrl+Alt+N, Esc to leave)';
+  count.classList.toggle('pending', num(c.unfiled) > 0);
 }
 
 /** The toast or the list (app/indexing-overlay.html?part=toast|list). */
@@ -279,8 +194,7 @@ function mountOverlay(doc, bridge, part) {
       if (key !== timerKey) {
         clearTimeout(timer);
         timerKey = key;
-        const ms = kind ? toastMs(kind) : null;
-        if (ms !== null) { const seqNow = s.toast.seq; timer = setTimeout(() => bridge.dismiss(seqNow), ms); }
+        if (kind) { const seqNow = s.toast.seq; timer = setTimeout(() => bridge.dismiss(seqNow), toastMs(kind)); }
       }
     }
     report();
@@ -289,59 +203,36 @@ function mountOverlay(doc, bridge, part) {
   return true;
 }
 
-function rowsOf(s) {
-  return s && s.snapshot && Array.isArray(s.snapshot.list) ? s.snapshot.list : [];
-}
+const rowsOf = (s) => (s && s.snapshot && Array.isArray(s.snapshot.list) ? s.snapshot.list : []);
 
 function toastNode(doc, s, bridge) {
   if (!s || !s.toast) return null;
-  const titles = s.snapshot ? s.snapshot.titles : {};
   const row = rowsOf(s).find(n => n.id === s.toast.id) || null;
   const failed = resultToast(s.toast.result);
-  const m = failed || (row ? toastModel(row, titles) : null);
+  const m = failed || (row ? toastModel(row) : null);
   if (!m) return null;
   const box = el(doc, 'div', `toast ${m.kind}`);
   box.dataset.kind = m.kind;
-  const head = box.appendChild(el(doc, 'div', 't1'));
-  if (m.kind === 'filing') head.appendChild(el(doc, 'span', 'spin'));
-  if (m.kind === 'filed') {
-    head.appendChild(el(doc, 'span', null, 'Filed:'));
-    head.appendChild(el(doc, 'span', 'dest', placeText(row.where)));
-  } else {
-    head.appendChild(el(doc, 'span', m.kind === 'asking' ? 'ask' : null, m.line));
-  }
-  if (!failed && row) box.appendChild(el(doc, 'div', 'note', short(row.text, 90))).title = row.text;
+  box.appendChild(el(doc, 'div', 't1', m.line));
+  if (!failed && row) box.appendChild(el(doc, 'div', 'note', short(m.note, 90))).title = row.text;
   const acts = el(doc, 'div', 'acts');
-  if (m.kind === 'filed') {
-    if (m.undo) acts.appendChild(button(doc, 'Undo', null, () => bridge.undo(row.id)));
-    acts.appendChild(picker(doc, 'Move to…', pickerOptions(row, titles, { moving: true }), (v) => bridge.move(row.id, v)));
-  } else if (m.kind === 'asking') {
-    const opts = m.options || [];
-    if (opts.length) acts.appendChild(button(doc, `File it (Enter)`, 'primary', () => bridge.choose(row.id, opts[0].value)));
-    acts.appendChild(picker(doc, 'Put it in…', opts, (v) => bridge.choose(row.id, v)));
-    acts.appendChild(button(doc, 'Not now', null, () => bridge.dismiss(s.toast.seq)));
-  } else if (m.kind === 'cant-undo') {
-    acts.appendChild(button(doc, 'Open', null, () => bridge.open(m.open)));
-  }
+  if (!failed && m.undo) acts.appendChild(button(doc, 'Undo', null, () => bridge.undo(row.id)));
+  if (!failed && m.copy) acts.appendChild(button(doc, 'Copy', null, () => bridge.copy(row.id)));
+  if (failed && failed.open) acts.appendChild(button(doc, 'Open the backlog', null, () => bridge.open(failed.open)));
   if (acts.childElementCount) box.appendChild(acts);
-  const ms = toastMs(m.kind);
-  if (ms !== null) {
-    const bar = box.appendChild(el(doc, 'div', 'bar'));
-    const fill = bar.appendChild(el(doc, 'i'));
-    fill.style.animationDuration = `${ms}ms`;
-  }
+  const bar = box.appendChild(el(doc, 'div', 'bar'));
+  bar.appendChild(el(doc, 'i')).style.animationDuration = `${toastMs(m.kind)}ms`;
   return box;
 }
 
 function listNode(doc, s, bridge) {
   if (!s || s.listOpen !== true) return null;
-  const titles = s.snapshot ? s.snapshot.titles : {};
   const box = el(doc, 'div', 'pop');
   const head = box.appendChild(el(doc, 'div', 'head'));
   head.appendChild(el(doc, 'span', null, `Today · ${typeof s.label === 'string' ? s.label : ''}`));
   head.appendChild(button(doc, '✕', 'x', () => bridge.closeList())).title = 'Close (Esc)';
   const rows = rowsOf(s);
-  if (rows.length === 0) box.appendChild(el(doc, 'div', 'empty', 'Nothing filed today.'));
+  if (rows.length === 0) box.appendChild(el(doc, 'div', 'empty', 'Nothing added today.'));
   for (const r of rows) {
     const lr = listRow(r);
     const line = box.appendChild(el(doc, 'div', `row ${r.state}`));
@@ -350,21 +241,13 @@ function listNode(doc, s, bridge) {
     line.appendChild(el(doc, 'span', 'where', lr.where));
     const acts = el(doc, 'span', 'mini');
     if (lr.undo) acts.appendChild(button(doc, 'Undo', null, () => bridge.undo(r.id)));
-    if (lr.move) acts.appendChild(picker(doc, 'Move to…', pickerOptions(r, titles, { moving: true }), (v) => bridge.move(r.id, v)));
-    if (lr.pick) {
-      const opts = pickerOptions(r, titles);
-      if (opts.length) acts.appendChild(button(doc, 'File it', 'primary', () => bridge.choose(r.id, opts[0].value))).title = opts[0].label;
-      acts.appendChild(picker(doc, 'Put it in…', opts, (v) => bridge.choose(r.id, v)));
-    }
+    if (lr.copy) acts.appendChild(button(doc, 'Copy', null, () => bridge.copy(r.id)));
     if (acts.childElementCount) line.appendChild(acts);
   }
   return box;
 }
 
-const api = {
-  counterText, placeText, reasonText, pickerOptions, choiceOf, toastModel, resultToast, toastMs, listRow, short, timeOf,
-  mountStrip, paintStrip, mountOverlay,
-};
+const api = { counterText, reasonText, toastModel, resultToast, toastMs, listRow, short, timeOf, mountStrip, paintStrip, mountOverlay };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

@@ -10,8 +10,7 @@
  *   CLAUDE_CUSTOM_OLLAMA_URL         the where-are-we summary talks to this Ollama, not 127.0.0.1:11434 (verify/probe-where-summary.js)
  *   CLAUDE_CUSTOM_SUMMARY_DIR        its summaries and GPU slot live here, not in .harness/state
  *   CLAUDE_CUSTOM_SUMMARY_POWER      'mains' | 'battery': the power state it sees, so a probe doesn't depend on the charger
- *   CLAUDE_CUSTOM_INDEXING_JOURNAL   the indexing field's journal, not .harness/state (verify/probe-indexing-strip.js);
- *                                    it also uses the Ollama, slot folder and power seams above
+ *   CLAUDE_CUSTOM_INDEXING_JOURNAL   the indexing field's journal, not .harness/state (verify/probe-indexing-strip.js)
  *
  * They're read by the production host and main, so a seam that leaks in (a shell that exported one) must be
  * visible: announce() logs one line naming every active seam, and a fixture that can't be read or isn't gh's

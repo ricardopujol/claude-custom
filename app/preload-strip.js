@@ -3,10 +3,10 @@
  * The tab strip page's bridge (PR 2, worktree tabs). The strip is the window's
  * OWN page; the tabs' pages are separate views with app/preload.js.
  *
- * Nineteen members and no more: nine ways to ask main for something and two ways
+ * Eighteen members and no more: nine ways to ask main for something and two ways
  * to hear what main pushes (the model, and the accent colour: a #rrggbb, or
  * null when the selected tab hasn't reported one), plus the indexing field's
- * six asks and two pushes (#66). Layout pass L2: minimise and
+ * five asks and two pushes (#66). Layout pass L2: minimise and
  * close the window (only drawn when it's frameless). PR 2: select a tab, close
  * a tab, open a tab's context menu. PR 3: open the `+` menu (New branch… / Reopen), submit the
  * branch form, and cancel it. Windowless sessions PR 2: open the ▾ menu of
@@ -43,10 +43,9 @@ contextBridge.exposeInMainWorld('strip', {
   winMinimize: () => ipcRenderer.send('strip:winMinimize'),
   winClose: () => ipcRenderer.send('strip:winClose'),
   // Backlog #66: the indexing field (app/indexing-display.js mountStrip; main's half is app/indexing-bridge.js).
-  // Submit a note, Enter on an empty field (file an asking note at its best guess), the field's focus (so a poll
-  // doesn't take the keyboard), Esc (back to the tab), the project chip, the counter (the list); and two pushes.
+  // Submit a note, the field's focus (so a poll doesn't take the keyboard), Esc (back to the tab), the project chip,
+  // the counter (the list); and two pushes.
   indexSubmit: (text) => ipcRenderer.invoke('strip:indexSubmit', text),
-  indexConfirm: () => ipcRenderer.send('strip:indexConfirm'),
   indexFocus: (on) => ipcRenderer.send('strip:indexFocus', on),
   indexLeave: () => ipcRenderer.send('strip:indexLeave'),
   indexChip: () => ipcRenderer.send('strip:indexChip'),

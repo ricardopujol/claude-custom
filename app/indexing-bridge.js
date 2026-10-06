@@ -1,12 +1,13 @@
 'use strict';
 /**
- * Main's half of the indexing field (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md pick 1: a field in the
- * strip that files, Undo in a toast; pick 2: the window's project, switched from the chip; "Claude's call" 4, 5, 8, 9).
- * Electron is injected, so this is tested without a window (test/indexing-bridge.test.js).
+ * Main's half of the indexing field (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md "Revised 2026-10-05
+ * (evening)": a field in the strip, Enter appends the note verbatim to the selected project's backlog `## Inbox`, Undo in a
+ * 10 s toast and in the "N filed" list; the chip switches project). Electron is injected, so this is tested without a
+ * window (test/indexing-bridge.test.js).
  *
- *   createIndexingBridge({ ipcMain, Menu, shell, makeView, overlayFile, getWin, isStrip, service, project, docsFor,
- *                          projects, viewTop, focusSelected, setFieldFocused, journalStamp, now })
- *     -> { push(force), raise(), focusField(), setAccent(hex), start(ms), stop() }
+ *   createIndexingBridge({ ipcMain, Menu, shell, copyText, makeView, overlayFile, getWin, isStrip, service, project,
+ *                          docsFor, projects, viewTop, focusSelected, setFieldFocused, journalStamp, now })
+ *     -> { push(force), raise(), focusField(), setAccent(hex), relayout(), start(ms), stop() }
  *
  * THE OVERLAY. The tab views cover everything under the 34 px strip, so the toast (bottom right) and the "N filed" list
  * (top right, under the strip) are two small WebContentsViews of app/indexing-overlay.html, stacked over the tab views
@@ -15,23 +16,19 @@
  * a tab view.
  *
  * CHANNELS, each answered only from its own page (a handler that answers anyone is not a boundary):
- *   strip  -> main  strip:indexSubmit (invoke), strip:indexConfirm, strip:indexFocus, strip:indexLeave, strip:indexChip,
- *                   strip:indexList
- *   main -> strip   strip-index { label, counts, mode, listOpen }, strip-index-focus
- *   overlay -> main indexing:choose / indexing:undo / indexing:move (invoke), indexing:open, indexing:dismiss,
- *                   indexing:size, indexing:closeList, indexing:ready
+ *   strip  -> main  strip:indexSubmit (invoke), strip:indexFocus, strip:indexLeave, strip:indexChip, strip:indexList
+ *   main -> strip   strip-index { label, counts, listOpen }, strip-index-focus
+ *   overlay -> main indexing:undo (invoke), indexing:copy, indexing:open, indexing:dismiss, indexing:size,
+ *                   indexing:closeList, indexing:ready
  *   main -> overlay indexing-state { part, snapshot, toast: { id, seq, result } | null, listOpen, accent, label }
  *
  * THE TOAST follows the note typed last in this window (or the one acted on last from the list), and shows what that
- * note's state says (app/indexing-display.js toastModel); `result` is a choose/undo/move that didn't work, said once.
- * A "waiting" toast hides after its 10 s but comes back (a new seq) when that note stops waiting, so the question
- * "Where should this go?" is never lost to a slow model; a dismissed asking or filed toast stays gone.
- * Enter on an empty field files an asking note at its best guess: propose mode's "File it (Enter)".
- *
- * Open is allowed only for the project's own backlog and history files.
+ * note's state says (app/indexing-display.js toastModel); `result` is an Undo that didn't work, said once. A "not filed
+ * yet" toast hides after its 10 s but comes back (a new seq) when that note is filed; a dismissed "added" toast stays
+ * gone. Undo is always for the selected project (the service re-derives the file from it). Copy puts a note's own words
+ * on the clipboard, for a note in this project's list only. Open is allowed only for the project's own backlog.
  */
 
-const display = require('./indexing-display');
 const { samePath } = require('../host/project-layout');
 
 const NOTE_MAX = 10_000;
@@ -57,7 +54,7 @@ function overlayBounds(part, { width, height, top }, reported) {
 }
 
 function createIndexingBridge({
-  ipcMain, Menu, shell, makeView, overlayFile, getWin, isStrip, service, project: initialProject, docsFor, projects,
+  ipcMain, Menu, shell, copyText = () => {}, makeView, overlayFile, getWin, isStrip, service, project: initialProject, docsFor, projects,
   viewTop, focusSelected = () => {}, setFieldFocused = () => {}, journalStamp = () => null, now = Date.now,
 }) {
   let project = { ...initialProject };
@@ -82,7 +79,7 @@ function createIndexingBridge({
     for (const p of ['toast', 'list']) if (views[p] && views[p].webContents === e.sender) return p;
     return null;
   };
-  const active = (part) => (part === 'toast' ? toast !== null && !toast.hiddenWhileWaiting : listOpen);
+  const active = (part) => (part === 'toast' ? toast !== null && !toast.hiddenWhileUnfiled : listOpen);
 
   function viewFor(part) {
     if (views[part]) return views[part];
@@ -131,14 +128,14 @@ function createIndexingBridge({
     if (!w) return;
     let snapshot;
     try { snapshot = service.snapshot(project.root); } catch { return; }
-    // A waiting toast that timed out comes back once its note stops waiting: the question (or the place) is news.
-    if (toast && toast.hiddenWhileWaiting) {
+    // A "not filed yet" toast that timed out comes back once its note is filed: that's news.
+    if (toast && toast.hiddenWhileUnfiled) {
       const row = (snapshot.list || []).find(n => n.id === toast.id);
       if (!row) toast = null;
-      else if (row.state !== 'waiting') showToast(toast.id);
+      else if (row.state !== 'unfiled') showToast(toast.id);
     }
-    const shownToast = toast && !toast.hiddenWhileWaiting ? toast : null;
-    const strip = { label: project.label, counts: snapshot.counts, mode: snapshot.mode, listOpen };
+    const shownToast = toast && !toast.hiddenWhileUnfiled ? toast : null;
+    const strip = { label: project.label, counts: snapshot.counts, listOpen };
     const sKey = JSON.stringify(strip);
     if (force || sKey !== lastStrip) {
       lastStrip = sKey;
@@ -175,20 +172,6 @@ function createIndexingBridge({
     const r = service.submit(project.root, text);
     if (r && r.ok) { showToast(r.id); push(true); kick(); }
     return r;
-  });
-
-  ipcMain.on('strip:indexConfirm', (e) => {
-    if (!fromStrip(e) || !toast || toast.result) return;
-    let snapshot;
-    try { snapshot = service.snapshot(project.root); } catch { return; }
-    const row = (snapshot.list || []).find(n => n.id === toast.id);
-    if (!row || row.state !== 'asking') return;
-    const best = display.pickerOptions(row, snapshot.titles)[0];
-    const choice = best ? display.choiceOf(best.value) : null;
-    if (!choice) return;
-    const r = service.choose(row.id, choice);
-    showToast(row.id, r && r.ok ? null : r);
-    push(true);
   });
 
   ipcMain.on('strip:indexFocus', (e, on) => {
@@ -235,21 +218,22 @@ function createIndexingBridge({
     return r;
   };
 
-  ipcMain.handle('indexing:choose', (e, id, value) => act(e, id, () => {
-    const c = display.choiceOf(value);
-    return c ? service.choose(id, c) : { ok: false, reason: 'bad-target' };
-  }));
-  ipcMain.handle('indexing:move', (e, id, value) => {
-    if (partOf(e) === null) return null;
-    if (!display.choiceOf(value)) return { ok: false, reason: 'bad-target' };
-    return act(e, id, () => service.move(id, display.choiceOf(value)));
+  // Always for the selected project: the service re-derives the backlog from it (Miguel I4, PR #121).
+  ipcMain.handle('indexing:undo', (e, id) => act(e, id, () => service.undo(id, project.root)));
+
+  // A note's own words onto the clipboard (a note that wasn't filed lives only in the journal), for a note of this
+  // project's list only.
+  ipcMain.on('indexing:copy', (e, id) => {
+    if (partOf(e) === null || !isId(id)) return;
+    let row = null;
+    try { row = (service.snapshot(project.root).list || []).find(n => n.id === id) || null; } catch { row = null; }
+    if (row && typeof row.text === 'string') { try { copyText(row.text); } catch { /* the clipboard is busy */ } }
   });
-  ipcMain.handle('indexing:undo', (e, id) => act(e, id, () => service.undo(id)));
 
   ipcMain.on('indexing:open', (e, file) => {
     if (partOf(e) === null || typeof file !== 'string') return;
     const docs = docsFor(project.root);
-    if (!docs || docs.ok !== true || !(samePath(file, docs.backlog) || samePath(file, docs.history))) return;
+    if (!docs || docs.ok !== true || !samePath(file, docs.backlog)) return;
     Promise.resolve(shell.openPath(file)).catch(() => {});
   });
 
@@ -257,7 +241,7 @@ function createIndexingBridge({
     if (partOf(e) !== 'toast' || !toast || toast.seq !== shownSeq) return;
     let row = null;
     try { row = (service.snapshot(project.root).list || []).find(n => n.id === toast.id) || null; } catch { row = null; }
-    if (!toast.result && row && row.state === 'waiting') toast.hiddenWhileWaiting = true;
+    if (!toast.result && row && row.state === 'unfiled') toast.hiddenWhileUnfiled = true;
     else toast = null;
     push(true);
   });

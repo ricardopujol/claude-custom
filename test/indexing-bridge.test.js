@@ -1,9 +1,9 @@
 'use strict';
 /**
- * Main's half of the indexing field (app/indexing-bridge.js, backlog #66, DESIGN_INDEXING_ASSISTANT.md pick 1 and
- * "Claude's call" 4, 5, 8 and 9), with Electron faked: every channel gated on its own page, the toast follows the note
- * just typed, Enter on an empty field files an asking note at its best guess, the overlay views sit over the tab views
- * where the toast and the list go, and the chip switches project.
+ * Main's half of the indexing field (app/indexing-bridge.js, backlog #66, DESIGN_INDEXING_ASSISTANT.md "Revised
+ * 2026-10-05 (evening)"), with Electron faked: every channel gated on its own page, the toast follows the note just
+ * typed, Undo is for the selected project, Copy puts a note that wasn't filed on the clipboard, the overlay views sit
+ * over the tab views where the toast and the list go, and the chip switches project.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -19,6 +19,7 @@ function fakeIpc() {
     emit: (ch, sender, ...args) => on.get(ch)({ sender }, ...args),
     invoke: (ch, sender, ...args) => handle.get(ch)({ sender }, ...args),
     has: (ch) => on.has(ch) || handle.has(ch),
+    names: () => [...on.keys(), ...handle.keys()],
   };
 }
 
@@ -40,6 +41,8 @@ function fakeView() {
   };
 }
 
+const ROW = (over) => ({ id: 'n1', text: 'x', at: 1, state: 'filed', reason: null, undoable: true, ...over });
+
 function setup({ snapshot } = {}) {
   const ipcMain = fakeIpc();
   const strip = { sent: [], send(ch, p) { this.sent.push([ch, p]); }, isDestroyed: () => false, focus() {} };
@@ -51,13 +54,11 @@ function setup({ snapshot } = {}) {
     getContentSize: () => [1200, 800],
     contentView: { addChildView: (v) => added.push(v), removeChildView: () => {} },
   };
-  const calls = { submit: [], choose: [], undo: [], move: [], tick: 0, opened: [], focused: 0, fieldFocus: [], menu: null };
-  let snap = snapshot || { mode: 'propose', counts: { filed: 0, waiting: 0, asking: 0 }, list: [], titles: {} };
+  const calls = { submit: [], undo: [], tick: 0, opened: [], copied: [], focused: 0, fieldFocus: [], menu: null };
+  let snap = snapshot || { counts: { filed: 0, unfiled: 0 }, list: [] };
   const service = {
-    submit: (root, text) => { calls.submit.push([root, text]); return text.trim() ? { ok: true, id: 'n1' } : { ok: false, reason: 'empty' }; },
-    choose: (id, c) => { calls.choose.push([id, c]); return { ok: true }; },
-    undo: (id) => { calls.undo.push(id); return { ok: false, reason: 'changed', file: 'C:\\p\\dev\\documentation\\P_BACKLOG.md' }; },
-    move: (id, c) => { calls.move.push([id, c]); return { ok: true }; },
+    submit: (root, text) => { calls.submit.push([root, text]); return text.trim() ? { ok: true, id: 'n1', filed: true } : { ok: false, reason: 'empty' }; },
+    undo: (id, root) => { calls.undo.push([id, root]); return { ok: false, reason: 'changed', file: 'C:\\p\\dev\\documentation\\P_BACKLOG.md' }; },
     tick: async () => { calls.tick += 1; },
     snapshot: () => snap,
   };
@@ -65,13 +66,14 @@ function setup({ snapshot } = {}) {
     ipcMain,
     Menu: { buildFromTemplate: (t) => ({ popup: () => { calls.menu = t; } }) },
     shell: { openPath: async (f) => { calls.opened.push(f); return ''; } },
+    copyText: (s) => calls.copied.push(s),
     makeView: () => { const v = fakeView(); v.webContents.owner = v; views.push(v); return v; },
     overlayFile: 'overlay.html',
     getWin: () => win,
     isStrip: (sender) => sender === strip,
     service,
     project: { root: 'C:\\p', label: 'p' },
-    docsFor: () => ({ ok: true, backlog: 'C:\\p\\dev\\documentation\\P_BACKLOG.md', history: 'C:\\p\\dev\\documentation\\P_HISTORY.md' }),
+    docsFor: () => ({ ok: true, backlog: 'C:\\p\\dev\\documentation\\P_BACKLOG.md' }),
     projects: async () => [{ root: 'C:\\p', label: 'p', current: true }, { root: 'C:\\q', label: 'q', current: false }],
     viewTop: () => 34,
     focusSelected: () => { calls.focused += 1; },
@@ -85,27 +87,25 @@ const lastStrip = (t) => t.strip.sent.filter(([ch]) => ch === 'strip-index').pop
 const overlayOf = (t, part) => t.views.find(v => v.loaded && v.loaded.o.query.part === part);
 const lastOverlay = (v) => v.webContents.sent.filter(([ch]) => ch === 'indexing-state').pop()[1];
 
-test('every channel is registered and answers only its own page', async () => {
+test('the channels are exactly these, and each answers only its own page', async () => {
   const t = setup();
-  for (const ch of ['strip:indexSubmit', 'strip:indexConfirm', 'strip:indexFocus', 'strip:indexLeave', 'strip:indexChip', 'strip:indexList',
-    'indexing:choose', 'indexing:undo', 'indexing:move', 'indexing:open', 'indexing:dismiss', 'indexing:size', 'indexing:closeList', 'indexing:ready']) {
-    assert.ok(t.ipcMain.has(ch), ch);
-  }
+  assert.deepStrictEqual(t.ipcMain.names().sort(), ['indexing:closeList', 'indexing:copy', 'indexing:dismiss', 'indexing:open',
+    'indexing:ready', 'indexing:size', 'indexing:undo', 'strip:indexChip', 'strip:indexFocus', 'strip:indexLeave', 'strip:indexList',
+    'strip:indexSubmit'].sort());
   assert.strictEqual(await t.ipcMain.invoke('strip:indexSubmit', { not: 'the strip' }, 'x'), null);
   assert.deepStrictEqual(t.calls.submit, []);
   assert.strictEqual(await t.ipcMain.invoke('indexing:undo', t.strip, 'n1'), null, 'the strip is not the overlay');
   assert.deepStrictEqual(t.calls.undo, []);
 });
 
-test('submit files into this window\'s project, shows the toast for that note, and kicks a tick', async () => {
+test('submit adds to this window\'s project, shows the toast for that note, and kicks a tick', async () => {
   const t = setup();
   const r = await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'tabs glow');
-  assert.deepStrictEqual(r, { ok: true, id: 'n1' });
+  assert.deepStrictEqual(r, { ok: true, id: 'n1', filed: true });
   assert.deepStrictEqual(t.calls.submit, [['C:\\p', 'tabs glow']]);
   assert.ok(t.calls.tick >= 1);
   const toast = overlayOf(t, 'toast');
-  assert.ok(toast, 'the toast view was made');
-  assert.ok(t.added.includes(toast), 'and stacked on the window');
+  assert.ok(toast && t.added.includes(toast), 'the toast view was made and stacked on the window');
   assert.strictEqual(lastOverlay(toast).toast.id, 'n1');
 });
 
@@ -116,52 +116,40 @@ test('submit refuses a note that is not a string or is over 10,000 characters, b
   assert.deepStrictEqual(t.calls.submit, []);
 });
 
-test('the strip is told the project, the counts and whether the list is open', async () => {
-  const t = setup({ snapshot: { mode: 'propose', counts: { filed: 2, waiting: 1, asking: 0 }, list: [], titles: {} } });
+test('the strip is told the project, the counts and whether the list is open', () => {
+  const t = setup({ snapshot: { counts: { filed: 2, unfiled: 1 }, list: [] } });
   t.bridge.push(true);
-  assert.deepStrictEqual(lastStrip(t), { label: 'p', counts: { filed: 2, waiting: 1, asking: 0 }, mode: 'propose', listOpen: false });
+  assert.deepStrictEqual(lastStrip(t), { label: 'p', counts: { filed: 2, unfiled: 1 }, listOpen: false });
 });
 
-test('Enter on an empty field files the asking note in the toast at its best guess', async () => {
-  const t = setup();
-  await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'wand idea');
-  t.setSnap({ mode: 'propose', counts: { filed: 0, waiting: 0, asking: 1 }, titles: { 61: 'Wand' },
-    list: [{ id: 'n1', text: 'wand idea', state: 'asking', guess: { kind: 'idea', target: 61, title: null, sure: true }, options: [61] }] });
-  t.ipcMain.emit('strip:indexConfirm', t.strip);
-  assert.deepStrictEqual(t.calls.choose, [['n1', { target: 61 }]]);
-});
-
-test('Enter on an empty field does nothing when the toast is not asking', async () => {
-  const t = setup();
-  t.ipcMain.emit('strip:indexConfirm', t.strip);
-  await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
-  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'filed', where: { target: 61 } }] });
-  t.ipcMain.emit('strip:indexConfirm', t.strip);
-  assert.deepStrictEqual(t.calls.choose, []);
-});
-
-test('a choice from the overlay is checked and turned into the service\'s choice; a bad value is refused', async () => {
-  const t = setup();
-  t.ipcMain.emit('strip:indexList', t.strip);                 // opens the list view
-  const list = overlayOf(t, 'list');
-  assert.deepStrictEqual(await t.ipcMain.invoke('indexing:choose', list.webContents, 'n1', 'history:learning'), { ok: true });
-  assert.deepStrictEqual(t.calls.choose, [['n1', { target: 'history', kind: 'learning' }]]);
-  assert.deepStrictEqual(await t.ipcMain.invoke('indexing:move', list.webContents, 'n1', 'bogus'), { ok: false, reason: 'bad-target' });
-  assert.deepStrictEqual(t.calls.move, []);
-  assert.deepStrictEqual(await t.ipcMain.invoke('indexing:choose', list.webContents, 42, 'new'), { ok: false, reason: 'bad-id' });
-});
-
-test('an Undo that could not happen is shown in the toast, and Open is allowed for that project\'s docs only', async () => {
+test('Undo is asked for the selected project, and one that could not happen is shown in the toast', async () => {
   const t = setup();
   t.ipcMain.emit('strip:indexList', t.strip);
   const list = overlayOf(t, 'list');
   const r = await t.ipcMain.invoke('indexing:undo', list.webContents, 'n1');
   assert.strictEqual(r.reason, 'changed');
+  assert.deepStrictEqual(t.calls.undo, [['n1', 'C:\\p']]);
+  assert.deepStrictEqual(lastOverlay(overlayOf(t, 'toast')).toast.result, r);
+  assert.deepStrictEqual(await t.ipcMain.invoke('indexing:undo', list.webContents, 42), { ok: false, reason: 'bad-id' });
+});
+
+test('Open is allowed for the project\'s own backlog only', async () => {
+  const t = setup();
+  await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
   const toast = overlayOf(t, 'toast');
-  assert.deepStrictEqual(lastOverlay(toast).toast.result, r);
   t.ipcMain.emit('indexing:open', toast.webContents, 'C:\\p\\dev\\documentation\\P_BACKLOG.md');
   t.ipcMain.emit('indexing:open', toast.webContents, 'C:\\Windows\\system32\\calc.exe');
   assert.deepStrictEqual(t.calls.opened, ['C:\\p\\dev\\documentation\\P_BACKLOG.md']);
+});
+
+test('Copy puts a note\'s own words on the clipboard, for a note of this project only', async () => {
+  const t = setup({ snapshot: { counts: {}, list: [ROW({ state: 'unfiled', reason: 'no-backlog', text: 'my idea\nline two' })] } });
+  t.ipcMain.emit('strip:indexList', t.strip);
+  const list = overlayOf(t, 'list');
+  t.ipcMain.emit('indexing:copy', list.webContents, 'n1');
+  t.ipcMain.emit('indexing:copy', list.webContents, 'not-in-the-list');
+  t.ipcMain.emit('indexing:copy', t.strip, 'n1');
+  assert.deepStrictEqual(t.calls.copied, ['my idea\nline two']);
 });
 
 test('dismiss ends the toast only for the toast it was shown for (a newer one stays)', async () => {
@@ -177,31 +165,27 @@ test('dismiss ends the toast only for the toast it was shown for (a newer one st
   assert.strictEqual(toast.visible, false);
 });
 
-test('a waiting toast that timed out comes back, with a new seq, once its note gets a place or needs one', async () => {
+test('a "not filed yet" toast that timed out comes back, with a new seq, once its note is filed', async () => {
   const t = setup();
   await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
   const toast = overlayOf(t, 'toast');
-  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'waiting', reason: 'busy' }] });
+  t.setSnap({ counts: {}, list: [ROW({ state: 'unfiled', reason: 'busy', undoable: false })] });
   t.bridge.push(true);
   const seq = lastOverlay(toast).toast.seq;
   t.ipcMain.emit('indexing:dismiss', toast.webContents, seq);
-  assert.strictEqual(lastOverlay(toast).toast, null, 'hidden while it waits');
-  t.bridge.push(true);
-  assert.strictEqual(lastOverlay(toast).toast, null, 'still waiting: still hidden');
-  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'asking', guess: {}, options: [] }] });
+  assert.strictEqual(lastOverlay(toast).toast, null, 'hidden while it isn\'t filed');
+  t.setSnap({ counts: {}, list: [ROW()] });
   t.bridge.push();
   const back = lastOverlay(toast).toast;
   assert.ok(back && back.id === 'n1' && back.seq > seq, JSON.stringify(back));
 });
 
-test('a dismissed asking or filed toast stays gone', async () => {
-  const t = setup();
+test('a dismissed "added" toast stays gone', async () => {
+  const t = setup({ snapshot: { counts: {}, list: [ROW()] } });
   await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
   const toast = overlayOf(t, 'toast');
-  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'asking', guess: {}, options: [] }] });
-  t.bridge.push(true);
   t.ipcMain.emit('indexing:dismiss', toast.webContents, lastOverlay(toast).toast.seq);
-  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'filed', where: { target: 'new', n: 3 } }] });
+  t.setSnap({ counts: {}, list: [ROW({ state: 'undone' })] });
   t.bridge.push(true);
   assert.strictEqual(lastOverlay(toast).toast, null);
 });
@@ -228,10 +212,10 @@ test('the list closes on a blur only after it was clicked into (opening it never
   t.ipcMain.emit('strip:indexList', t.strip);
   const list = overlayOf(t, 'list');
   list.webContents.fire('blur');
-  assert.strictEqual(lastStrip(t).listOpen, true, 'a blur before any focus (the strip kept the keyboard) leaves it open');
+  assert.strictEqual(lastStrip(t).listOpen, true);
   list.webContents.fire('focus');
   list.webContents.fire('blur');
-  assert.strictEqual(lastStrip(t).listOpen, false, 'clicked into, then away: closed');
+  assert.strictEqual(lastStrip(t).listOpen, false);
 });
 
 test('overlayBounds: a narrow window keeps a gutter; a tall report is capped to the space there is', () => {
@@ -269,7 +253,7 @@ test('focusField (Ctrl+Alt+N) tells the strip to focus the field', () => {
   assert.ok(t.strip.sent.some(([ch]) => ch === 'strip-index-focus'));
 });
 
-test('the chip pops the projects; picking one files there from then on', async () => {
+test('the chip pops the projects; picking one adds there from then on, and Undo is for that one', async () => {
   const t = setup();
   t.ipcMain.emit('strip:indexChip', t.strip);
   await new Promise(r => setImmediate(r));
@@ -278,4 +262,6 @@ test('the chip pops the projects; picking one files there from then on', async (
   assert.strictEqual(lastStrip(t).label, 'q');
   await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
   assert.strictEqual(t.calls.submit[0][0], 'C:\\q');
+  await t.ipcMain.invoke('indexing:undo', overlayOf(t, 'toast').webContents, 'n1');
+  assert.strictEqual(t.calls.undo[0][1], 'C:\\q');
 });
