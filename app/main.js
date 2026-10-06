@@ -608,6 +608,8 @@ const canvasViews = createCanvasViews({
   removeChild: (v) => win.contentView.removeChildView(v),
   ownerBounds: (owner) => { for (const v of liveViews) { if (v.webContents === owner) return v.getBounds(); } return null; },
   preloadPath: path.join(__dirname, 'canvas-panel-preload.js'),
+  // a panel made for a tab that is not the selected one must start hidden (a setOwnerVisible that came before it can't be replayed)
+  isOwnerVisible: (owner) => { const sel = selectedView(); return !!sel && sel.webContents === owner; },
   ask: (owner, origin) => new Promise((resolve) => {
     if (owner.isDestroyed()) { resolve('deny'); return; }
     const id = ++canvasAskSeq;

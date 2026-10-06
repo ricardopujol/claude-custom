@@ -23,8 +23,8 @@ class FakeContents extends EventEmitter {
 FakeContents.next = 100;
 
 class FakeSession extends EventEmitter {
-  constructor(name) { super(); this.name = name; this.proxy = null; this.permissionRequest = null; this.permissionCheck = null; this.requestFilter = null; this.order = []; }
-  async setProxy(c) { this.order.push('proxy'); this.proxy = c; }
+  constructor(name, gate) { super(); this.gate = gate; this.name = name; this.proxy = null; this.permissionRequest = null; this.permissionCheck = null; this.requestFilter = null; this.order = []; }
+  async setProxy(c) { this.order.push('proxy'); this.proxy = c; if (this.gate) await new Promise((res) => this.gate.push(res)); }
   setPermissionRequestHandler(fn) { this.permissionRequest = fn; }
   setPermissionCheckHandler(fn) { this.permissionCheck = fn; }
   setDevicePermissionHandler(fn) { this.devicePermission = fn; }
@@ -39,12 +39,13 @@ class FakeView {
 }
 
 function rig(over = {}) {
-  const sessions = {}; const views = []; const children = new Set(); const messages = []; const asked = [];
+  const sessions = {}; const views = []; const children = new Set(); const messages = []; const asked = []; const gate = [];
   let clock = 1000;
   const owner = { id: 7, isDestroyed: () => false };
   const m = createCanvasViews({
     WebContentsView: class extends FakeView { constructor(o) { super(o); views.push(this); } },
-    session: { fromPartition: (p) => (sessions[p] = sessions[p] || new FakeSession(p)) },
+    session: { fromPartition: (p) => (sessions[p] = sessions[p] || new FakeSession(p, over.gateProxy ? gate : null)) },
+    isOwnerVisible: over.isOwnerVisible,
     addChild: (v) => children.add(v), removeChild: (v) => children.delete(v),
     ownerBounds: () => ({ x: 0, y: 40, width: 1200, height: 800 }),
     preloadPath: 'C:/app/canvas-panel-preload.js',
@@ -53,7 +54,8 @@ function rig(over = {}) {
     fetchImpl: over.fetchImpl || (async () => new Response('pong')),
     now: () => clock, log: () => {},
   });
-  return { m, owner, views, sessions, children, messages, asked, tick: (ms) => { clock += ms; } };
+  const release = async () => { while (gate.length) { gate.shift()(); await new Promise((res) => setImmediate(res)); } };
+  return { m, owner, views, sessions, children, messages, asked, gate, release, tick: (ms) => { clock += ms; } };
 }
 const show = (r, extra = {}) => r.m.show(r.owner, { html: '<p>hi</p>', hosts: { approved: [], denied: [] }, rect: { x: 300, y: 100, width: 400, height: 500 }, ...extra });
 
@@ -352,4 +354,100 @@ test('inspect (a probe seam, read-only): where the panel is, whether it shows, a
   assert.strictEqual(r.m.click(r.owner, 30, 40), true);
   assert.deepStrictEqual(wc.sent.map(e => [e.type, e.x, e.y, e.button]), [['mouseMove', 30, 40, undefined], ['mouseDown', 30, 40, 'left'], ['mouseUp', 30, 40, 'left']]);
   assert.strictEqual(r.m.click({ id: 12345 }, 1, 1), false);
+});
+
+// ---- show / hide / tab-switch interleavings while the proxy is being set (PR #122 Dexter F4 / Miguel Y1) ----------------------------
+
+const live = (r) => r.views.filter(v => !v.webContents.closed);
+
+test('two shows before the first one resolves make one view, not two', async () => {
+  const r = rig({ gateProxy: true });
+  const a = show(r, { html: '<p>A</p>' });
+  const b = show(r, { html: '<p>B</p>' });
+  await r.release();
+  await Promise.all([a, b]);
+  assert.strictEqual(r.views.length, 1, 'one WebContentsView for the owner');
+  assert.strictEqual(r.children.size, 1);
+  assert.match(Buffer.from(r.views[0].webContents.loaded.split(',')[1], 'base64').toString('utf8'), /<p>B<\/p>/, 'the later page won');
+});
+
+test('a hide that lands while the proxy is being set stops the view from ever joining the window', async () => {
+  const r = rig({ gateProxy: true });
+  const pending = show(r);
+  r.m.hide(r.owner);
+  await r.release();
+  const out = await pending;
+  assert.strictEqual(r.children.size, 0, 'no view attached after a hide');
+  assert.strictEqual(r.views[0].webContents.closed, true, 'and its contents are closed');
+  assert.strictEqual(r.m.has(r.owner), false);
+  assert.strictEqual(out.ok, false);
+  assert.strictEqual(out.stale, true, 'the answer says it was overtaken, so the page does not show an error for it');
+  assert.deepStrictEqual(r.views[0].webContents.calls.filter(c => c[0] === 'load'), [], 'and nothing was loaded');
+});
+
+test('show, hide, show again before anything resolves: exactly one live view, the second', async () => {
+  const r = rig({ gateProxy: true });
+  const a = show(r, { html: '<p>A</p>' });
+  r.m.hide(r.owner);
+  const b = show(r, { html: '<p>B</p>' });
+  await r.release();
+  await Promise.all([a, b]);
+  assert.strictEqual(live(r).length, 1);
+  assert.strictEqual(r.children.size, 1);
+  assert.ok(r.children.has(live(r)[0]));
+  assert.strictEqual(r.views.length, 2);
+  assert.strictEqual(r.views[0].webContents.closed, true);
+});
+
+test('a tab switch away while the proxy is being set leaves the view hidden once it joins', async () => {
+  const r = rig({ gateProxy: true });
+  const pending = show(r);
+  r.m.setOwnerVisible(r.owner, false);
+  await r.release();
+  await pending;
+  assert.strictEqual(r.views[0].visible, false, 'the tab is in the background: its panel must not float over the selected tab');
+});
+
+test("a view made for a tab that is not selected starts hidden (the owner's visibility is asked, not assumed)", async () => {
+  const r = rig({ isOwnerVisible: () => false });
+  await show(r);
+  assert.strictEqual(r.views[0].visible, false);
+});
+
+test('an owner destroyed while the proxy is being set leaves no view behind', async () => {
+  const owner = Object.assign(new EventEmitter(), { id: 9, isDestroyed: () => false });
+  const r = rig({ gateProxy: true });
+  const pending = r.m.show(owner, { html: '<p>x</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+  owner.emit('destroyed');
+  await r.release();
+  await pending;
+  assert.strictEqual(r.children.size, 0);
+  assert.strictEqual(r.views[0].webContents.closed, true);
+});
+
+test('property: whatever the interleaving of show, hide, tab switches and proxy answers, at most one view is live per tab and the window matches', async () => {
+  const fc = require('fast-check');
+  const op = fc.oneof(fc.constant('show'), fc.constant('show'), fc.constant('hide'), fc.constant('release-one'), fc.constant('tick'),
+    fc.constant('visible'), fc.constant('hidden'));
+  await fc.assert(fc.asyncProperty(fc.array(op, { minLength: 1, maxLength: 14 }), async (ops) => {
+    const world = { visible: true };
+    const r = rig({ gateProxy: true, isOwnerVisible: () => world.visible });
+    const shows = [];
+    let n = 0;
+    const settle = () => new Promise((res) => setImmediate(res));
+    for (const o of ops) {
+      if (o === 'show') shows.push(show(r, { html: `<p>${++n}</p>` }));
+      else if (o === 'hide') r.m.hide(r.owner);
+      else if (o === 'visible' || o === 'hidden') { world.visible = o === 'visible'; r.m.setOwnerVisible(r.owner, world.visible); }
+      else if (o === 'release-one') { const g = r.gate; if (g && g.length) { g.shift()(); } await settle(); }
+      else await settle();
+      assert.ok(live(r).length <= 1, `at most one live view after ${o}`);
+    }
+    await r.release();
+    await Promise.all(shows);
+    assert.ok(live(r).length <= 1);
+    assert.strictEqual(r.children.size, r.m.has(r.owner) ? 1 : 0, 'the window holds a view exactly when the manager has a record');
+    for (const v of r.views) if (!r.children.has(v)) assert.strictEqual(v.webContents.closed, true, 'a view that is not in the window is closed, never leaked');
+    if (r.m.has(r.owner)) assert.strictEqual(live(r)[0].visible, world.visible, "it is visible exactly when the tab is the selected one");
+  }), { numRuns: 300 });
 });

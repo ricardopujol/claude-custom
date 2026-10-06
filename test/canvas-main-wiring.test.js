@@ -69,3 +69,7 @@ test('the tab preload and main agree on every canvas channel, in both directions
   const pushed = [...CODE.matchAll(/owner\.send\('(canvas:[a-z-]+)'/g)].map(m => m[1]).sort();
   assert.deepStrictEqual(heard, pushed);
 });
+
+test("a panel made for a tab asks main whether that tab is the selected one, so it never starts visible over another tab (PR #122 Dexter F4)", () => {
+  assert.match(CODE, /isOwnerVisible: \(owner\) => \{ const sel = selectedView\(\); return !!sel && sel\.webContents === owner; \},/);
+});

@@ -38,14 +38,14 @@ const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width',
 const originList = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))];
 
 function createCanvasViews({ WebContentsView, session, addChild, removeChild, ownerBounds, preloadPath, ask, onMessage,
-  fetchImpl = fetch, now = Date.now, log = () => {} } = {}) {
+  isOwnerVisible = () => true, fetchImpl = fetch, now = Date.now, log = () => {} } = {}) {
   const byOwner = new Map();          // owner contents id -> record
   const byPanel = new Map();          // panel contents id -> record
   let counter = 0;
 
   function applyBounds(rec) {
     const v = rec.view;
-    if (!v || v.webContents.isDestroyed()) return;
+    if (!rec.attached || rec.dead || !v || v.webContents.isDestroyed()) return;       // not in the window yet: the latched state is applied when it is
     const ob = ownerBounds(rec.owner);
     let shown = rec.ownerVisible && !rec.covered && ob && isRect(rec.rect);
     let b = null;
@@ -80,7 +80,9 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     wc.setAudioMuted(true);
   }
 
-  async function create(owner) {
+  // The record is registered SYNCHRONOUSLY, before anything awaits: a hide, a tab switch or a second show that lands while the proxy is
+  // being set must find it (PR #122 Dexter F4 / Miguel Y1). The view joins the window only once the proxy is in place (rec.ready).
+  function begin(owner) {
     counter += 1;
     const partition = `canvas-${owner.id}-${counter}`;       // no `persist:`: nothing outlives the view
     const ses = session.fromPartition(partition);
@@ -91,21 +93,28 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
       disableDialogs: true, safeDialogs: true,
     } });
     const wc = view.webContents;
-    const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: true, html: null, approved: new Set(), denied: new Set(),
-      pending: new Map(), lastInput: -Infinity, spent: true };
+    const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), html: null, approved: new Set(), denied: new Set(),
+      pending: new Map(), lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null };
     wc.on('input-event', (_e, ev) => { if (ev && CLICK_TYPES.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } });
     wc.on('render-process-gone', (_e, d) => log(`[canvas] panel renderer gone: ${d && d.reason}`));
     lockDown(ses, wc);
-    await ses.setProxy(DEAD_PROXY);                          // awaited: nothing may load before the proxy is in place
-    addChild(view);
     byOwner.set(owner.id, rec);
     byPanel.set(wc.id, rec);
     if (typeof owner.once === 'function') owner.once('destroyed', () => destroyRecord(rec));
+    rec.ready = (async () => {
+      await ses.setProxy(DEAD_PROXY);                      // awaited: nothing may load before the proxy is in place
+      if (rec.dead) return false;                          // hidden or destroyed meanwhile: the view never joins the window
+      addChild(view);
+      rec.attached = true;
+      applyBounds(rec);
+      return true;
+    })().catch((err) => { log(`[canvas] could not start the panel: ${err && err.message}`); destroyRecord(rec); return false; });
     return rec;
   }
 
   function destroyRecord(rec) {
-    byOwner.delete(rec.owner.id);
+    rec.dead = true;
+    if (byOwner.get(rec.owner.id) === rec) byOwner.delete(rec.owner.id);
     byPanel.delete(rec.wc.id);
     try { removeChild(rec.view); } catch { /* the window is going away */ }
     try { if (!rec.wc.isDestroyed()) rec.wc.close(); } catch { /* already gone */ }
@@ -121,12 +130,14 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
   async function show(owner, { html, hosts, rect, covered = false } = {}) {
     if (typeof html !== 'string') return { ok: false, error: 'no page' };
     if (Buffer.byteLength(html) > PANEL_LIMITS.htmlBytes) return { ok: false, error: 'the page is too big' };
-    let rec = byOwner.get(owner.id);
-    if (!rec) rec = await create(owner);
+    if (owner && typeof owner.isDestroyed === 'function' && owner.isDestroyed()) return { ok: false, error: 'the tab is gone', stale: true };
+    const rec = byOwner.get(owner.id) || begin(owner);
     setHosts(owner, hosts);
     rec.rect = isRect(rect) ? rect : rec.rect;
     rec.covered = !!covered;
     applyBounds(rec);
+    // A hide (or a newer show that replaced this record) during the proxy await is the last word: this show then has nothing to do.
+    if (!(await rec.ready) || rec.dead) return { ok: false, error: 'the panel was closed before it started', stale: true };
     if (rec.html !== html) {
       rec.html = html;
       const url = 'data:text/html;base64,' + Buffer.from(buildPage(html), 'utf8').toString('base64');
