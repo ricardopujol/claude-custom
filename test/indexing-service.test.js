@@ -239,3 +239,21 @@ test('a journal that fails: submit says so and the backlog is untouched; a tick 
   assert.strictEqual(read(t.backlog), BACKLOG);
   await broken.tick();
 });
+
+test('a retry whose look at the backlog fails (busy) does not write: a failed look is not "not there" (Dexter F1, PR #121)', async () => {
+  let fileCalls = 0;
+  const w = { ...writer, findNote: () => ({ ok: false, reason: 'busy' }), fileNote: (a) => { fileCalls += 1; return writer.fileNote(a); } };
+  const t = setup({ writerImpl: w });
+  t.journal.append({ ev: 'note', id: 'n1', project: t.project, text: 'mine', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  t.journal.append({ ev: 'filing', id: 'n1', at: new Date(2026, 9, 5, 9, 7).getTime() });
+  await t.svc.tick();
+  assert.strictEqual(fileCalls, 0, 'fileNote was not called');
+  assert.strictEqual(read(t.backlog), BACKLOG);
+  const n = t.svc.snapshot(t.project).list[0];
+  assert.deepStrictEqual([n.state, n.reason], ['unfiled', 'busy']);
+  w.findNote = writer.findNote;                                     // the backlog readable again: retried, filed once
+  t.advance(RETRY_MS);
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog).split('· mine').length - 1, 1);
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'filed');
+});
