@@ -35,7 +35,7 @@ function rig(over = {}) {
 }
 
 const ev = (event, payload) => ({ event, payload });
-const edit = (file, extra = {}) => ev('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: file }, agent_id: 'ag1', agent_type: 'electron-pro', ...extra });
+const edit = (file, extra = {}) => ev('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: file }, agent_id: 'ag1', agent_type: 'electron-pro', session_id: 'sess-1', ...extra });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test('an agent\'s Edit in another worktree writes its claim, with the host\'s facts', () => {
@@ -44,8 +44,18 @@ test('an agent\'s Edit in another worktree writes its claim, with the host\'s fa
   assert.strictEqual(r.writes.length, 1);
   assert.deepStrictEqual(r.writes[0], {
     agentId: 'ag1', agent: 'electron-pro', worktree: FEAT, also: [], fromBranch: 'develop', fromRoot: DEV,
-    hostPid: 4242, hostStartedAt: '1000', firstAt: 1000, lastAt: 1000, count: 1,
+    sessionId: 'sess-1', hostPid: 4242, hostStartedAt: '1000', firstAt: 1000, lastAt: 1000, count: 1,
   });
+});
+
+test('the claim names the session its call came from, so a hub card matches its OWN session\'s run (backlog #57, Dexter F5)', () => {
+  const r = rig();
+  r.p.handle(edit(path.join(FEAT, 'a.js'), { session_id: 'sess-2' }));
+  assert.strictEqual(r.writes[0].sessionId, 'sess-2');
+  // a later call that names no session doesn't forget the one already proven
+  r.clock = 2000;
+  r.p.handle(edit(path.join(FEAT, 'b.js'), { session_id: undefined }));
+  assert.strictEqual(r.writes[1].sessionId, 'sess-2');
 });
 
 test('more calls in the same worktree: the count grows, firstAt stays, lastAt moves', () => {

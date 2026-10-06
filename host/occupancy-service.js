@@ -33,7 +33,7 @@ const LABEL_MS = 30_000;
 const proofKey = c => `${c.agentId}|${c.hostPid}|${c.hostStartedAt}`;
 const signatureOf = claims => JSON.stringify([...claims]
   .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0))
-  .map(c => [c.agentId, c.agent, c.worktree, c.also, c.fromBranch, c.fromRoot, c.hostPid, c.hostStartedAt, c.firstAt]));
+  .map(c => [c.agentId, c.agent, c.worktree, c.also, c.fromBranch, c.fromRoot, c.sessionId, c.hostPid, c.hostStartedAt, c.firstAt]));
 
 function createOccupancyService({
   dir, ensureDir = () => {}, startTimes, onChange = () => {}, fsImpl = fs, watch = watchGlobalDir,

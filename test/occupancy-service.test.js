@@ -261,7 +261,7 @@ test('a platform that can\'t watch leaves the timer working', async () => {
 
 const { signatureOf } = require('../host/occupancy-service');
 const settle = async () => { for (let i = 0; i < 25; i += 1) await new Promise(resolve => setImmediate(resolve)); };
-const fields = c => [c.agentId, c.agent, c.worktree, c.also, c.fromBranch, c.fromRoot, c.hostPid, c.hostStartedAt, c.firstAt];
+const fields = c => [c.agentId, c.agent, c.worktree, c.also, c.fromBranch, c.fromRoot, c.sessionId, c.hostPid, c.hostStartedAt, c.firstAt];
 const { serializeClaim } = require('../host/agent-occupancy');
 
 test('signatureOf: the same claims in any order give the same signature; equal ids keep their input order', () => {
@@ -289,6 +289,8 @@ test('signatureOf: every field the signature names changes it, and lastAt / coun
   const variants = {
     agentId: 'other', agent: 'someone-else', worktree: path.resolve('/occ-svc/elsewhere'), also: ['y'],
     fromBranch: 'main', fromRoot: path.resolve('/occ-svc/other-root'), hostPid: 9999, hostStartedAt: '2000', firstAt: 555,
+    // the hub card matches on it (backlog #57): a claim that moves to another session is news
+    sessionId: 'another-session',
   };
   for (const [field, value] of Object.entries(variants)) {
     assert.notStrictEqual(signatureOf([{ ...base, [field]: value }]), before, `${field} must change the signature`);

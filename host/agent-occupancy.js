@@ -2,7 +2,7 @@
 /**
  * Which worktree is an agent working in? (backlog #44 + #47, documentation/DESIGN_WORKTREE_OCCUPANCY.md)
  *
- *   claimFrom(event, roots, ownRoot) -> { agentId, agent, worktree } | null
+ *   claimFrom(event, roots, ownRoot) -> { agentId, agent, worktree, sessionId } | null
  *   touchOf(tool, input, roots, ownRoot) -> worktree | null    the same test for one tool call, without an
  *                                       event: what a transcript's tool_use block proves
  *                                       (host/occupancy-transcripts.js, host/branch-ledger.js)
@@ -47,6 +47,9 @@ const WIN = process.platform === 'win32';
 
 const isStr = s => typeof s === 'string' && s !== '';
 const safeAgentId = id => (typeof id === 'string' && SAFE_ID.test(id) ? id : null);
+// The session an agent runs in (a UUID: the hook payload's session_id, the transcript's session folder). Somebody
+// else's string too, held to the same shape; anything else is "not known".
+const safeSessionId = safeAgentId;
 const isFiletime = s => typeof s === 'string' && filetimeToMs(s) !== null;
 
 function claimFileName(agentId) {
@@ -153,7 +156,7 @@ function claimFrom(event, roots, ownRoot) {
   if (agentId === null) return null;
   const worktree = touchOf(p.tool_name, p.tool_input, roots, ownRoot);
   if (worktree === null) return null;
-  return { agentId, agent: isStr(p.agent_type) ? p.agent_type : null, worktree };
+  return { agentId, agent: isStr(p.agent_type) ? p.agent_type : null, worktree, sessionId: safeSessionId(p.session_id) };
 }
 
 const validTouch = t => !!t && typeof t === 'object' && isStr(t.worktree) && normPath(t.worktree) !== null
@@ -189,7 +192,7 @@ const finite = n => typeof n === 'number' && Number.isFinite(n);
 const absStr = s => isStr(s) && path.isAbsolute(s);
 
 /** The claim record for one agent, from its touches and the launching host's facts; null with no touches. */
-function buildClaim({ agentId, agent, fromBranch, fromRoot, hostPid, hostStartedAt, touches } = {}) {
+function buildClaim({ agentId, agent, fromBranch, fromRoot, sessionId, hostPid, hostStartedAt, touches } = {}) {
   const l = latest(touches);
   if (l === null) return null;
   const t = l.touch;
@@ -200,6 +203,7 @@ function buildClaim({ agentId, agent, fromBranch, fromRoot, hostPid, hostStarted
     also: l.also.slice(0, ALSO_MAX),
     fromBranch: isStr(fromBranch) ? fromBranch : null,
     fromRoot,
+    sessionId: safeSessionId(sessionId),
     hostPid,
     hostStartedAt: isFiletime(hostStartedAt) ? hostStartedAt : null,
     firstAt: finite(t.firstAt) ? t.firstAt : t.lastAt,
@@ -211,7 +215,7 @@ function buildClaim({ agentId, agent, fromBranch, fromRoot, hostPid, hostStarted
 function serializeClaim(c) {
   return JSON.stringify({
     agentId: c.agentId, agent: c.agent, worktree: c.worktree, also: c.also, fromBranch: c.fromBranch,
-    fromRoot: c.fromRoot, hostPid: c.hostPid, hostStartedAt: c.hostStartedAt,
+    fromRoot: c.fromRoot, sessionId: c.sessionId, hostPid: c.hostPid, hostStartedAt: c.hostStartedAt,
     firstAt: c.firstAt, lastAt: c.lastAt, count: c.count,
   }, null, 2) + '\n';
 }
@@ -236,6 +240,7 @@ function parseClaim(text) {
       also: (Array.isArray(d.also) ? d.also : []).filter(absStr).slice(0, ALSO_MAX),
       fromBranch: isStr(d.fromBranch) ? d.fromBranch : null,
       fromRoot: d.fromRoot,
+      sessionId: safeSessionId(d.sessionId),
       hostPid: d.hostPid,
       hostStartedAt: isFiletime(d.hostStartedAt) ? d.hostStartedAt : null,
       firstAt: d.firstAt,

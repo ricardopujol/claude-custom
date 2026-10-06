@@ -169,8 +169,19 @@ test('the two buttons answer the confirm; the card line and the chip\'s Jump go 
 });
 
 test('the roster card draws the where-line from the claims this tab launched', () => {
-  assert.match(RENDERER, /occupancyDisplay\.cardLine\(occupancy\.launched, agent\)/);
+  assert.match(RENDERER, /occupancyDisplay\.cardLine\(occupancy\.launched, agent, occupancy\.session\)/);
   assert.match(RENDERER, /agentModelHtml\(r\.agent\) \+\s*occupancyWhereHtml\(r\.agent\) \+\s*careerHtml\(r\.agent\)/);
+});
+
+test('the card\'s session is the host\'s: from `hello`, then every `session` message, and a change repaints the roster (backlog #57)', () => {
+  assert.match(RENDERER, /const occupancy = \{[^}]*session: null[^}]*\}/);
+  assert.match(RENDERER, /const sessionIdOf = id => \(typeof id === 'string' && id !== '' \? id : null\);/);
+  // hello: set before the roster's own first paint, so that paint already matches on it
+  const helloAt = RENDERER.indexOf("if (msg.type === 'hello') {");
+  const hello = RENDERER.slice(helloAt, RENDERER.indexOf("if (msg.type === 'loadout') {", helloAt));
+  const set = hello.indexOf('occupancy.session = sessionIdOf(msg.sessionId);');
+  assert.ok(set !== -1 && set < hello.lastIndexOf('renderRoster();'), 'set in hello, before its renderRoster');
+  assert.match(RENDERER, /if \(msg\.type === 'session'\) \{\s*occupancy\.session = sessionIdOf\(msg\.sessionId\);\s*renderRoster\(\);\s*return;\s*\}/);
 });
 
 test('a worktree page reports nothing new to the shell: the turn it already sends is what the two-writers warning reads', () => {
