@@ -76,7 +76,12 @@ function shim() {
           body: typeof opts.body === 'string' ? opts.body : undefined,
         }).then((r) => {
           if (!r || r.ok !== true) { reject(new TypeError('Failed to fetch: ' + (r && r.error ? r.error : 'refused'))); return; }
-          resolve(new Response(NO_BODY[r.status] ? null : toBytes(r.bodyBase64), { status: r.status, statusText: r.statusText, headers: r.headers }));
+          // A status, status text or header value the Response class refuses throws HERE, inside a promise callback: uncaught, the page's fetch
+          // would never settle (PR #122 Miguel Y3). It is a failed fetch, as in a browser.
+          let response;
+          try { response = new Response(NO_BODY[r.status] ? null : toBytes(r.bodyBase64), { status: r.status, statusText: r.statusText, headers: r.headers }); }
+          catch (err) { reject(new TypeError('Failed to fetch: the answer could not be read (' + (err && err.message ? err.message : 'bad response') + ')')); return; }
+          resolve(response);
         }, (err) => reject(new TypeError('Failed to fetch: ' + (err && err.message ? err.message : 'refused'))));
       } catch (err) { reject(err); }
     });
