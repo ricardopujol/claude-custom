@@ -112,7 +112,7 @@ function layers(files) {
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.writeFileSync(f, typeof body === 'string' ? body : JSON.stringify(body));
   }
-  return { home, cwd, root };
+  return { configDir: path.join(home, '.claude'), cwd, root };
 }
 const SL = c => ({ statusLine: { type: 'command', command: c } });
 
