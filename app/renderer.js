@@ -1693,30 +1693,34 @@ function presetAskRow({ question, confirmText, action, confirmLabel, cancelLabel
   ])];
 }
 
+// The id a question remembers for the preset it is about (BACKLOG #59): its answer carries it (presetUi.id), so main
+// refuses it as `changed` if another window has since put a different preset under that name. None stored is null.
+const presetId = p => (typeof p.id === 'string' ? p.id : null);
+
 function presetRow(p, check) {
   const label = kind => window.dockPresets.labelFor(kind, p.name);
   if (presetUi.mode === 'rename' && presetUi.name === p.name) {
     return [...presetFieldRow({
       label: label('rename-field'), value: presetUi.text !== undefined ? presetUi.text : p.name, action: 'rename', commitText: 'Rename',
       commitLabel: label('rename-commit'), cancelLabel: label('rename-cancel'),
-      onCommit: (text) => runPresetOp({ op: 'rename', name: p.name, to: text }),
+      onCommit: (text) => runPresetOp({ op: 'rename', name: p.name, to: text, id: presetUi.id }),
     }), ...presetErrorLine()];
   }
   if (presetUi.mode === 'delete' && presetUi.name === p.name) {
     return [...presetAskRow({
       question: `Delete '${p.name}'?`, confirmText: 'Delete', action: 'delete-confirm',
       confirmLabel: label('delete-confirm'), cancelLabel: label('delete-cancel'),
-      onConfirm: () => runPresetOp({ op: 'delete', name: p.name }),
+      onConfirm: () => runPresetOp({ op: 'delete', name: p.name, id: presetUi.id }),
     }), ...presetErrorLine()];
   }
   const apply = node('button', { type: 'button', className: 'lm-apply', title: `Apply ${p.name}`, text: p.name, 'aria-label': label('apply'),
     on: { click: () => applyPreset(p, check.box.checked) } });
   apply.dataset.presetAct = 'apply';
   const rename = node('button', { type: 'button', className: 'lm-mini', text: '✎', title: 'Rename', 'aria-label': label('rename-open'),
-    on: { click: () => { dispatchPreset({ type: 'open', mode: 'rename', name: p.name }); openLayoutMenu(); } } });
+    on: { click: () => { dispatchPreset({ type: 'open', mode: 'rename', name: p.name, id: presetId(p) }); openLayoutMenu(); } } });
   rename.dataset.presetAct = 'rename';
   const del = node('button', { type: 'button', className: 'lm-mini', text: '✕', title: 'Delete', 'aria-label': label('delete-open'),
-    on: { click: () => { dispatchPreset({ type: 'open', mode: 'delete', name: p.name }); openLayoutMenu(); } } });
+    on: { click: () => { dispatchPreset({ type: 'open', mode: 'delete', name: p.name, id: presetId(p) }); openLayoutMenu(); } } });
   del.dataset.presetAct = 'delete';
   const row = node('div', { className: 'lm-row lm-preset' }, [presetThumb(p.layout), apply, rename, del]);
   row.dataset.preset = p.name;
@@ -1752,7 +1756,7 @@ function appendPresetSection(check) {
     for (const el of [...presetAskRow({
       question: `Replace '${presetUi.name}'?`, confirmText: 'Replace', action: 'replace-confirm',
       confirmLabel: label('replace-confirm'), cancelLabel: label('replace-cancel'),
-      onConfirm: () => runPresetOp({ op: 'save', name: presetUi.name, layout: committedLayout(), replace: true }),
+      onConfirm: () => runPresetOp({ op: 'save', name: presetUi.name, layout: committedLayout(), replace: true, id: presetUi.id }),
     }), ...presetErrorLine()]) section.appendChild(el);
   } else {
     if (presetUi.mode === 'idle') for (const el of presetErrorLine()) section.appendChild(el);     // rename and delete draw theirs on their own row
