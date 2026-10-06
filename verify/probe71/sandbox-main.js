@@ -87,8 +87,14 @@ const VECTORS = {
   'geolocation-camera': { code: `Promise.allSettled([navigator.geolocation ? new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej)) : Promise.reject('none'), navigator.mediaDevices ? navigator.mediaDevices.getUserMedia({ video: true }) : Promise.reject('none')]).then(r => report(r.map(x => x.status).join('/')))` },
   // --- the one thing the page may do: a button ----------------------------------------------------------------------------------------
   'send-without-click': { code: `claudePanel.send('typed by a script'); setTimeout(() => report('sent'), 300)` },
+  // --- the shelf: read-only, and open() only for an address that is on it, on a real click ---------------------------------------------
+  'shelf-readable': { code: `claudePanel.shelf().then(items => report(JSON.stringify(items.map(i => i.title))), e => report('blocked ' + e.message))` },
+  'open-without-click': { code: `claudePanel.open(SHELF_URL); setTimeout(() => report('opened'), 300)` },
+  'open-shelf-with-click': { code: `document.body.innerHTML = '<button id="b" style="position:fixed;left:0;top:0;width:200px;height:100px">go</button>'; document.getElementById('b').addEventListener('click', () => { claudePanel.open(SHELF_URL); report('clicked'); });` },
+  'open-offshelf-with-click': { code: `document.body.innerHTML = '<button id="b" style="position:fixed;left:0;top:0;width:200px;height:100px">go</button>'; document.getElementById('b').addEventListener('click', () => { claudePanel.open(D()); claudePanel.open('https://claude.ai/artifact/not-on-the-shelf'); report('clicked'); });` },
   'send-with-click': { code: `document.body.innerHTML = '<button id="b" style="position:fixed;left:0;top:0;width:200px;height:100px">go</button>'; document.getElementById('b').addEventListener('click', () => { claudePanel.send('hello from a click'); report('clicked'); });` },
 };
+const SHELF_ITEM = { title: 'Roadmap', url: 'https://claude.ai/artifact/on-the-shelf', time: '2026-10-05T12:00:00.000Z' };
 const NAMES = Object.keys(VECTORS).filter(n => !process.env.PROBE_ONLY || process.env.PROBE_ONLY.split('|').includes(n));
 
 // A STUN server on the machine's LAN address too: Chromium may not send STUN to loopback, and a control that cannot see a
@@ -124,9 +130,12 @@ app.whenReady().then(async () => {
   const tcp = net.createServer((sock) => { rtc.turnTcpConnections += 1; sock.destroy(); });
   const tcpPort = await listen(tcp);
 
-  const owner = new BrowserWindow({ show: false, width: 1000, height: 800 });
+  // Shown (but see-through and not taking focus): a hidden window makes Chromium throttle the panels' timers, and under load a panel
+  // would then miss its report window. The app's own panels are only ever alive while visible.
+  const owner = new BrowserWindow({ show: false, width: 1000, height: 800, focusable: false, opacity: 0.01, skipTaskbar: true });
+  owner.showInactive();
   await owner.loadURL('data:text/html,<p>owner</p>');
-  let windowOpens = 0; const navAttempts = []; const delivered = []; const asked = [];
+  let windowOpens = 0; const navAttempts = []; const delivered = []; const asked = []; const opened = [];
   owner.webContents.setWindowOpenHandler(() => { windowOpens += 1; return { action: 'deny' }; });
   owner.webContents.on('will-navigate', (_e, url) => navAttempts.push(url));
   const panels = new Map();   // owner id -> the panel contents the manager made for it, to read titles from
@@ -139,6 +148,7 @@ app.whenReady().then(async () => {
     preloadPath: PRELOAD,
     ask: async (o, origin) => { asked.push(origin); return 'deny'; },
     onMessage: (o, msg) => delivered.push(msg),
+    openUrl: (u) => { opened.push(u); return true; },
     log: () => {},
   });
   registerCanvasIpc(ipcMain, views);
@@ -147,7 +157,7 @@ app.whenReady().then(async () => {
     const v = VECTORS[name];
     const key = name.replace(' (control)', '');
     return `<script>
-      const V = ${JSON.stringify(key)}, A = ${JSON.stringify(approvedOrigin + '/')}, UDP = ${udp.address().port}, TCP = ${tcpPort}, LAN = ${JSON.stringify(LAN)};
+      const V = ${JSON.stringify(key)}, A = ${JSON.stringify(approvedOrigin + '/')}, UDP = ${udp.address().port}, TCP = ${tcpPort}, LAN = ${JSON.stringify(LAN)}, SHELF_URL = ${JSON.stringify(SHELF_ITEM.url)};
       const D = () => 'http://127.0.0.1:${ports[name]}/?v=' + encodeURIComponent(V);
       const report = (r) => { document.title = 'R:' + JSON.stringify(String(r)); };
       try { ${v.code} } catch (e) { report('threw ' + e.name); }
@@ -161,7 +171,7 @@ app.whenReady().then(async () => {
     if (MODE === 'sealed') {
       fakeOwner = { id: 1000 + NAMES.indexOf(name), isDestroyed: () => false };
       const approved = name === 'fetch-approved (control)' || name.startsWith('fetch-redirect') ? [approvedOrigin] : [];
-      await views.show(fakeOwner, { html, hosts: { approved, denied: [] }, rect: { x: 0, y: 0, width: 400, height: 300 } });
+      await views.show(fakeOwner, { html, hosts: { approved, denied: [] }, rect: { x: 0, y: 0, width: 400, height: 300 }, shelf: [SHELF_ITEM] });
       wc = panels.get(fakeOwner.id);
     } else {
       // The control: the same page and preload, but a default session and nothing locked.
@@ -176,8 +186,8 @@ app.whenReady().then(async () => {
       let done = false;
       const finish = (r) => { if (!done) { done = true; resolve(r); } };
       wc.on('page-title-updated', (_e, title) => { if (title.startsWith('R:')) finish(JSON.parse(title.slice(2))); });
-      setTimeout(() => finish('no report'), 5000);
-      if (name === 'send-with-click') {
+      setTimeout(() => finish('no report'), 15000);
+      if (name.endsWith('-with-click')) {
         setTimeout(() => { for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); }, 1200);
       }
     });
@@ -186,7 +196,7 @@ app.whenReady().then(async () => {
     else { try { owner.contentView.removeChildView(naiveView); naiveView.webContents.close(); } catch { /* gone */ } }
   }
 
-  const BATCH = 4;
+  const BATCH = 3;
   for (let i = 0; i < NAMES.length; i += BATCH) await Promise.all(NAMES.slice(i, i + BATCH).map(runOne));
   await new Promise(r => setTimeout(r, 1200));
 
@@ -203,11 +213,11 @@ app.whenReady().then(async () => {
   } catch { dnsQueries = -1; }
   const out = { electron: process.versions.electron, chrome: process.versions.chrome, mode: MODE, results, names: NAMES,
     hits, approvedHits: allowedRec.requests, rtc, dns: { queries: dnsQueries, kinds: [...dnsKinds] }, windowOpens,
-    ownerNavigations: navAttempts, delivered, asked: [...new Set(asked)] };
+    ownerNavigations: navAttempts, delivered, opened, asked: [...new Set(asked)] };
   const text = JSON.stringify(out);
   if (OUT) fs.writeFileSync(OUT, text); else console.log('RESULT ' + text);
   try { fs.unlinkSync(netlogFile); } catch { /* temp */ }
   servers.forEach(s => s.close()); udp.close(); tcp.close();
   app.exit(0);
 });
-setTimeout(() => { console.log('FAIL timeout'); app.exit(2); }, 240000);
+setTimeout(() => { console.log('FAIL timeout'); app.exit(2); }, 540000);

@@ -79,8 +79,19 @@ test('a page is asked for with canvas-get, once per signature, and retried if th
   assert.match(BLOCK, /setTimeout\(\(\) => \{ if \(canvasFetchSig === sig\) canvasFetchSig = null; \}, 3000\);/);
 });
 
-test('nothing in the block types into the session or writes a CR: the panel\'s buttons are a later step', () => {
-  assert.doesNotMatch(BLOCK, /typeCommand|submitTyped|type: 'input'|\\r/);
+test("a button's message is typed through typeCommand (the wand's path), as the line canvasDisplay builds, and nothing here writes a CR or an input frame", () => {
+  const fn = BLOCK.slice(BLOCK.indexOf('function canvasSendToSession('), BLOCK.indexOf('if (canvasBridge && canvasRoot) {'));
+  assert.match(fn, /const line = window\.canvasDisplay\.sessionLine\(text\);/);
+  assert.match(fn, /typeCommand\(line, \(r\) => \{/);
+  assert.match(fn, /\}, 'panel', \{ submit: true \}\);/, "kind 'panel' (app/top-bar-display.js PANEL_LINE), and Enter is the submit gate's decision, not this block's");
+  assert.match(fn, /if \(!line \|\| canvasTyping\) return;/, 'one at a time');
+  assert.match(BLOCK, /canvasBridge\.onMessage\(\(msg\) => \{ if \(msg && msg\.kind === 'send'\) canvasSendToSession\(msg\.text\); \}\);/);
+  assert.doesNotMatch(BLOCK, /submitTyped|type: 'input'|\\r/);
+});
+
+test('the shelf follows the page: given with it, and sent again only when it changes', () => {
+  assert.match(BLOCK, /canvasBridge\.show\(\{ html: req\.html, hosts: req\.hosts, shelf: req\.shelf,/);
+  assert.match(BLOCK, /if \(shelfKey !== canvasShownShelf\) \{ canvasShownShelf = shelfKey; canvasBridge\.shelf\(req\.shelf\); \}/);
 });
 
 test('the "already asked" memo is cleared whenever there is nothing to fetch, so the same page written again is fetched again', () => {

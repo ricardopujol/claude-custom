@@ -40,3 +40,15 @@ test('the environment wins in the "off" direction: either one is enough', () => 
   fs.writeFileSync(path.join(dir, 'canvas-settings.json'), JSON.stringify({ mcp: true }));
   assert.strictEqual(canvasMcpEnabled({ env: { CLAUDE_CUSTOM_CANVAS_MCP: '0' }, stateDir: dir }), false);
 });
+
+// verify/ probes run a stand-in for `claude` (cmd.exe, a fake input box). cmd.exe takes --mcp-config's JSON for a command line, prints
+// errors and EXITS, killing the session the probe is looking at. An overridden binary is not assumed to understand the flag.
+test('a binary override (CLAUDE_CUSTOM_BIN) switches the injection off, unless it is asked for explicitly', () => {
+  const dir = state();
+  assert.strictEqual(canvasMcpEnabled({ env: { CLAUDE_CUSTOM_BIN: 'C:/Windows/System32/cmd.exe' }, stateDir: dir }), false);
+  for (const v of ['1', 'on', 'true', 'yes', 'ON']) {
+    assert.strictEqual(canvasMcpEnabled({ env: { CLAUDE_CUSTOM_BIN: 'C:/x/claude.exe', CLAUDE_CUSTOM_CANVAS_MCP: v }, stateDir: dir }), true, v);
+  }
+  assert.strictEqual(canvasMcpEnabled({ env: { CLAUDE_CUSTOM_BIN: 'C:/x/claude.exe', CLAUDE_CUSTOM_CANVAS_MCP: '0' }, stateDir: dir }), false);
+  assert.strictEqual(canvasMcpEnabled({ env: { CLAUDE_CUSTOM_BIN: '' }, stateDir: dir }), true, 'an empty override is no override');
+});

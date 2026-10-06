@@ -23,7 +23,7 @@ test('the process-wide resolver rule is set before the app is ready (a switch se
 });
 
 test('every tab-page channel is gated on the sender being a tab view', () => {
-  for (const ch of ['canvas:bounds', 'canvas:cover', 'canvas:hosts', 'canvas:hide']) {
+  for (const ch of ['canvas:bounds', 'canvas:cover', 'canvas:hosts', 'canvas:set-shelf', 'canvas:hide']) {
     const m = new RegExp(`ipcMain\\.on\\('${ch}', \\(e(?:, [a-z]+)?\\) => \\{ if \\(isTabView\\(e\\.sender\\)\\)`).exec(CODE);
     assert.ok(m, `${ch} must check isTabView(e.sender)`);
   }
@@ -68,4 +68,8 @@ test('the tab preload and main agree on every canvas channel, in both directions
   const heard = [...pre.matchAll(/ipcRenderer\.on\('(canvas:[a-z-]+)'/g)].map(m => m[1]).sort();
   const pushed = [...CODE.matchAll(/owner\.send\('(canvas:[a-z-]+)'/g)].map(m => m[1]).sort();
   assert.deepStrictEqual(heard, pushed);
+});
+
+test('an address the panel asks to open goes to the real browser through openInBrowser, so only http(s) ever leaves the app', () => {
+  assert.match(CODE, /openUrl: \(url\) => openInBrowser\(url, "Claude's panel"\),/);
 });

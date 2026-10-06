@@ -616,6 +616,8 @@ const canvasViews = createCanvasViews({
     owner.send('canvas:need-host', { id, origin });
   }),
   onMessage: (owner, msg) => { if (!owner.isDestroyed()) owner.send('canvas:message', msg); },
+  // A shelf address the panel's page asked to open, after main checked it is exactly on the shelf and a real click came with it.
+  openUrl: (url) => openInBrowser(url, "Claude's panel"),
   log: (line) => console.log(line),
 });
 
@@ -840,6 +842,7 @@ function registerIpc() {
   ipcMain.on('canvas:bounds', (e, rect) => { if (isTabView(e.sender)) canvasViews.setBounds(e.sender, rect); });
   ipcMain.on('canvas:cover', (e, on) => { if (isTabView(e.sender)) canvasViews.setCovered(e.sender, on === true); });
   ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
+  ipcMain.on('canvas:set-shelf', (e, items) => { if (isTabView(e.sender)) canvasViews.setShelf(e.sender, items); });
   ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
   ipcMain.on('canvas:host-answer', (e, a) => {
     if (!isTabView(e.sender)) return;

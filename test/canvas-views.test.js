@@ -290,14 +290,13 @@ test('the process-wide resolver rule refuses every name but loopback (this is wh
   assert.strictEqual(HOST_RESOLVER_RULES, 'MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost');
 });
 
-test('registerCanvasIpc: a panel contents is answered by the module, and nothing else is, on exactly two channels', async () => {
+test('registerCanvasIpc: a panel contents is answered by the module, and nothing else is', async () => {
   const handlers = {}; const listeners = {};
   const ipc = { handle: (ch, fn) => { handlers[ch] = fn; }, on: (ch, fn) => { listeners[ch] = fn; } };
   const calls = [];
   const m = { fetchFor: async (s, req) => { calls.push(['fetch', s.id, req]); return { ok: true }; }, messageFrom: (s, msg) => { calls.push(['send', s.id, msg]); return true; } };
   registerCanvasIpc(ipc, m);
-  assert.deepStrictEqual(Object.keys(handlers), ['canvas:fetch']);
-  assert.deepStrictEqual(Object.keys(listeners), ['canvas:send']);
+  assert.ok('canvas:fetch' in handlers && 'canvas:send' in listeners, 'the first two channels (the shelf adds two more, tested below)');
   assert.deepStrictEqual(await handlers['canvas:fetch']({ sender: { id: 5 } }, { url: 'u' }), { ok: true });
   listeners['canvas:send']({ sender: { id: 6 } }, { kind: 'send', text: 't' });
   assert.deepStrictEqual(calls, [['fetch', 5, { url: 'u' }], ['send', 6, { kind: 'send', text: 't' }]]);
@@ -317,4 +316,112 @@ test('inspect (a probe seam, read-only): where the panel is, whether it shows, a
   assert.strictEqual(r.m.click(r.owner, 30, 40), true);
   assert.deepStrictEqual(wc.sent.map(e => [e.type, e.x, e.y, e.button]), [['mouseMove', 30, 40, undefined], ['mouseDown', 30, 40, 'left'], ['mouseUp', 30, 40, 'left']]);
   assert.strictEqual(r.m.click({ id: 12345 }, 1, 1), false);
+});
+
+// --- the shelf (BACKLOG #71, PR 2) ---------------------------------------------------------------------------------------------
+const ITEM_A = { title: 'Roadmap', url: 'https://claude.ai/artifact/aaa', time: '2026-10-05T12:00:00.000Z' };
+const ITEM_B = { title: 'Older', url: 'https://claude.ai/artifact/bbb', time: '2026-10-04T12:00:00.000Z' };
+
+function shelfRig() {
+  const opened = [];
+  const r = rig();
+  r.m = createCanvasViews({
+    WebContentsView: class extends FakeView { constructor(o) { super(o); r.views.push(this); this.webContents.pushed = []; this.webContents.send = (ch, items) => this.webContents.pushed.push([ch, items]); } },
+    session: { fromPartition: (p) => (r.sessions[p] = r.sessions[p] || new FakeSession(p)) },
+    addChild: (v) => r.children.add(v), removeChild: (v) => r.children.delete(v),
+    ownerBounds: () => ({ x: 0, y: 40, width: 1200, height: 800 }), preloadPath: 'p.js',
+    ask: async () => 'deny', onMessage: (o, msg) => r.messages.push(msg), openUrl: (u) => { opened.push(u); return true; },
+    now: () => 1000, log: () => {},
+  });
+  return { ...r, opened };
+}
+
+test('the shelf given with the page is what the panel reads (shelfFor), and only the panel\'s own contents may ask', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A, ITEM_B] });
+  assert.deepStrictEqual(r.m.shelfFor(r.views[0].webContents), [ITEM_A, ITEM_B]);
+  assert.deepStrictEqual(r.m.shelfFor({ id: 99999 }), []);
+  assert.deepStrictEqual(r.m.shelfFor(null), []);
+});
+
+test('a changed shelf is pushed to the live panel once; an unchanged one is not', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const wc = r.views[0].webContents;
+  r.m.setShelf(r.owner, [ITEM_A]);
+  assert.deepStrictEqual(wc.pushed, [], 'same shelf: nothing to say');
+  r.m.setShelf(r.owner, [ITEM_B, ITEM_A]);
+  assert.deepStrictEqual(wc.pushed, [['canvas:shelf', [ITEM_B, ITEM_A]]]);
+  r.m.setShelf(r.owner, [ITEM_B, ITEM_A]);
+  assert.strictEqual(wc.pushed.length, 1);
+});
+
+test('the shelf is cleaned: only well-formed https entries, capped', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A, { title: 5, url: 'https://x.com/', time: 't' }, { ...ITEM_B, url: 'javascript:alert(1)' }, { ...ITEM_B, url: 'http://claude.ai/x' }, null, 'x', { title: 'u', url: 'https://u:p@x.com/', time: 't' }] });
+  assert.deepStrictEqual(r.m.shelfFor(r.views[0].webContents), [ITEM_A]);
+  const many = Array.from({ length: 300 }, (_, i) => ({ title: `T${i}`, url: `https://claude.ai/artifact/id${i}`, time: 't' }));
+  r.m.setShelf(r.owner, many);
+  assert.strictEqual(r.m.shelfFor(r.views[0].webContents).length, 200);
+  r.m.setShelf(r.owner, 'junk');
+  assert.deepStrictEqual(r.m.shelfFor(r.views[0].webContents), []);
+});
+
+test('open: a real click and an address that is exactly on the shelf; nothing else is ever opened', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const panel = r.views[0].webContents;
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false, 'no real click yet: a script cannot open a link');
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  assert.strictEqual(r.m.openFrom(panel, { url: 'https://claude.ai/artifact/zzz' }), false, 'not on the shelf');
+  assert.strictEqual(r.m.openFrom(panel, { url: 'https://evil.example/' }), false);
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url + '#x' }), false, 'exactly the shelf entry, not a variant of it');
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), true);
+  assert.deepStrictEqual(r.opened, [ITEM_A.url]);
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false, 'one click opens one address');
+});
+
+test('open: a click is shared with send: it is spent by whichever uses it first', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'hi' }), true);
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false);
+  assert.deepStrictEqual(r.opened, []);
+});
+
+test('open: bad shapes and a stranger are refused', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  for (const bad of [null, 'x', {}, { url: 5 }, { url: '' }]) assert.strictEqual(r.m.openFrom(panel, bad), false, JSON.stringify(bad));
+  assert.strictEqual(r.m.openFrom({ id: 54321 }, { url: ITEM_A.url }), false);
+  assert.deepStrictEqual(r.opened, []);
+});
+
+test('registerCanvasIpc also answers the shelf and the open request, on exactly four channels', async () => {
+  const handlers = {}; const listeners = {};
+  const ipc = { handle: (ch, fn) => { handlers[ch] = fn; }, on: (ch, fn) => { listeners[ch] = fn; } };
+  const calls = [];
+  const m = { fetchFor: async () => ({ ok: true }), messageFrom: () => true, shelfFor: (s) => { calls.push(['shelf', s.id]); return [ITEM_A]; }, openFrom: (s, msg) => { calls.push(['open', s.id, msg]); return true; } };
+  registerCanvasIpc(ipc, m);
+  assert.deepStrictEqual(Object.keys(handlers).sort(), ['canvas:fetch', 'canvas:shelf']);
+  assert.deepStrictEqual(Object.keys(listeners).sort(), ['canvas:open', 'canvas:send']);
+  assert.deepStrictEqual(await handlers['canvas:shelf']({ sender: { id: 8 } }), [ITEM_A]);
+  listeners['canvas:open']({ sender: { id: 9 } }, { url: 'u' });
+  assert.deepStrictEqual(calls, [['shelf', 8], ['open', 9, { url: 'u' }]]);
+});
+
+test('messageFrom: the C1 range and the Unicode line separators are refused like any control character (they end the typed line early)', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  for (const bad of ['a\u0085b', 'a\u009bb', 'a b', 'a b', 'a\u007fb']) {
+    panel.emit('input-event', {}, { type: 'mouseUp' });
+    assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: bad }), false, JSON.stringify(bad));
+  }
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'café ☃' }), true);
 });

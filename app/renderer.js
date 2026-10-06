@@ -1296,6 +1296,9 @@ const canvasRoot = document.getElementById('canvas-root');
 let canvasLive = false;           // main has a native view for this tab
 let canvasShownSig = null;        // the page signature main was last given
 let canvasShownHosts = '';        // the host lists main was last given, as JSON
+let canvasShownShelf = '';        // the artifact shelf main was last given, as JSON
+let canvasTyping = false;         // a button's message is being typed: one at a time, as the wand does
+let canvasStatusTimer = null;
 let canvasLastCover = null;
 let canvasLastRect = null;
 let canvasRectKey = '';
@@ -1322,11 +1325,14 @@ function syncCanvasView() {
   const hostsKey = JSON.stringify(req.hosts);
   if (!canvasLive || canvasShownSig !== canvasState.htmlSig) {
     canvasLive = true; canvasShownSig = canvasState.htmlSig; canvasShownHosts = hostsKey; canvasLastCover = covered;
+    canvasShownShelf = window.canvasDisplay.shelfKey(canvasState);
     canvasRectKey = JSON.stringify(canvasLastRect);
-    canvasBridge.show({ html: req.html, hosts: req.hosts, rect: canvasLastRect, covered }).then(() => {}, () => {});
+    canvasBridge.show({ html: req.html, hosts: req.hosts, shelf: req.shelf, rect: canvasLastRect, covered }).then(() => {}, () => {});
     return;
   }
   if (hostsKey !== canvasShownHosts) { canvasShownHosts = hostsKey; canvasBridge.hosts(req.hosts); }
+  const shelfKey = window.canvasDisplay.shelfKey(canvasState);
+  if (shelfKey !== canvasShownShelf) { canvasShownShelf = shelfKey; canvasBridge.shelf(req.shelf); }
   if (covered !== canvasLastCover) { canvasLastCover = covered; canvasBridge.cover(covered); }
   const key = JSON.stringify(canvasLastRect);
   if (canvasLastRect && key !== canvasRectKey) { canvasRectKey = key; canvasBridge.bounds(canvasLastRect); }
@@ -1388,7 +1394,23 @@ function canvasAct(a) {
   renderCanvas();
 }
 
+// A button in Claude's panel (main already checked a real click came with it): its one line is typed into the prompt through the
+// wand's path, so the submit gate decides Enter and the transcript shows where it came from. The status line says what came of it.
+function canvasSendToSession(text) {
+  const line = window.canvasDisplay.sessionLine(text);
+  if (!line || canvasTyping) return;
+  canvasTyping = true;
+  typeCommand(line, (r) => {
+    canvasTyping = false;
+    canvasState = window.canvasDisplay.typed(canvasState, r);
+    renderCanvas();
+    clearTimeout(canvasStatusTimer);
+    if (r && r.ok) canvasStatusTimer = setTimeout(() => { canvasState = window.canvasDisplay.clearStatus(canvasState); renderCanvas(); }, r.box ? 8000 : 2500);
+  }, 'panel', { submit: true });
+}
+
 if (canvasBridge && canvasRoot) {
+  canvasBridge.onMessage((msg) => { if (msg && msg.kind === 'send') canvasSendToSession(msg.text); });
   // The page asked for a host it has not been given: the question covers the panel until it is answered.
   canvasBridge.onNeedHost((ask) => { canvasState = window.canvasDisplay.withAsk(canvasState, ask); renderCanvas(); });
   canvasRoot.addEventListener('click', (e) => {

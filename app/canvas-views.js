@@ -15,8 +15,9 @@
  *   - DNS is shut for the whole process in app/main.js (`host-resolver-rules`): the app makes no external Chromium request.
  *   - the panel's `fetch` is a message to this module, which makes the request itself, only to a host the person
  *     approved for THAT panel (app/canvas-fetch.js). An unknown host is a question to the owner's page, asked once.
- *   - the only other thing the panel can do is `send` a line of text toward the session (a button). It must be a real
- *     click or key press the contents received (a script cannot press its own button), one message per click, one line.
+ *   - the only other things the panel can do: `send` a line of text toward the session (a button), and `open` an address that is
+ *     exactly on the artifact shelf. Each must come with a real click or key press the contents received (a script cannot press
+ *     its own button), one use per click, one line of text. It can also READ the shelf (the host fills it from the CLI's hook).
  *   - hidden means stopped (design, call 7): `hide` destroys the view, so no timer or fetch of the page keeps running.
  *
  * The Electron classes arrive as arguments so test/canvas-views.test.js can drive this with fakes.
@@ -35,10 +36,21 @@ const DEAD_PROXY = Object.freeze({ mode: 'fixed_servers', proxyRules: 'http://12
 const CLICK_TYPES = new Set(['mouseDown', 'mouseUp', 'keyDown', 'rawKeyDown', 'char']);
 
 const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
+const SHELF_MAX = 200;
+function cleanShelf(list) {
+  const out = [];
+  for (const it of Array.isArray(list) ? list : []) {
+    if (it === null || typeof it !== 'object' || typeof it.title !== 'string' || it.title === '' || typeof it.time !== 'string' || typeof it.url !== 'string') continue;
+    let u;
+    try { u = new URL(it.url); } catch { continue; }
+    if (u.protocol === 'https:' && !u.username && !u.password && out.length < SHELF_MAX) out.push({ title: it.title, url: it.url, time: it.time });
+  }
+  return out;
+}
 const originList = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))];
 
 function createCanvasViews({ WebContentsView, session, addChild, removeChild, ownerBounds, preloadPath, ask, onMessage,
-  fetchImpl = fetch, now = Date.now, log = () => {} } = {}) {
+  openUrl = () => false, fetchImpl = fetch, now = Date.now, log = () => {} } = {}) {
   const byOwner = new Map();          // owner contents id -> record
   const byPanel = new Map();          // panel contents id -> record
   let counter = 0;
@@ -83,7 +95,7 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     } });
     const wc = view.webContents;
     const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: true, html: null, approved: new Set(), denied: new Set(),
-      pending: new Map(), lastInput: -Infinity, spent: true };
+      pending: new Map(), lastInput: -Infinity, spent: true, shelf: [], shelfKey: '[]' };
     wc.on('input-event', (_e, ev) => { if (ev && CLICK_TYPES.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } });
     wc.on('render-process-gone', (_e, d) => log(`[canvas] panel renderer gone: ${d && d.reason}`));
     lockDown(ses, wc);
@@ -109,12 +121,24 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     rec.denied = new Set(originList(hosts && hosts.denied));
   }
 
-  async function show(owner, { html, hosts, rect, covered = false } = {}) {
+  // The artifact shelf: given with the page, and pushed to the live panel when it changes. The page can only READ it.
+  function setShelf(owner, items) {
+    const rec = byOwner.get(owner && owner.id);
+    if (!rec) return;
+    const clean = cleanShelf(items);
+    const key = JSON.stringify(clean);
+    if (key === rec.shelfKey) return;
+    rec.shelf = clean; rec.shelfKey = key;
+    try { if (!rec.wc.isDestroyed()) rec.wc.send('canvas:shelf', clean); } catch { /* the contents is going away */ }
+  }
+
+  async function show(owner, { html, hosts, rect, covered = false, shelf } = {}) {
     if (typeof html !== 'string') return { ok: false, error: 'no page' };
     if (Buffer.byteLength(html) > PANEL_LIMITS.htmlBytes) return { ok: false, error: 'the page is too big' };
     let rec = byOwner.get(owner.id);
     if (!rec) rec = await create(owner);
     setHosts(owner, hosts);
+    if (shelf !== undefined) { const clean = cleanShelf(shelf); rec.shelf = clean; rec.shelfKey = JSON.stringify(clean); }
     rec.rect = isRect(rect) ? rect : rec.rect;
     rec.covered = !!covered;
     applyBounds(rec);
@@ -179,14 +203,30 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     if (!rec) return false;
     if (msg === null || typeof msg !== 'object' || msg.kind !== 'send' || typeof msg.text !== 'string') return false;
     const text = msg.text.trim();
-    if (!text || text.length > PANEL_LIMITS.messageChars || /[\x00-\x1f\x7f]/.test(text)) return false;
-    if (rec.spent || now() - rec.lastInput > PANEL_LIMITS.inputWindowMs) return false;
-    rec.spent = true;
+    if (!text || text.length > PANEL_LIMITS.messageChars || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(text)) return false;
+    if (!takeClick(rec)) return false;
     onMessage(rec.owner, { kind: 'send', text });
     return true;
   }
 
-  return { show, setBounds, setCovered, setOwnerVisible, setHosts, relayout, hide, destroyFor, has, fetchFor, messageFrom, inspect, click };
+  // A real click or key press the contents received a moment ago, spent by whichever of `send` and `open` uses it first.
+  function takeClick(rec) {
+    if (rec.spent || now() - rec.lastInput > PANEL_LIMITS.inputWindowMs) return false;
+    rec.spent = true;
+    return true;
+  }
+
+  const shelfFor = (sender) => { const rec = sender ? byPanel.get(sender.id) : null; return rec ? rec.shelf : []; };
+
+  /** Open one of the shelf's own addresses in the browser, on a real click. Never any other address, never a variant of one. */
+  function openFrom(sender, msg) {
+    const rec = sender ? byPanel.get(sender.id) : null;
+    if (!rec || msg === null || typeof msg !== 'object' || typeof msg.url !== 'string' || !rec.shelf.some(i => i.url === msg.url)) return false;
+    if (!takeClick(rec)) return false;
+    try { return openUrl(msg.url) !== false; } catch { return false; }
+  }
+
+  return { show, setBounds, setCovered, setOwnerVisible, setHosts, setShelf, relayout, hide, destroyFor, has, fetchFor, messageFrom, shelfFor, openFrom, inspect, click };
 }
 
 // Process-wide, set before the app is ready (app/main.js): Chromium resolves nothing but loopback. This is the only thing
@@ -194,10 +234,12 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
 // external request of its own through Chromium (the host and the Electron main process use Node's networking).
 const HOST_RESOLVER_RULES = 'MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost';
 
-/** The two channels the panel's preload talks on. `ipc` is Electron's ipcMain; `views` is a createCanvasViews result. */
+/** The four channels the panel's preload talks on. `ipc` is Electron's ipcMain; `views` is a createCanvasViews result. */
 function registerCanvasIpc(ipc, views) {
   ipc.handle('canvas:fetch', (e, req) => views.fetchFor(e.sender, req));
+  ipc.handle('canvas:shelf', (e) => views.shelfFor(e.sender));
   ipc.on('canvas:send', (e, msg) => { views.messageFrom(e.sender, msg); });
+  ipc.on('canvas:open', (e, msg) => { views.openFrom(e.sender, msg); });
 }
 
 module.exports = { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES, PANEL_LIMITS, DEAD_PROXY };

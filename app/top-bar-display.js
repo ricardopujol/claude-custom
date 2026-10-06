@@ -404,6 +404,11 @@ const AT_MENTION = /^@[^\x00-\x20\x7f#]+(?:#L[1-9]\d{0,8}(?:-[1-9]\d{0,8})?)?$/;
 // One line of a slash command: a CR or any control key in it would submit or edit something else.
 const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
 
+// A button's message in Claude's panel (BACKLOG #71): free text, so it is allowed ONLY behind this fixed prefix (the CLI can't read it as
+// a slash command or a `!` shell line), on one line, with no control or C1 character, no leading or trailing space and at most
+// 2000 characters (what app/canvas-display.js sessionLine builds, held to it by test/plan-panel.test.js).
+const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029](?:[^\x00-\x1f\x7f-\x9f\u2028\u2029]{0,1998}[^\s\x00-\x1f\x7f-\x9f\u2028\u2029])?$/;
+
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
  * Dexter F3 / Miguel I2). `screen` is inputState()'s answer. ->
@@ -414,9 +419,10 @@ const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
  */
 function planTyping({ command, screen, connected, kind } = {}) {
   const mention = kind === 'mention';
-  const shape = mention ? AT_MENTION : SLASH_COMMAND;
+  const panel = kind === 'panel';
+  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : SLASH_COMMAND;
   if (typeof command !== 'string' || !shape.test(command)) {
-    return { ok: false, reason: mention ? 'not a single-line @ mention' : 'not a single-line slash command' };
+    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : 'not a single-line slash command' };
   }
   if (!connected) return { ok: false, reason: 'not connected to the session' };
   // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
