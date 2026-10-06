@@ -200,3 +200,13 @@ test('removeEntry: a record that is not one is refused', () => {
     assert.deepStrictEqual(d.removeEntry('## Inbox\nx', bad), { ok: false, reason: 'bad-record' }, JSON.stringify(bad));
   }
 });
+
+test('an entry whose blank line was trimmed by an editor is still one entry: the next note goes after it, not inside it (Dexter F6, PR #121)', () => {
+  const entry = d.entryText('2026-10-05 09:07', 'a\n\n```\ncode', '\n');
+  const trimmed = `## Inbox\n${entry}`.replace(/[ \t]+\n/g, '\n') + '## 1. First\nbody\n';
+  assert.ok(trimmed.includes('- 2026-10-05 09:07 · a\n\n  ```\n  code\n'), 'fixture: the blank line lost its two spaces');
+  const plan = d.planAppend(trimmed, '- 2026-10-05 09:08 · next\n');
+  assert.strictEqual(trimmed.slice(0, plan.offset).endsWith('  code\n'), true);
+  const box = d.inboxOf(trimmed);
+  assert.strictEqual(trimmed.slice(box.end, box.end + 11), '## 1. First');
+});

@@ -105,6 +105,15 @@ function inboxOf(text) {
   for (let i = h + 1; i < lines.length; i++) {
     const l = lines[i].text;
     if (inEntry && CONTINUATION.test(l)) { last = lines[i]; continue; }
+    // A blank line of the note, stored as two spaces, may have been trimmed to nothing by an editor: it is still inside
+    // the entry when the next non-blank line is indented, or a fence in that note would open a section-long fence
+    // (Dexter F6, PR #121).
+    if (inEntry && l.trim() === '') {
+      let j = i + 1;
+      while (j < lines.length && lines[j].text.trim() === '') j++;
+      // (An indented heading still ends the section, as it always did.)
+      if (j < lines.length && CONTINUATION.test(lines[j].text) && headingLevel(lines[j].text) === 0) continue;
+    }
     const wasOpen = inner.isOpen();
     if (inner(l)) {
       if (!wasOpen) lastBeforeFence = last;
