@@ -11,7 +11,7 @@
  *     tick()                  -> Promise   tries one note again whose backlog was busy or kept changing
  *     undo(id, project)       -> { ok: true } | { ok: false, reason: 'changed', file } | { ok: false, reason }
  *                                project: the selected one; Undo only ever writes that project's own backlog
- *     snapshot(project)       -> { counts: { filed, unfiled }, list: [{ id, text, at, state, reason, undoable }] }
+ *     snapshot(project)       -> (throws when the journal can't be read) { counts: { filed, unfiled }, list: [{ id, text, at, state, reason, undoable }] }
  *
  * THE ORDER: the note is journaled first (nothing is lost), then the backlog is written, then `filed` is journaled.
  * Not filed: a project with no backlog file (or no documentation) gets nothing created and the note stays in the list
@@ -150,8 +150,9 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
   }
 
   function snapshot(project) {
-    let notes;
-    try { notes = fold(journal.read()); } catch { notes = new Map(); }
+    // A journal that can't be read throws: a confident "no notes" would cancel a pending toast for good (Dexter F5,
+    // PR #121). The caller keeps what it last showed.
+    const notes = fold(journal.read());
     const t = now();
     let docs = null;
     try { docs = docsFor(project); } catch { docs = null; }

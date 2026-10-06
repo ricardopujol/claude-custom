@@ -320,3 +320,14 @@ test('a retry still adopts its own entry when an identical one belongs to anothe
   assert.ok(t.svc.snapshot(t.project).list.every(n => n.state === 'filed'));
   assert.ok(a.filed);
 });
+
+test('snapshot of a journal that can\'t be read throws: it is not "no notes" (Dexter F5, PR #121)', () => {
+  const t = setup();
+  t.svc.submit(t.project, 'mine');
+  let fail = true;
+  const flaky = { ...t.journal, read: () => { if (fail) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return t.journal.read(); } };
+  const svc = createIndexingService({ journal: flaky, writer, docsFor: () => writer.docsOf({ root: t.project, dev: t.project }), now: () => new Date(2026, 9, 5, 9, 8).getTime() });
+  assert.throws(() => svc.snapshot(t.project), /EBUSY/);
+  fail = false;
+  assert.strictEqual(svc.snapshot(t.project).list.length, 1);
+});
