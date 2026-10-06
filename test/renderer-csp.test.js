@@ -51,6 +51,19 @@ test('plugins and <base> are shut, and everything else defaults to self', () => 
   assert.deepStrictEqual(p.get('form-action'), ["'none'"]);
 });
 
+test('no frames, workers or manifests: none exist in app/, and on a file: page self would admit any file:/// one', () => {
+  const p = policy();
+  for (const name of ['frame-src', 'worker-src', 'manifest-src']) {
+    assert.deepStrictEqual(p.get(name), ["'none'"], `${name} must be 'none'`);
+  }
+});
+
+test('only the directives this test knows about are present (a new one is a deliberate edit here)', () => {
+  const known = ['default-src', 'script-src', 'style-src', 'connect-src', 'object-src', 'base-uri', 'form-action',
+    'frame-src', 'worker-src', 'manifest-src', 'img-src', 'media-src', 'font-src'];
+  for (const name of policy().keys()) assert.ok(known.includes(name), `unexpected directive ${name}`);
+});
+
 test('the only network the page may open is the local WebSocket to the host', () => {
   const connect = policy().get('connect-src');
   assert.deepStrictEqual(connect, ['ws://127.0.0.1:*']);

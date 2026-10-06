@@ -2,13 +2,15 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <!-- BACKLOG #56. Scripts: our own files only (every <script> below has a src; nothing is inline, nothing evals).
+  <!-- BACKLOG #56. Scripts: none inline and nothing evals; every <script> below has a src. What 'self' admits on a file:
+       page is ANY file:/// URL (the page's origin is opaque), so this stops inline and web injection, not a file: script
+       (narrowing that needs an app:// protocol or hashes: BACKLOG). Frames, workers and manifests: none exist, so none.
        Styles keep 'unsafe-inline': this block, the style="" attributes the panels' markup carries, and the style
        elements xterm.js and CodeMirror inject all need it, and a style cannot run code. Images and media (a project's
        background, portraits: file:///) need no widening: on a file: page 'self' matches file:/// URLs, UNC paths
        included (measured). The one connection is the WebSocket to the local host. No data:, blob: or web source.
        test/renderer-csp.test.js pins this; verify/probe-csp-violations.js measures it in a real window. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ws://127.0.0.1:*; object-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'" />
   <!-- Replaced at runtime by the project folder (FF3). This is only what
        shows before the window exists; main.js preventDefaults
        page-title-updated so the page can never take it back. -->
