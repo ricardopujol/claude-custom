@@ -13,8 +13,12 @@
       --win: #11131a; --chrome: #171a23; --panel: #1e222d; --border: #262b38; --text: #c7cede; --dim: #6d7689;
       --accent: #d08c4a; --ok: #5fb07a; --warn: #e6c34a; --bad: #cc5f5f;
     }
-    html, body { margin: 0; background: transparent; color: var(--text); overflow: hidden;
+    /* The page reports its natural height and main caps the view to the window: past the cap it scrolls here. Never a
+       height in vh: the view's size comes FROM the reported height, so a vh cap would feed back into itself. */
+    html { overflow-x: hidden; overflow-y: auto; }
+    html, body { margin: 0; background: transparent; color: var(--text);
       font: 12.5px/1.45 "Segoe UI", system-ui, sans-serif; }
+    select { max-width: 220px; text-overflow: ellipsis; }
     #root { display: block; }
     button, select { font: inherit; font-size: 12px; background: var(--chrome); color: var(--text);
       border: 1px solid var(--border); border-radius: 5px; padding: 2px 9px; cursor: pointer; }
@@ -39,7 +43,7 @@
     @keyframes s { to { transform: rotate(360deg); } }
     /* the list */
     .pop { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px; display: grid; gap: 2px;
-      box-sizing: border-box; width: 100%; max-height: 100vh; overflow-y: auto; }
+      box-sizing: border-box; width: 100%; }
     .head { display: flex; justify-content: space-between; align-items: center; padding: 2px 4px 4px; color: var(--dim);
       font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
     .x { border: 0; background: transparent; color: var(--dim); padding: 0 4px; }

@@ -24,6 +24,8 @@
  *
  * THE TOAST follows the note typed last in this window (or the one acted on last from the list), and shows what that
  * note's state says (app/indexing-display.js toastModel); `result` is a choose/undo/move that didn't work, said once.
+ * A "waiting" toast hides after its 10 s but comes back (a new seq) when that note stops waiting, so the question
+ * "Where should this go?" is never lost to a slow model; a dismissed asking or filed toast stays gone.
  * Enter on an empty field files an asking note at its best guess: propose mode's "File it (Enter)".
  *
  * Open is allowed only for the project's own backlog and history files.
@@ -63,6 +65,7 @@ function createIndexingBridge({
   let seq = 0;
   let listOpen = false;
   let listClosedByBlurAt = -Infinity;
+  let listFocused = false;
   let accent = null;
   const views = { toast: null, list: null };
   const shown = { toast: false, list: false };      // tracked here: a View has no visibility property to read back
@@ -79,7 +82,7 @@ function createIndexingBridge({
     for (const p of ['toast', 'list']) if (views[p] && views[p].webContents === e.sender) return p;
     return null;
   };
-  const active = (part) => (part === 'toast' ? toast !== null : listOpen);
+  const active = (part) => (part === 'toast' ? toast !== null && !toast.hiddenWhileWaiting : listOpen);
 
   function viewFor(part) {
     if (views[part]) return views[part];
@@ -91,8 +94,13 @@ function createIndexingBridge({
     w.contentView.addChildView(v);
     v.webContents.loadFile(overlayFile, { query: { part } });
     if (part === 'list') {
+      // Click outside closes it, but only once it was clicked into: opening it leaves the keyboard where it was, and
+      // a blur that no focus came before is the strip keeping it, not the person leaving (measured in the probe).
+      v.webContents.on('focus', () => { listFocused = true; });
       v.webContents.on('blur', () => {
-        if (!listOpen) return;
+        const wasFocused = listFocused;
+        listFocused = false;
+        if (!listOpen || !wasFocused) return;
         listOpen = false;
         listClosedByBlurAt = now();
         push(true);
@@ -123,6 +131,13 @@ function createIndexingBridge({
     if (!w) return;
     let snapshot;
     try { snapshot = service.snapshot(project.root); } catch { return; }
+    // A waiting toast that timed out comes back once its note stops waiting: the question (or the place) is news.
+    if (toast && toast.hiddenWhileWaiting) {
+      const row = (snapshot.list || []).find(n => n.id === toast.id);
+      if (!row) toast = null;
+      else if (row.state !== 'waiting') showToast(toast.id);
+    }
+    const shownToast = toast && !toast.hiddenWhileWaiting ? toast : null;
     const strip = { label: project.label, counts: snapshot.counts, mode: snapshot.mode, listOpen };
     const sKey = JSON.stringify(strip);
     if (force || sKey !== lastStrip) {
@@ -133,7 +148,7 @@ function createIndexingBridge({
       if (!active(part) && !views[part]) continue;
       const v = viewFor(part);
       if (!v) continue;
-      const state = { part, snapshot, toast, listOpen, accent, label: project.label };
+      const state = { part, snapshot, toast: shownToast, listOpen, accent, label: project.label };
       const key = JSON.stringify(state);
       if (!force && key === lastOverlay[part]) continue;
       lastOverlay[part] = key;
@@ -192,7 +207,6 @@ function createIndexingBridge({
     if (!listOpen && now() - listClosedByBlurAt < BLUR_REOPEN_MS) return;
     listOpen = !listOpen;
     push(true);
-    if (listOpen && views.list && !views.list.webContents.isDestroyed()) views.list.webContents.focus();
   });
 
   ipcMain.on('strip:indexChip', async (e) => {
@@ -241,7 +255,10 @@ function createIndexingBridge({
 
   ipcMain.on('indexing:dismiss', (e, shownSeq) => {
     if (partOf(e) !== 'toast' || !toast || toast.seq !== shownSeq) return;
-    toast = null;
+    let row = null;
+    try { row = (service.snapshot(project.root).list || []).find(n => n.id === toast.id) || null; } catch { row = null; }
+    if (!toast.result && row && row.state === 'waiting') toast.hiddenWhileWaiting = true;
+    else toast = null;
     push(true);
   });
 

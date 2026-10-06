@@ -192,6 +192,35 @@ test('dismiss ends the toast only for the toast it was shown for (a newer one st
   assert.strictEqual(toast.visible, false);
 });
 
+test('a waiting toast that timed out comes back, with a new seq, once its note gets a place or needs one', async () => {
+  const t = setup();
+  await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
+  const toast = overlayOf(t, 'toast');
+  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'waiting', reason: 'busy' }] });
+  t.bridge.push(true);
+  const seq = lastOverlay(toast).toast.seq;
+  t.ipcMain.emit('indexing:dismiss', toast.webContents, seq);
+  assert.strictEqual(lastOverlay(toast).toast, null, 'hidden while it waits');
+  t.bridge.push(true);
+  assert.strictEqual(lastOverlay(toast).toast, null, 'still waiting: still hidden');
+  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'asking', guess: {}, options: [] }] });
+  t.bridge.push();
+  const back = lastOverlay(toast).toast;
+  assert.ok(back && back.id === 'n1' && back.seq > seq, JSON.stringify(back));
+});
+
+test('a dismissed asking or filed toast stays gone', async () => {
+  const t = setup();
+  await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
+  const toast = overlayOf(t, 'toast');
+  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'asking', guess: {}, options: [] }] });
+  t.bridge.push(true);
+  t.ipcMain.emit('indexing:dismiss', toast.webContents, lastOverlay(toast).toast.seq);
+  t.setSnap({ mode: 'propose', counts: {}, titles: {}, list: [{ id: 'n1', text: 'x', state: 'filed', where: { target: 'new', n: 3 } }] });
+  t.bridge.push(true);
+  assert.strictEqual(lastOverlay(toast).toast, null);
+});
+
 test('the overlay views size to what they show: toast bottom right, list top right under the strip, hidden when empty', async () => {
   const t = setup();
   await t.ipcMain.invoke('strip:indexSubmit', t.strip, 'x');
@@ -207,6 +236,17 @@ test('the overlay views size to what they show: toast bottom right, list top rig
   assert.deepStrictEqual(list.bounds, { x: 1200 - 380 - 10, y: 34 + 6, width: 380, height: 300 });
   t.ipcMain.emit('strip:indexList', t.strip);
   assert.strictEqual(list.visible, false, 'the counter closes it again');
+});
+
+test('the list closes on a blur only after it was clicked into (opening it never takes the keyboard)', () => {
+  const t = setup();
+  t.ipcMain.emit('strip:indexList', t.strip);
+  const list = overlayOf(t, 'list');
+  list.webContents.fire('blur');
+  assert.strictEqual(lastStrip(t).listOpen, true, 'a blur before any focus (the strip kept the keyboard) leaves it open');
+  list.webContents.fire('focus');
+  list.webContents.fire('blur');
+  assert.strictEqual(lastStrip(t).listOpen, false, 'clicked into, then away: closed');
 });
 
 test('overlayBounds: a narrow window keeps a gutter; a tall report is capped to the space there is', () => {
