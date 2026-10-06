@@ -36,6 +36,7 @@ const { createHygieneRegistry } = require('./lib/process-hygiene');
 
 const hygiene = createHygieneRegistry();
 hygiene.install();
+process.on('exit', () => { try { hygiene._emergencyCleanup('exit'); } catch { /* best effort */ } });
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-csp-probe-'));
 const container = path.join(tmp, 'proj');
 const dev = path.join(container, 'dev');
@@ -56,6 +57,8 @@ function ffmpeg(args) {
   const r = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], { windowsHide: true, encoding: 'utf8' });
   return r.status === 0 ? null : (r.error ? r.error.message : r.stderr);
 }
+// Built with path.join, never a backslash literal: a JS string 'C:' + backslash + 'Windows' silently loses the slashes (Miguel F1).
+const CMD_EXE = path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'cmd.exe');
 const VIDEO = path.join(media, 'loop.webm');
 const PICTURE = path.join(media, 'rust.png');
 // The admin share of this machine (//localhost/C$/...): a real UNC path to the same files, when the share is on. The URL
@@ -84,19 +87,20 @@ const { createStore } = require(path.join(ROOT, 'host', 'store'));
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 app.setPath('userData', ${JSON.stringify(path.join(tmp, 'userData'))});
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const seen = [];                       // every violation: { from, text }
+let phase = 'exercise';                // flipped to 'control' just before the deliberate violations: control and exercise are told apart by TIME
+const seen = [];                       // every CSP console line: { from, text, phase }
 const errors = [];                     // every other console error, for the record
 const panels = [];
 
 app.whenReady().then(async () => {
-  setTimeout(() => { console.log('@@' + JSON.stringify({ step: 'crash', error: 'the probe window ran past 150s' })); app.exit(2); }, 150000);
+  setTimeout(() => { console.log('@@' + JSON.stringify({ step: 'crash', error: 'the probe window ran past 240s' })); app.exit(2); }, 240000);
   // The SAME webPreferences app/main.js gives a tab's view.
   const win = new BrowserWindow({ width: 1200, height: 800, show: true, webPreferences: {
     contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } });
   registerAvatarHandlers({ ipcMain, store: createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} }), win, dialog });
   win.webContents.on('console-message', (_e, level, message, line, src) => {
     const text = message + ' (' + String(src).split('/').pop() + ':' + line + ')';
-    if (/Content[- ]Security[- ]Policy|Refused to/i.test(message)) seen.push({ from: 'console', text });
+    if (/Content[- ]Security[- ]Policy|Refused to/i.test(message)) seen.push({ from: 'console', text, phase });
     else if (level >= 2) errors.push(text);
   });
   win.loadFile(path.join(ROOT, 'app', 'renderer.html'), { query: {
@@ -199,6 +203,7 @@ app.whenReady().then(async () => {
 
     // NEGATIVE CONTROL: four things the policy must refuse. The probe passes only if the detector saw each one.
     const before = await js('window.__csp.length');
+    phase = 'control';
     await js(\`(() => {
       const s = document.createElement('script'); s.textContent = 'window.__inlineRan = true'; document.head.append(s);          // inline script
       try { (0, eval)('window.__evalRan = true'); } catch (e) { /* refused is the point */ }                                      // eval
@@ -244,6 +249,20 @@ async function waitFor(fn, ms = 20000, step = 250) {
     await sleep(step);
   }
 }
+// The root and every descendant of it, by PID (a process-table read; nothing is matched by name).
+function descendantsOf(root) {
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress'],
+  { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1048576 });
+  let rows = [];
+  try { rows = JSON.parse(r.stdout); } catch { return [root]; }
+  const found = new Set([root]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const p of rows) if (found.has(p.ParentProcessId) && !found.has(p.ProcessId)) { found.add(p.ProcessId); grew = true; }
+  }
+  return [...found];
+}
 async function runRealApp() {
   const port = await freePort();
   const token = require('crypto').randomBytes(16).toString('hex');
@@ -252,7 +271,7 @@ async function runRealApp() {
   fs.mkdirSync(registry, { recursive: true });
   const env = {
     ...inherited,
-    CLAUDE_CUSTOM_BIN: 'C:\Windows\System32\cmd.exe', CLAUDE_CUSTOM_CWD: dev,
+    CLAUDE_CUSTOM_BIN: CMD_EXE, CLAUDE_CUSTOM_CWD: dev,
     CLAUDE_CUSTOM_TABS_PROBE: String(port), CLAUDE_CUSTOM_TABS_PROBE_TOKEN: token,
     CLAUDE_CUSTOM_REGISTRY: registry, CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits-real'), CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads-real'),
   };
@@ -262,12 +281,13 @@ async function runRealApp() {
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
   const view = (action, args = {}) => command(app, { cmd: 'view', action, args });
-  const out = { ok: false, detail: '', csp: [], renderer: 0 };
+  const out = { ok: false, detail: '', csp: [], renderer: 0, binExists: fs.existsSync(CMD_EXE), hostPid: null, hostAliveAtEnd: false, left: [], treeSize: 0 };
   try {
     const up = await waitFor(async () => {
       const st = await command(app, { cmd: 'state' });
       const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
       if (!sel || !sel.started) return null;
+      if (Number.isInteger(sel.pid)) out.hostPid = sel.pid;
       const v = await view('state');
       return v && v.ok && v.sent ? v : null;
     }, 150000, 500);
@@ -294,11 +314,22 @@ async function runRealApp() {
     await view('bgStyle', { action: 'set-background', path: PICTURE });
     await sleep(2000);
     await sleep(1500);
-    out.ok = shown.length === 10 && !!reader;
-    out.detail = `panels shown ${shown.length}/10, reader ${reader ? 'open with CodeMirror' : 'did NOT open'}`;
+    // The tab must be ALIVE: a host whose claude binary is missing exits at once (host.js: process.exit on pty exit), so a host
+    // still up after all of this is proof the shell ran. Its pid comes from the tab list.
+    try { process.kill(out.hostPid, 0); out.hostAliveAtEnd = true; } catch { out.hostAliveAtEnd = false; }
+    out.ok = shown.length === 10 && !!reader && out.binExists && out.hostAliveAtEnd;
+    out.detail = `panels shown ${shown.length}/10, reader ${reader ? 'open with CodeMirror' : 'did NOT open'}, shell ${CMD_EXE} ${out.binExists ? 'exists' : 'MISSING'}, host pid ${out.hostPid} ${out.hostAliveAtEnd ? 'alive after the run' : 'DEAD'}`;
   } finally {
     await command(app, { cmd: 'quit' }, 8000);
     await sleep(1500);
+    // Whatever ignored `quit` goes now, by PID: every process in the tree this probe started (Miguel F2), then a list of survivors.
+    // The tab's host is spawned detached by the app, so it is not under the Electron PID: add it (and its pty) by the pid the tab list gave.
+    const tree = [...new Set([...descendantsOf(child.pid), ...(out.hostPid ? descendantsOf(out.hostPid) : [])])];
+    hygiene._emergencyCleanup('phase2-done');
+    if (out.hostPid) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(out.hostPid); } catch { /* already gone */ } }
+    await sleep(1500);
+    out.left = tree.filter(pid => { try { process.kill(pid, 0); return true; } catch { return false; } });
+    out.treeSize = tree.length;
     out.renderer = (app.out.match(/\[renderer:/g) || []).length;
     out.csp = app.out.split('\n').filter(l => /Content[- ]Security[- ]Policy|Refused to/i.test(l));
   }
@@ -328,7 +359,7 @@ async function runRealApp() {
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CLAUDE_CUSTOM_') && k !== 'ELECTRON_RUN_AS_NODE'));
   const env = {
     ...inherited,
-    CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd.exe',
+    CLAUDE_CUSTOM_BIN: CMD_EXE,
     CLAUDE_CUSTOM_CWD: dev, CLAUDE_CUSTOM_PORT: port, CLAUDE_CUSTOM_TOKEN: 'probe-token',
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'forge'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
@@ -366,7 +397,7 @@ async function runRealApp() {
   });
   let errOut = '';
   electron.stderr.on('data', d => { errOut += d; });
-  const killer = setTimeout(() => { console.log('FAIL: probe timed out after 180s'); hygiene._emergencyCleanup('timeout'); }, 180000);
+  const killer = setTimeout(() => { console.log('FAIL: probe timed out after 300s'); hygiene._emergencyCleanup('timeout'); }, 300000);
   await new Promise((resolve) => electron.on('exit', resolve));
   clearTimeout(killer);
   hygiene._emergencyCleanup('done');
@@ -402,8 +433,8 @@ async function runRealApp() {
   const exercise = all.slice(0, v.controlFrom || 0);
   const control = all.slice(v.controlFrom || 0);
   const consoleSeen = (step('console').seen) || [];
-  const controlText = (x) => /example\.invalid|inline|eval/i.test(`${x.blocked || ''} ${x.directive || ''} ${x.text || ''}`);
-  const exerciseConsole = consoleSeen.filter(x => !controlText(x));
+  const exerciseConsole = consoleSeen.filter(x => x.phase !== 'control');
+  const controlConsole = consoleSeen.filter(x => x.phase === 'control');
   console.log(`      violations while exercising the page: ${exercise.length} events, ${exerciseConsole.length} console messages`);
   for (const x of exercise) console.log(`        EVENT   ${x.directive} blocked=${x.blocked} ${x.src || ''}:${x.line || ''}`);
   for (const x of exerciseConsole) console.log(`        CONSOLE ${x.text}`);
@@ -421,10 +452,12 @@ async function runRealApp() {
   const real = await runRealApp();
   console.log(`      real app: ${real.renderer} renderer console lines, ${real.csp.length} CSP violations`);
   for (const l of real.csp) console.log(`        ${l}`);
-  check('REAL app/main.js: the window came up, every panel was shown, the reader opened', real.ok === true, real.detail);
+  check("REAL app/main.js: the window came up, every panel was shown, the reader opened, and the tab's shell is alive", real.ok === true, real.detail);
+  check("REAL app: its console route is live (it printed renderer lines; a CSP refusal prints through the same route, as phase 1's control shows)", real.renderer > 0, `${real.renderer} lines`);
+  check(`REAL app: every process this probe started is gone (${real.treeSize} in the tree)`, (real.left || []).length === 0, `left: ${(real.left || []).join(',') || 'none'}`);
   check('REAL app/main.js: ZERO CSP violations', real.ok === true && real.csp.length === 0);
 
-  check('control: the console route (what phase 2 reads) printed Refused-to lines for the control too', consoleSeen.filter(controlText).length >= 3, consoleSeen.filter(controlText).map(x => x.text.slice(0, 70)));
+  check('control: the console route (what phase 2 reads) printed Refused-to lines for the control too', controlConsole.length >= 3, controlConsole.map(x => x.text.slice(0, 70)));
 
   const errors = step('console').errors || [];
   console.log(`      other console errors (not CSP): ${errors.length}`);
