@@ -41,6 +41,7 @@ const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const CANVAS_DIR = path.join(STATE_DIR, 'canvas');
 const SID1 = 'probe-canvas-one';
 const SID2 = 'probe-canvas-two';
+const BROKER_NAME = 'probe-broker.invalid';
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
 const { isLiveHost } = require('./lib/live-host');
@@ -103,6 +104,10 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+    // The broker refuses every loopback address, so the stub is reached by a NAME the app's probe seam maps to loopback (PR #122 F6/F10).
+    // That is also what makes this check able to see the resolver rule break the broker: Chromium's own stack (net.fetch) would refuse
+    // this name (ERR_NAME_NOT_RESOLVED under host-resolver-rules), where it would still reach a bare 127.0.0.1.
+    CLAUDE_CUSTOM_CANVAS_PROBE_HOSTS: JSON.stringify({ [BROKER_NAME]: '127.0.0.1' }),
   };
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
@@ -200,7 +205,8 @@ async function main() {
   const server = http.createServer((q, res) => { hits.n += 1; res.writeHead(200, { 'content-type': 'text/plain' }); res.end('pong'); });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   hygiene.addCleanup(() => { try { server.close(); } catch { /* closed */ } });
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const loopbackOrigin = `http://127.0.0.1:${server.address().port}`;
+  const origin = `http://${BROKER_NAME}:${server.address().port}`;
 
   const app = await launchApp(dev);
   const ready = await viewReady(app);
@@ -271,7 +277,8 @@ async function main() {
   await view(app, 'canvasClick', { act: 'deny' });
   const denied = await waitFor(async () => { const i = await inspect(); return i.title === 'fetch blocked' ? i : null; }, 10000, 150);
   check('5: Deny: the page\'s fetch fails and the server saw nothing', !!denied && hits.n === 0, JSON.stringify({ title: (await inspect()).title, hits: hits.n }));
-  const afterDeny = await st();
+  // the host's frame with the new list follows the answer: wait for it, a probe that reads the instant after the click races it
+  const afterDeny = await waitFor(async () => { const s = await st(); return s.badge === '1 host denied' ? s : null; }, 8000, 150) || await st();
   check('5: the badge says "1 host denied", and the view is back', afterDeny.badge === '1 host denied' && (await inspect()).visible === true, JSON.stringify({ badge: afterDeny.badge, v: await inspect() }));
   check('5: the denial is on disk for this panel', !!hostsOnDisk() && hostsOnDisk().denied.includes(origin) && hostsOnDisk().approved.length === 0, JSON.stringify(hostsOnDisk()));
   writePage(SID1, reach(2));
@@ -284,6 +291,7 @@ async function main() {
   check('5: ...and the list covers the view', (await inspect()).visible === false);
   await view(app, 'canvasClick', { act: 'remove', origin });
   await waitFor(async () => { const s = await st(); return /No hosts yet/.test(s.text) ? s : null; }, 8000, 150);
+  await waitFor(async () => (hostsOnDisk() && hostsOnDisk().denied.length === 0 ? true : null), 8000, 150);     // the host writes it a moment after the list redraws
   check('5: Remove takes the host off the list (and the disk)', !!hostsOnDisk() && hostsOnDisk().denied.length === 0, JSON.stringify(hostsOnDisk()));
   await view(app, 'canvasClick', { act: 'close-hosts' });
   writePage(SID1, reach(3));
@@ -295,6 +303,21 @@ async function main() {
   const afterAllow = await st();
   check('5: the badge says "1 host allowed" and the answer is on disk', afterAllow.badge === '1 host allowed' && !!hostsOnDisk() && hostsOnDisk().approved.includes(origin), JSON.stringify({ badge: afterAllow.badge, disk: hostsOnDisk() }));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '5-allowed.png') });
+
+  // 5b: something else drawn over the slot (PR #122 Dexter F5) -----------------------------------------------------
+  check('5b: before the overlay the native view is visible', (await inspect()).visible === true, JSON.stringify(await inspect()));
+  await view(app, 'canvasOverlay', { on: true });
+  const hiddenByOverlay = await waitFor(async () => ((await inspect()).visible === false ? true : null), 5000, 100);
+  check('5b: a box drawn over part of the slot (a float, menu or popover) hides the native view, which would paint above it', !!hiddenByOverlay, JSON.stringify(await inspect()));
+  await view(app, 'canvasOverlay', { on: false });
+  const shownAgain = await waitFor(async () => ((await inspect()).visible === true ? true : null), 5000, 100);
+  check('5b: and the view is back once the box is gone', !!shownAgain, JSON.stringify(await inspect()));
+
+  // 5c: the broker never reaches this machine, whatever the person approved (PR #122 Dexter F6) ------------------------------------
+  const hitsBefore = hits.n;
+  writePage(SID1, `<h1>literal</h1><script>fetch(${JSON.stringify(loopbackOrigin + '/ping')}).then(r => { document.title = "literal " + r.status; }, (e) => { document.title = "literal blocked"; });</script>`);
+  const lit = await waitFor(async () => { const i = await inspect(); return i.title === 'literal blocked' || /^literal \d/.test(i.title) ? i : null; }, 15000, 150);
+  check('5c: a loopback ADDRESS is refused by the real broker, with no question and nothing reaching the server', !!lit && lit.title === 'literal blocked' && hits.n === hitsBefore && !(await st()).asking, JSON.stringify({ title: lit && lit.title, hits: hits.n - hitsBefore, asking: (await st()).asking }));
 
   // 6 -----------------------------------------------------------------------------
   await hook('SessionStart', { source: 'clear', session_id: SID2 });

@@ -602,8 +602,18 @@ function createTabView(tab) {
 const canvasAsks = new Map();      // id -> { owner, resolve }: a host question waiting on the tab's page
 let canvasAskSeq = 0;
 const CANVAS_ASK_TIMEOUT_MS = 5 * 60 * 1000;
+// PROBE SEAM, only when the probe driver's port AND token are set (the same gate as the other seams): names the probe maps to an address, vouched
+// for, so verify/probe-canvas-panel.js can serve a stub on loopback and still reach it BY A NAME through the real broker (which refuses every
+// loopback address, and every literal one). Any other name goes to real DNS. A normal run has no map and the broker's own resolver.
+const CANVAS_PROBE_HOSTS = (() => {
+  if (!PROBE_PORT || !PROBE_TOKEN) return null;
+  try { const m = JSON.parse(process.env.CLAUDE_CUSTOM_CANVAS_PROBE_HOSTS || 'null'); return m !== null && typeof m === 'object' ? m : null; } catch { return null; }
+})();
+const canvasProbeResolve = CANVAS_PROBE_HOSTS === null ? undefined
+  : async (name) => (typeof CANVAS_PROBE_HOSTS[name] === 'string' ? [{ address: CANVAS_PROBE_HOSTS[name], family: 4, trusted: true }] : require('dns').promises.lookup(name, { all: true }));
 const canvasViews = createCanvasViews({
   WebContentsView, session,
+  resolveHost: canvasProbeResolve,
   addChild: (v) => win.contentView.addChildView(v),
   removeChild: (v) => win.contentView.removeChildView(v),
   ownerBounds: (owner) => { for (const v of liveViews) { if (v.webContents === owner) return v.getBounds(); } return null; },
