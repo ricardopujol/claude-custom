@@ -1,201 +1,202 @@
 'use strict';
 /**
- * The indexing assistant's document side (host/indexing-doc.js, backlog #66, DESIGN_INDEXING_ASSISTANT.md "Claude's
- * call" 1, 2 and 5): read a backlog's numbered items, build the text of a filed note, place it, and take it back.
- * Pure: strings in, strings out.
+ * The indexing assistant's inbox (host/indexing-doc.js, backlog #66, DESIGN_INDEXING_ASSISTANT.md "Revised 2026-10-05
+ * (evening)"): a note becomes one `- YYYY-MM-DD HH:MM · <verbatim>` entry at the end of the backlog's `## Inbox`
+ * section, which is created right after the status block when it's missing; continuation lines are indented two
+ * spaces; Undo removes exactly that entry while it's still in the inbox unchanged. Pure: strings in, strings out.
  */
 const test = require('node:test');
 const assert = require('node:assert');
 
-const doc = require('../host/indexing-doc');
+const d = require('../host/indexing-doc');
 
 const BACKLOG = [
   '# proj — Backlog',
   '',
+  'Intro line.',
+  '',
+  '**Status (2026-09-29):**',
+  '- merged: a',
+  '',
   '## Suggested groupings',
-  '- a',
+  '- x',
   '',
-  '## 1. First thing',
-  'Ricardo: "one"',
-  '',
-  '## 3. Third thing (captured 2026-10-01)',
+  '## 1. First',
   'body',
-  '### a sub heading inside the item',
-  '- last line of three',
-  '',
-  '',
-  '## 2. Second thing',
-  'two',
   '',
 ].join('\n');
 
-// --- parsing ---------------------------------------------------------------------------------------------------------
+// --- the entry -------------------------------------------------------------------------------------------------------
 
-test('parseBacklog: numbered ## items in file order, with their number and title', () => {
-  const { items } = doc.parseBacklog(BACKLOG);
-  assert.deepStrictEqual(items.map(i => [i.n, i.title]), [[1, 'First thing'], [3, 'Third thing (captured 2026-10-01)'], [2, 'Second thing']]);
+test('stampOf: local YYYY-MM-DD HH:MM', () => {
+  assert.strictEqual(d.stampOf(new Date(2026, 9, 5, 9, 7).getTime()), '2026-10-05 09:07');
+  assert.strictEqual(d.stampOf(new Date(2026, 0, 1, 23, 59).getTime()), '2026-01-01 23:59');
 });
 
-test('parseBacklog: an item runs from its heading to the next # or ## heading, a ### inside it does not end it', () => {
-  const { items } = doc.parseBacklog(BACKLOG);
-  const three = items.find(i => i.n === 3);
-  const body = BACKLOG.slice(three.start, three.end);
-  assert.ok(body.startsWith('## 3. Third thing'));
-  assert.ok(body.includes('### a sub heading'));
-  assert.ok(body.endsWith('- last line of three\n\n\n'));
-  const two = items.find(i => i.n === 2);
-  assert.strictEqual(two.end, BACKLOG.length);
+test('entryText: "- STAMP · text", the note verbatim, the whole note trimmed', () => {
+  assert.strictEqual(d.entryText('2026-10-05 09:07', '  tabs should "glow" **now**  ', '\n'), '- 2026-10-05 09:07 · tabs should "glow" **now**\n');
 });
 
-test('parseBacklog: a heading inside a ``` fence is not an item and does not end one', () => {
-  const text = '## 1. One\n```\n## 9. not an item\n# nor this\n```\nstill one\n## 2. Two\n';
-  const { items } = doc.parseBacklog(text);
-  assert.deepStrictEqual(items.map(i => i.n), [1, 2]);
-  assert.ok(text.slice(items[0].start, items[0].end).includes('still one'));
+test('entryText: continuation lines are indented two spaces (a blank one too), in the file\'s line break', () => {
+  assert.strictEqual(d.entryText('S', 'one\ntwo\r\n\nthree', '\r\n'), '- S · one\r\n  two\r\n  \r\n  three\r\n');
 });
 
-test('parseBacklog: a number used twice is marked dup on both', () => {
-  const { items } = doc.parseBacklog('## 4. a\n## 4. b\n## 5. c\n');
-  assert.deepStrictEqual(items.map(i => i.dup), [true, true, false]);
+test('entryText: a lone \\r is a line break too, so no line can start at column 0', () => {
+  assert.strictEqual(d.entryText('S', 'a\rb', '\n'), '- S · a\n  b\n');
 });
 
-test('parseBacklog: CRLF files parse the same, titles carry no \\r', () => {
-  const { items } = doc.parseBacklog(BACKLOG.replace(/\n/g, '\r\n'));
-  assert.deepStrictEqual(items.map(i => i.title), ['First thing', 'Third thing (captured 2026-10-01)', 'Second thing']);
+test('newlineOf: the file\'s FIRST line break decides (add-history.ps1\'s rule); none is LF', () => {
+  assert.strictEqual(d.newlineOf('a\r\nb\nc'), '\r\n');
+  assert.strictEqual(d.newlineOf('a\nb\r\nc'), '\n');
+  assert.strictEqual(d.newlineOf('abc'), '\n');
 });
 
-test('parseBacklog: "## 7 no dot", "##7. tight" and "## x. word" are not items', () => {
-  assert.deepStrictEqual(doc.parseBacklog('## 7 no dot\n##7. tight\n## x. word\n').items, []);
+// --- the section -----------------------------------------------------------------------------------------------------
+
+test('ensureInbox: a missing inbox is created right after the status block, before the first ## heading', () => {
+  const r = d.ensureInbox(BACKLOG);
+  assert.strictEqual(r.added, true);
+  assert.ok(r.text.includes('- merged: a\n\n## Inbox\n\n## Suggested groupings'), JSON.stringify(r.text));
+  assert.strictEqual(r.text.replace('## Inbox\n\n', ''), BACKLOG, 'nothing else changes');
 });
 
-test('titleLines: the "## N. title" lines only, in file order', () => {
-  assert.deepStrictEqual(doc.titleLines(BACKLOG), ['## 1. First thing', '## 3. Third thing (captured 2026-10-01)', '## 2. Second thing']);
+test('ensureInbox: an inbox already there is left alone', () => {
+  const t = BACKLOG.replace('## Suggested', '## Inbox\n- old\n\n## Suggested');
+  assert.deepStrictEqual(d.ensureInbox(t), { text: t, added: false });
 });
 
-test('nextItemNumber: one more than the highest ## N., wherever it sits, fenced included', () => {
-  assert.strictEqual(doc.nextItemNumber(BACKLOG), 4);
-  assert.strictEqual(doc.nextItemNumber('## 1. a\n```\n## 40. fenced\n```\n'), 41);
-  assert.strictEqual(doc.nextItemNumber('# nothing numbered\n'), 1);
-  assert.strictEqual(doc.nextItemNumber(''), 1);
+test('ensureInbox: no ## heading at all puts it at the end; a file with no final newline gets one first', () => {
+  assert.strictEqual(d.ensureInbox('# T\nbody').text, '# T\nbody\n\n## Inbox\n');
+  assert.strictEqual(d.ensureInbox('# T\n\n').text, '# T\n\n## Inbox\n');
+  assert.strictEqual(d.ensureInbox('').text, '## Inbox\n');
 });
 
-test('newlineOf: CRLF when the file uses it, else LF', () => {
-  assert.strictEqual(doc.newlineOf('a\r\nb'), '\r\n');
-  assert.strictEqual(doc.newlineOf('a\nb'), '\n');
-  assert.strictEqual(doc.newlineOf(''), '\n');
+test('ensureInbox: a line before the first ## heading that is not blank gets a blank line after the inbox too', () => {
+  assert.strictEqual(d.ensureInbox('# T\ntext\n## A\n').text, '# T\ntext\n\n## Inbox\n\n## A\n');
 });
 
-// --- the text of a filed note ----------------------------------------------------------------------------------------
-
-test('a new item: "## N. title (captured DATE, indexing assistant)" then Ricardo: "<verbatim>"', () => {
-  const p = doc.planInsert(BACKLOG, { target: 'new', title: 'Tab colours', text: 'tabs should "glow"', date: '2026-10-05' });
-  assert.strictEqual(p.ok, true);
-  assert.strictEqual(p.n, 4);
-  assert.strictEqual(p.offset, BACKLOG.length);
-  assert.strictEqual(p.inserted, '\n## 4. Tab colours (captured 2026-10-05, indexing assistant)\nRicardo: "tabs should "glow""\n');
+test('ensureInbox: a ## heading inside a fence is not the first heading', () => {
+  const t = '# T\n```\n## not a heading\n```\n## A\n';
+  assert.strictEqual(d.ensureInbox(t).text, '# T\n```\n## not a heading\n```\n\n## Inbox\n\n## A\n');
 });
 
-test('a new item after a file with no final newline, and after one that already ends in a blank line', () => {
-  const p1 = doc.planInsert('## 1. a\nlast', { target: 'new', title: 'T', text: 'x', date: 'D' });
-  assert.strictEqual(p1.inserted, '\n\n## 2. T (captured D, indexing assistant)\nRicardo: "x"\n');
-  const p2 = doc.planInsert('## 1. a\nlast\n\n', { target: 'new', title: 'T', text: 'x', date: 'D' });
-  assert.strictEqual(p2.inserted, '## 2. T (captured D, indexing assistant)\nRicardo: "x"\n');
-  const p3 = doc.planInsert('', { target: 'new', title: 'T', text: 'x', date: 'D' });
-  assert.strictEqual(p3.inserted, '## 1. T (captured D, indexing assistant)\nRicardo: "x"\n');
+test('ensureInbox: a fence never closed would swallow an inbox put after it, so the inbox goes before it', () => {
+  assert.strictEqual(d.ensureInbox('# T\nbody\n```\ncode').text, '# T\nbody\n\n## Inbox\n\n```\ncode');
+  assert.strictEqual(d.ensureInbox('```').text, '## Inbox\n\n```');
+  const t = d.ensureInbox('# T\n~~~\n').text;
+  assert.strictEqual(d.inboxOf(t).found, true);
 });
 
-test('a new item in a CRLF file uses CRLF, and a multi-line note keeps its lines', () => {
-  const crlf = BACKLOG.replace(/\n/g, '\r\n');
-  const p = doc.planInsert(crlf, { target: 'new', title: 'T', text: 'line one\nline two', date: 'D' });
-  assert.strictEqual(p.inserted, '\r\n## 4. T (captured D, indexing assistant)\r\nRicardo: "line one\r\nline two"\r\n');
+test('ensureInbox: a heading with up to three leading spaces counts (Dexter F6b); four is not a heading', () => {
+  assert.strictEqual(d.ensureInbox('# T\n   ## A\n').text, '# T\n\n## Inbox\n\n   ## A\n');
+  assert.strictEqual(d.ensureInbox('# T\n    ## not\n').text, '# T\n    ## not\n\n## Inbox\n');
 });
 
-test('a title is one line: runs of whitespace (a newline too) become one space', () => {
-  const p = doc.planInsert('', { target: 'new', title: '  A\n  title\t here ', text: 'x', date: 'D' });
-  assert.ok(p.inserted.startsWith('## 1. A title here (captured'));
+test('ensureInbox: "## Inbox" is found with any case and leading spaces up to three, outside fences only', () => {
+  assert.strictEqual(d.ensureInbox('# T\n  ## inbox\n').added, false);
+  assert.strictEqual(d.ensureInbox('# T\n```\n## Inbox\n```\n').added, true);
 });
 
-test('a note on item #N goes after its last non-blank line, as "- **Note (DATE, indexing assistant):** text"', () => {
-  const p = doc.planInsert(BACKLOG, { target: 3, text: 'also do X', date: '2026-10-05' });
-  assert.strictEqual(p.ok, true);
-  const at = BACKLOG.indexOf('- last line of three\n') + '- last line of three\n'.length;
-  assert.strictEqual(p.offset, at);
-  assert.strictEqual(p.inserted, '- **Note (2026-10-05, indexing assistant):** also do X\n');
-  const after = doc.applyInsert(BACKLOG, p);
-  assert.ok(after.includes('- last line of three\n- **Note (2026-10-05, indexing assistant):** also do X\n\n\n## 2.'));
+// --- appending -------------------------------------------------------------------------------------------------------
+
+test('planAppend: the entry goes after the inbox\'s last non-blank line, so entries stay in typed order', () => {
+  const t = '# T\n\n## Inbox\n- 1\n- 2\n\n## A\n';
+  const p = d.planAppend(t, '- 3\n');
+  assert.deepStrictEqual(p, { ok: true, offset: t.indexOf('- 2\n') + 4, inserted: '- 3\n' });
+  assert.strictEqual(d.applyInsert(t, p), '# T\n\n## Inbox\n- 1\n- 2\n- 3\n\n## A\n');
 });
 
-test('a note on the last item when the file has no final newline', () => {
-  const text = '## 1. a\nbody';
-  const p = doc.planInsert(text, { target: 1, text: 'n', date: 'D' });
-  assert.strictEqual(p.offset, text.length);
-  assert.strictEqual(p.inserted, '\n- **Note (D, indexing assistant):** n\n');
+test('planAppend: an empty inbox gets its first entry under the heading', () => {
+  const t = '# T\n\n## Inbox\n\n## A\n';
+  assert.strictEqual(d.applyInsert(t, d.planAppend(t, '- 1\n')), '# T\n\n## Inbox\n- 1\n\n## A\n');
 });
 
-test('a multi-line note on an item: the lines after the first are indented under the bullet', () => {
-  const p = doc.planInsert('## 1. a\nbody\n', { target: 1, text: 'first\nsecond', date: 'D' });
-  assert.strictEqual(p.inserted, '- **Note (D, indexing assistant):** first\n  second\n');
+test('planAppend: an inbox at the end of a file with no final newline', () => {
+  const t = '## Inbox\n- 1';
+  const p = d.planAppend(t, '- 2\n');
+  assert.deepStrictEqual(p, { ok: true, offset: t.length, inserted: '\n- 2\n' });
 });
 
-test('a note on an item that does not exist, or exists twice, is refused', () => {
-  assert.deepStrictEqual(doc.planInsert(BACKLOG, { target: 9, text: 'x', date: 'D' }), { ok: false, reason: 'no-item' });
-  assert.deepStrictEqual(doc.planInsert('## 4. a\n## 4. b\n', { target: 4, text: 'x', date: 'D' }), { ok: false, reason: 'dup-item' });
+test('planAppend: a previous note\'s continuation lines (even "  ## x" or a fence) stay inside the inbox', () => {
+  const t = '## Inbox\n- S · a\n  ## 9. forged\n  ```\n- S · b\n\n## A\n';
+  assert.strictEqual(d.applyInsert(t, d.planAppend(t, '- c\n')), '## Inbox\n- S · a\n  ## 9. forged\n  ```\n- S · b\n- c\n\n## A\n');
 });
 
-test('a history entry is add-history.ps1\'s format: "- DATE [kind] text", appended at the end', () => {
-  const hist = '# H\n\n- 2026-10-04 [note] old\n';
-  const p = doc.planInsert(hist, { target: 'history', kind: 'decision', text: '  keep it simple  ', date: '2026-10-05' });
-  assert.deepStrictEqual(p, { ok: true, offset: hist.length, inserted: '- 2026-10-05 [decision] keep it simple\n' });
+test('planAppend: a line after the inbox that starts with two spaces (an indented heading) is never read as the new entry\'s continuation', () => {
+  const t = '## Inbox\n   ## A\n';
+  const entry = '- S · n\n';
+  const p = d.planAppend(t, entry);
+  assert.deepStrictEqual(p, { ok: true, offset: 9, inserted: '- S · n\n\n' });
+  const after = d.applyInsert(t, p);
+  assert.strictEqual(d.inboxOf(after).end, after.indexOf('   ## A'), 'the heading still ends the inbox');
+  assert.deepStrictEqual(d.removeEntry(after, d.recordOf(p, entry)), { ok: true, text: t });
 });
 
-test('a history entry after a file with no final newline, in CRLF, with continuation lines', () => {
-  const p = doc.planInsert('# H\r\n- x', { target: 'history', kind: 'learning', text: 'a\nb', date: 'D' });
-  assert.strictEqual(p.inserted, '\r\n- D [learning] a\r\n  b\r\n');
+test('planAppend: a fence still open at the end of the inbox: the entry goes before it, never inside it', () => {
+  const t = '## Inbox\n- 1\n\n~~~\ncode';
+  const p = d.planAppend(t, '- 2\n');
+  assert.strictEqual(d.applyInsert(t, p), '## Inbox\n- 1\n- 2\n\n~~~\ncode');
+  assert.strictEqual(d.applyInsert('## Inbox\n\n```', d.planAppend('## Inbox\n\n```', '- 1\n')), '## Inbox\n- 1\n\n```');
 });
 
-test('history only takes decision or learning', () => {
-  assert.deepStrictEqual(doc.planInsert('', { target: 'history', kind: 'idea', text: 'x', date: 'D' }), { ok: false, reason: 'bad-kind' });
+test('planAppend: no inbox is refused (ensureInbox comes first)', () => {
+  assert.deepStrictEqual(d.planAppend('# T\n', '- x\n'), { ok: false, reason: 'no-inbox' });
 });
 
-test('an empty note, or a target that is none of new / N / history, is refused', () => {
-  assert.deepStrictEqual(doc.planInsert(BACKLOG, { target: 'new', title: 'T', text: '   ', date: 'D' }), { ok: false, reason: 'empty' });
-  assert.deepStrictEqual(doc.planInsert(BACKLOG, { target: 'build-log', text: 'x', date: 'D' }), { ok: false, reason: 'bad-target' });
-  assert.deepStrictEqual(doc.planInsert(BACKLOG, { target: 0, text: 'x', date: 'D' }), { ok: false, reason: 'bad-target' });
-  assert.deepStrictEqual(doc.planInsert(BACKLOG, { target: 'new', title: '  ', text: 'x', date: 'D' }), { ok: false, reason: 'no-title' });
+// --- undo ------------------------------------------------------------------------------------------------------------
+
+test('removeEntry: the entry comes out exactly; the inbox heading it may have created stays', () => {
+  const base = d.ensureInbox(BACKLOG).text;
+  const entry = d.entryText('S', 'note', '\n');
+  const p = d.planAppend(base, entry);
+  const filed = d.applyInsert(base, p);
+  assert.deepStrictEqual(d.removeEntry(filed, d.recordOf(p, entry)), { ok: true, text: base });
 });
 
-// --- exact undo ------------------------------------------------------------------------------------------------------
-
-test('undoInsert takes back exactly what was inserted', () => {
-  const p = doc.planInsert(BACKLOG, { target: 1, text: 'n', date: 'D' });
-  const rec = doc.recordOf(BACKLOG, p);
-  assert.deepStrictEqual(doc.undoInsert(doc.applyInsert(BACKLOG, p), rec), { ok: true, text: BACKLOG });
+test('removeEntry: edits elsewhere in the backlog (above or below the inbox) don\'t block it, and are kept', () => {
+  const base = d.ensureInbox(BACKLOG).text;
+  const entry = d.entryText('S', 'note', '\n');
+  const p = d.planAppend(base, entry);
+  const edited = d.applyInsert(base, p).replace('Intro line.', 'Intro line, edited by a session.') + '## 2. New\n';
+  const r = d.removeEntry(edited, d.recordOf(p, entry));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.text, base.replace('Intro line.', 'Intro line, edited by a session.') + '## 2. New\n');
 });
 
-test('undoInsert allows text added AFTER the note (another session appending), and keeps it', () => {
-  const p = doc.planInsert(BACKLOG, { target: 'new', title: 'T', text: 'n', date: 'D' });
-  const rec = doc.recordOf(BACKLOG, p);
-  const later = doc.applyInsert(BACKLOG, p) + '\n## 5. Someone else\n';
-  assert.deepStrictEqual(doc.undoInsert(later, rec), { ok: true, text: BACKLOG + '\n## 5. Someone else\n' });
+test('removeEntry: an entry that was edited, moved out of the inbox, or filed away is refused, nothing removed', () => {
+  const base = '## Inbox\n\n## A\n';
+  const entry = d.entryText('S', 'note', '\n');
+  const p = d.planAppend(base, entry);
+  const rec = d.recordOf(p, entry);
+  const filed = d.applyInsert(base, p);
+  assert.deepStrictEqual(d.removeEntry(filed.replace('· note', '· note!'), rec), { ok: false, reason: 'changed' });
+  assert.deepStrictEqual(d.removeEntry(base + entry, rec), { ok: false, reason: 'changed' }, 'below ## A is outside the inbox');
+  assert.deepStrictEqual(d.removeEntry(base, rec), { ok: false, reason: 'changed' });
 });
 
-test('undoInsert refuses when anything before the note changed, or the note itself was edited', () => {
-  const p = doc.planInsert(BACKLOG, { target: 3, text: 'n', date: 'D' });
-  const rec = doc.recordOf(BACKLOG, p);
-  const filed = doc.applyInsert(BACKLOG, p);
-  assert.deepStrictEqual(doc.undoInsert('X' + filed, rec), { ok: false, reason: 'changed' });
-  assert.deepStrictEqual(doc.undoInsert(filed.replace('** n', '** m'), rec), { ok: false, reason: 'changed' });
-  assert.deepStrictEqual(doc.undoInsert(filed.slice(0, rec.offset + 3), rec), { ok: false, reason: 'changed' });
+test('removeEntry: only a whole entry at a line start counts (a longer entry that starts the same is not it)', () => {
+  const entry = '- S · note\n';
+  const t = '## Inbox\n- S · note and more\n';
+  assert.deepStrictEqual(d.removeEntry(t, { entry, offset: 9, lead: '' }), { ok: false, reason: 'changed' });
+  const t2 = '## Inbox\nx- S · note\n';
+  assert.deepStrictEqual(d.removeEntry(t2, { entry, offset: 10, lead: '' }), { ok: false, reason: 'changed' });
 });
 
-test('undoInsert refuses a record that is not one', () => {
-  for (const bad of [null, {}, { offset: -1, inserted: 'x', prefixHash: 'h' }, { offset: 1.5, inserted: 'x', prefixHash: 'h' },
-    { offset: 0, inserted: '', prefixHash: doc.hashOf('') }, { offset: 0, inserted: 'x' }]) {
-    assert.deepStrictEqual(doc.undoInsert('xyz', bad), { ok: false, reason: 'bad-record' }, JSON.stringify(bad));
+test('removeEntry: two identical entries (the same note in the same minute) take the one nearest where it was put', () => {
+  const t = '## Inbox\n- S · same\n- S · other\n- S · same\n';
+  const r = d.removeEntry(t, { entry: '- S · same\n', offset: t.lastIndexOf('- S · same'), lead: '' });
+  assert.strictEqual(r.text, '## Inbox\n- S · same\n- S · other\n');
+});
+
+test('removeEntry: the line break added in front of an entry at an unterminated end goes back out with it', () => {
+  const t = '## Inbox\n- 1';
+  const entry = '- 2\n';
+  const p = d.planAppend(t, entry);
+  assert.deepStrictEqual(d.removeEntry(d.applyInsert(t, p), d.recordOf(p, entry)), { ok: true, text: t });
+});
+
+test('removeEntry: a record that is not one is refused', () => {
+  for (const bad of [null, {}, { entry: '', offset: 0, lead: '' }, { entry: 'x', offset: -1, lead: '' }, { entry: 'x', offset: 1.5, lead: '' }, { entry: 'x', offset: 0, lead: 'y' }]) {
+    assert.deepStrictEqual(d.removeEntry('## Inbox\nx', bad), { ok: false, reason: 'bad-record' }, JSON.stringify(bad));
   }
-});
-
-test('recordOf: the offset, the inserted text and the hash of everything before it', () => {
-  const p = doc.planInsert('## 1. a\n', { target: 1, text: 'n', date: 'D' });
-  assert.deepStrictEqual(doc.recordOf('## 1. a\n', p), { offset: 8, inserted: p.inserted, prefixHash: doc.hashOf('## 1. a\n') });
 });
