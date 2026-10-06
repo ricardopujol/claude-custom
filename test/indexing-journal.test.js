@@ -1,9 +1,9 @@
 'use strict';
 /**
- * The indexing assistant's journal (host/indexing-journal.js, backlog #66, DESIGN_INDEXING_ASSISTANT.md "Claude's call"
- * 6 and 9): every note is written here FIRST, then what happened to it, as an append-only event log
+ * The indexing assistant's journal (host/indexing-journal.js, backlog #66, DESIGN_INDEXING_ASSISTANT.md "Revised
+ * 2026-10-05 (evening)"): every note is written here FIRST, then what happened to it, as an append-only event log
  * (.harness/state/indexing-notes.jsonl). Folding the events gives each note's state; the strip's list is today's notes
- * for one project, newest first, last 20, plus any still waiting for a place.
+ * for one project, newest first, last 20, plus any not filed.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -21,8 +21,8 @@ test('append + read: events come back in order; the file is created with its fol
   const dir = tmpDir('cc-ij-');
   const j = createJournal({ file: path.join(dir, 'state', 'indexing-notes.jsonl') });
   j.append({ ev: 'note', id: 'n1', project: P, text: 'hello', at: at(0) });
-  j.append({ ev: 'waiting', id: 'n1', reason: 'ollama-down', at: at(1) });
-  assert.deepStrictEqual(j.read().map(e => e.ev), ['note', 'waiting']);
+  j.append({ ev: 'unfiled', id: 'n1', reason: 'no-backlog', at: at(1) });
+  assert.deepStrictEqual(j.read().map(e => e.ev), ['note', 'unfiled']);
   assert.ok(fs.readFileSync(path.join(dir, 'state', 'indexing-notes.jsonl'), 'utf8').endsWith('\n'));
 });
 
@@ -65,13 +65,12 @@ test('a new id is minted for every note and never repeats', () => {
 
 // --- fold ------------------------------------------------------------------------------------------------------------
 
-const where = { file: 'B.md', target: 'new', kind: 'idea', title: 'T', n: 72, label: 'new #72' };
-const record = { offset: 10, inserted: 'x', prefixHash: 'h' };
+const where = { file: 'B.md' };
+const record = { entry: '- S · a\n', offset: 10, lead: '', sep: '' };
 
-test('fold: a note starts waiting, and each later event moves it on', () => {
+test('fold: a note starts unfiled, and each later event moves it on', () => {
   const notes = fold([
     { ev: 'note', id: 'n1', project: P, text: 'a', at: at(0) },
-    { ev: 'asking', id: 'n1', at: at(1), guess: { kind: 'idea', target: 'new', title: 'T', sure: false }, options: [61] },
     { ev: 'filed', id: 'n1', at: at(2), where, record },
   ]);
   const n = notes.get('n1');
@@ -82,21 +81,18 @@ test('fold: a note starts waiting, and each later event moves it on', () => {
   assert.strictEqual(n.filedAt, at(2));
 });
 
-test('fold: waiting keeps its reason; asking keeps the guess and options; undone ends a filing; a move files again', () => {
+test('fold: unfiled keeps its reason; undone ends a filing; only a filed note can be undone', () => {
   const evs = [
     { ev: 'note', id: 'n1', project: P, text: 'a', at: at(0) },
-    { ev: 'waiting', id: 'n1', reason: 'battery', at: at(1) },
+    { ev: 'undone', id: 'n1', at: at(1) },
+    { ev: 'unfiled', id: 'n1', reason: 'no-backlog', at: at(1) },
   ];
-  assert.deepStrictEqual([fold(evs).get('n1').state, fold(evs).get('n1').reason], ['waiting', 'battery']);
-  evs.push({ ev: 'asking', id: 'n1', at: at(2), guess: { kind: 'bug', target: 61 }, options: [61, 63] });
-  assert.deepStrictEqual(fold(evs).get('n1').options, [61, 63]);
-  assert.strictEqual(fold(evs).get('n1').reason, null);
+  assert.deepStrictEqual([fold(evs).get('n1').state, fold(evs).get('n1').reason], ['unfiled', 'no-backlog']);
   evs.push({ ev: 'filed', id: 'n1', at: at(3), where, record });
+  assert.strictEqual(fold(evs).get('n1').reason, null);
   evs.push({ ev: 'undone', id: 'n1', at: at(4) });
   assert.strictEqual(fold(evs).get('n1').state, 'undone');
   assert.strictEqual(fold(evs).get('n1').record, null);
-  evs.push({ ev: 'filed', id: 'n1', at: at(5), where: { ...where, target: 61 }, record });
-  assert.strictEqual(fold(evs).get('n1').state, 'filed');
 });
 
 test('fold: events for an unknown note, unknown kinds of event and malformed notes are ignored', () => {
@@ -110,7 +106,7 @@ test('fold: events for an unknown note, unknown kinds of event and malformed not
     null, 'x',
   ]);
   assert.deepStrictEqual([...notes.keys()], ['n1']);
-  assert.strictEqual(notes.get('n1').state, 'waiting');
+  assert.strictEqual(notes.get('n1').state, 'unfiled');
 });
 
 test('fold: a second note event with the same id does not reset a note', () => {
@@ -130,7 +126,6 @@ function notesOf(list) {
   for (const [id, project, minutes, state] of list) {
     evs.push({ ev: 'note', id, project, text: id, at: at(minutes) });
     if (state === 'filed') evs.push({ ev: 'filed', id, at: at(minutes), where, record });
-    if (state === 'asking') evs.push({ ev: 'asking', id, at: at(minutes), guess: {}, options: [] });
   }
   return fold(evs);
 }
@@ -140,9 +135,9 @@ test('listFor: today\'s notes for this project (path spelling ignored), newest f
   assert.deepStrictEqual(listFor(notes, P, at(10)).map(n => n.id), ['b', 'a']);
 });
 
-test('listFor: a note still waiting or asking shows whatever day it was written', () => {
-  const notes = notesOf([['old-wait', P, -3 * 24 * 60, 'waiting'], ['old-ask', P, -2 * 24 * 60, 'asking'], ['a', P, 0, 'filed']]);
-  assert.deepStrictEqual(listFor(notes, P, at(10)).map(n => n.id), ['a', 'old-ask', 'old-wait']);
+test('listFor: a note not filed shows whatever day it was written (its words are only there)', () => {
+  const notes = notesOf([['old', P, -3 * 24 * 60, 'unfiled'], ['a', P, 0, 'filed']]);
+  assert.deepStrictEqual(listFor(notes, P, at(10)).map(n => n.id), ['a', 'old']);
 });
 
 test('listFor: at most 20', () => {
@@ -152,7 +147,7 @@ test('listFor: at most 20', () => {
   assert.strictEqual(l[0].id, 'n29');
 });
 
-test('counts: today\'s filed, waiting and asking for this project', () => {
-  const notes = notesOf([['a', P, 0, 'filed'], ['b', P, 1, 'filed'], ['c', P, 2, 'waiting'], ['d', P, 3, 'asking'], ['e', 'C:\\x', 4, 'waiting'], ['f', P, -24 * 60, 'filed']]);
-  assert.deepStrictEqual(counts(notes, P, at(10)), { filed: 2, waiting: 1, asking: 1 });
+test('counts: today\'s filed, and every note not filed, for this project', () => {
+  const notes = notesOf([['a', P, 0, 'filed'], ['b', P, 1, 'filed'], ['c', P, -3 * 24 * 60, 'unfiled'], ['e', 'C:\\x', 4, 'unfiled'], ['f', P, -24 * 60, 'filed']]);
+  assert.deepStrictEqual(counts(notes, P, at(10)), { filed: 2, unfiled: 1 });
 });

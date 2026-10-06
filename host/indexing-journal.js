@@ -1,22 +1,22 @@
 'use strict';
 /**
- * The indexing assistant's journal (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md "Claude's call" 6 and 9).
+ * The indexing assistant's journal (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md "Revised 2026-10-05
+ * (evening)": a verbatim inbox).
  *
  *   createJournal({ file }) -> { append(event), read(), withLock(fn), newId() }
  *   fold(events)            -> Map<id, note>   each note's state, from its events in order (pure)
- *   listFor(notes, project, now) -> the strip's list: today's notes for the project plus any still waiting or asking,
- *                                   newest first, at most 20
- *   counts(notes, project, now)  -> { filed (today), waiting, asking }
+ *   listFor(notes, project, now) -> the strip's list: today's notes for the project plus any not filed, newest first,
+ *                                   at most 20
+ *   counts(notes, project, now)  -> { filed (today), unfiled }
  *
- * NOTHING IS LOST: a note is appended here BEFORE anything else happens to it, and stays here while Ollama is off, the
- * machine is on battery or the GPU slot is busy. Every later step is another event:
- *   note     { id, project, text, at }                       the note, verbatim; it starts waiting
- *   waiting  { id, reason, at }                              why it hasn't been filed yet
- *   asking   { id, at, guess: { kind, target, title, sure }, options: [N...] }   it needs a place picked
- *   filed    { id, at, where: { file, target, kind, title, n, label }, record: { offset, inserted, prefixHash } }
- *   undone   { id, at }                                      the filing was taken back exactly
- * A Move is `undone` then `filed`. One file for every project (.harness/state is install-wide): each note carries its
- * project root, and "per project" is a filter.
+ * NOTHING IS LOST: a note is appended here BEFORE its backlog is touched, so a note that couldn't be filed (no backlog
+ * file, a backlog that kept changing) still has its words here, for the list's Copy. Every later step is another event:
+ *   note     { id, project, text, at }          the note, verbatim; it starts unfiled
+ *   unfiled  { id, reason, at }                 why it isn't in the inbox
+ *   filed    { id, at, where: { file }, record: { entry, offset, lead, sep } }   in the inbox (host/indexing-doc.js)
+ *   undone   { id, at }                         the entry was taken back out exactly
+ * One file for every project (.harness/state is install-wide): each note carries its project root, and "per project"
+ * is a filter.
  *
  * Appends go through host/file-lock.js, because every claude-custom window has its own service and they share this
  * file. A torn last line (a crash mid-append) is skipped, never fatal. The note's words are never logged.
@@ -29,7 +29,6 @@ const { withFileLock } = require('./file-lock');
 const { normPath } = require('./project-layout');
 
 const LIST_MAX = 20;
-const STATES_PENDING = ['waiting', 'asking'];
 
 const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
 const isTime = (n) => typeof n === 'number' && Number.isFinite(n);
@@ -80,20 +79,16 @@ function fold(events) {
       if (notes.has(e.id) || !isText(e.text) || typeof e.project !== 'string' || !isTime(e.at)) continue;
       notes.set(e.id, {
         id: e.id, project: e.project, text: e.text, at: e.at,
-        state: 'waiting', reason: null, guess: null, options: [], where: null, record: null, filedAt: null,
+        state: 'unfiled', reason: null, where: null, record: null, filedAt: null,
       });
       continue;
     }
     const n = notes.get(e.id);
     if (!n) continue;
-    if (e.ev === 'waiting') {
-      n.state = 'waiting';
+    if (e.ev === 'unfiled') {
+      if (n.state === 'filed') continue;
+      n.state = 'unfiled';
       n.reason = typeof e.reason === 'string' ? e.reason : null;
-    } else if (e.ev === 'asking') {
-      n.state = 'asking';
-      n.reason = null;
-      n.guess = isObject(e.guess) ? e.guess : null;
-      n.options = Array.isArray(e.options) ? e.options.filter(x => Number.isInteger(x)) : [];
     } else if (e.ev === 'filed') {
       if (!isObject(e.where) || !isObject(e.record)) continue;
       n.state = 'filed';
@@ -119,7 +114,7 @@ function ofProject(notes, project) {
 
 function listFor(notes, project, now) {
   return ofProject(notes, project)
-    .filter(n => STATES_PENDING.includes(n.state) || sameDay(n.at, now))
+    .filter(n => n.state === 'unfiled' || sameDay(n.at, now))
     .sort((a, b) => b.at - a.at)
     .slice(0, LIST_MAX);
 }
@@ -128,8 +123,7 @@ function counts(notes, project, now) {
   const mine = ofProject(notes, project);
   return {
     filed: mine.filter(n => n.state === 'filed' && sameDay(n.at, now)).length,
-    waiting: mine.filter(n => n.state === 'waiting').length,
-    asking: mine.filter(n => n.state === 'asking').length,
+    unfiled: mine.filter(n => n.state === 'unfiled').length,
   };
 }
 
