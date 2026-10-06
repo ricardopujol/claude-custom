@@ -13,6 +13,12 @@
  * status row (MEASURED, verify/probe-footer-rows.js) and the tab header draws
  * the fields instead. The document is still forwarded either way.
  *
+ * Hidden is the DEFAULT (BACKLOG #67), but not decided here: the relay is
+ * re-read from disk on every fire while a running Electron main keeps its old
+ * code, so the two must never disagree about a missing key. Main writes
+ * `statusInHeader: true` into the file when none is chosen
+ * (app/window-chrome-bridge.js ensureStatusDefault), and this stays strict.
+ *
  * Why it exists: the document carries model.id and effort.level and re-fires
  * ~1s after /model and /effort with no turn (verify/probe-top-bar-truth.js),
  * the truth FF12's top bar resolves a switch against. `--settings` replaces
@@ -63,11 +69,12 @@ function parseArgs(argv) {
 // quiets the row: a missing, unreadable or corrupt file prints the row as
 // before, because failing toward a duplicate row beats failing toward a
 // missing one.
+const choseHeader = (value) => !!value && value.statusInHeader === true;
+
 function quiet(file) {
   if (!file) return false;
   try {
-    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return !!value && value.statusInHeader === true;
+    return choseHeader(JSON.parse(fs.readFileSync(file, 'utf8')));
   } catch {
     return false;
   }

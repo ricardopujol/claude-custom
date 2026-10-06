@@ -58,6 +58,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     slept: [],          // the spaced waits typeMerged asked for
     openPr: true,       // Type /merged's gh re-check: true / false / null (unknown), or (branch) => that
     prAsks: [],
+    logs: [],           // every log(...) call's arguments
   };
   // A worktree appears in git's list (what new-worktree.ps1 does).
   h.addWorktree = (name, branch) => { h.listText += '\n' + porcelain([[name, branch]]); };
@@ -66,7 +67,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     : (h.tokenFiles[port] !== undefined ? h.tokenFiles[port] : `tok-${port}`));
   const deps = {
     mode, container: ROOT, cwd: wt('dev'), launchedFrom,
-    log: () => {},
+    log: (...a) => { h.logs.push(a); },
     git: {
       list: async () => {
         h.gitInFlight++; h.gitMax = Math.max(h.gitMax, h.gitInFlight);
@@ -2428,6 +2429,31 @@ test('a warning reader that throws, or answers oddly, draws none and never break
     assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
     assert.ok(h.shell.model().every(e => e.resourceWarn === null));
   }
+});
+
+// #70 (Mortimer survivor 9): the reader's guard and its log line, pinned.
+const warnLogs = h => h.logs.filter(a => /warnFor/.test(String(a[0])));
+
+test('no resources, or resources without warnFor: no warning, and nothing is logged (the reader is not called)', async () => {
+  for (const resources of [undefined, {}, { warnFor: 'not a function' }]) {
+    const h = harness({ resources });
+    await h.shell.open();
+    assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+    assert.ok(h.shell.model().every(e => e.resourceWarn === null));
+    assert.deepStrictEqual(warnLogs(h), [], JSON.stringify(resources));
+  }
+});
+
+test('a warnFor that throws is logged with its message only, and one that throws a non-Error still never breaks the strip', async () => {
+  const h = harness({ resources: { warnFor: () => { throw new Error('x'); } } });
+  await h.shell.open();
+  const lines = warnLogs(h);
+  assert.ok(lines.length >= 1);
+  for (const a of lines) assert.deepStrictEqual(a, ['[shell] resources.warnFor threw:', 'x']);
+  const n = harness({ resources: { warnFor: () => { throw null; } } });  // eslint-disable-line no-throw-literal
+  await n.shell.open();
+  assert.deepStrictEqual(labels(n), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(warnLogs(n).length >= 1 && warnLogs(n).every(a => a[1] === null));
 });
 
 test('refresh() republishes the strip, so a warning that came or went reaches it', async () => {

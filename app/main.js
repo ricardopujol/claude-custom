@@ -28,7 +28,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES } = require('./layout-bridge');
-const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
+const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
@@ -417,6 +417,7 @@ let focused = false;
 function createWindow() {
   // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
   // an open window, so a later toggle applies to the next one.
+  ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
   const chrome = readChromeSettings(uiStore);
   windowFrameless = chrome.framelessWindow === true;
   win = new BrowserWindow({
