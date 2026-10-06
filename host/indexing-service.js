@@ -10,13 +10,13 @@
  *                              | { ok: false, reason: 'empty' | 'journal-failed' }
  *     tick()                  -> Promise   tries one note again whose backlog was busy or kept changing
  *     undo(id, project)       -> { ok: true } | { ok: false, reason: 'changed', file } | { ok: false, reason }
+ *                                project: the selected one; Undo only ever writes that project's own backlog
  *     snapshot(project)       -> { counts: { filed, unfiled }, list: [{ id, text, at, state, reason, undoable }] }
  *
  * THE ORDER: the note is journaled first (nothing is lost), then the backlog is written, then `filed` is journaled.
  * Not filed: a project with no backlog file (or no documentation) gets nothing created and the note stays in the list
  * as not filed, its words in the journal for Copy; a backlog that kept changing under the write, stayed busy or couldn't
- * be written,
- * is tried again by the tick after RETRY_MS.
+ * be written is tried again by the tick after RETRY_MS.
  *
  * TWO WINDOWS: the doc write and its event happen under the journal lock after re-reading that the note is still not
  * filed, so a note can't be filed twice by two windows. A tick never throws. The note's words are never logged.
@@ -26,6 +26,7 @@ const path = require('path');
 const fs = require('fs');
 const { fold, listFor, counts } = require('./indexing-journal');
 const { stampOf, removeEntry } = require('./indexing-doc');
+const { samePath } = require('./project-layout');
 const realWriter = require('./indexing-writer');
 
 const RETRY_MS = 15_000;
@@ -105,12 +106,17 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     }
   }
 
-  function undo(id) {
+  function undo(id, project) {
     try {
       const r = journal.withLock(({ append, read }) => {
         const n = fold(read()).get(id);
         if (!n || n.state !== 'filed') return { ok: false, reason: 'not-filed' };
-        const u = writer.undoNote(n.where.file, n.record);
+        // The journal is install-wide and any window writes it: the file Undo touches is re-derived from the selected
+        // project, never taken from the row (Miguel I4, PR #121).
+        if (!samePath(n.project, project)) return { ok: false, reason: 'other-project' };
+        const docs = docsFor(project);
+        if (!docs || docs.ok !== true || !samePath(n.where.file, docs.backlog)) return { ok: false, reason: 'bad-record' };
+        const u = writer.undoNote(docs.backlog, n.record);
         if (!u.ok) return { ok: false, reason: u.reason, file: n.where.file };
         append({ ev: 'undone', id, at: now() });
         return { ok: true };
@@ -127,12 +133,16 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     let notes;
     try { notes = fold(journal.read()); } catch { notes = new Map(); }
     const t = now();
+    let docs = null;
+    try { docs = docsFor(project); } catch { docs = null; }
+    const own = (f) => !!docs && docs.ok === true && samePath(f, docs.backlog);
     const files = new Map();
     const text = (f) => { if (!files.has(f)) files.set(f, readOr(f, null)); return files.get(f); };
     const list = listFor(notes, project, t).map(n => ({
       id: n.id, text: n.text, at: n.at, state: n.state, reason: n.reason,
       file: n.where ? path.basename(n.where.file) : null,
-      undoable: n.state === 'filed' && text(n.where.file) !== null && removeEntry(text(n.where.file), n.record).ok === true,
+      undoable: n.state === 'filed' && own(n.where.file) && text(n.where.file) !== null
+        && removeEntry(text(n.where.file), n.record).ok === true,
     }));
     return { counts: counts(notes, project, t), list };
   }

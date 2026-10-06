@@ -176,6 +176,26 @@ test('undo refuses when the entry was edited or filed away, names the file, remo
   assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'filed');
 });
 
+test('undo writes only to the selected project\'s own backlog: a journal row naming any other file is refused (Miguel I4, PR #121)', () => {
+  const t = setup();
+  const { id } = t.svc.submit(t.project, 'note');
+  const other = path.join(path.dirname(t.backlog), 'OTHER.md');
+  fs.writeFileSync(other, '## Inbox\n- 2026-10-05 09:07 · note\n');
+  // A row in the install-wide journal (any window can write it) that points Undo at another file.
+  const rec = t.journal.read().find(e => e.ev === 'filed');
+  t.journal.append({ ...rec, where: { file: other } });
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].undoable, false, 'the list doesn\'t offer it either');
+  assert.deepStrictEqual(t.svc.undo(id, t.project), { ok: false, reason: 'bad-record' });
+  assert.strictEqual(read(other), '## Inbox\n- 2026-10-05 09:07 · note\n');
+});
+
+test('undo of a note from another project than the selected one is refused', () => {
+  const t = setup();
+  const { id } = t.svc.submit(t.project, 'note');
+  assert.deepStrictEqual(t.svc.undo(id, 'C:\\somewhere\\else'), { ok: false, reason: 'other-project' });
+  assert.ok(read(t.backlog).includes('· note'));
+});
+
 test('undo of a note that is not filed says so', () => {
   const t = setup({ backlog: null });
   const { id } = t.svc.submit(t.project, 'x');
