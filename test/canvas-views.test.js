@@ -104,6 +104,29 @@ test('a download the page starts is cancelled: no Save-As box with a file name a
   assert.strictEqual(prevented, true);
 });
 
+test('a page whose beforeunload handler cancels leaving is overruled, so the next page replaces it (PR #122 Dexter F3)', async () => {
+  const r = rig();
+  await show(r);
+  const wc = r.views[0].webContents;
+  assert.ok(wc.listenerCount('will-prevent-unload') >= 1);
+  let prevented = false;
+  wc.emit('will-prevent-unload', { preventDefault() { prevented = true; } });
+  assert.strictEqual(prevented, true, 'preventDefault on will-prevent-unload ignores the beforeunload handler and lets the unload happen');
+});
+
+test('a load that failed is not remembered as shown: the same page is loaded again on the next show (PR #122 Dexter F3)', async () => {
+  const r = rig();
+  await show(r, { html: '<p>A</p>' });
+  const wc = r.views[0].webContents;
+  const realLoad = wc.loadURL.bind(wc);
+  wc.loadURL = (u) => { wc.calls.push(['load-failed', u]); return Promise.reject(new Error('ERR_ABORTED')); };
+  await show(r, { html: '<p>B</p>' });
+  await new Promise(res => setImmediate(res));
+  wc.loadURL = realLoad;
+  await show(r, { html: '<p>B</p>' });
+  assert.match(Buffer.from(wc.loaded.split(',')[1], 'base64').toString('utf8'), /<p>B<\/p>/, 'B was retried and is the page now');
+});
+
 test('the contents never navigate, never open a window and get no WebRTC route', async () => {
   const r = rig();
   await show(r);

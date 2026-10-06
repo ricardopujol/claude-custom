@@ -93,6 +93,7 @@ const pad = (s, n) => String(s).padEnd(n);
   check(answer('geolocation-camera') === 'rejected/rejected', `geolocation and camera are refused (got ${answer('geolocation-camera')})`);
   check(answer('dialog-loop') === 'past the dialogs', `alert, confirm and prompt return at once with no native dialog, so the page cannot lock the app's window (got ${answer('dialog-loop')})`);
   check(s.downloads.length >= 1 && s.downloads.every(d => d.prevented && !d.written), `a download the page starts itself (a data: link with download=) is cancelled: no Save-As box, no file (saw ${JSON.stringify(s.downloads)})`);
+  check(answer('beforeunload-pin') === 'replaced', `a page whose beforeunload handler cancels leaving it is replaced by the next page Claude writes (got ${answer('beforeunload-pin')})`);
   check(s.rtc.stunDatagrams === 0, 'WebRTC STUN over UDP: 0 datagrams');
   check(s.rtc.turnTcpConnections === 0, 'WebRTC TURN over TCP to a loopback port: 0 connections');
   check(s.dns.queries === 0, `DNS prefetch / preconnect of a hinted name: 0 queries (saw ${s.dns.queries} ${JSON.stringify(s.dns.kinds)})`);

@@ -73,6 +73,9 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     if (typeof ses.on === 'function') ses.on('will-download', (e) => e.preventDefault());
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
     for (const ev of ['will-navigate', 'will-frame-navigate', 'will-redirect', 'will-attach-webview']) wc.on(ev, (e) => e.preventDefault());
+    // A page whose beforeunload handler cancels leaving it would pin itself: Claude's next page is a loadURL, which runs that handler,
+    // and with no listener here Electron cancels the load. preventDefault ignores the handler and lets the unload happen.
+    wc.on('will-prevent-unload', (e) => e.preventDefault());
     try { wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch { /* a destroyed contents has nothing left to protect */ }
     wc.setAudioMuted(true);
   }
@@ -127,7 +130,10 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     if (rec.html !== html) {
       rec.html = html;
       const url = 'data:text/html;base64,' + Buffer.from(buildPage(html), 'utf8').toString('base64');
-      rec.wc.loadURL(url).catch((err) => log(`[canvas] load failed: ${err && err.message}`));
+      rec.wc.loadURL(url).catch((err) => {
+        log(`[canvas] load failed: ${err && err.message}`);
+        if (rec.html === html) rec.html = null;      // not shown: the same page is tried again on the next show, not skipped as 'already there'
+      });
     }
     return { ok: true };
   }

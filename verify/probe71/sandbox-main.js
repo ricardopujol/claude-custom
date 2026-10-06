@@ -91,10 +91,14 @@ const VECTORS = {
   // (once from a script on load, and once more on a real click, so a download that needs a user gesture is seen too)
   'data-download': { code: `const dl = () => { const a = document.createElement('a'); a.href = 'data:application/octet-stream;base64,QGVjaG8gb2Zm'; a.download = 'claude-quota-fix.bat'; document.body.appendChild(a); a.click(); };
     document.body.innerHTML = '<div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; dl(); document.addEventListener('click', dl); setTimeout(() => report('clicked'), 2500)` },
+  // --- a page that refuses to be left: its beforeunload handler cancels Claude's NEXT page (PR #122 Dexter F3). Phase one is this page and a
+  // real click (sticky user activation, which is what lets beforeunload act); phase two (SECOND_PAGES) is the page Claude writes next.
+  'beforeunload-pin': { code: `document.body.innerHTML = '<div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; return ''; }; document.addEventListener('click', () => report('armed'))` },
   // --- the one thing the page may do: a button ----------------------------------------------------------------------------------------
   'send-without-click': { code: `claudePanel.send('typed by a script'); setTimeout(() => report('sent'), 300)` },
   'send-with-click': { code: `document.body.innerHTML = '<button id="b" style="position:fixed;left:0;top:0;width:200px;height:100px">go</button>'; document.getElementById('b').addEventListener('click', () => { claudePanel.send('hello from a click'); report('clicked'); });` },
 };
+const SECOND_PAGES = { 'beforeunload-pin': `report('replaced')` };
 const NAMES = Object.keys(VECTORS).filter(n => !process.env.PROBE_ONLY || process.env.PROBE_ONLY.split('|').includes(n));
 
 // A STUN server on the machine's LAN address too: Chromium may not send STUN to loopback, and a control that cannot see a
@@ -149,8 +153,8 @@ app.whenReady().then(async () => {
   });
   registerCanvasIpc(ipcMain, views);
 
-  const pageFor = (name) => {
-    const v = VECTORS[name];
+  const pageFor = (name, code) => {
+    const v = { code: code || VECTORS[name].code };
     const key = name.replace(' (control)', '');
     return `<script>
       const V = ${JSON.stringify(key)}, A = ${JSON.stringify(approvedOrigin + '/')}, UDP = ${udp.address().port}, TCP = ${tcpPort}, LAN = ${JSON.stringify(LAN)};
@@ -189,10 +193,17 @@ app.whenReady().then(async () => {
       const finish = (r) => { if (!done) { done = true; resolve(r); } };
       wc.on('page-title-updated', (_e, title) => { if (title.startsWith('R:')) finish(JSON.parse(title.slice(2))); });
       setTimeout(() => finish('no report'), 5000);
-      if (name === 'send-with-click' || name === 'data-download') {
+      if (name === 'send-with-click' || name === 'data-download' || name === 'beforeunload-pin') {
         setTimeout(() => { for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); }, 1200);
       }
     });
+    if (SECOND_PAGES[name] && MODE === 'sealed' && results[name] === 'armed') {
+      results[name] = await new Promise((resolve) => {
+        const t = setTimeout(() => resolve('stuck on the first page'), 4000);
+        wc.on('page-title-updated', (_e, title) => { if (title === 'R:"replaced"') { clearTimeout(t); resolve('replaced'); } });
+        views.show(fakeOwner, { html: pageFor(name, SECOND_PAGES[name]), hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 400, height: 300 } });
+      });
+    }
     await new Promise(r => setTimeout(r, 400));        // a straggler request gets its moment to arrive
     if (MODE === 'sealed') views.hide(fakeOwner);
     else { try { owner.contentView.removeChildView(naiveView); naiveView.webContents.close(); } catch { /* gone */ } }
