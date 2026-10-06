@@ -11,14 +11,14 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 const { createCanvasControl, CANVAS_TYPES } = require('../host/canvas-control');
 
 const SID = '0f6c8a1e-3b8e-4a5b-9f0e-1d2c3b4a5f6e';
 
 function rig({ sessionId = SID } = {}) {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-canvas-control-'));
+  const stateDir = tmpDir('cc-canvas-control-');
   const frames = []; const watchers = [];
   const state = { sessionId };
   const control = createCanvasControl({

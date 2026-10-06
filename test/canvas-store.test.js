@@ -13,10 +13,11 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 const fc = require('fast-check');
 const { validSessionId, panelDir, readPage, readHosts, setHostDecision, MAX_HTML_BYTES, MAX_HOSTS } = require('../host/canvas-store');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-canvas-store-'));
+const tmp = () => tmpDir('cc-canvas-store-');
 
 test('a session id is a plain token: it can never walk out of the canvas folder', () => {
   for (const ok of ['0f6c8a1e-3b8e-4a5b-9f0e-1d2c3b4a5f6e', 'abc', 'a_b-c', 'A1']) assert.strictEqual(validSessionId(ok), true, ok);

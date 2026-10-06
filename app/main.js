@@ -842,6 +842,7 @@ function registerIpc() {
   ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
   ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
   ipcMain.on('canvas:host-answer', (e, a) => {
+    if (!isTabView(e.sender)) return;
     const pending = a && canvasAsks.get(a.id);
     if (!pending || pending.owner !== e.sender) return;      // only the tab that was asked can answer
     canvasAsks.delete(a.id);

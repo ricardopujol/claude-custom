@@ -1096,6 +1096,7 @@ function onModuleShown(id) {
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
+  if (id === 'canvas') { canvasFetchIfNeeded(); renderCanvas(); }
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
@@ -1283,6 +1284,124 @@ if (tbResourcesEl && resPopoverEl) {
 }
 // RESOURCES-END
 
+// CANVAS-BEGIN
+// Claude's panel (BACKLOG #71, documentation/DESIGN_LIVE_PANEL.md). app/canvas-display.js decides everything (what the frame
+// draws, what a frame from the host means, what a click is); this is the DOM, the socket and the native view. The page
+// Claude wrote is NOT part of this document: it is a sealed WebContentsView that main lays over `#canvas-slot` at the
+// rectangle measured here (app/canvas-views.js), so this page is its trusted controller, never its host. Hidden means
+// stopped: the view exists only while the module shows, this page is visible and there is a page to show.
+const canvasBridge = window.harness && window.harness.canvas;
+let canvasState = window.canvasDisplay.emptyState();
+const canvasRoot = document.getElementById('canvas-root');
+let canvasLive = false;           // main has a native view for this tab
+let canvasShownSig = null;        // the page signature main was last given
+let canvasShownHosts = '';        // the host lists main was last given, as JSON
+let canvasLastCover = null;
+let canvasLastRect = null;
+let canvasRectKey = '';
+let canvasFetchSig = null;        // the signature a canvas-get is already out for
+
+function canvasSlotRect() {
+  const el = canvasRoot && canvasRoot.querySelector('#canvas-slot');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left, y: r.top, width: r.width, height: r.height };
+}
+
+function syncCanvasView() {
+  if (!canvasBridge) return;
+  const want = shownModules.has('canvas') && document.visibilityState === 'visible' && window.canvasDisplay.canShow(canvasState);
+  if (!want) {
+    if (canvasLive) { canvasBridge.hide(); canvasLive = false; canvasShownSig = null; canvasRectKey = ''; }
+    return;
+  }
+  const req = window.canvasDisplay.showRequest(canvasState);
+  const covered = window.canvasDisplay.covered(canvasState);
+  const rect = canvasSlotRect();
+  if (rect) canvasLastRect = rect;
+  const hostsKey = JSON.stringify(req.hosts);
+  if (!canvasLive || canvasShownSig !== canvasState.htmlSig) {
+    canvasLive = true; canvasShownSig = canvasState.htmlSig; canvasShownHosts = hostsKey; canvasLastCover = covered;
+    canvasRectKey = JSON.stringify(canvasLastRect);
+    canvasBridge.show({ html: req.html, hosts: req.hosts, rect: canvasLastRect, covered }).then(() => {}, () => {});
+    return;
+  }
+  if (hostsKey !== canvasShownHosts) { canvasShownHosts = hostsKey; canvasBridge.hosts(req.hosts); }
+  if (covered !== canvasLastCover) { canvasLastCover = covered; canvasBridge.cover(covered); }
+  const key = JSON.stringify(canvasLastRect);
+  if (canvasLastRect && key !== canvasRectKey) { canvasRectKey = key; canvasBridge.bounds(canvasLastRect); }
+}
+
+function renderCanvas() {
+  if (!canvasRoot) return;
+  if (shownModules.has('canvas')) canvasRoot.innerHTML = window.canvasDisplay.html(window.canvasDisplay.view(canvasState));
+  syncCanvasView();
+}
+
+// The page comes from the host only when asked for, once per signature (the answer is a `canvas` frame with html).
+function canvasFetchIfNeeded() {
+  if (!window.canvasDisplay.needsFetch(canvasState) || !shownModules.has('canvas')) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const sig = canvasState.payload.signature;
+  if (canvasFetchSig === sig) return;
+  canvasFetchSig = sig;
+  ws.send(JSON.stringify({ type: 'canvas-get' }));
+  setTimeout(() => { if (canvasFetchSig === sig) canvasFetchSig = null; }, 3000);
+}
+
+// Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
+function canvasDock() {
+  if (placementLayout().hidden.includes('canvas')) commitPlacement(DTm.show(placementLayout(), 'canvas'), { select: 'canvas' });
+  else selectModule('canvas');
+}
+
+function canvasOnFrame(frame) {
+  const next = window.canvasDisplay.withFrame(canvasState, frame);
+  if (next === canvasState) return;
+  canvasState = next;
+  if (window.canvasDisplay.shouldDock(frame)) canvasDock();
+  canvasFetchIfNeeded();
+  renderCanvas();
+}
+
+function canvasHostsSend(message) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+}
+
+function canvasAct(a) {
+  if (a.act === 'allow' || a.act === 'deny') {
+    const ask = canvasState.asks.find(x => x.id === a.id);
+    if (!ask) return;
+    canvasBridge.answerHost(a.id, a.act);
+    canvasHostsSend({ type: 'canvas-hosts', action: a.act, origin: ask.origin });
+    canvasState = window.canvasDisplay.answered(canvasState, a.id);
+  } else if (a.act === 'remove') {
+    canvasHostsSend({ type: 'canvas-hosts', action: 'remove', origin: a.origin });
+  } else if (a.act === 'hosts') {
+    canvasState = window.canvasDisplay.toggleHosts(canvasState);
+  } else if (a.act === 'close-hosts') {
+    canvasState = window.canvasDisplay.toggleHosts(canvasState, false);
+  }
+  renderCanvas();
+}
+
+if (canvasBridge && canvasRoot) {
+  // The page asked for a host it has not been given: the question covers the panel until it is answered.
+  canvasBridge.onNeedHost((ask) => { canvasState = window.canvasDisplay.withAsk(canvasState, ask); renderCanvas(); });
+  canvasRoot.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-canvas-act]') : null;
+    const a = el ? window.canvasDisplay.actionOf(el.dataset) : null;
+    if (a) canvasAct(a);
+  });
+  let canvasFrame = 0;
+  new ResizeObserver(() => {
+    if (canvasFrame) return;
+    canvasFrame = requestAnimationFrame(() => { canvasFrame = 0; syncCanvasView(); });
+  }).observe(canvasRoot);
+  document.addEventListener('visibilitychange', syncCanvasView);
+}
+// CANVAS-END
+
 // Leaving the vault puts every revealed secret back out of sight -- both the
 // listed ones and whatever is half-typed in the field. A value left on screen
 // outlives the moment someone needed it. "Leaving" is anything that stops it
@@ -1311,6 +1430,7 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
   for (const id of fx.newlyShown) onModuleShown(id);
+  syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
   if (fx.focus === 'term') term.focus();
@@ -6045,6 +6165,7 @@ function handleControl(msg) {
     rosterIndexPayload = msg.rosterIndex || null;
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    canvasOnFrame(msg.canvas);
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
@@ -6064,6 +6185,10 @@ function handleControl(msg) {
   if (msg.type === 'wand') {
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    return;
+  }
+  if (msg.type === 'canvas') {
+    canvasOnFrame(msg);
     return;
   }
   if (msg.type === 'mood') {
