@@ -158,6 +158,39 @@ test('it changed again on the second try: nothing is written and it says conflic
   assert.deepStrictEqual(tempsIn(p.docs), []);
 });
 
+test('the backlog is re-checked before EVERY rename retry: a session\'s edit during the backoff is never replaced (Dexter F5, PR #121)', () => {
+  const p = project();
+  const docs = w.docsOf(p);
+  let throws = 0;
+  const rename = (from, to) => {
+    if (throws === 0) {
+      throws += 1;
+      // The rename is refused (the scanner, or the session's own writer holding the file)...
+      // ...and meanwhile the session's write lands.
+      fs.writeFileSync(docs.backlog, BACKLOG + '## 2. Written during the backoff\n');
+      const e = new Error('EPERM'); e.code = 'EPERM'; throw e;
+    }
+    fs.renameSync(from, to);
+  };
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'mine', rename, sleep: () => {} });
+  const text = read(docs.backlog);
+  assert.ok(text.includes('## 2. Written during the backoff'), 'the session\'s edit survives');
+  if (r.ok) assert.ok(text.includes('· mine'), 'filed on the fresh text');
+  else assert.strictEqual(r.reason, 'conflict');
+  assert.deepStrictEqual(tempsIn(p.docs), []);
+});
+
+test('a rename refused twice in a row is retried, still re-checked each time, then lands', () => {
+  const p = project();
+  const docs = w.docsOf(p);
+  let n = 0;
+  const rename = (from, to) => { if (n++ < 2) { const e = new Error('EBUSY'); e.code = 'EBUSY'; throw e; } fs.renameSync(from, to); };
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'mine', rename, sleep: () => {} });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(n, 3);
+  assert.ok(read(docs.backlog).includes('· mine'));
+});
+
 test('a write that fails leaves the backlog as it was and no temp file behind', () => {
   const p = project();
   const docs = w.docsOf(p);
