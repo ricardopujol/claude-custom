@@ -39,24 +39,39 @@ function docsOf(project) {
   return { ok: true, dir, name, backlog: path.join(dir, `${name}_BACKLOG.md`) };
 }
 
-function readOrNull(file) {
-  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
-}
+const READ_ATTEMPTS = 4;
 
 /**
- * Replace `file` with compute(text).text, safely (see the header). compute returns { ok: true, text, ...extra } or
- * { ok: false, reason }. -> { ok: true, ...extra } | { ok: false, reason: <compute's> | 'missing' | 'conflict' | 'write-failed' }.
+ * The file's text, or why not: `missing` (ENOENT: there is no such file) or `busy` (a handle held it through every
+ * retry). A read refused for a moment (EBUSY/EPERM/EACCES: a scanner, a session's editor) is retried with
+ * atomic-write's backoff, never taken for "missing" or "changed" (Dexter F8, PR #121).
  */
+function readDoc(file, { readFile = fs.readFileSync, sleep = sleepSync } = {}) {
+  let wait = FIRST_WAIT_MS;
+  for (let i = 1; ; i++) {
+    try {
+      return { ok: true, text: readFile(file, 'utf8') };
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return { ok: false, reason: 'missing' };
+      if (!isTransient(err) || i >= READ_ATTEMPTS) return { ok: false, reason: isTransient(err) ? 'busy' : 'missing' };
+      sleep(wait);
+      wait = nextWait(wait);
+    }
+  }
+}
+
 /**
  * Rename `tmp` over `file` only while `file` still holds `before`, re-checked before EVERY attempt: a rename refused
  * (EPERM/EBUSY: a scanner, or a session's own writer holding the file) is retried with atomic-write's backoff, and the
  * edit that may land during that backoff must never be replaced (Dexter F5, PR #121). -> true (renamed) | false
- * (the file changed: start over). Throws what the rename threw when it isn't transient or the attempts ran out.
+ * (the file changed, or couldn't be read to check: start over). Throws what the rename threw when it isn't transient
+ * or the attempts ran out.
  */
-function renameIfUnchanged(tmp, file, before, { rename = fs.renameSync, sleep = sleepSync } = {}) {
+function renameIfUnchanged(tmp, file, before, { rename = fs.renameSync, sleep = sleepSync, readFile } = {}) {
   let wait = FIRST_WAIT_MS;
   for (let i = 1; ; i++) {
-    if (readOrNull(file) !== before) return false;
+    const now = readDoc(file, { readFile, sleep });
+    if (!now.ok || now.text !== before) return false;
     try {
       rename(tmp, file);
       return true;
@@ -68,17 +83,23 @@ function renameIfUnchanged(tmp, file, before, { rename = fs.renameSync, sleep = 
   }
 }
 
-function safeRewrite(file, compute, { beforeRename = () => {}, rename, sleep } = {}) {
+/**
+ * Replace `file` with compute(text).text, safely (see the header). compute returns { ok: true, text, ...extra } or
+ * { ok: false, reason }. -> { ok: true, ...extra }
+ *                         | { ok: false, reason: <compute's> | 'missing' | 'busy' | 'conflict' | 'write-failed' }.
+ */
+function safeRewrite(file, compute, { beforeRename = () => {}, rename, sleep, readFile } = {}) {
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-    const before = readOrNull(file);
-    if (before === null) return { ok: false, reason: 'missing' };
+    const read = readDoc(file, { readFile, sleep });
+    if (!read.ok) return read;
+    const before = read.text;
     const next = compute(before);
     if (!next.ok) return next;
     const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
     try {
       fs.writeFileSync(tmp, next.text, 'utf8');
       beforeRename();
-      if (!renameIfUnchanged(tmp, file, before, { rename, sleep })) { fs.rmSync(tmp, { force: true }); continue; }
+      if (!renameIfUnchanged(tmp, file, before, { rename, sleep, readFile })) { fs.rmSync(tmp, { force: true }); continue; }
     } catch {
       try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to clean */ }
       return { ok: false, reason: 'write-failed' };
@@ -89,7 +110,7 @@ function safeRewrite(file, compute, { beforeRename = () => {}, rename, sleep } =
   return { ok: false, reason: 'conflict' };
 }
 
-function fileNote({ docs, stamp, text, beforeRename, rename, sleep }) {
+function fileNote({ docs, stamp, text, beforeRename, rename, sleep, readFile }) {
   if (typeof text !== 'string' || text.trim() === '') return { ok: false, reason: 'empty' };
   const r = safeRewrite(docs.backlog, (current) => {
     const base = doc.ensureInbox(current).text;
@@ -97,30 +118,31 @@ function fileNote({ docs, stamp, text, beforeRename, rename, sleep }) {
     const plan = doc.planAppend(base, entry);
     if (!plan.ok) return plan;
     return { ok: true, text: doc.applyInsert(base, plan), record: doc.recordOf(plan, entry) };
-  }, { beforeRename, rename, sleep });
+  }, { beforeRename, rename, sleep, readFile });
   if (!r.ok) return { ok: false, reason: r.reason === 'missing' ? 'no-backlog' : r.reason };
   return { ok: true, where: { file: docs.backlog }, record: r.record };
 }
 
 /**
- * Is this note's entry already in the inbox? -> { ok: true, record | null } | { ok: false, reason: 'no-backlog' }.
+ * Is this note's entry already in the inbox? -> { ok: true, record | null } | { ok: false, reason: 'no-backlog' | 'busy' }.
  * For a retry after a write the journal never heard about (Dexter F3, PR #121): the record found is the one Undo uses.
  */
-function findNote({ docs, stamp, text }) {
-  const current = readOrNull(docs.backlog);
-  if (current === null) return { ok: false, reason: 'no-backlog' };
-  const entry = doc.entryText(stamp, text, doc.newlineOf(current));
-  const at = doc.findEntry(current, entry);
+function findNote({ docs, stamp, text, readFile, sleep }) {
+  const read = readDoc(docs.backlog, { readFile, sleep });
+  if (!read.ok) return { ok: false, reason: read.reason === 'missing' ? 'no-backlog' : read.reason };
+  const entry = doc.entryText(stamp, text, doc.newlineOf(read.text));
+  const at = doc.findEntry(read.text, entry);
   return { ok: true, record: at < 0 ? null : { entry, offset: at, lead: '', sep: '' } };
 }
 
+/** -> { ok: true } | { ok: false, reason: 'changed' | 'busy' | 'write-failed' }  ('changed' also for a file that's gone) */
 function undoNote(file, record, opts) {
   const r = safeRewrite(file, (text) => {
     const u = doc.removeEntry(text, record);
     return u.ok ? { ok: true, text: u.text } : { ok: false, reason: 'changed' };
   }, opts);
   if (r.ok) return { ok: true };
-  return { ok: false, reason: r.reason === 'write-failed' ? 'write-failed' : 'changed' };
+  return { ok: false, reason: r.reason === 'write-failed' || r.reason === 'busy' ? r.reason : 'changed' };
 }
 
 module.exports = { docsOf, fileNote, findNote, undoNote };

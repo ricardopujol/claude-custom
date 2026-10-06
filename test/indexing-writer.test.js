@@ -191,6 +191,26 @@ test('a rename refused twice in a row is retried, still re-checked each time, th
   assert.ok(read(docs.backlog).includes('· mine'));
 });
 
+test('a read refused for a moment (EBUSY) is retried, not taken for a missing or changed backlog (Dexter F8, PR #121)', () => {
+  const p = project();
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'note' });
+  let n = 0;
+  const readFile = (f, enc) => { if (n++ === 0) { const e = new Error('EBUSY'); e.code = 'EBUSY'; throw e; } return fs.readFileSync(f, enc); };
+  assert.deepStrictEqual(w.undoNote(docs.backlog, r.record, { readFile, sleep: () => {} }), { ok: true });
+  assert.strictEqual(read(docs.backlog), WITH_INBOX(''));
+});
+
+test('a backlog that stays busy is "busy": never "no-backlog" (nothing created) and never "changed"', () => {
+  const p = project();
+  const docs = w.docsOf(p);
+  const filed = w.fileNote({ docs, stamp: STAMP, text: 'note' });
+  const readFile = () => { const e = new Error('EBUSY'); e.code = 'EBUSY'; throw e; };
+  assert.deepStrictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x', readFile, sleep: () => {} }), { ok: false, reason: 'busy' });
+  assert.deepStrictEqual(w.undoNote(docs.backlog, filed.record, { readFile, sleep: () => {} }), { ok: false, reason: 'busy' });
+  assert.deepStrictEqual(w.findNote({ docs, stamp: STAMP, text: 'note', readFile, sleep: () => {} }), { ok: false, reason: 'busy' });
+});
+
 test('a write that fails leaves the backlog as it was and no temp file behind', () => {
   const p = project();
   const docs = w.docsOf(p);

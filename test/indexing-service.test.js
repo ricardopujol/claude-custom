@@ -98,6 +98,17 @@ test('a backlog that kept changing: the note waits, and the tick files it once t
   assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'filed');
 });
 
+test('a backlog that stayed busy (Dexter F8) is tried again by the tick, like one that kept changing', async () => {
+  let busy = true;
+  const busyWriter = { ...writer, fileNote: (a) => (busy ? { ok: false, reason: 'busy' } : writer.fileNote(a)) };
+  const t = setup({ writerImpl: busyWriter });
+  assert.strictEqual(t.svc.submit(t.project, 'mine').reason, 'busy');
+  busy = false;
+  t.advance(RETRY_MS);
+  await t.svc.tick();
+  assert.ok(read(t.backlog).includes('· mine'));
+});
+
 test('a reason already recorded is not journaled again on every retry', async () => {
   const failing = { ...writer, fileNote: () => ({ ok: false, reason: 'conflict' }) };
   const t = setup({ writerImpl: failing });

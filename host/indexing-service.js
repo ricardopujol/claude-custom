@@ -14,7 +14,8 @@
  *
  * THE ORDER: the note is journaled first (nothing is lost), then the backlog is written, then `filed` is journaled.
  * Not filed: a project with no backlog file (or no documentation) gets nothing created and the note stays in the list
- * as not filed, its words in the journal for Copy; a backlog that kept changing under the write, or couldn't be written,
+ * as not filed, its words in the journal for Copy; a backlog that kept changing under the write, stayed busy or couldn't
+ * be written,
  * is tried again by the tick after RETRY_MS.
  *
  * TWO WINDOWS: the doc write and its event happen under the journal lock after re-reading that the note is still not
@@ -28,7 +29,7 @@ const { stampOf, removeEntry } = require('./indexing-doc');
 const realWriter = require('./indexing-writer');
 
 const RETRY_MS = 15_000;
-const RETRIED = new Set(['conflict', 'write-failed']);
+const RETRIED = new Set(['conflict', 'write-failed', 'busy']);
 
 const isText = (s) => typeof s === 'string' && s.trim() !== '';
 const readOr = (file, fallback) => { try { return fs.readFileSync(file, 'utf8'); } catch { return fallback; } };
