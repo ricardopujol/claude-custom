@@ -2856,14 +2856,14 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       }
       case 'canvasOverlay': {
         // a stand-in for a float / menu / popover crossing the slot (PR #122 Dexter F5): a fixed box over the slot's right half (at least SAMPLE_GAP wide: a thinner overlay can fall between the sample points), above the page
-        let box = document.getElementById('probe-canvas-overlay');
+        let box = document.querySelector('.probe-canvas-overlay');
         if (box) box.remove();
         if (a.on === true) {
           const slot = document.querySelector('#canvas-root #canvas-slot');
           if (!slot) return JSON.stringify({ ok: false, error: 'no slot' });
           const r = slot.getBoundingClientRect();
           box = document.createElement('div');
-          box.id = 'probe-canvas-overlay';
+          box.className = 'probe-canvas-overlay';
           box.style.cssText = 'position:fixed;z-index:45;background:#c33;left:' + (r.left + r.width * 0.4) + 'px;top:' + (r.top + r.height * 0.25) + 'px;width:' + (r.width * 0.5) + 'px;height:' + (r.height * 0.5) + 'px';
           document.body.appendChild(box);
         }
