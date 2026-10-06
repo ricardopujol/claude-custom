@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { renameWithRetry } = require('./atomic-write');
-const { hostOrigin } = require('../app/canvas-csp');
+const { hostOrigin } = require('./canvas-origin');
 
 const MAX_HTML_BYTES = 1024 * 1024;
 const MAX_HOSTS = 100;

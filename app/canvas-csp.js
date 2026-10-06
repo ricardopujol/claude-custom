@@ -13,28 +13,10 @@
  * panel / Deny" the moment the page first reaches for a new host, with no reload.
  */
 
+const { hostOrigin } = require('../host/canvas-origin');      // one origin rule for the panel and the host (PR #122 Miguel G8)
+
 // The policy's directive count: the property test holds the CSP to it.
 const CSP_DIRECTIVES = 8;
-
-// A DNS name is at most 253 characters: a longer one is the page filling the person's list (and memory) with junk, not a host (PR #122 Miguel G3).
-const MAX_HOST_CHARS = 253;
-const HOST_NAME = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])$/;
-
-/**
- * A plain http(s) origin from whatever string the page or the list gave, else null. A bare host is https. Credentials,
- * wildcards, other schemes, anything with a space or a quote: refused. Default ports fold away (URL does it).
- */
-function hostOrigin(input) {
-  if (typeof input !== 'string') return null;
-  const raw = input.trim();
-  if (!raw) return null;
-  let u;
-  try { u = new URL(raw.includes('://') ? raw : 'https://' + raw); } catch { return null; }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-  if (u.username || u.password) return null;
-  if (u.hostname.length > MAX_HOST_CHARS || !HOST_NAME.test(u.hostname)) return null;
-  return `${u.protocol}//${u.host}`;
-}
 
 /** The policy text. No input: nothing the panel is shown can add a source. */
 function buildCsp() {

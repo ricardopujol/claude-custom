@@ -93,3 +93,10 @@ test("the probe's name map exists only behind the probe driver's port AND token,
   assert.match(seam, /CANVAS_PROBE_HOSTS === null \? undefined/);
   assert.match(seam, /typeof CANVAS_PROBE_HOSTS\[name\] === 'string' \? \[\{ address: CANVAS_PROBE_HOSTS\[name\], family: 4, trusted: true \}\] : require\('dns'\)\.promises\.lookup\(name, \{ all: true \}\)/);
 });
+
+test('host/canvas-store.js depends on no app/ module: the origin rule lives on the host side, and the panel and the host apply ONE rule (PR #122 Miguel G8)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'host', 'canvas-store.js'), 'utf8');
+  assert.doesNotMatch(src, /require\(['"]\.\.\/app\//);
+  assert.match(src, /require\('\.\/canvas-origin'\)/);
+  assert.strictEqual(require('../app/canvas-csp').hostOrigin, require('../host/canvas-origin').hostOrigin);
+});

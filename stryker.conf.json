@@ -251,6 +251,7 @@
     "app/canvas-net.js",
     "app/canvas-views.js",
     "host/canvas-control.js",
+    "host/canvas-origin.js",
     "host/canvas-store.js"
   ],
   "reporters": [
