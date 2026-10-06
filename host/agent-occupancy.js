@@ -46,10 +46,12 @@ const ALSO_MAX = 8;
 const WIN = process.platform === 'win32';
 
 const isStr = s => typeof s === 'string' && s !== '';
-const safeAgentId = id => (typeof id === 'string' && SAFE_ID.test(id) ? id : null);
-// The session an agent runs in (a UUID: the hook payload's session_id, the transcript's session folder). Somebody
-// else's string too, held to the same shape; anything else is "not known".
-const safeSessionId = safeAgentId;
+// An id that is safe to put in a file name: an agent's, or the session an agent runs in (a UUID: the hook
+// payload's session_id, the transcript's session folder). Somebody else's string, held to this shape;
+// anything else is "not known".
+const safeId = id => (typeof id === 'string' && SAFE_ID.test(id) ? id : null);
+const safeAgentId = safeId;
+const safeSessionId = safeId;
 const isFiletime = s => typeof s === 'string' && filetimeToMs(s) !== null;
 
 function claimFileName(agentId) {

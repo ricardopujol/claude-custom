@@ -143,6 +143,17 @@ test('a folder whose name differs from the project\'s only in CASE is the projec
   else assert.deepStrictEqual(t, {});
 });
 
+test('the folder-name match is case-insensitive on Windows and exact elsewhere, whichever OS runs the suite (PR #124 Miguel M4)', () => {
+  const { makeDirNameStartsWith } = require('../host/branch-ledger');
+  const win = makeDirNameStartsWith(true);
+  const other = makeDirNameStartsWith(false);
+  assert.strictEqual(win('c--p-dev', 'C--p-dev'), true);
+  assert.strictEqual(win('C--P-DEV-x', 'c--p-dev'), true);
+  assert.strictEqual(win('C--q', 'C--p'), false);
+  assert.strictEqual(other('c--p-dev', 'C--p-dev'), false);
+  assert.strictEqual(other('C--p-dev-x', 'C--p-dev'), true);
+});
+
 test('a projects dir that does not exist is an error counted, not an empty project', async () => {
   const { ledger, errors } = await updateLedger(emptyLedger(), opts(path.join(tmpDir('branch-ledger-'), 'nope')));
   assert.strictEqual(errors, 1);

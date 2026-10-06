@@ -74,9 +74,10 @@ const inProject = (cwd, root) => typeof cwd === 'string' && (samePath(cwd, root)
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 const sameDirName = process.platform === 'win32' ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
 // A transcript folder is named after the cwd AS TYPED: a session started from `c:\...` files under `c--...` (backlog #57).
-const dirNameStartsWith = process.platform === 'win32'
+const makeDirNameStartsWith = win => (win
   ? (name, prefix) => name.toLowerCase().startsWith(prefix.toLowerCase())
-  : (name, prefix) => name.startsWith(prefix);
+  : (name, prefix) => name.startsWith(prefix));
+const dirNameStartsWith = makeDirNameStartsWith(process.platform === 'win32');
 
 const two = n => String(n).padStart(2, '0');
 
@@ -454,5 +455,5 @@ async function saveLedger(file, ledger, { rename = renameWithRetryAsync } = {}) 
 
 module.exports = {
   addLines, localDay, emptyRecord, spendOf, mergeLedgers, totals,
-  emptyLedger, updateLedger, loadLedger, saveLedger,
+  emptyLedger, updateLedger, loadLedger, saveLedger, makeDirNameStartsWith,
 };

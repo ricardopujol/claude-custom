@@ -184,6 +184,25 @@ test('the card\'s session is the host\'s: from `hello`, then every `session` mes
   assert.match(RENDERER, /if \(msg\.type === 'session'\) \{\s*occupancy\.session = sessionIdOf\(msg\.sessionId\);\s*renderRoster\(\);\s*return;\s*\}/);
 });
 
+test('a `session` message, run as written, sets the card\'s session and repaints; an empty or non-string id is "not known" (PR #124 Miguel M3)', () => {
+  const at = RENDERER.indexOf("if (msg.type === 'session') {");
+  assert.ok(at !== -1);
+  const block = RENDERER.slice(at, RENDERER.indexOf("if (msg.type === 'loadout') {", at));
+  const sessionIdOf = RENDERER.match(/const sessionIdOf = (id => [^\n]*);/);
+  assert.ok(sessionIdOf, 'the helper is found');
+  const run = (msg) => {
+    const calls = [];
+    const occupancy = { session: 'old' };
+    const handle = new Function('msg', 'occupancy', 'renderRoster', 'sessionIdOf', `${block}\n return 'fell through';`);
+    const out = handle(msg, occupancy, () => calls.push(occupancy.session), new Function(`return ${sessionIdOf[1]}`)());
+    return { out, calls, session: occupancy.session };
+  };
+  assert.deepStrictEqual(run({ type: 'session', sessionId: 'S2' }), { out: undefined, calls: ['S2'], session: 'S2' });
+  assert.strictEqual(run({ type: 'session', sessionId: '' }).session, null);
+  assert.strictEqual(run({ type: 'session', sessionId: 7 }).session, null);
+  assert.strictEqual(run({ type: 'hello' }).out, 'fell through');
+});
+
 test('a worktree page reports nothing new to the shell: the turn it already sends is what the two-writers warning reads', () => {
   assert.match(RENDERER, /turn: sessionTurn,/);
 });
