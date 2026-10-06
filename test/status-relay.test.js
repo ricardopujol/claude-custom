@@ -22,6 +22,7 @@ const { spawn } = require('child_process');
 const { buildHarnessSettings, findUserStatusLine } = require('../host/settings-writer');
 const { createHookBridge } = require('../host/hook-bridge');
 const { tmpDir } = require('./tmp-dir');
+const { posixShell } = require('./posix-shell');
 
 const RELAY = path.join(__dirname, '..', 'host', 'status-relay.js');
 const opts = { helperPath: 'C:/h/hook-helper.exe', pipeName: '\\\\.\\pipe\\claude-custom-abc' };
@@ -77,14 +78,17 @@ test('the relay command carries no backslash, quote or $ for a shell to eat', ()
   assert.ok(!/[$`'"]/.test(unquoted), unquoted);
 });
 
-test('the relay command survives a real POSIX shell with its arguments intact', () => {
+test('the relay command survives a real POSIX shell with its arguments intact', (t) => {
   const { spawnSync } = require('child_process');
+  // Not spawnSync('bash'): from PowerShell that is the WSL launcher, which fails without an error (BACKLOG #72).
+  const sh = posixShell();
+  if (!sh) { t.skip('no POSIX shell on this machine'); return; }
   const user = { type: 'command', command: 'node "C:\\a b\\s.js"', padding: 0 };
   const cmd = buildHarnessSettings(relayOpts(user)).statusLine.command;
   // Replace the program with printf so the shell shows what it would pass.
   const argsOnly = cmd.replace(/^"[^"]*"/, 'printf "%s\\n"');
-  const r = spawnSync('bash', ['-c', argsOnly], { encoding: 'utf8' });
-  if (r.error) return;
+  const r = spawnSync(sh, ['-c', argsOnly], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
   const argv = r.stdout.trim().split('\n');
   assert.strictEqual(argv[0], 'C:/cc/host/status-relay.js');
   assert.strictEqual(argv[argv.indexOf('--pipe') + 1], 'claude-custom-abc');
