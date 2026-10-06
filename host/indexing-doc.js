@@ -169,6 +169,25 @@ function recordOf(plan, entry) {
   return { entry, offset: plan.offset + lead.length, lead, sep };
 }
 
+/**
+ * Where `entry` is in the inbox, as a whole entry at a line start, nearest `near`; -1 when it isn't there. Undo uses it,
+ * and so does a retry that must not write a note twice (its write may have landed before the journal heard of it).
+ */
+function findEntry(text, entry, near = 0) {
+  const src = typeof text === 'string' ? text : '';
+  if (typeof entry !== 'string' || entry === '') return -1;
+  const box = inboxOf(src);
+  if (!box.found) return -1;
+  let best = -1;
+  for (let i = src.indexOf(entry, box.bodyStart); i >= 0 && i + entry.length <= box.end; i = src.indexOf(entry, i + 1)) {
+    const atLineStart = i === 0 || src[i - 1] === '\n';
+    // A whole entry: the next line isn't its continuation.
+    const complete = !CONTINUATION.test(src.slice(i + entry.length, i + entry.length + 2));
+    if (atLineStart && complete && (best < 0 || Math.abs(i - near) < Math.abs(best - near))) best = i;
+  }
+  return best;
+}
+
 function removeEntry(text, record) {
   const r = record && typeof record === 'object' ? record : {};
   const sep = r.sep === undefined ? '' : r.sep;
@@ -177,15 +196,7 @@ function removeEntry(text, record) {
     return { ok: false, reason: 'bad-record' };
   }
   const src = typeof text === 'string' ? text : '';
-  const box = inboxOf(src);
-  if (!box.found) return { ok: false, reason: 'changed' };
-  let best = -1;
-  for (let i = src.indexOf(r.entry, box.bodyStart); i >= 0 && i + r.entry.length <= box.end; i = src.indexOf(r.entry, i + 1)) {
-    const atLineStart = i === 0 || src[i - 1] === '\n';
-    // A whole entry: the next line isn't its continuation.
-    const complete = !CONTINUATION.test(src.slice(i + r.entry.length, i + r.entry.length + 2));
-    if (atLineStart && complete && (best < 0 || Math.abs(i - r.offset) < Math.abs(best - r.offset))) best = i;
-  }
+  const best = findEntry(src, r.entry, r.offset);
   if (best < 0) return { ok: false, reason: 'changed' };
   let start = best;
   let end = best + r.entry.length;
@@ -197,5 +208,5 @@ function removeEntry(text, record) {
 }
 
 module.exports = {
-  stampOf, entryText, newlineOf, inboxOf, ensureInbox, planAppend, applyInsert, recordOf, removeEntry,
+  stampOf, entryText, newlineOf, inboxOf, ensureInbox, planAppend, applyInsert, recordOf, findEntry, removeEntry,
 };

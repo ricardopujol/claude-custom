@@ -44,9 +44,20 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
       if (!n) return { filed: false, reason: 'gone' };
       if (n.state !== 'unfiled') return { filed: n.state === 'filed' };       // another window got there first
       const docs = docsFor(n.project);
-      const r = docs && docs.ok === true
-        ? writer.fileNote({ docs, stamp: stampOf(n.at), text: n.text })
-        : { ok: false, reason: (docs && docs.reason) || 'no-docs' };
+      let r;
+      if (!docs || docs.ok !== true) {
+        r = { ok: false, reason: (docs && docs.reason) || 'no-docs' };
+      } else {
+        // Journal the intent BEFORE the write; a note that has one may already be in the doc (the write landed and
+        // `filed` didn't), so it is looked for first and never written twice (Dexter F3 / Miguel I2, PR #121).
+        const found = n.intent ? writer.findNote({ docs, stamp: stampOf(n.at), text: n.text }) : null;
+        if (found && found.ok && found.record) {
+          r = { ok: true, where: { file: docs.backlog }, record: found.record };
+        } else {
+          if (!n.intent) append({ ev: 'filing', id, at: now() });
+          r = writer.fileNote({ docs, stamp: stampOf(n.at), text: n.text });
+        }
+      }
       if (r.ok) {
         append({ ev: 'filed', id, at: now(), where: r.where, record: r.record });
         holds.delete(id);
@@ -82,7 +93,8 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     try {
       const t = now();
       const due = [...fold(journal.read()).values()]
-        .filter(n => n.state === 'unfiled' && RETRIED.has(n.reason) && !(holds.get(n.id) > t))
+        // A reason the tick retries, or none at all: journaled but never decided (a crash, a journal that threw).
+        .filter(n => n.state === 'unfiled' && (n.reason === null || RETRIED.has(n.reason)) && !(holds.get(n.id) > t))
         .sort((a, b) => a.at - b.at)[0];
       if (!due) return;
       fileNow(due.id);

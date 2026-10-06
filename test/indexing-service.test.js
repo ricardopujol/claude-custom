@@ -106,6 +106,37 @@ test('a reason already recorded is not journaled again on every retry', async ()
   assert.strictEqual(t.journal.read().filter(e => e.ev === 'unfiled').length, 1);
 });
 
+test('the doc was written but "filed" never reached the journal: the retry finds the entry and never writes it twice (Dexter F3 / Miguel I2, PR #121)', async () => {
+  const t = setup();
+  // A journal whose first `filed` append throws (EPERM on the journal, or a crash right after the rename).
+  let thrown = false;
+  const real = t.journal;
+  const flaky = {
+    ...real,
+    withLock: (fn) => real.withLock(({ append, read }) => fn({
+      read,
+      append: (e) => { if (e.ev === 'filed' && !thrown) { thrown = true; throw new Error('EPERM'); } append(e); },
+    })),
+  };
+  let clock = new Date(2026, 9, 5, 9, 7).getTime();
+  const svc = createIndexingService({ journal: flaky, docsFor: () => writer.docsOf({ root: t.project, dev: t.project }), now: () => clock, log: () => {} });
+  const r = svc.submit(t.project, 'mine');
+  assert.strictEqual(r.filed, false);
+  assert.strictEqual(read(t.backlog).split('· mine').length - 1, 1, 'the doc was written once');
+  clock += RETRY_MS;
+  await svc.tick();
+  assert.strictEqual(read(t.backlog).split('· mine').length - 1, 1, 'and still once after the retry');
+  const n = svc.snapshot(t.project).list[0];
+  assert.deepStrictEqual([n.state, n.undoable], ['filed', true], 'the entry it found is the one Undo removes');
+});
+
+test('a note journaled but never filed (a crash before the write) is filed by the next tick', async () => {
+  const t = setup();
+  t.journal.append({ ev: 'note', id: 'crashed', project: t.project, text: 'left behind', at: new Date(2026, 9, 5, 9, 0).getTime() });
+  await t.svc.tick();
+  assert.ok(read(t.backlog).includes('- 2026-10-05 09:00 · left behind'));
+});
+
 test('undo removes exactly the entry; the list shows it undone', () => {
   const t = setup();
   const { id } = t.svc.submit(t.project, 'note');

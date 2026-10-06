@@ -106,6 +106,18 @@ test('undoNote refuses an entry that was edited or filed away, and removes nothi
   assert.strictEqual(read(docs.backlog), edited);
 });
 
+test('findNote: an entry already in the inbox is found with the record Undo needs; one that isn\'t, isn\'t', () => {
+  const p = project();
+  const docs = w.docsOf(p);
+  assert.deepStrictEqual(w.findNote({ docs, stamp: STAMP, text: 'note' }), { ok: true, record: null });
+  w.fileNote({ docs, stamp: STAMP, text: 'note' });
+  const f = w.findNote({ docs, stamp: STAMP, text: 'note' });
+  assert.strictEqual(f.ok, true);
+  assert.deepStrictEqual(w.undoNote(docs.backlog, f.record), { ok: true });
+  assert.strictEqual(read(docs.backlog), WITH_INBOX(''));
+  assert.deepStrictEqual(w.findNote({ docs: w.docsOf(project({ backlog: null })), stamp: STAMP, text: 'x' }), { ok: false, reason: 'no-backlog' });
+});
+
 test('no backlog file: nothing is created', () => {
   const p = project({ backlog: null });
   const docs = w.docsOf(p);

@@ -116,6 +116,13 @@ test('fold: a filed event with no record is still filed (it just can\'t be undon
   assert.strictEqual(noWhere.state, 'unfiled', 'a filed event that names no file is not one');
 });
 
+test('fold: a filing intent marks the note (its write may have happened) and leaves it unfiled until filed', () => {
+  const evs = [{ ev: 'note', id: 'n1', project: P, text: 'a', at: at(0) }, { ev: 'filing', id: 'n1', at: at(1) }];
+  assert.deepStrictEqual([fold(evs).get('n1').state, fold(evs).get('n1').intent], ['unfiled', true]);
+  evs.push({ ev: 'filed', id: 'n1', at: at(2), where, record });
+  assert.strictEqual(fold(evs).get('n1').state, 'filed');
+});
+
 test('fold: events for an unknown note, unknown kinds of event and malformed notes are ignored', () => {
   const notes = fold([
     { ev: 'filed', id: 'ghost', at: 1, where, record },

@@ -81,6 +81,18 @@ function fileNote({ docs, stamp, text, beforeRename, rename }) {
   return { ok: true, where: { file: docs.backlog }, record: r.record };
 }
 
+/**
+ * Is this note's entry already in the inbox? -> { ok: true, record | null } | { ok: false, reason: 'no-backlog' }.
+ * For a retry after a write the journal never heard about (Dexter F3, PR #121): the record found is the one Undo uses.
+ */
+function findNote({ docs, stamp, text }) {
+  const current = readOrNull(docs.backlog);
+  if (current === null) return { ok: false, reason: 'no-backlog' };
+  const entry = doc.entryText(stamp, text, doc.newlineOf(current));
+  const at = doc.findEntry(current, entry);
+  return { ok: true, record: at < 0 ? null : { entry, offset: at, lead: '', sep: '' } };
+}
+
 function undoNote(file, record, opts) {
   const r = safeRewrite(file, (text) => {
     const u = doc.removeEntry(text, record);
@@ -90,4 +102,4 @@ function undoNote(file, record, opts) {
   return { ok: false, reason: r.reason === 'write-failed' ? 'write-failed' : 'changed' };
 }
 
-module.exports = { docsOf, fileNote, undoNote };
+module.exports = { docsOf, fileNote, findNote, undoNote };

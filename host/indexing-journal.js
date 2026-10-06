@@ -12,6 +12,7 @@
  * NOTHING IS LOST: a note is appended here BEFORE its backlog is touched, so a note that couldn't be filed (no backlog
  * file, a backlog that kept changing) still has its words here, for the list's Copy. Every later step is another event:
  *   note     { id, project, text, at }          the note, verbatim; it starts unfiled
+ *   filing   { id, at }                         about to write: a retry looks for the entry before writing again
  *   unfiled  { id, reason, at }                 why it isn't in the inbox
  *   filed    { id, at, where: { file }, record: { entry, offset, lead, sep } }   in the inbox (host/indexing-doc.js)
  *   undone   { id, at }                         the entry was taken back out exactly
@@ -97,13 +98,15 @@ function fold(events) {
       if (notes.has(e.id) || !isText(e.text) || typeof e.project !== 'string' || !isTime(e.at)) continue;
       notes.set(e.id, {
         id: e.id, project: e.project, text: e.text, at: e.at,
-        state: 'unfiled', reason: null, where: null, record: null, filedAt: null,
+        state: 'unfiled', reason: null, intent: false, where: null, record: null, filedAt: null,
       });
       continue;
     }
     const n = notes.get(e.id);
     if (!n) continue;
-    if (e.ev === 'unfiled') {
+    if (e.ev === 'filing') {
+      n.intent = true;                     // its write may have landed: look before writing again (Dexter F3)
+    } else if (e.ev === 'unfiled') {
       if (n.state === 'filed') continue;
       n.state = 'unfiled';
       n.reason = typeof e.reason === 'string' ? e.reason : null;
