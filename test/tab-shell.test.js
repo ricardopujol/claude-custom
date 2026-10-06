@@ -2431,3 +2431,16 @@ test('refresh() republishes the strip, so a warning that came or went reaches it
   assert.ok(h.changes.length > before);
   assert.deepStrictEqual(h.changes.at(-1).model[0].resourceWarn, { pct: 61, level: 'red' });
 });
+
+test('handleProbeCommand: canvas (#71) is inspect or a click at whole-number coordinates, never a string of code', async () => {
+  const seen = [];
+  const api = { canvas: async (action, args) => { seen.push([action, args]); return { ok: true, action }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'canvas', action: 'inspect' }), api), { ok: true, action: 'inspect' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'canvas', action: 'click', x: 30, y: 40 }), api), { ok: true, action: 'click' });
+  for (const bad of [{ action: 'eval', code: '1' }, { action: 'click' }, { action: 'click', x: 1.5, y: 2 }, { action: 'click', x: -1, y: 2 },
+    { action: 'click', x: 1, y: 100000 }, { action: 'click', x: '1', y: 2 }, { action: undefined }, { action: 7 }]) {
+    const r = await probeCmd(line({ cmd: 'canvas', ...bad }), api);
+    assert.strictEqual(r.ok, false, JSON.stringify(bad));
+  }
+  assert.deepStrictEqual(seen, [['inspect', {}], ['click', { x: 30, y: 40 }]]);
+});

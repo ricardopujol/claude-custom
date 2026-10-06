@@ -213,7 +213,9 @@ function stringMap(o) {
  * dropped, missing ones back on the right) clean it before it becomes a tree.
  */
 function fromV1(raw, ids) {
-  const l = layoutApi.normalizeLayout(raw, ids);
+  // An L1 layout predates the opt-in modules: the L1 normalizer would drop one into a zone, so it is not told about them and
+  // the normalize below (which does know) hides them.
+  const l = layoutApi.normalizeLayout(raw, ids.filter(id => !HIDDEN_UNTIL_USED.includes(id)));
   const zone = z => (l.zones[z].length ? { type: 'group', id: z, tabs: l.zones[z] } : null);
   const strip = (kids, sizes, dir) => ({
     type: 'split', dir, kids: kids.filter(Boolean), sizes: sizes.filter((_, i) => kids[i]),

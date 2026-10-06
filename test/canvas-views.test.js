@@ -302,3 +302,19 @@ test('registerCanvasIpc: a panel contents is answered by the module, and nothing
   listeners['canvas:send']({ sender: { id: 6 } }, { kind: 'send', text: 't' });
   assert.deepStrictEqual(calls, [['fetch', 5, { url: 'u' }], ['send', 6, { kind: 'send', text: 't' }]]);
 });
+
+test('inspect (a probe seam, read-only): where the panel is, whether it shows, and the title it set; click sends a real press', async () => {
+  const r = rig();
+  assert.deepStrictEqual(r.m.inspect(r.owner), { exists: false });
+  await show(r);
+  const wc = r.views[0].webContents;
+  wc.getTitle = () => 'tick 3';
+  wc.sent = [];
+  wc.sendInputEvent = (e) => wc.sent.push(e);
+  assert.deepStrictEqual(r.m.inspect(r.owner), { exists: true, bounds: { x: 300, y: 140, width: 400, height: 500 }, visible: true, title: 'tick 3' });
+  r.m.setCovered(r.owner, true);
+  assert.strictEqual(r.m.inspect(r.owner).visible, false);
+  assert.strictEqual(r.m.click(r.owner, 30, 40), true);
+  assert.deepStrictEqual(wc.sent.map(e => [e.type, e.x, e.y, e.button]), [['mouseMove', 30, 40, undefined], ['mouseDown', 30, 40, 'left'], ['mouseUp', 30, 40, 'left']]);
+  assert.strictEqual(r.m.click({ id: 12345 }, 1, 1), false);
+});

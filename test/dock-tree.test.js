@@ -832,3 +832,12 @@ test('other modules a newer build adds still land in the first group; only the o
   assert.ok(T.groups(l)[0].tabs.includes('brand-new'));
   assert.deepEqual(T.HIDDEN_UNTIL_USED, ['canvas']);
 });
+
+test('Claude\'s panel is hidden after the L1 migration too (a layout from before it existed), not dropped into a zone', () => {
+  const ids = [...IDS, 'canvas'];
+  const l = T.fromV1(DL.defaultLayout(IDS), ids);
+  assert.deepEqual(l.hidden, ['canvas']);
+  assert.ok(!T.groups(l).some(gr => gr.tabs.includes('canvas')));
+  assert.deepEqual(T.groups(l)[0].tabs, IDS);
+  assert.deepEqual(T.readAny(DL.defaultLayout(IDS), ids).hidden, ['canvas'], 'readAny migrates the same way');
+});

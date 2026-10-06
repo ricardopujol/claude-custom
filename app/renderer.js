@@ -1359,6 +1359,9 @@ function canvasOnFrame(frame) {
   const next = window.canvasDisplay.withFrame(canvasState, frame);
   if (next === canvasState) return;
   canvasState = next;
+  // Nothing to fetch (the page arrived, or there is none): the 'already asked' memo goes, so the SAME page written again later
+  // (a clock, then a too-big page, then the clock) is asked for again.
+  if (!window.canvasDisplay.needsFetch(canvasState)) canvasFetchSig = null;
   if (window.canvasDisplay.shouldDock(frame)) canvasDock();
   canvasFetchIfNeeded();
   renderCanvas();
@@ -2805,6 +2808,37 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           return JSON.stringify({ ok: true });
         }
         return JSON.stringify({ ok: false, error: 'unknown op' });
+      }
+      // backlog #71: verify/probe-canvas-panel.js reads Claude's panel (its frame; the page itself is a native view main reports
+      // on) and clicks its controls as a pointer would
+      case 'canvasState': {
+        const root = document.getElementById('canvas-root');
+        const slot = root.querySelector('#canvas-slot');
+        const sr = slot ? slot.getBoundingClientRect() : null;
+        const panel = document.querySelector('.panel[data-panel="canvas"]');
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.canvasDisplay === 'object' && typeof window.canvasDisplay.view === 'function',
+          shown: panel.classList.contains('on'),
+          inShownModules: shownModules.has('canvas'),
+          hiddenInLayout: placementLayout().hidden.includes('canvas'),
+          text: root.textContent,
+          slot: sr ? { x: sr.left, y: sr.top, width: sr.width, height: sr.height } : null,
+          badge: (root.querySelector('.cv-badge') || {}).textContent || null,
+          asking: (root.querySelector('.cv-ask p') || {}).textContent || null,
+          hostsListed: [...root.querySelectorAll('.cv-host')].map(h => h.textContent),
+          note: (root.querySelector('.cv-error') || {}).textContent || null,
+          empty: !!root.querySelector('.cv-empty'),
+          live: canvasLive,
+          visibility: document.visibilityState,
+        });
+      }
+      case 'canvasClick': {
+        const el = [...document.querySelectorAll('#canvas-root [data-canvas-act]')].find(e => e.dataset.canvasAct === String(a.act)
+          && (a.id === undefined || e.dataset.canvasId === String(a.id)) && (a.origin === undefined || e.dataset.canvasOrigin === String(a.origin)));
+        if (!el) return JSON.stringify({ ok: false, error: 'no canvas control ' + JSON.stringify(a) });
+        el.click();
+        return JSON.stringify({ ok: true });
       }
       case 'resourcesClick': {
         // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape

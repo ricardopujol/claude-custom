@@ -82,3 +82,9 @@ test('a page is asked for with canvas-get, once per signature, and retried if th
 test('nothing in the block types into the session or writes a CR: the panel\'s buttons are a later step', () => {
   assert.doesNotMatch(BLOCK, /typeCommand|submitTyped|type: 'input'|\\r/);
 });
+
+test('the "already asked" memo is cleared whenever there is nothing to fetch, so the same page written again is fetched again', () => {
+  const fn = BLOCK.slice(BLOCK.indexOf('function canvasOnFrame('), BLOCK.indexOf('function canvasHostsSend('));
+  assert.match(fn, /if \(!window\.canvasDisplay\.needsFetch\(canvasState\)\) canvasFetchSig = null;/);
+  assert.ok(fn.indexOf('canvasFetchSig = null') < fn.indexOf('canvasFetchIfNeeded();'), 'cleared BEFORE the next fetch decision');
+});

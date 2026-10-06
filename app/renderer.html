@@ -1114,7 +1114,8 @@
     .cv-error { flex: 0 0 auto; margin: 0 8px; font-size: 11px; color: var(--bad); }
     .cv-ask p, .cv-ask code { color: var(--text); }
     .cv-ask code { padding: 1px 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; word-break: break-all; }
-    .cv-ask-btns { display: flex; gap: 8px; margin-top: 10px; }
+    .cv-ask-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .cv-ask-btns button { flex: 1 1 auto; }
     .cv-ask-btns button, .cv-close, .cv-remove { font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; background: var(--panel); color: var(--text);
       border: 1px solid var(--border); border-radius: 4px; }
     .cv-allow { border-color: var(--accent); }

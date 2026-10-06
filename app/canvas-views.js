@@ -57,7 +57,8 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
       w = Math.min(w, ob.x + ob.width - x); h = Math.min(h, ob.y + ob.height - y);
       if (w > 0 && h > 0) b = { x, y, width: w, height: h }; else shown = false;
     }
-    if (b) v.setBounds(b);
+    if (b) { v.setBounds(b); rec.lastBounds = b; }
+    rec.lastVisible = !!shown;
     v.setVisible(!!shown);
   }
 
@@ -134,6 +135,24 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
   const destroyFor = hide;
   const has = (owner) => byOwner.has(owner && owner.id);
 
+  // PROBE SEAMS (app/main.js exposes them only on the probe driver's authenticated channel): read-only, and a real press. There
+  // is deliberately no way to run code in the panel from outside it: a probe reads what the page chose to put in its title.
+  function inspect(owner) {
+    const rec = byOwner.get(owner && owner.id);
+    if (!rec) return { exists: false };
+    let title = '';
+    try { title = rec.wc.getTitle(); } catch { /* destroyed */ }
+    return { exists: true, bounds: rec.lastBounds || null, visible: rec.lastVisible === true, title };
+  }
+  function click(owner, x, y) {
+    const rec = byOwner.get(owner && owner.id);
+    if (!rec) return false;
+    rec.wc.sendInputEvent({ type: 'mouseMove', x, y });
+    rec.wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    rec.wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    return true;
+  }
+
   async function fetchFor(sender, req) {
     const rec = sender ? byPanel.get(sender.id) : null;
     if (!rec) return { ok: false, error: 'not a panel' };
@@ -167,7 +186,7 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     return true;
   }
 
-  return { show, setBounds, setCovered, setOwnerVisible, setHosts, relayout, hide, destroyFor, has, fetchFor, messageFrom };
+  return { show, setBounds, setCovered, setOwnerVisible, setHosts, relayout, hide, destroyFor, has, fetchFor, messageFrom, inspect, click };
 }
 
 // Process-wide, set before the app is ready (app/main.js): Chromium resolves nothing but loopback. This is the only thing

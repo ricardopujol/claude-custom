@@ -1420,6 +1420,13 @@ function startProbeDriver(port) {
         `window.__dockProbe ? window.__dockProbe(JSON.parse(${req})) : JSON.stringify({ ok: false, error: 'no probe hook' })`);
       return JSON.parse(out);
     },
+    // #71: the selected tab's Claude's panel, from the outside: where it is, whether it shows, and the title its page set.
+    async canvas(action, args) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      if (action === 'inspect') return { ok: true, ...canvasViews.inspect(sel.webContents) };
+      return { ok: canvasViews.click(sel.webContents, args.x, args.y) };
+    },
     async screenshot(file) {
       const sel = selectedView();
       const viewBytes = sel ? await capture(sel.webContents, file) : 0;
