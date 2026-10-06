@@ -1320,7 +1320,7 @@ function syncCanvasView() {
   if (!canvasBridge) return;
   const want = shownModules.has('canvas') && document.visibilityState === 'visible' && window.canvasDisplay.canShow(canvasState);
   if (!want) {
-    if (canvasLive) { canvasBridge.hide(); canvasLive = false; canvasShownSig = null; canvasRectKey = ''; }
+    if (canvasLive) { canvasBridge.hide(); canvasLive = false; canvasShownSig = null; canvasRectKey = ''; const had = canvasState.asks.length > 0; canvasState = window.canvasDisplay.withoutAsks(canvasState); if (had) renderCanvas(); }
     return;
   }
   const req = window.canvasDisplay.showRequest(canvasState);
@@ -1331,7 +1331,16 @@ function syncCanvasView() {
   if (!canvasLive || canvasShownSig !== canvasState.htmlSig) {
     canvasLive = true; canvasShownSig = canvasState.htmlSig; canvasShownHosts = hostsKey; canvasLastCover = covered;
     canvasRectKey = JSON.stringify(canvasLastRect);
-    canvasBridge.show({ html: req.html, hosts: req.hosts, rect: canvasLastRect, covered }).then(() => {}, () => {});
+    const sig = canvasState.htmlSig;
+    canvasBridge.show({ html: req.html, hosts: req.hosts, rect: canvasLastRect, covered }).then((res) => {
+      // main said no (too big once decoded, no tab...): say so in the module instead of drawing an empty slot for a view that does not exist.
+      // A `stale` answer means a hide or a newer show overtook this one; that is not an error.
+      if (res && res.ok === false && res.stale !== true) {
+        if (canvasShownSig === sig) { canvasLive = false; canvasShownSig = null; canvasRectKey = ''; }
+        canvasState = window.canvasDisplay.withRefusal(canvasState, sig, res.error);
+        renderCanvas();
+      }
+    }, () => {});
     return;
   }
   if (hostsKey !== canvasShownHosts) { canvasShownHosts = hostsKey; canvasBridge.hosts(req.hosts); }

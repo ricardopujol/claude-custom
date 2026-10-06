@@ -97,3 +97,11 @@ test('anything else drawn over the slot hides the native view, and the page look
   assert.match(BLOCK, /window\.addEventListener\('pointermove', \(e\) => \{ if \(e\.buttons\) canvasSchedule\(\); \}, true\);/);
   assert.match(BLOCK, /setInterval\(\(\) => \{ if \(canvasLive\) canvasSchedule\(\); \}, 250\);/);
 });
+
+test('a show main refuses is said in the module and not retried; a stale answer is ignored; the questions go when the view goes (PR #122 Dexter F9, Miguel G4)', () => {
+  const sync = BLOCK.slice(BLOCK.indexOf('function syncCanvasView('), BLOCK.indexOf('function syncCanvasView(') + 2600);
+  assert.match(sync, /canvasBridge\.show\(\{ html: req\.html, hosts: req\.hosts, rect: canvasLastRect, covered \}\)\.then\(\(res\) => \{/);
+  assert.match(sync, /if \(res && res\.ok === false && res\.stale !== true\) \{/);
+  assert.match(sync, /canvasState = window\.canvasDisplay\.withRefusal\(canvasState, sig, res\.error\);\s*renderCanvas\(\);/);
+  assert.match(sync, /canvasBridge\.hide\(\); canvasLive = false;[^\n]*const had = canvasState\.asks\.length > 0; canvasState = window\.canvasDisplay\.withoutAsks\(canvasState\); if \(had\) renderCanvas\(\);/);
+});

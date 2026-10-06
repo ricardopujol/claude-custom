@@ -30,7 +30,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ESCAPES[c]);
 const plural = (n, one, many) => (n === 1 ? one : many);
 const mb = (bytes) => { const n = bytes / MB; return Number.isInteger(n) ? String(n) : n.toFixed(1); };
 
-const emptyState = () => ({ payload: null, html: null, htmlSig: null, asks: [], hostsOpen: false, note: null });
+const emptyState = () => ({ payload: null, html: null, htmlSig: null, asks: [], hostsOpen: false, note: null, refusal: null });
 
 const isPayload = f => f !== null && typeof f === 'object' && (f.sessionId === null || isStr(f.sessionId)) && STATUSES.includes(f.status)
   && typeof f.signature === 'string';
@@ -61,7 +61,12 @@ function withFrame(state, frame) {
 const shouldDock = frame => isPayload(frame) && frame.changed === true && (frame.status === 'ok' || frame.status === 'toobig');
 
 const needsFetch = s => !!s.payload && s.payload.status === 'ok' && s.htmlSig !== s.payload.signature;
-const canShow = s => !!s.payload && s.payload.status === 'ok' && isStr(s.html) && s.htmlSig === s.payload.signature;
+// `refusal`: main said no to THIS page (PR #122 Dexter F9: it was swallowed, so the slot sat blank with no word). It holds for that signature only.
+const refused = s => !!s.refusal && s.refusal.sig === s.htmlSig;
+const canShow = s => !!s.payload && s.payload.status === 'ok' && isStr(s.html) && s.htmlSig === s.payload.signature && !refused(s);
+const withRefusal = (state, sig, error) => (isStr(sig) && sig === state.htmlSig ? { ...state, refusal: { sig, error: isStr(error) && error ? error.slice(0, 120) : 'it was refused' } } : state);
+// The questions belong to the view that asked them: when the view goes (hidden, or its page changed) they are stale, and answering one would persist a decision for a page that no longer exists.
+const withoutAsks = state => (state.asks.length ? { ...state, asks: [] } : state);
 const showRequest = s => (canShow(s) ? { html: s.html, hosts: s.payload.hosts } : null);
 const covered = s => s.asks.length > 0 || s.hostsOpen;
 
@@ -105,9 +110,9 @@ function view(state) {
   const kind = status === 'ok' ? 'page' : status;
   const first = state.asks[0] || null;
   return {
-    kind, badge, hosts, hostsOpen: state.hostsOpen, note: state.note,
+    kind, badge, hosts, hostsOpen: state.hostsOpen, note: state.note || (refused(state) ? `Couldn't show Claude's page: ${state.refusal.error}.` : null),
     ask: first ? { id: first.id, origin: first.origin, more: state.asks.length - 1 } : null,
-    loading: kind === 'page' && !canShow(state),
+    loading: kind === 'page' && !canShow(state) && !refused(state),
     text: kind === 'toobig' ? `Claude's page is too big (${mb(p.bytes)} MB, the limit is ${mb(p.limitBytes)} MB)` : null,
   };
 }
@@ -167,7 +172,7 @@ function actionOf(data) {
   }
 }
 
-const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, covered, samplePoints, slotObstructed, SAMPLE_GAP, withAsk, answered, toggleHosts, view, html, actionOf };
+const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, covered, samplePoints, slotObstructed, SAMPLE_GAP, withRefusal, withoutAsks, withAsk, answered, toggleHosts, view, html, actionOf };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.canvasDisplay = API;

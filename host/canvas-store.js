@@ -45,8 +45,13 @@ function readPage(dir, { fsImpl = fs } = {}) {
   let buf;
   try { buf = fsImpl.readFileSync(file); } catch { return { status: 'unreadable', bytes: 0, signature: 'unreadable' }; }
   if (buf.length > MAX_HTML_BYTES) return { status: 'toobig', bytes: buf.length, signature: `${buf.length}:big:${Math.floor(st.mtimeMs)}` };
+  // The panel's own cap (app/canvas-views.js) is on the DECODED text: bytes that are not valid UTF-8 (a Latin-1 file) become U+FFFD, three bytes each, so
+  // a file under the cap can decode to one over it. Measure what main will measure, so "ok" here is never refused there (PR #122 Dexter F9).
+  const html = buf.toString('utf8');
+  const decoded = Buffer.byteLength(html);
+  if (decoded > MAX_HTML_BYTES) return { status: 'toobig', bytes: decoded, signature: `${decoded}:big:${Math.floor(st.mtimeMs)}` };
   const hash = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 12);
-  return { status: 'ok', html: buf.toString('utf8'), bytes: buf.length, signature: `${buf.length}:${hash}` };
+  return { status: 'ok', html, bytes: buf.length, signature: `${buf.length}:${hash}` };
 }
 
 const origins = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))].slice(0, MAX_HOSTS);

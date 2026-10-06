@@ -233,3 +233,41 @@ test('property: any overlay big enough to see over the slot hides it, wherever i
       assert.strictEqual(D.slotObstructed(slot, () => true), false);
     }), { numRuns: 400 });
 });
+
+// ---- a refused show is said on screen; questions go with their view (PR #122 Dexter F9, Miguel G4) ----------------------------------
+
+const withPage = () => D.withFrame(D.withFrame(D.emptyState(), frame()), frame({ html: '<p>x</p>' }));
+
+test('a refusal from main is a note and a blank slot, not a view the renderer believes in', () => {
+  let s = withPage();
+  assert.strictEqual(D.canShow(s), true);
+  s = D.withRefusal(s, s.htmlSig, 'the page is too big');
+  assert.strictEqual(D.canShow(s), false, 'so the renderer stops asking main to show it');
+  const v = D.view(s);
+  assert.strictEqual(v.note, "Couldn't show Claude's page: the page is too big.");
+  assert.strictEqual(v.loading, false, 'not "Loading..." forever');
+  assert.match(D.html(v), /cv-error[^>]*>Couldn&#39;t show Claude&#39;s page: the page is too big\.</);
+});
+
+test('a refusal holds for that page only: a new page, a new session or a refusal for a stale page changes nothing', () => {
+  const s = D.withRefusal(withPage(), '20:aaa', 'x');
+  const next = D.withFrame(D.withFrame(s, frame({ signature: '30:bbb' })), frame({ signature: '30:bbb', html: '<p>y</p>' }));
+  assert.strictEqual(D.canShow(next), true);
+  assert.strictEqual(D.view(next).note, null);
+  assert.strictEqual(D.canShow(D.withFrame(s, frame({ sessionId: 'other', signature: '9:z' }))), false, 'no page yet in the new session');
+  assert.strictEqual(D.withRefusal(withPage(), '99:stale', 'x').refusal, null);
+  assert.strictEqual(D.withRefusal(withPage(), null, 'x').refusal, null);
+  assert.strictEqual(D.view(D.withRefusal(withPage(), '20:aaa', '')).note, "Couldn't show Claude's page: it was refused.");
+  assert.ok(D.view(D.withRefusal(withPage(), '20:aaa', 'x'.repeat(500))).note.length < 200, 'the reason is capped');
+});
+
+test('withoutAsks drops the pending questions and leaves everything else alone', () => {
+  let s = D.withAsk(D.withAsk(withPage(), { id: 1, origin: 'https://a.example' }), { id: 2, origin: 'https://b.example' });
+  s = D.toggleHosts(s, true);
+  const cleared = D.withoutAsks(s);
+  assert.deepStrictEqual(cleared.asks, []);
+  assert.strictEqual(cleared.hostsOpen, true);
+  assert.strictEqual(cleared.html, s.html);
+  const none = withPage();
+  assert.strictEqual(D.withoutAsks(none), none, 'same object when there is nothing to clear');
+});
