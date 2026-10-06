@@ -32,7 +32,11 @@ const PANEL_LIMITS = Object.freeze({
 });
 
 const DEAD_PROXY = Object.freeze({ mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1', proxyBypassRules: '<-loopback>' });
-const CLICK_TYPES = new Set(['mouseDown', 'mouseUp', 'keyDown', 'rawKeyDown', 'char']);
+// A GESTURE, not an event: a click is a mouseDown and its mouseUp, a key press is a keyDown and its char. Only the first of each arms the
+// gate; the rest of the same gesture keeps it fresh without un-spending it (PR #122 Dexter F7 / Miguel G1: a mouseUp re-armed it, so
+// onmousedown + onclick sent twice from one click).
+const ARMS = new Set(['mouseDown', 'keyDown', 'rawKeyDown']);
+const KEEPS_FRESH = new Set(['mouseUp', 'char']);
 
 const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
 const originList = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))];
@@ -110,7 +114,10 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     const wc = view.webContents;
     const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), html: null, approved: new Set(), denied: new Set(),
       pending: new Map(), lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null };
-    wc.on('input-event', (_e, ev) => { if (ev && CLICK_TYPES.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } });
+    wc.on('input-event', (_e, ev) => {
+      if (!ev) return;
+      if (ARMS.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } else if (KEEPS_FRESH.has(ev.type)) rec.lastInput = now();
+    });
     wc.on('render-process-gone', (_e, d) => log(`[canvas] panel renderer gone: ${d && d.reason}`));
     lockContents(wc);
     byOwner.set(owner.id, rec);

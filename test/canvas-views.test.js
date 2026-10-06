@@ -281,7 +281,7 @@ test('messageFrom: a click is needed; the message is trimmed to text; the owner 
   await show(r);
   const panel = r.views[0].webContents;
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'hello' }), false, 'no real input yet: a script cannot press its own button');
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'hello' }), true);
   assert.deepStrictEqual(r.messages, [{ kind: 'send', text: 'hello' }]);
 });
@@ -290,10 +290,10 @@ test('messageFrom: input goes stale, one message per click, and bad shapes are d
   const r = rig();
   await show(r);
   const panel = r.views[0].webContents;
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true);
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false, 'a click is spent by one message');
-  panel.emit('input-event', {}, { type: 'mouseUp' });
+  panel.emit('input-event', {}, { type: 'mouseDown' });
   r.tick(PANEL_LIMITS.inputWindowMs + 1);
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'late' }), false, 'a click from long ago is not a click now');
   panel.emit('input-event', {}, { type: 'keyDown' });
@@ -483,4 +483,70 @@ test("a reused session still has the dead proxy in place before the second view 
   owner.emit('destroyed');
   assert.strictEqual(r.m.has(owner), false, 'the panel went with its tab');
   assert.strictEqual(r.children.size, 0);
+});
+
+// ---- one gesture, one use (PR #122 Dexter F7 / Miguel G1) --------------------------------------------------------------------------
+
+test('one physical click is one use: the mouseUp of a click that already sent does not re-arm the gate', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: '/a' }), true, 'onmousedown');
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: '/b' }), false, 'onclick of the same gesture');
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: '/c' }), true, 'the next click is a new use');
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['/a', '/c']);
+});
+
+test('a click that sends only on its mouseUp (onclick) still works, even when the press was slow', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  r.tick(PANEL_LIMITS.inputWindowMs - 100);
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  r.tick(150);
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'ok' }), true, 'the release kept the gesture fresh');
+});
+
+test('a lone mouseUp (a press that began outside the panel) does not arm anything', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseUp' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'x' }), false);
+});
+
+test('a key press is one use: the char that follows its keyDown does not re-arm', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'rawKeyDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true);
+  panel.emit('input-event', {}, { type: 'char' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false);
+});
+
+test('property: the messages let through never outnumber the gestures that began (a mouseDown or a key press)', async () => {
+  const fc = require('fast-check');
+  const ev = fc.constantFrom('mouseDown', 'mouseUp', 'mouseMove', 'keyDown', 'rawKeyDown', 'char', 'send', 'send', 'send');
+  await fc.assert(fc.asyncProperty(fc.array(ev, { maxLength: 40 }), async (events) => {
+    const r = rig();
+    await show(r);
+    const panel = r.views[0].webContents;
+    let began = 0; let accepted = 0; let armed = false;
+    for (const e of events) {
+      if (e === 'send') {
+        const ok = r.m.messageFrom(panel, { kind: 'send', text: 'x' });
+        assert.strictEqual(ok, armed, 'accepted exactly when a gesture began since the last accepted send');
+        if (ok) { accepted += 1; armed = false; }
+      } else {
+        panel.emit('input-event', {}, { type: e });
+        if (e === 'mouseDown' || e === 'keyDown' || e === 'rawKeyDown') { began += 1; armed = true; }
+      }
+    }
+    assert.ok(accepted <= began);
+  }), { numRuns: 200 });
 });
