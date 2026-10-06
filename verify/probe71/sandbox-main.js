@@ -214,7 +214,11 @@ app.whenReady().then(async () => {
       else wc.on('page-title-updated', (_e, title) => consider(title));
       setTimeout(() => finish('no report'), Number(process.env.PROBE_REPORT_MS) || 10000);
       if (name === 'send-with-click' || name === 'data-download' || name === 'beforeunload-pin') {
-        setTimeout(() => { for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); }, 1200);
+        const press = () => { if (!wc.isDestroyed()) for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); };
+        setTimeout(press, 1200);
+        // press again every second until the page has reported, so a page that loaded late on a busy machine is not missed (the report
+        // follows its first click within milliseconds, so send-with-click still delivers exactly one message)
+        const again = setInterval(() => { if (done) clearInterval(again); else press(); }, 1000);
       }
     });
     if (SECOND_PAGES[name] && MODE === 'sealed' && results[name] === 'armed') {
@@ -229,7 +233,7 @@ app.whenReady().then(async () => {
     else { try { owner.contentView.removeChildView(naiveView); naiveView.webContents.close(); } catch { /* gone */ } }
   }
 
-  const BATCH = 4;
+  const BATCH = Number(process.env.PROBE_BATCH) || 2;
   for (let i = 0; i < NAMES.length; i += BATCH) await Promise.all(NAMES.slice(i, i + BATCH).map(runOne));
   await new Promise(r => setTimeout(r, 1200));
 
