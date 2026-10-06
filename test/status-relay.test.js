@@ -302,11 +302,14 @@ test('#27: statusInHeader false, missing, or not exactly true -> the user row pr
   }
 });
 
-test('#27: a missing or corrupt toggle file -> the user row prints (fail toward showing)', async () => {
+test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (fail toward showing)', async () => {
   const dir = tmpDir('relay-bad');
   const corrupt = path.join(dir, 'chrome-global.json');
   fs.writeFileSync(corrupt, '{not json');
-  for (const file of [path.join(dir, 'nope.json'), corrupt]) {
+  const unreadable = path.join(dir, 'a-directory.json');   // exists, but reading it throws EISDIR
+  fs.mkdirSync(unreadable);
+  // #67: the DEFAULT is main's to write into the file, never the relay's guess.
+  for (const file of [path.join(dir, 'nope.json'), corrupt, unreadable]) {
     const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
     assert.strictEqual(res.out, 'USER-ROW', file);
   }

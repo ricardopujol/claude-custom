@@ -15,10 +15,13 @@
  * (avatar-bridge.js has the reasoning): install-wide personal preferences. Its
  * own key, `chrome-global`, in the same store.
  *
- * Both default OFF, and only a real boolean `true` turns one on: a missing or
- * corrupt record must never hide the user's title bar or status row. Setters
- * take the DESIRED state and refuse anything that isn't a boolean (the string
- * 'false' is truthy; favourites-bridge, Dexter PR #60 F6/N5).
+ * statusInHeader defaults ON (BACKLOG #67): only a real boolean `false` turns
+ * it off, so a missing record means the row is hidden and the header shows the
+ * fields. The default is written into the file (ensureStatusDefault), because
+ * the relay only quiets on an explicit `true`. framelessWindow still defaults OFF and needs a real `true`: a
+ * missing record must never hide the user's title bar. Setters take the
+ * DESIRED state and refuse anything that isn't a boolean (the string 'false'
+ * is truthy; favourites-bridge, Dexter PR #60 F6/N5).
  *
  * Its own module so it can be tested without booting Electron.
  */
@@ -30,18 +33,25 @@ const GET_CHANNEL = 'chrome:getSettings';
 const SET_STATUS_CHANNEL = 'chrome:setStatusInHeader';
 const SET_FRAMELESS_CHANNEL = 'chrome:setFrameless';
 const PUSH_CHANNEL = 'chrome-settings';
+// What main says when it can't tell: the answer to a window that isn't ours,
+// and the read-only-store fallback, where a corrupt file looks like a missing
+// one. Off is what the relay does with a file it can't read (it prints the row).
 const OFF = Object.freeze({ statusInHeader: false, framelessWindow: false });
 
+// What nothing-chosen means. Main WRITES statusInHeader into the file (see
+// ensureStatusDefault) so the relay, which only trusts an explicit true, agrees.
+const DEFAULTS = Object.freeze({ statusInHeader: true, framelessWindow: false });
+
 function settingsOf(rec) {
-  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return { ...OFF };
-  return { statusInHeader: rec.statusInHeader === true, framelessWindow: rec.framelessWindow === true };
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return { ...DEFAULTS };
+  return { statusInHeader: rec.statusInHeader !== false, framelessWindow: rec.framelessWindow === true };
 }
 
 // For createWindow: a frame must be decided now, and the framed window is the
 // safe answer when the file can't say.
 function readChromeSettings(store) {
   const known = readChromeState(store);
-  return known || { ...OFF };
+  return known || { ...DEFAULTS };
 }
 
 /**
@@ -56,12 +66,43 @@ function readChromeState(store) {
     if (typeof store.readState === 'function') {
       const st = store.readState(CHROME_KEY);
       if (st.status === 'ok') return settingsOf(st.value);
-      if (st.status === 'missing') return { ...OFF };
+      if (st.status === 'missing') return { ...DEFAULTS };
       return null;
     }
-    return settingsOf(store.read(CHROME_KEY, {}));
+    // No readState: a corrupt file reads as the fallback, same as a missing one.
+    // Say "off", which is what the relay does with it, never the default (F2).
+    const rec = store.read(CHROME_KEY, UNREADABLE);
+    return rec === UNREADABLE ? { ...OFF } : settingsOf(rec);
   } catch {
     return null;
+  }
+}
+
+const UNREADABLE = Symbol('unreadable');
+
+/**
+ * Makes the default real in the file the relay reads (BACKLOG #67). The CLI
+ * re-reads host/status-relay.js on every fire, but a running main keeps its old
+ * code, so the default can't live in either reader's guess: it is written down.
+ * Writes `statusInHeader: true` when the file is missing or has no boolean
+ * choice, keeping every other key; never touches a corrupt or unreadable file.
+ * Atomic (the store writes temp + rename). Returns true when it wrote.
+ */
+function ensureStatusDefault(store) {
+  try {
+    const st = typeof store.readState === 'function'
+      ? store.readState(CHROME_KEY)
+      : { status: 'ok', value: store.read(CHROME_KEY, undefined) };
+    if (st.status !== 'ok' && st.status !== 'missing') return false;
+    const rec = st.status === 'ok' && st.value && typeof st.value === 'object' && !Array.isArray(st.value) ? st.value : {};
+    if (typeof rec.statusInHeader === 'boolean') return false;
+    store.update(CHROME_KEY, {}, (prev) => ({
+      ...(prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}), statusInHeader: true,
+    }));
+    return true;
+  } catch (err) {
+    console.error('[main] could not write the status-in-header default:', err && err.message);
+    return false;
   }
 }
 
@@ -74,7 +115,11 @@ function registerChromeHandlers({ ipcMain, store, sync = {}, isSender, send }) {
   const fromWindow = (e) => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
 
   // Null when the file can't be read: the page keeps "unknown" and asks again.
-  ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readChromeState(store) : { ...OFF }));
+  ipcMain.handle(GET_CHANNEL, (e) => {
+    if (!fromWindow(e)) return { ...OFF };
+    ensureStatusDefault(store);
+    return readChromeState(store);
+  });
 
   const setter = (key) => (e, value) => {
     if (!fromWindow(e)) return null;
@@ -147,6 +192,6 @@ function viewTop({ focusMode, frameless, stripHeight }) {
 }
 
 module.exports = {
-  readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop,
+  readChromeSettings, readChromeState, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop,
   CHROME_KEY, GET_CHANNEL, SET_STATUS_CHANNEL, SET_FRAMELESS_CHANNEL, PUSH_CHANNEL,
 };
