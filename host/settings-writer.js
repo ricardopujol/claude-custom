@@ -242,15 +242,31 @@ function writeHarnessSettings(dir, opts, port) {
 }
 
 /**
+ * Claude's panel's MCP server (BACKLOG #71, host/canvas-mcp.js) as the JSON string `--mcp-config` takes. A CLI flag, so nothing is
+ * written to the user's config, and it is ADDED to the user's own servers (--strict-mcp-config, which would switch them off, is
+ * never passed). Forward slashes everywhere: no shell treats them as an escape (the backslash trap above). An incomplete
+ * description is no injection at all, never a broken one.
+ */
+function canvasMcpConfig(c) {
+  if (!c || typeof c !== 'object') return null;
+  const ok = (v) => typeof v === 'string' && v !== '';
+  if (!ok(c.nodePath) || !ok(c.scriptPath) || !ok(c.root) || !ok(c.pointerFile)) return null;
+  return JSON.stringify({ mcpServers: { canvas: { command: c.nodePath, args: [slashes(c.scriptPath)],
+    env: { CLAUDE_CUSTOM_CANVAS_ROOT: slashes(c.root), CLAUDE_CUSTOM_CANVAS_POINTER: slashes(c.pointerFile) } } } });
+}
+
+/**
  * Builds claude's argv. The generated settings file is attached only when the
  * native helper actually exists on disk: hooks pointing at a missing binary
  * would fire on every matched Task and Bash call and invoke nothing, degrading
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists } = {}) {
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp } = {}) {
   const args = ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
+  const mcp = canvasMcpConfig(canvasMcp);
+  if (mcp) args.push('--mcp-config', mcp);
   return args;
 }
 

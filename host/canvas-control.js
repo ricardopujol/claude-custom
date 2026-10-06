@@ -19,6 +19,8 @@
  * rename). A page that was already there when the session resumed is not a "change"; only a write after that is.
  */
 const fs = require('fs');
+const path = require('path');
+const { renameWithRetry } = require('./atomic-write');
 const { panelDir, validSessionId, readPage, readHosts, setHostDecision, MAX_HTML_BYTES } = require('./canvas-store');
 const { isShelfEvent, artifactFromPayload, readShelf, addToShelf } = require('./canvas-shelf');
 
@@ -27,7 +29,7 @@ const { isShelfEvent, artifactFromPayload, readShelf, addToShelf } = require('./
 const CANVAS_TYPES = Object.freeze(['canvas-get', 'canvas-hosts']);
 const WATCHED = new Set(['index.html', 'shelf.json']);
 
-function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => {} } = {}) {
+function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => {}, pointerFile = null } = {}) {
   if (!stateDir) throw new Error('createCanvasControl: stateDir is required');
   if (typeof getSessionId !== 'function') throw new Error('createCanvasControl: getSessionId is required');
   if (typeof emit !== 'function') throw new Error('createCanvasControl: emit is required');
@@ -48,6 +50,19 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
   const pageOf = (id) => (id ? readPage(dirOf(id)) : { status: 'empty', bytes: 0, signature: 'empty' });
 
   const payload = () => { const id = currentId(); return meta(pageOf(id), id); };
+
+  // The CLI's session id does not exist when the MCP server (host/canvas-mcp.js) is spawned, so the host keeps it in a pointer
+  // file the server re-reads on every call. Written atomically; removed when there is no session, and with the host.
+  function writePointer(id) {
+    if (!pointerFile) return;
+    try {
+      if (!id) { fs.rmSync(pointerFile, { force: true }); return; }
+      fs.mkdirSync(path.dirname(pointerFile), { recursive: true });
+      const temp = `${pointerFile}.${process.pid}.tmp`;
+      fs.writeFileSync(temp, JSON.stringify({ sessionId: id }));
+      renameWithRetry(temp, pointerFile);
+    } catch (err) { log(`[canvas] could not write the session pointer: ${err && err.message}`); }
+  }
 
   function pruneEmpty(id) {
     const dir = dirOf(id);
@@ -70,6 +85,7 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
     if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
     pruneEmpty(armedId);
     armedId = id;
+    writePointer(id);
     if (id) {
       try {
         watcher = watch({ dir: dirOf(id), create: true, match: (f) => WATCHED.has(f), onChange });
@@ -119,6 +135,7 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
     if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
     pruneEmpty(armedId);
     armedId = null;
+    writePointer(null);
   }
 
   return { payload, handles, handle, handlesShelfEvent, shelfEvent, sessionChanged, close };

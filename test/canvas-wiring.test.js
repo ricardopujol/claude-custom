@@ -63,3 +63,12 @@ test('an Artifact hook event goes to the shelf and nowhere else: after the occup
   assert.ok(at > HOST.indexOf('if (isBedtimeOnly(ev)) return;'), 'after the bedtime exit');
   assert.ok(at < HOST.indexOf("if (ev.event === 'SessionStart' && ev.payload"), 'before anything reads the event as work');
 });
+
+test("Claude's panel's MCP server is injected through buildClaudeArgs, only when the setting allows it, with the host's own pointer file", () => {
+  assert.match(HOST, /const \{ canvasMcpEnabled \} = require\('\.\/canvas-settings'\);/);
+  assert.match(HOST, /const CANVAS_POINTER_FILE = path\.join\(HARNESS_DIR, 'state', 'canvas', `_tab-\$\{PORT\}\.json`\);/);
+  assert.match(HOST, /const canvasMcp = canvasMcpEnabled\(\{ env: process\.env, stateDir: path\.join\(HARNESS_DIR, 'state'\) \}\)/);
+  assert.match(HOST, /const ARGS = buildClaudeArgs\(\{ settingsFile, helperExists, canvasMcp \}\);/);
+  assert.match(HOST, /pointerFile: CANVAS_POINTER_FILE,/, 'the same file the server reads is the one the control writes');
+  assert.match(HOST, /scriptPath: path\.join\(__dirname, 'canvas-mcp\.js'\)/);
+});

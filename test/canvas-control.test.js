@@ -19,15 +19,16 @@ const SID = '0f6c8a1e-3b8e-4a5b-9f0e-1d2c3b4a5f6e';
 
 function rig({ sessionId = SID } = {}) {
   const stateDir = tmpDir('cc-canvas-control-');
+  const pointerFile = path.join(stateDir, 'canvas', '_tab-4242.json');
   const frames = []; const watchers = [];
   const state = { sessionId };
   const control = createCanvasControl({
-    stateDir, getSessionId: () => state.sessionId, emit: (f) => frames.push(f), log: () => {},
+    stateDir, getSessionId: () => state.sessionId, emit: (f) => frames.push(f), log: () => {}, pointerFile,
     watch: (opts) => { const w = { opts, closed: false, close() { this.closed = true; } }; watchers.push(w); return w; },
   });
   const dir = (id = SID) => path.join(stateDir, 'canvas', id);
   const write = (html, id = SID) => { fs.mkdirSync(dir(id), { recursive: true }); fs.writeFileSync(path.join(dir(id), 'index.html'), html); };
-  return { control, frames, watchers, state, stateDir, dir, write };
+  return { control, frames, watchers, state, stateDir, dir, write, pointerFile };
 }
 
 test('the message types are exactly the two the window sends', () => {
@@ -218,4 +219,32 @@ test('handlesShelfEvent is only true for an Artifact post event', () => {
   const r = rig();
   assert.strictEqual(r.control.handlesShelfEvent({ event: 'PostToolUse', payload: { tool_name: 'Bash' } }), false);
   assert.strictEqual(r.control.handlesShelfEvent(null), false);
+});
+
+// The MCP server (host/canvas-mcp.js) does not know the session id at spawn: the host keeps a pointer file with it.
+test('the pointer file names the live session, follows a change, and goes with a session that is gone', () => {
+  const r = rig({ sessionId: null });
+  const read = () => JSON.parse(fs.readFileSync(r.pointerFile, 'utf8'));
+  assert.strictEqual(fs.existsSync(r.pointerFile), false, 'no session, no pointer');
+  r.state.sessionId = SID;
+  r.control.sessionChanged(SID);
+  assert.deepStrictEqual(read(), { sessionId: SID });
+  const other = '11111111-2222-3333-4444-555555555555';
+  r.state.sessionId = other;
+  r.control.sessionChanged(other);
+  assert.deepStrictEqual(read(), { sessionId: other });
+  r.state.sessionId = null;
+  r.control.sessionChanged(null);
+  assert.strictEqual(fs.existsSync(r.pointerFile), false, 'an unknown session is no pointer, never a stale one');
+  r.state.sessionId = SID;
+  r.control.sessionChanged(SID);
+  r.control.close();
+  assert.strictEqual(fs.existsSync(r.pointerFile), false, 'the pointer goes with the host');
+});
+
+test('without a pointerFile the control writes none', () => {
+  const stateDir = tmpDir('cc-canvas-control-');
+  const c = createCanvasControl({ stateDir, getSessionId: () => SID, emit() {}, watch: () => ({ close() {} }) });
+  c.sessionChanged(SID);
+  assert.strictEqual(fs.existsSync(path.join(stateDir, 'canvas', '_tab-4242.json')), false);
 });
