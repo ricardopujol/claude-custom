@@ -108,11 +108,13 @@ function fold(events) {
       n.state = 'unfiled';
       n.reason = typeof e.reason === 'string' ? e.reason : null;
     } else if (e.ev === 'filed') {
-      if (!isObject(e.where) || !isObject(e.record)) continue;
+      // A record that's missing still means the note IS in the doc: it can't be undone, but it must never be filed
+      // again (Miguel B2, PR #121). Only a filed event that names no file isn't one.
+      if (!isObject(e.where) || typeof e.where.file !== 'string') continue;
       n.state = 'filed';
       n.reason = null;
       n.where = e.where;
-      n.record = e.record;
+      n.record = isObject(e.record) ? e.record : null;
       n.filedAt = isTime(e.at) ? e.at : null;
     } else if (e.ev === 'undone') {
       if (n.state !== 'filed') continue;
