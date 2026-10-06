@@ -3,7 +3,7 @@
  * The indexing assistant's journal (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md "Revised 2026-10-05
  * (evening)": a verbatim inbox).
  *
- *   createJournal({ file }) -> { append(event), read(), withLock(fn), newId() }
+ *   createJournal({ file }) -> { append(event), read(), withLock(fn), compact(keep), newId() }
  *   fold(events)            -> Map<id, note>   each note's state, from its events in order (pure)
  *   listFor(notes, project, now) -> the strip's list: today's notes for the project plus any not filed, newest first,
  *                                   at most 20
@@ -27,6 +27,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { withFileLock } = require('./file-lock');
+const { renameWithRetry } = require('./atomic-write');
 const { normPath } = require('./project-layout');
 
 const LIST_MAX = 20;
@@ -66,12 +67,7 @@ function createJournal({ file }) {
     return withFileLock(lockFile, fn);
   }
 
-  function read() {
-    let raw;
-    try { raw = fs.readFileSync(file, 'utf8'); } catch (err) {
-      if (err && err.code === 'ENOENT') return [];
-      throw err;
-    }
+  function parse(raw) {
     const out = [];
     for (const line of raw.split('\n')) {
       if (line.trim() === '') continue;
@@ -80,12 +76,48 @@ function createJournal({ file }) {
     return out;
   }
 
+  function read() {
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch (err) {
+      if (err && err.code === 'ENOENT') return [];
+      throw err;
+    }
+    return parse(raw);
+  }
+
+  /**
+   * Rewrite the journal with only the notes `keep(note)` says (every one of their events, in order), so it doesn't
+   * grow forever (Miguel S1, PR #121). Under the lock, temp + rename. -> { ok: true, kept, dropped } (notes)
+   */
+  function compact(keep) {
+    return withLock(() => {
+      let raw;
+      try { raw = fs.readFileSync(file, 'utf8'); } catch (err) {
+        if (err && err.code === 'ENOENT') return { ok: true, kept: 0, dropped: 0 };
+        throw err;
+      }
+      const events = parse(raw);
+      const notes = fold(events);
+      const ids = new Set([...notes.values()].filter(keep).map(n => n.id));
+      const tmp = `${file}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`;
+      try {
+        fs.writeFileSync(tmp, events.filter(e => ids.has(e.id)).map(e => JSON.stringify(e) + '\n').join(''), 'utf8');
+        renameWithRetry(tmp, file);
+      } catch (err) {
+        try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left */ }
+        throw err;
+      }
+      return { ok: true, kept: ids.size, dropped: notes.size - ids.size };
+    });
+  }
+
   return {
     // An append from outside a withLock takes the lock itself; inside one, `withLock(() => j.append(...))` would
     // deadlock on the same lock, so the locked body gets appendUnlocked as its argument.
     append: (event) => withLock(() => appendUnlocked(event)),
     withLock: (fn) => withLock(() => fn({ append: appendUnlocked, read })),
     read,
+    compact,
     newId: () => crypto.randomBytes(9).toString('hex'),
   };
 }

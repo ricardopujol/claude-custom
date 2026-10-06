@@ -91,9 +91,21 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     return r.filed ? { ok: true, id, filed: true } : { ok: true, id, filed: false, reason: r.reason };
   }
 
+  // Once a day (the first tick, then whenever the local day changes) the journal keeps only what the list can show:
+  // today's notes and any not filed (Miguel S1, PR #121).
+  let rotatedDay = null;
+  function rotate(t) {
+    const day = new Date(t).toDateString();
+    if (day === rotatedDay) return;
+    journal.compact((n) => n.state === 'unfiled' || new Date(n.at).toDateString() === day);
+    rotatedDay = day;
+  }
+
   async function tick() {
     try {
       const t = now();
+      // Its own try: a rotation that fails (the lock busy) must not keep a note from being filed.
+      try { rotate(t); } catch (err) { log('[indexing] journal rotation failed:', (err && err.message) || String(err)); }
       const due = [...fold(journal.read()).values()]
         // A reason the tick retries, or none at all: journaled but never decided (a crash, a journal that threw).
         .filter(n => n.state === 'unfiled' && (n.reason === null || RETRIED.has(n.reason)) && !(holds.get(n.id) > t))

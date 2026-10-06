@@ -210,6 +210,25 @@ test('snapshot: another project\'s notes are not in it', () => {
   assert.deepStrictEqual(t.svc.snapshot(t.project).list.map(n => n.text), ['mine']);
 });
 
+test('the journal is rotated once a day: yesterday\'s filed and undone notes go, today\'s and any not filed stay (Miguel S1)', async () => {
+  const t = setup({ backlog: null });
+  t.svc.submit(t.project, 'never filed');                          // unfiled (no backlog), stays
+  fs.writeFileSync(t.backlog, BACKLOG);
+  const y = t.svc.submit(t.project, 'filed yesterday');             // filed, goes tomorrow
+  assert.strictEqual(y.filed, true);
+  await t.svc.tick();                                               // first tick: today's rotation, nothing old yet
+  assert.strictEqual(new Set(t.journal.read().map(e => e.id)).size, 2);
+  t.advance(24 * 60 * 60 * 1000);
+  t.svc.submit(t.project, 'today');
+  await t.svc.tick();                                               // a new day: rotated
+  const ids = new Set(t.journal.read().map(e => e.id));
+  assert.strictEqual(ids.has(y.id), false);
+  assert.deepStrictEqual(t.svc.snapshot(t.project).list.map(n => n.text).sort(), ['never filed', 'today']);
+  const before = t.journal.read().length;
+  await t.svc.tick();
+  assert.strictEqual(t.journal.read().length, before, 'once a day, not every tick');
+});
+
 test('a journal that fails: submit says so and the backlog is untouched; a tick never throws', async () => {
   const t = setup();
   const broken = createIndexingService({

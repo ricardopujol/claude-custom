@@ -44,6 +44,26 @@ test('an append after a torn last line starts on its own line, so the new note i
   assert.ok(!fs.readFileSync(file, 'utf8').includes('\n\n'));
 });
 
+test('compact: keeps every event of the notes `keep` says, in order, drops the rest and torn lines; temp + rename (Miguel S1)', () => {
+  const dir = tmpDir('cc-ij-');
+  const file = path.join(dir, 'j.jsonl');
+  const j = createJournal({ file });
+  j.append({ ev: 'note', id: 'old', project: P, text: 'a', at: 1 });
+  j.append({ ev: 'note', id: 'new', project: P, text: 'b', at: 2 });
+  j.append({ ev: 'filed', id: 'old', at: 3, where: { file: 'x' }, record: null });
+  j.append({ ev: 'unfiled', id: 'new', reason: 'no-backlog', at: 4 });
+  fs.appendFileSync(file, '{"ev":"torn');
+  const r = j.compact((n) => n.id === 'new');
+  assert.deepStrictEqual(r, { ok: true, kept: 1, dropped: 1 });
+  assert.deepStrictEqual(j.read().map(e => `${e.ev}:${e.id}`), ['note:new', 'unfiled:new']);
+  assert.deepStrictEqual(fs.readdirSync(dir).filter(f => f.endsWith('.tmp')), []);
+  assert.strictEqual(fs.existsSync(file + '.lock'), false);
+});
+
+test('compact: no journal yet is nothing to do', () => {
+  assert.deepStrictEqual(createJournal({ file: path.join(tmpDir('cc-ij-'), 'none.jsonl') }).compact(() => true), { ok: true, kept: 0, dropped: 0 });
+});
+
 test('read: no file yet is no events', () => {
   assert.deepStrictEqual(createJournal({ file: path.join(tmpDir('cc-ij-'), 'none.jsonl') }).read(), []);
 });
