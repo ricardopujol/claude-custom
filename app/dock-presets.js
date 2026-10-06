@@ -86,14 +86,21 @@ function cleanPresets(raw) {
   return usable(raw).map(({ name, layout, id }) => (id === null ? { name, layout } : { name, layout, id }));
 }
 
+// The ONE rule for who needs an id: a usable preset with none, or with one an earlier preset already has.
+// `taken` is every id that is good as it stands, `lacking` the presets that need a new one.
+function sortIds(raw) {
+  const taken = new Set();
+  const lacking = [];
+  for (const p of usable(raw)) {
+    if (p.id !== null && !taken.has(p.id)) taken.add(p.id);
+    else lacking.push(p);
+  }
+  return { taken, lacking };
+}
+
 /** True when a usable preset in `raw` has no id, or one an earlier preset already has: what withIds would mend. */
 function needsIds(raw) {
-  const seen = new Set();
-  for (const { id } of usable(raw)) {
-    if (id === null || seen.has(id)) return true;
-    seen.add(id);
-  }
-  return false;
+  return sortIds(raw).lacking.length > 0;
 }
 
 /**
@@ -103,10 +110,9 @@ function needsIds(raw) {
  */
 function withIds(raw, newId = randomId) {
   if (!Array.isArray(raw)) return raw;
-  const taken = new Set();
+  const { taken, lacking } = sortIds(raw);
   const give = new Map();
-  for (const p of usable(raw)) {
-    if (p.id !== null && !taken.has(p.id)) { taken.add(p.id); continue; }
+  for (const p of lacking) {
     let id;
     try { id = newId(); } catch { continue; }
     if (!isId(id) || taken.has(id)) continue;

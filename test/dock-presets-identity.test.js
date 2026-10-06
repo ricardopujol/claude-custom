@@ -295,6 +295,47 @@ test('a get whose write-back fails answers the list as it was read: reading is n
   assert.deepStrictEqual(W.sent, []);
 });
 
+test('PR #127 Miguel S2: a get whose write-back keeps failing says so once, not on every read', async () => {
+  const store = fakeStore([{ name: 'A', layout: L() }]);
+  store.write = () => { throw new Error('EPERM'); };
+  const W = windowOn(store, counter());
+  const logged = [];
+  const real = console.error;
+  console.error = (...args) => logged.push(args);
+  try { await W.get(); await W.get(); await W.get(); } finally { console.error = real; }
+  assert.strictEqual(logged.length, 1);
+  assert.match(String(logged[0][0]), /ids/);
+});
+
+test('PR #127 Miguel S3: needsIds and withIds are one rule: there is something to give exactly when withIds changes the list', () => {
+  const entryArb = fc.oneof(
+    { weight: 4, arbitrary: fc.record({ name: fc.constantFrom('A', 'a', 'B', 'C', ''), layout: fc.constant(L()), id: fc.option(fc.constantFrom('i1', 'i2', '', 7, 'x'.repeat(65)), { nil: undefined }) }, { requiredKeys: ['name', 'layout'] }) },
+    { weight: 1, arbitrary: fc.anything() },
+  );
+  fc.assert(fc.property(fc.array(entryArb, { maxLength: 8 }), raw => {
+    assert.strictEqual(P.needsIds(raw), P.withIds(raw, counter('fresh-')) !== raw, JSON.stringify(raw));
+  }), { numRuns: Number(process.env.LAYOUT_RUNS) || 300 });
+});
+
+test('PR #127 Miguel S1: whatever an op answers ok is under the byte cap AFTER the ids are added (the cap is checked before them)', () => {
+  const bytes = v => new TextEncoder().encode(JSON.stringify(v)).length;
+  const wide = n => String.fromCodePoint(0x1F600 + n).repeat(39) + 'x';        // 40 characters, 4 bytes each but one
+  const entryArb = fc.record({ pad: fc.nat(P.MAX_PRESET_BYTES - 40), id: fc.boolean() });
+  fc.assert(fc.property(
+    fc.array(entryArb, { minLength: 25, maxLength: 31 }), fc.constantFrom('save', 'replace', 'rename'), fc.nat(40),
+    (spec, kind, at) => {
+      const raw = spec.map(({ pad, id }, i) => ({ name: wide(i), layout: { pad: 'x'.repeat(pad) }, ...(id ? { id: `${i}`.padEnd(P.ID_MAX, 'z') } : {}) }));
+      if (bytes(raw) > P.MAX_LIST_BYTES) return;
+      const mine = P.cleanPresets(raw)[at % raw.length];
+      const id = mine.id || null;
+      const req = kind === 'rename' ? { op: 'rename', name: mine.name, to: wide(60), id }
+        : { op: 'save', name: kind === 'replace' ? mine.name : wide(70), layout: { pad: 'y'.repeat(P.MAX_PRESET_BYTES - 40) }, replace: kind === 'replace', id };
+      const r = P.applyOp(raw, req, { newId: () => 'z'.repeat(P.ID_MAX) });
+      if (r.ok) assert.ok(bytes(r.list) <= P.MAX_LIST_BYTES, `${r.list.length} entries, ${bytes(r.list)} bytes`);
+    },
+  ), { numRuns: Number(process.env.LAYOUT_RUNS) || 200 });
+});
+
 // --- what the page does with it -----------------------------------------------------------------------------------
 
 const step = (state, event) => P.reduceMenu(state, event);

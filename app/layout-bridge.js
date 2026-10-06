@@ -88,6 +88,7 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, nam
   // Presets stored before they had ids (BACKLOG #59) get theirs the first time a window reads the list, so every
   // question the page asks can name the preset it is about. Written back as one locked read-modify-write; if that
   // fails the list is answered as it was read (an id-less preset is still asked about by name, as null).
+  let saidIdsFailed = false;
   function giveIds(answer) {
     if (answer.status !== 'ok' || !needsIds(answer.layout)) return answer;
     try {
@@ -103,7 +104,7 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, nam
       try { send(names.push, list); } catch { /* window is going away */ }
       return { status: 'ok', layout: list };
     } catch (err) {
-      console.error('[main] could not give the presets their ids:', err && err.message);
+      if (!saidIdsFailed) { saidIdsFailed = true; console.error('[main] could not give the presets their ids (said once; each read tries again):', err && err.message); }
       return answer;
     }
   }
