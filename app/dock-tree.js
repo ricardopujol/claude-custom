@@ -35,6 +35,9 @@ const TERM_MIN = { width: 320, height: 160 };         // the terminal wins
 const RAIL = { side: 28, wide: 30 };
 const GUTTER = 5;
 const DEFAULT_SIZE = { row: 180, col: 160 };          // a new cell beside / under the terminal
+// A module's OWN width when it gets a cell of its own beside the terminal (Ricardo, 2026-10-06, #71 question 1: Claude's panel docks itself at
+// 320, the 180 above is too cramped for its question card). A column default and every other module stay as above.
+const OWN_ROW_SIZE = Object.freeze({ canvas: 320 });
 // No screen is wider than this; a bigger stored size (1e306 from a damaged file)
 // overflowed L1's fitting arithmetic into NaN.
 const MAX_SIZE = 10000;
@@ -312,7 +315,8 @@ function dock(layout, id, target) {
     // Beside the terminal the newcomer gets a default size and the terminal's side stays 0 (the spine
     // flexes); beside anything else the two share the slot equally.
     const pixels = hasTerm(cellNode);
-    const sizes = pixels ? (first ? [DEFAULT_SIZE[dir], 0] : [0, DEFAULT_SIZE[dir]]) : [1, 1];
+    const own = dir === 'row' && OWN_ROW_SIZE[id] ? OWN_ROW_SIZE[id] : DEFAULT_SIZE[dir];
+    const sizes = pixels ? (first ? [own, 0] : [0, own]) : [1, 1];
     replaceCell(l, cellNode, { type: 'split', dir, kids: first ? [added, cellNode] : [cellNode, added], sizes });
   }
   const result = normalize(l, modulesIn(layout));
