@@ -140,9 +140,17 @@ app.whenReady().then(async () => {
   owner.webContents.setWindowOpenHandler(() => { windowOpens += 1; return { action: 'deny' }; });
   owner.webContents.on('will-navigate', (_e, url) => navAttempts.push(url));
   const panels = new Map();   // owner id -> the panel contents the manager made for it, to read titles from
+  // Titles are recorded from the moment the contents EXISTS (its constructor), so a page that reports at once is never missed by a listener
+  // that was attached a tick after its load began (a quiet machine hid that race; a busy one made half the vectors 'no report').
+  const seenTitles = new Map(); const titleWaiters = new Map();
 
   const views = createCanvasViews({
-    WebContentsView: class extends WebContentsView { constructor(o) { super(o); panels.set(Number(/^canvas-([0-9]+)-/.exec(o.webPreferences.partition)[1]), this.webContents); } },
+    WebContentsView: class extends WebContentsView { constructor(o) {
+      super(o);
+      const id = Number(/^canvas-([0-9]+)$/.exec(o.webPreferences.partition)[1]);
+      panels.set(id, this.webContents);
+      this.webContents.on('page-title-updated', (_e, t) => { if (!seenTitles.has(id)) seenTitles.set(id, []); seenTitles.get(id).push(t); const w = titleWaiters.get(id); if (w) w(t); });
+    } },
     session,
     addChild: (v) => owner.contentView.addChildView(v), removeChild: (v) => owner.contentView.removeChildView(v),
     ownerBounds: () => ({ x: 0, y: 0, width: 1000, height: 800 }),
@@ -191,8 +199,10 @@ app.whenReady().then(async () => {
     results[name] = await new Promise((resolve) => {
       let done = false;
       const finish = (r) => { if (!done) { done = true; resolve(r); } };
-      wc.on('page-title-updated', (_e, title) => { if (title.startsWith('R:')) finish(JSON.parse(title.slice(2))); });
-      setTimeout(() => finish('no report'), 5000);
+      const consider = (title) => { if (title.startsWith('R:')) finish(JSON.parse(title.slice(2))); };
+      if (MODE === 'sealed') { (seenTitles.get(fakeOwner.id) || []).forEach(consider); titleWaiters.set(fakeOwner.id, consider); }
+      else wc.on('page-title-updated', (_e, title) => consider(title));
+      setTimeout(() => finish('no report'), Number(process.env.PROBE_REPORT_MS) || 10000);
       if (name === 'send-with-click' || name === 'data-download' || name === 'beforeunload-pin') {
         setTimeout(() => { for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) wc.sendInputEvent({ type, x: 30, y: 30, button: 'left', clickCount: 1 }); }, 1200);
       }

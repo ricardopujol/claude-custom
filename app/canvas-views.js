@@ -41,7 +41,11 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
   isOwnerVisible = () => true, fetchImpl = fetch, now = Date.now, log = () => {} } = {}) {
   const byOwner = new Map();          // owner contents id -> record
   const byPanel = new Map();          // panel contents id -> record
-  let counter = 0;
+  // ONE in-memory session per tab, kept across hide/show: Electron never frees a session, so a fresh partition per show leaked a network
+  // context, a webRequest hook and permission handlers every time the module was shown (PR #122 Dexter F8 / Miguel G2). Storage and
+  // cache are cleared whenever the view goes.
+  const sessions = new Map();        // partition -> { ses, ready }: ready = the dead proxy is in place
+  const watched = new Set();         // owner ids whose 'destroyed' we already listen for
 
   function applyBounds(rec) {
     const v = rec.view;
@@ -62,7 +66,8 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     v.setVisible(!!shown);
   }
 
-  function lockDown(ses, wc) {
+  // The session's half of the lock-down. Done ONCE per session: a tab's panel keeps one session across hide/show (below).
+  function lockSession(ses) {
     ses.setPermissionRequestHandler((_c, _p, cb) => cb(false));
     ses.setPermissionCheckHandler(() => false);
     if (typeof ses.setDevicePermissionHandler === 'function') ses.setDevicePermissionHandler(() => false);
@@ -71,6 +76,9 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     // `<a download href="data:...">` is not a navigation, so the guards below never see it, and a `data:` request is allowed:
     // with no handler Electron raises a Save-As box for a file name and content the page chose (measured: verify/probe-canvas-sandbox.js).
     if (typeof ses.on === 'function') ses.on('will-download', (e) => e.preventDefault());
+  }
+
+  function lockContents(wc) {
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
     for (const ev of ['will-navigate', 'will-frame-navigate', 'will-redirect', 'will-attach-webview']) wc.on(ev, (e) => e.preventDefault());
     // A page whose beforeunload handler cancels leaving it would pin itself: Claude's next page is a loadURL, which runs that handler,
@@ -83,9 +91,16 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
   // The record is registered SYNCHRONOUSLY, before anything awaits: a hide, a tab switch or a second show that lands while the proxy is
   // being set must find it (PR #122 Dexter F4 / Miguel Y1). The view joins the window only once the proxy is in place (rec.ready).
   function begin(owner) {
-    counter += 1;
-    const partition = `canvas-${owner.id}-${counter}`;       // no `persist:`: nothing outlives the view
-    const ses = session.fromPartition(partition);
+    const partition = `canvas-${owner.id}`;                   // no `persist:`: nothing outlives the app
+    let st = sessions.get(partition);
+    if (!st) {
+      const fresh = session.fromPartition(partition);
+      lockSession(fresh);
+      st = { ses: fresh, ready: null };
+      sessions.set(partition, st);
+    }
+    if (!st.ready) st.ready = Promise.resolve(st.ses.setProxy(DEAD_PROXY)).catch((err) => { st.ready = null; throw err; });
+    const ses = st.ses;
     const view = new WebContentsView({ webPreferences: {
       sandbox: true, contextIsolation: true, nodeIntegration: false, devTools: false, preload: preloadPath, partition,
       // alert/confirm/prompt are native message boxes parented to the app's window: a page looping on confirm() would lock the
@@ -97,12 +112,21 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
       pending: new Map(), lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null };
     wc.on('input-event', (_e, ev) => { if (ev && CLICK_TYPES.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } });
     wc.on('render-process-gone', (_e, d) => log(`[canvas] panel renderer gone: ${d && d.reason}`));
-    lockDown(ses, wc);
+    lockContents(wc);
     byOwner.set(owner.id, rec);
     byPanel.set(wc.id, rec);
-    if (typeof owner.once === 'function') owner.once('destroyed', () => destroyRecord(rec));
+    if (typeof owner.once === 'function' && !watched.has(owner.id)) {
+      watched.add(owner.id);
+      owner.once('destroyed', () => {
+        watched.delete(owner.id);
+        const cur = byOwner.get(owner.id);
+        if (cur) destroyRecord(cur);
+        sessions.delete(partition);
+      });
+    }
+    const proxied = st.ready;
     rec.ready = (async () => {
-      await ses.setProxy(DEAD_PROXY);                      // awaited: nothing may load before the proxy is in place
+      await proxied;                                       // awaited: nothing may load before the proxy is in place
       if (rec.dead) return false;                          // hidden or destroyed meanwhile: the view never joins the window
       addChild(view);
       rec.attached = true;
@@ -118,6 +142,8 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     byPanel.delete(rec.wc.id);
     try { removeChild(rec.view); } catch { /* the window is going away */ }
     try { if (!rec.wc.isDestroyed()) rec.wc.close(); } catch { /* already gone */ }
+    // The session stays (Electron never frees one) but holds nothing of the page that was in it.
+    for (const clear of ['clearStorageData', 'clearCache']) { try { Promise.resolve(rec.ses[clear] && rec.ses[clear]()).catch(() => {}); } catch { /* nothing to clear */ } }
   }
 
   function setHosts(owner, hosts) {

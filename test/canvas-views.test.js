@@ -29,6 +29,8 @@ class FakeSession extends EventEmitter {
   setPermissionCheckHandler(fn) { this.permissionCheck = fn; }
   setDevicePermissionHandler(fn) { this.devicePermission = fn; }
   setSpellCheckerEnabled() {}
+  async clearStorageData() { this.clears = (this.clears || 0) + 1; }
+  async clearCache() { this.clears = (this.clears || 0) + 1; }
   get webRequest() { return { onBeforeRequest: (fn) => { this.requestFilter = fn; } }; }
 }
 
@@ -450,4 +452,35 @@ test('property: whatever the interleaving of show, hide, tab switches and proxy 
     for (const v of r.views) if (!r.children.has(v)) assert.strictEqual(v.webContents.closed, true, 'a view that is not in the window is closed, never leaked');
     if (r.m.has(r.owner)) assert.strictEqual(live(r)[0].visible, world.visible, "it is visible exactly when the tab is the selected one");
   }), { numRuns: 300 });
+});
+
+// ---- one session per tab, not one per show (PR #122 Dexter F8 / Miguel G2) -------------------------------------------------------
+
+test('showing, hiding and showing again 30 times uses one session for the tab, locked once, and clears it every time the view goes', async () => {
+  const owner = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false });
+  const r = rig();
+  for (let i = 0; i < 30; i++) {
+    await r.m.show(owner, { html: '<p>x</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+    r.m.hide(owner);
+  }
+  assert.deepStrictEqual(Object.keys(r.sessions), ['canvas-7'], 'one partition per tab, however often the panel is shown');
+  const ses = r.sessions['canvas-7'];
+  assert.strictEqual(ses.listenerCount('will-download'), 1, 'the session was locked once, not once per show');
+  assert.strictEqual(ses.order.filter(x => x === 'proxy').length, 1, 'and its proxy was set once');
+  assert.strictEqual(ses.clears, 30 * 2, 'storage and cache are cleared each time the view goes');
+  assert.strictEqual(owner.listenerCount('destroyed'), 1, 'one destroyed-listener per tab, not one per show');
+  assert.strictEqual(r.views.length, 30, 'a fresh view each time (hidden means stopped)');
+});
+
+test("a reused session still has the dead proxy in place before the second view loads, and a destroyed tab forgets its session", async () => {
+  const owner = Object.assign(new EventEmitter(), { id: 8, isDestroyed: () => false });
+  const r = rig();
+  await r.m.show(owner, { html: '<p>x</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+  r.m.hide(owner);
+  await r.m.show(owner, { html: '<p>y</p>', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
+  assert.ok(r.sessions['canvas-8'].proxy, 'the proxy is set');
+  assert.ok(r.views[1].webContents.calls.some(c => c[0] === 'load'));
+  owner.emit('destroyed');
+  assert.strictEqual(r.m.has(owner), false, 'the panel went with its tab');
+  assert.strictEqual(r.children.size, 0);
 });
