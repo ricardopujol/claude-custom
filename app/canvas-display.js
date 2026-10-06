@@ -65,6 +65,25 @@ const canShow = s => !!s.payload && s.payload.status === 'ok' && isStr(s.html) &
 const showRequest = s => (canShow(s) ? { html: s.html, hosts: s.payload.hosts } : null);
 const covered = s => s.asks.length > 0 || s.hostsOpen;
 
+// ---- anything ELSE drawn over the slot (PR #122 Dexter F5) ---------------------------------------------------------------------
+// A native view paints above the whole page, so a floating dock panel, a menu or a popover that crosses the slot would be hidden behind
+// it, and a click meant for it would land in the untrusted panel (and arm a `send`). `covered` only knew the panel's own overlays. This asks
+// the page what is topmost at a grid of points over the slot instead of listing overlays, so one nobody thought of is caught too.
+const SAMPLE_GAP = 40;         // px between sample points: an overlay at least this big in both directions always contains one
+const SAMPLE_MAX = 12;         // per axis, so a big slot costs at most 144 hit tests
+const isBox = r => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
+const axis = (start, len) => {
+  const n = Math.min(SAMPLE_MAX, Math.max(2, Math.ceil(len / SAMPLE_GAP) + 1));
+  return Array.from({ length: n }, (_, i) => start + 1 + (i * (len - 2)) / (n - 1));    // 1px inside each edge: the edge pixel itself may belong to a neighbour
+};
+const samplePoints = (rect) => {
+  if (!isBox(rect) || rect.width < 3 || rect.height < 3) return [];
+  const xs = axis(rect.x, rect.width); const ys = axis(rect.y, rect.height);
+  return ys.flatMap(y => xs.map(x => ({ x, y })));
+};
+/** Is something other than the slot topmost anywhere over it? `isSlotAt(x, y)` answers for one point (true when the slot, or nothing the page can see, is on top). */
+const slotObstructed = (rect, isSlotAt) => samplePoints(rect).some(p => !isSlotAt(p.x, p.y));
+
 function withAsk(state, ask) {
   if (!ask || !Number.isInteger(ask.id) || ask.id < 0 || !isStr(ask.origin) || ask.origin === '') return state;
   if (state.asks.some(a => a.id === ask.id)) return state;
@@ -148,7 +167,7 @@ function actionOf(data) {
   }
 }
 
-const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, covered, withAsk, answered, toggleHosts, view, html, actionOf };
+const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, covered, samplePoints, slotObstructed, SAMPLE_GAP, withAsk, answered, toggleHosts, view, html, actionOf };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.canvasDisplay = API;

@@ -1308,6 +1308,14 @@ function canvasSlotRect() {
   return { x: r.left, y: r.top, width: r.width, height: r.height };
 }
 
+// Is the slot itself topmost at this point? (null: outside the page, nothing of ours is over it). A native view ignores the DOM's stacking, so
+// whatever else is drawn over the slot (a floating dock panel, a menu, a popover) must hide it (PR #122 Dexter F5).
+function canvasIsSlotAt(x, y) {
+  const slot = canvasRoot && canvasRoot.querySelector('#canvas-slot');
+  const el = document.elementFromPoint(x, y);
+  return !el || !slot || el === slot || slot.contains(el);
+}
+
 function syncCanvasView() {
   if (!canvasBridge) return;
   const want = shownModules.has('canvas') && document.visibilityState === 'visible' && window.canvasDisplay.canShow(canvasState);
@@ -1316,8 +1324,8 @@ function syncCanvasView() {
     return;
   }
   const req = window.canvasDisplay.showRequest(canvasState);
-  const covered = window.canvasDisplay.covered(canvasState);
   const rect = canvasSlotRect();
+  const covered = window.canvasDisplay.covered(canvasState) || (rect !== null && window.canvasDisplay.slotObstructed(rect, canvasIsSlotAt));
   if (rect) canvasLastRect = rect;
   const hostsKey = JSON.stringify(req.hosts);
   if (!canvasLive || canvasShownSig !== canvasState.htmlSig) {
@@ -1397,11 +1405,17 @@ if (canvasBridge && canvasRoot) {
     if (a) canvasAct(a);
   });
   let canvasFrame = 0;
-  new ResizeObserver(() => {
+  const canvasSchedule = () => {
     if (canvasFrame) return;
     canvasFrame = requestAnimationFrame(() => { canvasFrame = 0; syncCanvasView(); });
-  }).observe(canvasRoot);
+  };
+  new ResizeObserver(canvasSchedule).observe(canvasRoot);
   document.addEventListener('visibilitychange', syncCanvasView);
+  // Something else may now be over the slot (a float dragged across it, a menu or popover opened): look again right after any interaction
+  // (once its own handlers have run), while a button is held (a drag), and on a slow tick as the safety net for anything that moves by itself.
+  for (const ev of ['pointerup', 'click', 'keyup', 'contextmenu', 'wheel', 'resize']) window.addEventListener(ev, () => setTimeout(canvasSchedule, 0), true);
+  window.addEventListener('pointermove', (e) => { if (e.buttons) canvasSchedule(); }, true);
+  setInterval(() => { if (canvasLive) canvasSchedule(); }, 250);
 }
 // CANVAS-END
 
@@ -2838,6 +2852,21 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           && (a.id === undefined || e.dataset.canvasId === String(a.id)) && (a.origin === undefined || e.dataset.canvasOrigin === String(a.origin)));
         if (!el) return JSON.stringify({ ok: false, error: 'no canvas control ' + JSON.stringify(a) });
         el.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'canvasOverlay': {
+        // a stand-in for a float / menu / popover crossing the slot (PR #122 Dexter F5): a fixed box over the slot's right half (at least SAMPLE_GAP wide: a thinner overlay can fall between the sample points), above the page
+        let box = document.getElementById('probe-canvas-overlay');
+        if (box) box.remove();
+        if (a.on === true) {
+          const slot = document.querySelector('#canvas-root #canvas-slot');
+          if (!slot) return JSON.stringify({ ok: false, error: 'no slot' });
+          const r = slot.getBoundingClientRect();
+          box = document.createElement('div');
+          box.id = 'probe-canvas-overlay';
+          box.style.cssText = 'position:fixed;z-index:45;background:#c33;left:' + (r.left + r.width * 0.4) + 'px;top:' + (r.top + r.height * 0.25) + 'px;width:' + (r.width * 0.5) + 'px;height:' + (r.height * 0.5) + 'px';
+          document.body.appendChild(box);
+        }
         return JSON.stringify({ ok: true });
       }
       case 'resourcesClick': {

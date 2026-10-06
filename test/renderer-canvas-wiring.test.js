@@ -88,3 +88,12 @@ test('the "already asked" memo is cleared whenever there is nothing to fetch, so
   assert.match(fn, /if \(!window\.canvasDisplay\.needsFetch\(canvasState\)\) canvasFetchSig = null;/);
   assert.ok(fn.indexOf('canvasFetchSig = null') < fn.indexOf('canvasFetchIfNeeded();'), 'cleared BEFORE the next fetch decision');
 });
+
+test('anything else drawn over the slot hides the native view, and the page looks again after interactions, drags and on a tick (PR #122 Dexter F5)', () => {
+  const sync = BLOCK.slice(BLOCK.indexOf('function syncCanvasView('), BLOCK.indexOf('function syncCanvasView(') + 1500);
+  assert.match(sync, /const covered = window\.canvasDisplay\.covered\(canvasState\) \|\| \(rect !== null && window\.canvasDisplay\.slotObstructed\(rect, canvasIsSlotAt\)\);/);
+  assert.match(BLOCK, /function canvasIsSlotAt\(x, y\) \{[^}]*document\.elementFromPoint\(x, y\)/);
+  for (const ev of ['pointerup', 'click', 'keyup', 'contextmenu', 'wheel', 'resize']) assert.ok(BLOCK.includes(`'${ev}'`), ev);
+  assert.match(BLOCK, /window\.addEventListener\('pointermove', \(e\) => \{ if \(e\.buttons\) canvasSchedule\(\); \}, true\);/);
+  assert.match(BLOCK, /setInterval\(\(\) => \{ if \(canvasLive\) canvasSchedule\(\); \}, 250\);/);
+});
