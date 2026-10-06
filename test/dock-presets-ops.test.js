@@ -231,9 +231,10 @@ test('a stored list already over the cap refuses growth but still lets a delete 
 test('applyOp runs save, rename and delete over the stored list', () => {
   const saved = P.applyOp(two(), { op: 'save', name: 'Plan', layout: L('p') });
   assert.deepStrictEqual(names(saved), ['Review', 'Write', 'Plan']);
-  assert.deepStrictEqual(names(P.applyOp(two(), { op: 'save', name: 'review', layout: L('z'), replace: true })), ['review', 'Write']);
-  assert.deepStrictEqual(names(P.applyOp(two(), { op: 'rename', name: 'Review', to: 'Docs' })), ['Docs', 'Write']);
-  assert.deepStrictEqual(names(P.applyOp(two(), { op: 'delete', name: 'Write' })), ['Review']);
+  const idd = () => [{ name: 'Review', layout: L('r'), id: 'r1' }, { name: 'Write', layout: L('w'), id: 'w1' }];   // applyOp asks for the id
+  assert.deepStrictEqual(names(P.applyOp(idd(), { op: 'save', name: 'review', layout: L('z'), replace: true, id: 'r1' })), ['review', 'Write']);
+  assert.deepStrictEqual(names(P.applyOp(idd(), { op: 'rename', name: 'Review', to: 'Docs', id: 'r1' })), ['Docs', 'Write']);
+  assert.deepStrictEqual(names(P.applyOp(idd(), { op: 'delete', name: 'Write', id: 'w1' })), ['Review']);
 });
 
 test('applyOp refuses what it does not understand with a named reason and never throws', () => {

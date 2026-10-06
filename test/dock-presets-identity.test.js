@@ -107,11 +107,71 @@ test('a name that is not there at all is still `missing`, whatever id came with 
   assert.deepStrictEqual(P.applyOp(two(), { op: 'rename', name: 'Nope', to: 'X', id: 'r1' }), { ok: false, reason: 'missing' });
 });
 
-test('a preset stored with no id is matched by a confirm that saw it with none (null); a request with no id field is by name only', () => {
+test('PR #127 Dexter F1 / Miguel I1: no id is no proof of identity: a question with none (null or missing) is refused, even over a preset that has none', () => {
   const bare = [{ name: 'Old', layout: L() }];
-  assert.strictEqual(P.applyOp(bare, { op: 'delete', name: 'Old', id: null }).ok, true);
+  const ops = id => [
+    { op: 'delete', name: 'Old', ...id }, { op: 'rename', name: 'Old', to: 'New', ...id },
+    { op: 'save', name: 'Old', layout: L('z'), replace: true, ...id },
+  ];
+  for (const id of [{ id: null }, {}, { id: undefined }, { id: '' }, { id: 7 }]) {
+    for (const req of ops(id)) {
+      assert.deepStrictEqual(P.applyOp(bare, req), { ok: false, reason: 'changed' }, `id-less preset: ${JSON.stringify(req)}`);
+      assert.deepStrictEqual(P.applyOp(two(), req.name === 'Old' ? { ...req, name: 'Review' } : req), { ok: false, reason: 'changed' }, `preset with an id: ${JSON.stringify(req)}`);
+    }
+  }
   assert.deepStrictEqual(P.applyOp(bare, { op: 'delete', name: 'Old', id: 'x' }), { ok: false, reason: 'changed' });
-  assert.strictEqual(P.applyOp(two(), { op: 'delete', name: 'Review' }).ok, true);
+});
+
+test('PR #127 Dexter F1: an old build\'s delete-then-rename-into-the-name, which writes no ids, still costs the other window nothing', async () => {
+  const store = fakeStore([{ name: 'Focus', layout: L('focus') }, { name: 'Debug', layout: L('debug') }]);
+  const A = windowOn(store, counter());
+  // A was shown the list by a watcher push (a push never gives ids), so its question about Focus carries null.
+  const shown = P.describe(store.data[PRESET_NAMES.key]).list.find(p => p.name === 'Focus');
+  assert.strictEqual(shown.id, undefined);
+  const askedWith = { id: typeof shown.id === 'string' ? shown.id : null };
+  // The old window (no ids anywhere): deletes Focus, then renames Debug to Focus.
+  store.data[PRESET_NAMES.key] = P.deletePreset(store.data[PRESET_NAMES.key], 'Focus').list;
+  store.data[PRESET_NAMES.key] = P.renamePreset(store.data[PRESET_NAMES.key], 'Debug', 'Focus').list;
+  assert.deepStrictEqual(await A.op({ op: 'delete', name: 'Focus', ...askedWith }), { ok: false, reason: 'changed' });
+  assert.deepStrictEqual(P.find(store.data[PRESET_NAMES.key], 'Focus').layout, L('debug'), 'ex-Debug is still there');
+});
+
+test('PROPERTY (PR #127): no confirm ever acts on a different preset than the one it asked about, whoever wrote in between (ids or not)', () => {
+  const nameArb = fc.constantFrom('Focus', 'focus', 'Debug', 'Review', 'A');
+  const entryArb = fc.record({ name: nameArb, id: fc.option(fc.constantFrom('i1', 'i2', 'i3'), { nil: undefined }) }, { requiredKeys: ['name'] });
+  const writerArb = fc.record({
+    build: fc.constantFrom('old', 'new'), op: fc.constantFrom('save', 'rename', 'delete', 'replace'), name: nameArb, to: nameArb,
+  });
+  const key = n => P.nameKey(n.trim());
+  const underName = (raw, name) => raw.find(e => e && typeof e.name === 'string' && key(e.name) === key(name));
+  fc.assert(fc.property(
+    fc.uniqueArray(entryArb, { minLength: 1, maxLength: 5, selector: e => e.name.toLowerCase() }), fc.boolean(), fc.nat(), fc.array(writerArb, { maxLength: 5 }),
+    fc.constantFrom('delete', 'rename', 'replace'), nameArb,
+    (seed, migrated, pick, writers, confirm, to) => {
+      let uid = 0;
+      const tag = raw => raw.map(e => (e.uid === undefined ? { ...e, uid: ++uid } : e));
+      let raw = tag(seed.map(({ name, id }, n) => (id === undefined ? { name, layout: L(name) } : { name, layout: L(name), id: `i${n}` })));   // ids that exist are one each
+      if (migrated) raw = P.withIds(raw, counter('m'));          // this window's get gave the stored presets their ids
+      const shown = P.cleanPresets(raw);
+      const asked = shown[pick % shown.length];
+      const askedUid = underName(raw, asked.name).uid;
+      const sent = typeof asked.id === 'string' ? asked.id : null;   // what the page sends: the id it was shown, else null
+      for (const w of writers) {
+        let r;
+        if (w.build === 'new') {
+          const here = underName(raw, w.name);
+          r = P.applyOp(raw, { op: w.op === 'replace' ? 'save' : w.op, name: w.name, to: w.to, layout: L('w'), replace: w.op === 'replace', id: here && typeof here.id === 'string' ? here.id : null }, { newId: counter('w') });
+        } else if (w.op === 'rename') r = P.renamePreset(raw, w.name, w.to);
+        else if (w.op === 'delete') r = P.deletePreset(raw, w.name);
+        else r = P.savePreset(raw, w.name, L('w'), { replace: w.op === 'replace' });
+        if (r.ok) raw = tag(r.list);
+      }
+      const req = { op: confirm === 'rename' ? 'rename' : confirm === 'delete' ? 'delete' : 'save', name: asked.name, to, layout: L('mine'), replace: confirm === 'replace', id: sent };
+      const target = underName(raw, asked.name);
+      const r = P.applyOp(raw, req, { newId: counter('z') });
+      if (r.ok && target) assert.strictEqual(target.uid, askedUid, `${confirm} of ${asked.name} acted on another preset: ${JSON.stringify(raw)}`);
+    },
+  ), { numRuns: Number(process.env.LAYOUT_RUNS) || 600 });
 });
 
 test('`changed` is checked after `missing` and before the new name is judged, so the user hears the reason that matters', () => {
@@ -129,8 +189,8 @@ test('a replace whose name has gone meanwhile is a plain save, as before: there 
 test('a new preset gets an id; rename and replace keep the one it has', () => {
   const saved = P.applyOp(two(), { op: 'save', name: 'Plan', layout: L() }, { newId: counter('n') });
   assert.deepStrictEqual(saved.list.map(p => p.id), ['r1', 'w1', 'n1']);
-  assert.strictEqual(P.applyOp(two(), { op: 'rename', name: 'Review', to: 'Docs' }, { newId: counter('n') }).list[0].id, 'r1');
-  assert.strictEqual(P.applyOp(two(), { op: 'save', name: 'review', layout: L('z'), replace: true }, { newId: counter('n') }).list[0].id, 'r1');
+  assert.strictEqual(P.applyOp(two(), { op: 'rename', name: 'Review', to: 'Docs', id: 'r1' }, { newId: counter('n') }).list[0].id, 'r1');
+  assert.strictEqual(P.applyOp(two(), { op: 'save', name: 'review', layout: L('z'), replace: true, id: 'r1' }, { newId: counter('n') }).list[0].id, 'r1');
 });
 
 test('an op gives an id to every preset that has none (or a bad or repeated one), and leaves entries this build cannot use alone', () => {

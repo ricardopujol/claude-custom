@@ -293,11 +293,11 @@ test('an op saves into the fresh list, pushes the new list to every view, and an
 
 test('rename and delete go through the same op channel', async () => {
   const { call, store } = presetSetup(fakeStore({ [PRESET_NAMES.key]: PRESETS }));
-  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'rename', name: 'reviewing', to: 'Docs' })).ok, true);
+  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'rename', name: 'reviewing', to: 'Docs', id: 'r1' })).ok, true);
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Docs', 'Writing']);
-  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Writing' })).ok, true);
+  assert.strictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Writing', id: 'w1' })).ok, true);
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Docs']);
-  assert.deepStrictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Docs' })).list, [], 'deleting the last one is stored, not refused');
+  assert.deepStrictEqual((await call(PRESET_NAMES.op, { op: 'delete', name: 'Docs', id: 'r1' })).list, [], 'deleting the last one is stored, not refused');
 });
 
 test('PR #103 Dexter 1: two windows, one store: a save in B does not erase what A saved, however stale B\'s copy is', async () => {
@@ -319,8 +319,8 @@ test('PR #103 Dexter 1: two windows, one store: a save in B does not erase what 
   assert.strictEqual((await opB(SAVE('Debug'))).ok, true);
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Reviewing', 'Focus', 'Debug']);
   // and a delete in B of something A has since renamed away is a refusal, not a silent write
-  assert.strictEqual((await opA({ op: 'rename', name: 'Focus', to: 'Focused' })).ok, true);
-  assert.deepStrictEqual(await opB({ op: 'delete', name: 'Focus' }), { ok: false, reason: 'missing' });
+  assert.strictEqual((await opA({ op: 'rename', name: 'Focus', to: 'Focused', id: store.data[PRESET_NAMES.key][1].id })).ok, true);
+  assert.deepStrictEqual(await opB({ op: 'delete', name: 'Focus', id: 'zzz' }), { ok: false, reason: 'missing' });
   assert.deepStrictEqual(store.data[PRESET_NAMES.key].map(p => p.name), ['Reviewing', 'Focused', 'Debug']);
 });
 
@@ -383,7 +383,7 @@ test('nothing this build cannot use is erased: foreign entries and fields ride t
   await call(PRESET_NAMES.op, SAVE('Plan'));
   // the stored preset with no id gets one beside its unknown field; what this build can't use gets none
   assert.deepStrictEqual(store.data[PRESET_NAMES.key], [{ ...stored[0], id: 'n1' }, ...stored.slice(1), { name: 'Plan', layout: TREE, id: 'n2' }]);
-  await call(PRESET_NAMES.op, { op: 'rename', name: 'Reviewing', to: 'Looked at' });
+  await call(PRESET_NAMES.op, { op: 'rename', name: 'Reviewing', to: 'Looked at', id: 'n1' });
   assert.deepStrictEqual(store.data[PRESET_NAMES.key][0], { name: 'Looked at', layout: TREE, pinned: true, id: 'n1' });
 });
 

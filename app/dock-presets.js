@@ -138,9 +138,12 @@ function find(raw, name) {
 
 const refuse = reason => ({ ok: false, reason });
 
-// A question carries the id of the preset it was asked about (null: it was shown one with no id). The preset now
-// under that name must be the same one, or the answer is `changed`. A request with no `id` at all goes by name only.
-const stale = (entry, id) => id !== undefined && entry.id !== id;
+// A question carries the id of the preset it was asked about. The preset now under that name must have that very id,
+// or the answer is `changed`. No id (null: the page was shown a preset with none, as an older build writes them) is
+// no proof of anything, because two presets with none look the same: it fails closed, and the page re-reads the list
+// (the read gives every preset an id) so the next question can be answered. Only a direct caller of the three
+// functions below that leaves `id` out altogether (the option, not the request) goes by name; applyOp never does.
+const stale = (entry, id) => id !== undefined && !(isId(id) && entry.id === id);
 const bytesOf = list => { try { return new TextEncoder().encode(JSON.stringify(list)).length; } catch { return Infinity; } };
 
 // A list that grew must still fit the byte cap. Thinning (a delete) is never refused: it is how a list gets under.
@@ -200,10 +203,12 @@ function deletePreset(raw, name, { id } = {}) {
   return { ok: true, list: raw.filter((_, i) => i !== where) };
 }
 
+// A request that names no id is a question that was never tied to a preset: null, so it is refused as `changed`.
+const idOf = r => (r.id === undefined ? null : r.id);
 const OPS = {
-  save: (raw, r) => savePreset(raw, r.name, r.layout, { replace: r.replace === true, id: r.id }),
-  rename: (raw, r) => renamePreset(raw, r.name, r.to, { id: r.id }),
-  delete: (raw, r) => deletePreset(raw, r.name, { id: r.id }),
+  save: (raw, r) => savePreset(raw, r.name, r.layout, { replace: r.replace === true, id: idOf(r) }),
+  rename: (raw, r) => renamePreset(raw, r.name, r.to, { id: idOf(r) }),
+  delete: (raw, r) => deletePreset(raw, r.name, { id: idOf(r) }),
 };
 
 /**
