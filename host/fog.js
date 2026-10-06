@@ -33,7 +33,6 @@
 const fsp = require('fs/promises');
 const path = require('path');
 const { claudeProjectsDir } = require('./claude-config-dir');
-const os = require('os');
 const { projectDirName } = require('./project-dir');
 // ONE enumeration, shared with usage.js -- see host/transcripts.js. It used
 // to live here, and usage.js had its own top-level-only version, so the map

@@ -158,7 +158,7 @@ function isRootish(dir) {
 
 // Why this directory may not be granted, or null if it may. Every comparison is
 // on the normalised key, never on the display path.
-function refusalFor(dir, { home }) {
+function refusalFor(dir, { home, configDir }) {
   if (!dir) return 'the path is not absolute, so there is nothing safe to grant';
   const key = normSlashes(dir);
   if (isRootish(key)) return 'a drive, share or filesystem root is never granted';
@@ -169,6 +169,15 @@ function refusalFor(dir, { home }) {
     // ANCESTORS too: equality alone let `C:\Users` through, which contains home
     // and every other profile on the machine.
     if (isInside(homeKey, key)) return 'this directory contains the home directory';
+  }
+
+  // The CLI's config dir holds its credentials, settings (hooks) and every transcript. Under CLAUDE_CONFIG_DIR it
+  // isn't a folder NAMED `.claude`, so the segment check below can't see it: judge the resolved path itself, in
+  // both directions (it, anything inside it, and any folder that contains it).
+  const cfgKey = configDir ? normSlashes(configDir) : '';
+  if (cfgKey) {
+    if (isInside(key, cfgKey)) return 'the Claude config directory holds credentials and is never granted';
+    if (isInside(cfgKey, key)) return 'this directory contains the Claude config directory, which holds credentials';
   }
 
   for (const seg of key.split('/')) {
@@ -199,7 +208,7 @@ const quote = p => (/[\s"]/.test(p) ? '"' + p.replace(/"/g, BACKSLASH + '"') + '
  *   truncated   entries dropped by MAX_DROP_FILES
  *   unusable    entries with no usable or terminal-safe path
  */
-function planDrop({ entries = [], cwd, home = null, alreadyGranted = [] } = {}) {
+function planDrop({ entries = [], cwd, home = null, configDir = null, alreadyGranted = [] } = {}) {
   const all = Array.isArray(entries) ? entries : [];
 
   const safe = [];
@@ -246,7 +255,7 @@ function planDrop({ entries = [], cwd, home = null, alreadyGranted = [] } = {}) 
       // The refusal is decided BEFORE the dedupe. The other order let an
       // already-granted root `continue` past the checks, so the notice the
       // whole design leans on silently disappeared.
-      const why = refusalFor(dir, { home });
+      const why = refusalFor(dir, { home, configDir });
       if (why) { refused.push({ dir: dir || entry.path, why }); continue; }
 
       const key = normSlashes(dir);

@@ -45,7 +45,6 @@
 const fsp = require('fs/promises');
 const path = require('path');
 const { claudeProjectsDir } = require('./claude-config-dir');
-const os = require('os');
 const { projectDirName } = require('./project-dir');
 const { transcriptFiles, readMeta, SUBAGENTS } = require('./transcripts');
 

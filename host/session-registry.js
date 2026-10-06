@@ -21,7 +21,6 @@
  */
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { claudeConfigDir } = require('./claude-config-dir');
 const { resolveGitDir } = require('./git-branch');

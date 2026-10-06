@@ -25,7 +25,6 @@
 const fsp = require('fs/promises');
 const path = require('path');
 const { claudeProjectsDir } = require('./claude-config-dir');
-const os = require('os');
 const childProcess = require('child_process');
 const { projectDirName } = require('./project-dir');
 const { transcriptFiles } = require('./transcripts');

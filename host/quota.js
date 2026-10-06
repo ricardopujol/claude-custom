@@ -39,7 +39,6 @@
 const fsp = require('fs/promises');
 const path = require('path');
 const { claudeConfigDir } = require('./claude-config-dir');
-const os = require('os');
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 

@@ -21,7 +21,7 @@ const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
-const { claudeConfigDir } = require('./claude-config-dir');
+const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
 const { killTree, killPidTree } = require('./kill-tree');
@@ -142,6 +142,8 @@ function resolveClaude() {
 
 const CLAUDE_BIN = resolveClaude();
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+// A relative CLAUDE_CONFIG_DIR means a folder under THIS tab's cwd (where its `claude` runs), not the host process's.
+setConfigAnchor(CWD);
 // CWD is this tab's worktree: the pty, the session lock and everything git.
 // PROJECT_ROOT and STATE_ROOT are the project's (theme, label / look, style):
 // one set shared by every tab of a container. For a flat repo all three are
@@ -804,6 +806,7 @@ function handleDrop(msg, ws) {
     cwd: CWD,
     alreadyGranted: grantedDirs,
     home: os.homedir(),
+    configDir: claudeConfigDir(),
   });
 
   for (const r of plan.refused) console.log('[host] drop refused  :', r.dir, '-', r.why);

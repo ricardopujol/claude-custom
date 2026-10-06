@@ -179,7 +179,7 @@ function discoverSkills({ claudeHome, projectDir, fs = nodeFs, log = () => {} } 
  */
 function claudeHomeOf({ seam, env, home } = {}) {
   if (isStr(seam) && seam !== '') return seam;
-  return claudeConfigDir({ env, home });
+  return claudeConfigDir({ env, home }); // `env` key always present: undefined means no env
 }
 
 /**

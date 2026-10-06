@@ -436,33 +436,93 @@ test('#66 indexing: every channel the bridge listens on is used by a preload, an
   assert.deepStrictEqual(used.filter(ch => !listened.includes(ch)), [], 'a page sends on a channel main never answers');
 });
 
+// ---- BACKLOG #23: the CLI's config dir has ONE resolver (host/claude-config-dir.js) ---------------------------------
+// (here, not in claude-config-dir.test.js: that file is in the mutation command, and reading a mutated module as text
+// aborts Stryker's dry run)
 
-// BACKLOG #23 (here, not in claude-config-dir.test.js: that file is in the mutation command)
-test('fog, repo-diff and agent-stats-cache (no export to call): the default projects dir comes from the resolver', () => {
-  for (const f of ['fog', 'repo-diff', 'agent-stats-cache']) {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'host', f + '.js'), 'utf8');
-    assert.match(src, /claudeProjectsDir\(\)/, `${f} still builds ~/.claude/projects by hand`);
+const REPO = path.join(__dirname, '..');
+
+// Comments out, line numbers kept, so a mention in prose never counts and the reported line is real.
+function stripComments(src) {
+  const blank = m => m.replace(/[^\n]/g, '');
+  return src.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
+}
+
+/**
+ * Every line that names a `.claude` FOLDER, in any spelling: single, double or template quotes, `'.claude/projects'`
+ * joins, `${home}/.claude`, a homedir alias under any name, a join split over several lines. It keys on the folder
+ * name rather than on what it's joined to, because the aliases are unbounded and the name isn't.
+ */
+function claudeFolderLines(src) {
+  const hits = [];
+  stripComments(src).split(/\r?\n/).forEach((l, i) => {
+    if (/(?<![\w$)\]])\.claude(?![-\w])/.test(l)) hits.push({ line: i + 1, text: l.trim() });
+  });
+  return hits;
+}
+
+// The ONLY places a `.claude` folder is named by hand. Per LINE, with the reason; anything else must go through
+// claudeConfigDir()/claudeProjectsDir(). A stale entry fails too, so this list can't rot.
+const CLAUDE_FOLDER_ALLOWED = [
+  ['host/claude-config-dir.js', "path.join(opts.home || os.homedir(), '.claude')", 'the resolver itself: the default when unset'],
+  ['host/review-reports.js', "'.claude', 'reviews'", "Ricardo's own reviews folder, not the CLI's state"],
+  ['host/worktree-ops.js', "'.claude', 'skills', 'worktree'", "Ricardo's own worktree skill scripts, not the CLI's state"],
+  ['host/drop.js', "'.config', '.claude', '.azure'", 'a deny-list NAME for the drop guard'],
+  ['host/host.js', "path.join(CWD, '.claude', 'skills')", 'project-level (under the tab cwd)'],
+  ['host/roster-index.js', "path.join(cwd, '.claude', 'agents')", 'project-level'],
+  ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.local.json')", 'project-level'],
+  ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.json')", 'project-level'],
+  ['host/wand-skills.js', "path.join(projectDir, '.claude', 'skills')", 'project-level'],
+  ['host/probe-seams.js', 'not gh / ~/.claude', 'a log message, no path built'],
+];
+
+function scanDirs() {
+  const out = [];
+  for (const d of ['host', 'app', 'bin']) {
+    const dir = path.join(REPO, d);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) if (f.endsWith('.js')) out.push(`${d}/${f}`);
+  }
+  return out;
+}
+
+test('the config-dir guard sees every way of hard-coding the default (it is tested on its own counterexamples)', () => {
+  const bad = [
+    "path.join(os.homedir(), '.claude/projects')",
+    'path.join(os.homedir(), ".claude")',
+    '`${os.homedir()}/.claude`',
+    "const HOME = os.homedir(); path.join(HOME, '.claude')",
+    "path.join(\n  os.homedir(),\n  '.claude')",
+    "os.homedir() + '/.claude/projects'",
+  ];
+  for (const b of bad) assert.ok(claudeFolderLines(b).length > 0, `not flagged: ${b}`);
+  for (const ok of ['// ~/.claude is the default', '/* the .claude folder */ x()', "path.join(home, '.claude-custom')", "const p = '.claudette'"]) {
+    assert.deepStrictEqual(claudeFolderLines(ok), [], `flagged by mistake: ${ok}`);
   }
 });
 
-// Files whose `.claude` under the home is NOT the CLI's own state (or is the resolver itself).
-const ALLOWED = new Set([
-  'claude-config-dir.js', // the resolver
-  'review-reports.js',    // Ricardo's reviews folder
-  'worktree-ops.js',      // Ricardo's skill scripts
-  'drop.js',              // a deny-list name
-]);
-
-test('guard: no host module builds <home>/.claude by hand outside the allow-list', () => {
-  const dir = path.join(__dirname, '..', 'host');
+test('guard: no host/app/bin module names a .claude folder outside the per-line allow-list', () => {
+  const used = new Set();
   const bad = [];
-  for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.js'))) {
-    if (ALLOWED.has(f)) continue;
-    const lines = fs.readFileSync(path.join(dir, f), 'utf8').split(/\r?\n/);
-    lines.forEach((l, i) => {
-      if (/^\s*(\/\/|\*)/.test(l)) return;
-      if (/(homedir\(\)|homeDir|\bhome)\s*,\s*'\.claude'/.test(l)) bad.push(`${f}:${i + 1}: ${l.trim()}`);
-    });
+  for (const rel of scanDirs()) {
+    for (const h of claudeFolderLines(fs.readFileSync(path.join(REPO, rel), 'utf8'))) {
+      const i = CLAUDE_FOLDER_ALLOWED.findIndex(([f, snippet]) => f === rel && h.text.includes(snippet));
+      if (i >= 0) used.add(i); else bad.push(`${rel}:${h.line}: ${h.text}`);
+    }
   }
-  assert.deepStrictEqual(bad, [], 'route these through host/claude-config-dir.js');
+  assert.deepStrictEqual(bad, [], 'route CLI state through host/claude-config-dir.js (or allow-list the line, with a reason)');
+  const stale = CLAUDE_FOLDER_ALLOWED.filter((_, i) => !used.has(i)).map(e => `${e[0]}: ${e[1]}`);
+  assert.deepStrictEqual(stale, [], 'allow-list entries that no longer match anything: delete them');
+});
+
+// host.js can't be required, so its wiring is pinned in the source (the pattern of test/host-top-bar.test.js).
+test('host.js wires the config dir: the tab cwd anchors it, and the statusLine and the drop guard read it', () => {
+  const host = stripComments(fs.readFileSync(path.join(REPO, 'host', 'host.js'), 'utf8'));
+  assert.match(host, /setConfigAnchor\(CWD\)/, "a relative CLAUDE_CONFIG_DIR isn't anchored to the tab's cwd");
+  const sl = host.slice(host.indexOf('findUserStatusLine({'), host.indexOf('findUserStatusLine({') + 120);
+  assert.match(sl, /findUserStatusLine\(\{ configDir: claudeConfigDir\(\), cwd: CWD \}\)/);
+  assert.doesNotMatch(sl, /home:/);
+  const drop = host.slice(host.indexOf('planDrop({'), host.indexOf('planDrop({') + 300);
+  assert.match(drop, /configDir: claudeConfigDir\(\)/, 'the drop guard is not told where the config dir is');
+  assert.match(host, /claudeHomeOf\(\{ seam: seams\.claudeHome, env: process\.env, home: os\.homedir\(\) \}\)/);
 });
