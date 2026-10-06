@@ -85,21 +85,6 @@ const lastStrip = (t) => t.strip.sent.filter(([ch]) => ch === 'strip-index').pop
 const overlayOf = (t, part) => t.views.find(v => v.loaded && v.loaded.o.query.part === part);
 const lastOverlay = (v) => v.webContents.sent.filter(([ch]) => ch === 'indexing-state').pop()[1];
 
-test('source contract: every channel the bridge listens on is used by a preload, and every push has a listener', () => {
-  const fs = require('fs');
-  const path = require('path');
-  const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-  const bridge = read('indexing-bridge.js');
-  const preloads = read('preload-strip.js') + read('preload-indexing.js');
-  const listened = [...bridge.matchAll(/ipcMain\.(?:on|handle)\('([^']+)'/g)].map(m => m[1]);
-  const pushed = [...bridge.matchAll(/\.send\('([^']+)'/g)].map(m => m[1]);
-  assert.ok(listened.length >= 14 && pushed.length >= 3);
-  assert.deepStrictEqual(listened.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a channel no page sends on');
-  assert.deepStrictEqual(pushed.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a push no page listens for');
-  const used = [...preloads.matchAll(/ipcRenderer\.(?:send|invoke)\('((?:strip:index|indexing:)[^']*)'/g)].map(m => m[1]);
-  assert.deepStrictEqual(used.filter(ch => !listened.includes(ch)), [], 'a page sends on a channel main never answers');
-});
-
 test('every channel is registered and answers only its own page', async () => {
   const t = setup();
   for (const ch of ['strip:indexSubmit', 'strip:indexConfirm', 'strip:indexFocus', 'strip:indexLeave', 'strip:indexChip', 'strip:indexList',

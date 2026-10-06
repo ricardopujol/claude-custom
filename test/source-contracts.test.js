@@ -420,3 +420,18 @@ test('Miguel I4: a redraw puts the hover card back where it was, reading no layo
   assert.doesNotMatch(GIT_RINGS_SRC.slice(at, GIT_RINGS_SRC.indexOf('dial.textContent', at)), /getBoundingClientRect/);
   assert.match(GIT_RINGS_SRC, /fillCard\(dial, card, cardWas\.key\)/);
 });
+
+// (here, not in indexing-bridge.test.js: that file is in the mutation command, and reading a mutated module as text
+// aborts Stryker's dry run)
+test('#66 indexing: every channel the bridge listens on is used by a preload, and every push has a listener', () => {
+  const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const bridge = read('indexing-bridge.js');
+  const preloads = read('preload-strip.js') + read('preload-indexing.js');
+  const listened = [...bridge.matchAll(/ipcMain\.(?:on|handle)\('([^']+)'/g)].map(m => m[1]);
+  const pushed = [...bridge.matchAll(/\.send\('([^']+)'/g)].map(m => m[1]);
+  assert.ok(listened.length >= 14 && pushed.length >= 3);
+  assert.deepStrictEqual(listened.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a channel no page sends on');
+  assert.deepStrictEqual(pushed.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a push no page listens for');
+  const used = [...preloads.matchAll(/ipcRenderer\.(?:send|invoke)\('((?:strip:index|indexing:)[^']*)'/g)].map(m => m[1]);
+  assert.deepStrictEqual(used.filter(ch => !listened.includes(ch)), [], 'a page sends on a channel main never answers');
+});
