@@ -124,3 +124,14 @@ test('the shim: a 204 has no body', async () => {
   assert.strictEqual(res.status, 204);
   assert.strictEqual(await res.text(), '');
 });
+
+test('hostOrigin: a host name longer than DNS allows (253) is refused, so a page cannot fill the lists with huge origins (PR #122 Miguel G3)', () => {
+  const label = 'a'.repeat(60);
+  const ok = [label, label, label, 'com'].join('.');                 // 60+1+60+1+60+1+3 = 186
+  assert.strictEqual(hostOrigin(`https://${ok}`), `https://${ok}`);
+  const exactly = `${'b'.repeat(63)}.${'b'.repeat(63)}.${'b'.repeat(63)}.${'b'.repeat(61)}`;   // 253
+  assert.strictEqual(exactly.length, 253);
+  assert.strictEqual(hostOrigin(`https://${exactly}`), `https://${exactly}`);
+  assert.strictEqual(hostOrigin(`https://${exactly}b`), null);
+  assert.strictEqual(hostOrigin(`https://${'x'.repeat(5000)}.com`), null);
+});

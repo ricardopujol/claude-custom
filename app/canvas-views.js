@@ -28,6 +28,7 @@ const PANEL_LIMITS = Object.freeze({
   htmlBytes: 1024 * 1024,        // the design's size cap on index.html
   messageChars: 2000,
   pendingAsks: 3,                // hosts waiting on an answer at once; past this a new one is refused unasked
+  totalAsks: 12,                 // questions one view may put to the person in its lifetime; past this a new host is refused unasked (PR #122 Miguel G3)
   inputWindowMs: 2000,           // how recent a real click or key press must be for a `send` to count
 });
 
@@ -113,7 +114,7 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     } });
     const wc = view.webContents;
     const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), html: null, approved: new Set(), denied: new Set(),
-      pending: new Map(), lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null };
+      pending: new Map(), asked: 0, lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null };
     wc.on('input-event', (_e, ev) => {
       if (!ev) return;
       if (ARMS.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } else if (KEEPS_FRESH.has(ev.type)) rec.lastInput = now();
@@ -218,11 +219,12 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
       decide: (o) => (rec.approved.has(o) ? 'allow' : rec.denied.has(o) ? 'deny' : 'ask'),
       ask: (origin) => {
         if (rec.pending.has(origin)) return rec.pending.get(origin);
-        if (rec.pending.size >= PANEL_LIMITS.pendingAsks) return Promise.resolve('deny');
+        if (rec.pending.size >= PANEL_LIMITS.pendingAsks || rec.asked >= PANEL_LIMITS.totalAsks) return Promise.resolve('deny');
+        rec.asked += 1;
         const p = (async () => {
           let answer = 'deny';
           try { answer = (await ask(rec.owner, origin)) === 'allow' ? 'allow' : 'deny'; } catch { /* no answer is a no */ }
-          (answer === 'allow' ? rec.approved : rec.denied).add(origin);
+          (answer === 'allow' ? rec.approved : rec.denied).add(origin);       // bounded by totalAsks
           return answer;
         })().finally(() => rec.pending.delete(origin));
         rec.pending.set(origin, p);

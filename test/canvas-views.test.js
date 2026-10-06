@@ -563,3 +563,28 @@ test('fetchFor: an approved name that resolves to this machine or its network re
   assert.strictEqual(lit.ok, false);
   assert.deepStrictEqual(r.asked, [], 'a local address is never put to the person as a question');
 });
+
+test('a page cannot keep asking: past the per-view cap, new hosts are refused without a question (PR #122 Miguel G3)', async () => {
+  const r = rig({ answer: 'deny' });
+  await show(r);
+  const panel = r.views[0].webContents;
+  for (let i = 0; i < PANEL_LIMITS.totalAsks + 8; i++) {
+    const out = await r.m.fetchFor(panel, { url: `https://h${i}.example.com/` });
+    assert.strictEqual(out.ok, false);
+  }
+  assert.strictEqual(r.asked.length, PANEL_LIMITS.totalAsks, 'the person was asked totalAsks times and no more');
+  assert.deepStrictEqual(r.asked.slice(-1), [`https://h${PANEL_LIMITS.totalAsks - 1}.example.com`]);
+});
+
+test('the ask budget is per view: a hosts already approved or denied never spends it, and a new view starts afresh', async () => {
+  const r = rig({ answer: 'deny' });
+  await show(r, { hosts: { approved: ['https://ok.example.com'], denied: ['https://no.example.com'] } });
+  const panel = r.views[0].webContents;
+  for (let i = 0; i < 30; i++) { await r.m.fetchFor(panel, { url: 'https://ok.example.com/' }); await r.m.fetchFor(panel, { url: 'https://no.example.com/' }); }
+  assert.deepStrictEqual(r.asked, []);
+  for (let i = 0; i < PANEL_LIMITS.totalAsks; i++) await r.m.fetchFor(panel, { url: `https://h${i}.example.com/` });
+  r.m.hide(r.owner);
+  await show(r);
+  await r.m.fetchFor(r.views[1].webContents, { url: 'https://fresh.example.com/' });
+  assert.strictEqual(r.asked.length, PANEL_LIMITS.totalAsks + 1);
+});

@@ -16,6 +16,8 @@
 // The policy's directive count: the property test holds the CSP to it.
 const CSP_DIRECTIVES = 8;
 
+// A DNS name is at most 253 characters: a longer one is the page filling the person's list (and memory) with junk, not a host (PR #122 Miguel G3).
+const MAX_HOST_CHARS = 253;
 const HOST_NAME = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])$/;
 
 /**
@@ -30,7 +32,7 @@ function hostOrigin(input) {
   try { u = new URL(raw.includes('://') ? raw : 'https://' + raw); } catch { return null; }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
   if (u.username || u.password) return null;
-  if (!HOST_NAME.test(u.hostname)) return null;
+  if (u.hostname.length > MAX_HOST_CHARS || !HOST_NAME.test(u.hostname)) return null;
   return `${u.protocol}//${u.host}`;
 }
 
