@@ -1257,6 +1257,8 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      // the roster cards match an agent's worktree claim on it (backlog #57): a /clear starts a new one
+      broadcastControl({ type: 'session', sessionId });
       sessionModels.refresh().catch(() => { /* the next SubagentStop will carry it */ });
     }
     if (ev.event === 'SubagentStop') {
@@ -2068,6 +2070,8 @@ wss.on('connection', (ws, req) => {
     // the session as input (PR #75).
     controls: [...CONTROL_TYPES],
     cwd: CWD,
+    // This session's id, null before SessionStart: the roster cards match a worktree claim on it (backlog #57).
+    sessionId,
     // FF21. `project` is the same source of truth as the OS window title
     // (FF3, `projectLabel`) rather than a second guess at the same string.
     // `branch` is null for "not a git repo"; for a detached HEAD it is a

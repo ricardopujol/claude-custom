@@ -217,7 +217,10 @@ document.getElementById('terminal-banner-dismiss').addEventListener('click', () 
 // initials for occupancy. Every decision is in app/terminal-bar.js, app/occupancy-display.js and
 // app/occupancy-confirm.js; this only paints what they return, and sends what the confirm releases. Nothing here
 // makes anything read-only, and nothing animates.
-const occupancy = { here: [], launched: [], confirm: null, jumpNote: '' };
+// `session` is this tab's session id, from the host (`hello`, then `session` on every SessionStart): a card's line is
+// only a claim of THIS session's run, never another session's agent of the same name in the same folder (backlog #57).
+const occupancy = { here: [], launched: [], confirm: null, jumpNote: '', session: null };
+const sessionIdOf = id => (typeof id === 'string' && id !== '' ? id : null);
 const occupancyEls = { confirm: document.getElementById('occupancy-confirm'), confirmText: document.getElementById('occupancy-confirm-text') };
 const barEls = {
   bar: document.getElementById('terminal-bar'),
@@ -3632,7 +3635,7 @@ function beltClick(target) {
 // #44: where an agent launched from THIS session is working, when it has touched another worktree. Nothing at
 // all for an agent that hasn't. A button, so a click on it is never "open the log" (cardClickAgent skips them).
 function occupancyWhereHtml(agent) {
-  const line = window.occupancyDisplay ? window.occupancyDisplay.cardLine(occupancy.launched, agent) : null;
+  const line = window.occupancyDisplay ? window.occupancyDisplay.cardLine(occupancy.launched, agent, occupancy.session) : null;
   if (!line) return '';
   return `<button type="button" class="agent-where" data-where-root="${escapeHtml(line.root)}" title="${escapeHtml(line.title)}">` +
     `${escapeHtml(line.text)}${line.plus > 0 ? `<span class="agent-where-plus">+${line.plus}</span>` : ''}</button>`;
@@ -6070,12 +6073,18 @@ function handleControl(msg) {
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
+    occupancy.session = sessionIdOf(msg.sessionId);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (msg.maxSeats) seatMax = msg.maxSeats;
     councilWarnings = [];
     renderSeats();
     if (!msg.hooks) console.warn('[renderer] host reports no hook helper — moods will not update');
+    return;
+  }
+  if (msg.type === 'session') {
+    occupancy.session = sessionIdOf(msg.sessionId);
+    renderRoster();
     return;
   }
   if (msg.type === 'loadout') {

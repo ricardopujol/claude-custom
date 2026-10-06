@@ -2120,6 +2120,15 @@ test('shortcutFor: Ctrl+Alt+T opens New branch…; plain Ctrl+T stays the CLI ta
   assert.strictEqual(shortcutFor({ ...kd('t', { control: true, alt: true }), type: 'keyUp' }), null);
 });
 
+test('shortcutFor: Ctrl+Alt+N focuses the indexing field (#66); Ctrl+N and Ctrl+Shift+Alt+N stay the terminal\'s', () => {
+  assert.strictEqual(shortcutFor(kd('n', { control: true, alt: true })), 'index-note');
+  assert.strictEqual(shortcutFor(kd('N', { control: true, alt: true })), 'index-note');
+  assert.strictEqual(shortcutFor(kd('n', { control: true })), null);
+  assert.strictEqual(shortcutFor(kd('n', { control: true, shift: true, alt: true })), null);
+  assert.strictEqual(shortcutFor(kd('n', { alt: true })), null);
+  assert.strictEqual(shortcutFor({ ...kd('n', { control: true, alt: true }), type: 'keyUp' }), null);
+});
+
 test('shortcutWillAct: New branch… claims its key only when the form will open (#35)', async () => {
   const tabs = harness();
   await tabs.shell.open();

@@ -260,6 +260,20 @@ async function main() {
   check('6: ...and the claim is still there after the second turn', !!claim2 && same(claim2.worktree, other) && claim2.hostPid === host.pid,
     claim2 ? JSON.stringify({ worktree: claim2.worktree, count: claim2.count }) : `files: ${JSON.stringify(claimFiles())}`);
 
+  // 9 (PR #124 Dexter, host.js's SessionStart handler): the host takes the tab's session id from EVERY SessionStart
+  // it sees, with no agent_id guard. Does a teammate's life fire one of its own, and does the teammate's
+  // session_id differ from the tab's?
+  const starts = payloads().filter(p => p.hook_event_name === 'SessionStart');
+  const fromAgent = starts.filter(p => typeof p.agent_id === 'string' && p.agent_id !== '');
+  const tabIds = new Set(starts.map(p => p.session_id));
+  const mateIds = new Set(mateEvents().map(p => p.session_id));
+  noteLine('SessionStart events seen', JSON.stringify(starts.map(p => ({ source: p.source, session_id: p.session_id, agent_id: p.agent_id }))));
+  noteLine('session_id on the teammate\'s events', JSON.stringify([...mateIds]));
+  check('9: no SessionStart carries an agent_id (a teammate never overwrites the tab\'s session id)', starts.length > 0 && fromAgent.length === 0,
+    `${starts.length} SessionStart, ${fromAgent.length} from an agent`);
+  check('9: the SessionStart ids are ONE id, and it is the one the teammate\'s calls carry', tabIds.size === 1 && [...mateIds].every(s => tabIds.has(s)),
+    `tab ${JSON.stringify([...tabIds])}, teammate ${JSON.stringify([...mateIds])}`);
+
   noteLine('events from the teammate', mateEvents().map(p => `${p.hook_event_name}${p.tool_name ? ':' + p.tool_name : ''}`).join(' '));
   if (DUMP) for (const p of payloads()) console.log('DUMP  ' + JSON.stringify(p).slice(0, 700));
 

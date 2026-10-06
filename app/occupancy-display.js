@@ -8,7 +8,7 @@
  *   bannerModel(here, { turn, now })                 the banner over a worktree's terminal, or null
  *   chipModel(here, { turn, now })                   the same facts as the terminal bar's chip (the banner
  *                                                    retired into it, backlog #49 + #52), or null
- *   cardLine(claims, agentName)                      the hub card's `-> worktree` line, or null
+ *   cardLine(claims, agentName, sessionId)           the hub card's `-> worktree` line, or null
  *   viewPayload(claims, key, { keyOf })              what main pushes to one tab's page
  *   initials(name) / minutesLabel(firstAt, now)
  *
@@ -141,11 +141,14 @@ const baseName = p => {
   return parts.length ? parts[parts.length - 1] : String(p);
 };
 
-function cardLine(claims, agentName) {
-  if (!isStr(agentName) || !Array.isArray(claims)) return null;
+// A card is one session's agent: an agent NAME launched from this FOLDER can be another session's run (two sessions
+// in `dev` each running an Explore), so the claim's session has to be the card's (backlog #57, PR #96 Dexter F5).
+// A claim that names no session, or a card that doesn't know its own yet, can't be proven to be this card's: nothing.
+function cardLine(claims, agentName, sessionId) {
+  if (!isStr(agentName) || !isStr(sessionId) || !Array.isArray(claims)) return null;
   const mine = claims
     .map((c, i) => ({ c, i }))
-    .filter(({ c }) => isClaim(c) && c.agent === agentName)
+    .filter(({ c }) => isClaim(c) && c.agent === agentName && c.sessionId === sessionId)
     .sort((a, b) => ((Number.isFinite(b.c.lastAt) ? b.c.lastAt : 0) - (Number.isFinite(a.c.lastAt) ? a.c.lastAt : 0)) || (b.i - a.i))
     .map(({ c }) => c);
   if (mine.length === 0) return null;
@@ -165,7 +168,7 @@ function cardLine(claims, agentName) {
   };
 }
 
-const PAGE_FIELDS = ['agentId', 'agent', 'worktree', 'also', 'fromBranch', 'fromRoot', 'firstAt', 'lastAt'];
+const PAGE_FIELDS = ['agentId', 'agent', 'worktree', 'also', 'fromBranch', 'fromRoot', 'sessionId', 'firstAt', 'lastAt'];
 const forPage = (c) => {
   const out = {};
   for (const f of PAGE_FIELDS) out[f] = f === 'also' ? (Array.isArray(c.also) ? c.also.filter(isStr) : []) : (c[f] === undefined ? null : c[f]);
