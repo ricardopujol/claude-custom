@@ -100,7 +100,10 @@ test('a project folder that does not exist is "no-transcript" too', async () => 
 test('with no projectsDir given it falls back to the same default agent-stats uses, and does not throw', async () => {
   const os = require('os');
   const { defaultProjectsDir } = require('../host/agent-stats');
-  assert.strictEqual(defaultProjectsDir(), path.join(os.homedir(), '.claude', 'projects'));
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CLAUDE_CONFIG_DIR; // hermetic: the default, whatever the runner exports
+  try { assert.strictEqual(defaultProjectsDir(), path.join(os.homedir(), '.claude', 'projects')); }
+  finally { if (was !== undefined) process.env.CLAUDE_CONFIG_DIR = was; }
   const r = await findTranscript({ cwd: 'Z:/definitely/not/a/project-' + process.pid, agent: 'nobody' });
   assert.deepStrictEqual(r, { file: null, reason: 'no-transcript' });
 });

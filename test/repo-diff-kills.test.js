@@ -91,7 +91,8 @@ test('with no projectsDir the transcripts are read from <home>/.claude/projects'
   const proj = path.join(home, '.claude', 'projects', 'C--Users-ricar-VibeCode-proj');
   fs.mkdirSync(proj, { recursive: true });
   fs.writeFileSync(path.join(proj, 's.jsonl'), withResults([edit(`${ROOT}/a.js`, 'o', 'n', 1)]).map((e) => JSON.stringify(e)).join('\n'));
-  const keep = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
+  const keep = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+  delete process.env.CLAUDE_CONFIG_DIR; // hermetic: the default, whatever the runner exports
   process.env.USERPROFILE = home;
   process.env.HOME = home;
   try {

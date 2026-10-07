@@ -76,12 +76,12 @@
 
 const fsp = require('fs/promises');
 const path = require('path');
-const os = require('os');
+const { claudeProjectsDir } = require('./claude-config-dir');
 const { renameWithRetryAsync } = require('./atomic-write');
 const { readTranscript } = require('./agent-stats');
 const { scanProjects } = require('./roster-index');
 
-function defaultProjectsDir() { return path.join(os.homedir(), '.claude', 'projects'); }
+function defaultProjectsDir() { return claudeProjectsDir(); }
 
 const CACHE_VERSION = 1;
 
