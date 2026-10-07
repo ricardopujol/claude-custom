@@ -44,7 +44,7 @@
 
 const fsp = require('fs/promises');
 const path = require('path');
-const os = require('os');
+const { claudeProjectsDir } = require('./claude-config-dir');
 const { projectDirName } = require('./project-dir');
 const { transcriptFiles, readMeta, SUBAGENTS } = require('./transcripts');
 
@@ -68,7 +68,7 @@ const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 function defaultProjectsDir() {
-  return path.join(os.homedir(), '.claude', 'projects');
+  return claudeProjectsDir();
 }
 
 /**

@@ -46,7 +46,7 @@
 
 const fsp = require('fs/promises');
 const path = require('path');
-const os = require('os');
+const { claudeProjectsDir } = require('./claude-config-dir');
 const { transcriptFiles } = require('./transcripts');
 const { identityTables, resolveAgent } = require('./agent-stats');
 
@@ -71,7 +71,7 @@ const TAIL_BYTES = 128 * 1024;
 const TAIL_MAX_BYTES = 8 * 1024 * 1024;
 
 function defaultProjectsDir() {
-  return path.join(os.homedir(), '.claude', 'projects');
+  return claudeProjectsDir();
 }
 
 /**

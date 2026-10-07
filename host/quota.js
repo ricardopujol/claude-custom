@@ -38,7 +38,7 @@
 
 const fsp = require('fs/promises');
 const path = require('path');
-const os = require('os');
+const { claudeConfigDir } = require('./claude-config-dir');
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
@@ -57,7 +57,7 @@ const KNOWN_LABELS = Object.freeze({
 });
 
 function defaultCredentialsPath() {
-  return path.join(os.homedir(), '.claude', '.credentials.json');
+  return path.join(claudeConfigDir(), '.credentials.json');
 }
 
 // A readable label for a window we have no name for. Better than dropping the

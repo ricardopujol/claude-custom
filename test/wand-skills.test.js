@@ -296,9 +296,11 @@ test('S1: the claude home is the probe seam, else CLAUDE_CONFIG_DIR, else ~/.cla
   const { claudeHomeOf } = require('../host/wand-skills');
   const home = path.join(os.tmpdir(), 'h');
   assert.strictEqual(claudeHomeOf({ seam: 'S', env: { CLAUDE_CONFIG_DIR: 'C' }, home }), 'S');
-  assert.strictEqual(claudeHomeOf({ seam: null, env: { CLAUDE_CONFIG_DIR: 'C' }, home }), 'C');
+  const abs = path.join(os.tmpdir(), 'cfg-abs');
+  assert.strictEqual(claudeHomeOf({ seam: null, env: { CLAUDE_CONFIG_DIR: abs }, home }), abs);
   assert.strictEqual(claudeHomeOf({ seam: null, env: { CLAUDE_CONFIG_DIR: '' }, home }), path.join(home, '.claude'));
   assert.strictEqual(claudeHomeOf({ seam: null, env: {}, home }), path.join(home, '.claude'));
+  // no env key at all means NO env, whatever the runner's own CLAUDE_CONFIG_DIR is (hermetic)
   assert.strictEqual(claudeHomeOf({ home }), path.join(home, '.claude'));
 });
 

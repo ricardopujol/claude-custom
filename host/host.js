@@ -21,6 +21,7 @@ const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
+const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
 const { killTree, killPidTree } = require('./kill-tree');
@@ -143,6 +144,8 @@ function resolveClaude() {
 
 const CLAUDE_BIN = resolveClaude();
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+// A relative CLAUDE_CONFIG_DIR means a folder under THIS tab's cwd (where its `claude` runs), not the host process's.
+setConfigAnchor(CWD);
 // CWD is this tab's worktree: the pty, the session lock and everything git.
 // PROJECT_ROOT and STATE_ROOT are the project's (theme, label / look, style):
 // one set shared by every tab of a container. For a flat repo all three are
@@ -362,7 +365,7 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
-    userStatusLine: findUserStatusLine({ home: os.homedir(), cwd: CWD }),
+    userStatusLine: findUserStatusLine({ configDir: claudeConfigDir(), cwd: CWD }),
     // BACKLOG #27: "status line in the header" quiets the CLI's row. Written by
     // app/window-chrome-bridge.js into the same install-wide state dir.
     quietWhen: path.join(HARNESS_DIR, 'state', 'chrome-global.json'),
@@ -823,6 +826,7 @@ function handleDrop(msg, ws) {
     cwd: CWD,
     alreadyGranted: grantedDirs,
     home: os.homedir(),
+    configDir: claudeConfigDir(),
   });
 
   for (const r of plan.refused) console.log('[host] drop refused  :', r.dir, '-', r.why);
