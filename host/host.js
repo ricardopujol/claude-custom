@@ -32,7 +32,7 @@ const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portra
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { readUsage, EMPTY } = require('./usage');
-const { readAgentStats } = require('./agent-stats');
+const { readAgentStats, createStatsMemo } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
 const { wholeRoster, scanProjects } = require('./roster-index');
 const { lifetimeAgentTokens, readCacheSeed } = require('./agent-stats-cache');
@@ -970,10 +970,13 @@ function handleRosterMessage(msg) {
 // would put that cost on a clock for a figure that only changes on a finish.
 let lastAgentStats = { ok: false, agents: [], unresolved: 0 };
 let agentStatsPending = null;
+// Remembers each finished transcript's result by (mtime, size), so a SubagentStop re-reads only what changed
+// (BACKLOG #74 D: the full re-read cost ~5 CPU-s and ~600 MB per finish on a 664 MB project).
+const agentStatsMemo = createStatsMemo();
 
 function refreshAgentStats() {
   if (agentStatsPending) return agentStatsPending;
-  agentStatsPending = readAgentStats({ cwd: CWD })
+  agentStatsPending = readAgentStats({ cwd: CWD, memo: agentStatsMemo })
     .then((stats) => { lastAgentStats = stats; return stats; })
     .catch((err) => {
       console.error('[host] agent stats failed:', err && err.message);
