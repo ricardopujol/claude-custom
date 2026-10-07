@@ -64,6 +64,7 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
+const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
@@ -876,6 +877,10 @@ function registerIpc() {
   ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
   ipcMain.on('canvas:set-shelf', (e, items) => { if (isTabView(e.sender)) canvasViews.setShelf(e.sender, items); });
   ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
+  // The Style tab's switch for the panel's MCP server (#71 question 8): the file the host reads when it builds `claude`'s arguments, so a
+  // change takes effect on the next session. null means unknown (a read or write that failed): the page keeps asking, never guesses.
+  ipcMain.handle('canvas:settings-get', (e) => (isTabView(e.sender) ? readMcpSetting(uiStore.dir) : null));
+  ipcMain.handle('canvas:settings-set', (e, on) => (isTabView(e.sender) && typeof on === 'boolean' ? writeMcpSetting(uiStore.dir, on) : null));
   ipcMain.on('canvas:host-answer', (e, a) => {
     if (!isTabView(e.sender)) return;
     const pending = a && canvasAsks.get(a.id);

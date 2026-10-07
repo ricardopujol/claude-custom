@@ -105,3 +105,13 @@ test('host/canvas-store.js depends on no app/ module: the origin rule lives on t
   assert.match(src, /require\('\.\/canvas-origin'\)/);
   assert.strictEqual(require('../app/canvas-csp').hostOrigin, require('../host/canvas-origin').hostOrigin);
 });
+
+test("the panel's MCP switch is answered only to a tab view, only writes a real boolean, and reads and writes the folder the host reads (#71 question 8)", () => {
+  assert.match(CODE, /ipcMain\.handle\('canvas:settings-get', \(e\) => \(isTabView\(e\.sender\) \? readMcpSetting\(uiStore\.dir\) : null\)\);/);
+  assert.match(CODE, /ipcMain\.handle\('canvas:settings-set', \(e, on\) => \(isTabView\(e\.sender\) && typeof on === 'boolean' \? writeMcpSetting\(uiStore\.dir, on\) : null\)\);/);
+  assert.match(CODE, /const uiStore = createStore\(\{ dir: path\.join\(__dirname, '\.\.', '\.harness', 'state'\) \}\);/);
+  const host = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  assert.match(host, /canvasMcpEnabled\(\{ env: process\.env, stateDir: path\.join\(HARNESS_DIR, 'state'\) \}\)/, 'the host reads the same folder');
+  const pre = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
+  assert.match(pre, /settingsSet: \(on\) => ipcRenderer\.invoke\('canvas:settings-set', on\)/, 'the page sends what it has; main refuses a non-boolean');
+});

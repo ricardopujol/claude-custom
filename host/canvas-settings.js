@@ -8,10 +8,13 @@
  * overridden (CLAUDE_CUSTOM_BIN) and CLAUDE_CUSTOM_CANVAS_MCP does not say 1 / on / true / yes. Anything
  * unreadable or unknown means ON: the default is the feature, and a corrupt file must not silently remove it.
  *
- * There is no switch for it in the window yet: where that goes is a design question (documentation/handoffs).
+ * The switch is a checkbox in the Style tab (Ricardo, 2026-10-06, #71 question 8: the recommendation); it writes the same file with
+ * writeMcpSetting and reads it back with readMcpSetting. The environment still wins in the "off" direction and says so nowhere in the
+ * window: the checkbox shows the file's own choice.
  */
 const fs = require('fs');
 const path = require('path');
+const { renameWithRetry } = require('./atomic-write');
 
 const OFF_WORDS = new Set(['0', 'off', 'false', 'no']);
 const ON_WORDS = new Set(['1', 'on', 'true', 'yes']);
@@ -32,4 +35,37 @@ function canvasMcpEnabled({ env = process.env, stateDir } = {}) {
   return true;
 }
 
-module.exports = { canvasMcpEnabled };
+/**
+ * The file's own choice, for the checkbox: false only for { "mcp": false }; true when there is no file or it is not a settings object
+ * (the same reading canvasMcpEnabled gives it); null when the file can't be read for any other reason (busy, no permission): unknown,
+ * never a guessed answer.
+ */
+function readMcpSetting(stateDir) {
+  if (typeof stateDir !== 'string' || !stateDir) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'canvas-settings.json'), 'utf8'));
+    return !(raw !== null && typeof raw === 'object' && !Array.isArray(raw) && raw.mcp === false);
+  } catch (err) {
+    return err && (err.code === 'ENOENT' || err instanceof SyntaxError) ? true : null;
+  }
+}
+
+/** Turn the injection on or off in the file, keeping any other key. Atomic. Returns the value written, or null when nothing was (a non-boolean, or a failed write). */
+function writeMcpSetting(stateDir, on) {
+  if (typeof on !== 'boolean' || typeof stateDir !== 'string' || !stateDir) return null;
+  const file = path.join(stateDir, 'canvas-settings.json');
+  try {
+    let rec = {};
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) rec = raw;
+    } catch { /* missing or corrupt: start again from nothing */ }
+    fs.mkdirSync(stateDir, { recursive: true });
+    const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify({ ...rec, mcp: on }, null, 2));
+    renameWithRetry(temp, file);
+    return on;
+  } catch { return null; }
+}
+
+module.exports = { canvasMcpEnabled, readMcpSetting, writeMcpSetting };

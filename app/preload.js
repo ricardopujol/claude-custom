@@ -246,6 +246,9 @@ contextBridge.exposeInMainWorld('harness', {
     hosts: (hosts) => ipcRenderer.send('canvas:hosts', hosts),
     shelf: (items) => ipcRenderer.send('canvas:set-shelf', items),
     hide: () => ipcRenderer.send('canvas:hide'),
+    // the Style tab's switch for the panel's MCP server: a boolean, or null when main could not tell (read) / save (write)
+    settingsGet: () => ipcRenderer.invoke('canvas:settings-get'),
+    settingsSet: (on) => ipcRenderer.invoke('canvas:settings-set', on),
     answerHost: (id, answer) => ipcRenderer.send('canvas:host-answer', { id, answer }),
     onNeedHost: (fn) => (ipcRenderer.removeAllListeners('canvas:need-host'), ipcRenderer.on('canvas:need-host',
       (_e, ask) => {

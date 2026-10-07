@@ -41,6 +41,7 @@ const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const CANVAS_DIR = path.join(STATE_DIR, 'canvas');
 const SID1 = 'probe-canvas-one';
 const SID2 = 'probe-canvas-two';
+const MCP_FILE = path.join(STATE_DIR, 'canvas-settings.json');
 const BROKER_NAME = 'probe-broker.invalid';
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
@@ -85,10 +86,11 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
+const mcpSnap = snapshotFile(MCP_FILE);
 const layoutSnap = snapshotFile(LAYOUT_FILE);
 const treeSnap = snapshotFile(TREE_FILE);
 const removeCanvasDirs = () => { for (const sid of [SID1, SID2]) { try { fs.rmSync(path.join(CANVAS_DIR, sid), { recursive: true, force: true }); } catch { /* none */ } } };
-hygiene.addCleanup(() => { layoutSnap.restore(); treeSnap.restore(); removeCanvasDirs(); });
+hygiene.addCleanup(() => { mcpSnap.restore(); layoutSnap.restore(); treeSnap.restore(); removeCanvasDirs(); });
 hygiene.install();
 
 async function launchApp(cwd) {
@@ -214,7 +216,7 @@ async function main() {
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
-  for (const f of [LAYOUT_FILE, TREE_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
+  for (const f of [LAYOUT_FILE, TREE_FILE, MCP_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
   removeCanvasDirs();
 
   // the host the panel's page may reach (counts what arrives)
@@ -392,6 +394,18 @@ async function main() {
   }
 
   if (failures) console.log('--- app output (tail) ---\n' + app.out.slice(-2500));
+  // 7: the Style tab's switch for Claude's panel (#71 question 8) ----------------------------------------------------------
+  await view(app, 'show', { id: 'style' });
+  const box = (click) => view(app, 'canvasMcpBox', { click });
+  const boxOn = await waitFor(async () => { const b = await box(false); return b.exists && !b.disabled ? b : null; }, 10000, 200);
+  check("7: the Style tab shows the switch, on by default (no file)", !!boxOn && boxOn.checked === true && !fs.existsSync(MCP_FILE), JSON.stringify(boxOn));
+  await box(true);
+  const mcpOff = await waitFor(async () => { try { return JSON.parse(fs.readFileSync(MCP_FILE, 'utf8')).mcp === false ? true : null; } catch { return null; } }, 8000, 150);
+  check('7: clicking it writes { "mcp": false } where the host reads it, and the box says off', !!mcpOff && (await box(false)).checked === false, fs.existsSync(MCP_FILE) ? fs.readFileSync(MCP_FILE, 'utf8') : 'no file');
+  await box(true);
+  const mcpOn = await waitFor(async () => { try { return JSON.parse(fs.readFileSync(MCP_FILE, 'utf8')).mcp === true ? true : null; } catch { return null; } }, 8000, 150);
+  check('7: and clicking it again writes { "mcp": true }', !!mcpOn && (await box(false)).checked === true);
+
   const fin = await st();
   check('the page raised no panel error line at rest', fin.note === null, JSON.stringify(fin.note));
   console.log(`screenshots: ${shots}`);

@@ -1175,7 +1175,7 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
-  'canvasState', 'canvasClick', 'canvasOverlay',
+  'canvasState', 'canvasClick', 'canvasOverlay', 'canvasMcpBox',
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn

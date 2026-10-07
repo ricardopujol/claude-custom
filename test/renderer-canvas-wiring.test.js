@@ -116,3 +116,11 @@ test('a show main refuses is said in the module and not retried; a stale answer 
   assert.match(sync, /canvasState = window\.canvasDisplay\.withRefusal\(canvasState, sig, res\.error\);\s*renderCanvas\(\);/);
   assert.match(sync, /canvasBridge\.hide\(\); canvasLive = false;[^\n]*const had = canvasState\.asks\.length > 0; canvasState = window\.canvasDisplay\.withoutAsks\(canvasState\); if \(had\) renderCanvas\(\);/);
 });
+
+test("the Style tab's switch for Claude's panel: a checkbox that sends the desired state, settles on main's answer and re-reads on null (#71 question 8)", () => {
+  assert.match(JS, /if \(section\.id === 'panel' && v\) \{/);
+  assert.match(JS, /id="style-canvas-mcp"\$\{v\.mcp === true \? ' checked' : ''\}\$\{v\.mcp === null \? ' disabled' : ''\}/);
+  assert.match(JS, /window\.harness\.canvas\.settingsSet\(canvasMcpBox\.checked\)\.then\(settledCanvasMcp\)\.catch\(refreshCanvasMcp\);/);
+  assert.match(JS, /function settledCanvasMcp\(value\) \{\s*if \(typeof value === 'boolean'\) \{ styleState = reduceCanvasMcp\(styleState, value\); renderStylePanel\(\); \} else refreshCanvasMcp\(\);/);
+  assert.match(JS, /^refreshCanvasMcp\(\);/m);
+});

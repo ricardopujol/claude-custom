@@ -28,6 +28,7 @@ const STYLE_SECTIONS = [
   { id: 'inactive', title: 'Inactive windows' },
   { id: 'avatars', title: 'Agent pictures' },
   { id: 'window', title: 'Window' },
+  { id: 'panel', title: "Claude's panel" },
 ];
 
 const HEX_RE = /^#[0-9a-f]{6}$/i;
@@ -187,12 +188,27 @@ function windowSectionView(state) {
   };
 }
 
+/**
+ * #71 question 8 (Ricardo, 2026-10-06: the recommendation): whether Claude's panel is offered to the CLI at all. Strict like the
+ * toggles above: only a real boolean is known, anything else is null, "reading…". It changes what the next session is started with.
+ */
+function panelSectionView(state) {
+  const mcp = state && typeof state.mcp === 'boolean' ? state.mcp : null;
+  return {
+    mcp,
+    mcpDescription: mcp === null ? 'reading…'
+      : mcp ? "Claude can build things in its panel (it's offered to the CLI as a tool). A change applies to the next session you start."
+        : "Claude's panel is not offered to the CLI: it can't build anything there. A change applies to the next session you start.",
+  };
+}
+
 const SECTION_VIEWS = {
   colours: coloursSectionView,
   background: backgroundSectionView,
   inactive: inactiveSectionView,
   avatars: avatarsSectionView,
   window: windowSectionView,
+  panel: panelSectionView,
 };
 
 /**
@@ -221,6 +237,7 @@ function emptyStyleState() {
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
     window: { statusInHeader: null, framelessWindow: null },
+    panel: { mcp: null },
   };
 }
 
@@ -276,6 +293,7 @@ function reduceStyle(prev, msg) {
     inactive: state.inactive,
     avatars: state.avatars || emptyStyleState().avatars,
     window: state.window || emptyStyleState().window,
+    panel: state.panel || emptyStyleState().panel,       // the host never reports it: a style message must not lose it
   };
 }
 
@@ -334,9 +352,17 @@ function reduceChromeSettings(prev, settings) {
   return { ...state, window: { statusInHeader: pick('statusInHeader'), framelessWindow: pick('framelessWindow') } };
 }
 
+/** Records the panel's MCP switch as main reports it; only a real boolean lands (null = main couldn't tell: stay unknown). */
+function reduceCanvasMcp(prev, value) {
+  const state = prev || emptyStyleState();
+  if (typeof value !== 'boolean') return state;
+  return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mcp: value } };
+}
+
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
   avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
+  panelSectionView, reduceCanvasMcp,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

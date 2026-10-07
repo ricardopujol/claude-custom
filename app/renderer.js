@@ -2908,6 +2908,13 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         el.click();
         return JSON.stringify({ ok: true });
       }
+      case 'canvasMcpBox': {
+        // #71 question 8: the Style tab's switch for Claude's panel (read it, or press it)
+        const box = document.getElementById('style-canvas-mcp');
+        if (!box) return JSON.stringify({ ok: true, exists: false });
+        if (a.click === true) box.click();
+        return JSON.stringify({ ok: true, exists: true, checked: box.checked, disabled: box.disabled });
+      }
       case 'canvasOverlay': {
         // a stand-in for a float / menu / popover crossing the slot (PR #122 Dexter F5): a fixed box over the slot's right half (at least SAMPLE_GAP wide: a thinner overlay can fall between the sample points), above the page
         let box = document.querySelector('.probe-canvas-overlay');
@@ -5822,6 +5829,16 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'panel' && v) {
+    // Id written out in full: test/renderer-scope.test.js finds it by text.
+    return (
+      `<section class="style-section" data-section="panel">${header}` +
+      `<label class="style-row"><input type="checkbox" id="style-canvas-mcp"${v.mcp === true ? ' checked' : ''}${v.mcp === null ? ' disabled' : ''}>` +
+      ` Let Claude build in its panel (next session)</label>` +
+      `<div class="style-note">${escapeHtml(v.mcpDescription)}</div>` +
+      `</section>`
+    );
+  }
   // A future section with no view function yet still gets its title drawn,
   // rather than vanishing -- "say something rather than nothing", the same
   // rule the fog and projects panels follow for a failed read.
@@ -6025,6 +6042,14 @@ function bindAvatarSection() {
       chrome.setStatusInHeader(statusBox.checked).then(settledChrome).catch(refreshChromeSettings);
     });
   }
+  // #71 question 8: Claude's panel on or off for the next session. Send the DESIRED state; main answers what the file now says, and null
+  // (a failed save) re-reads the truth instead of trusting the click.
+  const canvasMcpBox = document.getElementById('style-canvas-mcp');
+  if (canvasMcpBox && window.harness && window.harness.canvas) {
+    canvasMcpBox.addEventListener('change', () => {
+      window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(refreshCanvasMcp);
+    });
+  }
   const framelessBox = document.getElementById('style-frameless');
   if (framelessBox && chrome) {
     framelessBox.addEventListener('change', () => {
@@ -6045,6 +6070,16 @@ function applyChromeSettings(settings) {
   chromeSettings = styleState.window;
   renderStatusFields(lastStatusFields);
   renderStylePanel();
+}
+// #71 question 8: the panel's MCP switch. Null (main couldn't read the file) stays unknown and asks again; never a guessed answer.
+function settledCanvasMcp(value) {
+  if (typeof value === 'boolean') { styleState = reduceCanvasMcp(styleState, value); renderStylePanel(); } else refreshCanvasMcp();
+}
+function refreshCanvasMcp() {
+  if (!(window.harness && window.harness.canvas && window.harness.canvas.settingsGet)) return;
+  window.harness.canvas.settingsGet().then((v) => {
+    if (typeof v === 'boolean') settledCanvasMcp(v); else setTimeout(refreshCanvasMcp, 1000);
+  }).catch(() => setTimeout(refreshCanvasMcp, 1000));
 }
 function settledChrome(saved) {
   if (saved && typeof saved === 'object') applyChromeSettings(saved);
@@ -6130,6 +6165,7 @@ if (window.harness && window.harness.chrome) {
   window.harness.chrome.onChange(applyChromeSettings);
   refreshChromeSettings();
 }
+refreshCanvasMcp();                // #71 question 8: the panel's switch in the Style tab
 
 // The hover pencil on a roster face: pick a file, send it as the same
 // `portrait set` a drop sends, for the state the card is showing.
