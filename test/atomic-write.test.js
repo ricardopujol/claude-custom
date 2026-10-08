@@ -501,7 +501,7 @@ test('async INVARIANT: an exhausted retry never sleeps after its final attempt',
 
 // PR #125 Miguel M1: no temp file survives a write or a rename that throws.
 const { writeFileAtomic } = require('../host/atomic-write');
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-atomic-'));
+const tmp = () => tmpDir('cc-atomic-');
 
 test('writeFileAtomic writes the file and leaves no temp', () => {
   const dir = tmp();
