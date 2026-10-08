@@ -94,6 +94,9 @@ const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/b
 // The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
 const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
 const { killVerified } = require('../host/resource-kill');
+const pidLedger = require('../host/pid-ledger');
+const { killProvenAsync } = require('../host/kill-tree');
+const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { stopHost } = require('../host/stop-holder');
@@ -891,6 +894,9 @@ function registerIpc() {
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
+  ipcMain.handle('resources:stopLeftovers', (e, req) => (isTabView(e.sender) && resources
+    ? resources.stopLeftovers(req)
+    : { ok: false, text: 'refused' }));
   // The strip page's own channels: gated on the window's OWN webContents, so a
   // tab's page (which has the other preload) cannot use them.
   ipcMain.on('strip:select', (e, key) => {
@@ -1722,6 +1728,14 @@ app.whenReady().then(async () => {
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
+    // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
+    // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
+    ledger: () => pidLedger.readLedger(),
+    reap: createLeftoverSeams({
+      startTimes, kill: (pid, start) => killProvenAsync(pid, start),
+      removeEntries: (entries) => pidLedger.removeEntries(pidLedger.defaultLedgerFile(), entries),
+    }),
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
     warnAt: warnAtSeam,
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },
