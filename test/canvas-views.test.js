@@ -316,7 +316,7 @@ test('messageFrom: input goes stale, one message per click, and bad shapes are d
   panel.emit('input-event', {}, { type: 'mouseDown' });
   r.tick(PANEL_LIMITS.inputWindowMs + 1);
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'late' }), false, 'a click from long ago is not a click now');
-  panel.emit('input-event', {}, { type: 'keyDown' });
+  press(panel, 'Enter');
   for (const bad of [null, 'x', {}, { kind: 'other', text: 'x' }, { kind: 'send' }, { kind: 'send', text: 5 }, { kind: 'send', text: '' }, { kind: 'send', text: '   ' },
     { kind: 'send', text: 'x'.repeat(PANEL_LIMITS.messageChars + 1) }, { kind: 'send', text: 'two\nlines' }]) {
     assert.strictEqual(r.m.messageFrom(panel, bad), false, JSON.stringify(bad));
@@ -647,19 +647,70 @@ test('a lone mouseUp (a press that began outside the panel) does not arm anythin
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'x' }), false);
 });
 
-test('a key press is one use: the char that follows its keyDown does not re-arm', async () => {
+// A key is read from before-input-event, the only event that carries WHICH key (input-event has a type and modifiers, nothing else).
+const press = (panel, key, extra = {}) => panel.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', key, code: key === ' ' ? 'Space' : key, isAutoRepeat: false, ...extra });
+const release = (panel, key) => panel.emit('before-input-event', { preventDefault() {} }, { type: 'keyUp', key, code: key === ' ' ? 'Space' : key, isAutoRepeat: false });
+
+test('a key press is one use: Enter arms, the char that follows its keyDown does not re-arm', async () => {
   const r = rig();
   await show(r);
   const panel = r.views[0].webContents;
-  panel.emit('input-event', {}, { type: 'rawKeyDown' });
+  press(panel, 'Enter');
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true);
   panel.emit('input-event', {}, { type: 'char' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false);
 });
 
+test('PR #125 Dexter #6: ONLY Enter and Space count as a click; typing into the page\'s own field authorises nothing', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  for (const key of ['a', 'Z', '1', 'Tab', 'Escape', 'ArrowDown', 'Backspace', 'Shift', 'Control', 'F5', 'Delete', 'é']) {
+    press(panel, key);
+    panel.emit('input-event', {}, { type: 'rawKeyDown' });       // the old arming events, with no key named
+    panel.emit('input-event', {}, { type: 'keyDown' });
+    panel.emit('input-event', {}, { type: 'char' });
+    assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'x' }), false, key);
+  }
+  for (const key of ['Enter', ' ']) {
+    press(panel, key);
+    assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: key === ' ' ? 'space' : 'enter' }), true, JSON.stringify(key));
+  }
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['enter', 'space']);
+});
+
+test('PR #125 Dexter #6: a held key (auto-repeat) never re-arms, and one press is one use', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  press(panel, 'Enter');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'first' }), true);
+  for (let i = 0; i < 5; i++) press(panel, 'Enter', { isAutoRepeat: true });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'again' }), false, 'auto-repeat is not a new press');
+  press(panel, ' ', { isAutoRepeat: true });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'again' }), false);
+  press(panel, 'Enter');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'second' }), true, 'a fresh press is a fresh use');
+});
+
+test('PR #125 Dexter #6: Space acts on the key UP in a browser: the release keeps a press fresh without un-spending it', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  press(panel, ' ');
+  r.tick(PANEL_LIMITS.inputWindowMs - 100);
+  release(panel, ' ');
+  r.tick(PANEL_LIMITS.inputWindowMs - 100);
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true, 'still fresh after the release');
+  release(panel, ' ');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false, 'a release is not a press');
+  release(panel, 'a');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'c' }), false);
+});
+
 test('property: the messages let through never outnumber the gestures that began (a mouseDown or a key press)', async () => {
   const fc = require('fast-check');
-  const ev = fc.constantFrom('mouseDown', 'mouseUp', 'mouseMove', 'keyDown', 'rawKeyDown', 'char', 'send', 'send', 'send');
+  const ev = fc.constantFrom('mouseDown', 'mouseUp', 'mouseMove', 'enter', 'space', 'repeat', 'letter', 'char', 'send', 'send', 'send');
   await fc.assert(fc.asyncProperty(fc.array(ev, { maxLength: 40 }), async (events) => {
     const r = rig();
     await show(r);
@@ -671,8 +722,9 @@ test('property: the messages let through never outnumber the gestures that began
         assert.strictEqual(ok, armed, 'accepted exactly when a gesture began since the last accepted send');
         if (ok) { accepted += 1; armed = false; }
       } else {
-        panel.emit('input-event', {}, { type: e });
-        if (e === 'mouseDown' || e === 'keyDown' || e === 'rawKeyDown') { began += 1; armed = true; }
+        if (e === 'enter' || e === 'space' || e === 'repeat' || e === 'letter') press(panel, e === 'enter' ? 'Enter' : e === 'space' ? ' ' : 'q', { isAutoRepeat: e === 'repeat' });
+        else panel.emit('input-event', {}, { type: e });
+        if (e === 'mouseDown' || e === 'enter' || e === 'space') { began += 1; armed = true; }
       }
     }
     assert.ok(accepted <= began);

@@ -16,7 +16,7 @@
  *   - the panel's `fetch` is a message to this module, which makes the request itself, only to a host the person
  *     approved for THAT panel (app/canvas-fetch.js). An unknown host is a question to the owner's page, asked once.
  *   - the only other things the panel can do: `send` a line of text toward the session (a button), and `open` an address that is
- *     exactly on the artifact shelf. Each must come with a real click or key press the contents received (a script cannot press
+ *     exactly on the artifact shelf. Each must come with a real click, or an Enter or Space press, the contents received (a script cannot press
  *     its own button), one use per click, one line of text. It can also READ the shelf (the host fills it from the CLI's hook).
  *   - no native dialog over the app's window: alert/confirm/prompt are disabled (`disableDialogs`). Measured (Electron 33, verify/
  *     probe-canvas-sandbox.js, PR #122 Dexter R2): `window.print()` raises NO dialog but wedges the panel's renderer and the browser's
@@ -35,15 +35,19 @@ const PANEL_LIMITS = Object.freeze({
   messageChars: 2000,
   pendingAsks: 3,                // hosts waiting on an answer at once; past this a new one is refused unasked
   totalAsks: 12,                 // questions one view may put to the person in its lifetime; past this a new host is refused unasked (PR #122 Miguel G3)
-  inputWindowMs: 2000,           // how recent a real click or key press must be for a `send` to count
+  inputWindowMs: 2000,           // how recent a real click or Enter/Space press must be for a `send` to count
 });
 
 const DEAD_PROXY = Object.freeze({ mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1', proxyBypassRules: '<-loopback>' });
-// A GESTURE, not an event: a click is a mouseDown and its mouseUp, a key press is a keyDown and its char. Only the first of each arms the
-// gate; the rest of the same gesture keeps it fresh without un-spending it (PR #122 Dexter F7 / Miguel G1: a mouseUp re-armed it, so
-// onmousedown + onclick sent twice from one click).
-const ARMS = new Set(['mouseDown', 'keyDown', 'rawKeyDown']);
-const KEEPS_FRESH = new Set(['mouseUp', 'char']);
+// A GESTURE, not an event: a click is a mouseDown and its mouseUp. Only the mouseDown arms the gate; the mouseUp keeps it fresh without
+// un-spending it (PR #122 Dexter F7 / Miguel G1: a mouseUp re-armed it, so onmousedown + onclick sent twice from one click).
+// A KEY counts as a click only for the two keys that activate a button, Enter and Space, once per press and never on auto-repeat (PR #125
+// Dexter #6, Ricardo's call 2026-10-08: typing into a field of the page, or holding a key, must authorise nothing). Which key is not in
+// 'input-event' (a type and modifiers only), so keys are read from 'before-input-event'. Space acts on the key UP in a browser, so a
+// release of Enter or Space keeps the press fresh, like a mouseUp.
+const ARMS = new Set(['mouseDown']);
+const KEEPS_FRESH = new Set(['mouseUp']);
+const ACTIVATION_KEYS = new Set(['Enter', ' ']);
 
 const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
 const SHELF_MAX = 200;
@@ -135,6 +139,11 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     wc.on('input-event', (_e, ev) => {
       if (!ev) return;
       if (ARMS.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } else if (KEEPS_FRESH.has(ev.type)) rec.lastInput = now();
+    });
+    wc.on('before-input-event', (_e, input) => {
+      if (!input || !ACTIVATION_KEYS.has(input.key)) return;
+      if (input.type === 'keyDown' && input.isAutoRepeat !== true) { rec.lastInput = now(); rec.spent = false; }
+      else if (input.type === 'keyUp') rec.lastInput = now();
     });
     wc.on('render-process-gone', (_e, d) => log(`[canvas] panel renderer gone: ${d && d.reason}`));
     lockContents(wc);

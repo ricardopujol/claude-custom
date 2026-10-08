@@ -5,7 +5,7 @@
  *
  *   fetch(url, init)  -> the broker (app/canvas-fetch.js): only a host the person approved for this panel is reached.
  *                        The page does not call this itself: the shim in app/canvas-csp.js replaces `window.fetch` with it.
- *   send(text)        -> a line of text toward the session (a button). Main refuses it unless a real click or key press
+ *   send(text)        -> a line of text toward the session (a button). Main refuses it unless a real click or Enter/Space press
  *                        arrived at this page a moment ago, so a script cannot press its own button.
  *   shelf()           -> a Promise of the artifact shelf [{ title, url, time }] (read-only: the host fills it from the CLI's own hook).
  *   onShelf(fn)       -> fn(items) whenever the shelf changes; replaces the one listener (a non-function removes it).
