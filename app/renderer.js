@@ -1427,7 +1427,7 @@ function showCanvasStatus(next, ms = 8000) {
 function canvasSendToSession(text) {
   const line = window.canvasDisplay.sessionLine(text);
   if (!line) { showCanvasStatus(window.canvasDisplay.unsent(canvasState, window.canvasDisplay.whyNot(text) || 'the message could not be typed')); return; }
-  if (canvasTyping) return;
+  if (canvasTyping) { showCanvasStatus(window.canvasDisplay.unsent(canvasState, 'the previous message is still being typed')); return; }
   canvasTyping = true;
   typeCommand(line, (r) => {
     canvasTyping = false;
