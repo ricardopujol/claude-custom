@@ -18,6 +18,11 @@
  *   - the only other things the panel can do: `send` a line of text toward the session (a button), and `open` an address that is
  *     exactly on the artifact shelf. Each must come with a real click or key press the contents received (a script cannot press
  *     its own button), one use per click, one line of text. It can also READ the shelf (the host fills it from the CLI's hook).
+ *   - no native dialog over the app's window: alert/confirm/prompt are disabled (`disableDialogs`). Measured (Electron 33, verify/
+ *     probe-canvas-sandbox.js, PR #122 Dexter R2): `window.print()` raises NO dialog (it blocks the panel's own renderer, which is
+ *     no worse than `for(;;){}`), `<input type=file>` raises none, `<input type=color>` raises a popup widget, not a dialog. The probe
+ *     fails the day any of them becomes a native dialog. None of the panel's abilities (`fetch`, `send`, `open`, reading the shelf)
+ *     shows a picker or reads a file.
  *   - hidden means stopped (design, call 7): `hide` destroys the view, so no timer or fetch of the page keeps running.
  *
  * The Electron classes arrive as arguments so test/canvas-views.test.js can drive this with fakes.
