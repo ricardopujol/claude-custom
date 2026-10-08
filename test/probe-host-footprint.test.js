@@ -111,3 +111,55 @@ test('parseQuery turns garbage or truncated PowerShell output into "no rows", ne
   assert.deepStrictEqual(parseQuery('{"ProcessId":1}'), [{ ProcessId: 1 }]);
   assert.deepStrictEqual(parseQuery('[{"ProcessId":1},{"ProcessId":2}]').length, 2);
 });
+
+// Miguel M1, PR #131: `Number('abc')` is NaN, so the run's end was NaN and the loop never broke; `--interval 0`
+// respawned PowerShell back to back. Bad values are refused up front with a message.
+test('parseArgs refuses a non-numeric, zero, negative or too-small --minutes / --interval', () => {
+  const { parseArgs } = require('../verify/probe-host-footprint.js');
+  for (const argv of [
+    ['--minutes', 'abc'], ['--minutes', '0'], ['--minutes', '-5'], ['--minutes', 'Infinity'], ['--minutes'],
+    ['--interval', 'abc'], ['--interval', '0'], ['--interval', '0.5'], ['--interval'],
+    ['--pid', 'abc'], ['--pid'],
+  ]) {
+    const r = parseArgs(argv);
+    assert.strictEqual(typeof r.error, 'string', `accepted ${argv.join(' ')}`);
+  }
+});
+
+test('parseArgs accepts sane values and keeps the defaults', () => {
+  const { parseArgs } = require('../verify/probe-host-footprint.js');
+  const d = parseArgs([]);
+  assert.strictEqual(d.error, undefined);
+  assert.strictEqual(d.minutes, 60);
+  assert.strictEqual(d.intervalS, 30);
+  assert.deepStrictEqual(d.pids, []);
+  const r = parseArgs(['--minutes', '8', '--interval', '15', '--pid', '276', '--pid', '12']);
+  assert.deepStrictEqual([r.minutes, r.intervalS, r.pids], [8, 15, [276, 12]]);
+  assert.strictEqual(parseArgs(['--interval', '1']).intervalS, 1);
+});
+
+// Miguel M7, PR #131: an interrupted run (the documented use case for --summarise) can leave a half-written
+// last line, and a bare JSON.parse per line threw on it.
+test('parseSampleLines skips a half-written or garbled line instead of throwing', () => {
+  const { parseSampleLines } = require('../verify/probe-host-footprint.js');
+  const text = '{"t":1,"priv":5}\n\n{"t":2,"priv":6}\n{"t":3,"pri';
+  assert.deepStrictEqual(parseSampleLines(text), [{ t: 1, priv: 5 }, { t: 2, priv: 6 }]);
+});
+
+test('parseArgs gives each run its own default output file, so a previous run is never truncated', () => {
+  const { parseArgs } = require('../verify/probe-host-footprint.js');
+  const a = parseArgs([], new Date(2026, 9, 8, 13, 5, 7));
+  const b = parseArgs([], new Date(2026, 9, 8, 13, 5, 9));
+  assert.notStrictEqual(a.out, b.out);
+  assert.match(a.out, /host-footprint-20261008-130507\.jsonl$/);
+});
+
+test('an explicit --out that already holds samples is refused without --force; empty, missing or forced is fine', () => {
+  const { parseArgs, overwriteRefusal } = require('../verify/probe-host-footprint.js');
+  const size = (n) => () => n;
+  assert.match(overwriteRefusal(parseArgs(['--out', 'x.jsonl']), size(120)), /--force/);
+  assert.strictEqual(overwriteRefusal(parseArgs(['--out', 'x.jsonl', '--force']), size(120)), null);
+  assert.strictEqual(overwriteRefusal(parseArgs(['--out', 'x.jsonl']), size(0)), null);
+  assert.strictEqual(overwriteRefusal(parseArgs(['--out', 'x.jsonl']), size(null)), null);
+  assert.strictEqual(overwriteRefusal(parseArgs([]), size(120)), null);   // the per-run default is new each time
+});

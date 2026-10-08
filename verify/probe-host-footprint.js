@@ -10,8 +10,16 @@
      node verify/probe-host-footprint.js                      every host, 60 min, every 30 s
      node verify/probe-host-footprint.js --pid 276 --minutes 10 --interval 10
      node verify/probe-host-footprint.js --summarise .harness/host-footprint.jsonl
-   Samples stream to --out (default .harness/host-footprint.jsonl) as JSON lines, one per host per tick, so a
-   run that is interrupted still leaves its data. Exit code is 0 unless no host was ever found.
+   Samples stream to --out (default .harness/host-footprint-<yyyymmdd-hhmmss>.jsonl, one file per run) as JSON
+   lines, one per host per tick, so a run that is interrupted still leaves its data; --summarise skips a torn
+   last line. An explicit --out that already holds samples is refused unless --force. A bad --minutes,
+   --interval (minimum 1 s) or --pid exits 2 with a usage line. Otherwise the exit code is 0 unless no host
+   was ever found.
+
+   WHAT THE SAMPLER COSTS. Each tick spawns one `powershell` and runs one CIM query: about 1 CPU-second
+   (a real sample measured ~2.3 s wall-clock over ~430 processes). At the default 30 s interval that's
+   roughly 3 % of one core, on the machine but NOT in the host's own CPU-seconds, which come from the host's
+   kernel+user times. Use a longer --interval when the machine is busy.
 
    LEAK vs CHURN. A host was seen swinging 743 -> 317 MB inside a minute. That is garbage collection,
    not a leak, and a last-minus-first comparison cannot tell them apart. The verdict therefore reads the
@@ -165,21 +173,83 @@ function report(lines) {
   }
 }
 
-function arg(name, dflt) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i === -1 ? dflt : process.argv[i + 1];
+/** JSON-lines samples; a half-written last line from an interrupted run (or any garbled line) is skipped. */
+function parseSampleLines(text) {
+  const rows = [];
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); } catch { /* torn or garbled: not a sample */ }
+  }
+  return rows;
+}
+
+const MIN_INTERVAL_S = 1;   // below this the PowerShell query respawns back to back (see the cost note above)
+const USAGE = 'usage: probe-host-footprint.js [--pid N]... [--minutes M>0] [--interval S>=1] [--out file [--force]]'
+  + ' | --summarise file';
+const stamp = (d) => [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, '0')).join('')
+  + '-' + [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join('');
+
+/**
+ * The command line, validated once. Returns { error } for a bad value instead of letting it reach the loop:
+ * `Number('abc')` is NaN, which made the run's end NaN and the loop never break (Miguel M1, PR #131). The
+ * default --out is per run, so a new run never truncates an old one's samples (Miguel M7).
+ */
+function parseArgs(argv, now = new Date()) {
+  const value = (name) => {
+    const i = argv.indexOf(`--${name}`);
+    if (i === -1) return undefined;
+    const v = argv[i + 1];
+    return v === undefined || v.startsWith('--') ? null : v;
+  };
+  const positive = (name, dflt, min) => {
+    const v = value(name);
+    if (v === undefined) return dflt;
+    const n = Number(v);
+    return v !== null && Number.isFinite(n) && n >= min && n > 0 ? n : { error: `--${name} needs a number ${min ? '>= ' + min : '> 0'}, got ${v === null ? 'nothing' : JSON.stringify(v)}` };
+  };
+  const sumFile = value('summarise');
+  if (sumFile === null) return { error: '--summarise needs a file' };
+  if (sumFile !== undefined) return { summarise: sumFile };
+  const minutes = positive('minutes', 60, 0);
+  if (minutes.error) return minutes;
+  const intervalS = positive('interval', 30, MIN_INTERVAL_S);
+  if (intervalS.error) return intervalS;
+  const pids = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--pid') continue;
+    const n = Number(argv[i + 1]);
+    if (!Number.isInteger(n) || n <= 0) return { error: `--pid needs a process id, got ${JSON.stringify(argv[i + 1] || 'nothing')}` };
+    pids.push(n);
+  }
+  const out = value('out');
+  if (out === null) return { error: '--out needs a file' };
+  return {
+    minutes, intervalS, pids, force: argv.includes('--force'),
+    explicitOut: out !== undefined,
+    out: out !== undefined ? out : path.join(__dirname, '..', '.harness', `host-footprint-${stamp(now)}.jsonl`),
+  };
+}
+
+/** An explicit --out that already holds samples is not truncated unless --force says so. */
+function overwriteRefusal(opts, sizeOf) {
+  if (!opts.explicitOut || opts.force) return null;
+  const size = sizeOf(opts.out);
+  return typeof size === 'number' && size > 0
+    ? `${opts.out} already holds ${size} bytes of samples; pass --force to overwrite it, or choose another --out`
+    : null;
 }
 
 async function main() {
-  const sumFile = arg('summarise', null);
-  if (sumFile) {
-    report(fs.readFileSync(sumFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+  const opts = parseArgs(process.argv.slice(2));
+  if (opts.error) { console.error(`${opts.error}\n${USAGE}`); return 2; }
+  if (opts.summarise) {
+    report(parseSampleLines(fs.readFileSync(opts.summarise, 'utf8')));
     return 0;
   }
-  const minutes = Number(arg('minutes', 60));
-  const intervalS = Number(arg('interval', 30));
-  const only = process.argv.reduce((a, v, i, all) => (v === '--pid' ? a.concat(Number(all[i + 1])) : a), []);
-  const out = arg('out', path.join(__dirname, '..', '.harness', 'host-footprint.jsonl'));
+  const { minutes, intervalS, out } = opts;
+  const only = opts.pids;
+  const refusal = overwriteRefusal(opts, (f) => { try { return fs.statSync(f).size; } catch { return null; } });
+  if (refusal) { console.error(refusal); return 2; }
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, '');
   const lines = [];
@@ -205,4 +275,4 @@ if (require.main === module) {
   main().then((c) => process.exit(c), (e) => { console.error(e); process.exit(1); });
 }
 
-module.exports = { summarise, parseHosts, floorSlope, parseQuery };
+module.exports = { summarise, parseHosts, floorSlope, parseQuery, parseArgs, parseSampleLines, overwriteRefusal };
