@@ -45,6 +45,29 @@ test('a floor that keeps rising is a leak even when it sawtooths', () => {
   assert.ok(r.floorSlopeMBPerHour > 100, `floor slope ${r.floorSlopeMBPerHour}`);
 });
 
+// Dexter F3, PR #131: a fitted slope plus a first-minus-last rise can't tell one warm-up step from a ramp. A floor
+// that steps 200 -> 300 MB at minute 8 and then stays flat for 52 minutes gave 85.7 MB/h and "leak".
+test('a one-time step to a higher flat floor is not a leak (early or mid-run)', () => {
+  for (const stepAt of [8, 30]) {
+    const series = [];
+    for (let i = 0; i <= 60; i += 0.5) series.push(s(i, i < stepAt ? 200 : 300, i));
+    const r = summarise(series);
+    assert.notStrictEqual(r.verdict, 'leak', `step at minute ${stepAt}: slope ${r.floorSlopeMBPerHour}`);
+  }
+});
+
+test('a floor that rose and then levelled off for the later windows is not a leak', () => {
+  const series = [];
+  for (let i = 0; i <= 60; i += 0.5) series.push(s(i, 100 + Math.min(i, 30) * 3, i));
+  assert.notStrictEqual(summarise(series).verdict, 'leak');
+});
+
+test('a steady clean ramp is still a leak', () => {
+  const series = [];
+  for (let i = 0; i <= 60; i += 0.5) series.push(s(i, 100 + i * 2, i));
+  assert.strictEqual(summarise(series).verdict, 'leak');
+});
+
 test('fewer than two samples is "unknown", never a confident zero', () => {
   assert.strictEqual(summarise([]).verdict, 'unknown');
   assert.strictEqual(summarise([s(0, 100, 1)]).verdict, 'unknown');

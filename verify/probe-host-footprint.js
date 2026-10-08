@@ -29,6 +29,7 @@ const MIN_TREND_MS = 10 * 60000;
 const LEAK_FLOOR_MB_PER_HOUR = 30;
 const LEAK_FLOOR_RISE_MB = 25;
 const CHURN_SWING_MB = 50;
+const FLOOR_STEP_NOISE_MB = 2;   // a window-to-window floor change smaller than this is GC jitter, not a rise
 
 // ---- pure helpers (unit-tested in test/probe-host-footprint.test.js) ----
 
@@ -68,6 +69,18 @@ function floorSlope(samples) {
   return slope(floors(samples)) * HOUR_MS;
 }
 
+/**
+ * "Keeps rising": most window-to-window floor steps go up, in the run as a whole AND in its later half. A fitted
+ * slope can't do this alone: one warm-up step (200 -> 300 MB at minute 8, then flat) fits 85.7 MB/h (Dexter F3,
+ * PR #131). A step changes one delta; a leak changes most of them.
+ */
+function floorKeepsRising(fl) {
+  const deltas = [];
+  for (let i = 1; i < fl.length; i++) deltas.push(fl[i].y - fl[i - 1].y);
+  const mostlyUp = (ds) => ds.length > 0 && ds.filter((d) => d > FLOOR_STEP_NOISE_MB).length * 2 > ds.length;
+  return mostlyUp(deltas) && mostlyUp(deltas.slice(Math.floor(deltas.length / 2)));
+}
+
 function summarise(samples) {
   const unknown = { verdict: 'unknown', cpuPerHour: null, samples: samples.length };
   if (samples.length < 2) return unknown;
@@ -81,7 +94,8 @@ function summarise(samples) {
   const floorRiseMB = fl[fl.length - 1].y - fl[0].y;
   let verdict = 'stable';
   if (spanMs < MIN_TREND_MS) verdict = 'too-short';
-  else if (floorSlopeMBPerHour > LEAK_FLOOR_MB_PER_HOUR && floorRiseMB > LEAK_FLOOR_RISE_MB) verdict = 'leak';
+  else if (floorSlopeMBPerHour > LEAK_FLOOR_MB_PER_HOUR && floorRiseMB > LEAK_FLOOR_RISE_MB
+    && floorKeepsRising(fl)) verdict = 'leak';
   else if (maxMB - minMB > CHURN_SWING_MB) verdict = 'churn';
   return {
     verdict,
