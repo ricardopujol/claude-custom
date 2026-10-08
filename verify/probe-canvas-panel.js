@@ -191,6 +191,9 @@ async function liveForeignHost() {
   for (const f of files) {
     const id = readIdentity({ dir: path.join(ROOT, '.harness'), port: Number(f.replace(/\.json$/, '')) });
     if (!id || !Number.isInteger(id.pid)) continue;
+    // A host of an EARLIER run of this probe (its project lives in a cc-probe-canvas-panel-* temp dir) is not a window open on this checkout: its
+    // identity file outlives a killed run, and Windows hands its pid to the next process (measured: a Chrome renderer made REFUSED fire).
+    if (path.basename(path.dirname(path.dirname(String(id.cwd || '')))).startsWith('cc-probe-canvas-panel-')) continue;
     if (await isLiveHost(id) && !path.resolve(String(id.cwd || '')).toLowerCase().startsWith(path.resolve(tmp).toLowerCase() + path.sep)) return id;
   }
   return null;
