@@ -72,6 +72,95 @@ function defaultProjectsDir() {
 }
 
 /**
+ * A per-file memo for readAgentStats (BACKLOG #74 D).
+ *
+ * WHY: a pass reads EVERY transcript of the project, and the host runs one for every SubagentStop. On the
+ * main project (664 MB, files up to 60 MB) that measured ~5 CPU-seconds and ~600 MB of RSS per pass.
+ * Almost all of those files are finished sessions that never change again.
+ *
+ * Both per-file results are pure functions of the file's bytes, so they are keyed by (mtimeMs, size) taken
+ * BEFORE the read: a file that grows while it is being read is simply a miss on the next pass. Transcripts
+ * are append-only logs, so an edit that keeps both the size and the mtime is not a case worth a hash.
+ * Failures are never stored (they throw before the set), and neither is a file that vanished between its stat
+ * and its read (null), so a file that has never been read successfully is counted on every pass exactly as
+ * without a memo. ONE EXCEPTION, on purpose (Dexter F1, PR #131): a file that WAS read fine and whose (mtime,
+ * size) hasn't changed is served from the memo without a read, so if it has turned unreadable since (a backup
+ * tool holding it, an ACL that still allows stat) the pass reports its known, unchanged figures and does not
+ * count it as unreadable. A failed stat always falls through to a real read, which reports as without a memo.
+ * `prune` drops files that left the listing, which bounds the memo by the project's size. That also makes a
+ * memo SINGLE-PROJECT: one memo per project dir (per `cwd`). Shared across two, each pass would evict the
+ * other's entries (Miguel M6).
+ *
+ * Opt-in (readAgentStats({ memo })): a caller with no memo behaves exactly as before.
+ *
+ * WHAT IT DOESN'T COVER (Miguel M2, PR #131, measured 2026-10-08): the live session transcript grows every turn,
+ * so it misses every time and its identity scan re-reads the whole file (readAgentStats and readSessionModel each
+ * do it once per SubagentStop). One scan measured ~16 ms CPU on the live 4.1 MB file and ~141 ms on the
+ * project's biggest, 58 MB. At one SubagentStop every 20 s (180 an hour, two scans each) that's ~6 s/h on the
+ * live file and ~51 s/h if it were 58 MB, against the 150 s/h measured after this fix, and real sessions finish
+ * agents far less often. So an offset-based incremental scan isn't worth its complexity yet. If it
+ * becomes worth it, the remaining cost is the RSS spike of reading a 60 MB file into one string. The first pass
+ * after the host starts is still a full, cold read.
+ */
+function createStatsMemo() {
+  const identity = new Map();
+  const transcript = new Map();
+  return {
+    identity, transcript,
+    reads: { identity: 0, transcript: 0 },        // real file reads, for tests and the probe
+    size: () => identity.size + transcript.size,
+    prune(present) {
+      for (const m of [identity, transcript]) for (const k of m.keys()) if (!present.has(k)) m.delete(k);
+    },
+  };
+}
+
+// `stat` before the read, and the key is what the stat said. No memo: just compute.
+async function memoised(map, file, counter, memo, compute) {
+  if (!memo) return compute();
+  let st;
+  try { st = await fsp.stat(file); } catch { return compute(); }   // the read reports it, exactly as without a memo
+  const hit = map.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.value;
+  memo.reads[counter]++;
+  const value = await compute();
+  // A vanished transcript (null) is not remembered: the file may come back.
+  if (value !== null) map.set(file, { mtimeMs: st.mtimeMs, size: st.size, value });
+  return value;
+}
+
+/** Every Agent spawn in one transcript, in file order: [{ id, type, name }]. Throws on read errors. */
+async function scanSpawns(file) {
+  const raw = await fsp.readFile(file, 'utf8');
+  const spawns = [];
+  const lines = raw.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Cheap pre-filter: most lines are not tool calls at all, and this runs
+    // over the whole project.
+    if (line.indexOf('"tool_use"') !== -1 && line.indexOf('"Agent"') !== -1) {
+      try {
+        const obj = JSON.parse(line);
+        const content = obj && obj.message && obj.message.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (!block || block.type !== 'tool_use' || block.name !== 'Agent') continue;
+            const input = block.input || {};
+            if (!input.subagent_type) continue;
+            spawns.push({ id: block.id || null, type: input.subagent_type, name: input.name || null });
+          }
+        }
+      } catch { /* a partial final line is normal */ }
+    }
+    if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
+  }
+  return spawns;
+}
+
+const spawnsOf = (file, memo) => memoised(memo && memo.identity, file, 'identity', memo, () => scanSpawns(file));
+
+
+/**
  * The two identity tables, built from every transcript in the project --
  * subagent transcripts included, because an agent can spawn an agent and the
  * inner `Agent` block then lives in the outer agent's transcript rather than in
@@ -86,7 +175,7 @@ function defaultProjectsDir() {
  *              within one session. See the comment at the `bySession.set`
  *              below for why both of those are load-bearing.
  */
-async function identityTables(files) {
+async function identityTables(files, memo) {
   const byToolUse = new Map();
   // name -> Map(session -> type | null). SESSION-SCOPED on purpose: Dexter,
   // logic review 2026-09-14 -- a flat name->type map merges two agents'
@@ -110,54 +199,37 @@ async function identityTables(files) {
   let errors = 0;
 
   for (const entry of files) {
-    let raw;
+    let spawns;
     try {
-      raw = await fsp.readFile(entry.file, 'utf8');
+      spawns = await spawnsOf(entry.file, memo);
     } catch (err) {
       // Same split as readTranscript: vanished is nothing, unreadable is a
       // failure.
       if (!err || err.code !== 'ENOENT') errors++;
       continue;
     }
-    const lines = raw.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // Cheap pre-filter: most lines are not tool calls at all, and this runs
-      // over the whole project.
-      if (line.indexOf('"tool_use"') !== -1 && line.indexOf('"Agent"') !== -1) {
-        try {
-          const obj = JSON.parse(line);
-          const content = obj && obj.message && obj.message.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              if (!block || block.type !== 'tool_use' || block.name !== 'Agent') continue;
-              const input = block.input || {};
-              if (!input.subagent_type) continue;
-              if (block.id) byToolUse.set(block.id, input.subagent_type);
-              if (input.name) {
-                let bySession = byName.get(input.name);
-                if (!bySession) { bySession = new Map(); byName.set(input.name, bySession); }
-                // Tests PRESENCE, not truthiness. `null` is the collision
-                // marker and is itself falsy, so an `existing && ...` guard
-                // takes the else branch once poisoned and writes a concrete
-                // type back -- the marker survived exactly until the next
-                // spawn of that name. Miguel and Dexter both caught this at
-                // the 2026-09-15 merge gate: A, B, A resolved to A and
-                // reported `resolved: true`, which is the "silently picking
-                // whichever spawn was parsed last" this exists to prevent.
-                // Poisoning must be one-way: null !== any type, so once set
-                // it stays set.
-                if (!bySession.has(entry.session)) {
-                  bySession.set(entry.session, input.subagent_type);
-                } else if (bySession.get(entry.session) !== input.subagent_type) {
-                  bySession.set(entry.session, null);
-                }
-              }
-            }
-          }
-        } catch { /* a partial final line is normal */ }
+    // Replayed in FILE ORDER, which is what the collision rule below depends on.
+    for (const { id, type, name } of spawns) {
+      if (id) byToolUse.set(id, type);
+      if (name) {
+        let bySession = byName.get(name);
+        if (!bySession) { bySession = new Map(); byName.set(name, bySession); }
+        // Tests PRESENCE, not truthiness. `null` is the collision
+        // marker and is itself falsy, so an `existing && ...` guard
+        // takes the else branch once poisoned and writes a concrete
+        // type back -- the marker survived exactly until the next
+        // spawn of that name. Miguel and Dexter both caught this at
+        // the 2026-09-15 merge gate: A, B, A resolved to A and
+        // reported `resolved: true`, which is the "silently picking
+        // whichever spawn was parsed last" this exists to prevent.
+        // Poisoning must be one-way: null !== any type, so once set
+        // it stays set.
+        if (!bySession.has(entry.session)) {
+          bySession.set(entry.session, type);
+        } else if (bySession.get(entry.session) !== type) {
+          bySession.set(entry.session, null);
+        }
       }
-      if (i % PARSE_BATCH === PARSE_BATCH - 1) await yieldToLoop();
     }
   }
   return { byToolUse, byName, errors };
@@ -200,7 +272,11 @@ function resolveAgent(meta, tables, session) {
   return { agent: label, source: label ? 'unresolved' : 'unknown' };
 }
 
-async function readTranscript(file) {
+async function readTranscript(file, memo) {
+  return memoised(memo && memo.transcript, file, 'transcript', memo, () => readTranscriptUncached(file));
+}
+
+async function readTranscriptUncached(file) {
   let raw;
   try {
     raw = await fsp.readFile(file, 'utf8');
@@ -273,7 +349,7 @@ async function readTranscript(file) {
  * recorded and does not count against `ok`; a meta or transcript that exists
  * but is unreadable or corrupt does.
  */
-async function readAgentStats({ cwd, projectsDir } = {}) {
+async function readAgentStats({ cwd, projectsDir, memo } = {}) {
   const root = projectsDir || defaultProjectsDir();
   const dir = path.join(root, projectDirName(cwd));
 
@@ -286,7 +362,8 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
       enumErrors: 1, identityErrors: 0, readErrors: 0 };
   }
 
-  const tables = await identityTables(files);
+  if (memo) memo.prune(new Set(files.map(entry => entry.file)));
+  const tables = await identityTables(files, memo);
 
   const byAgent = new Map();
   let unresolved = 0;
@@ -316,7 +393,7 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
 
     let read;
     try {
-      read = await readTranscript(entry.file);
+      read = await readTranscript(entry.file, memo);
     } catch (err) {
       // BOUND and logged, not a bare catch. Dexter, 2026-09-15: swallowing the
       // error silently means a future TypeError from inside the parse loop
@@ -373,7 +450,7 @@ async function readAgentStats({ cwd, projectsDir } = {}) {
 // the load-bearing half of this module's absence/zero distinction, and a
 // mutation of it was measured surviving the whole suite when it was private.
 module.exports = {
-  readAgentStats, resolveAgent, identityTables, readTranscript, SUBAGENTS, IDLE_GAP_MS,
+  readAgentStats, createStatsMemo, resolveAgent, identityTables, readTranscript, SUBAGENTS, IDLE_GAP_MS,
   // Shared with host/agent-log-session.js so "where are the transcripts" is
   // stated once (it was module-private; the log's default depended on it).
   defaultProjectsDir,

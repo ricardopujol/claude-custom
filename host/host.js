@@ -32,7 +32,7 @@ const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portra
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { readUsage, EMPTY } = require('./usage');
-const { readAgentStats } = require('./agent-stats');
+const { readAgentStats, createStatsMemo } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
 const { wholeRoster, scanProjects } = require('./roster-index');
 const { lifetimeAgentTokens, readCacheSeed } = require('./agent-stats-cache');
@@ -970,10 +970,13 @@ function handleRosterMessage(msg) {
 // would put that cost on a clock for a figure that only changes on a finish.
 let lastAgentStats = { ok: false, agents: [], unresolved: 0 };
 let agentStatsPending = null;
+// Remembers each finished transcript's result by (mtime, size), so a SubagentStop re-reads only what changed
+// (BACKLOG #74 D: the full re-read cost ~5 CPU-s and ~600 MB per finish on a 664 MB project).
+const agentStatsMemo = createStatsMemo();
 
 function refreshAgentStats() {
   if (agentStatsPending) return agentStatsPending;
-  agentStatsPending = readAgentStats({ cwd: CWD })
+  agentStatsPending = readAgentStats({ cwd: CWD, memo: agentStatsMemo })
     .then((stats) => { lastAgentStats = stats; return stats; })
     .catch((err) => {
       console.error('[host] agent stats failed:', err && err.message);
@@ -1114,6 +1117,9 @@ const sessionModels = createSessionModelRefresher({
     projectsDir: defaultProjectsDir(),
     projectDir: projectDirName(CWD),
     sessionId: id,
+    // The same project as readAgentStats, so one memo serves both (#74 D, PR #131 M3). Both can run at once on a
+    // SubagentStop: each entry is set as one (stat, value) pair, and a concurrent prune can only cause a miss.
+    memo: agentStatsMemo,
   }),
   currentSessionId: () => sessionId,
   onChange: (m) => broadcastControl({ type: 'sessionModel', ...m }),
