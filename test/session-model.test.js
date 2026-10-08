@@ -823,3 +823,22 @@ test('mergeSessionModel: a read with NO errors field is not clean, and its count
   assert.strictEqual(m.agents.L && m.agents.L.model, 'm', 'no errors field must not count as a clean read');
   assert.strictEqual(m.errors, null, 'an unreported count is unknown -- never a confident zero');
 });
+
+// Miguel M3, PR #131: readSessionModel runs on every SessionStart and every SubagentStop, and its identity
+// walk re-read every file of the session. With the host's agent-stats memo it re-reads only what changed.
+test('readSessionModel with a memo: a second pass re-reads no unchanged file and answers the same', async () => {
+  const { createStatsMemo } = require('../host/agent-stats');
+  const { projectsDir, projectDir, dir } = project();
+  writeSession(dir, 's1', [agentSpawn('toolu_1', 'code-reviewer', 'miguel'), assistant('claude-opus-5', '2026-01-01T00:00:00.000Z')]);
+  writeSubagent(dir, 's1', 'agent-a', { agentType: 'miguel' }, [assistant('claude-sonnet-5', '2026-01-01T00:02:00.000Z')]);
+  const plain = await readSessionModel({ projectsDir, projectDir, sessionId: 's1' });
+  const memo = createStatsMemo();
+  const first = await readSessionModel({ projectsDir, projectDir, sessionId: 's1', memo });
+  const reads = memo.reads.identity;
+  assert.ok(reads >= 2, `identity reads ${reads}`);
+  const second = await readSessionModel({ projectsDir, projectDir, sessionId: 's1', memo });
+  assert.strictEqual(memo.reads.identity, reads);
+  assert.deepStrictEqual(first, plain);
+  assert.deepStrictEqual(second, plain);
+  assert.ok(plain.agents['code-reviewer'], 'the fixture resolves the agent');
+});

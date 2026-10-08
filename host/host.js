@@ -1117,6 +1117,9 @@ const sessionModels = createSessionModelRefresher({
     projectsDir: defaultProjectsDir(),
     projectDir: projectDirName(CWD),
     sessionId: id,
+    // The same project as readAgentStats, so one memo serves both (#74 D, PR #131 M3). Both can run at once on a
+    // SubagentStop: each entry is set as one (stat, value) pair, and a concurrent prune can only cause a miss.
+    memo: agentStatsMemo,
   }),
   currentSessionId: () => sessionId,
   onChange: (m) => broadcastControl({ type: 'sessionModel', ...m }),
