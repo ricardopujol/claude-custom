@@ -28,7 +28,7 @@
  * deleted from the registry regardless. A throw is still handled (treated as
  * failure), for a resumeFn that does throw.
  */
-const { killPidTree } = require('../../host/kill-tree');
+const { killPidTree, killChildTree, trackExit } = require('../../host/kill-tree');
 
 // A registry is a small piece of mutable state one probe process owns for
 // its own lifetime -- not shared across probes, not persisted. A factory
@@ -89,6 +89,18 @@ function createHygieneRegistry({ killFn = killPidTree } = {}) {
     registerSuspended(pid) { suspendedPids.add(pid); },
     clearSuspended(pid) { suspendedPids.delete(pid); },
     registerSpawnedTree(pid) { spawnedTrees.add(pid); },
+    // The form to use when the probe holds the child (ChildProcess or node-pty IPty): its pid leaves the registry
+    // the moment it exits, so a later cleanup never kills a pid that may already be someone else's (PR #130, Dexter #9).
+    registerChild(child) {
+      if (!child || !child.pid) return child;
+      const pid = child.pid;
+      trackExit(child);
+      spawnedTrees.add(pid);
+      const drop = () => { spawnedTrees.delete(pid); };
+      if (typeof child.once === 'function') child.once('exit', drop);
+      else if (typeof child.onExit === 'function') child.onExit(drop);
+      return child;
+    },
     addCleanup(fn) { extraCleanups.add(fn); },
     removeCleanup(fn) { extraCleanups.delete(fn); },
     unregisterSpawnedTree(pid) { spawnedTrees.delete(pid); },
@@ -120,4 +132,4 @@ function createHygieneRegistry({ killFn = killPidTree } = {}) {
   return registry;
 }
 
-module.exports = { createHygieneRegistry, killPidTree };
+module.exports = { createHygieneRegistry, killPidTree, killChildTree, trackExit };

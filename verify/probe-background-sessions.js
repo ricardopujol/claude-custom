@@ -109,7 +109,7 @@ function startHost(name, cwd, port) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry') };
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
   const h = { name, port, token, child, out: '' };
   child.stdout.on('data', d => { h.out += d; });
   child.stderr.on('data', d => { h.out += d; });
@@ -148,7 +148,7 @@ async function launchApp(cwd, extraEnv = {}) {
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${path.join(tmp, 'user-data')}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });

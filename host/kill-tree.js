@@ -20,10 +20,47 @@
  */
 const { spawn, spawnSync } = require('child_process');
 
+/*
+ * Has this child ended? (PR #130 review, Dexter #1.) Once a child's exit has been handled its pid is free and may
+ * already name another process, so a kill BY PID is only safe before that. A Node ChildProcess says so itself
+ * (exitCode or signalCode set); a node-pty IPty does not, so its exit is recorded by trackExit() from the moment it
+ * is spawned. An IPty nobody tracked cannot be judged: childExited() then answers "ended" (doubt keeps the stranger
+ * safe), and killChildTree says why it did nothing.
+ */
+const EXITED = Symbol.for('claude-custom.child.exited');
+const TRACKED = Symbol.for('claude-custom.child.tracked');
+
+function trackExit(child) {
+  if (!child || child[TRACKED]) return child;
+  child[TRACKED] = true;
+  const mark = () => { child[EXITED] = true; };
+  if (typeof child.once === 'function') child.once('exit', mark);
+  else if (typeof child.onExit === 'function') child.onExit(mark);
+  return child;
+}
+
+function childExited(child) {
+  if (!child) return true;
+  if (child[EXITED] === true) return true;
+  if ('exitCode' in child) return child.exitCode !== null || (child.signalCode !== null && child.signalCode !== undefined);
+  return !child[TRACKED];
+}
+
+// Kill a child's tree by its pid, but only while the child is provably still running. True if a kill was sent.
+function killChildTree(child, { killFn = killPidTree } = {}) {
+  if (!child || !child.pid) return false;
+  if (childExited(child)) {
+    if (!('exitCode' in child) && !child[TRACKED]) console.log(`[kill-tree] pid ${child.pid}: not killed, its exit was never tracked (call trackExit at spawn)`);
+    return false;
+  }
+  killFn(child.pid);
+  return true;
+}
+
 // child is a Node ChildProcess (has .pid, .exitCode, .kill()) -- the shape
 // host/host.js's own spawned children (the health runner, the launcher) have.
 function killTree(child, { spawnFn = spawn } = {}) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || childExited(child)) return;
   if (process.platform === 'win32') {
     // The try/catch below does NOT catch this: a ChildProcess reports a failed
     // spawn through an ASYNC 'error' event, and an EventEmitter with no 'error'
@@ -80,4 +117,4 @@ function killPidTree(pid) {
   try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
 }
 
-module.exports = { killTree, killPidTree };
+module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited };

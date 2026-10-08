@@ -135,7 +135,7 @@ async function launchApp(cwd) {
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -277,7 +277,7 @@ async function launchReady(cwd) {
     if (!ready) {
       console.log(`(attempt ${attempt}: the window never came up; ${app.out.slice(-300).replace(/s+/g, ' ')})`);
       await quitApp(app);
-      if (!app.exited) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(app.child.pid); } catch { /* gone */ } }
+      if (!app.exited) { try { require(path.join(ROOT, 'host', 'kill-tree')).killChildTree(app.child); } catch { /* gone */ } }
     }
   }
   return { app, ready };

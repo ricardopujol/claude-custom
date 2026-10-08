@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /**
  * Does *Stop that session* work between REAL hosts? (host/stop-holder.js)
  *
@@ -220,7 +221,7 @@ function finish(code) {
   // may have been reused by now, and taskkill /T /F on it ends a stranger.
   for (const h of hosts) {
     if (h.child.exitCode !== null || h.child.signalCode !== null) continue;
-    try { execFileSync('taskkill', ['/PID', String(h.child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ }
+    try { killChildTree(h.child); } catch { /* gone */ }
   }
   setTimeout(() => {
     try { fs.rmSync(repo, { recursive: true, force: true }); } catch { /* best effort */ }

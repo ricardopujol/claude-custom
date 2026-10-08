@@ -173,7 +173,7 @@ async function main() {
   let hostLog = '';
   host.stdout.on('data', d => { hostLog += d; });
   host.stderr.on('data', d => { hostLog += d; });
-  if (host.pid) hygiene.registerSpawnedTree(host.pid);
+  if (host.pid) hygiene.registerChild(host);
 
   let app = null;
   let cdp = null;
@@ -196,7 +196,7 @@ async function main() {
     app = spawnElectron(electronExe, [REPO, `--remote-debugging-port=${CDP}`], {
       env: { ...env, CLAUDE_CUSTOM_SIDE_TAB: 'agents' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (app.pid) hygiene.registerSpawnedTree(app.pid);
+    if (app.pid) hygiene.registerChild(app);
     let appLog = '';
     app.stdout.on('data', d => { appLog += d; });
     app.stderr.on('data', d => { appLog += d; });

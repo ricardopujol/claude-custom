@@ -40,7 +40,7 @@ test('it does not depend on whether the machine is plugged in', () => {
 
 test('every process it starts is cleaned up on every exit path, including Ctrl+C', () => {
   assert.match(PROBE, /hygiene\.install\(\)/);
-  assert.match(PROBE, /hygiene\.registerSpawnedTree\(child\.pid\)/);
+  assert.match(PROBE, /hygiene\.registerChild\(child\)/);
   assert.match(PROBE, /hygiene\.addCleanup\(killEverything\)/);
   assert.match(PROBE, /hygiene\._emergencyCleanup\('done'\)/);
 });

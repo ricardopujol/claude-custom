@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* Backlog #64: the accent a person picks must be the only accent on screen.  (re-runnable)
 
      node verify/probe-accent.js        (exit 0 = every check held; OUT=<png> and PORT=<n> optional)
@@ -68,7 +69,7 @@ Object.assign(env, {
 const children = [];
 const killTree = (c) => {
   if (!c || !c.pid) return;
-  try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ }
+  try { killChildTree(c); } catch { /* already gone */ }
 };
 const cleanup = () => {
   children.forEach(killTree);

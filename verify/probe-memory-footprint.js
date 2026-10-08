@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* BACKLOG #20 -- what does the app actually cost in memory?
 
    This is the BASELINE every later memory change is judged against (#1, #2,
@@ -178,7 +179,7 @@ async function main() {
     // our tree between this snapshot and the kill escapes -- the same window
     // status-relay.js's killTree accepts. The survivor check below reports it.
     try { sample(); } catch {}
-    spawnSync('taskkill', ['/PID', String(app.pid), '/T', '/F'], { windowsHide: true });
+    killChildTree(app);
     await sleep(1000);
     const ours = (p) => seen.get(p.ProcessId) === (p.CommandLine || p.Name);
     for (const p of allProcesses().filter(ours)) {

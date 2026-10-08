@@ -123,7 +123,7 @@ const check = (label, ok, detail) => {
   }
 
   // The tree this probe started, by pid; never by name (#74 B: /IM electron.exe also killed Ricardo's own windows).
-  try { require('../host/kill-tree').killPidTree(app.pid); } catch {}
+  try { require('../host/kill-tree').killChildTree(app); } catch {}
   console.log(failures === 0 ? '\nALL PASS — now LOOK at ' + SHOT : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();

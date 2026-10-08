@@ -171,7 +171,7 @@ async function launchApp(cwd) {
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false, exitCode: null };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });

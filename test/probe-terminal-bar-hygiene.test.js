@@ -31,7 +31,7 @@ test('the bar probe never touches the real state: registry, portraits, uploads a
 
 test('every process the bar probe starts is cleaned up on every exit path, including Ctrl+C', () => {
   assert.match(BAR, /hygiene\.install\(\)/);
-  assert.match(BAR, /hygiene\.registerSpawnedTree\(child\.pid\)/);
+  assert.match(BAR, /hygiene\.registerChild\(child\)/);
   assert.match(BAR, /hygiene\.addCleanup\(killEverything\)/);
   assert.match(BAR, /hygiene\._emergencyCleanup\('done'\)/);
 });
@@ -53,7 +53,7 @@ test('the signal probe\'s real capture is opt-in, never bills a key, and ends on
   assert.match(SIGNAL, /delete env\.ANTHROPIC_API_KEY/);
   assert.match(SIGNAL, /delete env\.ELECTRON_RUN_AS_NODE/);
   assert.match(SIGNAL, /k\.startsWith\('CLAUDE_CUSTOM_'\)/);
-  assert.match(SIGNAL, /killPidTree\(term\.pid\)/);
+  assert.match(SIGNAL, /killChildTree\(term\)/);
   assert.doesNotMatch(SIGNAL, /taskkill|Stop-Process|pkill|killall|\/IM\b/i);
 });
 
@@ -79,7 +79,7 @@ test('F6: the anchor probe runs the real CLI in a temp folder, skips no permissi
   assert.doesNotMatch(ANCHOR, /dangerously-skip-permissions/);
   assert.match(ANCHOR, /delete env\.ANTHROPIC_API_KEY/);
   assert.match(ANCHOR, /delete env\.ELECTRON_RUN_AS_NODE/);
-  assert.match(ANCHOR, /killPidTree\(p\.pid\)/);
+  assert.match(ANCHOR, /killChildTree\(p\)/);
   assert.match(ANCHOR, /npm', \['root', '-g'\]/);
   assert.doesNotMatch(ANCHOR, /taskkill|Stop-Process|pkill|killall|\/IM\b/i);
 });

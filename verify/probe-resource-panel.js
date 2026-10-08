@@ -111,7 +111,7 @@ async function launchApp(cwd) {
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -355,7 +355,7 @@ async function main() {
       const posix = idleJs.replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`).replace(/\\/g, '/');
       const payload = `source /dev/null 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && eval 'node ${posix}' < /dev/null && pwd -P >| /dev/null`;
       const sh = spawn(bashExe, ['-c', payload], { stdio: 'ignore', windowsHide: true });
-      hygiene.registerSpawnedTree(sh.pid);
+      hygiene.registerChild(sh);
       try {
         const line = await waitFor(async () => { const l = cimLine(sh.pid); return /eval/.test(l) ? l : null; }, 15000, 300);
         check('3: a REAL Bash-tool command line (read from the process table) labels as the script it runs', !!line && displayName(line, 'bash.exe') === 'idle-label.js', JSON.stringify([line && line.slice(0, 160), line && displayName(line, 'bash.exe')]));

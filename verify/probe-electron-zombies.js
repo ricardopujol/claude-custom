@@ -75,7 +75,7 @@ async function main() {
   if (process.platform !== 'win32') { console.log('SKIP: reads the Windows process table'); return 0; }
   const census = require('./lib/proc-census');
   const { launchElectron, stopElectron, waitForExit, sleep } = require('./lib/launch-electron');
-  const { killPidTree } = require('../host/kill-tree');
+  const { killChildTree } = require('../host/kill-tree');
 
   const CYCLES = Number(argOf('cycles', 5));
   const VIEWS = Number(argOf('views', 3));
@@ -118,7 +118,7 @@ async function main() {
 
       const t0 = Date.now();
       if (CLOSE === 'exit') fs.writeFileSync(quitFile, 'quit');
-      else killPidTree(h.pid);
+      else killChildTree(h.child);
       const polls = [];
       while ((Date.now() - t0) / 1000 < WATCH_S) {
         await sleep(POLL_S * 1000);
@@ -137,13 +137,10 @@ async function main() {
         const root = sum.find(r => r.pid === h.pid);
         check(`cycle ${c}: the app exited when asked`, h.exited === true || (root && root.goneAfterS !== null));
       }
-      // Still listed after the watch: ours by pid AND start time at the last poll, so kill each ONE by pid
-      // (TerminateProcess, no /T: a tree walk from a pid we only watch could take recycled-pid orphans with it).
-      const last = polls.length ? polls[polls.length - 1].rows : [];
-      for (const r of left) {
-        const p = tracked.find(x => x.pid === r.pid);
-        if (p && last.some(x => x.pid === p.pid && x.start === p.start)) { try { process.kill(p.pid); } catch { /* gone */ } }
-      }
+      // Still listed after the watch: NOT killed here. A row seen at the last poll proves nothing about the pid now
+      // (these are the processes that are exiting; PR #130 review, Dexter #2), and no handle is held on them. A root
+      // that is still running is stopped below through its handle; the rest are reported and left to finish.
+      if (left.length) console.log(`  cycle ${c}: ${left.length} still listed at ${WATCH_S}s, left to exit: ${left.map(r => `${r.type}:${r.pid}`).join(' ')}`);
     } finally {
       // Let a root killed above report its exit first, so the stop below does not kill its (maybe reused) pid.
       await waitForExit(h.child, 5000);

@@ -186,7 +186,7 @@ app.whenReady().then(async () => {
   delete env.ELECTRON_RUN_AS_NODE;
 
   const host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(host.pid);
+  hygiene.registerChild(host);
   let hostOut = '';
   host.stdout.on('data', d => { hostOut += d; });
   host.stderr.on('data', d => { hostOut += d; });
@@ -201,7 +201,7 @@ app.whenReady().then(async () => {
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
   const electron = spawnElectron(require('electron'), [mainFile], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(electron.pid);
+  hygiene.registerChild(electron);
   let out = '';
   electron.stdout.on('data', d => { out += d; process.stdout.write(d); });
   electron.stderr.on('data', d => { if (/probe|Error/.test(String(d))) process.stderr.write(d); });

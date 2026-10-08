@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* Backlog #66: the indexing field in a REAL window.  (re-runnable)
 
      node verify/probe-indexing-strip.js        (exit 0 = every check held; PORT=<n> optional)
@@ -60,7 +61,7 @@ fs.mkdirSync(shots, { recursive: true });
 const children = [];
 const killTree = (c) => {
   if (!c || !c.pid) return;
-  try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ }
+  try { killChildTree(c); } catch { /* already gone */ }
 };
 let fake = null;
 const cleanup = async () => {
