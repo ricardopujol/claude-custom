@@ -28,7 +28,8 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
+const { killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
+const { spawnElectron } = require(path.join(__dirname, 'lib', 'launch-electron'));
 const MAIN = path.join(__dirname, 'probe71', 'sandbox-main.js');
 
 function runElectron(mode) {
@@ -42,7 +43,7 @@ function runElectron(mode) {
     env.PROBE_WATCH = '1';
     if (process.env.PROBE_OWNER_FOCUS) env.PROBE_ARM = path.join(os.tmpdir(), `probe-canvas-windows-${process.pid}-${mode}.armed`);
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-canvas-'));
-    const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')), [MAIN, `--user-data-dir=${userData}`],
+    const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [MAIN, `--user-data-dir=${userData}`],
       { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     // The window watcher: every visible top-level window of the Electron tree is a native dialog. It logs each one and closes it by handle,
     // so a dialog can never hang the run (see verify/probe71/watch-windows.ps1).
@@ -54,12 +55,12 @@ function runElectron(mode) {
     let log = '';
     child.stdout.on('data', d => { log += d; });
     child.stderr.on('data', d => { log += d; });
-    const timer = setTimeout(() => { killPidTree(child.pid); reject(new Error('timeout\n' + log.slice(-800))); }, 280000);
+    const timer = setTimeout(() => { killChildTree(child); reject(new Error('timeout\n' + log.slice(-800))); }, 280000);
     child.on('exit', () => {
       clearTimeout(timer);
-      try { killPidTree(child.pid); } catch { /* already gone */ }
+      try { killChildTree(child); } catch { /* already gone */ }
       try { fs.writeFileSync(winStop, 'stop'); } catch { /* the watcher also ends when the root process does */ }
-      setTimeout(() => { try { killPidTree(watcher.pid); } catch { /* already gone */ } }, 1500);
+      setTimeout(() => { try { killChildTree(watcher); } catch { /* already gone */ } }, 1500);
       let data = null; let exitMs = null;
       try { data = JSON.parse(fs.readFileSync(out, 'utf8')); exitMs = Date.now() - fs.statSync(out).mtimeMs; } catch { /* reported below */ }
       let windows = [];
