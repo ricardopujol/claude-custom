@@ -27,7 +27,7 @@ const path = require('path');
 const readline = require('readline');
 const { panelDir, MAX_HTML_BYTES } = require('./canvas-store');
 const { readShelf } = require('./canvas-shelf');
-const { renameWithRetry } = require('./atomic-write');
+const { writeFileAtomic } = require('./atomic-write');
 
 const RENDER_DESCRIPTION = [
   'Replace the page in the user\'s "Claude\'s panel", a side panel in claude-custom\'s window. Do this ONLY when the user asks you to build or change something in that panel; never change it on your own.',
@@ -76,9 +76,7 @@ function createCanvasMcp({ root, pointerFile } = {}) {
     try {
       fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, 'index.html');
-      const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(temp, html);
-      renameWithRetry(temp, file);
+      writeFileAtomic(file, html);
     } catch (err) { return fail(`Could not write the panel: ${err && err.message ? err.message : 'unknown error'}`); }
     return ok(`Rendered ${bytes} bytes into the user's Claude's panel. It shows when the panel is open; the user was not notified.`);
   }

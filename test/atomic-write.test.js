@@ -498,3 +498,36 @@ test('async INVARIANT: an exhausted retry never sleeps after its final attempt',
       `attempts=${attempts}: ${slept.length} sleeps for ${attempts} attempts`);
   }
 });
+
+// PR #125 Miguel M1: no temp file survives a write or a rename that throws.
+const { writeFileAtomic } = require('../host/atomic-write');
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-atomic-'));
+
+test('writeFileAtomic writes the file and leaves no temp', () => {
+  const dir = tmp();
+  writeFileAtomic(path.join(dir, 'a.json'), '{"a":1}');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a.json'), 'utf8'), '{"a":1}');
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.json']);
+});
+
+test('writeFileAtomic: a rename that throws removes the temp and rethrows', () => {
+  const dir = tmp();
+  const boom = Object.assign(new Error('EPERM: held'), { code: 'EPERM' });
+  assert.throws(() => writeFileAtomic(path.join(dir, 'a.json'), 'x', { rename: () => { throw boom; } }), boom);
+  assert.deepStrictEqual(fs.readdirSync(dir), [], 'the temp is gone');
+});
+
+test('writeFileAtomic: a write that throws midway (disk full) removes the half-written temp and rethrows', () => {
+  const dir = tmp();
+  const boom = Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+  const write = (p, data) => { fs.writeFileSync(p, data.slice(0, 1)); throw boom; };
+  assert.throws(() => writeFileAtomic(path.join(dir, 'a.json'), 'xyz', { write }), boom);
+  assert.deepStrictEqual(fs.readdirSync(dir), []);
+});
+
+test('writeFileAtomic: a REAL refused rename (the target is a folder) leaves no temp', () => {
+  const dir = tmp();
+  fs.mkdirSync(path.join(dir, 'a.json'));
+  assert.throws(() => writeFileAtomic(path.join(dir, 'a.json'), 'x'));
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.json']);
+});

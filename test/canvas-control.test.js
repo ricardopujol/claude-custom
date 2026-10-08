@@ -274,3 +274,10 @@ test('a control removes ITS pointer on close, but not one another host has since
   taken.control.close();
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(taken.pointerFile, 'utf8')), { sessionId: 'THEIRS' }, 'a pointer that now names another session is not ours to remove');
 });
+
+test('PR #125 Miguel M1: a pointer write that fails leaves no temp file', () => {
+  const r = rig();
+  fs.mkdirSync(r.pointerFile, { recursive: true });                            // the rename onto it is refused
+  r.control.sessionChanged('FAILS');
+  assert.deepStrictEqual(fs.readdirSync(path.dirname(r.pointerFile)).filter((f) => f.endsWith('.tmp')), []);
+});

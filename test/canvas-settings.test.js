@@ -105,3 +105,10 @@ test('property: whatever sequence of choices, the file always reads back as the 
     assert.strictEqual(canvasMcpEnabled({ env: {}, stateDir: dir }), choices[choices.length - 1]);
   }), { numRuns: 40 });
 });
+
+test('PR #125 Miguel M1: a settings write that fails leaves no temp file', () => {
+  const blocked = state();
+  fs.mkdirSync(path.join(blocked, 'canvas-settings.json'));
+  assert.strictEqual(writeMcpSetting(blocked, true), null);
+  assert.deepStrictEqual(fs.readdirSync(blocked), ['canvas-settings.json']);
+});

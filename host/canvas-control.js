@@ -20,7 +20,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { renameWithRetry } = require('./atomic-write');
+const { writeFileAtomic } = require('./atomic-write');
 const { panelDir, validSessionId, readPage, readHosts, setHostDecision, MAX_HTML_BYTES } = require('./canvas-store');
 const { isShelfEvent, artifactFromPayload, readShelf, addToShelf } = require('./canvas-shelf');
 
@@ -69,9 +69,7 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
     try {
       if (!id) { removeOwnPointer(); return; }
       fs.mkdirSync(path.dirname(pointerFile), { recursive: true });
-      const temp = `${pointerFile}.${process.pid}.tmp`;
-      fs.writeFileSync(temp, JSON.stringify({ sessionId: id }));
-      renameWithRetry(temp, pointerFile);
+      writeFileAtomic(pointerFile, JSON.stringify({ sessionId: id }));
       wrote = id;
     } catch (err) { log(`[canvas] could not write the session pointer: ${err && err.message}`); }
   }

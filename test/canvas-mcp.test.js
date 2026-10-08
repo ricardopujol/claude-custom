@@ -170,3 +170,11 @@ test('as a process with no environment it still starts and answers, and refuses 
   await new Promise(res => child.on('exit', res));
   assert.strictEqual(JSON.parse(buf.split('\n')[0]).result.isError, true);
 });
+
+test('PR #125 Miguel M1: a render whose write fails leaves no temp file in the session folder, and says so', () => {
+  const r = rig();
+  fs.mkdirSync(path.join(r.dir(), 'index.html'), { recursive: true });         // the rename onto it is refused
+  const res = r.call('canvas_render', { html: '<p>x</p>' });
+  assert.strictEqual(res.result.isError, true);
+  assert.deepStrictEqual(fs.readdirSync(r.dir()), ['index.html']);
+});

@@ -148,3 +148,10 @@ test('property: whatever the text, an entry from the text fallback is on claude.
     if (item) assert.strictEqual(new URL(item.url).hostname, 'claude.ai');
   }), { numRuns: 300 });
 });
+
+test('PR #125 Miguel M1: a shelf write that fails leaves no temp file in the session folder', () => {
+  const dir = tmpDir('cc-shelf-fail-');
+  fs.mkdirSync(path.join(dir, 'shelf.json'));          // the rename onto it is refused
+  assert.throws(() => addToShelf(dir, { title: 't', url: URL1, time: NOW.toISOString() }));
+  assert.deepStrictEqual(fs.readdirSync(dir), ['shelf.json']);
+});

@@ -14,7 +14,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { renameWithRetry } = require('./atomic-write');
+const { writeFileAtomic } = require('./atomic-write');
 
 const OFF_WORDS = new Set(['0', 'off', 'false', 'no']);
 const ON_WORDS = new Set(['1', 'on', 'true', 'yes']);
@@ -61,9 +61,7 @@ function writeMcpSetting(stateDir, on) {
       if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) rec = raw;
     } catch { /* missing or corrupt: start again from nothing */ }
     fs.mkdirSync(stateDir, { recursive: true });
-    const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify({ ...rec, mcp: on }, null, 2));
-    renameWithRetry(temp, file);
+    writeFileAtomic(file, JSON.stringify({ ...rec, mcp: on }, null, 2));
     return on;
   } catch { return null; }
 }

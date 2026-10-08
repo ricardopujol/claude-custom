@@ -18,7 +18,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { renameWithRetry } = require('./atomic-write');
+const { writeFileAtomic } = require('./atomic-write');
 
 const MAX_SHELF = 200;
 const TITLE_MAX = 120;
@@ -92,9 +92,7 @@ function addToShelf(dir, item) {
   const next = [item, ...readShelf(dir).filter(i => i.url !== item.url)].slice(0, MAX_SHELF);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'shelf.json');
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify({ version: 1, items: next }, null, 2));
-  renameWithRetry(temp, file);
+  writeFileAtomic(file, JSON.stringify({ version: 1, items: next }, null, 2));
   return next;
 }
 
