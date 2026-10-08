@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree, trackExit } = require('../host/kill-tree');
 /* What does a /bedtime run emit, and what rule starts, paces and ends a night?   (re-runnable)
 
    Backlog #52 (documentation/DESIGN_TERMINAL_BAR.md) drew the bedtime rule from what the skill is SUPPOSED to do:
@@ -113,7 +114,6 @@ function findClaude() {
 // --- --capture ---------------------------------------------------------------
 async function capture() {
   const pty = require('node-pty');
-  const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-bedtime-'));
   const logFile = path.join(base, 'hooks.jsonl').replace(/\\/g, '/');
   const self = __filename.replace(/\\/g, '/');
@@ -156,7 +156,8 @@ async function capture() {
   });
   let screen = '';
   term.onData(d => { screen += d; });
-  const killed = () => { try { killPidTree(term.pid); } catch { /* gone */ } };
+  trackExit(term);  // node-pty reports no exitCode: record its exit now, so killChildTree can tell
+  const killed = () => { try { killChildTree(term); } catch { /* gone */ } };
   process.on('exit', killed);
   try {
     await sleep(9000);

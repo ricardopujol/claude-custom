@@ -26,6 +26,7 @@
  */
 
 const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -275,8 +276,8 @@ async function runRealApp() {
     CLAUDE_CUSTOM_TABS_PROBE: String(port), CLAUDE_CUSTOM_TABS_PROBE_TOKEN: token,
     CLAUDE_CUSTOM_REGISTRY: registry, CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits-real'), CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads-real'),
   };
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${path.join(tmp, 'userData-real')}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${path.join(tmp, 'userData-real')}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(child);
   const app = { port, token, out: '' };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -326,7 +327,7 @@ async function runRealApp() {
     // The tab's host is spawned detached by the app, so it is not under the Electron PID: add it (and its pty) by the pid the tab list gave.
     const tree = [...new Set([...descendantsOf(child.pid), ...(out.hostPid ? descendantsOf(out.hostPid) : [])])];
     hygiene._emergencyCleanup('phase2-done');
-    if (out.hostPid) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(out.hostPid); } catch { /* already gone */ } }
+    if (out.hostPid) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(out.hostPid); } catch { /* already gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
     await sleep(1500);
     out.left = tree.filter(pid => { try { process.kill(pid, 0); return true; } catch { return false; } });
     out.treeSize = tree.length;
@@ -369,7 +370,7 @@ async function runRealApp() {
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
 
   const host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(host.pid);
+  hygiene.registerChild(host);
   let hostOut = '';
   host.stdout.on('data', d => { hostOut += d; });
   host.stderr.on('data', d => { hostOut += d; });
@@ -383,8 +384,8 @@ async function runRealApp() {
 
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
-  const electron = spawn(require(path.join(ROOT, 'node_modules', 'electron')), [mainFile], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(electron.pid);
+  const electron = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [mainFile], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(electron);
   const events = [];
   let carry = '';
   electron.stdout.on('data', (d) => {

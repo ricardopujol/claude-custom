@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* Does the statusLine document carry the context window? Measured on the REAL
    CLI, sending NO prompt -- /model is a local command, so this spends no tokens.
 
@@ -60,7 +61,6 @@ if (process.argv[2] === '--status') {
 
 const pty = require('node-pty');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
-const { killPidTree } = require('../host/kill-tree');
 const { createSettingsGuard } = require('./lib/settings-guard');
 
 const COLS = 110;
@@ -107,7 +107,7 @@ async function main() {
   const shell = process.platform === 'win32' ? 'cmd.exe' : 'claude';
   const args = process.platform === 'win32' ? ['/c', 'claude', '--settings', settingsFile] : ['--settings', settingsFile];
   const child = pty.spawn(shell, args, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
   child.onData(() => { /* the screen is not what is measured here */ });
   let failed = false;
   try {
@@ -144,7 +144,7 @@ async function main() {
     console.error('probe error:', err);
   } finally {
     hygiene.unregisterSpawnedTree(child.pid);
-    try { killPidTree(child.pid); } catch { /* already gone */ }
+    try { killChildTree(child); } catch { /* already gone */ }
     await sleep(1500);
     const changed = restore();
     console.log(`\nsettings restored: ${changed.length ? changed.join(', ') : 'nothing had changed'}`);

@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* Backlog #66: the indexing field in a REAL window.  (re-runnable)
 
      node verify/probe-indexing-strip.js        (exit 0 = every check held; PORT=<n> optional)
@@ -25,6 +26,7 @@
    the real model is never asked anything. ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are removed from the
    children's environment first. Only the two processes started here are killed, by their own pid. */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -59,7 +61,7 @@ fs.mkdirSync(shots, { recursive: true });
 const children = [];
 const killTree = (c) => {
   if (!c || !c.pid) return;
-  try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ }
+  try { killChildTree(c); } catch { /* already gone */ }
 };
 let fake = null;
 const cleanup = async () => {
@@ -178,9 +180,9 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     host.stderr.on('data', (d) => { hostLog += d; });
     if (!(await waitFor(() => /listening/i.test(hostLog), 15000))) { check('the host started', false, hostLog.slice(-400)); return; }
 
-    const electron = spawn(path.join(REPO, 'node_modules', '.bin', 'electron.cmd'), ['.', `--remote-debugging-port=${CDP}`], {
-      cwd: REPO, env: electronEnv, stdio: ['ignore', 'pipe', 'pipe'], shell: true,
-    });
+    const electron = spawnElectron(require('electron'), ['.', `--remote-debugging-port=${CDP}`], {
+      cwd: REPO, env: electronEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_INDEXING_JOURNAL', 'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
     children.push(electron);
     let electronLog = '';
     electron.stdout.on('data', (d) => { electronLog += d; });

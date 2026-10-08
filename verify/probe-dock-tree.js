@@ -41,7 +41,8 @@
  * never touches another checkout's. It REFUSES (exit 2) while a live host is open on this checkout. A small window is a held-down #dock (`squeeze`), not an OS window.
  * The only processes stopped are the ones this probe started. WINDOWS ONLY.
  */
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -132,9 +133,9 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
   });
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
-    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
+    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -250,7 +251,7 @@ function hostsUnder(dir) {
 }
 function killEverything() {
   for (const id of [...hostsUnder(dev), ...hostsUnder(featA)]) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
+  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayouts);
@@ -276,7 +277,7 @@ async function launchReady(cwd) {
     if (!ready) {
       console.log(`(attempt ${attempt}: the window never came up; ${app.out.slice(-300).replace(/s+/g, ' ')})`);
       await quitApp(app);
-      if (!app.exited) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(app.child.pid); } catch { /* gone */ } }
+      if (!app.exited) { try { require(path.join(ROOT, 'host', 'kill-tree')).killChildTree(app.child); } catch { /* gone */ } }
     }
   }
   return { app, ready };

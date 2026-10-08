@@ -29,8 +29,8 @@ test('the probe never deletes anything under the repo\'s real .harness', () => {
 test('both children are registered with the hygiene registry and the registry is installed', () => {
   assert.match(PROBE, /require\('\.\/lib\/process-hygiene'\)/);
   assert.match(PROBE, /hygiene\.install\(\)/);
-  assert.match(PROBE, /hygiene\.registerSpawnedTree\(host\.pid\)/);
-  assert.match(PROBE, /hygiene\.registerSpawnedTree\(electron\.pid\)/);
+  assert.match(PROBE, /hygiene\.registerChild\(host\)/);
+  assert.match(PROBE, /hygiene\.registerChild\(electron\)/);
 });
 
 test('the probe kills whole trees (not a top pid) on every exit path', () => {
