@@ -43,13 +43,19 @@ const emptyState = () => ({ payload: null, html: null, htmlSig: null, asks: [], 
 const isPayload = f => f !== null && typeof f === 'object' && (f.sessionId === null || isStr(f.sessionId)) && STATUSES.includes(f.status)
   && typeof f.signature === 'string';
 
+// A COPY of host/canvas-shelf.js cleanShelfList (this is a plain script in the page and cannot require it): test/shelf-validators.test.js feeds all
+// of them the same fixtures (PR #125 Miguel M4).
+const SHELF_MAX = 200;
+const SHELF_TITLE_MAX = 120;
+const shelfTitle = (v) => v.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SHELF_TITLE_MAX).trim();
 function cleanShelf(list) {
   const out = [];
   for (const it of Array.isArray(list) ? list : []) {
-    if (it === null || typeof it !== 'object' || !isStr(it.title) || it.title === '' || !isStr(it.time) || !isStr(it.url)) continue;
+    if (it === null || typeof it !== 'object' || Array.isArray(it) || !isStr(it.title) || it.title === '' || !isStr(it.time) || !isStr(it.url)) continue;
     let u;
-    try { u = new URL(it.url); } catch { continue; }
-    if (u.protocol === 'https:' && !u.username && !u.password) out.push({ title: it.title, url: it.url, time: it.time });
+    try { u = new URL(it.url.trim()); } catch { continue; }
+    if (u.protocol === 'https:' && !u.username && !u.password && u.hostname) out.push({ title: shelfTitle(it.title) || 'Artifact', url: u.href, time: it.time });
+    if (out.length >= SHELF_MAX) break;
   }
   return out;
 }

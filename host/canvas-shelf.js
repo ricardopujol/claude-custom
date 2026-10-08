@@ -72,18 +72,29 @@ function artifactFromPayload(payload, now = new Date()) {
   return { title, url, time: now.toISOString() };
 }
 
+/**
+ * THE shelf validator, for every trust boundary (PR #125 Miguel M4: it existed three times with three behaviours). An entry needs a non-empty
+ * string title, a string time and a plain https address with no credentials; the title is one line of at most 120 characters, the
+ * address is the platform's normalised form, and at most MAX_SHELF entries are kept. app/canvas-views.js (main) uses this function itself;
+ * app/canvas-display.js is a plain script in the page and carries a copy that test/shelf-validators.test.js holds to the same fixtures.
+ */
+function cleanShelfList(list) {
+  const out = [];
+  for (const it of Array.isArray(list) ? list : []) {
+    if (!isObj(it) || !isStr(it.title) || !it.title || !isStr(it.time)) continue;
+    const url = cleanUrl(it.url);
+    if (url) out.push({ title: oneLine(it.title) || 'Artifact', url, time: it.time });
+    if (out.length >= MAX_SHELF) break;
+  }
+  return out;
+}
+
 /** The shelf on disk, newest first. Missing, corrupt or the wrong shape is an empty shelf; a bad entry is dropped. */
 function readShelf(dir) {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(dir, 'shelf.json'), 'utf8'));
     if (!isObj(raw) || !Array.isArray(raw.items)) return [];
-    const out = [];
-    for (const it of raw.items) {
-      if (!isObj(it) || !isStr(it.title) || !it.title || !isStr(it.time)) continue;
-      const url = cleanUrl(it.url);
-      if (url) out.push({ title: oneLine(it.title) || 'Artifact', url, time: it.time });
-    }
-    return out.slice(0, MAX_SHELF);
+    return cleanShelfList(raw.items);
   } catch { return []; }
 }
 
@@ -96,4 +107,4 @@ function addToShelf(dir, item) {
   return next;
 }
 
-module.exports = { isShelfEvent, artifactFromPayload, readShelf, addToShelf, MAX_SHELF };
+module.exports = { isShelfEvent, artifactFromPayload, readShelf, addToShelf, cleanShelfList, MAX_SHELF };

@@ -526,3 +526,11 @@ test('host.js wires the config dir: the tab cwd anchors it, and the statusLine a
   assert.match(drop, /configDir: claudeConfigDir\(\)/, 'the drop guard is not told where the config dir is');
   assert.match(host, /claudeHomeOf\(\{ seam: seams\.claudeHome, env: process\.env, home: os\.homedir\(\) \}\)/);
 });
+
+// PR #125 Miguel M4: main's copy of the shelf validator IS the host's function (test/shelf-validators.test.js holds the page's copy to it).
+test('app/canvas-views.js uses the host shelf validator itself, not a copy', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'canvas-views.js'), 'utf8');
+  assert.match(src, /const \{ cleanShelfList \} = require\('\.\.\/host\/canvas-shelf'\);/);
+  assert.match(src, /const cleanShelf = cleanShelfList;/);
+  assert.doesNotMatch(src, /function cleanShelf\(/);
+});

@@ -29,6 +29,7 @@
  */
 const { brokerFetch } = require('./canvas-fetch');
 const { buildPage, hostOrigin } = require('./canvas-csp');
+const { cleanShelfList } = require('../host/canvas-shelf');
 
 const PANEL_LIMITS = Object.freeze({
   htmlBytes: 1024 * 1024,        // the design's size cap on index.html
@@ -50,17 +51,7 @@ const KEEPS_FRESH = new Set(['mouseUp']);
 const ACTIVATION_KEYS = new Set(['Enter', ' ']);
 
 const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
-const SHELF_MAX = 200;
-function cleanShelf(list) {
-  const out = [];
-  for (const it of Array.isArray(list) ? list : []) {
-    if (it === null || typeof it !== 'object' || typeof it.title !== 'string' || it.title === '' || typeof it.time !== 'string' || typeof it.url !== 'string') continue;
-    let u;
-    try { u = new URL(it.url); } catch { continue; }
-    if (u.protocol === 'https:' && !u.username && !u.password && out.length < SHELF_MAX) out.push({ title: it.title, url: it.url, time: it.time });
-  }
-  return out;
-}
+const cleanShelf = cleanShelfList;          // the ONE validator (host/canvas-shelf.js), shared by all three trust boundaries (PR #125 Miguel M4)
 const originList = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))];
 
 function createCanvasViews({ WebContentsView, session, addChild, removeChild, ownerBounds, preloadPath, ask, onMessage,
