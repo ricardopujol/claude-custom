@@ -68,6 +68,7 @@ const { watchLoadout } = require('./loadout-watch');
 const { createWandControl } = require('./wand-control');
 const { discoverSkills, claudeHomeOf, isSkillEvent } = require('./wand-skills');
 const { watchDir } = require('./wand-watch');
+const { createCanvasControl } = require('./canvas-control');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
@@ -449,6 +450,16 @@ watchLoadout({
     const frame = loadoutControl.changed();
     if (frame) broadcastControl(frame);
   },
+});
+// Claude's panel (BACKLOG #71): the page the running Claude builds for it, and the hosts the person approved for it, live in
+// .harness/state/canvas/<cli-session-id>/ (host/canvas-store.js). The session id arrives with the SessionStart hook, which
+// re-points the watch (sessionChanged); the page itself is only sent to a window that asks for it (host/canvas-control.js).
+const canvasControl = createCanvasControl({
+  stateDir: path.join(HARNESS_DIR, 'state'),
+  getSessionId: () => sessionId,
+  emit: (frame) => broadcastControl(frame),
+  watch: watchDir,
+  log: (line) => console.log(line),
 });
 // The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
 // list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam
@@ -1267,6 +1278,7 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      canvasControl.sessionChanged(sessionId);
       // the roster cards match an agent's worktree claim on it (backlog #57): a /clear starts a new one
       broadcastControl({ type: 'session', sessionId });
       sessionModels.refresh().catch(() => { /* the next SubagentStop will carry it */ });
@@ -2133,6 +2145,8 @@ wss.on('connection', (ws, req) => {
     loadout: loadoutControl.payload(),
     // The wand: the favourites (or why they are unavailable) and the skills they can point at.
     wand: wandControl.payload(),
+    // Claude's panel: whether the running session has built one (never the page: a window asks for it), and its hosts.
+    canvas: canvasControl.payload(),
     // Layout pass L1: this tab's own layout, or null for the global one.
     layoutOverride,
     vault: vaultPayload(),
@@ -2478,6 +2492,11 @@ wss.on('connection', (ws, req) => {
       handleRosterMessage(msg);
       return;
     }
+    if (canvasControl.handles(msg.type)) {
+      // Answered by a broadcast `canvas` frame (host/canvas-control.js), the refusal included.
+      canvasControl.handle(msg);
+      return;
+    }
     if (wandControl.handles(msg.type)) {
       // Broadcast, refusal included: the frame carries the true state, and two windows disagreeing about
       // a favourite is worse than a redraw. Answers are never `quiet` (host/wand-control.js).
@@ -2724,6 +2743,7 @@ wss.on('error', (err) => {
 function shutdown({ removeIdentity = true } = {}) {
   if (term) { try { term.kill(); } catch {} }
   try { repoService.close(); } catch {}
+  try { canvasControl.close(); } catch {}
   releaseSessionLock(SESSION_LOCK, lockOwner);
   killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }

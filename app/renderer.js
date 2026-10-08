@@ -1099,6 +1099,7 @@ function onModuleShown(id) {
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
+  if (id === 'canvas') { canvasFetchIfNeeded(); renderCanvas(); }
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
@@ -1295,6 +1296,150 @@ if (tbResourcesEl && resPopoverEl) {
 }
 // RESOURCES-END
 
+// CANVAS-BEGIN
+// Claude's panel (BACKLOG #71, documentation/DESIGN_LIVE_PANEL.md). app/canvas-display.js decides everything (what the frame
+// draws, what a frame from the host means, what a click is); this is the DOM, the socket and the native view. The page
+// Claude wrote is NOT part of this document: it is a sealed WebContentsView that main lays over `#canvas-slot` at the
+// rectangle measured here (app/canvas-views.js), so this page is its trusted controller, never its host. Hidden means
+// stopped: the view exists only while the module shows, this page is visible and there is a page to show.
+const canvasBridge = window.harness && window.harness.canvas;
+let canvasState = window.canvasDisplay.emptyState();
+const canvasRoot = document.getElementById('canvas-root');
+let canvasLive = false;           // main has a native view for this tab
+let canvasShownSig = null;        // the page signature main was last given
+let canvasShownHosts = '';        // the host lists main was last given, as JSON
+let canvasLastCover = null;
+let canvasLastRect = null;
+let canvasRectKey = '';
+let canvasFetchSig = null;        // the signature a canvas-get is already out for
+
+function canvasSlotRect() {
+  const el = canvasRoot && canvasRoot.querySelector('#canvas-slot');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left, y: r.top, width: r.width, height: r.height };
+}
+
+// Is the slot itself topmost at this point? (null: outside the page, nothing of ours is over it). A native view ignores the DOM's stacking, so
+// whatever else is drawn over the slot (a floating dock panel, a menu, a popover) must hide it (PR #122 Dexter F5).
+function canvasIsSlotAt(x, y) {
+  const slot = canvasRoot && canvasRoot.querySelector('#canvas-slot');
+  const el = document.elementFromPoint(x, y);
+  return !el || !slot || el === slot || slot.contains(el);
+}
+
+function syncCanvasView() {
+  if (!canvasBridge) return;
+  const want = shownModules.has('canvas') && document.visibilityState === 'visible' && window.canvasDisplay.canShow(canvasState);
+  if (!want) {
+    if (canvasLive) { canvasBridge.hide(); canvasLive = false; canvasShownSig = null; canvasRectKey = ''; const had = canvasState.asks.length > 0; canvasState = window.canvasDisplay.withoutAsks(canvasState); if (had) renderCanvas(); }
+    return;
+  }
+  const req = window.canvasDisplay.showRequest(canvasState);
+  const rect = canvasSlotRect();
+  const covered = window.canvasDisplay.covered(canvasState) || (rect !== null && window.canvasDisplay.slotObstructed(rect, canvasIsSlotAt));
+  if (rect) canvasLastRect = rect;
+  const hostsKey = JSON.stringify(req.hosts);
+  if (!canvasLive || canvasShownSig !== canvasState.htmlSig) {
+    canvasLive = true; canvasShownSig = canvasState.htmlSig; canvasShownHosts = hostsKey; canvasLastCover = covered;
+    canvasRectKey = JSON.stringify(canvasLastRect);
+    const sig = canvasState.htmlSig;
+    canvasBridge.show({ html: req.html, hosts: req.hosts, rect: canvasLastRect, covered }).then((res) => {
+      // main said no (too big once decoded, no tab...): say so in the module instead of drawing an empty slot for a view that does not exist.
+      // A `stale` answer means a hide or a newer show overtook this one; that is not an error.
+      if (res && res.ok === false && res.stale !== true) {
+        if (canvasShownSig === sig) { canvasLive = false; canvasShownSig = null; canvasRectKey = ''; }
+        canvasState = window.canvasDisplay.withRefusal(canvasState, sig, res.error);
+        renderCanvas();
+      }
+    }, () => {});
+    return;
+  }
+  if (hostsKey !== canvasShownHosts) { canvasShownHosts = hostsKey; canvasBridge.hosts(req.hosts); }
+  if (covered !== canvasLastCover) { canvasLastCover = covered; canvasBridge.cover(covered); }
+  const key = JSON.stringify(canvasLastRect);
+  if (canvasLastRect && key !== canvasRectKey) { canvasRectKey = key; canvasBridge.bounds(canvasLastRect); }
+}
+
+function renderCanvas() {
+  if (!canvasRoot) return;
+  if (shownModules.has('canvas')) canvasRoot.innerHTML = window.canvasDisplay.html(window.canvasDisplay.view(canvasState));
+  syncCanvasView();
+}
+
+// The page comes from the host only when asked for, once per signature (the answer is a `canvas` frame with html).
+function canvasFetchIfNeeded() {
+  if (!window.canvasDisplay.needsFetch(canvasState) || !shownModules.has('canvas')) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const sig = canvasState.payload.signature;
+  if (canvasFetchSig === sig) return;
+  canvasFetchSig = sig;
+  ws.send(JSON.stringify({ type: 'canvas-get' }));
+  setTimeout(() => { if (canvasFetchSig === sig) canvasFetchSig = null; }, 3000);
+}
+
+// Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
+function canvasDock() {
+  if (placementLayout().hidden.includes('canvas')) commitPlacement(DTm.show(placementLayout(), 'canvas'), { select: 'canvas' });
+  else selectModule('canvas');
+}
+
+function canvasOnFrame(frame) {
+  const next = window.canvasDisplay.withFrame(canvasState, frame);
+  if (next === canvasState) return;
+  canvasState = next;
+  // Nothing to fetch (the page arrived, or there is none): the 'already asked' memo goes, so the SAME page written again later
+  // (a clock, then a too-big page, then the clock) is asked for again.
+  if (!window.canvasDisplay.needsFetch(canvasState)) canvasFetchSig = null;
+  if (window.canvasDisplay.shouldDock(frame)) canvasDock();
+  canvasFetchIfNeeded();
+  renderCanvas();
+}
+
+function canvasHostsSend(message) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+}
+
+function canvasAct(a) {
+  if (a.act === 'allow' || a.act === 'deny') {
+    const ask = canvasState.asks.find(x => x.id === a.id);
+    if (!ask) return;
+    canvasBridge.answerHost(a.id, a.act);
+    canvasHostsSend({ type: 'canvas-hosts', action: a.act, origin: ask.origin });
+    canvasState = window.canvasDisplay.answered(canvasState, a.id);
+  } else if (a.act === 'remove') {
+    canvasHostsSend({ type: 'canvas-hosts', action: 'remove', origin: a.origin });
+  } else if (a.act === 'hosts') {
+    canvasState = window.canvasDisplay.toggleHosts(canvasState);
+  } else if (a.act === 'close-hosts') {
+    canvasState = window.canvasDisplay.toggleHosts(canvasState, false);
+  }
+  renderCanvas();
+}
+
+if (canvasBridge && canvasRoot) {
+  // The page asked for a host it has not been given: the question covers the panel until it is answered.
+  canvasBridge.onNeedHost((ask) => { canvasState = window.canvasDisplay.withAsk(canvasState, ask); renderCanvas(); });
+  canvasRoot.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-canvas-act]') : null;
+    const a = el ? window.canvasDisplay.actionOf(el.dataset) : null;
+    if (a) canvasAct(a);
+  });
+  let canvasFrame = 0;
+  const canvasSchedule = () => {
+    if (canvasFrame) return;
+    canvasFrame = requestAnimationFrame(() => { canvasFrame = 0; syncCanvasView(); });
+  };
+  new ResizeObserver(canvasSchedule).observe(canvasRoot);
+  document.addEventListener('visibilitychange', syncCanvasView);
+  // Something else may now be over the slot (a float dragged across it, a menu or popover opened): look again right after any interaction
+  // (once its own handlers have run), while a button is held (a drag), and on a slow tick as the safety net for anything that moves by itself.
+  for (const ev of ['pointerup', 'click', 'keyup', 'contextmenu', 'wheel', 'resize']) window.addEventListener(ev, () => setTimeout(canvasSchedule, 0), true);
+  window.addEventListener('pointermove', (e) => { if (e.buttons) canvasSchedule(); }, true);
+  setInterval(() => { if (canvasLive) canvasSchedule(); }, 250);
+}
+// CANVAS-END
+
 // Leaving the vault puts every revealed secret back out of sight -- both the
 // listed ones and whatever is half-typed in the field. A value left on screen
 // outlives the moment someone needed it. "Leaving" is anything that stops it
@@ -1323,6 +1468,7 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
   for (const id of fx.newlyShown) onModuleShown(id);
+  syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
   if (fx.focus === 'term') term.focus();
@@ -2717,6 +2863,52 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           return JSON.stringify({ ok: true });
         }
         return JSON.stringify({ ok: false, error: 'unknown op' });
+      }
+      // backlog #71: verify/probe-canvas-panel.js reads Claude's panel (its frame; the page itself is a native view main reports
+      // on) and clicks its controls as a pointer would
+      case 'canvasState': {
+        const root = document.getElementById('canvas-root');
+        const slot = root.querySelector('#canvas-slot');
+        const sr = slot ? slot.getBoundingClientRect() : null;
+        const panel = document.querySelector('.panel[data-panel="canvas"]');
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.canvasDisplay === 'object' && typeof window.canvasDisplay.view === 'function',
+          shown: panel.classList.contains('on'),
+          inShownModules: shownModules.has('canvas'),
+          hiddenInLayout: placementLayout().hidden.includes('canvas'),
+          text: root.textContent,
+          slot: sr ? { x: sr.left, y: sr.top, width: sr.width, height: sr.height } : null,
+          badge: (root.querySelector('.cv-badge') || {}).textContent || null,
+          asking: (root.querySelector('.cv-ask p') || {}).textContent || null,
+          hostsListed: [...root.querySelectorAll('.cv-host')].map(h => h.textContent),
+          note: (root.querySelector('.cv-error') || {}).textContent || null,
+          empty: !!root.querySelector('.cv-empty'),
+          live: canvasLive,
+          visibility: document.visibilityState,
+        });
+      }
+      case 'canvasClick': {
+        const el = [...document.querySelectorAll('#canvas-root [data-canvas-act]')].find(e => e.dataset.canvasAct === String(a.act)
+          && (a.id === undefined || e.dataset.canvasId === String(a.id)) && (a.origin === undefined || e.dataset.canvasOrigin === String(a.origin)));
+        if (!el) return JSON.stringify({ ok: false, error: 'no canvas control ' + JSON.stringify(a) });
+        el.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'canvasOverlay': {
+        // a stand-in for a float / menu / popover crossing the slot (PR #122 Dexter F5): a fixed box over the slot's right half (at least SAMPLE_GAP wide: a thinner overlay can fall between the sample points), above the page
+        let box = document.querySelector('.probe-canvas-overlay');
+        if (box) box.remove();
+        if (a.on === true) {
+          const slot = document.querySelector('#canvas-root #canvas-slot');
+          if (!slot) return JSON.stringify({ ok: false, error: 'no slot' });
+          const r = slot.getBoundingClientRect();
+          box = document.createElement('div');
+          box.className = 'probe-canvas-overlay';
+          box.style.cssText = 'position:fixed;z-index:45;background:#c33;left:' + (r.left + r.width * 0.4) + 'px;top:' + (r.top + r.height * 0.25) + 'px;width:' + (r.width * 0.5) + 'px;height:' + (r.height * 0.5) + 'px';
+          document.body.appendChild(box);
+        }
+        return JSON.stringify({ ok: true });
       }
       case 'resourcesClick': {
         // matched on the dataset, not a selector: a tab's key is a Windows path, and a backslash in a CSS string is an escape
@@ -6079,6 +6271,7 @@ function handleControl(msg) {
     rosterIndexPayload = msg.rosterIndex || null;
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    canvasOnFrame(msg.canvas);
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
@@ -6104,6 +6297,10 @@ function handleControl(msg) {
   if (msg.type === 'wand') {
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    return;
+  }
+  if (msg.type === 'canvas') {
+    canvasOnFrame(msg);
     return;
   }
   if (msg.type === 'mood') {

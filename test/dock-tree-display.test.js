@@ -13,6 +13,8 @@ const { TABS } = require('../app/side-tabs');
 const { faceSize } = require('../app/roster-width');
 
 const IDS = TABS.map(t => t.id);
+// Claude's panel (#71) starts hidden, so a default layout shows every module but it.
+const SHOWN = IDS.filter(id => !T.HIDDEN_UNTIL_USED.includes(id));
 const NO_SEL = { active: {}, foldAll: false };
 const plan = (layout, vp, sel = NO_SEL) => V.treePlan(layout, sel, TABS, vp, { faceSize });
 const groupBox = p => p.boxes.find(b => b.kind === 'group');
@@ -22,7 +24,7 @@ test('the default in 1000 x 600: one group, every tab, Agents on, tall, its port
   const g = groupBox(p);
   assert.strictEqual(g.shape, 'tall');
   assert.strictEqual(g.panel, 'agents');
-  assert.deepStrictEqual(g.tabs.map(t => t.id), IDS);
+  assert.deepStrictEqual(g.tabs.map(t => t.id), SHOWN);
   assert.deepStrictEqual(g.tabs.filter(t => t.on).map(t => t.id), ['agents']);
   assert.deepStrictEqual(g.tabs[1], { id: 'vault', label: 'Vault', title: 'Local encrypted secrets', on: false });
   assert.deepStrictEqual(g.rect, { x: 820, y: 0, width: 180, height: 600 });
@@ -92,8 +94,8 @@ test('a short wide group keeps the portrait at least 28 and at most 150', () => 
 test('a rail lists its modules and carries no panel', () => {
   const p = plan(T.defaultLayout(IDS), { width: 440, height: 600 });
   const rail = p.boxes.find(b => b.kind === 'rail');
-  assert.deepStrictEqual(rail.modules, IDS);
-  assert.deepStrictEqual(rail.tabs.map(t => t.label), TABS.map(t => t.label), 'a rail names its modules for its buttons');
+  assert.deepStrictEqual(rail.modules, SHOWN);
+  assert.deepStrictEqual(rail.tabs.map(t => t.label), TABS.filter(t => SHOWN.includes(t.id)).map(t => t.label), 'a rail names its modules for its buttons');
   assert.deepStrictEqual(p.shown, []);
 });
 
@@ -182,7 +184,7 @@ test('menuRows lists every module in registry order, hidden ones included, with 
   l = T.hide(T.hide(l, 'vault'), 'style');
   const rows = V.menuRows(l, TABS);
   assert.deepStrictEqual(rows.map(r => r.id), IDS);
-  assert.deepStrictEqual(rows.filter(r => !r.shown).map(r => r.id), ['vault', 'style']);
+  assert.deepStrictEqual(rows.filter(r => !r.shown).map(r => r.id), ['vault', 'style', 'canvas']);
   assert.deepStrictEqual(rows[0], { id: 'agents', label: 'Agents', shown: true });
 });
 

@@ -40,6 +40,10 @@ const TABS = [
   // BACKLOG #63: CPU and memory per session, per project and in total. An ordinary module like the rest: it docks, moves
   // and hides through the same layout, and it samples only while it is showing (app/resources-service.js).
   { id: 'resources', label: 'Resources', title: 'CPU and memory: which session is using the machine' },
+  // BACKLOG #71: a panel the running Claude builds itself, a sandboxed page per tab. An ordinary module like the rest, with
+  // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
+  // Claude renders into it, which only happens when it is asked to.
+  { id: 'canvas', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

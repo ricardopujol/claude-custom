@@ -236,6 +236,27 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(payload); } catch (err) { console.error('[preload] resources:state listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('resources:state')),
   },
+  // Claude's panel (BACKLOG #71). The panel's page is a native view of its own that main lays over the dock panel's body
+  // (app/canvas-views.js); THIS page is its trusted controller: `show` gives it the page Claude wrote, the hosts the person
+  // approved and where it goes ({ html, hosts, rect, covered } -> { ok }); `bounds` / `cover` / `hosts` keep it in step;
+  // `hide` destroys it (hidden means stopped); `answerHost` is the person's answer to a host question; `onNeedHost` and
+  // `onMessage` are main -> page ({ id, origin } / { kind: 'send', text }), each replacing its one listener.
+  canvas: {
+    show: (req) => ipcRenderer.invoke('canvas:show', req),
+    bounds: (rect) => ipcRenderer.send('canvas:bounds', rect),
+    cover: (on) => ipcRenderer.send('canvas:cover', on === true),
+    hosts: (hosts) => ipcRenderer.send('canvas:hosts', hosts),
+    hide: () => ipcRenderer.send('canvas:hide'),
+    answerHost: (id, answer) => ipcRenderer.send('canvas:host-answer', { id, answer }),
+    onNeedHost: (fn) => (ipcRenderer.removeAllListeners('canvas:need-host'), ipcRenderer.on('canvas:need-host',
+      (_e, ask) => {
+        try { fn(ask); } catch (err) { console.error('[preload] canvas:need-host listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('canvas:need-host')),
+    onMessage: (fn) => (ipcRenderer.removeAllListeners('canvas:message'), ipcRenderer.on('canvas:message',
+      (_e, msg) => {
+        try { fn(msg); } catch (err) { console.error('[preload] canvas:message listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('canvas:message')),
+  },
   // Focus mode (layout pass L1, #1): only the terminal shows. Main owns it (the
   // tab view has to cover the strip); the page hides its header and zones when
   // told through onChange, which replaces its one listener.

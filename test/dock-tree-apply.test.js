@@ -15,6 +15,9 @@ const T = require('../app/dock-tree');
 const { TABS } = require('../app/side-tabs');
 
 const IDS = TABS.map(t => t.id);
+// Claude's panel (#71) starts hidden, so a default layout draws every module but it.
+const SHOWN = IDS.filter(id => !T.HIDDEN_UNTIL_USED.includes(id));
+const SHOWN_TABS = TABS.filter(t => SHOWN.includes(t.id));
 const NO_SEL = { active: {}, foldAll: false };
 
 // --- the fake document --------------------------------------------------------------
@@ -230,9 +233,9 @@ test('tab buttons are rebuilt only when the tabs change: a selection change keep
   V.applyBoxes(plan(l), w.doc);
   const nav = groupEl(w.dock, 'right').querySelector('.zone-tabs');
   const before = [...nav.children];
-  assert.deepStrictEqual(before.map(b => b.dataset.module), IDS);
-  assert.deepStrictEqual(before.map(b => b.textContent), TABS.map(t => t.label));
-  assert.deepStrictEqual(before.map(b => b.title), TABS.map(t => t.title));
+  assert.deepStrictEqual(before.map(b => b.dataset.module), SHOWN);
+  assert.deepStrictEqual(before.map(b => b.textContent), SHOWN_TABS.map(t => t.label));
+  assert.deepStrictEqual(before.map(b => b.title), SHOWN_TABS.map(t => t.title));
   assert.ok(before.every(b => b.type === 'button'));
   assert.deepStrictEqual(before.filter(b => b.classes.has('on')).map(b => b.dataset.module), ['agents']);
   V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc);
@@ -240,7 +243,7 @@ test('tab buttons are rebuilt only when the tabs change: a selection change keep
   assert.deepStrictEqual(before.filter(b => b.classes.has('on')).map(b => b.dataset.module), ['vault']);
   // A different set of tabs is a rebuild.
   V.applyBoxes(plan(T.hide(l, 'style')), w.doc);
-  assert.strictEqual(nav.children.length, IDS.length - 1);
+  assert.strictEqual(nav.children.length, SHOWN.length - 1);
   assert.ok(nav.children.every(b => !before.includes(b)), 'new buttons');
 });
 
@@ -276,7 +279,7 @@ test('rails and dividers: made per key, reused, removed when gone; a rail\'s but
   assert.ok(w.dock.children.indexOf(rails()[0]) < w.dock.children.indexOf(w.overlay));
   const rail = rails()[0];
   const buttons = [...rail.children];
-  assert.deepStrictEqual(buttons.map(b => b.dataset.module), IDS);
+  assert.deepStrictEqual(buttons.map(b => b.dataset.module), SHOWN);
   assert.ok(buttons.every(b => b.type === 'button'));
   assert.strictEqual(rail.dataset.dir, 'v');
   V.applyBoxes(plan(l, NO_SEL, { width: 430, height: 600 }), w.doc);
@@ -318,10 +321,10 @@ test('I4: the showing tab is aria-pressed, the others are not, and a selection c
   const nav = groupEl(w.dock, 'right').querySelector('.zone-tabs');
   const before = [...nav.children];
   assert.ok(before.every(b => b.tagName === 'BUTTON'), 'they stay buttons');
-  assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), IDS.map(id => (id === 'agents' ? 'true' : 'false')));
+  assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), SHOWN.map(id => (id === 'agents' ? 'true' : 'false')));
   V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc);
   assert.deepStrictEqual([...nav.children], before);
-  assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), IDS.map(id => (id === 'vault' ? 'true' : 'false')));
+  assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), SHOWN.map(id => (id === 'vault' ? 'true' : 'false')));
 });
 
 const focusedModule = w => { const a = w.doc.activeElement; return a ? [a.tagName, a.dataset.module, a.parentNode.classes.has('drail') ? 'rail' : 'tab'] : null; };
