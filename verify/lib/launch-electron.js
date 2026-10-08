@@ -96,7 +96,7 @@ async function launchElectron({
   handle.start = start;
   let launcherStart = null;
   try { launcherStart = await selfStart(); } catch { /* recorded with an unknown start: alive while this pid runs */ }
-  ledger.appendEntry(ledgerFile, {
+  record(ledgerFile, handle, {
     pid: child.pid, start, kind, label, createdAt: Date.now(),
     launcher: { pid: process.pid, start: typeof launcherStart === 'string' ? launcherStart : null },
   });
@@ -121,7 +121,7 @@ function spawnElectron(exe, args = [], opts = {}, {
   child.on('exit', () => {
     handle.exited = true;
     live.delete(handle);
-    if (handle.recorded && ledgerFile) { try { ledger.removePids(ledgerFile, [handle.pid]); } catch { /* the reaper prunes */ } }
+    forget(ledgerFile, handle);
   });
   child.ledgered = (async () => {
     let start = null;
@@ -136,16 +136,34 @@ function spawnElectron(exe, args = [], opts = {}, {
     let launcherStart = null;
     try { launcherStart = await selfStart(); } catch { /* recorded with an unknown start: alive while this pid runs */ }
     if (handle.exited) return false;
+    handle.start = start;
     if (ledgerFile) {
-      ledger.appendEntry(ledgerFile, {
+      return record(ledgerFile, handle, {
         pid: child.pid, start, kind, label, createdAt: Date.now(),
         launcher: { pid: process.pid, start: typeof launcherStart === 'string' ? launcherStart : null },
       });
-      handle.recorded = true;
     }
     return true;
   })();
   return child;
+}
+
+// A launch's ledger line goes when its process does: a tombstone matched on pid AND start (host/pid-ledger.js). A
+// failure is said, not swallowed; the line then stays for the reaper, which prunes it once the process is gone.
+function forget(ledgerFile, handle) {
+  if (!ledgerFile || !handle.recorded) return;
+  const r = ledger.removeEntries(ledgerFile, [{ pid: handle.pid, start: handle.start }]);
+  if (r.ok) handle.recorded = false;
+  else console.log(`[launch-electron] could not remove pid ${handle.pid} from the ledger (${r.error}); the reaper will prune it`);
+}
+
+// Write the ledger line; false (and said) if the ledger lock could not be had: the child is then unrecorded, and only
+// this process's exit sweep stops it.
+function record(ledgerFile, handle, entry) {
+  try { ledger.appendEntry(ledgerFile, entry); handle.recorded = true; return true; } catch (err) {
+    console.log(`[launch-electron] could not record pid ${handle.pid} in the ledger (${err && (err.code || err.message)}); only this process's exit sweep will stop it`);
+    return false;
+  }
 }
 
 function waitForExit(child, ms) {
@@ -177,7 +195,7 @@ async function stopElectron(handle, { polite, killFn = handle.killFn || killPidT
   }
   if (how !== 'stuck') {
     live.delete(handle);
-    if (ledgerFile) { try { ledger.removePids(ledgerFile, [pid]); } catch { /* the reaper prunes stale lines */ } }
+    forget(ledgerFile, handle);
   }
   return { how };
 }

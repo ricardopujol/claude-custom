@@ -83,21 +83,21 @@ test('launch: when the start time cannot be read the process is killed at once a
 
 test('stop: polite first, waits for the exit, and does NOT kill a process that left by itself', async () => {
   const f = fakes({ exitsOnPolite: true });
-  const r = await stopElectron({ child: f.child, pid: 4242 }, { polite: f.polite, killFn: f.kill, politeMs: 2000 });
+  const r = await stopElectron({ child: f.child, pid: 4242, start: '777', recorded: true }, { polite: f.polite, killFn: f.kill, politeMs: 2000 });
   assert.deepStrictEqual(f.calls.map(c => c[0]), ['polite']);
   assert.strictEqual(r.how, 'polite');
 });
 
 test('stop: when it does not leave in time it is killed BY PID, once', async () => {
   const f = fakes({ exitsOnPolite: false });
-  const r = await stopElectron({ child: f.child, pid: 4242 }, { polite: f.polite, killFn: f.kill, politeMs: 30 });
+  const r = await stopElectron({ child: f.child, pid: 4242, start: '777', recorded: true }, { polite: f.polite, killFn: f.kill, politeMs: 30 });
   assert.deepStrictEqual(f.calls, [['polite'], ['kill', 4242]]);
   assert.strictEqual(r.how, 'killed');
 });
 
 test('stop: a polite step that throws still ends in the kill', async () => {
   const f = fakes({ exitsOnPolite: false });
-  await stopElectron({ child: f.child, pid: 4242 }, { polite: () => { throw new Error('socket gone'); }, killFn: f.kill, politeMs: 30 });
+  await stopElectron({ child: f.child, pid: 4242, start: '777', recorded: true }, { polite: () => { throw new Error('socket gone'); }, killFn: f.kill, politeMs: 30 });
   assert.deepStrictEqual(f.calls, [['kill', 4242]]);
 });
 
@@ -107,12 +107,12 @@ test('stop: removes the ledger entry once the process is gone, and leaves it if 
     const file = path.join(dir, 'l.jsonl');
     ledger.appendEntry(file, { pid: 4242, start: '777', launcher: null, label: 'x' });
     const f = fakes({ exitsOnPolite: true });
-    await stopElectron({ child: f.child, pid: 4242 }, { polite: f.polite, killFn: f.kill, politeMs: 2000, ledgerFile: file });
+    await stopElectron({ child: f.child, pid: 4242, start: '777', recorded: true }, { polite: f.polite, killFn: f.kill, politeMs: 2000, ledgerFile: file });
     assert.deepStrictEqual(ledger.readLedger(file), []);
 
     ledger.appendEntry(file, { pid: 4242, start: '777', launcher: null, label: 'x' });
     const g = fakes({ exitsOnPolite: false });
-    const r = await stopElectron({ child: g.child, pid: 4242 }, { polite: g.polite, killFn: () => {}, politeMs: 20, graceMs: 20, ledgerFile: file });
+    const r = await stopElectron({ child: g.child, pid: 4242, start: '777', recorded: true }, { polite: g.polite, killFn: () => {}, politeMs: 20, graceMs: 20, ledgerFile: file });
     assert.strictEqual(r.how, 'stuck');
     assert.strictEqual(ledger.readLedger(file).length, 1, 'a process that would not die stays in the ledger for the reaper');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -243,7 +243,7 @@ test('stop: a child that has already exited is not killed by pid (its pid may be
     ledger.appendEntry(file, { pid: 4242, start: '777', launcher: null, label: 'x' });
     const f = fakes();
     f.die();
-    const r = await stopElectron({ child: f.child, pid: 4242 }, { killFn: f.kill, politeMs: 0, graceMs: 20, ledgerFile: file });
+    const r = await stopElectron({ child: f.child, pid: 4242, start: '777', recorded: true }, { killFn: f.kill, politeMs: 0, graceMs: 20, ledgerFile: file });
     assert.deepStrictEqual(f.calls.filter(c => c[0] === 'kill'), []);
     assert.strictEqual(r.how, 'gone');
     assert.deepStrictEqual(ledger.readLedger(file), []);

@@ -132,3 +132,25 @@ test('a kill that reports failed or unknown keeps the line, even if the re-check
     assert.strictEqual(ledger.readLedger(file).length, 2);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// PR #130 review, Dexter #5 / Miguel M2 + S5: the reaper removes by (pid, start), and a ledger write that fails after
+// the kills is reported in the result, never thrown (the kills already happened and must still be reported).
+test('a stale line and a live line with the same pid: reaping drops only the stale one', async () => {
+  const { dir, file } = setup([E(10, { start: '100' }), E(10, { start: '200', launcher: { pid: 7, start: '1' } })]);
+  try {
+    const r = await reap({ file, dryRun: false, startTimes: async () => new Map([[10, '200'], [7, '1']]), kill: () => 'killed', stillRunning: async () => new Set() });
+    assert.deepStrictEqual(r.killed, [], 'the live one has a live launcher');
+    assert.deepStrictEqual(ledger.readLedger(file).map(e => [e.pid, e.start]), [[10, '200']]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a ledger that cannot be written after the kills: the kills are still reported, with the ledger error', async () => {
+  const { dir, file } = setup([E(10)]);
+  try {
+    fs.writeFileSync(file + '.lock', JSON.stringify({ pid: process.pid, at: Date.now() }));
+    const r = await reap({ file, dryRun: false, startTimes: async () => new Map([[10, '110']]), kill: () => 'killed', stillRunning: async () => new Set(), ledgerDeadlineMs: 30 });
+    assert.deepStrictEqual(r.killed, [10]);
+    assert.strictEqual(r.ledger.ok, false);
+    assert.ok(r.ledger.error);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

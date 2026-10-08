@@ -17,9 +17,9 @@ const ledger = require('../host/pid-ledger');
 const { startTimes: realStartTimes } = require('../host/proc-start');
 const { killProven } = require('../host/kill-tree');
 
-async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartTimes, kill = killProven, dryRun = true, stillRunning, now = Date.now(), minAgeMs = 0 } = {}) {
+async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartTimes, kill = killProven, dryRun = true, stillRunning, now = Date.now(), minAgeMs = 0, ledgerDeadlineMs } = {}) {
   const entries = ledger.readLedger(file);
-  const result = { entries: entries.length, verified: true, wouldKill: [], killed: [], failed: [], dropped: [] };
+  const result = { entries: entries.length, verified: true, wouldKill: [], killed: [], failed: [], dropped: [], ledger: { ok: true } };
   if (entries.length === 0) return result;
 
   const pids = new Set();
@@ -49,16 +49,20 @@ async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartT
       return new Set(targets.filter(e => again && again.has(e.pid) && again.get(e.pid) === e.start).map(e => e.pid));
     })();
   const mismatched = [];
+  const gone = [];
   for (const e of targets) {
     const o = outcome.get(e.pid);
-    if (o === 'mismatch') mismatched.push(e.pid);
+    if (o === 'mismatch') mismatched.push(e);
     else if (o === 'failed' || o === 'unknown' || left.has(e.pid)) result.failed.push(e.pid);
-    else result.killed.push(e.pid);
+    else { result.killed.push(e.pid); gone.push(e); }
   }
 
-  const stale = [...ledger.staleEntries(entries, starts).map(e => e.pid), ...mismatched];
-  result.dropped = stale;
-  ledger.removePids(file, [...result.killed, ...stale]);
+  const stale = [...ledger.staleEntries(entries, starts), ...mismatched];
+  result.dropped = stale.map(e => e.pid);
+  // By (pid, start), appended under the ledger lock, then compacted (host/pid-ledger.js). A failure here comes after the
+  // kills, so it is reported with them, never thrown (PR #130 review, Dexter #5, Miguel M2 / S5).
+  const removed = ledger.removeEntries(file, [...gone, ...stale], { deadlineMs: ledgerDeadlineMs });
+  result.ledger = removed.ok ? ledger.compact(file, { deadlineMs: ledgerDeadlineMs }) : removed;
   return result;
 }
 
@@ -67,10 +71,11 @@ module.exports = { reap };
 if (require.main === module) {
   const kill = process.argv.includes('--kill');
   reap({ dryRun: !kill }).then((r) => {
+    if (!r.ledger.ok) console.log(`the ledger could not be updated (${r.ledger.error}); the next run prunes what is gone`);
     if (!r.verified) { console.log('could not read process start times; nothing was touched'); process.exit(2); }
     console.log(`${r.entries} ledger entr${r.entries === 1 ? 'y' : 'ies'}; ` +
       (kill ? `killed ${r.killed.length} [${r.killed.join(', ')}], still running ${r.failed.length} [${r.failed.join(', ')}]`
         : `would kill ${r.wouldKill.length} [${r.wouldKill.join(', ')}] (run with --kill)`) +
       `; dropped ${r.dropped.length} stale`);
-  });
+  }).catch((err) => { console.error(`reap failed: ${err && err.message}`); process.exit(2); });
 }

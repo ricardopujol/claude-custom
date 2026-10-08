@@ -41,6 +41,12 @@ function parseLedger(text) {
     let o;
     try { o = JSON.parse(t); } catch { continue; }
     if (!o || typeof o !== 'object' || !validPid(o.pid) || !validStart(o.start)) continue;
+    if (o.removed === true) {
+      // A tombstone: the process with this pid AND start is gone, so every earlier line for it goes (never a line with
+      // the same pid and another start: that is another process).
+      for (let i = out.length - 1; i >= 0; i--) if (out[i].pid === o.pid && out[i].start === o.start) out.splice(i, 1);
+      continue;
+    }
     const l = o.launcher;
     out.push({
       pid: o.pid, start: o.start,
@@ -58,17 +64,56 @@ function readLedger(file = defaultLedgerFile()) {
   try { return parseLedger(fs.readFileSync(file, 'utf8')); } catch { return []; }
 }
 
-function appendEntry(file, e) {
-  fs.appendFileSync(file, serializeEntry(e) + '\n');
+/*
+ * WRITES (PR #130 review, Dexter #5 + Miguel M2). The ledger is shared by every probe, lane and the reaper at once, so:
+ *   - adding and removing are both APPENDS, under host/file-lock.js's cross-process lock. A removal is a tombstone
+ *     line { pid, start, removed: true } matched on pid AND start, so it can never take a newer entry that reused the
+ *     pid, and there is no read-modify-write in which another process's new line could be lost;
+ *   - only compact() rewrites the file, under the same lock (so no append can land between its read and its rename),
+ *     and a rename Windows refuses (EPERM / EBUSY while another process has the file open) is retried, then reported
+ *     as { ok: false, error }: never thrown after kills have happened, never swallowed.
+ * The lock fails closed: appendEntry throws, removeEntries and compact return { ok: false }.
+ */
+const { withFileLock } = require('./file-lock');
+const lockOf = file => `${file}.lock`;
+
+function appendEntry(file, e, { deadlineMs } = {}) {
+  withFileLock(lockOf(file), () => fs.appendFileSync(file, serializeEntry(e) + '\n'), { deadlineMs });
 }
 
-function removePids(file, pids) {
-  const drop = new Set(pids);
-  const keep = readLedger(file).filter(e => !drop.has(e.pid));
-  // Temp file then rename (CLAUDE.md: never open with 'w' before the write is sure).
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, keep.map(serializeEntry).join('\n') + (keep.length ? '\n' : ''));
-  fs.renameSync(tmp, file);
+function removeEntries(file, entries, { deadlineMs } = {}) {
+  const lines = entries.filter(e => e && validPid(e.pid) && validStart(e.start))
+    .map(e => JSON.stringify({ pid: e.pid, start: e.start, removed: true }) + '\n').join('');
+  if (!lines) return { ok: true };
+  try {
+    withFileLock(lockOf(file), () => fs.appendFileSync(file, lines), { deadlineMs });
+    return { ok: true };
+  } catch (err) { return { ok: false, error: (err && (err.code || err.message)) || String(err) }; }
+}
+
+const sleepMs = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function compact(file, { deadlineMs, renameFn = fs.renameSync, retries = 5, retryMs = 50 } = {}) {
+  try {
+    return withFileLock(lockOf(file), () => {
+      let text;
+      try { text = fs.readFileSync(file, 'utf8'); } catch (err) { return err.code === 'ENOENT' ? { ok: true } : { ok: false, error: err.code || err.message }; }
+      const keep = parseLedger(text);
+      // Temp file then rename (CLAUDE.md: never open with 'w' before the write is sure).
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, keep.map(serializeEntry).join('\n') + (keep.length ? '\n' : ''));
+      let last = null;
+      for (let i = 0; i <= retries; i++) {
+        try { renameFn(tmp, file); return { ok: true }; } catch (err) {
+          last = err;
+          if (err.code !== 'EPERM' && err.code !== 'EBUSY' && err.code !== 'EACCES') break;
+          if (i < retries) sleepMs(retryMs);
+        }
+      }
+      try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+      return { ok: false, error: (last && (last.code || last.message)) || 'rename failed' };
+    }, { deadlineMs });
+  } catch (err) { return { ok: false, error: (err && (err.code || err.message)) || String(err) }; }
 }
 
 // starts: Map<pid, FILETIME string | null> from host/proc-start.js startTimes(), or null when the query failed.
@@ -105,4 +150,4 @@ function staleEntries(entries, starts) {
   });
 }
 
-module.exports = { KINDS, defaultLedgerFile, serializeEntry, parseLedger, readLedger, appendEntry, removePids, selectReapable, staleEntries, launcherAlive, isRecordedProcess };
+module.exports = { KINDS, defaultLedgerFile, serializeEntry, parseLedger, readLedger, appendEntry, removeEntries, compact, selectReapable, staleEntries, launcherAlive, isRecordedProcess };
