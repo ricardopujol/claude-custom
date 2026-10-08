@@ -228,14 +228,16 @@ function reapSet(found, { now = Date.now(), minAgeMs = REAP_AFTER_MS } = {}) {
  * with the ms left before it goes (0: on the next sample), and what was stopped. null when there is nothing to show, so the
  * section is not drawn.
  */
-function present(found, stopped, { now = Date.now() } = {}) {
+function present(found, stopped, { now = Date.now(), taskLogs = [], deleted = [] } = {}) {
   const strip = (r) => {
     const { entry, goneSince, ...rest } = r;
     const left = r.reapable === true && r.provable === true && isNum(goneSince) ? Math.max(0, REAP_AFTER_MS - (now - goneSince)) : null;
     return { ...rest, reapInMs: left };
   };
-  const out = { stuck: found.stuck.map(strip), probes: found.probes.map(strip), shells: found.shells.map(strip), mcp: found.mcp.map(strip), stopped: (stopped || []).map(s => ({ ...s })), reapAfterMs: REAP_AFTER_MS };
-  const any = out.stuck.length + out.probes.length + out.shells.length + out.mcp.length + out.stopped.length;
+  const out = { stuck: found.stuck.map(strip), probes: found.probes.map(strip), shells: found.shells.map(strip), mcp: found.mcp.map(strip), stopped: (stopped || []).map(s => ({ ...s })), reapAfterMs: REAP_AFTER_MS,
+    // big task-output files (host/task-logs.js): the rows without their paths, and the files deleted lately
+    taskLogs: taskLogs.map(({ paths, mtimeMs, dev, ino, ...r }) => r), deleted: deleted.map(d => ({ ...d })) };
+  const any = out.stuck.length + out.probes.length + out.shells.length + out.mcp.length + out.stopped.length + out.taskLogs.length + out.deleted.length;
   return any ? out : null;
 }
 

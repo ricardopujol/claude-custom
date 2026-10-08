@@ -1226,13 +1226,13 @@ async function resourcesAct(a) {
   if (a.act === 'toggle') resState = D.toggle(resState, a.key);
   else if (a.act === 'ask-stop') resState = D.askStop(resState, a);
   else if (a.act === 'cancel-stop') resState = D.cancelStop(resState);
-  else if (a.act === 'left-stop' || a.act === 'left-stop-group') {
+  else if (a.act === 'left-stop' || a.act === 'left-stop-group' || a.act === 'left-delete') {
     // The Leftovers Stop: main resolves the rows against its own latest sample, so the page only says which. One at a time.
     if (!resBridge || resState.leftBusy) return;
     resState = D.beginLeftStop(resState);
     renderResources();
     let result;
-    try { result = await resBridge.stopLeftovers(a.act === 'left-stop' ? { rows: [{ pid: a.pid, start: a.start }] } : { group: a.group }); } catch { result = null; }
+    try { result = await resBridge.stopLeftovers(a.act === 'left-stop' ? { rows: [{ pid: a.pid, start: a.start }] } : a.act === 'left-delete' ? { taskLog: a.key } : { group: a.group }); } catch { result = null; }
     resState = D.leftStopResult(resState, result);
   }
   else if (a.act === 'confirm-stop') {

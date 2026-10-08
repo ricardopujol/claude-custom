@@ -124,6 +124,7 @@ function actionOf(data) {
       return pid > 0 && /^\d+$/.test(String(data.resStart)) ? { act: 'left-stop', pid, start: data.resStart } : null;
     }
     case 'left-stop-group': return LEFT_STOP_GROUPS.includes(data.resGroup) ? { act: 'left-stop-group', group: data.resGroup } : null;
+    case 'left-delete': return isStr(data.resKey) && /^\d+:\d+$/.test(data.resKey) ? { act: 'left-delete', key: data.resKey } : null;
     case 'confirm-stop': return { act: 'confirm-stop' };
     case 'cancel-stop': return { act: 'cancel-stop' };
     case 'ask-stop': {
@@ -171,6 +172,20 @@ function groupSide(kind, rows) {
   return `${sessions} ${sessions === 1 ? 'session' : 'sessions'} × ${Math.round(total / sessions / MB)} MB`;
 }
 
+// A big task-output file (host/task-logs.js): "<session> · <file>", the first session of a linked file and how many more.
+function taskLogRow(r) {
+  const sessions = Array.isArray(r.sessions) ? r.sessions.filter(isStr) : [];
+  const first = sessions.length ? sessions[0].slice(0, 8) : '?';
+  const more = sessions.length > 1 ? ` +${sessions.length - 1}` : '';
+  const file = isStr(r.name) && r.name !== '' ? r.name : '?';
+  const notes = { delete: 'deleting within a minute', alive: 'kept: its session is still running', young: 'kept: written to in the last 15 min' };
+  return {
+    name: `${first} · ${file}${more}`, who: file, key: isStr(r.key) ? r.key : '', pid: '', start: '',
+    ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: notes[r.why] || "kept: can't tell whether its session ended",
+    canStop: false, canDelete: r.deletable === true && isStr(r.key) && /^\d+:\d+$/.test(r.key),
+  };
+}
+
 function leftoversView(l, ui) {
   if (!l || typeof l !== 'object') return null;
   const list = k => (Array.isArray(l[k]) ? l[k] : []);
@@ -189,8 +204,13 @@ function leftoversView(l, ui) {
     const src = list(kind);
     if (rows.length) groups.push({ id: kind, title, edge, rows, side: groupSide(kind, src), foot: kind === 'stuck' ? 'Windows is still tearing these down. Nothing can stop them faster.' : null, sub: kind === 'probes' ? 'launcher gone' : null, stopCount: LEFT_STOP_GROUPS.includes(kind) ? rows.filter(x => x.canStop).length : 0 });
   }
+  const taskRows = list('taskLogs');
+  if (taskRows.length) {
+    groups.push({ id: 'taskLogs', title: 'Task logs over 100 MB', edge: 'res-edge-yellow', rows: taskRows.map(taskLogRow), side: 'deleted 15 min after their session ends', foot: null, sub: null, stopCount: 0 });
+  }
+  const deleted = list('deleted').map(d => ({ text: `Deleted ${isStr(d.name) && d.name !== '' ? d.name : '?'}, ${fmtBytes(d.bytes)} freed` }));
   const stopped = list('stopped').map(s => ({ text: `Stopped ${isStr(s.what) && s.what !== '' ? s.what : (isStr(s.name) ? s.name : '?')} (PID ${s.pid}), ${fmtBytes(s.bytes)} freed` }));
-  if (!all.length && !stopped.length) return null;
+  if (!all.length && !stopped.length && !taskRows.length && !deleted.length) return null;
   // Each process once: a row inside another row's subtree (`nested`) is already in that row's figure. Not every figure measured: "at least".
   let bytes = 0;
   let measured = false;
@@ -199,9 +219,11 @@ function leftoversView(l, ui) {
     if (r.nested === true) continue;
     if (isNum(r.bytes)) { bytes += r.bytes; measured = true; } else complete = false;
   }
-  const memFig = !measured ? '—' : `${complete ? '' : '≥ '}${fmtBytes(bytes)}`;
+  // A file on disk is not memory: with no process rows the heading shows the files' own total, said as disk.
+  const disk = taskRows.reduce((n, r) => n + (isNum(r.bytes) ? r.bytes : 0), 0);
+  const memFig = !all.length && taskRows.length ? `${fmtBytes(disk)} on disk` : !measured ? '—' : `${complete ? '' : '≥ '}${fmtBytes(bytes)}`;
   return {
-    sum: { count: all.length, memFig }, chip: all.length ? `${all.length} left over` : null, groups, stopped,
+    sum: { count: all.length + taskRows.length, memFig }, chip: all.length + taskRows.length ? `${all.length + taskRows.length} left over` : null, groups, stopped: [...deleted, ...stopped],
     busy: !!(ui && ui.busy), note: ui && isStr(ui.note) && ui.note !== '' ? ui.note : null,
   };
 }
@@ -209,9 +231,11 @@ function leftoversView(l, ui) {
 function leftoversHtml(v) {
   if (!v) return '';
   const lock = v.busy ? ' disabled' : '';
-  const rows = g => g.rows.map(r => `<div class="res-lrow ${g.edge}" title="PID ${esc(r.pid)}"><span class="res-cname">${esc(r.name)}${g.sub ? ` <span class="res-lsub">${esc(g.sub)}</span>` : ''}</span>`
+  const rows = g => g.rows.map(r => `<div class="res-lrow ${g.edge}" title="${r.key ? esc(r.who) : `PID ${esc(r.pid)}`}"><span class="res-cname">${esc(r.name)}${g.sub ? ` <span class="res-lsub">${esc(g.sub)}</span>` : ''}</span>`
     + `<span class="res-fig res-lmem">${esc(r.memFig)}</span><span class="res-fig res-lage">${esc(r.ageFig)}</span>`
-    + (r.canStop
+    + (r.canDelete
+      ? `<button type="button" class="res-lstop" data-res-act="left-delete" data-res-key="${esc(r.key)}" aria-label="Delete ${esc(r.who)}"${lock}>Delete</button>`
+      : r.canStop
       ? `<button type="button" class="res-lstop" data-res-act="left-stop" data-res-pid="${esc(r.pid)}" data-res-start="${esc(r.start)}" aria-label="Stop ${esc(r.who)}, PID ${esc(r.pid)}"${lock}>Stop</button>`
       : '<span class="res-lstop-gap" aria-hidden="true"></span>')
     + '</div>'

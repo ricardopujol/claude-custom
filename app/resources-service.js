@@ -21,6 +21,7 @@ const warning = require('../host/resource-warning');
 const stopper = require('../host/resource-stop');
 const { createHistory } = require('../host/resource-history');
 const leftovers = require('../host/leftovers');
+const taskLogsLib = require('../host/task-logs');
 
 const HALF_CADENCE_MS = 5000;
 
@@ -43,6 +44,10 @@ function createResourcesService({
   // host/leftovers.js createReaper: { kill(pid, start) (host/kill-tree.js killProvenAsync), launcherGone(entry), isRunning(pid, start),
   // removeEntries(entries) }. With no `reap` the readout is shown and nothing is ever stopped, by the clock or by a click.
   ledger = () => [], reap = null,
+  // Big task-output files (#74 F(3)): { scan() -> files (host/task-logs-fs.js scanTaskFiles), registry() -> { ok, entries },
+  // remove(row) -> { deleted, failed, kept, freed } (the one guarded delete), everyMs }. Scanned on its own slow cadence, stat
+  // only. With no `taskLogs` the group is simply absent.
+  taskLogs = null,
 }) {
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
@@ -56,6 +61,10 @@ function createResourcesService({
   const reaper = reap ? leftovers.createReaper({ ...reap, now, log }) : null;
   const tracker = leftovers.createTracker({ now });
   let lastFound = null;           // the latest sample's leftovers (with their ledger entries): what a manual Stop is resolved against
+  let tl = { files: [], registry: null, at: -Infinity, busy: false };   // the last task-output scan (stat only), when it ended, whether one is in flight
+  let tlListed = null;         // the pids of the latest full, fresh sample: what "a session is alive" is judged against; null: nothing may be deleted
+  const tlDeleted = [];        // { name, bytes, at } of the files deleted lately (shown for an hour, like Stopped)
+  const TL_EVERY_MS = (taskLogs && taskLogs.everyMs) || 60_000;
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
 
   // A minimised window wants nothing: the page's visibility is a second witness the app does not trust alone
@@ -109,6 +118,45 @@ function createResourcesService({
   // is the monotonic time the points are measured against.
   const withHistory = full => (full ? { ...full, history: history.points(), historyNow: Math.round(mono()) } : full);
 
+  // ---- big task-output files (#74 F(3), host/task-logs.js decides, host/task-logs-fs.js touches the disk) ----
+  const tlClassify = () => taskLogsLib.classify({ files: tl.files, registry: tl.registry, listedPids: tlListed || new Set(), now: now() });
+  function tlShownDeleted() {
+    const t = now();
+    for (let i = tlDeleted.length - 1; i >= 0; i--) if (t - tlDeleted[i].at >= 60 * 60_000) tlDeleted.splice(i, 1);
+    while (tlDeleted.length > 10) tlDeleted.shift();
+    return tlDeleted;
+  }
+  async function tlRemove(rows) {
+    let ok = 0;
+    for (const row of rows) {
+      const res = await taskLogs.remove(row);
+      if (res && res.deleted > 0 && res.failed === 0 && res.kept === 0) { ok++; tl.files = tl.files.filter(f => !row.paths.includes(f.path)); tlDeleted.push({ name: row.name, project: row.project, bytes: res.freed > 0 ? res.freed : row.bytes, at: now() }); }
+      else log('[resources] task log not deleted:', row.name, JSON.stringify(res));
+    }
+    return { ok, failed: rows.length - ok };
+  }
+  async function tlRead() {
+    const [files, registry] = await Promise.all([taskLogs.scan(), taskLogs.registry()]);
+    tl.files = files;
+    tl.registry = registry;
+  }
+  // On the slow cadence, after a fresh full sample was sent: stat the task folders, then delete what is provably abandoned. One at a time.
+  function tlTick() {
+    if (!taskLogs || tl.busy || !tlListed || now() - tl.at < TL_EVERY_MS) return;
+    tl.busy = true;
+    (async () => {
+      try {
+        await tlRead();
+        if (tlListed) await tlRemove(tlClassify().filter(r => r.deletable));
+      } catch (err) {
+        log('[resources] the task-output scan failed:', (err && err.message) || err);
+      } finally {
+        tl.busy = false;
+        tl.at = now();
+      }
+    })();
+  }
+
   // The Leftovers section (#74 item 6): found in the same sample the tree came from, so it adds no poller. ANY failure in it
   // (an unreadable ledger, a malformed entry) costs the section only, said in the log: the model, the machine figures and the
   // chip are the panel's job and must go out whatever happens here (PR #132 Miguel I2). The stop does not run here: the caller
@@ -118,6 +166,7 @@ function createResourcesService({
       let entries = [];
       try { entries = ledger(); } catch (err) { log('[resources] could not read the pid ledger:', err && err.message); }
       const procs = snap.sample.procs;
+      tlListed = new Set(procs.map(p => p.pid));
       const proven = tree.provenHosts(procs, claims());
       const tabHosts = new Set(tabList().map(t => hostOfPort(proven, t.port)).filter(Number.isInteger));
       const attribution = tree.attribute(procs, {
@@ -130,7 +179,7 @@ function createResourcesService({
       const labels = new Map(built.project.rows.map(r => [`session:${r.hostPid}`, r.label]));
       for (const row of found.mcp.concat(found.shells)) if (row.session) row.session = labels.get(row.session) || row.session.replace('session:', 'session ');
       lastFound = found;
-      return { payload: leftovers.present(found, reaper ? reaper.stopped() : [], { now: now() }), found };
+      return { payload: leftovers.present(found, reaper ? reaper.stopped() : [], { now: now(), taskLogs: taskLogs ? tlClassify() : [], deleted: tlShownDeleted() }), found };
     } catch (err) {
       log('[resources] the Leftovers section failed:', (err && err.stack) || err);
       lastFound = null;
@@ -183,6 +232,7 @@ function createResourcesService({
     }
 
     record(snap, built, machine);
+    tlListed = null;     // set again by leftoversOf from THIS sample; an expired or machine-only one deletes nothing
     const left = built && snap.expired !== true ? leftoversOf(snap, built) : null;
     if (!left) lastFound = null;
     lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null };
@@ -192,6 +242,7 @@ function createResourcesService({
     // AFTER the send: the panel paints first. The stop waits a macrotask before each kill (host/leftovers.js), and an adhoc sample
     // (Stop's own re-read) never starts it.
     if (left && reaper && snap.adhoc !== true) reaper.run(left.found).catch(err => log('[resources] leftovers reap threw:', err && err.message));
+    if (snap.adhoc !== true) { if (left) tlTick(); else tlListed = null; }
   }
 
   // The Stop on a Leftovers row, or "Stop N" on a group (B). The page names WHICH rows ({ rows: [{ pid, start }] } or { group }); main
@@ -201,6 +252,26 @@ function createResourcesService({
   const STOP_GROUPS = ['probes', 'shells'];
   async function stopLeftovers(req) {
     const refuse = text => ({ ok: false, text });
+    // A big task-output file, by its key: re-scanned now and re-judged by the same rule as the automatic delete, so the page can
+    // never name a file the app does not itself hold as abandoned.
+    if (req && typeof req === 'object' && typeof req.taskLog === 'string') {
+      if (!taskLogs || !tlListed) return refuse('deleting is not available');
+      if (tl.busy) return refuse('the task folders are being scanned; try again in a moment');
+      tl.busy = true;
+      try {
+        await tlRead();
+        const rows = tlListed ? tlClassify().filter(r => r.deletable && r.key === req.taskLog) : [];
+        if (rows.length === 0) return refuse('that file is not one this panel can delete');
+        const res = await tlRemove(rows);
+        return { ok: true, stopped: res.ok, failed: res.failed };
+      } catch (err) {
+        log('[resources] the task-output delete failed:', (err && err.message) || err);
+        return refuse('the task folders could not be read');
+      } finally {
+        tl.busy = false;
+        tl.at = now();
+      }
+    }
     if (!reaper) return refuse('stopping is not available');
     if (!lastFound) return refuse('there is nothing left over to stop');
     const provable = group => lastFound[group].filter(r => r.provable === true && r.entry);
