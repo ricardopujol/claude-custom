@@ -53,14 +53,26 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
 
   // The CLI's session id does not exist when the MCP server (host/canvas-mcp.js) is spawned, so the host keeps it in a pointer
   // file the server re-reads on every call. Written atomically; removed when there is no session, and with the host.
+  // The pointer is keyed by PORT, so it can be another host's: a host that lost the port bind, or a second one started for the same port,
+  // never wrote it and must not remove it (PR #125 Dexter #5: the live host's canvas tools then failed until /clear). Only the host that wrote
+  // it removes it, and only while it still names the session that host wrote.
+  let wrote = null;         // the session id this control last wrote into the pointer, or null if it never has
+  function removeOwnPointer() {
+    if (!pointerFile || wrote === null) return;
+    let mine = true;
+    try { mine = JSON.parse(fs.readFileSync(pointerFile, 'utf8')).sessionId === wrote; } catch { /* unreadable or gone: nothing of another host's to protect */ }
+    wrote = null;
+    if (mine) fs.rmSync(pointerFile, { force: true });
+  }
   function writePointer(id) {
     if (!pointerFile) return;
     try {
-      if (!id) { fs.rmSync(pointerFile, { force: true }); return; }
+      if (!id) { removeOwnPointer(); return; }
       fs.mkdirSync(path.dirname(pointerFile), { recursive: true });
       const temp = `${pointerFile}.${process.pid}.tmp`;
       fs.writeFileSync(temp, JSON.stringify({ sessionId: id }));
       renameWithRetry(temp, pointerFile);
+      wrote = id;
     } catch (err) { log(`[canvas] could not write the session pointer: ${err && err.message}`); }
   }
 

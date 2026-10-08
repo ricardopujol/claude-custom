@@ -248,3 +248,27 @@ test('without a pointerFile the control writes none', () => {
   c.sessionChanged(SID);
   assert.strictEqual(fs.existsSync(path.join(stateDir, 'canvas', '_tab-4242.json')), false);
 });
+
+// PR #125 Dexter #5: the pointer is keyed by port, so it can be another host's. A control that never wrote it must not remove it.
+test('a control that never wrote the pointer leaves another host\'s pointer in place when it closes (a host that lost the port bind)', () => {
+  const r = rig();
+  fs.mkdirSync(path.dirname(r.pointerFile), { recursive: true });
+  fs.writeFileSync(r.pointerFile, JSON.stringify({ sessionId: 'LIVE-HOST-SESSION' }));
+  r.control.close();
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(r.pointerFile, 'utf8')), { sessionId: 'LIVE-HOST-SESSION' });
+  r.control.sessionChanged(null);
+  assert.strictEqual(fs.existsSync(r.pointerFile), true, 'an unknown session does not clear a pointer it did not write either');
+});
+
+test('a control removes ITS pointer on close, but not one another host has since written over it', () => {
+  const mine = rig();
+  mine.control.sessionChanged('MINE');
+  assert.strictEqual(fs.existsSync(mine.pointerFile), true);
+  mine.control.close();
+  assert.strictEqual(fs.existsSync(mine.pointerFile), false, 'its own pointer goes with it');
+  const taken = rig();
+  taken.control.sessionChanged('MINE');
+  fs.writeFileSync(taken.pointerFile, JSON.stringify({ sessionId: 'THEIRS' }));
+  taken.control.close();
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(taken.pointerFile, 'utf8')), { sessionId: 'THEIRS' }, 'a pointer that now names another session is not ours to remove');
+});
