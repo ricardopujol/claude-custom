@@ -359,10 +359,18 @@ function reduceCanvasMcp(prev, value) {
   return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mcp: value } };
 }
 
+// How long to wait before asking main again for the panel switch after a read that gave no answer (PR #125 Miguel M3): 1 s, doubling, at most
+// 30 s, and it gives up (null) after CANVAS_MCP_MAX_TRIES asks. Until then the box stays "reading..."; a later change or a reload asks afresh.
+const CANVAS_MCP_MAX_TRIES = 8;
+function canvasMcpRetryDelay(attempt) {
+  if (!Number.isInteger(attempt) || attempt < 0 || attempt + 1 >= CANVAS_MCP_MAX_TRIES) return null;
+  return Math.min(1000 * 2 ** attempt, 30000);
+}
+
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
   avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
-  panelSectionView, reduceCanvasMcp,
+  panelSectionView, reduceCanvasMcp, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

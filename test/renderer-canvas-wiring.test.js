@@ -121,7 +121,54 @@ test('a show main refuses is said in the module and not retried; a stale answer 
 test("the Style tab's switch for Claude's panel: a checkbox that sends the desired state, settles on main's answer and re-reads on null (#71 question 8)", () => {
   assert.match(JS, /if \(section\.id === 'panel' && v\) \{/);
   assert.match(JS, /id="style-canvas-mcp"\$\{v\.mcp === true \? ' checked' : ''\}\$\{v\.mcp === null \? ' disabled' : ''\}/);
-  assert.match(JS, /window\.harness\.canvas\.settingsSet\(canvasMcpBox\.checked\)\.then\(settledCanvasMcp\)\.catch\(refreshCanvasMcp\);/);
+  assert.match(JS, /window\.harness\.canvas\.settingsSet\(canvasMcpBox\.checked\)\.then\(settledCanvasMcp\)\.catch\(\(\) => refreshCanvasMcp\(\)\);/);
   assert.match(JS, /function settledCanvasMcp\(value\) \{\s*if \(typeof value === 'boolean'\) \{ styleState = reduceCanvasMcp\(styleState, value\); renderStylePanel\(\); \} else refreshCanvasMcp\(\);/);
   assert.match(JS, /^refreshCanvasMcp\(\);/m);
+});
+
+// PR #125 Miguel M3: the switch's re-read loop backs off, stops, and never stacks. Run the real function against a fake clock and bridge.
+function loopRig(answers) {
+  const start = JS.indexOf('function settledCanvasMcp(value) {');
+  const body = JS.slice(start, JS.indexOf('function settledChrome(saved) {'));
+  const timers = []; const asks = []; const settled = [];
+  const window_ = { harness: { canvas: { settingsGet: () => { asks.push(timers.length); const a = answers.shift(); return a === 'throw' ? Promise.reject(new Error('x')) : Promise.resolve(a); } } } };
+  const delay = (n) => (Number.isInteger(n) && n >= 0 && n + 1 < 8 ? Math.min(1000 * 2 ** n, 30000) : null);
+  const f = new Function('window', 'setTimeout', 'canvasMcpRetryDelay', 'styleState', 'reduceCanvasMcp', 'renderStylePanel', `${body}; return { refreshCanvasMcp, settledCanvasMcp };`);
+  const api = f(window_, (fn, ms) => { timers.push({ fn, ms }); }, delay, {}, (st, v) => { settled.push(v); return st; }, () => {});
+  return { ...api, timers, asks, settled };
+}
+const flush = () => new Promise((r) => setImmediate(r));
+
+test('M3: the re-read backs off 1 s, 2 s, 4 s ... and gives up after 8 asks', async () => {
+  const r = loopRig(Array(20).fill(null));
+  r.refreshCanvasMcp();
+  const waits = [];
+  for (let i = 0; i < 20; i++) { await flush(); const t = r.timers.shift(); if (!t) break; waits.push(t.ms); t.fn(); }
+  assert.deepStrictEqual(waits, [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+  assert.strictEqual(r.asks.length, 8);
+  await flush();
+  assert.strictEqual(r.timers.length, 0, 'it stopped');
+});
+
+test('M3: a failed save while a loop runs does not stack a second loop; after a boolean answer a new loop may start', async () => {
+  const r = loopRig([null, null, true, null, true]);
+  r.refreshCanvasMcp();
+  await flush();
+  r.settledCanvasMcp(null);              // a failed save
+  r.settledCanvasMcp(null);
+  assert.strictEqual(r.asks.length, 1, 'no second loop while one is waiting');
+  assert.strictEqual(r.timers.length, 1, 'one timer');
+  r.timers.shift().fn(); await flush();
+  r.timers.shift().fn(); await flush();   // the third ask answers true
+  assert.deepStrictEqual(r.settled, [true]);
+  r.settledCanvasMcp(null); await flush(); // a fresh loop is allowed now
+  assert.strictEqual(r.asks.length, 4);
+});
+
+test('M3: a rejected read retries the same way', async () => {
+  const r = loopRig(['throw', true]);
+  r.refreshCanvasMcp(); await flush();
+  assert.strictEqual(r.timers[0].ms, 1000);
+  r.timers.shift().fn(); await flush();
+  assert.deepStrictEqual(r.settled, [true]);
 });

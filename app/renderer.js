@@ -6068,7 +6068,7 @@ function bindAvatarSection() {
   const canvasMcpBox = document.getElementById('style-canvas-mcp');
   if (canvasMcpBox && window.harness && window.harness.canvas) {
     canvasMcpBox.addEventListener('change', () => {
-      window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(refreshCanvasMcp);
+      window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(() => refreshCanvasMcp());
     });
   }
   const framelessBox = document.getElementById('style-frameless');
@@ -6096,11 +6096,20 @@ function applyChromeSettings(settings) {
 function settledCanvasMcp(value) {
   if (typeof value === 'boolean') { styleState = reduceCanvasMcp(styleState, value); renderStylePanel(); } else refreshCanvasMcp();
 }
-function refreshCanvasMcp() {
+// ONE loop at a time, backing off and then stopping (PR #125 Miguel M3): a file main cannot read used to be asked about every second for the life
+// of the window, and a failed save could stack a second loop on top of a running one.
+let canvasMcpLoop = false;
+function refreshCanvasMcp(attempt = 0) {
   if (!(window.harness && window.harness.canvas && window.harness.canvas.settingsGet)) return;
+  if (attempt === 0) { if (canvasMcpLoop) return; canvasMcpLoop = true; }
+  const again = () => {
+    const wait = canvasMcpRetryDelay(attempt);
+    if (wait === null) { canvasMcpLoop = false; return; }
+    setTimeout(() => refreshCanvasMcp(attempt + 1), wait);
+  };
   window.harness.canvas.settingsGet().then((v) => {
-    if (typeof v === 'boolean') settledCanvasMcp(v); else setTimeout(refreshCanvasMcp, 1000);
-  }).catch(() => setTimeout(refreshCanvasMcp, 1000));
+    if (typeof v === 'boolean') { canvasMcpLoop = false; settledCanvasMcp(v); } else again();
+  }).catch(again);
 }
 function settledChrome(saved) {
   if (saved && typeof saved === 'object') applyChromeSettings(saved);

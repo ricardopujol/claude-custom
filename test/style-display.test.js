@@ -338,3 +338,10 @@ test('reduceCanvasMcp: a real boolean lands, anything else changes nothing, and 
   assert.deepStrictEqual({ ...on, panel: null }, { ...start, panel: null });
   assert.strictEqual(reduceCanvasMcp(undefined, true).panel.mcp, true);
 });
+
+test('canvasMcpRetryDelay (PR #125 Miguel M3): doubles from 1 s, caps at 30 s, stops after 8 asks, and refuses nonsense', () => {
+  const { canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES } = require('../app/style-display');
+  assert.strictEqual(CANVAS_MCP_MAX_TRIES, 8);
+  assert.deepStrictEqual([0, 1, 2, 3, 4, 5, 6].map(canvasMcpRetryDelay), [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+  for (const bad of [7, 8, 100, -1, 1.5, NaN, Infinity, '1', null, undefined]) assert.strictEqual(canvasMcpRetryDelay(bad), null, String(bad));
+});
