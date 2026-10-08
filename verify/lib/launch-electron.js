@@ -61,14 +61,55 @@ function sweepLive() {
   }
 }
 
-function installSweep() {
-  if (sweepInstalled) return;
-  sweepInstalled = true;
-  const sweep = sweepLive;
-  process.on('exit', sweep);
+// The exit / signal sweep. A signal handler runs once and exits only when nothing else listens for that signal
+// (PR #130 review, Miguel S3): a probe with its own handler keeps control of its exit and its async cleanup.
+function installSweep(proc = process) {
+  if (proc === process) { if (sweepInstalled) return; sweepInstalled = true; }
+  proc.on('exit', sweepLive);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(sig, () => { sweep(); process.exit(sig === 'SIGINT' ? 130 : 143); });
+    proc.once(sig, () => {
+      sweepLive();
+      if (proc.listenerCount(sig) === 0) proc.exit(sig === 'SIGINT' ? 130 : 143);
+    });
   }
+}
+
+// Both launch functions track a child the same way (PR #130 review, Miguel S4): in the sweep while it runs, and out of
+// the sweep and the ledger the moment it exits.
+function track(child, { killFn, ledgerFile, label = '' }) {
+  const handle = { child, pid: child.pid, killFn, ledgerFile, label };
+  live.add(handle);
+  child.on('exit', () => {
+    handle.exited = true;
+    live.delete(handle);
+    forget(ledgerFile, handle);
+  });
+  return handle;
+}
+
+// Prove the child by its start time, then record it. 'recorded' | 'unrecorded' (no ledger, or its lock refused) |
+// 'exited-early' (gone before its start could be read: no kill, the pid may be reused) | 'exited' (gone before the
+// line was written) | 'unproven' (start unreadable: killed, nothing could safely reap it later).
+async function prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, label }) {
+  const { child } = handle;
+  let start = null;
+  try { const starts = await startTimes([child.pid]); start = starts && starts.get(child.pid); } catch { /* unproven */ }
+  if (typeof start !== 'string') {
+    live.delete(handle);
+    if (handle.exited) return 'exited-early';
+    console.log(`[launch-electron] could not read the start time of pid ${child.pid}; killing it rather than leave an unproven process`);
+    try { killFn(child.pid); } catch { /* gone */ }
+    return 'unproven';
+  }
+  handle.start = start;
+  let launcherStart = null;
+  try { launcherStart = await selfStart(); } catch { /* recorded with an unknown start: alive while this pid runs */ }
+  if (handle.exited) return 'exited';
+  if (!ledgerFile) return 'unrecorded';
+  return record(ledgerFile, handle, {
+    pid: child.pid, start, kind, label, createdAt: Date.now(),
+    launcher: { pid: process.pid, start: typeof launcherStart === 'string' ? launcherStart : null },
+  }) ? 'recorded' : 'unrecorded';
 }
 
 async function launchElectron({
@@ -82,26 +123,10 @@ async function launchElectron({
   if (cwd) opts.cwd = cwd;
   if (stdio) opts.stdio = stdio;
   const child = spawnFn(exe, args, opts);
-  const handle = { child, pid: child.pid, label, ledgerFile, killFn };
-  live.add(handle);
-  child.on('exit', () => { handle.exited = true; });
-
-  const starts = await startTimes([child.pid]);
-  const start = starts && starts.get(child.pid);
-  if (typeof start !== 'string') {
-    live.delete(handle);
-    // Gone already: its pid may belong to someone else by now, so no kill.
-    if (handle.exited) throw new Error(`launchElectron: pid ${child.pid} exited before its start time could be read`);
-    try { killFn(child.pid); } catch { /* gone */ }
-    throw new Error(`launchElectron: could not read the start time of pid ${child.pid}; killed it rather than leave an unproven process`);
-  }
-  handle.start = start;
-  let launcherStart = null;
-  try { launcherStart = await selfStart(); } catch { /* recorded with an unknown start: alive while this pid runs */ }
-  record(ledgerFile, handle, {
-    pid: child.pid, start, kind, label, createdAt: Date.now(),
-    launcher: { pid: process.pid, start: typeof launcherStart === 'string' ? launcherStart : null },
-  });
+  const handle = track(child, { killFn, ledgerFile, label });
+  const proof = await prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, label });
+  if (proof === 'exited-early') throw new Error(`launchElectron: pid ${child.pid} exited before its start time could be read`);
+  if (proof === 'unproven') throw new Error(`launchElectron: could not read the start time of pid ${child.pid}; killed it rather than leave an unproven process`);
   handle.stop = (o) => stopElectron(handle, o);
   return handle;
 }
@@ -119,35 +144,9 @@ function spawnElectron(exe, args = [], opts = {}, {
 } = {}) {
   if (install) installSweep();
   const child = spawnFn(exe, args, { ...opts, env: probeEnv(opts.env, parentEnv, keepEnv) });
-  const handle = { child, pid: child.pid, killFn };
-  live.add(handle);
-  child.on('exit', () => {
-    handle.exited = true;
-    live.delete(handle);
-    forget(ledgerFile, handle);
-  });
-  child.ledgered = (async () => {
-    let start = null;
-    try { const starts = await startTimes([child.pid]); start = starts && starts.get(child.pid); } catch { /* unproven */ }
-    if (handle.exited) return false;
-    if (typeof start !== 'string') {
-      console.log(`[launch-electron] could not read the start time of pid ${child.pid}; killing it rather than leave an unproven process`);
-      live.delete(handle);
-      try { killFn(child.pid); } catch { /* gone */ }
-      return false;
-    }
-    let launcherStart = null;
-    try { launcherStart = await selfStart(); } catch { /* recorded with an unknown start: alive while this pid runs */ }
-    if (handle.exited) return false;
-    handle.start = start;
-    if (ledgerFile) {
-      return record(ledgerFile, handle, {
-        pid: child.pid, start, kind, label, createdAt: Date.now(),
-        launcher: { pid: process.pid, start: typeof launcherStart === 'string' ? launcherStart : null },
-      });
-    }
-    return true;
-  })();
+  const handle = track(child, { killFn, ledgerFile, label });
+  child.ledgered = prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, label })
+    .then(p => p === 'recorded' || (p === 'unrecorded' && !ledgerFile));
   return child;
 }
 
@@ -203,4 +202,4 @@ async function stopElectron(handle, { polite, killFn = handle.killFn || killPidT
   return { how };
 }
 
-module.exports = { cleanElectronEnv, probeEnv, launchElectron, spawnElectron, stopElectron, sweepLive, waitForExit, sleep };
+module.exports = { cleanElectronEnv, probeEnv, launchElectron, spawnElectron, stopElectron, sweepLive, installSweep, waitForExit, sleep };

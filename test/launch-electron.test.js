@@ -281,3 +281,36 @@ test('spawnElectron: keepEnv reaches the child env', () => {
       parentEnv: { CLAUDE_CUSTOM_CWD: 'C:/w', CLAUDE_CUSTOM_PORT: '7' }, keepEnv: ['CLAUDE_CUSTOM_CWD'] });
   assert.deepStrictEqual(f.calls[0][3].env, { CLAUDE_CUSTOM_CWD: 'C:/w' });
 });
+
+// PR #130 review, Miguel S4: launchElectron and spawnElectron share one ledger path. Before, launchElectron never
+// removed a child that exited by itself (its line waited for the reaper).
+test('launch: a child that exits by itself leaves the ledger at once, as spawnElectron\'s does', async () => {
+  const dir = tmpDir('cc-launch-test-');
+  try {
+    const f = fakes();
+    const file = path.join(dir, 'l.jsonl');
+    await launchElectron({ electronPath: 'E.exe', env: {}, ledgerFile: file, spawnFn: f.spawnFn, startTimes: f.startTimes,
+      selfStart: async () => '555', install: false });
+    assert.strictEqual(ledger.readLedger(file).length, 1);
+    f.die();
+    assert.deepStrictEqual(ledger.readLedger(file), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// PR #130 review, Miguel S3: the sweep's signal handlers run once and exit only when nothing else handles the signal,
+// so a probe's own handler (and its async cleanup) is not cut short.
+test('installSweep: a signal with no other listener sweeps and exits 130 / 143; with a probe\'s own listener it does not exit', () => {
+  const { installSweep } = require('../verify/lib/launch-electron');
+  const mk = () => { const p = new EventEmitter(); p.exits = []; p.exit = (c) => p.exits.push(c); return p; };
+  const a = mk();
+  installSweep(a);
+  a.emit('SIGINT');
+  assert.deepStrictEqual(a.exits, [130]);
+  const b = mk();
+  installSweep(b);
+  b.on('SIGTERM', () => {});              // the probe's own handler
+  b.emit('SIGTERM');
+  assert.deepStrictEqual(b.exits, []);
+  b.emit('SIGTERM');
+  assert.strictEqual(b.listenerCount('SIGTERM'), 1, 'ours ran once and is gone; the probe\'s stays');
+});
