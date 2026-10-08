@@ -81,9 +81,15 @@ function defaultProjectsDir() {
  * Both per-file results are pure functions of the file's bytes, so they are keyed by (mtimeMs, size) taken
  * BEFORE the read: a file that grows while it is being read is simply a miss on the next pass. Transcripts
  * are append-only logs, so an edit that keeps both the size and the mtime is not a case worth a hash.
- * Failures are never stored (they throw before the set), so an unreadable file is counted on every pass
- * exactly as without a memo. `prune` drops files that left the listing, which bounds the memo by the
- * project's size.
+ * Failures are never stored (they throw before the set), and neither is a file that vanished between its stat
+ * and its read (null), so a file that has never been read successfully is counted on every pass exactly as
+ * without a memo. ONE EXCEPTION, on purpose (Dexter F1, PR #131): a file that WAS read fine and whose (mtime,
+ * size) hasn't changed is served from the memo without a read, so if it has turned unreadable since (a backup
+ * tool holding it, an ACL that still allows stat) the pass reports its known, unchanged figures and does not
+ * count it as unreadable. A failed stat always falls through to a real read, which reports as without a memo.
+ * `prune` drops files that left the listing, which bounds the memo by the project's size. That also makes a
+ * memo SINGLE-PROJECT: one memo per project dir (per `cwd`). Shared across two, each pass would evict the
+ * other's entries (Miguel M6).
  *
  * Opt-in (readAgentStats({ memo })): a caller with no memo behaves exactly as before.
  */

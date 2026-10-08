@@ -170,3 +170,70 @@ test('readTranscript with a memo still treats a VANISHED file as nothing, and an
   await assert.rejects(() => readTranscript(dirAsFile, memo), (e) => e && e.code === 'EISDIR');
   assert.strictEqual(memo.size(), 0);
 });
+
+// Swap fs/promises.readFile (the same object host/agent-stats.js holds) for the length of one pass.
+function stubReadFile(fn) {
+  const fsp = require('fs/promises');
+  const orig = fsp.readFile;
+  fsp.readFile = (file, ...rest) => fn(orig, String(file), ...rest);
+  return () => { fsp.readFile = orig; };
+}
+const agentA = (p) => path.join(p.dir, 's1', 'subagents', 'agent-a.jsonl');
+const agentB = (p) => path.join(p.dir, 's1', 'subagents', 'agent-b.jsonl');
+
+// Dexter F2, PR #131: the key must be the stat taken BEFORE the read. An agent's last turn can be appended
+// while its transcript is being read; a stat taken after the read would key the old bytes under the final
+// size, and every later pass would hit and lose that turn for good. Every read of agent-a in pass 1 appends a
+// turn and resolves with the bytes from before that append.
+test('a turn appended WHILE the transcript is read is picked up on the next pass (stat before read)', async () => {
+  const p = fixture();
+  const memo = createStatsMemo();
+  let n = 0;
+  const restore = stubReadFile(async (orig, file, ...rest) => {
+    const before = await orig(file, ...rest);
+    if (file === agentA(p)) fs.appendFileSync(file, turn(10 + n, U(100, 100), 'late' + n++) + NL);
+    return before;
+  });
+  try { await readAgentStats({ cwd: CWD, projectsDir: p.root, memo }); } finally { restore(); }
+  assert.ok(n >= 1, 'the stub never saw agent-a');
+  const reads = memo.reads.transcript;
+  const cold = await readAgentStats({ cwd: CWD, projectsDir: p.root });
+  const warm = await readAgentStats({ cwd: CWD, projectsDir: p.root, memo });
+  assert.strictEqual(memo.reads.transcript, reads + 1);             // the grown file missed, so it was re-read
+  assert.deepStrictEqual(warm, cold);                                // ... and every appended turn is counted
+});
+
+// Dexter F1, PR #131: a file that was read fine, and whose (mtime, size) hasn't changed, is served from the
+// memo even if reading it would now fail (a backup tool holding it, an ACL that still allows stat). The bytes
+// are known and unchanged, so the figure is right; this pins that choice so it can't flip silently.
+test('an unchanged file that has turned unreadable since a good read is served from the memo', async () => {
+  const p = fixture();
+  const memo = createStatsMemo();
+  const first = await readAgentStats({ cwd: CWD, projectsDir: p.root, memo });
+  const restore = stubReadFile(async (orig, file, ...rest) => {
+    if (file === agentB(p)) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+    return orig(file, ...rest);
+  });
+  let second;
+  try { second = await readAgentStats({ cwd: CWD, projectsDir: p.root, memo }); } finally { restore(); }
+  assert.strictEqual(second.ok, true);
+  assert.deepStrictEqual(second, first);
+});
+
+// Miguel M4, PR #131: a transcript that passes its stat and then vanishes before the read returns null, and
+// null must not be remembered: the file may come back. (The other "vanished" test fails at the stat, so it
+// never reached this guard.)
+test('a transcript that vanishes between its stat and its read is not remembered as empty', async () => {
+  const p = fixture();
+  const memo = createStatsMemo();
+  const restore = stubReadFile(async (orig, file, ...rest) => {
+    if (file === agentB(p)) throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+    return orig(file, ...rest);
+  });
+  let a;
+  try { a = await readAgentStats({ cwd: CWD, projectsDir: p.root, memo }); } finally { restore(); }
+  assert.ok(!a.agents.find(r => r.agent === 'logic-reviewer'), 'agent-b was read despite the stub');
+  const b = await readAgentStats({ cwd: CWD, projectsDir: p.root, memo });
+  assert.deepStrictEqual(b, await readAgentStats({ cwd: CWD, projectsDir: p.root }));
+  assert.ok(b.agents.find(r => r.agent === 'logic-reviewer'));
+});
