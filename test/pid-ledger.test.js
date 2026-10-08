@@ -7,6 +7,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const { tmpDir } = require('./tmp-dir');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -136,7 +137,7 @@ test('PROPERTY: an entry whose launcher still matches is never selected', () => 
 });
 
 test('append and read: the ledger file is JSON lines, appended, tolerant of a missing file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-ledger-test-'));
+  const dir = tmpDir('cc-ledger-test-');
   try {
     const file = path.join(dir, 'ledger.jsonl');
     assert.deepStrictEqual(ledger.readLedger(file), []);

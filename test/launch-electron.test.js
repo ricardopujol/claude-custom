@@ -6,6 +6,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const { tmpDir } = require('./tmp-dir');
 const EventEmitter = require('node:events');
 const fs = require('fs');
 const os = require('os');
@@ -48,7 +49,7 @@ function fakes({ exitsOnPolite = true } = {}) {
 }
 
 test('launch: spawns with the cleaned env, writes a ledger entry proven by start time, naming this process as the launcher', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  const dir = tmpDir('cc-launch-test-');
   try {
     const f = fakes();
     const file = path.join(dir, 'l.jsonl');
@@ -101,7 +102,7 @@ test('stop: a polite step that throws still ends in the kill', async () => {
 });
 
 test('stop: removes the ledger entry once the process is gone, and leaves it if the kill did not take', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  const dir = tmpDir('cc-launch-test-');
   try {
     const file = path.join(dir, 'l.jsonl');
     ledger.appendEntry(file, { pid: 4242, start: '777', launcher: null, label: 'x' });
@@ -167,7 +168,7 @@ test('spawnElectron: returns the child at once, with exe, args and the other opt
 });
 
 test('spawnElectron: writes a ledger entry proven by start time, and removes it when the child exits', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  const dir = tmpDir('cc-launch-test-');
   try {
     const file = path.join(dir, 'l.jsonl');
     const f = spawnFakes();
@@ -185,7 +186,7 @@ test('spawnElectron: writes a ledger entry proven by start time, and removes it 
 });
 
 test('spawnElectron: an unreadable start time kills the child by pid and writes nothing', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  const dir = tmpDir('cc-launch-test-');
   try {
     const file = path.join(dir, 'l.jsonl');
     const f = spawnFakes({ start: null });
@@ -198,7 +199,7 @@ test('spawnElectron: an unreadable start time kills the child by pid and writes 
 });
 
 test('spawnElectron: a child that exited before its start time was read is neither killed (its pid may be reused) nor recorded', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  const dir = tmpDir('cc-launch-test-');
   try {
     const file = path.join(dir, 'l.jsonl');
     const f = spawnFakes({ start: null });
@@ -236,7 +237,7 @@ test('the exit sweep kills, by pid, only the children still running', async () =
 });
 
 test('stop: a child that has already exited is not killed by pid (its pid may be reused), and its ledger entry goes', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  const dir = tmpDir('cc-launch-test-');
   try {
     const file = path.join(dir, 'l.jsonl');
     ledger.appendEntry(file, { pid: 4242, start: '777', launcher: null, label: 'x' });

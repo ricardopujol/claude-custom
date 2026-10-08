@@ -19,7 +19,15 @@
    Usage:  node verify/probe-electron-zombies.js [--cycles 5] [--views 3] [--close exit|kill] [--watch 60] [--linger 5]
    --close exit  the app's own way out (views closed, window closed, app.exit(0)).  --close kill  taskkill /T /F.
    Heavy work: take ~/.claude/scripts/heavy-lock.ps1 first; one Electron at a time (cycles are sequential).
-   PASS/FAIL is on "every cycle ran and was measured", never on the linger numbers: they are the finding. */
+   PASS/FAIL is on "every cycle ran and was measured", never on the linger numbers: they are the finding.
+
+   RESULTS 2026-10-08 13:25, quiet machine (34 GB free, 2-9 % CPU), 5 cycles x 7 processes (main, gpu, utility,
+   4 renderers), polled every 2 s:
+     --close exit  every process gone by the first poll (3 s), none zombie-shaped, 0/35 lingered.
+     --close kill  the same: 3 s, 0/35.
+   So a trivial Electron does not reproduce A on a quiet machine. The real app's 8-13 s on a quiet machine (and
+   60-90 s+ on a busy one, Defender at 20-62 %) is not explained by Electron's own exit alone; still open, and the
+   next comparison is this probe on a BUSY machine, or with the app's own main in place of the trivial one. */
 
 if (process.versions.electron && process.type === 'browser') {
   trivialMain();
@@ -43,12 +51,17 @@ function trivialMain() {
       views.push(v);
     }
     process.stdout.write('TREE-UP\n');
-    process.stdin.on('data', () => {
+    // The quit signal is a file: an Electron main on Windows does not read a piped stdin (measured 2026-10-08:
+    // five cycles never saw the 'quit' line, and every process was still alive at 60 s).
+    const quitFile = process.env.CC_ZOMBIE_QUIT;
+    const t = setInterval(() => {
+      if (!quitFile || !require('fs').existsSync(quitFile)) return;
+      clearInterval(t);
       // destroyTabView's order: off the window, then the webContents closed.
       for (const v of views) { win.contentView.removeChildView(v); v.webContents.close(); }
       win.close();
       setTimeout(() => app.exit(0), 200);
-    });
+    }, 100);
   });
 }
 
@@ -61,7 +74,7 @@ function argOf(name, dflt) {
 async function main() {
   if (process.platform !== 'win32') { console.log('SKIP: reads the Windows process table'); return 0; }
   const census = require('./lib/proc-census');
-  const { launchElectron, stopElectron, sleep } = require('./lib/launch-electron');
+  const { launchElectron, stopElectron, waitForExit, sleep } = require('./lib/launch-electron');
   const { killPidTree } = require('../host/kill-tree');
 
   const CYCLES = Number(argOf('cycles', 5));
@@ -78,11 +91,16 @@ async function main() {
     if (!ok) failures++;
   };
 
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
   const results = [];
   for (let c = 1; c <= CYCLES; c++) {
+    const quitFile = path.join(os.tmpdir(), `cc-zombie-quit-${process.pid}-${c}`);
+    try { fs.rmSync(quitFile, { force: true }); } catch { /* none */ }
     const h = await launchElectron({
-      args: [__filename], extraEnv: { CC_ZOMBIE_VIEWS: String(VIEWS) }, label: `probe-electron-zombies#${c}`,
-      stdio: ['pipe', 'pipe', 'inherit'],
+      args: [__filename], extraEnv: { CC_ZOMBIE_VIEWS: String(VIEWS), CC_ZOMBIE_QUIT: quitFile },
+      label: `probe-electron-zombies#${c}`, stdio: ['ignore', 'pipe', 'inherit'],
     });
     try {
       const up = await new Promise((resolve) => {
@@ -99,7 +117,7 @@ async function main() {
       if (!tracked.length) { check(`cycle ${c}: the tree was read before the close`, false); continue; }
 
       const t0 = Date.now();
-      if (CLOSE === 'exit') h.child.stdin.write('quit\n');
+      if (CLOSE === 'exit') fs.writeFileSync(quitFile, 'quit');
       else killPidTree(h.pid);
       const polls = [];
       while ((Date.now() - t0) / 1000 < WATCH_S) {
@@ -127,7 +145,10 @@ async function main() {
         if (p && last.some(x => x.pid === p.pid && x.start === p.start)) { try { process.kill(p.pid); } catch { /* gone */ } }
       }
     } finally {
+      // Let a root killed above report its exit first, so the stop below does not kill its (maybe reused) pid.
+      await waitForExit(h.child, 5000);
       await stopElectron(h, { politeMs: 0, graceMs: 5000 });
+      try { fs.rmSync(quitFile, { force: true }); } catch { /* best effort */ }
     }
   }
 

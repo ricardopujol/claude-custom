@@ -5,6 +5,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const { tmpDir } = require('./tmp-dir');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -14,7 +15,7 @@ const { reap } = require('../verify/reap-probes');
 const E = (pid, over = {}) => ({ pid, start: `S${pid}`.replace('S', '1'), launcher: { pid: 9000 + pid, start: '2' }, kind: 'probe-window', label: 'p', createdAt: 1, ...over });
 
 function setup(entries) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-reap-test-'));
+  const dir = tmpDir('cc-reap-test-');
   const file = path.join(dir, 'l.jsonl');
   for (const e of entries) ledger.appendEntry(file, e);
   return { dir, file };
