@@ -41,7 +41,7 @@
  * never touches another checkout's. It REFUSES (exit 2) while a live host is open on this checkout. A small window is a held-down #dock (`squeeze`), not an OS window.
  * The only processes stopped are the ones this probe started. WINDOWS ONLY.
  */
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

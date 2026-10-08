@@ -13,8 +13,10 @@
 
    Each cycle: launch through verify/lib/launch-electron.js (clean env, ledger entry, kill by pid), wait for the
    tree to come up, read every process's type from its command line (unreadable after the close), close, then poll
-   the process table every POLL_S seconds for up to WATCH_S, and record when each process left and how long it was
-   seen zombie-shaped. Anything still listed at the end is killed by pid, only if its start time still matches.
+   the process table at least every POLL_S seconds (each poll is one CIM query, 1-2 s itself) for up to WATCH_S, and
+   record when each process left and how long it was seen zombie-shaped. Anything still listed at the end is reported
+   and left to finish: no pid is killed from a table row (PR #130 review). A root still running is stopped through the
+   handle this probe holds.
 
    Usage:  node verify/probe-electron-zombies.js [--cycles 5] [--views 3] [--close exit|kill] [--watch 60] [--linger 5]
    --close exit  the app's own way out (views closed, window closed, app.exit(0)).  --close kill  taskkill /T /F.
@@ -22,7 +24,7 @@
    PASS/FAIL is on "every cycle ran and was measured", never on the linger numbers: they are the finding.
 
    RESULTS 2026-10-08 13:25, quiet machine (34 GB free, 2-9 % CPU), 5 cycles x 7 processes (main, gpu, utility,
-   4 renderers), polled every 2 s:
+   4 renderers), polled at least every 2 s (the gap is the sleep plus the query; t is read from the clock):
      --close exit  every process gone by the first poll (3 s), none zombie-shaped, 0/35 lingered.
      --close kill  the same: 3 s, 0/35.
    So a trivial Electron does not reproduce A on a quiet machine. The real app's 8-13 s on a quiet machine (and
@@ -106,7 +108,9 @@ async function main() {
       const up = await new Promise((resolve) => {
         let out = '';
         const t = setTimeout(() => resolve(false), 30000);
-        h.child.stdout.on('data', (d) => { out += d; if (/TREE-UP/.test(out)) { clearTimeout(t); resolve(true); } });
+        // Detached once the line is seen (PR #130 review, Miguel S7): nothing reads the child's output after that.
+        const onData = (d) => { out += d; if (/TREE-UP/.test(out)) { clearTimeout(t); h.child.stdout.removeListener('data', onData); h.child.stdout.resume(); resolve(true); } };
+        h.child.stdout.on('data', onData);
         h.child.once('exit', () => { clearTimeout(t); resolve(false); });
       });
       if (!up) { check(`cycle ${c}: the tree came up`, false); continue; }

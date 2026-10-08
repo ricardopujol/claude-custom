@@ -40,7 +40,7 @@
  * through the probe hook and checks the page -> shell -> strip path.
  */
 
-const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnSync, execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

@@ -46,7 +46,7 @@
  * (verify/lib/process-hygiene.js), never a process by name.
  */
 
-const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnSync, execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

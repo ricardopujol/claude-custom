@@ -31,7 +31,7 @@
  * the probe's temp folder is killed at the end.
  */
 
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

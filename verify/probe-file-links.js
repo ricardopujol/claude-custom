@@ -23,7 +23,6 @@
    end; a 3-row path is linked from its first and last row and a click opens
    the whole path; a missing path is no link; `notes.md:3` resolves against
    the tab folder. */
-const { spawn } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const path = require('path');
 

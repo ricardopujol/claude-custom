@@ -45,7 +45,7 @@
  * repo, registry, portraits, uploads and user data are temp folders. Only PIDs this probe started are killed.
  */
 
-const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnSync, execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

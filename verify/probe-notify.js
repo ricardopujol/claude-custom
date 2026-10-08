@@ -6,7 +6,7 @@
    renderer received the attention message, ran its handler without error, and
    showed nothing, because the handler's own focus guard skipped the toast. Only
    a probe that watches MAIN can tell "delivered" from "displayed". */
-const { spawn, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const path = require('path');

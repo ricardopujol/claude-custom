@@ -44,7 +44,7 @@
  * repo. The install's global layout file is moved aside for the run and put back.
  */
 
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

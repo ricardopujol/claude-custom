@@ -29,7 +29,7 @@
  * allocate port blocks in ~\.claude-custom\worktree-ports.json for temp
  * folders that are then deleted. WINDOWS ONLY (cmd.exe, PowerShell, taskkill).
  */
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

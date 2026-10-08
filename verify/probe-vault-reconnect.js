@@ -26,7 +26,7 @@
  * registry, portraits, uploads and user data are temp folders; every host this
  * started is killed. WINDOWS ONLY.
  */
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');

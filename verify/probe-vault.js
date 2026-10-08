@@ -7,7 +7,6 @@
 
    It also asserts the property the whole feature rests on -- that the secret
    never reaches the host, which owns the pty. */
-const { spawn } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const path = require('path');

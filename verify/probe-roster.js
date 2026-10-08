@@ -4,7 +4,7 @@
    Reported as: "I asked the session to deploy dexter and miguel, it did, but
    they were not visible in their portrait tab." Every headless check of this
    path passes, so this one drives the REAL window and photographs the result. */
-const { spawn, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const path = require('path');

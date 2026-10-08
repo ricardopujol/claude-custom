@@ -23,7 +23,6 @@
  *                         closes itself.
  */
 
-const { spawn } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const path = require('path');
 
