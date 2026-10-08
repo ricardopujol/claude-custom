@@ -99,3 +99,36 @@ test('a kill that throws does not stop the others, and the survivor keeps its li
     assert.deepStrictEqual(ledger.readLedger(file).map(e => e.pid), [10]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// PR #130 review, Dexter #2: prove and kill in one step. The reaper hands the recorded start to the kill (killProven
+// re-proves it on a held handle), and a kill that finds another process on the pid ('mismatch') kills nothing.
+test('the kill gets the recorded start time with the pid; a mismatch is not counted as killed and its line goes as stale', async () => {
+  const { dir, file } = setup([E(10), E(11)]);
+  try {
+    const calls = [];
+    const r = await reap({
+      file, dryRun: false, startTimes: async () => new Map([[10, '110'], [11, '111']]),
+      kill: (pid, start) => { calls.push([pid, start]); return pid === 10 ? 'mismatch' : 'killed'; },
+      stillRunning: async () => new Set(),
+    });
+    assert.deepStrictEqual(calls, [[10, '110'], [11, '111']]);
+    assert.deepStrictEqual(r.killed, [11]);
+    assert.deepStrictEqual(r.failed, []);
+    assert.ok(r.dropped.includes(10), 'the pid is someone else now: its line is stale');
+    assert.deepStrictEqual(ledger.readLedger(file), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a kill that reports failed or unknown keeps the line, even if the re-check cannot see the process', async () => {
+  const { dir, file } = setup([E(10), E(11)]);
+  try {
+    const r = await reap({
+      file, dryRun: false, startTimes: async () => new Map([[10, '110'], [11, '111']]),
+      kill: (pid) => (pid === 10 ? 'failed' : 'unknown'),
+      stillRunning: async () => new Set(),
+    });
+    assert.deepStrictEqual(r.killed, []);
+    assert.deepStrictEqual(r.failed.sort(), [10, 11]);
+    assert.strictEqual(ledger.readLedger(file).length, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

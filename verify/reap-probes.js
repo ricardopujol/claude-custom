@@ -7,16 +7,17 @@
  *
  * Only ledger entries (host/pid-ledger.js, written by verify/lib/launch-electron.js) are ever considered. One is
  * killed only if the pid is running with the START TIME the ledger recorded (a reused pid is a different process) and
- * its launcher is gone. The tree is killed BY PID (host/kill-tree.js); no process is ever named, and a process whose
- * start time cannot be read is left alone. Lines whose process is gone or replaced are dropped.
+ * its launcher is gone. The tree is killed BY PID through host/kill-tree.js's killProven, which re-proves the start time
+ * on a held process handle in the same step (no window for the pid to change owner); no process is ever named, and a
+ * process whose start time cannot be read is left alone. Lines whose process is gone or replaced are dropped.
  *
  * A process already exiting ignores the kill, so one that is still listed afterwards keeps its line for the next run.
  */
 const ledger = require('../host/pid-ledger');
 const { startTimes: realStartTimes } = require('../host/proc-start');
-const { killPidTree } = require('../host/kill-tree');
+const { killProven } = require('../host/kill-tree');
 
-async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartTimes, kill = killPidTree, dryRun = true, stillRunning, now = Date.now(), minAgeMs = 0 } = {}) {
+async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartTimes, kill = killProven, dryRun = true, stillRunning, now = Date.now(), minAgeMs = 0 } = {}) {
   const entries = ledger.readLedger(file);
   const result = { entries: entries.length, verified: true, wouldKill: [], killed: [], failed: [], dropped: [] };
   if (entries.length === 0) return result;
@@ -30,8 +31,15 @@ async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartT
   result.wouldKill = targets.map(e => e.pid);
   if (dryRun) return result;
 
+  // kill(pid, start) proves the start again on a held handle and kills in the same step (host/kill-tree.js killProven,
+  // PR #130 review, Dexter #2). 'mismatch': the pid is another process now, nothing killed, the line is stale.
+  // 'failed' / 'unknown': nothing is known to have died, the line stays whatever the re-check says.
+  const outcome = new Map();
   for (const e of targets) {
-    try { kill(e.pid); } catch (err) { console.log(`[reap] kill ${e.pid} failed: ${err && err.message}`); }
+    try { outcome.set(e.pid, kill(e.pid, e.start)); } catch (err) {
+      console.log(`[reap] kill ${e.pid} failed: ${err && err.message}`);
+      outcome.set(e.pid, 'failed');
+    }
   }
   // What is still running afterwards keeps its line. Default: ask again, by the same proof.
   const left = stillRunning
@@ -40,9 +48,15 @@ async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartT
       const again = await startTimes(targets.map(e => e.pid));
       return new Set(targets.filter(e => again && again.has(e.pid) && again.get(e.pid) === e.start).map(e => e.pid));
     })();
-  for (const e of targets) (left.has(e.pid) ? result.failed : result.killed).push(e.pid);
+  const mismatched = [];
+  for (const e of targets) {
+    const o = outcome.get(e.pid);
+    if (o === 'mismatch') mismatched.push(e.pid);
+    else if (o === 'failed' || o === 'unknown' || left.has(e.pid)) result.failed.push(e.pid);
+    else result.killed.push(e.pid);
+  }
 
-  const stale = ledger.staleEntries(entries, starts).map(e => e.pid);
+  const stale = [...ledger.staleEntries(entries, starts).map(e => e.pid), ...mismatched];
   result.dropped = stale;
   ledger.removePids(file, [...result.killed, ...stale]);
   return result;

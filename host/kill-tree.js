@@ -93,13 +93,17 @@ function killTree(child, { spawnFn = spawn } = {}) {
 // sets `shell: true` (the thing that makes a tree possible in the first
 // place) on win32. A future non-Windows caller that needs a real tree kill
 // must not assume this function gives it one.
-function killPidTree(pid) {
+function killPidTree(pid, { run = spawnSync, fallback = (p) => process.kill(p, 'SIGTERM'), platform = process.platform } = {}) {
   if (!pid) return;
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     try {
-      const r = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+      const r = run('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
       if (r.error) {
         console.log('[kill-tree] taskkill could not be run:', r.error.code || r.error.message, '- falling back');
+      } else if (r.status === 128) {
+        // "Not found": the pid is already gone. Final (PR #130 review, Dexter #2): a process.kill on it now could only
+        // reach a process that took the freed pid since, which nobody proved is ours.
+        return;
       } else if (r.status !== 0) {
         // Finding 3 (Dexter, PR #61 review): `r.error` is only set when
         // taskkill itself couldn't be spawned. When it runs and FAILS --
@@ -114,7 +118,40 @@ function killPidTree(pid) {
       }
     } catch (err) { console.log('[kill-tree] taskkill threw:', err.message, '- falling back'); }
   }
-  try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+  try { fallback(pid); } catch { /* already gone */ }
 }
 
-module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited };
+/*
+ * A kill that cannot land on a reused pid (PR #130 review, Dexter #2). Proving a start time and killing in two round
+ * trips leaves a window in which the process exits and its pid is handed to another; so both happen in ONE PowerShell
+ * call that holds the process handle across them (an open handle keeps Windows from reusing the pid): open it, read
+ * StartTime ON that handle, compare with the recorded FILETIME (host/proc-start.js reads the same source), and only
+ * then taskkill /T while the handle is still held. Outcomes: 'killed', 'gone' (not running, or exited first),
+ * 'mismatch' (the pid is another process), 'failed' (taskkill refused), 'unknown' (could not be judged: nothing done).
+ */
+const POWERSHELL = require('path').join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+function parseProvenKill(r) {
+  if (!r || r.error || typeof r.stdout !== 'string') return 'unknown';
+  const m = /^(GONE|UNKNOWN|MISMATCH|KILLED (-?\d+))\s*$/m.exec(r.stdout);
+  if (!m) return 'unknown';
+  if (m[1] === 'GONE') return 'gone';
+  if (m[1] === 'MISMATCH') return 'mismatch';
+  if (m[1] === 'UNKNOWN') return 'unknown';
+  const code = Number(m[2]);
+  return code === 0 ? 'killed' : code === 128 ? 'gone' : 'failed';
+}
+
+function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0 || typeof start !== 'string' || !/^\d+$/.test(start)) return 'unknown';
+  const script = [
+    `try { $p = Get-Process -Id ${pid} -ErrorAction Stop } catch { 'GONE'; exit }`,
+    "try { $null = $p.Handle; $s = $p.StartTime.ToFileTimeUtc() } catch { 'UNKNOWN'; exit }",
+    `if ([string]$s -ne '${start}') { 'MISMATCH'; exit }`,
+    "if ($p.HasExited) { 'GONE'; exit }",
+    `& taskkill.exe /PID ${pid} /T /F *> $null; 'KILLED ' + $LASTEXITCODE`,
+  ].join('; ');
+  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
+}
+
+module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, parseProvenKill };
