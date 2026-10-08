@@ -22,7 +22,9 @@ const { renameWithRetry } = require('./atomic-write');
 
 const MAX_SHELF = 200;
 const TITLE_MAX = 120;
-const URL_IN_TEXT = /https:\/\/[A-Za-z0-9.-]+\/artifact\/[A-Za-z0-9_-]+/;
+// The text form is the narrowest reading: the platform's own host only. A tool message can quote any address, and the model chooses the
+// path that comes before the one that counts (PR #125 Dexter #7 / Miguel M2).
+const URL_IN_TEXT = /https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+/;
 
 const isStr = (v) => typeof v === 'string';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -50,9 +52,16 @@ function textsOf(resp) {
   return out;
 }
 
+/** A result or payload that says it failed: never a publish, whatever address its message quotes. */
+function failed(payload) {
+  const resp = payload.tool_response;
+  if (payload.is_error === true || payload.isError === true || payload.error !== undefined) return true;
+  return isObj(resp) && (resp.is_error === true || resp.isError === true || resp.error !== undefined && resp.error !== null && resp.error !== false);
+}
+
 /** `{ title, url, time }` for a successful publish, else null. */
 function artifactFromPayload(payload, now = new Date()) {
-  if (!isObj(payload) || payload.tool_name !== 'Artifact') return null;
+  if (!isObj(payload) || payload.tool_name !== 'Artifact' || failed(payload)) return null;
   const resp = payload.tool_response;
   const input = isObj(payload.tool_input) ? payload.tool_input : {};
   let url = isObj(resp) ? cleanUrl(resp.url) : null;

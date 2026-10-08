@@ -136,7 +136,8 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
   function shelfEvent(ev) {
     const id = currentId();
     const dir = dirOf(id);
-    if (!dir || !isShelfEvent(ev)) return;
+    // Only a PostToolUse is a publish: a PostToolUseFailure has no address to keep, whatever its message quotes (PR #125 Miguel M2).
+    if (!dir || !isShelfEvent(ev) || ev.event !== 'PostToolUse') return;
     const item = artifactFromPayload(ev.payload);
     if (!item) return;
     try { addToShelf(dir, item); } catch (err) { log(`[canvas] could not save the shelf: ${err && err.message}`); return; }

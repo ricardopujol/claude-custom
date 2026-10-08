@@ -115,3 +115,36 @@ test('addToShelf creates the folder and leaves no temp file behind', () => {
   addToShelf(dir, { title: 'A', url: URL1, time: 't' });
   assert.deepStrictEqual(fs.readdirSync(dir), ['shelf.json']);
 });
+
+// PR #125 Dexter #7 / Miguel M2: a failed publish, and an address that is not the platform's, never reach the shelf.
+const ERR_TEXT = 'Version conflict for https://claude.ai/artifact/abc; re-read and retry';
+test('a result flagged as an error never shelves, in any of its shapes, even when its message quotes an artifact address', () => {
+  const base = { tool_name: 'Artifact', tool_input: { file_path: 'a.html' } };
+  for (const tool_response of [
+    { isError: true, content: [{ type: 'text', text: ERR_TEXT }] },
+    { is_error: true, content: [{ type: 'text', text: ERR_TEXT }] },
+    { is_error: true, url: URL1 },
+    { error: 'boom', url: URL1 },
+  ]) assert.strictEqual(artifactFromPayload({ ...base, tool_response }, NOW), null, JSON.stringify(tool_response));
+  for (const extra of [{ is_error: true }, { isError: true }, { error: 'Version conflict' }]) {
+    assert.strictEqual(artifactFromPayload({ ...base, ...extra, tool_response: ERR_TEXT }, NOW), null, JSON.stringify(extra));
+  }
+  assert.ok(artifactFromPayload({ ...base, tool_response: { isError: false, url: URL1 } }, NOW), 'an explicit false is not a failure');
+});
+
+test('the text fallback takes only the platform host: a quoted foreign address, or one after a hostile path, is not a publish', () => {
+  const base = { tool_name: 'Artifact', tool_input: { file_path: 'a.html' } };
+  for (const text of ['Published /tmp/https://evil.example/artifact/x.html at https://evil.example/artifact/x (Version 1)', 'see https://evil.example/artifact/zzz',
+    'https://claude.ai.evil.example/artifact/zzz', 'http://claude.ai/artifact/zzz']) {
+    assert.strictEqual(artifactFromPayload({ ...base, tool_response: text }, NOW), null, text);
+  }
+  const ok = artifactFromPayload({ ...base, tool_response: 'Published /tmp/https://evil.example/artifact/x.html at ' + URL1 + ' (Version 1)' }, NOW);
+  assert.strictEqual(ok && ok.url, URL1, 'the claude.ai address after the hostile path is the one kept');
+});
+
+test('property: whatever the text, an entry from the text fallback is on claude.ai', () => {
+  fc.assert(fc.property(fc.string(), fc.constantFrom('', 'https://evil.example/artifact/q ', ' ' + URL1, 'http://claude.ai/artifact/q'), (noise, extra) => {
+    const item = artifactFromPayload({ tool_name: 'Artifact', tool_response: noise + extra + noise }, NOW);
+    if (item) assert.strictEqual(new URL(item.url).hostname, 'claude.ai');
+  }), { numRuns: 300 });
+});

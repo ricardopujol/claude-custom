@@ -208,6 +208,8 @@ test('shelfEvent: a failure, an event with no address, or no session adds nothin
   const r = rig();
   r.control.shelfEvent(artifactEvent({ tool_response: 'Error: not signed in' }));
   r.control.shelfEvent({ event: 'PostToolUseFailure', payload: { tool_name: 'Artifact', error: 'nope' } });
+  // a PostToolUseFailure that quotes a real-looking address is still not a publish (PR #125 Miguel M2)
+  r.control.shelfEvent({ event: 'PostToolUseFailure', payload: { tool_name: 'Artifact', tool_response: 'Version conflict for https://claude.ai/artifact/abc' } });
   assert.strictEqual(r.frames.length, 0);
   assert.deepStrictEqual(r.control.payload().shelf, []);
   const none = rig({ sessionId: null });
