@@ -143,3 +143,16 @@ test('Q4: the perf row carries the private working set in bytes (wsp); a row wit
   assert.strictEqual(s.perf.get(5).ws, null);
   assert.strictEqual(s.perf.get(6).ws, null);
 });
+
+test('parseSample keeps a process\'s thread and handle counts, null when absent or not a count (#74 Leftovers: 1 thread / 0 handles is a stuck exit)', () => {
+  const s = S.parseSample(raw({
+    procs: [proc(4, 0, 100, { threads: 1, handles: 0 }), proc(5, 0, 100, {}), proc(6, 0, 100, { threads: -3, handles: 'x' })],
+  }), 1);
+  const by = pid => s.procs.find(p => p.pid === pid);
+  assert.strictEqual(by(4).threads, 1);
+  assert.strictEqual(by(4).handles, 0);
+  assert.strictEqual(by(5).threads, null);
+  assert.strictEqual(by(5).handles, null);
+  assert.strictEqual(by(6).threads, null);
+  assert.strictEqual(by(6).handles, null);
+});

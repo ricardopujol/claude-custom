@@ -20,6 +20,7 @@ const tree = require('../host/resource-tree');
 const warning = require('../host/resource-warning');
 const stopper = require('../host/resource-stop');
 const { createHistory } = require('../host/resource-history');
+const leftovers = require('../host/leftovers');
 
 const HALF_CADENCE_MS = 5000;
 
@@ -38,6 +39,10 @@ function createResourcesService({
   // The warning's CPU threshold, 40 by default. A verification seam (CLAUDE_CUSTOM_RESOURCE_WARN_AT in app/main.js), so a
   // probe on a busy machine can show the chip without pinning 40% of it; nothing in the UI sets it.
   warnAt = warning.THRESHOLD,
+  // Leftovers (#74 item 6): `ledger()` -> the pid ledger's entries (host/pid-ledger.js readLedger); `reap` = { kill(pid, start) ->
+  // 'killed' | 'gone' | 'mismatch' | 'failed' | 'unknown' (host/kill-tree.js killProven), removeEntries(entries) }. With no `reap`
+  // the readout is shown and nothing is ever stopped.
+  ledger = () => [], reap = null,
 }) {
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
@@ -48,6 +53,7 @@ function createResourcesService({
   const history = createHistory();   // the one-hour sparklines' data: in memory only, starts empty after a restart
   let lastRecordedSample = null;   // the sample object a point was last made from: a re-sent old one makes none
   let lastRecordMono = -Infinity;
+  const reaper = reap ? leftovers.createReaper({ ...reap, now, log }) : null;
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
 
   // A minimised window wants nothing: the page's visibility is a second witness the app does not trust alone
@@ -101,6 +107,26 @@ function createResourcesService({
   // is the monotonic time the points are measured against.
   const withHistory = full => (full ? { ...full, history: history.points(), historyNow: Math.round(mono()) } : full);
 
+  // The Leftovers section (#74 item 6): found in the same sample the tree came from, so it adds no poller. A ledger that
+  // cannot be read means no ledger rows this time, never a broken panel. The auto-reap runs after it, off this call.
+  function leftoversOf(snap, built) {
+    let entries = [];
+    try { entries = ledger(); } catch (err) { log('[resources] could not read the pid ledger:', err && err.message); }
+    const procs = snap.sample.procs;
+    const proven = tree.provenHosts(procs, claims());
+    const tabHosts = new Set(tabList().map(t => hostOfPort(proven, t.port)).filter(Number.isInteger));
+    const attribution = tree.attribute(procs, {
+      hosts: proven.map(h => (tabHosts.has(h.pid) ? { pid: h.pid, owner: ownPid } : { pid: h.pid })),
+      installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPids: [ownPid],
+    });
+    const mem = new Map([...snap.sample.perf].filter(([, v]) => typeof v.ws === 'number').map(([pid, v]) => [pid, v.ws]));
+    const found = leftovers.find({ procs, mem, ledger: entries, attribution, ownPid, now: now() });
+    if (reaper) reaper.run(found).catch(err => log('[resources] leftovers reap threw:', err && err.message));
+    const labels = new Map(built.project.rows.map(r => [`session:${r.hostPid}`, r.label]));
+    for (const row of found.mcp.concat(found.shells)) if (row.session) row.session = labels.get(row.session) || row.session.replace('session:', 'session ');
+    return leftovers.present(found, reaper ? reaper.stopped() : [], { now: now() });
+  }
+
   function onUpdate(snap) {
     const last = snap.machine && snap.machine.last;
     const machine = last
@@ -146,7 +172,8 @@ function createResourcesService({
     }
 
     record(snap, built, machine);
-    lastPayload = { model: built, status, machine, chipOn };
+    const left = built && snap.expired !== true ? leftoversOf(snap, built) : null;
+    lastPayload = { model: built, status, machine, chipOn, leftovers: left };
     lastLight = { model: null, status, machine, chipOn };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
     send(withHistory(lastPayload), lastLight);

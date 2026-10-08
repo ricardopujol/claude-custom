@@ -92,6 +92,8 @@ const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/b
 // The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
 const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
 const { killVerified } = require('../host/resource-kill');
+const pidLedger = require('../host/pid-ledger');
+const { killProven } = require('../host/kill-tree');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { stopHost } = require('../host/stop-holder');
@@ -1649,6 +1651,10 @@ app.whenReady().then(async () => {
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // Leftovers (#74): the shared pid ledger, and the 15-minute auto-reap of what it proves is ours. A kill is killProven: the
+    // ledger's start time is proven again on a held handle at the moment of the kill (host/kill-tree.js).
+    ledger: () => pidLedger.readLedger(),
+    reap: { kill: (pid, start) => killProven(pid, start), removeEntries: (entries) => pidLedger.removeEntries(pidLedger.defaultLedgerFile(), entries) },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
     warnAt: warnAtSeam,
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },

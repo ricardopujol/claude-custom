@@ -118,6 +118,57 @@ function actionOf(data) {
   }
 }
 
+// ---- Leftovers (BACKLOG #74 item 6, option A) ---------------------------------------------------------------------
+
+const LEFT_GROUPS = [['stuck', 'Stuck closing'], ['probes', 'Probe windows nobody runs'], ['shells', 'Agent shells'], ['mcp', 'MCP servers']];
+
+function fmtAge(ms) {
+  if (!isNum(ms) || ms < 0) return '—';
+  if (ms < 60_000) return '<1 min';
+  const min = Math.floor(ms / 60_000);
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h`;
+}
+
+// What a row says about its fate: a proven one when it is stopped, anything else why it is only shown.
+function leftoverNote(kind, r) {
+  if (r.reapable === true && isNum(r.reapInMs)) return r.reapInMs <= 0 ? 'stopping…' : `stops in ${Math.ceil(r.reapInMs / 60_000)} min`;
+  if (kind === 'stuck') return "Windows is still closing it; it can't be stopped from here";
+  if (kind === 'shells') return "kept: can't tell whether an agent still needs it";
+  return '';
+}
+
+function leftoversView(l) {
+  if (!l || typeof l !== 'object') return null;
+  const list = k => (Array.isArray(l[k]) ? l[k] : []);
+  const groups = [];
+  let count = 0;
+  let bytes = 0;
+  let measured = false;
+  for (const [kind, title] of LEFT_GROUPS) {
+    const rows = list(kind).map((r) => {
+      count += 1;
+      if (isNum(r.bytes)) { bytes += r.bytes; measured = true; }
+      const who = isStr(r.what) && r.what !== '' ? r.what : (isStr(r.name) ? r.name : '?');
+      return { name: isStr(r.session) && r.session !== '' ? `${who} · ${r.session}` : who, pid: r.pid, ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: leftoverNote(kind, r) };
+    });
+    if (rows.length) groups.push({ id: kind, title, rows });
+  }
+  const stopped = list('stopped').map(s => ({ text: `Stopped ${isStr(s.what) && s.what !== '' ? s.what : (isStr(s.name) ? s.name : '?')} (PID ${s.pid}), ${fmtBytes(s.bytes)} freed` }));
+  if (!count && !stopped.length) return null;
+  return { sum: { count, memFig: measured ? fmtBytes(bytes) : '—' }, groups, stopped };
+}
+
+function leftoversHtml(v) {
+  if (!v) return '';
+  const rows = g => g.rows.map(r => `<div class="res-child" title="PID ${esc(r.pid)}"><span class="res-cname">${esc(r.name)}</span>`
+    + `<span class="res-fig">${esc(r.ageFig)}</span><span class="res-fig">${esc(r.memFig)}</span><span class="res-stop-gap" aria-hidden="true"></span></div>`
+    + (r.note ? `<div class="res-note res-lnote">${esc(r.note)}</div>` : '')).join('');
+  return `<section class="res-sec res-left"><h3>Leftovers <span class="res-sum">${esc(v.sum.count)} · ${esc(v.sum.memFig)}</span></h3>`
+    + v.groups.map(g => `<div class="res-sub">${esc(g.title)}</div>${rows(g)}`).join('')
+    + (v.stopped.length ? `<div class="res-sub">Stopped automatically</div>${v.stopped.map(s => `<div class="res-note">${esc(s.text)}</div>`).join('')}` : '')
+    + '</section>';
+}
+
 // ---- the view -------------------------------------------------------------------------------------------------
 
 function view(state) {
@@ -178,6 +229,7 @@ function view(state) {
     loading: false,
     stale: { dim: status.stale === true, text: status.stale === true && isNum(status.ageMs) ? `last updated ${Math.round(status.ageMs / 1000)} s ago` : null },
     machine,
+    leftovers: leftoversView(p.leftovers),
     project: { sum: { cpuFig: cpuFig(proj.cpu), memFig: memFig(proj.bytes) }, rows, self },
     windows: (model.windows || []).map(w => ({ label: w.label, ...sumRow(w) })),
     background: model.background ? { label: 'background sessions', ...sumRow(model.background) } : null,
@@ -231,6 +283,7 @@ function html(v) {
   const others = [...v.windows.map(plain), ...(v.background ? [plain(v.background)] : [])];
   return `<div class="res${v.stale.dim ? ' res-dim' : ''}">`
     + (v.stale.text ? `<div class="res-note res-stale">${esc(v.stale.text)}</div>` : '')
+    + leftoversHtml(v.leftovers)
     + '<section class="res-sec"><h3>Machine</h3>'
     + `<div class="res-bar-row"><span class="res-bl">CPU</span>${bar(v.machine.cpuBar)}<span class="res-fig">${esc(v.machine.cpuFig)}</span></div>`
     + `<div class="res-bar-row"><span class="res-bl">Memory</span>${bar(v.machine.memBar)}<span class="res-fig">${esc(v.machine.memFig)}</span></div>`
@@ -243,7 +296,7 @@ function html(v) {
 /** The chip's on/off the page holds: a payload with a real boolean wins; anything else keeps what the page had. */
 const nextChipOn = (current, payload) => (payload && typeof payload.chipOn === 'boolean' ? payload.chipOn : current);
 
-const API = { fmtCpu, fmtBytes, chipView, nextChipOn, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, actionOf, view, html };
+const API = { fmtAge, fmtCpu, fmtBytes, chipView, nextChipOn, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, actionOf, view, html };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesDisplay = API;

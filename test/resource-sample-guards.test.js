@@ -11,7 +11,7 @@ const parse = (procs, extra = {}) => S.parseSample(JSON.stringify({ procs, perf:
 const one = (over) => parse([{ ...good(), ...over }]).procs;
 
 test('parseSample: the good row is accepted exactly as written (the control)', () => {
-  assert.deepStrictEqual(one({}), [{ pid: 5, ppid: 2, name: 'node.exe', cmd: 'node a.js', start: '133000000000000000', priv: 1024 }]);
+  assert.deepStrictEqual(one({}), [{ pid: 5, ppid: 2, name: 'node.exe', cmd: 'node a.js', start: '133000000000000000', priv: 1024, threads: null, handles: null }]);
 });
 
 test('proc pid: only a positive integer is a process', () => {

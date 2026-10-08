@@ -549,3 +549,70 @@ test('history: a bare push before any sample carries an empty history, and resen
   assert.strictEqual(r.sent.length, n + 1);
   assert.strictEqual(r.sent.at(-1).history.length, 1);
 });
+
+// ---- Leftovers (BACKLOG #74 item 6) ---------------------------------------------------------------------------
+
+const NOWMS = 1_800_000_000_000;
+const ftOf = ms => String(BigInt(ms) * 10000n + 116444736000000000n);
+// a probe's Electron (pid 90) whose launcher (pid 91) is gone; the window (10) is not its parent
+function leftoverWorld() {
+  const procs = world();
+  procs.push({ pid: 90, ppid: 1, name: 'electron.exe', cmd: 'electron.exe probe', priv: 700, start: ftOf(NOWMS - 60 * 60_000), threads: 9, handles: 80 });
+  return procs;
+}
+const probeEntry = over => ({ pid: 90, start: ftOf(NOWMS - 60 * 60_000), launcher: { pid: 91, start: ftOf(NOWMS - 61 * 60_000) }, kind: 'probe-window', label: 'probe-x', createdAt: NOWMS - 30 * 60_000, ...over });
+const tick = () => new Promise(r => setImmediate(r));
+
+test('Leftovers: the full page gets the readout, the light one never does', () => {
+  const r = rig({ now: () => NOWMS, ledger: () => [probeEntry({ createdAt: NOWMS - 5 * 60_000 })] });
+  r.svc.onUpdate(fullSnap(2, 10, leftoverWorld()));
+  const full = r.sent.at(-1);
+  assert.deepStrictEqual(full.leftovers.probes.map(x => x.pid), [90]);
+  assert.strictEqual(full.leftovers.probes[0].reapInMs, 10 * 60_000);
+  assert.strictEqual(full.leftovers.probes[0].bytes, 700);
+  assert.ok(!('entry' in full.leftovers.probes[0]));
+  assert.ok(!('leftovers' in (r.svc.get(false) || {})) || r.svc.get(false).leftovers === undefined);
+});
+
+test('Leftovers: nothing left means no readout (null), not an empty one', () => {
+  const r = rig({ now: () => NOWMS, ledger: () => [] });
+  r.svc.onUpdate(fullSnap(2, 10));
+  assert.strictEqual(r.sent.at(-1).leftovers, null);
+});
+
+test('Leftovers: a proven probe older than 15 minutes is stopped through the injected kill with the ledger\'s start, once, and listed as stopped', async () => {
+  const calls = [];
+  const tomb = [];
+  const r = rig({
+    now: () => NOWMS, ledger: () => [probeEntry()],
+    reap: { kill: (pid, start) => { calls.push([pid, start]); return 'killed'; }, removeEntries: (es) => { tomb.push(...es.map(e => e.pid)); return { ok: true }; } },
+  });
+  r.svc.onUpdate(fullSnap(2, 10, leftoverWorld()));
+  await tick();
+  assert.deepStrictEqual(calls, [[90, probeEntry().start]]);
+  assert.deepStrictEqual(tomb, [90]);
+  r.svc.onUpdate(fullSnap(3, 10, world()));
+  assert.deepStrictEqual(r.sent.at(-1).leftovers.stopped.map(s => [s.pid, s.label]), [[90, 'probe-x']]);
+  r.svc.onUpdate(fullSnap(4, 10, leftoverWorld()));
+  await tick();
+  assert.strictEqual(calls.length, 1, 'never killed twice');
+});
+
+test('Leftovers: no reap is wired (or the sample is expired, or the pid is not proven) means nothing is stopped', async () => {
+  const calls = [];
+  const kill = (pid) => { calls.push(pid); return 'killed'; };
+  const none = rig({ now: () => NOWMS, ledger: () => [probeEntry()] });
+  none.svc.onUpdate(fullSnap(2, 10, leftoverWorld()));
+  const expired = rig({ now: () => NOWMS, ledger: () => [probeEntry()], reap: { kill } });
+  expired.svc.onUpdate({ ...fullSnap(2, 10, leftoverWorld()), expired: true, failures: 3 });
+  const reused = rig({ now: () => NOWMS, ledger: () => [probeEntry({ start: ftOf(NOWMS - 5 * 60_000) })], reap: { kill } });
+  reused.svc.onUpdate(fullSnap(2, 10, leftoverWorld()));
+  await tick();
+  assert.deepStrictEqual(calls, []);
+});
+
+test('Leftovers: a ledger that throws does not stop the panel; the readout is just empty', () => {
+  const r = rig({ now: () => NOWMS, ledger: () => { throw new Error('locked'); }, log: () => {} });
+  r.svc.onUpdate(fullSnap(2, 10));
+  assert.ok(r.sent.at(-1).model);
+});
