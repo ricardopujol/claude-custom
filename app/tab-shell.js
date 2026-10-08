@@ -1174,6 +1174,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
+  // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
+  'canvasState', 'canvasClick', 'canvasOverlay',
   // backlog #34: verify/probe-video-background.js
   'bgState', 'bgStyle', 'bgMatch',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
@@ -1245,6 +1247,13 @@ async function handleProbeCommand(line, api, expectedToken) {
           return { ok: false, error: 'view needs a known action' };
         }
         return await api.view(cmd.action, cmd.args && typeof cmd.args === 'object' ? cmd.args : {});
+      // #71: where Claude's panel is and what its page titled itself, or a real press on it. Never a string of code.
+      case 'canvas': {
+        if (cmd.action === 'inspect') return await api.canvas('inspect', {});
+        const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
+        if (cmd.action === 'click' && whole(cmd.x) && whole(cmd.y)) return await api.canvas('click', { x: cmd.x, y: cmd.y });
+        return { ok: false, error: 'canvas needs inspect, or click with whole-number x and y' };
+      }
       // #34: the window minimised or restored as the OS would, and the OS's reduced-motion setting
       // emulated -- the two inputs of the background video's play rule a probe can't reach by hand.
       case 'window-state':

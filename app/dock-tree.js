@@ -35,6 +35,9 @@ const TERM_MIN = { width: 320, height: 160 };         // the terminal wins
 const RAIL = { side: 28, wide: 30 };
 const GUTTER = 5;
 const DEFAULT_SIZE = { row: 180, col: 160 };          // a new cell beside / under the terminal
+// A module's OWN width when it gets a cell of its own beside the terminal (Ricardo, 2026-10-06, #71 question 1: Claude's panel docks itself at
+// 320, the 180 above is too cramped for its question card). A column default and every other module stay as above.
+const OWN_ROW_SIZE = Object.freeze({ canvas: 320 });
 // No screen is wider than this; a bigger stored size (1e306 from a damaged file)
 // overflowed L1's fitting arithmetic into NaN.
 const MAX_SIZE = 10000;
@@ -54,12 +57,19 @@ const isNum = v => typeof v === 'number' && Number.isFinite(v);
 const isSize = v => isNum(v) && v > 0;
 const TERM = () => ({ type: 'term' });
 
+// Modules that start HIDDEN rather than as a tab in the first group, until something puts them on screen (BACKLOG #71:
+// Claude's panel appears when Claude is first asked to build something in it, never on its own). A saved layout that
+// predates one gets it hidden too, instead of a new tab in the person's first group. Once it is placed anywhere, it stays
+// where the person put it.
+const HIDDEN_UNTIL_USED = ['canvas'];
+
 function defaultLayout(ids) {
-  const tabs = [...ids];
+  const tabs = ids.filter(id => !HIDDEN_UNTIL_USED.includes(id));
+  const away = ids.filter(id => HIDDEN_UNTIL_USED.includes(id));
   const rootNode = tabs.length
     ? { type: 'split', dir: 'row', kids: [TERM(), { type: 'group', id: 'right', tabs }], sizes: [0, DEFAULT_SIZE.row] }
     : TERM();
-  return { version: VERSION, root: rootNode, floats: [], hidden: [], seat: {} };
+  return { version: VERSION, root: rootNode, floats: [], hidden: away, seat: {} };
 }
 
 const hasTerm = n => n.type === 'term' || (n.type === 'split' && n.kids.some(hasTerm));
@@ -178,7 +188,8 @@ function normalize(raw, ids) {
   }
 
   const hiddenIds = (Array.isArray(raw.hidden) ? raw.hidden : []).filter(id => st.claim(id));
-  const missing = [...known].filter(id => !placed.has(id));
+  const missing = [...known].filter(id => !placed.has(id) && !HIDDEN_UNTIL_USED.includes(id));
+  for (const id of known) if (!placed.has(id) && HIDDEN_UNTIL_USED.includes(id)) hiddenIds.push(id);
   if (missing.length) {
     let first = null;
     walk(r, (n) => { if (!first && n.type === 'group') first = n; });
@@ -205,7 +216,9 @@ function stringMap(o) {
  * dropped, missing ones back on the right) clean it before it becomes a tree.
  */
 function fromV1(raw, ids) {
-  const l = layoutApi.normalizeLayout(raw, ids);
+  // An L1 layout predates the opt-in modules: the L1 normalizer would drop one into a zone, so it is not told about them and
+  // the normalize below (which does know) hides them.
+  const l = layoutApi.normalizeLayout(raw, ids.filter(id => !HIDDEN_UNTIL_USED.includes(id)));
   const zone = z => (l.zones[z].length ? { type: 'group', id: z, tabs: l.zones[z] } : null);
   const strip = (kids, sizes, dir) => ({
     type: 'split', dir, kids: kids.filter(Boolean), sizes: sizes.filter((_, i) => kids[i]),
@@ -302,7 +315,8 @@ function dock(layout, id, target) {
     // Beside the terminal the newcomer gets a default size and the terminal's side stays 0 (the spine
     // flexes); beside anything else the two share the slot equally.
     const pixels = hasTerm(cellNode);
-    const sizes = pixels ? (first ? [DEFAULT_SIZE[dir], 0] : [0, DEFAULT_SIZE[dir]]) : [1, 1];
+    const own = dir === 'row' && OWN_ROW_SIZE[id] ? OWN_ROW_SIZE[id] : DEFAULT_SIZE[dir];
+    const sizes = pixels ? (first ? [own, 0] : [0, own]) : [1, 1];
     replaceCell(l, cellNode, { type: 'split', dir, kids: first ? [added, cellNode] : [cellNode, added], sizes });
   }
   const result = normalize(l, modulesIn(layout));
@@ -739,7 +753,7 @@ function fit(layout, selection, viewport) {
 }
 
 const API = {
-  VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
+  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
   cleanSelection, selectTab, raiseFloat, toggleFoldAll, activeOf, fit,
 };
