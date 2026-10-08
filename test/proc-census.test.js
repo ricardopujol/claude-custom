@@ -102,3 +102,38 @@ test('queryRows: rows when the query ran to its END sentinel; null when it faile
   assert.strictEqual(census.queryRows('electron.exe', { run: ok('1|0|5|9|10|100|x\r\n') }), null, 'no END: cut short');
   assert.strictEqual(census.queryRows('electron.exe', { run: () => ({ error: new Error('ETIMEDOUT'), stdout: 'END' }) }), null);
 });
+
+// ---- byType: the cross-cycle report of verify/probe-electron-zombies.js ------------------------------------------
+
+const s = (type, goneAfterS, zombieSeenS = 0, privMBBefore = 50) => ({ pid: 1, type, privMBBefore, goneAfterS, zombieSeenS, lastPrivMB: 1 });
+
+test('byType: per process type, how many, how many outlived the threshold, the longest stay, and those never seen to leave', () => {
+  const r = census.byType([[s('main', 1), s('renderer', 12, 10), s('gpu-process', 3)], [s('renderer', null, 40), s('renderer', 2)]], { lingerS: 5 });
+  assert.deepStrictEqual(r, {
+    'gpu-process': { count: 1, lingered: 0, stillThere: 0, maxGoneAfterS: 3, maxZombieSeenS: 0 },
+    main: { count: 1, lingered: 0, stillThere: 0, maxGoneAfterS: 1, maxZombieSeenS: 0 },
+    renderer: { count: 3, lingered: 2, stillThere: 1, maxGoneAfterS: 12, maxZombieSeenS: 40 },
+  });
+});
+
+test('byType: exactly the threshold is not lingering; no cycles is an empty report', () => {
+  assert.strictEqual(census.byType([[s('main', 5)]], { lingerS: 5 }).main.lingered, 0);
+  assert.deepStrictEqual(census.byType([], { lingerS: 5 }), {});
+});
+
+test('byType (property): lingered = stillThere + those gone after the threshold, and never exceeds count', () => {
+  const sumArb = fc.record({ type: fc.constantFrom('main', 'renderer', 'gpu-process', 'utility'),
+    goneAfterS: fc.option(fc.integer({ min: 0, max: 120 }), { nil: null }), zombieSeenS: fc.integer({ min: 0, max: 120 }) });
+  fc.assert(fc.property(fc.array(fc.array(sumArb, { maxLength: 8 }), { maxLength: 6 }), fc.integer({ min: 0, max: 60 }), (cycles, lingerS) => {
+    const r = census.byType(cycles.map(c => c.map(x => s(x.type, x.goneAfterS, x.zombieSeenS))), { lingerS });
+    const flat = cycles.flat();
+    for (const [type, v] of Object.entries(r)) {
+      const mine = flat.filter(x => x.type === type);
+      assert.strictEqual(v.count, mine.length);
+      assert.strictEqual(v.stillThere, mine.filter(x => x.goneAfterS === null).length);
+      assert.strictEqual(v.lingered, mine.filter(x => x.goneAfterS === null || x.goneAfterS > lingerS).length);
+      assert.ok(v.lingered <= v.count);
+    }
+    assert.strictEqual(Object.values(r).reduce((a, v) => a + v.count, 0), flat.length);
+  }));
+});

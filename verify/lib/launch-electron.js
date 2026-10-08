@@ -165,7 +165,9 @@ function waitForExit(child, ms) {
 async function stopElectron(handle, { polite, killFn = handle.killFn || killPidTree, politeMs = 15000, graceMs = 5000, ledgerFile = handle.ledgerFile } = {}) {
   const { child, pid } = handle;
   let how = null;
-  if (polite) {
+  // Already gone: no kill, its pid may belong to someone else by now.
+  if (handle.exited || (child.exitCode !== null && child.exitCode !== undefined)) how = 'gone';
+  else if (polite) {
     try { polite(); } catch (err) { console.log(`[launch-electron] polite step failed: ${err && err.message}`); }
     if (await waitForExit(child, politeMs)) how = 'polite';
   }

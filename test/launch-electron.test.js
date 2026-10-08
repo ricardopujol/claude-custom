@@ -234,3 +234,17 @@ test('the exit sweep kills, by pid, only the children still running', async () =
   sweepLive();
   assert.deepStrictEqual(kills, [6002]);
 });
+
+test('stop: a child that has already exited is not killed by pid (its pid may be reused), and its ledger entry goes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  try {
+    const file = path.join(dir, 'l.jsonl');
+    ledger.appendEntry(file, { pid: 4242, start: '777', launcher: null, label: 'x' });
+    const f = fakes();
+    f.die();
+    const r = await stopElectron({ child: f.child, pid: 4242 }, { killFn: f.kill, politeMs: 0, graceMs: 20, ledgerFile: file });
+    assert.deepStrictEqual(f.calls.filter(c => c[0] === 'kill'), []);
+    assert.strictEqual(r.how, 'gone');
+    assert.deepStrictEqual(ledger.readLedger(file), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

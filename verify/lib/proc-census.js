@@ -71,6 +71,24 @@ function summarize(tracked, polls) {
   });
 }
 
+/**
+ * The cross-cycle report: summarize() results of every cycle, grouped by process type. `lingered` counts the ones
+ * still listed more than lingerS seconds after the close (or never seen to leave: `stillThere`). maxGoneAfterS is
+ * over the ones that did leave (null if none did).
+ */
+function byType(cycles, { lingerS }) {
+  const out = {};
+  for (const r of cycles.flat()) {
+    const v = out[r.type] || (out[r.type] = { count: 0, lingered: 0, stillThere: 0, maxGoneAfterS: null, maxZombieSeenS: 0 });
+    v.count++;
+    if (r.goneAfterS === null) v.stillThere++;
+    if (r.goneAfterS === null || r.goneAfterS > lingerS) v.lingered++;
+    if (r.goneAfterS !== null && (v.maxGoneAfterS === null || r.goneAfterS > v.maxGoneAfterS)) v.maxGoneAfterS = r.goneAfterS;
+    if (r.zombieSeenS > v.maxZombieSeenS) v.maxZombieSeenS = r.zombieSeenS;
+  }
+  return Object.fromEntries(Object.keys(out).sort().map(k => [k, out[k]]));
+}
+
 // One PowerShell call for the whole table of one image name. Rows, or null when the query failed.
 function queryRows(imageName = 'electron.exe', { run = spawnSync, powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') } = {}) {
   const script = `$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter "Name='${imageName}'" | ForEach-Object { '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $_.ProcessId,$_.ParentProcessId,$_.ThreadCount,$_.HandleCount,[int]($_.PrivatePageCount/1MB),$_.CreationDate.ToFileTimeUtc(),$_.CommandLine }; 'END'`;
@@ -79,4 +97,4 @@ function queryRows(imageName = 'electron.exe', { run = spawnSync, powershell = p
   return parseRows(r.stdout);
 }
 
-module.exports = { typeOf, parseRows, zombieShaped, descendantsOf, summarize, queryRows };
+module.exports = { typeOf, parseRows, zombieShaped, descendantsOf, summarize, byType, queryRows };
