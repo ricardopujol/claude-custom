@@ -92,6 +92,15 @@ function defaultProjectsDir() {
  * other's entries (Miguel M6).
  *
  * Opt-in (readAgentStats({ memo })): a caller with no memo behaves exactly as before.
+ *
+ * WHAT IT DOESN'T COVER (Miguel M2, PR #131, measured 2026-10-08): the live session transcript grows every turn,
+ * so it misses every time and its identity scan re-reads the whole file (readAgentStats and readSessionModel each
+ * do it once per SubagentStop). One scan measured ~16 ms CPU on the live 4.1 MB file and ~141 ms on the
+ * project's biggest, 58 MB. At one SubagentStop every 20 s (180 an hour, two scans each) that's ~6 s/h on the
+ * live file and ~51 s/h if it were 58 MB, against the 150 s/h measured after this fix, and real sessions finish
+ * agents far less often. So an offset-based incremental scan isn't worth its complexity yet. If it
+ * becomes worth it, the remaining cost is the RSS spike of reading a 60 MB file into one string. The first pass
+ * after the host starts is still a full, cold read.
  */
 function createStatsMemo() {
   const identity = new Map();
