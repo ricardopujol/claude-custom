@@ -40,7 +40,7 @@ const WebSocket = require('ws');
 
 const ROOT = path.join(__dirname, '..');
 const BUILD = path.basename(ROOT);
-const { createHygieneRegistry } = require('./lib/process-hygiene');
+const { createHygieneRegistry, killChildTree } = require('./lib/process-hygiene');
 
 if (process.platform !== 'win32') {
   console.log('SKIP: this probe drives cmd.exe and taskkill; Windows only');
@@ -96,7 +96,7 @@ const killed = new Set();
 function killTree(pid) {
   if (!alive(pid) || killed.has(pid)) return;
   killed.add(pid);
-  try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ }
+  try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
 }
 
 // --- a host, as app/main.js would spawn one, on a non-repo folder ---------------------
@@ -191,9 +191,9 @@ function probeHostPids() {
 }
 
 function cleanup() {
-  for (const a of apps) killTree(a.child.pid);
+  for (const a of apps) killChildTree(a.child);   // held children: only while running (PR #130 review r2)
   for (const x of extraPids) killTree(x);
-  for (const h of hosts) if (!exited(h)) killTree(h.child.pid);
+  for (const h of hosts) killChildTree(h.child);
   for (const id of probeHostPids()) killTree(id.pid);
 }
 const extraPids = [];

@@ -48,7 +48,7 @@ const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
 const { isLiveHost } = require('./lib/live-host');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
+const { killPidTree, killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 
 const hygiene = createHygieneRegistry();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -163,7 +163,7 @@ function killEverything() {
   for (const id of hostsOfThisRun()) track(id.pid, id.processStartedAt);
   for (const [pid, start] of seenPids) {
     // still the same process? (a dead pid, or one reused since, is left alone). The tree is ours: a host this window spawned.
-    if (sameStart(startOf(pid), start)) { try { killPidTree(pid); } catch { /* gone */ } }
+    if (sameStart(startOf(pid), start)) { try { killPidTree(pid); } catch { /* gone */ } }   // kill-ok: start-proven on the line itself, just before the kill (the seenPids class, proven)
   }
 }
 hygiene.addCleanup(killEverything);
@@ -360,10 +360,10 @@ async function main() {
         const line = await waitFor(async () => { const l = cimLine(sh.pid); return /eval/.test(l) ? l : null; }, 15000, 300);
         check('3: a REAL Bash-tool command line (read from the process table) labels as the script it runs', !!line && displayName(line, 'bash.exe') === 'idle-label.js', JSON.stringify([line && line.slice(0, 160), line && displayName(line, 'bash.exe')]));
       } finally {
-        // the bash and the node it started: ended by their own pids, never by name
-        const kids = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-          `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${sh.pid}").ProcessId`], { encoding: 'utf8', windowsHide: true }).split(/\s+/).filter(Boolean).map(Number);
-        for (const pid of [...kids, sh.pid]) { try { process.kill(pid); } catch { /* gone */ } }
+        // The bash and the node it started, as one tree, through the bash this probe holds: only while it is still
+        // running. After 15 s of waiting it may have exited, and then its pid (and any ParentProcessId=<it> query) may
+        // name a stranger (PR #130 review r2, Dexter #2A). Never by name.
+        killChildTree(sh);
       }
     }
     // (2) Whatever bash this very session's Claude Code started right now, if there is one: shown, and held to the same rules.

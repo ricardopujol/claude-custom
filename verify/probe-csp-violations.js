@@ -327,7 +327,7 @@ async function runRealApp() {
     // The tab's host is spawned detached by the app, so it is not under the Electron PID: add it (and its pty) by the pid the tab list gave.
     const tree = [...new Set([...descendantsOf(child.pid), ...(out.hostPid ? descendantsOf(out.hostPid) : [])])];
     hygiene._emergencyCleanup('phase2-done');
-    if (out.hostPid) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(out.hostPid); } catch { /* already gone */ } }
+    if (out.hostPid) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(out.hostPid); } catch { /* already gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
     await sleep(1500);
     out.left = tree.filter(pid => { try { process.kill(pid, 0); return true; } catch { return false; } });
     out.treeSize = tree.length;

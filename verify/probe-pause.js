@@ -653,7 +653,7 @@ async function realSessionTest(suspendPrimitive) {
     const root = candidates.find(c => !candidates.some(other => other.ProcessId === c.ParentProcessId));
     const rootPid = (root || candidates[0]).ProcessId;
     console.log(`[${at()}] cleaning up: tree-killing pid=${rootPid} (root of the matched chain) and the session`);
-    try { execFileSync('taskkill', ['/PID', String(rootPid), '/F', '/T']); } catch (err) { console.log(`   taskkill root pid: ${err.message}`); }
+    try { execFileSync('taskkill', ['/PID', String(rootPid), '/F', '/T']); } catch (err) { console.log(`   taskkill root pid: ${err.message}`); }   // kill-ok: the root of a chain read from the process table a moment ago (table-row class)
     results.realSession = record;
   } finally {
     try { term.kill(); } catch {}

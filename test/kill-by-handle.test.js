@@ -103,43 +103,108 @@ test('registerChild: a child with no pid (spawn failed) is not registered', () =
 });
 
 // ---- the source rule ---------------------------------------------------------------------------------------------
+//
+// THE RULE BANS THE RAW PRIMITIVES, not one spelling of their argument (PR #130 review round 2, Dexter #3). Round 1
+// matched only `killPidTree(<x>.pid)` as the sole argument, and the commonest way to reintroduce the bug (bind the pid
+// to a local first, or put it in an array) passed. Now, in comment-free code, a line is a violation if it
+//   - names killPidTree anywhere but a plain destructured import (a call with any arguments, an alias, a renamed
+//     import, passing it as a value);
+//   - calls registerSpawnedTree( (registerChild is the held-child form);
+//   - calls process.kill( with any signal but 0 (0 only tests liveness);
+//   - has a string or template that starts with `taskkill`.
+// A reviewed exception says so ON ITS LINE: a `kill-ok: <reason>` comment (a reason is required). The handle-holding
+// forms (killChildTree, registerChild, child.kill()) are never flagged.
 
-// `<x>.pid` handed to a raw-pid kill: killPidTree(x.pid), registerSpawnedTree(x.pid), process.kill(x.pid[, sig]),
-// or a taskkill argv carrying String(x.pid). Signal 0 (a liveness test) kills nothing and is allowed.
-function rawPidKills(src) {
-  const out = [];
-  const res = [
-    /\bkillPidTree\(\s*[\w$.]+\.pid\s*\)/g,
-    /\bregisterSpawnedTree\(\s*[\w$.]+\.pid\s*\)/g,
-    /\bprocess\.kill\(\s*[\w$.]+\.pid\s*(?:,\s*(?!0\s*\))[^)]*)?\)/g,
-    /taskkill['"]?\s*,\s*\[[^\]]*String\(\s*[\w$.]+\.pid\s*\)/g,
-  ];
-  for (const re of res) for (const m of src.matchAll(re)) out.push(m[0]);
+// Comments blanked to spaces, strings kept, line breaks kept (so line numbers still match the source).
+function blankComments(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (c === '/' && d === '/') { while (i < n && src[i] !== '\n') { out += src[i] === '\r' ? '\r' : ' '; i++; } continue; }
+    if (c === '/' && d === '*') {
+      out += '  '; i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) { out += src[i] === '\n' || src[i] === '\r' ? src[i] : ' '; i++; }
+      out += '  '; i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c;
+      out += c; i++;
+      while (i < n && src[i] !== q) {
+        if (src[i] === '\\') { out += src[i] + (src[i + 1] || ''); i += 2; continue; }
+        if (q !== '`' && src[i] === '\n') break;
+        out += src[i]; i++;
+      }
+      if (i < n && src[i] === q) { out += src[i]; i++; }
+      continue;
+    }
+    out += c; i++;
+  }
   return out;
 }
 
-test('rule fixtures: each raw <x>.pid kill is flagged; the handle-holding forms and a signal-0 probe are not', () => {
-  assert.strictEqual(rawPidKills("killPidTree(app.pid);").length, 1);
-  assert.strictEqual(rawPidKills("require('../host/kill-tree').killPidTree(app.child.pid)").length, 1);
-  assert.strictEqual(rawPidKills("hygiene.registerSpawnedTree(electron.pid);").length, 1);
-  assert.strictEqual(rawPidKills("process.kill(k.pid);").length, 1);
-  assert.strictEqual(rawPidKills("process.kill(k.pid, 'SIGTERM');").length, 1);
-  assert.strictEqual(rawPidKills("execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'])").length, 1);
-  assert.strictEqual(rawPidKills("spawnSync('taskkill', ['/pid', String(host.pid), '/T', '/F'])").length, 1);
-  assert.deepStrictEqual(rawPidKills([
-    'killChildTree(app);', 'hygiene.registerChild(electron);', 'process.kill(out.hostPid, 0);',
-    'try { process.kill(pid, 0); return true; } catch {}', 'child.kill();',
+const KILL_OK = /\/\/.*\bkill-ok:\s*\S/;
+
+function rawKills(source) {
+  const orig = source.split(/\r?\n/);
+  const code = blankComments(source).split(/\r?\n/);
+  const out = [];
+  code.forEach((line, i) => {
+    if (KILL_OK.test(orig[i])) return;
+    const hits = [];
+    const imp = /^\s*(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(/.exec(line);
+    if (imp) { if (/\bkillPidTree\s*:/.test(imp[1])) hits.push('renamed killPidTree import'); }
+    else if (/(?<![\w$])killPidTree(?![\w$])/.test(line)) hits.push('killPidTree');
+    if (/(?<![\w$])registerSpawnedTree\s*\(/.test(line)) hits.push('registerSpawnedTree(');
+    for (const m of line.matchAll(/(?<![\w$])process\.kill\(/g)) {
+      const rest = line.slice(m.index + m[0].length);
+      if (!/^[^,()]*(?:\([^()]*\)[^,()]*)*,\s*0\s*\)/.test(rest)) hits.push('process.kill( without signal 0');
+    }
+    if (/['"`]\s*taskkill\b/i.test(line)) hits.push('taskkill');
+    for (const h of hits) out.push(`${i + 1}: ${h}: ${orig[i].trim().slice(0, 90)}`);
+  });
+  return out;
+}
+const flagged = (s) => rawKills(s).length > 0;
+
+test('rule fixtures: every bypass from the round-2 review is flagged (Dexter #3)', () => {
+  for (const fx of [
+    'const pid = host.pid; killPidTree(pid);',                                          // aliased pid (was live: teammate-occupancy)
+    'for (const pid of [...kids, sh.pid]) process.kill(pid);',                         // array / spread (was live: resource-panel)
+    'killPidTree(app.pid, { run });',                                                   // extra arguments
+    'execSync(`taskkill /PID ${app.pid} /T /F`);',                                      // template-string taskkill
+    "spawnSync('taskkill', ['/PID', `${app.pid}`, '/T', '/F']);",                      // argv without String(
+    "const { killPidTree: kpt } = require('../host/kill-tree');\nkpt(app.pid);",        // aliased import
+    'const k = killPidTree; k(app.pid);',                                               // the primitive passed as a value
+    "require('../host/kill-tree').killPidTree(app.child.pid);",                         // the round-1 forms still caught
+    'hygiene.registerSpawnedTree(electron.pid);',
+    "process.kill(k.pid, 'SIGTERM');",
+    'process.kill(pid);',
+    'killPidTree(pid); // kill-ok:',                                                    // an exception needs a reason
+  ]) assert.ok(flagged(fx), fx);
+});
+
+test('rule fixtures: the held-child forms, a liveness probe, a reasoned exception, log text and comments are not flagged', () => {
+  assert.deepStrictEqual(rawKills([
+    "const { killPidTree, killChildTree } = require('../host/kill-tree');",
+    'killChildTree(app);', 'hygiene.registerChild(electron);', 'child.kill();',
+    'process.kill(out.hostPid, 0);', 'try { process.kill(pid, 0); return true; } catch {}',
+    'try { process.kill(Number(id), 0); } catch {}',
+    "for (const pid of seenPids) killPidTree(pid);   // kill-ok: identity-file pids, the seenPids class",
+    "console.log('SKIP: this probe drives cmd.exe and taskkill; Windows only');",
+    '// killPidTree(app.pid) was the old way',
+    "/* spawnSync('taskkill', ['/PID', String(c.pid)]) */",
   ].join('\n')), []);
 });
 
-test('rule: no file under verify/ kills a <x>.pid by a raw pid (use killChildTree / registerChild)', () => {
+test('rule: no file under verify/ uses a raw kill primitive without a reasoned kill-ok on that line (no file is exempt)', () => {
   const VERIFY = path.join(__dirname, '..', 'verify');
   const files = fs.readdirSync(VERIFY, { recursive: true }).filter(f => /\.js$/.test(f)).map(f => path.join(VERIFY, f));
   const bad = [];
-  for (const f of files) {
-    if (path.basename(f) === 'launch-electron.js') continue;   // kills only while it holds the handle (Dexter: sound)
-    for (const v of rawPidKills(fs.readFileSync(f, 'utf8'))) bad.push(`${path.relative(VERIFY, f)}: ${v}`);
-  }
+  for (const f of files) for (const v of rawKills(fs.readFileSync(f, 'utf8'))) bad.push(`${path.relative(VERIFY, f)}:${v}`);
   assert.deepStrictEqual(bad, []);
 });
 

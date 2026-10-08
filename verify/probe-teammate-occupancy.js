@@ -280,8 +280,8 @@ async function main() {
 
   // ---- the host goes away ---------------------------------------------------------------------------------
   try { ws.close(); } catch { /* closed */ }
-  const pid = host.pid;
-  killPidTree(pid);
+  const pid = host.pid;     // kept for the identity-file checks below, never killed by (PR #130 review r2, Dexter #2B)
+  killChildTree(host);
   await sleep(4000);
   const left = id ? readClaim(id) : null;
   check('8: with its host killed the claim is gone, or names a host that is no longer running',

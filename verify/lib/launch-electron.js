@@ -57,7 +57,7 @@ function sweepLive() {
   for (const h of [...live]) {
     live.delete(h);
     if (h.exited) continue;
-    try { (h.killFn || killPidTree)(h.pid); } catch { /* gone */ }
+    try { (h.killFn || killPidTree)(h.pid); } catch { /* gone */ }   // kill-ok: the default killFn, called only while the child's handle is held
   }
 }
 
@@ -115,7 +115,7 @@ async function prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, 
 async function launchElectron({
   electronPath, args = [], env = process.env, extraEnv = {}, cwd, label = '', kind = 'probe-window',
   ledgerFile = ledger.defaultLedgerFile(), spawnFn = spawn, startTimes = realStartTimes,
-  selfStart = defaultSelfStart, killFn = killPidTree, install = true, stdio,
+  selfStart = defaultSelfStart, killFn = killPidTree, install = true, stdio,   // kill-ok: the default killFn, called only while the child's handle is held
 } = {}) {
   const exe = electronPath || require('electron');
   if (install) installSweep();
@@ -138,7 +138,7 @@ async function launchElectron({
  * child (unless it already left: its pid may be reused) and `child.ledgered` resolves false.
  */
 function spawnElectron(exe, args = [], opts = {}, {
-  spawnFn = spawn, startTimes = realStartTimes, selfStart = defaultSelfStart, killFn = killPidTree,
+  spawnFn = spawn, startTimes = realStartTimes, selfStart = defaultSelfStart, killFn = killPidTree,   // kill-ok: the default killFn, called only while the child's handle is held
   ledgerFile = ledger.defaultLedgerFile(), install = true, label = '', kind = 'probe-window', parentEnv = process.env,
   keepEnv = [],
 } = {}) {
@@ -182,7 +182,7 @@ function waitForExit(child, ms) {
  * the tree by pid and wait graceMs. The ledger entry goes only when the root is gone: a root that would not die stays
  * recorded so the reaper can try again.
  */
-async function stopElectron(handle, { polite, killFn = handle.killFn || killPidTree, politeMs = 15000, graceMs = 5000, ledgerFile = handle.ledgerFile } = {}) {
+async function stopElectron(handle, { polite, killFn = handle.killFn || killPidTree, politeMs = 15000, graceMs = 5000, ledgerFile = handle.ledgerFile } = {}) {   // kill-ok: the default killFn, called only while the child's handle is held
   const { child, pid } = handle;
   let how = null;
   // Already gone: no kill, its pid may belong to someone else by now.

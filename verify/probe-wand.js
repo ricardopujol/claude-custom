@@ -193,7 +193,7 @@ function hostsOfThisRun() {
 }
 function killEverything() {
   for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
+  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
 }
 hygiene.addCleanup(killEverything);
 

@@ -34,7 +34,7 @@ const { killPidTree, killChildTree, trackExit } = require('../../host/kill-tree'
 // its own lifetime -- not shared across probes, not persisted. A factory
 // (rather than module-level singletons) so a test can create an isolated one
 // per test case instead of fighting global state between tests.
-function createHygieneRegistry({ killFn = killPidTree } = {}) {
+function createHygieneRegistry({ killFn = killPidTree } = {}) {   // kill-ok: the registry's default; registerChild drops a pid when its child exits
   const suspendedPids = new Set();
   const spawnedTrees = new Set();
   const extraCleanups = new Set();
@@ -88,7 +88,7 @@ function createHygieneRegistry({ killFn = killPidTree } = {}) {
     setResumeFn(fn) { resumeFn = fn; },
     registerSuspended(pid) { suspendedPids.add(pid); },
     clearSuspended(pid) { suspendedPids.delete(pid); },
-    registerSpawnedTree(pid) { spawnedTrees.add(pid); },
+    registerSpawnedTree(pid) { spawnedTrees.add(pid); },   // kill-ok: the raw form's definition; probes register held children with registerChild
     // The form to use when the probe holds the child (ChildProcess or node-pty IPty): its pid leaves the registry
     // the moment it exits, so a later cleanup never kills a pid that may already be someone else's (PR #130, Dexter #9).
     registerChild(child) {
@@ -132,4 +132,4 @@ function createHygieneRegistry({ killFn = killPidTree } = {}) {
   return registry;
 }
 
-module.exports = { createHygieneRegistry, killPidTree, killChildTree, trackExit };
+module.exports = { createHygieneRegistry, killPidTree, killChildTree, trackExit };   // kill-ok: a re-export, not a kill

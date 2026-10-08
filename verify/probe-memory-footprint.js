@@ -183,7 +183,7 @@ async function main() {
     await sleep(1000);
     const ours = (p) => seen.get(p.ProcessId) === (p.CommandLine || p.Name);
     for (const p of allProcesses().filter(ours)) {
-      spawnSync('taskkill', ['/PID', String(p.ProcessId), '/F'], { windowsHide: true });
+      spawnSync('taskkill', ['/PID', String(p.ProcessId), '/F'], { windowsHide: true });   // kill-ok: a table row matched by pid AND the command line seen this run (table-row class)
     }
     await sleep(2000);
     const survivors = allProcesses().filter(ours);
