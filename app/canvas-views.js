@@ -19,10 +19,10 @@
  *     exactly on the artifact shelf. Each must come with a real click or key press the contents received (a script cannot press
  *     its own button), one use per click, one line of text. It can also READ the shelf (the host fills it from the CLI's hook).
  *   - no native dialog over the app's window: alert/confirm/prompt are disabled (`disableDialogs`). Measured (Electron 33, verify/
- *     probe-canvas-sandbox.js, PR #122 Dexter R2): `window.print()` raises NO dialog (it blocks the panel's own renderer, which is
- *     no worse than `for(;;){}`), `<input type=file>` raises none, `<input type=color>` raises a popup widget, not a dialog. The probe
- *     fails the day any of them becomes a native dialog. None of the panel's abilities (`fetch`, `send`, `open`, reading the shelf)
- *     shows a picker or reads a file.
+ *     probe-canvas-sandbox.js, PR #122 Dexter R2): `window.print()` raises NO dialog but wedges the panel's renderer and the browser's
+ *     exit (app/quit-watchdog.js ends a stalled quit; `hide` kills the renderer outright), `<input type=file>` raises none, `<input type=color>`
+ *     raises a popup widget, not a dialog. The probe fails the day any of them becomes a native dialog. None of the panel's abilities
+ *     (`fetch`, `send`, `open`, reading the shelf) shows a picker or reads a file.
  *   - hidden means stopped (design, call 7): `hide` destroys the view, so no timer or fetch of the page keeps running.
  *
  * The Electron classes arrive as arguments so test/canvas-views.test.js can drive this with fakes.
@@ -166,6 +166,9 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     if (byOwner.get(rec.owner.id) === rec) byOwner.delete(rec.owner.id);
     byPanel.delete(rec.wc.id);
     try { removeChild(rec.view); } catch { /* the window is going away */ }
+    // Killed outright first, healthy or not: a renderer wedged inside window.print() never answers a polite close, and the app then cannot
+    // exit (measured, verify/probe-canvas-sandbox.js print-loop). The page is being thrown away either way.
+    try { if (!rec.wc.isDestroyed()) rec.wc.forcefullyCrashRenderer(); } catch { /* nothing left to kill */ }
     try { if (!rec.wc.isDestroyed()) rec.wc.close(); } catch { /* already gone */ }
     // The session stays (Electron never frees one) but holds nothing of the page that was in it.
     for (const clear of ['clearStorageData', 'clearCache']) { try { Promise.resolve(rec.ses[clear] && rec.ses[clear]()).catch(() => {}); } catch { /* nothing to clear */ } }
