@@ -31,15 +31,38 @@ function cleanElectronEnv(env = process.env, extra = {}) {
   return out;
 }
 
+/**
+ * The env for spawnElectron, the drop-in: the probe built `childEnv` from process.env, so a CLAUDE_CUSTOM_* with the
+ * parent's own value came from the tab this probe runs in and goes; one the probe added or changed is its own and stays.
+ * ELECTRON_RUN_AS_NODE always goes. No childEnv means spawn's default, the parent's env.
+ */
+function probeEnv(childEnv, parentEnv = process.env) {
+  const out = {};
+  for (const [k, v] of Object.entries(childEnv || parentEnv)) {
+    if (k === 'ELECTRON_RUN_AS_NODE') continue;
+    if (k.startsWith('CLAUDE_CUSTOM_') && parentEnv[k] === v) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 const defaultSelfStart = createSelfStartTime();
 const live = new Set();            // handles not yet stopped, for the exit / signal sweep
 let sweepInstalled = false;
 
+// Synchronous: 'exit' handlers cannot await. A kill by PID of each child still running, then done.
+function sweepLive() {
+  for (const h of [...live]) {
+    live.delete(h);
+    if (h.exited) continue;
+    try { (h.killFn || killPidTree)(h.pid); } catch { /* gone */ }
+  }
+}
+
 function installSweep() {
   if (sweepInstalled) return;
   sweepInstalled = true;
-  // Synchronous: 'exit' handlers cannot await. A kill by PID, then done.
-  const sweep = () => { for (const h of [...live]) { try { killPidTree(h.pid); } catch { /* gone */ } live.delete(h); } };
+  const sweep = sweepLive;
   process.on('exit', sweep);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(sig, () => { sweep(); process.exit(sig === 'SIGINT' ? 130 : 143); });
@@ -64,8 +87,10 @@ async function launchElectron({
   const starts = await startTimes([child.pid]);
   const start = starts && starts.get(child.pid);
   if (typeof start !== 'string') {
-    try { killFn(child.pid); } catch { /* gone */ }
     live.delete(handle);
+    // Gone already: its pid may belong to someone else by now, so no kill.
+    if (handle.exited) throw new Error(`launchElectron: pid ${child.pid} exited before its start time could be read`);
+    try { killFn(child.pid); } catch { /* gone */ }
     throw new Error(`launchElectron: could not read the start time of pid ${child.pid}; killed it rather than leave an unproven process`);
   }
   handle.start = start;
@@ -77,6 +102,50 @@ async function launchElectron({
   });
   handle.stop = (o) => stopElectron(handle, o);
   return handle;
+}
+
+/**
+ * The drop-in for the probes' own `spawn(electron, args, opts)`: same signature, returns the ChildProcess at once, so
+ * a probe's stop logic stays as it is. Around it: probeEnv's env, the exit / signal sweep, and a ledger entry once the
+ * start time is read (`child.ledgered` resolves true), removed when the child exits. An unreadable start time kills the
+ * child (unless it already left: its pid may be reused) and `child.ledgered` resolves false.
+ */
+function spawnElectron(exe, args = [], opts = {}, {
+  spawnFn = spawn, startTimes = realStartTimes, selfStart = defaultSelfStart, killFn = killPidTree,
+  ledgerFile = ledger.defaultLedgerFile(), install = true, label = '', kind = 'probe-window', parentEnv = process.env,
+} = {}) {
+  if (install) installSweep();
+  const child = spawnFn(exe, args, { ...opts, env: probeEnv(opts.env, parentEnv) });
+  const handle = { child, pid: child.pid, killFn };
+  live.add(handle);
+  child.on('exit', () => {
+    handle.exited = true;
+    live.delete(handle);
+    if (handle.recorded && ledgerFile) { try { ledger.removePids(ledgerFile, [handle.pid]); } catch { /* the reaper prunes */ } }
+  });
+  child.ledgered = (async () => {
+    let start = null;
+    try { const starts = await startTimes([child.pid]); start = starts && starts.get(child.pid); } catch { /* unproven */ }
+    if (handle.exited) return false;
+    if (typeof start !== 'string') {
+      console.log(`[launch-electron] could not read the start time of pid ${child.pid}; killing it rather than leave an unproven process`);
+      live.delete(handle);
+      try { killFn(child.pid); } catch { /* gone */ }
+      return false;
+    }
+    let launcherStart = null;
+    try { launcherStart = await selfStart(); } catch { /* recorded as no launcher */ }
+    if (handle.exited) return false;
+    if (ledgerFile) {
+      ledger.appendEntry(ledgerFile, {
+        pid: child.pid, start, kind, label, createdAt: Date.now(),
+        launcher: typeof launcherStart === 'string' ? { pid: process.pid, start: launcherStart } : null,
+      });
+      handle.recorded = true;
+    }
+    return true;
+  })();
+  return child;
 }
 
 function waitForExit(child, ms) {
@@ -111,4 +180,4 @@ async function stopElectron(handle, { polite, killFn = handle.killFn || killPidT
   return { how };
 }
 
-module.exports = { cleanElectronEnv, launchElectron, stopElectron, waitForExit, sleep };
+module.exports = { cleanElectronEnv, probeEnv, launchElectron, spawnElectron, stopElectron, sweepLive, waitForExit, sleep };

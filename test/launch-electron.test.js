@@ -116,3 +116,121 @@ test('stop: removes the ledger entry once the process is gone, and leaves it if 
     assert.strictEqual(ledger.readLedger(file).length, 1, 'a process that would not die stays in the ledger for the reaper');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---- spawnElectron: the synchronous drop-in for `spawn(electron, args, opts)` the probes call --------------------
+
+const { probeEnv, spawnElectron } = require('../verify/lib/launch-electron');
+
+test('probeEnv: ELECTRON_RUN_AS_NODE always goes; a CLAUDE_CUSTOM_* equal to the parent\'s (inherited from a tab) goes', () => {
+  const parent = { CLAUDE_CUSTOM_PORT: '7', CLAUDE_CUSTOM_PIPE: '\\\\.\\pipe\\tab', ELECTRON_RUN_AS_NODE: '1', PATH: 'p' };
+  const child = { ...parent, KEEP: 'k' };
+  assert.deepStrictEqual(probeEnv(child, parent), { PATH: 'p', KEEP: 'k' });
+});
+
+test('probeEnv: a CLAUDE_CUSTOM_* the probe set itself (new, or a different value) is kept', () => {
+  const parent = { CLAUDE_CUSTOM_PIPE: 'tab-pipe', CLAUDE_CUSTOM_PORT: '7' };
+  const child = { ...parent, CLAUDE_CUSTOM_PIPE: 'probe-pipe', CLAUDE_CUSTOM_BIN: 'cmd.exe' };
+  assert.deepStrictEqual(probeEnv(child, parent), { CLAUDE_CUSTOM_PIPE: 'probe-pipe', CLAUDE_CUSTOM_BIN: 'cmd.exe' });
+});
+
+test('probeEnv: no env given means the parent\'s, cleaned; neither object is modified', () => {
+  const parent = { CLAUDE_CUSTOM_PORT: '7', ELECTRON_RUN_AS_NODE: '1', A: 'a' };
+  assert.deepStrictEqual(probeEnv(undefined, parent), { A: 'a' });
+  assert.deepStrictEqual(parent, { CLAUDE_CUSTOM_PORT: '7', ELECTRON_RUN_AS_NODE: '1', A: 'a' });
+});
+
+function spawnFakes({ start = '777' } = {}) {
+  const calls = [];
+  const child = new EventEmitter();
+  child.pid = 5151;
+  child.exitCode = null;
+  const die = () => { child.exitCode = 0; child.emit('exit', 0); };
+  return {
+    calls, child, die,
+    spawnFn: (exe, args, opts) => { calls.push(['spawn', exe, args, opts]); return child; },
+    startTimes: async (pids) => { calls.push(['startTimes', pids]); return start === null ? null : new Map(pids.map(p => [p, start])); },
+    kill: (pid) => { calls.push(['kill', pid]); },
+  };
+}
+
+test('spawnElectron: returns the child at once, with exe, args and the other options passed through and the env cleaned', () => {
+  const f = spawnFakes();
+  const child = spawnElectron('E.exe', ['app', '--x'], { cwd: 'C:/r', stdio: 'pipe', env: { ELECTRON_RUN_AS_NODE: '1', A: 'a' } },
+    { spawnFn: f.spawnFn, startTimes: f.startTimes, selfStart: async () => '555', ledgerFile: null, install: false, parentEnv: {} });
+  assert.strictEqual(child, f.child);
+  const [, exe, args, opts] = f.calls[0];
+  assert.strictEqual(exe, 'E.exe');
+  assert.deepStrictEqual(args, ['app', '--x']);
+  assert.strictEqual(opts.cwd, 'C:/r');
+  assert.strictEqual(opts.stdio, 'pipe');
+  assert.deepStrictEqual(opts.env, { A: 'a' });
+});
+
+test('spawnElectron: writes a ledger entry proven by start time, and removes it when the child exits', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  try {
+    const file = path.join(dir, 'l.jsonl');
+    const f = spawnFakes();
+    const child = spawnElectron('E.exe', [], {}, { spawnFn: f.spawnFn, startTimes: f.startTimes, selfStart: async () => '555',
+      ledgerFile: file, install: false, label: 'probe-y', parentEnv: {} });
+    assert.strictEqual(await child.ledgered, true);
+    const [e] = ledger.readLedger(file);
+    assert.strictEqual(e.pid, 5151);
+    assert.strictEqual(e.start, '777');
+    assert.strictEqual(e.label, 'probe-y');
+    assert.deepStrictEqual(e.launcher, { pid: process.pid, start: '555' });
+    f.die();
+    assert.deepStrictEqual(ledger.readLedger(file), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('spawnElectron: an unreadable start time kills the child by pid and writes nothing', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  try {
+    const file = path.join(dir, 'l.jsonl');
+    const f = spawnFakes({ start: null });
+    const child = spawnElectron('E.exe', [], {}, { spawnFn: f.spawnFn, startTimes: f.startTimes, selfStart: async () => '555',
+      ledgerFile: file, install: false, killFn: f.kill, parentEnv: {} });
+    assert.strictEqual(await child.ledgered, false);
+    assert.deepStrictEqual(f.calls.filter(c => c[0] === 'kill'), [['kill', 5151]]);
+    assert.deepStrictEqual(ledger.readLedger(file), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('spawnElectron: a child that exited before its start time was read is neither killed (its pid may be reused) nor recorded', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-test-'));
+  try {
+    const file = path.join(dir, 'l.jsonl');
+    const f = spawnFakes({ start: null });
+    const child = spawnElectron('E.exe', [], {}, { spawnFn: f.spawnFn, startTimes: f.startTimes, selfStart: async () => '555',
+      ledgerFile: file, install: false, killFn: f.kill, parentEnv: {} });
+    f.die();
+    assert.strictEqual(await child.ledgered, false);
+    assert.deepStrictEqual(f.calls.filter(c => c[0] === 'kill'), []);
+    assert.deepStrictEqual(ledger.readLedger(file), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('launch: a child that exited before its start time was read is not killed by pid (its pid may be reused)', async () => {
+  const f = fakes();
+  await assert.rejects(launchElectron({
+    electronPath: 'E.exe', args: [], env: {}, label: 'x', ledgerFile: path.join(os.tmpdir(), 'cc-never.jsonl'),
+    spawnFn: f.spawnFn, startTimes: async () => { f.die(); return null; }, selfStart: async () => '555', install: false, killFn: f.kill,
+  }), /exited/);
+  assert.deepStrictEqual(f.calls.filter(c => c[0] === 'kill'), []);
+});
+
+test('the exit sweep kills, by pid, only the children still running', async () => {
+  const { sweepLive } = require('../verify/lib/launch-electron');
+  const a = spawnFakes(); a.child.pid = 6001;
+  const b = spawnFakes(); b.child.pid = 6002;
+  const kills = [];
+  const opts = (f) => ({ spawnFn: f.spawnFn, startTimes: f.startTimes, selfStart: async () => '555', ledgerFile: null,
+    install: false, killFn: (pid) => kills.push(pid), parentEnv: {} });
+  const ca = spawnElectron('E.exe', [], {}, opts(a));
+  const cb = spawnElectron('E.exe', [], {}, opts(b));
+  await ca.ledgered; await cb.ledgered;
+  a.die();
+  sweepLive();
+  assert.deepStrictEqual(kills, [6002]);
+});
