@@ -21,6 +21,7 @@
  *   node verify/probe-avatar-roster.js        (exit 0 = every check passed)
  */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -185,7 +186,7 @@ app.whenReady().then(async () => {
   delete env.ELECTRON_RUN_AS_NODE;
 
   const host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(host.pid);
+  hygiene.registerChild(host);
   let hostOut = '';
   host.stdout.on('data', d => { hostOut += d; });
   host.stderr.on('data', d => { hostOut += d; });
@@ -199,8 +200,8 @@ app.whenReady().then(async () => {
 
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
-  const electron = spawn(require('electron'), [mainFile], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(electron.pid);
+  const electron = spawnElectron(require('electron'), [mainFile], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(electron);
   let out = '';
   electron.stdout.on('data', d => { out += d; process.stdout.write(d); });
   electron.stderr.on('data', d => { if (/probe|Error/.test(String(d))) process.stderr.write(d); });

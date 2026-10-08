@@ -129,7 +129,7 @@ async function main() {
       }
     }
   } finally {
-    for (const k of kids) { try { process.kill(k.pid); } catch {} }
+    for (const k of kids) { try { k.kill(); } catch {} }
     await new Promise(r => setTimeout(r, 800));
     // The identity file must not outlive the host as a live claim.
     // Only meaningful if the hosts came up at all. Asserting it after a failed

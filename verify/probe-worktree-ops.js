@@ -29,7 +29,8 @@
  * allocate port blocks in ~\.claude-custom\worktree-ports.json for temp
  * folders that are then deleted. WINDOWS ONLY (cmd.exe, PowerShell, taskkill).
  */
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -168,9 +169,9 @@ async function launchApp(cwd) {
   delete env.CLAUDE_CUSTOM_PORT;
   delete env.CLAUDE_CUSTOM_TOKEN;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
-    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
+    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_WORKTREE_SCRIPTS'] });
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false, exitCode: null };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -248,7 +249,7 @@ function killEverything() {
   for (const dir of [dev, ...['feat/a', 'feat/demo', 'feat/setup-fails', 'feat/dirty', 'feat/keep'].map(wtPath)]) {
     for (const id of hostsUnder(dir)) seenPids.add(id.pid);
   }
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
+  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
 }
 hygiene.addCleanup(killEverything);
 

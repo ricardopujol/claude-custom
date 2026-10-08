@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree, trackExit } = require('../host/kill-tree');
 /* Does the REAL `claude` CLI keep a `/skill` line submitted while a turn is running, and run it as a skill?
    (BACKLOG #61, step 0 of documentation/PLAN_WAND_SUBMIT.md. Re-runnable. Zero spend, zero network.)
 
@@ -59,7 +60,6 @@ async function main() {
   if (!claudeBin) throw new Error('claude not found under npm root -g');
   const pty = require('node-pty');
   const { Terminal } = require('@xterm/headless');
-  const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
   const token = crypto.randomBytes(4).toString('hex');
   const bodyMarker = `SKILL-BODY-${token}`;
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-queued-skill-'));
@@ -118,7 +118,8 @@ async function main() {
   const term = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
   const p = pty.spawn(claudeBin, ['--model', 'haiku'], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
   p.onData(d => term.write(d));
-  const killed = () => { try { killPidTree(p.pid); } catch { /* gone */ } };
+  trackExit(p);  // node-pty reports no exitCode: record its exit now, so killChildTree can tell
+  const killed = () => { try { killChildTree(p); } catch { /* gone */ } };
   process.on('exit', killed);
   const flush = () => new Promise(r => term.write('', r));
   const screen = async () => {
