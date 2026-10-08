@@ -34,7 +34,7 @@ const RENDER_DESCRIPTION = [
   '`html` is one complete HTML page: inline CSS and JavaScript, at most 1 MB, no external files (images as data: URIs).',
   'The page runs in a sandbox: no access to the user\'s files, other tabs, clipboard or cookies, and timers run only while the panel is visible. What it can do:',
   '- `fetch(url, { method, headers, body })` (string bodies) to a website. The user is asked to allow each new host the first time, per panel; nothing else reaches the network (no XHR, WebSocket, EventSource, external scripts or images). No secrets: only keyless APIs.',
-  '- `claudePanel.send(text)`: types ONE line into the user\'s prompt as "(from Claude\'s panel) <text>". It only works from a click handler on a real click, so build a button that calls it.',
+  '- `claudePanel.send(text)`: types ONE line into the user\'s prompt as "(from Claude\'s panel) <text>". It only works from a click handler on a real click (or an Enter or Space press on a focused button), so build a button that calls it.',
   '- `claudePanel.shelf()` (a Promise of [{ title, url, time }], the artifacts published in this session, newest first), `claudePanel.onShelf(fn)` for updates, and `claudePanel.open(url)` to open one of those addresses in the browser (on a click).',
   'Calling this again replaces the whole page. Keep the page small and self-contained.',
 ].join('\n');
@@ -118,6 +118,8 @@ function createCanvasMcp({ root, pointerFile } = {}) {
 
 function run() {
   const mcp = createCanvasMcp({ root: process.env.CLAUDE_CUSTOM_CANVAS_ROOT, pointerFile: process.env.CLAUDE_CUSTOM_CANVAS_POINTER });
+  // The CLI may exit before we have written our last answer: that EPIPE is the end of the conversation, not an uncaught exception in its MCP log.
+  process.stdout.on('error', () => process.exit(0));
   const rl = readline.createInterface({ input: process.stdin });
   rl.on('line', (line) => {
     let msg;

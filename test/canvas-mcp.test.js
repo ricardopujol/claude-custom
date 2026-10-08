@@ -178,3 +178,16 @@ test('PR #125 Miguel M1: a render whose write fails leaves no temp file in the s
   assert.strictEqual(res.result.isError, true);
   assert.deepStrictEqual(fs.readdirSync(r.dir()), ['index.html']);
 });
+
+test('PR #125 Miguel S3: when the CLI closes its end first, the server ends quietly (EPIPE is not an uncaught exception)', async () => {
+  const r = rig();
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'host', 'canvas-mcp.js')], {
+    env: { ...process.env, CLAUDE_CUSTOM_CANVAS_ROOT: r.root, CLAUDE_CUSTOM_CANVAS_POINTER: r.pointerFile }, stdio: ['pipe', 'pipe', 'pipe'] });
+  let err = '';
+  child.stderr.on('data', (d) => { err += d; });
+  child.stdout.destroy();                                   // the reader is gone
+  for (let i = 0; i < 20; i++) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: i, method: 'ping' }) + '\n');
+  const code = await new Promise((res) => { const t = setTimeout(() => { child.kill(); res('hung'); }, 8000); child.on('exit', (c) => { clearTimeout(t); res(c); }); });
+  assert.strictEqual(code, 0, err);
+  assert.doesNotMatch(err, /EPIPE|Unhandled|uncaught/i);
+});
