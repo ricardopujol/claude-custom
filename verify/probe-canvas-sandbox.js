@@ -60,11 +60,11 @@ function runElectron(mode) {
       try { killPidTree(child.pid); } catch { /* already gone */ }
       try { fs.writeFileSync(winStop, 'stop'); } catch { /* the watcher also ends when the root process does */ }
       setTimeout(() => { try { killPidTree(watcher.pid); } catch { /* already gone */ } }, 1500);
-      let data = null;
-      try { data = JSON.parse(fs.readFileSync(out, 'utf8')); } catch { /* reported below */ }
+      let data = null; let exitMs = null;
+      try { data = JSON.parse(fs.readFileSync(out, 'utf8')); exitMs = Date.now() - fs.statSync(out).mtimeMs; } catch { /* reported below */ }
       let windows = [];
       try { windows = fs.readFileSync(winLog, 'utf8').split(/\r?\n/).filter(Boolean).map(l => JSON.parse(l)); } catch { /* none seen */ }
-      if (data) data.windows = windows;
+      if (data) { data.windows = windows; data.exitMs = exitMs; }
       for (const f of [winLog, winStop, env.PROBE_ARM].filter(Boolean)) { try { fs.unlinkSync(f); } catch { /* temp */ } }
       try { fs.unlinkSync(out); } catch { /* temp */ }
       try { fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* temp */ }
@@ -75,6 +75,7 @@ function runElectron(mode) {
 
 // The windows the watcher saw while one vector ran (its span, plus the half second a dialog takes to show).
 const during = (run, name) => { const sp = run.spans && run.spans[name]; return sp ? (run.windows || []).filter(w => w.t >= sp.from && w.t <= sp.to + 500) : []; };
+const EXIT_LIMIT_MS = 12000;     // app/quit-watchdog.js ends a stalled quit after 5 s; a clean one takes about 1
 const isNativeDialog = (w) => w.cls === '#32770';
 const leaked = (h) => (h ? h.requests + h.connections : 0);
 const pad = (s, n) => String(s).padEnd(n);
@@ -116,14 +117,17 @@ const pad = (s, n) => String(s).padEnd(n);
   check(answer('dialog-loop') === 'past the dialogs', `alert, confirm and prompt return at once with no native dialog, so the page cannot lock the app's window (got ${answer('dialog-loop')})`);
   // Native dialogs that disableDialogs does not cover (PR #122 Dexter R2-1, R2-3). A native dialog (message box, print, file chooser) is a
   // visible top-level window of class #32770 in the Electron tree; the watcher closes it by handle. MEASURED (Electron 33.4.11, Windows 11):
-  // window.print() raises NO window, it blocks the panel's own renderer instead (no report in 50 s, like for(;;){}; the app stays usable);
+  // window.print() raises NO window, it wedges the panel's renderer AND the browser's exit instead (no report in 50 s; the app stays usable but
+  // cannot quit: app/quit-watchdog.js is what ends it, and the exit-time check below is its test);
   // <input type=file> raises none either, even with nothing sealed and the owner focused; <input type=color> raises a Chromium popup widget
   // (Chrome_WidgetWin_1, not a dialog) when the owner has focus. So these three checks are guards: they fail if any becomes a native dialog.
   const dialogs = (run, name) => (name ? during(run, name) : (run.windows || [])).filter(isNativeDialog);
-  // print-loop is a KNOWN GAP (verify/probe71/vector-modes.js): run only with PROBE_KNOWN_GAPS=1, because it hangs the process's exit.
   for (const name of ['print-loop', 'file-picker-with-click', 'color-picker-with-click'].filter(n => s.names.includes(n))) {
     check(dialogs(s, name).length === 0, `${name}: no native dialog window appeared (saw ${JSON.stringify(dialogs(s, name).map(w => w.cls + ':' + w.title))}; the panel answered "${answer(name)}")`);
   }
+  // Quitting has to finish whatever the panel is doing: print-loop wedges the browser's exit (measured), spin-loop is the renderer-only control.
+  check(s.exitMs !== null && s.exitMs <= EXIT_LIMIT_MS, `the app exits within ${EXIT_LIMIT_MS / 1000} s of its last result with print() and for(;;){} panels shown (took ${Math.round(s.exitMs)} ms)`);
+  check(answer('spin-loop') === 'spinning', `a panel stuck in for(;;){} is reached and reports before it spins (got ${answer('spin-loop')})`);
   check(dialogs(s).length === 0, `no native dialog window of any kind appeared in the panel's process tree during the run (saw ${dialogs(s).length})`);
   check(s.downloads.length >= 1 && s.downloads.every(d => d.prevented && !d.written), `a download the page starts itself (a data: link with download=) is cancelled: no Save-As box, no file (saw ${JSON.stringify(s.downloads)})`);
   check(answer('beforeunload-pin') === 'replaced', `a page whose beforeunload handler cancels leaving it is replaced by the next page Claude writes (got ${answer('beforeunload-pin')})`);

@@ -12,22 +12,18 @@
  *     dialog window and cancels it by handle.
  */
 const DIALOG_VECTORS = new Set(['dialog-loop', 'print-loop', 'file-picker-with-click', 'color-picker-with-click']);
-const NEVER_NAIVE = new Set(['dialog-loop']);
-// A vector that shows a defect the app still has. It stays out of the default run (it would wedge the probe) until the defect is fixed;
-// ask for it by name (PROBE_ONLY) or with PROBE_KNOWN_GAPS=1. `print-loop`: window.print() raises no dialog (measured) but blocks the
-// panel's renderer for good, and the Electron process then cannot exit (app.exit(0) did not return in 85 s). PR #122 Dexter R2-1.
-const KNOWN_GAPS = new Set(['print-loop']);
+// `print-loop` and `spin-loop` wedge a panel and only mean something sealed (they test that the APP survives them): no naive control.
+const NEVER_NAIVE = new Set(['dialog-loop', 'print-loop', 'spin-loop']);
 
-/** @param {'sealed'|'naive'} mode  @param {string[]} names every vector  @param {{watched?: boolean, only?: string, gaps?: boolean}} opts */
-function vectorsFor(mode, names, { watched = false, only = '', gaps = false } = {}) {
+/** @param {'sealed'|'naive'} mode  @param {string[]} names every vector  @param {{watched?: boolean, only?: string}} opts */
+function vectorsFor(mode, names, { watched = false, only = '' } = {}) {
   const wanted = only ? only.split('|') : null;
   return names.filter((n) => {
     if (wanted && !wanted.includes(n)) return false;
-    if (KNOWN_GAPS.has(n) && !gaps && !(wanted && wanted.includes(n))) return false;
     if (mode === 'sealed') return true;
     if (NEVER_NAIVE.has(n)) return false;
     return !DIALOG_VECTORS.has(n) || watched === true;
   });
 }
 
-module.exports = { DIALOG_VECTORS, NEVER_NAIVE, KNOWN_GAPS, vectorsFor };
+module.exports = { DIALOG_VECTORS, NEVER_NAIVE, vectorsFor };

@@ -23,6 +23,7 @@ const path = require('path');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('../../app/canvas-views');
 const { buildPage } = require('../../app/canvas-csp');
 const { DIALOG_VECTORS, vectorsFor } = require('./vector-modes');
+const { armQuitWatchdog } = require('../../app/quit-watchdog');
 
 const MODE = process.env.PROBE_MODE === 'naive' ? 'naive' : 'sealed';
 const OUT = process.env.PROBE_OUT;
@@ -94,6 +95,8 @@ const VECTORS = {
   // --- native dialogs that are not JavaScript dialogs: disableDialogs does not cover them (PR #122 Dexter R2-1 / R2-3). A dialog is a visible
   // top-level window of this process tree; verify/probe71/watch-windows.ps1 (started by the driver) logs each one and closes it by handle.
   'print-loop': { code: `let n = 0; const next = () => { const f = document.createElement('iframe'); document.body.appendChild(f); f.contentWindow.print(); f.remove(); if (++n < 3) next(); }; next(); setTimeout(() => report('past print'), 300)` },
+  // a panel that never yields: quitting must still work (PR #122 Dexter R2-1, lead 2026-10-08). `report` first: nothing runs after the loop.
+  'spin-loop': { code: `report('spinning'); for (;;) {}` },
   'file-picker-with-click': { code: `document.body.innerHTML = '<input type=file id=f><div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; document.addEventListener('click', () => { const a = navigator.userActivation.isActive; document.getElementById('f').click(); report('clicked, activation ' + a); })` },
   'color-picker-with-click': { code: `document.body.innerHTML = '<input type=color id=c><div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; document.addEventListener('click', () => { const a = navigator.userActivation.isActive; document.getElementById('c').click(); report('clicked, activation ' + a); })` },
   // --- a download the page starts itself: Electron's default is a Save-As box with a name and content the page chose (PR #122 Dexter F2)
@@ -109,13 +112,14 @@ const VECTORS = {
 };
 const SECOND_PAGES = { 'beforeunload-pin': `report('replaced')` };
 // Which vectors run in which mode (dialog-loop never runs naive, PR #122 Dexter R2-2): verify/probe71/vector-modes.js.
-const NAMES = vectorsFor(MODE, Object.keys(VECTORS), { watched: process.env.PROBE_WATCH === '1', only: process.env.PROBE_ONLY, gaps: process.env.PROBE_KNOWN_GAPS === '1' });
+const NAMES = vectorsFor(MODE, Object.keys(VECTORS), { watched: process.env.PROBE_WATCH === '1', only: process.env.PROBE_ONLY });
 
 // A STUN server on the machine's LAN address too: Chromium may not send STUN to loopback, and a control that cannot see a
 // leak proves nothing. Falls back to loopback on a machine with no other address.
 const LAN = (Object.values(os.networkInterfaces()).flat().find(i => i && i.family === 'IPv4' && !i.internal) || { address: '127.0.0.1' }).address;
 const listen = (srv) => new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve(srv.address().port)));
 
+armQuitWatchdog(app);
 app.whenReady().then(async () => {
   const netlogFile = path.join(os.tmpdir(), `probe-canvas-netlog-${process.pid}.json`);
   await netLog.startLogging(netlogFile, { captureMode: 'everything' });
@@ -277,6 +281,7 @@ app.whenReady().then(async () => {
   if (OUT) fs.writeFileSync(OUT, text); else console.log('RESULT ' + text);
   try { fs.unlinkSync(netlogFile); } catch { /* temp */ }
   servers.forEach(s => s.close()); udp.close(); tcp.close();
-  app.exit(0);
+  // The way the app itself quits (app/main.js): app.exit(0) is NOT that path, and it was what hid the print() hang. The watchdog is the app's.
+  app.quit();
 });
 setTimeout(() => { console.log('FAIL timeout'); app.exit(2); }, 240000);

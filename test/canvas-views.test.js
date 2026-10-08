@@ -18,7 +18,8 @@ class FakeContents extends EventEmitter {
   setAudioMuted(m) { this.calls.push(['muted', m]); }
   loadURL(u) { this.calls.push(['load', u]); this.loaded = u; return Promise.resolve(); }
   isDestroyed() { return this.destroyedFlag; }
-  close() { this.closed = true; this.destroyedFlag = true; }
+  forcefullyCrashRenderer() { this.calls.push(['crash']); this.crashed = true; }
+  close() { this.calls.push(['close']); this.closed = true; this.destroyedFlag = true; }
 }
 FakeContents.next = 100;
 
@@ -205,6 +206,24 @@ test('covered (a prompt in the page above it) and an invisible tab both hide the
   assert.strictEqual(r.views[0].visible, false, 'an uncover must not show a view whose tab is in the background');
   r.m.setOwnerVisible(r.owner, true);
   assert.strictEqual(r.views[0].visible, true);
+});
+
+test('hide kills the panel renderer outright BEFORE closing it: a renderer wedged in print() would keep the app from exiting (PR #122 R2-1)', async () => {
+  const r = rig();
+  await show(r);
+  const wc = r.views[0].webContents;
+  r.m.hide(r.owner);
+  const order = wc.calls.map((c) => c[0]).filter((n) => n === 'crash' || n === 'close');
+  assert.deepStrictEqual(order, ['crash', 'close']);
+});
+
+test('a contents that is already destroyed is not crashed again', async () => {
+  const r = rig();
+  await show(r);
+  const wc = r.views[0].webContents;
+  wc.destroyedFlag = true;
+  r.m.hide(r.owner);
+  assert.ok(!wc.crashed);
 });
 
 test('hide unloads: the view leaves the window and its contents are closed (hidden means stopped)', async () => {
