@@ -137,3 +137,19 @@ test('byType (property): lingered = stillThere + those gone after the threshold,
     assert.strictEqual(Object.values(r).reduce((a, v) => a + v.count, 0), flat.length);
   }));
 });
+
+// ---- start times from two sources: Get-Process (100 ns) vs CIM CreationDate (whole microseconds) -----------------
+
+test('sameStart: a Get-Process FILETIME and the CIM one for the same process (truncated to the microsecond) match', () => {
+  // Measured 2026-10-08 on one process: Get-Process 134359518853898904, CIM 134359518853898900.
+  assert.strictEqual(census.sameStart('134359518853898904', '134359518853898900'), true);
+  assert.strictEqual(census.sameStart('134359518853898900', '134359518853898904'), true);
+  assert.strictEqual(census.sameStart('134359518853898914', '134359518853898900'), false, 'a different microsecond is another process');
+  assert.strictEqual(census.sameStart('x', '1'), false);
+});
+
+test('descendantsOf: the launcher\'s start time (Get-Process precision) finds the root in CIM rows', () => {
+  const rows = [row(10, 1, '134359518853898900', { type: 'main' }), row(11, 10, '134359518853999900')];
+  assert.deepStrictEqual(census.descendantsOf(rows, 10, '134359518853898904').map(r => r.pid), [10, 11]);
+  assert.deepStrictEqual(census.descendantsOf(rows, 10, '134359518853998904'), [], 'another start is another process');
+});

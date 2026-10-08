@@ -33,9 +33,18 @@ function parseRows(text) {
 
 const zombieShaped = (r) => r.thr <= 1 && r.hnd === 0;
 
+/**
+ * Same process start? host/proc-start.js reads Get-Process StartTime (100 ns ticks); these rows come from CIM
+ * CreationDate, which keeps whole microseconds (measured 2026-10-08: ...898904 vs ...898900). Compared per microsecond.
+ */
+function sameStart(a, b) {
+  if (!/^\d+$/.test(String(a)) || !/^\d+$/.test(String(b))) return false;
+  return BigInt(a) / 10n === BigInt(b) / 10n;
+}
+
 function descendantsOf(rows, rootPid, rootStart) {
   const root = rows.find(r => r.pid === rootPid);
-  if (!root || (rootStart !== undefined && root.start !== String(rootStart))) return [];
+  if (!root || (rootStart !== undefined && !sameStart(root.start, rootStart))) return [];
   const inTree = new Map([[root.pid, root]]);
   let grew = true;
   while (grew) {
@@ -97,4 +106,4 @@ function queryRows(imageName = 'electron.exe', { run = spawnSync, powershell = p
   return parseRows(r.stdout);
 }
 
-module.exports = { typeOf, parseRows, zombieShaped, descendantsOf, summarize, byType, queryRows };
+module.exports = { typeOf, parseRows, zombieShaped, sameStart, descendantsOf, summarize, byType, queryRows };
