@@ -750,3 +750,68 @@ test('D7 (wand): a command with a C1 control character is not a single-line slas
   }
   assert.strictEqual(planTyping({ command: '/x caf\u00e9', screen: 'ready', connected: true }).ok, true);
 });
+
+// --- PR #125 Dexter #2/#3: a line wider than the box wraps; whitespace is judged the same on both sides --------------------------------------
+
+// What the CLI's box shows for `command` at `cols` columns, MEASURED shape (verify/probe-panel-line-input.js): `❯ ` then the text, wrapped at the
+// terminal width with the space at the break dropped (liveBox trims each row), and only the LAST `maxRows` rows kept, the `❯` staying first.
+function wrapBox(command, cols, maxRows = 15) {
+  const text = `❯ ${command}`;
+  const rows = [];
+  for (let i = 0; i < text.length; i += cols) rows.push(text.slice(i, i + cols));
+  const kept = rows.length > maxRows ? ['❯ ' + rows[rows.length - maxRows], ...rows.slice(rows.length - maxRows + 1)] : rows;
+  return ['h', RULE, ...kept, RULE, ...NO_MARK];
+}
+const PANEL = "(from Claude's panel) ";
+const words = (n) => { let s = ''; let i = 0; while (s.length < n) s += `word${i++} `; return s.slice(0, n).trim(); };
+
+test('commandTyped reads back a line that wraps over several rows: 99 and 1999 characters at 80 and 120 columns', () => {
+  for (const cols of [80, 120]) {
+    for (const n of [99, 1999]) {
+      const command = PANEL + words(n);
+      assert.strictEqual(commandTyped(wrapBox(command, cols), command), true, `${n} chars at ${cols} columns`);
+    }
+  }
+});
+
+test('commandTyped: a wrapped box that is NOT the command is refused (a glued-on word, a different tail, a stale draft inside)', () => {
+  const command = PANEL + words(99);
+  for (const cols of [80, 120]) {
+    assert.strictEqual(commandTyped(wrapBox(command + ' extra', cols), command), false, 'glued on');
+    assert.strictEqual(commandTyped(wrapBox('draft ' + command, cols), command), false, 'draft before');
+    assert.strictEqual(commandTyped(wrapBox(command.slice(0, -3) + 'XYZ', cols), command), false, 'different tail');
+  }
+  const long = PANEL + words(1999);
+  assert.strictEqual(commandTyped(wrapBox(long + 'x', 80), long), false, 'a scrolled box whose tail is not the command tail');
+  assert.strictEqual(commandTyped(wrapBox(long.slice(0, -1), 80), long), false, 'a scrolled box that ends short of it');
+});
+
+test('commandTyped: a few rows that are only the end of the command are NOT accepted (only a full scrolled box is)', () => {
+  const command = PANEL + words(400);
+  const tail = command.slice(-150);
+  assert.strictEqual(commandTyped(['h', RULE, '❯ ' + tail.slice(0, 80), tail.slice(80), RULE, ...NO_MARK], command), false);
+});
+
+test('commandTyped: a non-breaking space or a doubled space is the same as one space, on either side (Dexter #3)', () => {
+  const nb = PANEL + 'Total:\u00a042';
+  const dbl = PANEL + 'Total:  42';
+  for (const c of [nb, dbl, PANEL + 'Total: 42']) {
+    for (const shown of ['❯ ' + PANEL + 'Total: 42', '❯ ' + PANEL + 'Total:\u00a042', '❯ ' + PANEL + 'Total:  42']) {
+      assert.strictEqual(commandTyped(['h', RULE, shown, RULE, ...NO_MARK], c), true, JSON.stringify([c, shown]));
+    }
+  }
+  assert.strictEqual(commandTyped(['h', RULE, '❯ ' + PANEL + 'Total:42', RULE, ...NO_MARK], dbl), false, 'no space at all is not a space');
+});
+
+test('typingKeys: a long command goes in chunks (one big write is collapsed to a paste placeholder), a short one in one piece', () => {
+  assert.deepStrictEqual(typingKeys('/model sonnet', false), ['\x05', '\x15', '/model sonnet']);
+  const long = PANEL + words(1999);
+  const keys = typingKeys(long, false);
+  assert.deepStrictEqual(keys.slice(0, 2), ['\x05', '\x15']);
+  assert.strictEqual(keys.slice(2).join(''), long, 'the chunks put the command back together exactly');
+  assert.ok(keys.slice(2).every((k) => k.length <= 200), 'no chunk of more than 200 characters');
+  assert.ok(keys.length > 4);
+  const emoji = '😀'.repeat(150);
+  assert.strictEqual(typingKeys(emoji, false).slice(2).join(''), emoji);
+  assert.ok(typingKeys(emoji, false).slice(2).every((k) => !/[\ud800-\udbff]$/.test(k) && !/^[\udc00-\udfff]/.test(k)), 'a surrogate pair is never split between writes');
+});

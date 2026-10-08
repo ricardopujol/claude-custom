@@ -338,17 +338,31 @@ function inputState(lines, opts) {
 }
 
 /**
- * The read-back just before the CR (Miguel r2): is the live box EXACTLY
- * `❯ <command>`? The screen was judged once, before four spaced writes; a
- * dialog opening meanwhile, or a draft the clear did not reach, would
- * otherwise take the CR. Whitespace runs (xterm may render a non-breaking
- * space) compare as one space.
+ * The read-back just before the CR (Miguel r2): is the live box EXACTLY `❯ <command>`? The screen was judged once, before the spaced
+ * writes; a dialog opening meanwhile, or a draft the clear did not reach, would otherwise take the CR.
+ *
+ * Whitespace is judged the same on both sides (PR #125 Dexter #3): a run of it, or a non-breaking space, is one space in the box and in the
+ * command. A line longer than the box is wide WRAPS over several rows (Dexter #2; measured, verify/probe-panel-line-input.js: 99 characters
+ * wrap at 80 and 120 columns), and the wrap swallows the space it breaks at, so over several rows the comparison ignores whitespace
+ * altogether. The CLI's box shows at most ~15 rows and keeps the END of a longer text (the `❯` stays on the first row): a box of
+ * SCROLLED_MIN_ROWS or more whose text is a tail of the command is accepted, the head being out of sight. A stale draft before the
+ * command is what that cannot show; the box was one row before the keys went in and Ctrl-U cleared it.
  */
+const SCROLLED_MIN_ROWS = 5;
+const COMMAND_CHUNK = 200;       // characters per write: one big write is taken for a paste and collapsed to "[Pasted text #1]" (measured)
 function commandTyped(lines, command, opts) {
   if (typeof command !== 'string' || !command) return false;
-  if (inputState(lines, opts) !== 'ready') return false;
-  const line = liveBox(lines).box[0].replace(/\s+/g, ' ').trim();
-  return line === `❯ ${command}`;
+  const live = liveBox(lines);
+  const rows = live && live.box;
+  if (!rows || !rows.length || rows[0].charAt(0) !== '❯') return false;          // a dialog, or no box
+  if (opts && opts.vim && !vimInsertShown(lines)) return false;                // vim NORMAL: keys are motions
+  const collapse = (t) => t.replace(/\s+/g, ' ').trim();
+  if (rows.length === 1) return collapse(rows[0]) === collapse(`❯ ${command}`);
+  const strip = (t) => t.replace(/\s+/g, '');
+  const shown = strip(rows.join('')).replace(/^❯/, '');
+  const want = strip(command);
+  if (shown === want) return true;
+  return rows.length >= SCROLLED_MIN_ROWS && shown.length > 0 && want.endsWith(shown);
 }
 
 const SCREEN_REFUSALS = {
@@ -394,7 +408,10 @@ function planSwitch({ kind, raw, current, screen, connected } = {}) {
  * caller spaces them PTY_STEP_MS apart: typed as one chunk, a line is taken for a paste.
  */
 function typingKeys(command, enterInsert) {
-  return [...(enterInsert ? ['i'] : []), '\x05', '\x15', command];
+  const chunks = [];
+  const chars = Array.from(command);
+  for (let i = 0; i < chars.length; i += COMMAND_CHUNK) chunks.push(chars.slice(i, i + COMMAND_CHUNK).join(''));
+  return [...(enterInsert ? ['i'] : []), '\x05', '\x15', ...(chunks.length ? chunks : [command])];
 }
 
 // One `@path`, optionally `#L40` or `#L40-60` (the reader's "@ in prompt", #32): no space, so the CLI reads
