@@ -28,7 +28,7 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
+const { killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 const { buildClaudeArgs } = require(path.join(ROOT, 'host', 'settings-writer'));
 const { canvasMcpEnabled } = require(path.join(ROOT, 'host', 'canvas-settings'));
 const claudeBin = path.join(execFileSync('npm', ['root', '-g'], { encoding: 'utf8', shell: true }).trim(), '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
@@ -113,7 +113,7 @@ async function runCli({ base, enabled, script }) {
   const child = spawn(claudeBin, args, { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const started = Date.now();
   let out = ''; child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { out += d; });
-  const code = await new Promise(r => { const t = setTimeout(() => { try { killPidTree(child.pid); } catch { /* gone */ } r('timeout'); }, 90000); child.on('exit', c => { clearTimeout(t); r(c); }); });
+  const code = await new Promise(r => { const t = setTimeout(() => { try { killChildTree(child); } catch { /* gone */ } r('timeout'); }, 90000); child.on('exit', c => { clearTimeout(t); r(c); }); });
   server.close();
   return { requests, out: out.trim(), code, ms: Date.now() - started, state, args, claudeJsonChanged: fs.readFileSync(claudeJson, 'utf8') !== before, claudeJson: fs.readFileSync(claudeJson, 'utf8') };
 }

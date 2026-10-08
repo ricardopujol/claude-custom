@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const REPO = require('path').join(__dirname, '..', '..').split(require('path').sep).join('/');
 const pty = require(REPO + '/node_modules/node-pty');
 const { Terminal } = require(REPO + '/node_modules/@xterm/headless');
-const { killPidTree } = require(REPO + '/host/kill-tree');
+const { killChildTree, trackExit } = require(REPO + '/host/kill-tree');
 const MOD = path.join(__dirname, 'canvas-probe');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const claudeBin = path.join(execFileSync('npm', ['root', '-g'], { encoding: 'utf8', shell: true }).trim(), '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
@@ -29,6 +29,7 @@ async function run(mode) {
   const args = ['--model', 'haiku'];
   if (mode === 'env') env.CLAUDE_CODE_PLUGIN_DIRS = root; else args.push('--plugin-dir', target);
   const p = pty.spawn(claudeBin, args, { name: 'xterm-256color', cols: 160, rows: 45, cwd: work, env });
+  trackExit(p);
   p.onData(d => term.write(d));
   const scr = async () => { await new Promise(r => term.write('', r)); const b = term.buffer.active; const o = []; for (let i = 0; i < b.length; i++) o.push(b.getLine(i).translateToString(true)); return o.join('\n'); };
   const res = { mode };
@@ -39,7 +40,7 @@ async function run(mode) {
     await sleep(6000);
     s = await scr(); res.bandAfterCopy = /CANVAS-BAND/.test(s); res.notes = s.split('\n').filter(l => /canvas-probe|reload|plugin/i.test(l)).map(l => l.trim()).slice(0, 6);
   } finally {
-    try { killPidTree(p.pid); } catch {} server.close();
+    try { killChildTree(p); } catch {} server.close();
     try { fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch {}
   }
   console.log('RESULT ' + JSON.stringify(res));

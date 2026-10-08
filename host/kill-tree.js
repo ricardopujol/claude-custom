@@ -20,10 +20,66 @@
  */
 const { spawn, spawnSync } = require('child_process');
 
+/*
+ * Has this child ended? (PR #130 review, Dexter #1.) Once a child's exit has been handled its pid is free and may
+ * already name another process, so a kill BY PID is only safe before that. A Node ChildProcess says so itself
+ * (exitCode or signalCode set); a node-pty IPty does not, so its exit is recorded by trackExit() from the moment it
+ * is spawned. An IPty nobody tracked cannot be judged: childExited() then answers "ended" (doubt keeps the stranger
+ * safe), and killChildTree says why it did nothing.
+ *
+ * node-pty's onExit IS LATE (PR #130 review round 2, Dexter #1): conpty.cc closes the process handle the moment the
+ * shell exits, and onExit fires only after a >= 1 s flush timer, so the pid is free a second before any JS knows. So
+ * for an IPty, trackExit also reads its start time at spawn, and killChildTree kills it through killProven (the start
+ * proven again on a held handle) once that is known. And a kill site runs at most once per child: the second
+ * killed() of a probe (its finally, then its process 'exit' handler) is a no-op.
+ */
+const EXITED = Symbol.for('claude-custom.child.exited');
+const TRACKED = Symbol.for('claude-custom.child.tracked');
+const KILLED = Symbol.for('claude-custom.child.killed');
+const START = Symbol.for('claude-custom.child.start');
+const START_READ = Symbol.for('claude-custom.child.startRead');
+
+function trackExit(child, { startTimes } = {}) {
+  if (!child || child[TRACKED]) return child;
+  child[TRACKED] = true;
+  const mark = () => { child[EXITED] = true; };
+  if (typeof child.once === 'function') child.once('exit', mark);
+  else if (typeof child.onExit === 'function') child.onExit(mark);
+  if (!('exitCode' in child) && child.pid) {
+    const read = startTimes || require('./proc-start').startTimes;
+    child[START_READ] = Promise.resolve()
+      .then(() => read([child.pid]))
+      .then((m) => { const s = m && m.get(child.pid); if (typeof s === 'string') child[START] = s; })
+      .catch(() => { /* unknown: the kill falls back to the pid, once */ });
+  }
+  return child;
+}
+
+function childExited(child) {
+  if (!child) return true;
+  if (child[EXITED] === true) return true;
+  if ('exitCode' in child) return child.exitCode !== null || (child.signalCode !== null && child.signalCode !== undefined);
+  return !child[TRACKED];
+}
+
+// Kill a child's tree by its pid, but only while the child is provably still running, and only once. An IPty whose
+// start is known is killed through killProven. True if a kill was sent.
+function killChildTree(child, { killFn = killPidTree, provenKill = killProven } = {}) {
+  if (!child || !child.pid || child[KILLED]) return false;
+  if (childExited(child)) {
+    if (!('exitCode' in child) && !child[TRACKED]) console.log(`[kill-tree] pid ${child.pid}: not killed, its exit was never tracked (call trackExit at spawn)`);
+    return false;
+  }
+  child[KILLED] = true;
+  if (!('exitCode' in child) && typeof child[START] === 'string') provenKill(child.pid, child[START]);
+  else killFn(child.pid);
+  return true;
+}
+
 // child is a Node ChildProcess (has .pid, .exitCode, .kill()) -- the shape
 // host/host.js's own spawned children (the health runner, the launcher) have.
 function killTree(child, { spawnFn = spawn } = {}) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || childExited(child)) return;
   if (process.platform === 'win32') {
     // The try/catch below does NOT catch this: a ChildProcess reports a failed
     // spawn through an ASYNC 'error' event, and an EventEmitter with no 'error'
@@ -56,13 +112,17 @@ function killTree(child, { spawnFn = spawn } = {}) {
 // sets `shell: true` (the thing that makes a tree possible in the first
 // place) on win32. A future non-Windows caller that needs a real tree kill
 // must not assume this function gives it one.
-function killPidTree(pid) {
+function killPidTree(pid, { run = spawnSync, fallback = (p) => process.kill(p, 'SIGTERM'), platform = process.platform } = {}) {
   if (!pid) return;
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     try {
-      const r = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+      const r = run('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
       if (r.error) {
         console.log('[kill-tree] taskkill could not be run:', r.error.code || r.error.message, '- falling back');
+      } else if (r.status === 128) {
+        // "Not found": the pid is already gone. Final (PR #130 review, Dexter #2): a process.kill on it now could only
+        // reach a process that took the freed pid since, which nobody proved is ours.
+        return;
       } else if (r.status !== 0) {
         // Finding 3 (Dexter, PR #61 review): `r.error` is only set when
         // taskkill itself couldn't be spawned. When it runs and FAILS --
@@ -77,7 +137,40 @@ function killPidTree(pid) {
       }
     } catch (err) { console.log('[kill-tree] taskkill threw:', err.message, '- falling back'); }
   }
-  try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+  try { fallback(pid); } catch { /* already gone */ }
 }
 
-module.exports = { killTree, killPidTree };
+/*
+ * A kill that cannot land on a reused pid (PR #130 review, Dexter #2). Proving a start time and killing in two round
+ * trips leaves a window in which the process exits and its pid is handed to another; so both happen in ONE PowerShell
+ * call that holds the process handle across them (an open handle keeps Windows from reusing the pid): open it, read
+ * StartTime ON that handle, compare with the recorded FILETIME (host/proc-start.js reads the same source), and only
+ * then taskkill /T while the handle is still held. Outcomes: 'killed', 'gone' (not running, or exited first),
+ * 'mismatch' (the pid is another process), 'failed' (taskkill refused), 'unknown' (could not be judged: nothing done).
+ */
+const POWERSHELL = require('path').join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+function parseProvenKill(r) {
+  if (!r || r.error || typeof r.stdout !== 'string') return 'unknown';
+  const m = /^(GONE|UNKNOWN|MISMATCH|KILLED (-?\d+))\s*$/m.exec(r.stdout);
+  if (!m) return 'unknown';
+  if (m[1] === 'GONE') return 'gone';
+  if (m[1] === 'MISMATCH') return 'mismatch';
+  if (m[1] === 'UNKNOWN') return 'unknown';
+  const code = Number(m[2]);
+  return code === 0 ? 'killed' : code === 128 ? 'gone' : 'failed';
+}
+
+function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0 || typeof start !== 'string' || !/^\d+$/.test(start)) return 'unknown';
+  const script = [
+    `try { $p = Get-Process -Id ${pid} -ErrorAction Stop } catch { 'GONE'; exit }`,
+    "try { $null = $p.Handle; $s = $p.StartTime.ToFileTimeUtc() } catch { 'UNKNOWN'; exit }",
+    `if ([string]$s -ne '${start}') { 'MISMATCH'; exit }`,
+    "if ($p.HasExited) { 'GONE'; exit }",
+    `& taskkill.exe /PID ${pid} /T /F *> $null; 'KILLED ' + $LASTEXITCODE`,
+  ].join('; ');
+  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
+}
+
+module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, parseProvenKill };

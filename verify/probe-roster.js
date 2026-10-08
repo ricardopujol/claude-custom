@@ -4,7 +4,8 @@
    Reported as: "I asked the session to deploy dexter and miguel, it did, but
    they were not visible in their portrait tab." Every headless check of this
    path passes, so this one drives the REAL window and photographs the result. */
-const { spawn, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
@@ -40,7 +41,7 @@ const check = (label, ok, detail) => {
   try { fs.truncateSync(LOG, 0); } catch {}
   try { fs.unlinkSync(SHOT); } catch {}
 
-  const app = spawn(require('electron'), [REPO], {
+  const app = spawnElectron(require('electron'), [REPO], {
     env: {
       ...process.env,
       CLAUDE_CUSTOM_PORT: String(PORT),
@@ -54,7 +55,7 @@ const check = (label, ok, detail) => {
       CLAUDE_CUSTOM_DEMO_SECRET: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_DEMO_SECRET', 'CLAUDE_CUSTOM_FLOURISH', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY', 'CLAUDE_CUSTOM_SIDE_TAB'] });
   let out = '';
   app.stdout.on('data', d => { out += d.toString(); });
   app.stderr.on('data', d => { out += d.toString(); });
@@ -121,8 +122,8 @@ const check = (label, ok, detail) => {
     console.log(out.slice(-3000));
   }
 
-  try { app.kill(); } catch {}
-  spawnSync('taskkill', ['/IM', 'electron.exe', '/F'], { windowsHide: true });
+  // The tree this probe started, by pid; never by name (#74 B: /IM electron.exe also killed Ricardo's own windows).
+  try { require('../host/kill-tree').killChildTree(app); } catch {}
   console.log(failures === 0 ? '\nALL PASS — now LOOK at ' + SHOT : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();

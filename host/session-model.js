@@ -233,6 +233,9 @@ async function readSessionModel({
   // Injectable for the same reason host/usage.js's is: a locked file is not
   // reproducible portably.
   openFile = (f, flags) => fsp.open(f, flags),
+  // host/agent-stats.js's createStatsMemo: the identity walk then re-reads only files whose (mtime, size)
+  // changed. This runs on every SessionStart and SubagentStop (Miguel M3, PR #131). One memo per project.
+  memo,
 } = {}) {
   const session = { model: null, at: null };
   // A Map, turned into an object only on the way out: `agents[agent] = row`
@@ -263,7 +266,7 @@ async function readSessionModel({
   // these same files, and the inner Agent block lives in the outer agent's
   // transcript, which is one of them.
   const mine = files.filter(f => f.session === sessionId);
-  const tables = await identityTables(mine);
+  const tables = await identityTables(mine, memo);
   let errors = enumErrors + tables.errors;
   // Which run each agent's row came from, so a later file can be compared
   // against it rather than simply overwriting it -- see isNewerRun.

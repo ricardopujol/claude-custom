@@ -44,6 +44,7 @@
    cannot start. Exit code is the number of FAILs. */
 
 const { spawn, spawnSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const http = require('http');
@@ -172,7 +173,7 @@ async function main() {
   let hostLog = '';
   host.stdout.on('data', d => { hostLog += d; });
   host.stderr.on('data', d => { hostLog += d; });
-  if (host.pid) hygiene.registerSpawnedTree(host.pid);
+  if (host.pid) hygiene.registerChild(host);
 
   let app = null;
   let cdp = null;
@@ -192,10 +193,10 @@ async function main() {
     if (!pipe) { console.log(`SKIP: the host did not come up -- the hook bridge only starts when .harness/hook-helper.exe exists (build it from helper/) (${hostLog.trim().slice(-200)})`); return -1; }
     console.log(`host up on :${PORT}, bridge ${pipe}`);
 
-    app = spawn(electronExe, [REPO, `--remote-debugging-port=${CDP}`], {
+    app = spawnElectron(electronExe, [REPO, `--remote-debugging-port=${CDP}`], {
       env: { ...env, CLAUDE_CUSTOM_SIDE_TAB: 'agents' }, stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    if (app.pid) hygiene.registerSpawnedTree(app.pid);
+    }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SIDE_TAB'] });
+    if (app.pid) hygiene.registerChild(app);
     let appLog = '';
     app.stdout.on('data', d => { appLog += d; });
     app.stderr.on('data', d => { appLog += d; });

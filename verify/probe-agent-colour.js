@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* Backlog #65: the agent cards' "working" state is the one agent blue, never the user's accent.  (re-runnable)
 
      node verify/probe-agent-colour.js        (exit 0 = every check held; PORT=<n> optional)
@@ -16,6 +17,7 @@
    environment (Claude Code is an Electron app and exports them). Only the two processes
    started here are killed, by pid. */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -56,7 +58,7 @@ Object.assign(env, {
 const children = [];
 const killTree = (c) => {
   if (!c || !c.pid) return;
-  try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ }
+  try { killChildTree(c); } catch { /* already gone */ }
 };
 const cleanup = () => {
   children.forEach(killTree);
@@ -117,9 +119,9 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     await sleep(3500);
     if (!/listening/i.test(hostLog)) { console.error('host did not start:\n' + hostLog); process.exitCode = 1; return; }
 
-    electron = spawn(path.join(REPO, 'node_modules', '.bin', 'electron.cmd'), ['.', `--remote-debugging-port=${CDP}`], {
-      cwd: REPO, env, stdio: 'ignore', shell: true,
-    });
+    electron = spawnElectron(require('electron'), ['.', `--remote-debugging-port=${CDP}`], {
+      cwd: REPO, env, stdio: 'ignore',
+    }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_UPLOADS'] });
     children.push(electron);
 
     let targets = [];

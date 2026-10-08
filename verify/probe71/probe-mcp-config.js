@@ -37,7 +37,7 @@ const claudeBin = path.join(execFileSync('npm', ['root', '-g'], { encoding: 'utf
   const before = fs.readFileSync(path.join(config, '.claude.json'), 'utf8');
   const child = spawn(claudeBin, ['-p', 'hello', '--model', 'haiku', '--mcp-config', mcp], { cwd: work, env });
   let out = ''; child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { out += d; });
-  const code = await new Promise(r => { const t = setTimeout(() => { try { process.kill(child.pid); } catch {} r('timeout'); }, 60000); child.on('exit', c => { clearTimeout(t); r(c); }); });
+  const code = await new Promise(r => { const t = setTimeout(() => { try { require('C:/Users/ricar/VibeCode/claude-custom/dev/host/kill-tree').killChildTree(child); } catch {} r('timeout'); }, 60000); child.on('exit', c => { clearTimeout(t); r(c); }); });
   const mainTools = seen.filter(Boolean).find(t => t.length > 5) || [];
   const after = fs.readFileSync(path.join(config, '.claude.json'), 'utf8');
   const res = { exit: code, stdout: out.trim().slice(0, 200), canvasTools: mainTools.filter(n => n.startsWith('mcp__canvas')),

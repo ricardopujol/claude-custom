@@ -13,7 +13,7 @@ const { execFileSync } = require('child_process');
 const REPO = require('path').join(__dirname, '..', '..').split(require('path').sep).join('/');
 const pty = require(REPO + '/node_modules/node-pty');
 const { Terminal } = require(REPO + '/node_modules/@xterm/headless');
-const { killPidTree } = require(REPO + '/host/kill-tree');
+const { killChildTree, trackExit } = require(REPO + '/host/kill-tree');
 const MOD = path.join(__dirname, 'canvas-probe');
 const REG = path.join(MOD, 'hooks', 'register.tsx');
 const OUT = path.join(__dirname, 'out');
@@ -86,8 +86,9 @@ async function main() {
   const term = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
   let rawAll = '';
   const p = pty.spawn(claudeBin, ['--model', 'haiku', '--plugin-dir', MOD], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
+  trackExit(p);
   p.onData(d => { rawAll += d; term.write(d); });
-  const killed = () => { try { killPidTree(p.pid); } catch { /* gone */ } };
+  const killed = () => { try { killChildTree(p); } catch { /* gone */ } };
   process.on('exit', killed);
   const flush = () => new Promise(r => term.write('', r));
   const screen = async () => {
