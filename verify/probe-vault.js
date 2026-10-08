@@ -8,6 +8,7 @@
    It also asserts the property the whole feature rests on -- that the secret
    never reaches the host, which owns the pty. */
 const { spawn } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -25,7 +26,7 @@ const check = (label, ok, detail) => {
 (async () => {
   try { fs.unlinkSync(VAULT); } catch {}
 
-  const app = spawn(require('electron'), [REPO], {
+  const app = spawnElectron(require('electron'), [REPO], {
     env: {
       ...process.env,
       CLAUDE_CUSTOM_PORT: '7803',

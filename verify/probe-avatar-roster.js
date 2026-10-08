@@ -21,6 +21,7 @@
  *   node verify/probe-avatar-roster.js        (exit 0 = every check passed)
  */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -199,7 +200,7 @@ app.whenReady().then(async () => {
 
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
-  const electron = spawn(require('electron'), [mainFile], { cwd: ROOT, env });
+  const electron = spawnElectron(require('electron'), [mainFile], { cwd: ROOT, env });
   hygiene.registerSpawnedTree(electron.pid);
   let out = '';
   electron.stdout.on('data', d => { out += d; process.stdout.write(d); });

@@ -25,6 +25,7 @@
    the real model is never asked anything. ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are removed from the
    children's environment first. Only the two processes started here are killed, by their own pid. */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -178,8 +179,8 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     host.stderr.on('data', (d) => { hostLog += d; });
     if (!(await waitFor(() => /listening/i.test(hostLog), 15000))) { check('the host started', false, hostLog.slice(-400)); return; }
 
-    const electron = spawn(path.join(REPO, 'node_modules', '.bin', 'electron.cmd'), ['.', `--remote-debugging-port=${CDP}`], {
-      cwd: REPO, env: electronEnv, stdio: ['ignore', 'pipe', 'pipe'], shell: true,
+    const electron = spawnElectron(require('electron'), ['.', `--remote-debugging-port=${CDP}`], {
+      cwd: REPO, env: electronEnv, stdio: ['ignore', 'pipe', 'pipe'],
     });
     children.push(electron);
     let electronLog = '';

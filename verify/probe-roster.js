@@ -5,6 +5,7 @@
    they were not visible in their portrait tab." Every headless check of this
    path passes, so this one drives the REAL window and photographs the result. */
 const { spawn, spawnSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
@@ -40,7 +41,7 @@ const check = (label, ok, detail) => {
   try { fs.truncateSync(LOG, 0); } catch {}
   try { fs.unlinkSync(SHOT); } catch {}
 
-  const app = spawn(require('electron'), [REPO], {
+  const app = spawnElectron(require('electron'), [REPO], {
     env: {
       ...process.env,
       CLAUDE_CUSTOM_PORT: String(PORT),
@@ -121,8 +122,8 @@ const check = (label, ok, detail) => {
     console.log(out.slice(-3000));
   }
 
-  try { app.kill(); } catch {}
-  spawnSync('taskkill', ['/IM', 'electron.exe', '/F'], { windowsHide: true });
+  // The tree this probe started, by pid; never by name (#74 B: /IM electron.exe also killed Ricardo's own windows).
+  try { require('../host/kill-tree').killPidTree(app.pid); } catch {}
   console.log(failures === 0 ? '\nALL PASS — now LOOK at ' + SHOT : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();

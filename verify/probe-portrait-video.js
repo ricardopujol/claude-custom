@@ -20,6 +20,7 @@
  */
 
 const { spawn } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -93,7 +94,7 @@ const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 
 const electron = require('electron');
-const child = spawn(electron, [path.join(tmp, 'main.js')], {
+const child = spawnElectron(electron, [path.join(tmp, 'main.js')], {
   stdio: ['ignore', 'pipe', 'inherit'],
   windowsHide: true,
   env,

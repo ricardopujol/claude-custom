@@ -15,6 +15,7 @@
  *   node verify/probe-agent-log.js
  */
 const { spawn } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -125,7 +126,7 @@ app.on('ready', async () => {
 
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;      // CLAUDE.md: inherited from Claude Code, turns Electron into plain Node
-  const child = spawn(require('electron'), [path.join(tmp, 'main.js')], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true, env });
+  const child = spawnElectron(require('electron'), [path.join(tmp, 'main.js')], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true, env });
   let stdout = '';
   child.stdout.on('data', d => { stdout += d; });
   const kill = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, 20000);

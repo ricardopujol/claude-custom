@@ -16,6 +16,7 @@
    environment (Claude Code is an Electron app and exports them). Only the two processes
    started here are killed, by pid. */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -117,8 +118,8 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     await sleep(3500);
     if (!/listening/i.test(hostLog)) { console.error('host did not start:\n' + hostLog); process.exitCode = 1; return; }
 
-    electron = spawn(path.join(REPO, 'node_modules', '.bin', 'electron.cmd'), ['.', `--remote-debugging-port=${CDP}`], {
-      cwd: REPO, env, stdio: 'ignore', shell: true,
+    electron = spawnElectron(require('electron'), ['.', `--remote-debugging-port=${CDP}`], {
+      cwd: REPO, env, stdio: 'ignore',
     });
     children.push(electron);
 

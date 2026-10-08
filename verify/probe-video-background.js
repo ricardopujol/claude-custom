@@ -47,6 +47,7 @@
  */
 
 const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -151,7 +152,7 @@ async function launchApp(cwd) {
   for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_CUSTOM_') && !keep.includes(k)) delete env[k];
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
   hygiene.registerSpawnedTree(child.pid);
   const app = { port, token, child, out: '', exited: false };

@@ -24,13 +24,14 @@
    the whole path; a missing path is no link; `notes.md:3` resolves against
    the tab folder. */
 const { spawn } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const path = require('path');
 
 if (!process.versions.electron) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_CUSTOM_')) delete env[k];
-  const child = spawn(require('electron'), [__filename, ...process.argv.slice(2)],
+  const child = spawnElectron(require('electron'), [__filename, ...process.argv.slice(2)],
     { stdio: 'inherit', windowsHide: true, env });
   child.on('exit', (code) => process.exit(code ?? 0));
   return;

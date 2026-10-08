@@ -41,6 +41,7 @@ if (process.versions.electron && process.type === 'browser') {
 
 function launcher() {
   const { spawn } = require('child_process');
+  const { spawnElectron } = require('./lib/launch-electron');
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -71,7 +72,7 @@ function launcher() {
     await sleep(3500);
     if (!/listening/i.test(hostLog)) { console.error('host did not start:\n' + hostLog); cleanup(); process.exit(1); }
 
-    const electron = spawn(path.join(REPO, 'node_modules', '.bin', 'electron.cmd'), ['.'], {
+    const electron = spawnElectron(require('electron'), ['.'], {
       cwd: REPO,
       env: {
         ...env,
@@ -81,7 +82,6 @@ function launcher() {
         CC_PROBE_DIM_TRIALS: process.env.TRIALS || '5',
       },
       stdio: 'inherit',
-      shell: true,
     });
 
     electron.on('exit', () => {

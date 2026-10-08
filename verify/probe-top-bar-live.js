@@ -36,12 +36,13 @@
    ELECTRON_RUN_AS_NODE is deleted for this process and set ONLY for the host
    child, exactly as app/main.js does. */
 const { spawn } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const path = require('path');
 
 if (!process.versions.electron) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(require('electron'), [__filename, ...process.argv.slice(2)],
+  const child = spawnElectron(require('electron'), [__filename, ...process.argv.slice(2)],
     { stdio: 'inherit', windowsHide: true, env });
   child.on('exit', (code) => process.exit(code ?? 0));
   return;

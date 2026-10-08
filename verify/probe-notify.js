@@ -7,6 +7,7 @@
    showed nothing, because the handler's own focus guard skipped the toast. Only
    a probe that watches MAIN can tell "delivered" from "displayed". */
 const { spawn, spawnSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -27,7 +28,7 @@ const check = (label, ok, detail) => {
   // The electron module exports the path to the real binary. The .cmd shim
   // swallows stdout when spawned with shell:true, which reads exactly like the
   // app printing nothing.
-  const app = spawn(require('electron'), [REPO], {
+  const app = spawnElectron(require('electron'), [REPO], {
     env: { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT), CLAUDE_CUSTOM_CWD: REPO },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -93,8 +94,8 @@ const check = (label, ok, detail) => {
     console.log('  (no toast bodies: the window had focus, so none were raised)');
   }
 
-  try { app.kill(); } catch {}
-  spawnSync('taskkill', ['/IM', 'electron.exe', '/F'], { windowsHide: true });
+  // The tree this probe started, by pid; never by name (#74 B: /IM electron.exe also killed Ricardo's own windows).
+  try { require('../host/kill-tree').killPidTree(app.pid); } catch {}
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();

@@ -42,6 +42,7 @@
    That kills every Electron on the machine. Only the PIDs of our own tree are
    killed, matched by PID *and* command line because Windows reuses PIDs. */
 const { spawn, spawnSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
@@ -228,7 +229,7 @@ async function main() {
     // Claude Code is itself Electron: an inherited ELECTRON_RUN_AS_NODE would
     // start this child as plain Node (see CLAUDE.md, "Traps").
     delete env.ELECTRON_RUN_AS_NODE;
-    app = spawn(require('electron'), [REPO], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    app = spawnElectron(require('electron'), [REPO], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     app.stdout.on('data', (d) => { out += d.toString(); });
     app.stderr.on('data', (d) => { out += d.toString(); });

@@ -45,6 +45,7 @@
  * the temp repo is removed.
  */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -142,7 +143,7 @@ async function launchApp(cwd, extraEnv = {}) {
   delete env.CLAUDE_CUSTOM_TOKEN;
   Object.assign(env, extraEnv);
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
   hygiene.registerSpawnedTree(child.pid);
   const app = { no: windowNo, port, token, child, out: '', exited: false, exitCode: null };

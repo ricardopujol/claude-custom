@@ -26,6 +26,7 @@
  */
 
 const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -275,7 +276,7 @@ async function runRealApp() {
     CLAUDE_CUSTOM_TABS_PROBE: String(port), CLAUDE_CUSTOM_TABS_PROBE_TOKEN: token,
     CLAUDE_CUSTOM_REGISTRY: registry, CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits-real'), CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads-real'),
   };
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${path.join(tmp, 'userData-real')}`], { cwd: ROOT, env });
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${path.join(tmp, 'userData-real')}`], { cwd: ROOT, env });
   hygiene.registerSpawnedTree(child.pid);
   const app = { port, token, out: '' };
   child.stdout.on('data', d => { app.out += d; });
@@ -383,7 +384,7 @@ async function runRealApp() {
 
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
-  const electron = spawn(require(path.join(ROOT, 'node_modules', 'electron')), [mainFile], { cwd: ROOT, env });
+  const electron = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [mainFile], { cwd: ROOT, env });
   hygiene.registerSpawnedTree(electron.pid);
   const events = [];
   let carry = '';
