@@ -266,7 +266,9 @@ function canvasMcpConfig(c) {
 function buildClaudeArgs({ settingsFile, helperExists, canvasMcp } = {}) {
   const args = ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
-  const mcp = canvasMcpConfig(canvasMcp);
+  // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
+  // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
+  const mcp = helperExists ? canvasMcpConfig(canvasMcp) : null;
   if (mcp) args.push('--mcp-config', mcp);
   return args;
 }

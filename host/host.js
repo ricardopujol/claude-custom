@@ -386,7 +386,7 @@ const helperExists = fs.existsSync(HELPER_PATH);
 // Claude's panel's MCP server (BACKLOG #71, host/canvas-mcp.js) rides in on --mcp-config, added to the user's own servers, unless the
 // setting (host/canvas-settings.js) turns it off. It learns its session through this host's pointer file, which the control keeps.
 const CANVAS_POINTER_FILE = path.join(HARNESS_DIR, 'state', 'canvas', `_tab-${PORT}.json`);
-const canvasMcp = canvasMcpEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') })
+const canvasMcp = helperExists && canvasMcpEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') })
   ? { nodePath: process.versions.electron ? 'node' : process.execPath, scriptPath: path.join(__dirname, 'canvas-mcp.js'),
     root: path.join(HARNESS_DIR, 'state'), pointerFile: CANVAS_POINTER_FILE }
   : null;
@@ -468,7 +468,7 @@ const canvasControl = createCanvasControl({
   emit: (frame) => broadcastControl(frame),
   watch: watchDir,
   log: (line) => console.log(line),
-  pointerFile: CANVAS_POINTER_FILE,
+  pointerFile: canvasMcp ? CANVAS_POINTER_FILE : null,        // no tools offered, no pointer to keep (PR #125 Miguel S5)
 });
 // The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
 // list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam

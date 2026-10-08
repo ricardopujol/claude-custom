@@ -509,10 +509,11 @@ test('with the panel off (no canvasMcp) there is no --mcp-config at all, and the
   assert.deepStrictEqual(buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: true, canvasMcp: null }), ['--dangerously-skip-permissions', '--settings', 'C:/h/s.json']);
 });
 
-test('the panel does not depend on the hook helper: it is injected with no helper too', () => {
+test('the panel DOES depend on the hook helper (PR #125 Dexter #8): without it no session id ever arrives, so it is not injected', () => {
   const args = buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: false, canvasMcp: CANVAS });
-  assert.ok(args.includes('--mcp-config'));
+  assert.ok(!args.includes('--mcp-config'));
   assert.ok(!args.includes('--settings'));
+  assert.ok(buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: true, canvasMcp: CANVAS }).includes('--mcp-config'));
 });
 
 test('an incomplete canvasMcp is no injection rather than a broken one', () => {
