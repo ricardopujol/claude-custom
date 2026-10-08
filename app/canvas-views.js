@@ -17,6 +17,10 @@
  *     approved for THAT panel (app/canvas-fetch.js). An unknown host is a question to the owner's page, asked once.
  *   - the only other thing the panel can do is `send` a line of text toward the session (a button). It must be a real
  *     click or key press the contents received (a script cannot press its own button), one message per click, one line.
+ *   - no native dialog over the app's window: alert/confirm/prompt are disabled (`disableDialogs`). Measured (Electron 33, verify/
+ *     probe-canvas-sandbox.js, PR #122 Dexter R2): `window.print()` raises NO dialog (it blocks the panel's own renderer, which is
+ *     no worse than `for(;;){}`), `<input type=file>` raises none, `<input type=color>` raises a popup widget, not a dialog. The probe
+ *     fails the day any of them becomes a native dialog. The panel has no ability to read a file or show a picker: `fetch` and `send` only.
  *   - hidden means stopped (design, call 7): `hide` destroys the view, so no timer or fetch of the page keeps running.
  *
  * The Electron classes arrive as arguments so test/canvas-views.test.js can drive this with fakes.

@@ -39,9 +39,18 @@ function runElectron(mode) {
     env.PROBE_MODE = mode;
     const out = path.join(os.tmpdir(), `probe-canvas-sandbox-${process.pid}-${mode}.json`);
     env.PROBE_OUT = out;
+    env.PROBE_WATCH = '1';
+    if (process.env.PROBE_OWNER_FOCUS) env.PROBE_ARM = path.join(os.tmpdir(), `probe-canvas-windows-${process.pid}-${mode}.armed`);
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-canvas-'));
     const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')), [MAIN, `--user-data-dir=${userData}`],
       { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    // The window watcher: every visible top-level window of the Electron tree is a native dialog. It logs each one and closes it by handle,
+    // so a dialog can never hang the run (see verify/probe71/watch-windows.ps1).
+    const winLog = path.join(os.tmpdir(), `probe-canvas-windows-${process.pid}-${mode}.jsonl`);
+    const winStop = path.join(os.tmpdir(), `probe-canvas-windows-${process.pid}-${mode}.stop`);
+    for (const f of [winLog, winStop, env.PROBE_ARM].filter(Boolean)) { try { fs.unlinkSync(f); } catch { /* none yet */ } }
+    const watcher = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', path.join(__dirname, 'probe71', 'watch-windows.ps1'),
+      '-Root', String(child.pid), '-Log', winLog, '-Stop', winStop, ...(env.PROBE_ARM ? ['-Arm', env.PROBE_ARM] : [])], { stdio: 'ignore', windowsHide: true });
     let log = '';
     child.stdout.on('data', d => { log += d; });
     child.stderr.on('data', d => { log += d; });
@@ -49,8 +58,14 @@ function runElectron(mode) {
     child.on('exit', () => {
       clearTimeout(timer);
       try { killPidTree(child.pid); } catch { /* already gone */ }
+      try { fs.writeFileSync(winStop, 'stop'); } catch { /* the watcher also ends when the root process does */ }
+      setTimeout(() => { try { killPidTree(watcher.pid); } catch { /* already gone */ } }, 1500);
       let data = null;
       try { data = JSON.parse(fs.readFileSync(out, 'utf8')); } catch { /* reported below */ }
+      let windows = [];
+      try { windows = fs.readFileSync(winLog, 'utf8').split(/\r?\n/).filter(Boolean).map(l => JSON.parse(l)); } catch { /* none seen */ }
+      if (data) data.windows = windows;
+      for (const f of [winLog, winStop, env.PROBE_ARM].filter(Boolean)) { try { fs.unlinkSync(f); } catch { /* temp */ } }
       try { fs.unlinkSync(out); } catch { /* temp */ }
       try { fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* temp */ }
       if (!data) reject(new Error('no result\n' + log.slice(-800))); else resolve(data);
@@ -58,6 +73,9 @@ function runElectron(mode) {
   });
 }
 
+// The windows the watcher saw while one vector ran (its span, plus the half second a dialog takes to show).
+const during = (run, name) => { const sp = run.spans && run.spans[name]; return sp ? (run.windows || []).filter(w => w.t >= sp.from && w.t <= sp.to + 500) : []; };
+const isNativeDialog = (w) => w.cls === '#32770';
 const leaked = (h) => (h ? h.requests + h.connections : 0);
 const pad = (s, n) => String(s).padEnd(n);
 
@@ -72,6 +90,8 @@ const pad = (s, n) => String(s).padEnd(n);
   for (const name of s.names) console.log('  ' + pad(name, 34) + pad(leaked(s.hits[name]), 6) + String(s.results[name]).slice(0, 60));
   console.log(`  WebRTC STUN datagrams: ${s.rtc.stunDatagrams}   TURN-over-TCP connections: ${s.rtc.turnTcpConnections}   DNS queries for the hinted names: ${s.dns.queries} ${JSON.stringify(s.dns.kinds)}`);
   console.log(`  windows main was asked to open: ${s.windowOpens}   navigations of the app page: ${s.ownerNavigations.length}   messages delivered to the session: ${JSON.stringify(s.delivered)}`);
+
+  console.log(`  native windows the watcher saw in the panel's process tree: ${s.windows.length} ${JSON.stringify(s.windows.map(w => ({ cls: w.cls, title: w.title })))}`);
 
   for (const name of s.names) {
     if (name === 'fetch-approved (control)') {
@@ -94,6 +114,17 @@ const pad = (s, n) => String(s).padEnd(n);
   check(!/^(wrote|set|opened)/.test(answer('local-storage')) && !/^(set|opened)/.test(answer('cookie')) && !/^opened/.test(answer('indexed-db')), 'storage, cookies and indexedDB are unusable');
   check(answer('geolocation-camera') === 'rejected/rejected', `geolocation and camera are refused (got ${answer('geolocation-camera')})`);
   check(answer('dialog-loop') === 'past the dialogs', `alert, confirm and prompt return at once with no native dialog, so the page cannot lock the app's window (got ${answer('dialog-loop')})`);
+  // Native dialogs that disableDialogs does not cover (PR #122 Dexter R2-1, R2-3). A native dialog (message box, print, file chooser) is a
+  // visible top-level window of class #32770 in the Electron tree; the watcher closes it by handle. MEASURED (Electron 33.4.11, Windows 11):
+  // window.print() raises NO window, it blocks the panel's own renderer instead (no report in 50 s, like for(;;){}; the app stays usable);
+  // <input type=file> raises none either, even with nothing sealed and the owner focused; <input type=color> raises a Chromium popup widget
+  // (Chrome_WidgetWin_1, not a dialog) when the owner has focus. So these three checks are guards: they fail if any becomes a native dialog.
+  const dialogs = (run, name) => (name ? during(run, name) : (run.windows || [])).filter(isNativeDialog);
+  // print-loop is a KNOWN GAP (verify/probe71/vector-modes.js): run only with PROBE_KNOWN_GAPS=1, because it hangs the process's exit.
+  for (const name of ['print-loop', 'file-picker-with-click', 'color-picker-with-click'].filter(n => s.names.includes(n))) {
+    check(dialogs(s, name).length === 0, `${name}: no native dialog window appeared (saw ${JSON.stringify(dialogs(s, name).map(w => w.cls + ':' + w.title))}; the panel answered "${answer(name)}")`);
+  }
+  check(dialogs(s).length === 0, `no native dialog window of any kind appeared in the panel's process tree during the run (saw ${dialogs(s).length})`);
   check(s.downloads.length >= 1 && s.downloads.every(d => d.prevented && !d.written), `a download the page starts itself (a data: link with download=) is cancelled: no Save-As box, no file (saw ${JSON.stringify(s.downloads)})`);
   check(answer('beforeunload-pin') === 'replaced', `a page whose beforeunload handler cancels leaving it is replaced by the next page Claude writes (got ${answer('beforeunload-pin')})`);
   check(s.rtc.stunDatagrams === 0, 'WebRTC STUN over UDP: 0 datagrams');
