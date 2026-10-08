@@ -169,3 +169,13 @@ test('after the kill, a failed re-check (null) or an unreadable start keeps ever
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
 });
+
+// PR #130 review, Dexter #8: the reaper reaps only the kind it knows how to prove: probe windows. An agent shell
+// (a later kind) whose launcher (the host) restarted may still belong to a live session.
+test('an agent-shell entry with a gone launcher is not reaped; a probe-window one is', async () => {
+  const { dir, file } = setup([E(10, { kind: 'agent-shell' }), E(11)]);
+  try {
+    const r = await reap({ file, dryRun: true, startTimes: async () => new Map([[10, '110'], [11, '111']]) });
+    assert.deepStrictEqual(r.wouldKill, [11]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

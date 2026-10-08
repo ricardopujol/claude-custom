@@ -27,7 +27,9 @@ async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartT
   const starts = await startTimes([...pids]);
   if (starts === null) { result.verified = false; return result; }
 
-  const targets = ledger.selectReapable(entries, starts, { now, minAgeMs });
+  // Only the kind this reaper knows how to prove (PR #130 review, Dexter #8): a probe window dies with its probe. An
+  // 'agent-shell' may outlive a restarted host and still belong to a live session; it is not this tool's to kill.
+  const targets = ledger.selectReapable(entries.filter(e => e.kind === 'probe-window'), starts, { now, minAgeMs });
   result.wouldKill = targets.map(e => e.pid);
   if (dryRun) return result;
 
