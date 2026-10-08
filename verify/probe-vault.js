@@ -36,7 +36,7 @@ const check = (label, ok, detail) => {
       CLAUDE_CUSTOM_SCREENSHOT_DELAY: '20000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY', 'CLAUDE_CUSTOM_VAULT_PROBE'] });
   let out = '';
   app.stdout.on('data', d => { out += d.toString(); });
   app.stderr.on('data', d => { out += d.toString(); });

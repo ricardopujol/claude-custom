@@ -230,7 +230,7 @@ async function main() {
     // Claude Code is itself Electron: an inherited ELECTRON_RUN_AS_NODE would
     // start this child as plain Node (see CLAUDE.md, "Traps").
     delete env.ELECTRON_RUN_AS_NODE;
-    app = spawnElectron(require('electron'), [REPO], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    app = spawnElectron(require('electron'), [REPO], { env, stdio: ['ignore', 'pipe', 'pipe'] }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_TOKEN'] });
     let out = '';
     app.stdout.on('data', (d) => { out += d.toString(); });
     app.stderr.on('data', (d) => { out += d.toString(); });

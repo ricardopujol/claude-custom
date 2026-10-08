@@ -35,12 +35,14 @@ function cleanElectronEnv(env = process.env, extra = {}) {
  * The env for spawnElectron, the drop-in: the probe built `childEnv` from process.env, so a CLAUDE_CUSTOM_* with the
  * parent's own value came from the tab this probe runs in and goes; one the probe added or changed is its own and stays.
  * ELECTRON_RUN_AS_NODE always goes. No childEnv means spawn's default, the parent's env.
+ * Value equality cannot tell "inherited" from "set by the probe to the same value" (PR #130 review, Dexter #7 = Miguel
+ * S2: CLAUDE_CUSTOM_CWD = REPO run from a tab of that same worktree), so the names in `keep` are the probe's own and stay.
  */
-function probeEnv(childEnv, parentEnv = process.env) {
+function probeEnv(childEnv, parentEnv = process.env, keep = []) {
   const out = {};
   for (const [k, v] of Object.entries(childEnv || parentEnv)) {
     if (k === 'ELECTRON_RUN_AS_NODE') continue;
-    if (k.startsWith('CLAUDE_CUSTOM_') && parentEnv[k] === v) continue;
+    if (k.startsWith('CLAUDE_CUSTOM_') && parentEnv[k] === v && !keep.includes(k)) continue;
     out[k] = v;
   }
   return out;
@@ -113,9 +115,10 @@ async function launchElectron({
 function spawnElectron(exe, args = [], opts = {}, {
   spawnFn = spawn, startTimes = realStartTimes, selfStart = defaultSelfStart, killFn = killPidTree,
   ledgerFile = ledger.defaultLedgerFile(), install = true, label = '', kind = 'probe-window', parentEnv = process.env,
+  keepEnv = [],
 } = {}) {
   if (install) installSweep();
-  const child = spawnFn(exe, args, { ...opts, env: probeEnv(opts.env, parentEnv) });
+  const child = spawnFn(exe, args, { ...opts, env: probeEnv(opts.env, parentEnv, keepEnv) });
   const handle = { child, pid: child.pid, killFn };
   live.add(handle);
   child.on('exit', () => {

@@ -144,7 +144,7 @@ async function launchApp(cwd, extraEnv = {}) {
   Object.assign(env, extraEnv);
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
-    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
+    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
   hygiene.registerChild(child);
   const app = { no: windowNo, port, token, child, out: '', exited: false, exitCode: null };
   child.stdout.on('data', d => { app.out += d; });

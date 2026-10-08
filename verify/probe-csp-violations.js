@@ -276,7 +276,7 @@ async function runRealApp() {
     CLAUDE_CUSTOM_TABS_PROBE: String(port), CLAUDE_CUSTOM_TABS_PROBE_TOKEN: token,
     CLAUDE_CUSTOM_REGISTRY: registry, CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits-real'), CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads-real'),
   };
-  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${path.join(tmp, 'userData-real')}`], { cwd: ROOT, env });
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${path.join(tmp, 'userData-real')}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
   hygiene.registerChild(child);
   const app = { port, token, out: '' };
   child.stdout.on('data', d => { app.out += d; });
@@ -384,7 +384,7 @@ async function runRealApp() {
 
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
-  const electron = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [mainFile], { cwd: ROOT, env });
+  const electron = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [mainFile], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
   hygiene.registerChild(electron);
   const events = [];
   let carry = '';

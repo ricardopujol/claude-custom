@@ -82,7 +82,7 @@ function launcher() {
         CC_PROBE_DIM_TRIALS: process.env.TRIALS || '5',
       },
       stdio: 'inherit',
-    });
+    }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT'] });
 
     electron.on('exit', () => {
       let result = null;

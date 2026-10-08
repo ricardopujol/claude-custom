@@ -195,7 +195,7 @@ async function main() {
 
     app = spawnElectron(electronExe, [REPO, `--remote-debugging-port=${CDP}`], {
       env: { ...env, CLAUDE_CUSTOM_SIDE_TAB: 'agents' }, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SIDE_TAB'] });
     if (app.pid) hygiene.registerChild(app);
     let appLog = '';
     app.stdout.on('data', d => { appLog += d; });

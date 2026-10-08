@@ -31,7 +31,7 @@ const check = (label, ok, detail) => {
   const app = spawnElectron(require('electron'), [REPO], {
     env: { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT), CLAUDE_CUSTOM_CWD: REPO },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT'] });
   let out = '';
   app.stdout.on('data', d => { out += d.toString(); });
   app.stderr.on('data', d => { out += d.toString(); });

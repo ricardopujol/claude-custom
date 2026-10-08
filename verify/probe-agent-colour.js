@@ -121,7 +121,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 
     electron = spawnElectron(require('electron'), ['.', `--remote-debugging-port=${CDP}`], {
       cwd: REPO, env, stdio: 'ignore',
-    });
+    }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_UPLOADS'] });
     children.push(electron);
 
     let targets = [];

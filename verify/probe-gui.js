@@ -75,7 +75,7 @@ const fire = (pipe, event, payload) =>
         CLAUDE_CUSTOM_SCREENSHOT_DELAY: String(SCREENSHOT_DELAY),
       },
       stdio: 'inherit',
-    }
+    }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY'] }
   );
 
   electron.on('exit', () => {

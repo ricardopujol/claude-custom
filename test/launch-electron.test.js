@@ -264,3 +264,20 @@ test('spawnElectron: a launcher whose own start cannot be read is recorded as { 
       'this launcher is running: its Electron is not reapable');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// PR #130 review, Dexter #7 = Miguel S2: value equality cannot tell "inherited from the tab" from "set by the probe to
+// the same value", so the probe names what it set (keepEnv) and those are never dropped.
+test('probeEnv: a CLAUDE_CUSTOM_* the probe names in keepEnv stays even when it equals the parent\'s value', () => {
+  const parent = { CLAUDE_CUSTOM_CWD: 'C:/w', CLAUDE_CUSTOM_PORT: '7' };
+  const child = { ...parent, CLAUDE_CUSTOM_CWD: 'C:/w' };
+  assert.deepStrictEqual(probeEnv(child, parent, ['CLAUDE_CUSTOM_CWD']), { CLAUDE_CUSTOM_CWD: 'C:/w' });
+  assert.deepStrictEqual(probeEnv(child, parent), {}, 'without keepEnv the equal value reads as inherited');
+});
+
+test('spawnElectron: keepEnv reaches the child env', () => {
+  const f = spawnFakes();
+  spawnElectron('E.exe', [], { env: { CLAUDE_CUSTOM_CWD: 'C:/w', CLAUDE_CUSTOM_PORT: '7' } },
+    { spawnFn: f.spawnFn, startTimes: f.startTimes, selfStart: async () => '555', ledgerFile: null, install: false,
+      parentEnv: { CLAUDE_CUSTOM_CWD: 'C:/w', CLAUDE_CUSTOM_PORT: '7' }, keepEnv: ['CLAUDE_CUSTOM_CWD'] });
+  assert.deepStrictEqual(f.calls[0][3].env, { CLAUDE_CUSTOM_CWD: 'C:/w' });
+});

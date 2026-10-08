@@ -103,7 +103,7 @@ host.stderr.on('data', d => { hostLog += d.toString(); });
     env: { ...env, CLAUDE_CUSTOM_SCREENSHOT: OUT, CLAUDE_CUSTOM_SCREENSHOT_DELAY: '12000',
       CLAUDE_CUSTOM_SIDE_TAB: 'style' },
     stdio: 'inherit',
-  });
+  }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY', 'CLAUDE_CUSTOM_SIDE_TAB'] });
 
   electron.on('exit', () => {
     try { host.kill(); } catch { /* already gone */ }

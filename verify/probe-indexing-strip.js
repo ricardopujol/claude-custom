@@ -182,7 +182,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 
     const electron = spawnElectron(require('electron'), ['.', `--remote-debugging-port=${CDP}`], {
       cwd: REPO, env: electronEnv, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_INDEXING_JOURNAL', 'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
     children.push(electron);
     let electronLog = '';
     electron.stdout.on('data', (d) => { electronLog += d; });

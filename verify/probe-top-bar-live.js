@@ -43,7 +43,7 @@ if (!process.versions.electron) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawnElectron(require('electron'), [__filename, ...process.argv.slice(2)],
-    { stdio: 'inherit', windowsHide: true, env });
+    { stdio: 'inherit', windowsHide: true, env }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_HELPER', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_TOKEN'] });
   child.on('exit', (code) => process.exit(code ?? 0));
   return;
 }

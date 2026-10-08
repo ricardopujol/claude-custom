@@ -200,7 +200,7 @@ app.whenReady().then(async () => {
 
   const mainFile = path.join(tmp, 'probe-main.js');
   fs.writeFileSync(mainFile, mainSource(port));
-  const electron = spawnElectron(require('electron'), [mainFile], { cwd: ROOT, env });
+  const electron = spawnElectron(require('electron'), [mainFile], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
   hygiene.registerChild(electron);
   let out = '';
   electron.stdout.on('data', d => { out += d; process.stdout.write(d); });

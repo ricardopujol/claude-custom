@@ -55,7 +55,7 @@ const check = (label, ok, detail) => {
       CLAUDE_CUSTOM_DEMO_SECRET: process.env.CLAUDE_CUSTOM_DEMO_SECRET || '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_DEMO_SECRET', 'CLAUDE_CUSTOM_FLOURISH', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY', 'CLAUDE_CUSTOM_SIDE_TAB'] });
   let out = '';
   app.stdout.on('data', d => { out += d.toString(); });
   app.stderr.on('data', d => { out += d.toString(); });
