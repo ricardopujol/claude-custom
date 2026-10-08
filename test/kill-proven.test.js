@@ -56,7 +56,7 @@ test('killPidTree: taskkill\'s "not found" (128) is final, no process.kill fallb
 
 const sleeper = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
 
-test('killProven (real process): a wrong start time leaves it running; the right one kills it', {
+test('killProven (real process, real PowerShell): a wrong start time leaves it running; the right one kills it', {
   skip: process.platform !== 'win32' && 'PowerShell + taskkill: Windows only',
 }, async () => {
   const c = sleeper();

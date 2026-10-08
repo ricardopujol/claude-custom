@@ -315,6 +315,7 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
     'resource-stop-position.test.js', // one real-PowerShell kill test (D4/D5)
     'resource-stop-respawn.test.js',  // N1/N2 real supervisor trees
     'resource-sampler.test.js',       // one real CIM sample
+    'kill-proven.test.js',            // one real sleeper killed through killProven's PowerShell (PR #130, Dexter #2)
   ];
   // Command files that spawn real processes and are NOT skipped. Every one predates #63 and was accepted by earlier gate
   // runs (node -e children are tens of ms; the two PowerShell ones are one call each). Adding here is a decision, and
