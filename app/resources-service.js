@@ -39,9 +39,9 @@ function createResourcesService({
   // The warning's CPU threshold, 40 by default. A verification seam (CLAUDE_CUSTOM_RESOURCE_WARN_AT in app/main.js), so a
   // probe on a busy machine can show the chip without pinning 40% of it; nothing in the UI sets it.
   warnAt = warning.THRESHOLD,
-  // Leftovers (#74 item 6): `ledger()` -> the pid ledger's entries (host/pid-ledger.js readLedger); `reap` = { kill(pid, start) ->
-  // 'killed' | 'gone' | 'mismatch' | 'failed' | 'unknown' (host/kill-tree.js killProven), removeEntries(entries) }. With no `reap`
-  // the readout is shown and nothing is ever stopped.
+  // Leftovers (#74 item 6): `ledger()` -> the pid ledger's entries (host/pid-ledger.js readLedger); `reap` = the seams of
+  // host/leftovers.js createReaper: { kill(pid, start) (host/kill-tree.js killProvenAsync), launcherGone(entry), isRunning(pid, start),
+  // removeEntries(entries) }. With no `reap` the readout is shown and nothing is ever stopped, by the clock or by a click.
   ledger = () => [], reap = null,
 }) {
   let minimised = false;
@@ -54,6 +54,8 @@ function createResourcesService({
   let lastRecordedSample = null;   // the sample object a point was last made from: a re-sent old one makes none
   let lastRecordMono = -Infinity;
   const reaper = reap ? leftovers.createReaper({ ...reap, now, log }) : null;
+  const tracker = leftovers.createTracker({ now });
+  let lastFound = null;           // the latest sample's leftovers (with their ledger entries): what a manual Stop is resolved against
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
 
   // A minimised window wants nothing: the page's visibility is a second witness the app does not trust alone
@@ -107,24 +109,33 @@ function createResourcesService({
   // is the monotonic time the points are measured against.
   const withHistory = full => (full ? { ...full, history: history.points(), historyNow: Math.round(mono()) } : full);
 
-  // The Leftovers section (#74 item 6): found in the same sample the tree came from, so it adds no poller. A ledger that
-  // cannot be read means no ledger rows this time, never a broken panel. The auto-reap runs after it, off this call.
+  // The Leftovers section (#74 item 6): found in the same sample the tree came from, so it adds no poller. ANY failure in it
+  // (an unreadable ledger, a malformed entry) costs the section only, said in the log: the model, the machine figures and the
+  // chip are the panel's job and must go out whatever happens here (PR #132 Miguel I2). The stop does not run here: the caller
+  // starts it after the payload is sent.
   function leftoversOf(snap, built) {
-    let entries = [];
-    try { entries = ledger(); } catch (err) { log('[resources] could not read the pid ledger:', err && err.message); }
-    const procs = snap.sample.procs;
-    const proven = tree.provenHosts(procs, claims());
-    const tabHosts = new Set(tabList().map(t => hostOfPort(proven, t.port)).filter(Number.isInteger));
-    const attribution = tree.attribute(procs, {
-      hosts: proven.map(h => (tabHosts.has(h.pid) ? { pid: h.pid, owner: ownPid } : { pid: h.pid })),
-      installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPids: [ownPid],
-    });
-    const mem = new Map([...snap.sample.perf].filter(([, v]) => typeof v.ws === 'number').map(([pid, v]) => [pid, v.ws]));
-    const found = leftovers.find({ procs, mem, ledger: entries, attribution, ownPid, now: now() });
-    if (reaper) reaper.run(found).catch(err => log('[resources] leftovers reap threw:', err && err.message));
-    const labels = new Map(built.project.rows.map(r => [`session:${r.hostPid}`, r.label]));
-    for (const row of found.mcp.concat(found.shells)) if (row.session) row.session = labels.get(row.session) || row.session.replace('session:', 'session ');
-    return leftovers.present(found, reaper ? reaper.stopped() : [], { now: now() });
+    try {
+      let entries = [];
+      try { entries = ledger(); } catch (err) { log('[resources] could not read the pid ledger:', err && err.message); }
+      const procs = snap.sample.procs;
+      const proven = tree.provenHosts(procs, claims());
+      const tabHosts = new Set(tabList().map(t => hostOfPort(proven, t.port)).filter(Number.isInteger));
+      const attribution = tree.attribute(procs, {
+        hosts: proven.map(h => (tabHosts.has(h.pid) ? { pid: h.pid, owner: ownPid } : { pid: h.pid })),
+        installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPids: [ownPid],
+      });
+      const mem = new Map([...snap.sample.perf].filter(([, v]) => typeof v.ws === 'number').map(([pid, v]) => [pid, v.ws]));
+      // This window's tab hosts must never die with a row (a host an earlier window started can sit below a probe root).
+      const found = tracker.stamp(leftovers.find({ procs, mem, ledger: entries, attribution, ownPid, protect: [...tabHosts], now: now() }), { advance: snap.adhoc !== true });
+      const labels = new Map(built.project.rows.map(r => [`session:${r.hostPid}`, r.label]));
+      for (const row of found.mcp.concat(found.shells)) if (row.session) row.session = labels.get(row.session) || row.session.replace('session:', 'session ');
+      lastFound = found;
+      return { payload: leftovers.present(found, reaper ? reaper.stopped() : [], { now: now() }), found };
+    } catch (err) {
+      log('[resources] the Leftovers section failed:', (err && err.stack) || err);
+      lastFound = null;
+      return null;
+    }
   }
 
   function onUpdate(snap) {
@@ -173,10 +184,38 @@ function createResourcesService({
 
     record(snap, built, machine);
     const left = built && snap.expired !== true ? leftoversOf(snap, built) : null;
-    lastPayload = { model: built, status, machine, chipOn, leftovers: left };
+    if (!left) lastFound = null;
+    lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null };
     lastLight = { model: null, status, machine, chipOn };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
     send(withHistory(lastPayload), lastLight);
+    // AFTER the send: the panel paints first. The stop waits a macrotask before each kill (host/leftovers.js), and an adhoc sample
+    // (Stop's own re-read) never starts it.
+    if (left && reaper && snap.adhoc !== true) reaper.run(left.found).catch(err => log('[resources] leftovers reap threw:', err && err.message));
+  }
+
+  // The Stop on a Leftovers row, or "Stop N" on a group (B). The page names WHICH rows ({ rows: [{ pid, start }] } or { group }); main
+  // resolves them against the latest sample's PROVABLE rows (ledger pid + start, launcher gone, not this window's own), so a page
+  // can never name a process the app did not itself find provable. The stop re-proves the launcher and the start again, then a
+  // fresh sample is taken so the section updates at once.
+  const STOP_GROUPS = ['probes', 'shells'];
+  async function stopLeftovers(req) {
+    const refuse = text => ({ ok: false, text });
+    if (!reaper) return refuse('stopping is not available');
+    if (!lastFound) return refuse('there is nothing left over to stop');
+    const provable = group => lastFound[group].filter(r => r.provable === true && r.entry);
+    let rows;
+    if (req && typeof req === 'object' && STOP_GROUPS.includes(req.group)) rows = provable(req.group);
+    else if (req && typeof req === 'object' && Array.isArray(req.rows) && req.rows.length > 0 && req.rows.length <= 50) {
+      const all = STOP_GROUPS.flatMap(provable);
+      rows = req.rows.map(q => all.find(r => q && Number.isInteger(q.pid) && typeof q.start === 'string' && r.pid === q.pid && r.start === q.start));
+      if (rows.some(r => !r)) return refuse('that is not a leftover this panel can stop');
+    } else return refuse('that is not a leftover this panel can stop');
+    if (rows.length === 0) return refuse('there is nothing left over to stop');
+    const res = await reaper.stop(rows);
+    try { await sampler.sampleNow(); } catch { /* the next sample on the cadence shows it */ }
+    const stopped = res.results.filter(r => r.stopped).length;
+    return { ok: true, stopped, failed: res.results.length - stopped };
   }
 
   // A page learns the chip's state from the payload; before the first sample there is none, so a bare one (no model, no
@@ -235,6 +274,7 @@ function createResourcesService({
       return s && s.on ? { pct: s.pct, level: s.level } : null;
     },
     stop,
+    stopLeftovers,
   };
 }
 
