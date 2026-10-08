@@ -43,6 +43,9 @@ test('killChildTree: a running child is killed by its pid, once; no child or no 
   assert.deepStrictEqual(kills, [77]);
 });
 
+// Fake ptys never get a real start-time read (a fake pid could be a real process's).
+const NO_START = { startTimes: async () => new Map() };
+
 function ptyLike(pid) {
   let onExit = null;
   return { pid, onExit(cb) { onExit = cb; }, kill() {}, exit() { if (onExit) onExit({ exitCode: 0 }); } };
@@ -56,7 +59,7 @@ test('killChildTree (node-pty): an IPty whose exit was never tracked is not kill
 
 test('killChildTree (node-pty): a tracked IPty is killed while running, and not after its onExit fired', () => {
   const kills = [];
-  const p = trackExit(ptyLike(88));
+  const p = trackExit(ptyLike(88), NO_START);
   assert.strictEqual(killChildTree(p, { killFn: (x) => kills.push(x) }), true);
   p.exit();
   assert.strictEqual(killChildTree(p, { killFn: (x) => kills.push(x) }), false);
@@ -66,7 +69,7 @@ test('killChildTree (node-pty): a tracked IPty is killed while running, and not 
 test('registerChild (node-pty): the pid leaves the registry on onExit', () => {
   const kills = [];
   const reg = createHygieneRegistry({ killFn: (x) => kills.push(x) });
-  const p = ptyLike(89);
+  const p = trackExit(ptyLike(89), NO_START);   // tracked first: no real start-time read for a fake pid
   reg.registerChild(p);
   p.exit();
   reg._emergencyCleanup('done');
@@ -138,4 +141,41 @@ test('rule: no file under verify/ kills a <x>.pid by a raw pid (use killChildTre
     for (const v of rawPidKills(fs.readFileSync(f, 'utf8'))) bad.push(`${path.relative(VERIFY, f)}: ${v}`);
   }
   assert.deepStrictEqual(bad, []);
+});
+
+// ---- PR #130 review round 2, Dexter #1: node-pty frees the pid natively >= 1 s before onExit fires ------------------
+
+// A fake with node-pty's real order: exitNative() (conpty.cc: CloseHandle, the pid is free), onExit only later.
+function lateExitPty(pid) {
+  let cb = null;
+  return { pid, onExit(f) { cb = f; }, kill() {}, exitNative() {}, fireOnExit() { if (cb) cb({ exitCode: 0 }); } };
+}
+
+test('killChildTree runs at most once per child: a second call (finally, then the exit handler) kills nothing', () => {
+  const kills = [];
+  const c = child(77);
+  assert.strictEqual(killChildTree(c, { killFn: (p) => kills.push(p) }), true);
+  assert.strictEqual(killChildTree(c, { killFn: (p) => kills.push(p) }), false);
+  assert.deepStrictEqual(kills, [77]);
+});
+
+test('node-pty with a late onExit: killed in the finally, freed natively, then killed() again from process exit -> no second kill', () => {
+  const kills = [];
+  const p = trackExit(lateExitPty(88), NO_START);
+  killChildTree(p, { killFn: (x) => kills.push(x) });       // the finally
+  p.exitNative();                                           // pid 88 is free from here; onExit has not fired
+  killChildTree(p, { killFn: (x) => kills.push(x) });       // process.on('exit', killed)
+  p.fireOnExit();
+  assert.deepStrictEqual(kills, [88]);
+});
+
+test('node-pty: once its start time is known, the kill goes through killProven (proven on a held handle), never a raw pid kill', async () => {
+  const raw = [];
+  const proven = [];
+  const p = trackExit(lateExitPty(89), { startTimes: async (pids) => new Map(pids.map(x => [x, '134000000000000777'])) });
+  await p[Symbol.for('claude-custom.child.startRead')];
+  p.exitNative();                                           // the pty ended by itself; onExit is still a second away
+  killChildTree(p, { killFn: (x) => raw.push(x), provenKill: (pid, start) => { proven.push([pid, start]); return 'gone'; } });
+  assert.deepStrictEqual(raw, []);
+  assert.deepStrictEqual(proven, [[89, '134000000000000777']]);
 });
