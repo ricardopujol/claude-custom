@@ -64,7 +64,7 @@ function chipView(payload) {
 
 // ---- state --------------------------------------------------------------------------------------------------
 
-const emptyState = () => ({ payload: null, expanded: [], confirm: null, pending: null, outcome: null });
+const emptyState = () => ({ payload: null, expanded: [], confirm: null, pending: null, outcome: null, leftBusy: false, leftNote: null });
 
 function sessionRows(payload) {
   return payload && payload.model && payload.model.project && Array.isArray(payload.model.project.rows) ? payload.model.project.rows : [];
@@ -78,7 +78,19 @@ function withPayload(state, payload) {
   let { confirm, outcome } = state;
   if (confirm && !hasChild(payload, confirm.pid, confirm.start)) confirm = null;
   if (outcome && (outcome.kind === 'stopped' || !hasChild(payload, outcome.pid, outcome.start))) outcome = null;
-  return { ...state, payload, confirm, outcome };
+  // The Leftovers Stop's message lasts one sample, like "Stopped".
+  return { ...state, payload, confirm, outcome, leftNote: null };
+}
+
+/** A Leftovers Stop was pressed: the request is in flight and every Leftovers button is disabled until it answers. */
+const beginLeftStop = state => (state.leftBusy ? state : { ...state, leftBusy: true, leftNote: null });
+
+/** Its answer: nothing to show on success (the row leaves with the next sample), a plain sentence when not everything stopped. */
+function leftStopResult(state, result) {
+  let note = null;
+  if (!result || result.ok !== true) note = `Couldn't stop: ${result && isStr(result.text) && result.text !== '' ? result.text : 'the request did not get through'}.`;
+  else if (isNum(result.failed) && result.failed > 0) note = `Couldn't stop ${result.failed} of them; they are still listed.`;
+  return { ...state, leftBusy: false, leftNote: note };
 }
 
 function toggle(state, id) {
@@ -107,6 +119,11 @@ function actionOf(data) {
   if (!data || typeof data !== 'object') return null;
   switch (data.resAct) {
     case 'toggle': return isStr(data.resKey) && data.resKey !== '' ? { act: 'toggle', key: data.resKey } : null;
+    case 'left-stop': {
+      const pid = /^\d+$/.test(String(data.resPid)) ? Number(data.resPid) : 0;
+      return pid > 0 && /^\d+$/.test(String(data.resStart)) ? { act: 'left-stop', pid, start: data.resStart } : null;
+    }
+    case 'left-stop-group': return LEFT_STOP_GROUPS.includes(data.resGroup) ? { act: 'left-stop-group', group: data.resGroup } : null;
     case 'confirm-stop': return { act: 'confirm-stop' };
     case 'cancel-stop': return { act: 'cancel-stop' };
     case 'ask-stop': {
@@ -120,7 +137,14 @@ function actionOf(data) {
 
 // ---- Leftovers (BACKLOG #74 item 6, option A) ---------------------------------------------------------------------
 
-const LEFT_GROUPS = [['stuck', 'Stuck closing'], ['probes', 'Probe windows nobody runs'], ['shells', 'Agent shells'], ['mcp', 'MCP servers']];
+// [payload key, title, left-edge colour class]: red for what is stuck, yellow for what the app can say nobody runs, grey for what is only big.
+const LEFT_GROUPS = [
+  ['stuck', 'Stuck closing', 'res-edge-red'],
+  ['probes', 'Probe windows nobody runs', 'res-edge-yellow'],
+  ['shells', 'Agent shells', 'res-edge-yellow'],
+  ['mcp', 'MCP servers', 'res-edge-grey'],
+];
+const LEFT_STOP_GROUPS = ['probes', 'shells'];
 
 function fmtAge(ms) {
   if (!isNum(ms) || ms < 0) return '—';
@@ -129,43 +153,66 @@ function fmtAge(ms) {
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h`;
 }
 
-// What a row says about its fate: a proven one when it is stopped, anything else why it is only shown.
+// What a row says about its fate: an auto-stop row when it goes, anything else why it is only shown or stopped by hand.
 function leftoverNote(kind, r) {
-  if (r.reapable === true && isNum(r.reapInMs)) return r.reapInMs <= 0 ? 'stopping…' : `stops in ${Math.ceil(r.reapInMs / 60_000)} min`;
+  if (r.reapable === true && r.provable === true && isNum(r.reapInMs)) return r.reapInMs <= 0 ? 'stopping…' : `stops in ${Math.ceil(r.reapInMs / 60_000)} min`;
   if (kind === 'stuck') return "Windows is still closing it; it can't be stopped from here";
   if (kind === 'shells') return "kept: can't tell whether an agent still needs it";
   return '';
 }
 
-function leftoversView(l) {
+function leftoversView(l, ui) {
   if (!l || typeof l !== 'object') return null;
   const list = k => (Array.isArray(l[k]) ? l[k] : []);
   const groups = [];
-  let count = 0;
-  let bytes = 0;
-  let measured = false;
-  for (const [kind, title] of LEFT_GROUPS) {
+  const all = [];
+  for (const [kind, title, edge] of LEFT_GROUPS) {
     const rows = list(kind).map((r) => {
-      count += 1;
-      if (isNum(r.bytes)) { bytes += r.bytes; measured = true; }
+      all.push(r);
       const who = isStr(r.what) && r.what !== '' ? r.what : (isStr(r.name) ? r.name : '?');
-      return { name: isStr(r.session) && r.session !== '' ? `${who} · ${r.session}` : who, pid: r.pid, ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: leftoverNote(kind, r) };
+      const startOk = isStr(r.start) && /^\d+$/.test(r.start) && Number.isInteger(r.pid) && r.pid > 0;
+      return {
+        name: isStr(r.session) && r.session !== '' ? `${who} · ${r.session}` : who, who, pid: r.pid, start: r.start,
+        ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: leftoverNote(kind, r), canStop: r.provable === true && startOk,
+      };
     });
-    if (rows.length) groups.push({ id: kind, title, rows });
+    if (rows.length) groups.push({ id: kind, title, edge, rows, stopCount: LEFT_STOP_GROUPS.includes(kind) ? rows.filter(x => x.canStop).length : 0 });
   }
   const stopped = list('stopped').map(s => ({ text: `Stopped ${isStr(s.what) && s.what !== '' ? s.what : (isStr(s.name) ? s.name : '?')} (PID ${s.pid}), ${fmtBytes(s.bytes)} freed` }));
-  if (!count && !stopped.length) return null;
-  return { sum: { count, memFig: measured ? fmtBytes(bytes) : '—' }, groups, stopped };
+  if (!all.length && !stopped.length) return null;
+  // Each process once: a row inside another row's subtree (`nested`) is already in that row's figure. Not every figure measured: "at least".
+  let bytes = 0;
+  let measured = false;
+  let complete = true;
+  for (const r of all) {
+    if (r.nested === true) continue;
+    if (isNum(r.bytes)) { bytes += r.bytes; measured = true; } else complete = false;
+  }
+  const memFig = !measured ? '—' : `${complete ? '' : '≥ '}${fmtBytes(bytes)}`;
+  return {
+    sum: { count: all.length, memFig }, chip: all.length ? `${all.length} left over` : null, groups, stopped,
+    busy: !!(ui && ui.busy), note: ui && isStr(ui.note) && ui.note !== '' ? ui.note : null,
+  };
 }
 
 function leftoversHtml(v) {
   if (!v) return '';
-  const rows = g => g.rows.map(r => `<div class="res-child" title="PID ${esc(r.pid)}"><span class="res-cname">${esc(r.name)}</span>`
-    + `<span class="res-fig">${esc(r.ageFig)}</span><span class="res-fig">${esc(r.memFig)}</span><span class="res-stop-gap" aria-hidden="true"></span></div>`
-    + (r.note ? `<div class="res-note res-lnote">${esc(r.note)}</div>` : '')).join('');
-  return `<section class="res-sec res-left"><h3>Leftovers <span class="res-sum">${esc(v.sum.count)} · ${esc(v.sum.memFig)}</span></h3>`
-    + v.groups.map(g => `<div class="res-sub">${esc(g.title)}</div>${rows(g)}`).join('')
-    + (v.stopped.length ? `<div class="res-sub">Stopped automatically</div>${v.stopped.map(s => `<div class="res-note">${esc(s.text)}</div>`).join('')}` : '')
+  const lock = v.busy ? ' disabled' : '';
+  const rows = g => g.rows.map(r => `<div class="res-lrow ${g.edge}" title="PID ${esc(r.pid)}"><span class="res-cname">${esc(r.name)}</span>`
+    + `<span class="res-fig res-lmem">${esc(r.memFig)}</span><span class="res-fig res-lage">${esc(r.ageFig)}</span>`
+    + (r.canStop
+      ? `<button type="button" class="res-lstop" data-res-act="left-stop" data-res-pid="${esc(r.pid)}" data-res-start="${esc(r.start)}" aria-label="Stop ${esc(r.who)}, PID ${esc(r.pid)}"${lock}>Stop</button>`
+      : '<span class="res-lstop-gap" aria-hidden="true"></span>')
+    + '</div>'
+    + (r.note ? `<div class="res-note res-lnote ${g.edge}">${esc(r.note)}</div>` : '')).join('');
+  const head = g => `<div class="res-sub ${g.edge}"><span>${esc(g.title)}</span>`
+    + (g.stopCount > 0 ? `<button type="button" class="res-lstop" data-res-act="left-stop-group" data-res-group="${esc(g.id)}"${lock}>${v.busy ? 'Stopping…' : `Stop ${esc(g.stopCount)}`}</button>` : '')
+    + '</div>';
+  return `<div class="res-title">Resources${v.chip ? ` <span class="res-chip">${esc(v.chip)}</span>` : ''}</div>`
+    + `<section class="res-sec res-left"><h3>Leftovers <span class="res-sum">${esc(v.sum.memFig)}</span></h3>`
+    + v.groups.map(g => `${head(g)}${rows(g)}`).join('')
+    + (v.note ? `<div class="res-note res-refused">${esc(v.note)}</div>` : '')
+    + (v.stopped.length ? `<div class="res-sub"><span>Stopped</span></div>${v.stopped.map(s => `<div class="res-note">${esc(s.text)}</div>`).join('')}` : '')
     + '</section>';
 }
 
@@ -229,7 +276,7 @@ function view(state) {
     loading: false,
     stale: { dim: status.stale === true, text: status.stale === true && isNum(status.ageMs) ? `last updated ${Math.round(status.ageMs / 1000)} s ago` : null },
     machine,
-    leftovers: leftoversView(p.leftovers),
+    leftovers: leftoversView(p.leftovers, { busy: state.leftBusy, note: state.leftNote }),
     project: { sum: { cpuFig: cpuFig(proj.cpu), memFig: memFig(proj.bytes) }, rows, self },
     windows: (model.windows || []).map(w => ({ label: w.label, ...sumRow(w) })),
     background: model.background ? { label: 'background sessions', ...sumRow(model.background) } : null,
@@ -296,7 +343,7 @@ function html(v) {
 /** The chip's on/off the page holds: a payload with a real boolean wins; anything else keeps what the page had. */
 const nextChipOn = (current, payload) => (payload && typeof payload.chipOn === 'boolean' ? payload.chipOn : current);
 
-const API = { fmtAge, fmtCpu, fmtBytes, chipView, nextChipOn, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, actionOf, view, html };
+const API = { fmtAge, fmtCpu, fmtBytes, chipView, nextChipOn, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, beginLeftStop, leftStopResult, actionOf, view, html };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesDisplay = API;

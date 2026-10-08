@@ -1225,6 +1225,15 @@ async function resourcesAct(a) {
   if (a.act === 'toggle') resState = D.toggle(resState, a.key);
   else if (a.act === 'ask-stop') resState = D.askStop(resState, a);
   else if (a.act === 'cancel-stop') resState = D.cancelStop(resState);
+  else if (a.act === 'left-stop' || a.act === 'left-stop-group') {
+    // The Leftovers Stop: main resolves the rows against its own latest sample, so the page only says which. One at a time.
+    if (!resBridge || resState.leftBusy) return;
+    resState = D.beginLeftStop(resState);
+    renderResources();
+    let result;
+    try { result = await resBridge.stopLeftovers(a.act === 'left-stop' ? { rows: [{ pid: a.pid, start: a.start }] } : { group: a.group }); } catch { result = null; }
+    resState = D.leftStopResult(resState, result);
+  }
   else if (a.act === 'confirm-stop') {
     const req = resState.confirm;
     // one Stop, one answer: a second press while it is in flight does nothing

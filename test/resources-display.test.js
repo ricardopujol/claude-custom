@@ -357,61 +357,134 @@ test('S5: the empty spacer that keeps the Stop column aligned is hidden from ass
 // ---- Leftovers (BACKLOG #74 item 6, option A) -----------------------------------------------------------------------
 
 const MINUTE = 60_000;
-const lrow = (over = {}) => ({ kind: 'probe-window', pid: 100, start: '5', name: 'electron.exe', what: 'probe-x', label: 'probe-x', bytes: 230 * MB, ageMs: 12 * MINUTE, reapable: true, reapInMs: 3 * MINUTE, ...over });
+const lrow = (over = {}) => ({ kind: 'probe-window', pid: 100, start: '5', name: 'electron.exe', what: 'probe-x', label: 'probe-x', bytes: 230 * MB, ageMs: 12 * MINUTE, provable: true, reapable: true, reapInMs: 3 * MINUTE, nested: false, ...over });
+const unproven = (over = {}) => lrow({ provable: false, reapable: false, reapInMs: null, ...over });
 const leftovers = (over = {}) => ({ stuck: [], probes: [], shells: [], mcp: [], stopped: [], reapAfterMs: 15 * MINUTE, ...over });
-const leftoverView = l => D.view(stateWith(payload({ leftovers: l }))).leftovers;
+const leftoverView = (l, state = {}) => D.view({ ...stateWith(payload({ leftovers: l })), ...state }).leftovers;
+const leftoverHtml = (l, state = {}) => D.html(D.view({ ...stateWith(payload({ leftovers: l })), ...state }));
 
-test('Leftovers: no section when there is nothing to show (null), and none while the panel is still measuring', () => {
+test('Leftovers: no section when there is nothing to show (null), and nothing is drawn for it', () => {
   assert.strictEqual(D.view(stateWith(payload())).leftovers, null);
   assert.strictEqual(leftoverView(null), null);
+  assert.strictEqual(leftoverView('nope'), null);
   assert.strictEqual(leftoverView(leftovers()), null, 'every list empty is the same as none');
-  assert.ok(!D.html(D.view(stateWith(payload()))).includes('Leftovers'));
+  const html = D.html(D.view(stateWith(payload())));
+  assert.ok(!html.includes('Leftovers') && !html.includes('left over'));
 });
 
-test('Leftovers: the four kinds are grouped under their own titles, in order, empty groups left out', () => {
-  const v = leftoverView(leftovers({
-    mcp: [lrow({ kind: 'mcp', what: 'chrome-devtools-mcp', session: 'main', reapable: false, reapInMs: null })],
-    stuck: [lrow({ kind: 'stuck', what: 'Electron', reapable: false, reapInMs: null })],
-    probes: [lrow()],
-  }));
-  assert.deepStrictEqual(v.groups.map(g => g.title), ['Stuck closing', 'Probe windows nobody runs', 'MCP servers']);
-});
-
-test('Leftovers: a proven row says when it stops, a stuck one says Windows is closing it, an unproven shell says it was not stopped', () => {
-  const v = leftoverView(leftovers({
-    stuck: [lrow({ kind: 'stuck', what: 'Electron', reapable: false, reapInMs: null })],
-    probes: [lrow({ reapInMs: 3 * MINUTE }), lrow({ pid: 101, reapInMs: 0 }), lrow({ pid: 102, reapInMs: 90_000 })],
-    shells: [lrow({ kind: 'shell', what: 'bash.exe', session: 'main', reapable: false, reapInMs: null })],
-  }));
-  const notes = Object.fromEntries(v.groups.map(g => [g.title, g.rows.map(r => r.note)]));
-  assert.deepStrictEqual(notes['Stuck closing'], ['Windows is still closing it; it can\'t be stopped from here']);
-  assert.deepStrictEqual(notes['Probe windows nobody runs'], ['stops in 3 min', 'stopping…', 'stops in 2 min']);
-  assert.deepStrictEqual(notes['Agent shells'], ['kept: can\'t tell whether an agent still needs it']);
-});
-
-test('Leftovers: age and memory read as figures; a memory that was not measured is a dash, never 0 MB', () => {
-  const v = leftoverView(leftovers({ probes: [lrow({ ageMs: 5 * 3600_000 + 10 * MINUTE }), lrow({ pid: 7, bytes: null, ageMs: null }), lrow({ pid: 8, ageMs: 20_000 })] }));
-  assert.deepStrictEqual(v.groups[0].rows.map(r => [r.ageFig, r.memFig]), [['5 h', '230 MB'], ['—', '—'], ['<1 min', '230 MB']]);
-});
-
-test('Leftovers: the heading sums what is listed; memory is a dash when none of it was measured', () => {
-  const v = leftoverView(leftovers({ probes: [lrow(), lrow({ pid: 9, bytes: 20 * MB })], mcp: [lrow({ kind: 'mcp', bytes: null, reapable: false, reapInMs: null })] }));
-  assert.strictEqual(v.sum.count, 3);
-  assert.strictEqual(v.sum.memFig, '250 MB');
-  assert.strictEqual(leftoverView(leftovers({ stuck: [lrow({ kind: 'stuck', bytes: null, reapable: false, reapInMs: null })] })).sum.memFig, '—');
-});
-
-test('Leftovers: what was stopped automatically is listed, and alone it still makes a section', () => {
-  const v = leftoverView(leftovers({ stopped: [{ kind: 'probe-window', pid: 7, what: 'probe-y', label: 'probe-y', bytes: 120 * MB, at: 1 }] }));
+test('Leftovers (S6): a payload with only "stopped" still makes a section, with no groups and no chip', () => {
+  const v = leftoverView(leftovers({ stopped: [{ kind: 'probe-window', pid: 7, what: 'probe-y', bytes: 120 * MB, at: 1 }] }));
   assert.deepStrictEqual(v.stopped.map(s => s.text), ['Stopped probe-y (PID 7), 120 MB freed']);
   assert.strictEqual(v.groups.length, 0);
+  assert.strictEqual(v.chip, null);
+  assert.ok(D.html(D.view(stateWith(payload({ leftovers: leftovers({ stopped: [{ pid: 7, what: 'p', bytes: MB }] }) })))).includes('Stopped'));
 });
 
-test('Leftovers: rows from the machine are escaped in the HTML, the section sits above Machine, and rows carry no Stop button', () => {
-  const html = D.html(D.view(stateWith(payload({ leftovers: leftovers({ mcp: [lrow({ kind: 'mcp', what: '<img src=x onerror=alert(1)>', session: '"><b>', reapable: false, reapInMs: null })] }) }))));
-  assert.ok(!html.includes('<img'));
-  assert.ok(!html.includes('"><b>'));
+test('Leftovers: the four kinds are grouped under their own titles, in order, empty groups left out, each with its left-edge colour', () => {
+  const v = leftoverView(leftovers({
+    mcp: [unproven({ kind: 'mcp', what: 'chrome-devtools-mcp', session: 'main' })],
+    stuck: [unproven({ kind: 'stuck', what: 'Electron' })],
+    probes: [lrow()],
+    shells: [unproven({ kind: 'shell', what: 'bash.exe' })],
+  }));
+  assert.deepStrictEqual(v.groups.map(g => [g.title, g.edge]), [
+    ['Stuck closing', 'res-edge-red'], ['Probe windows nobody runs', 'res-edge-yellow'], ['Agent shells', 'res-edge-yellow'], ['MCP servers', 'res-edge-grey'],
+  ]);
+});
+
+test('Leftovers: the title carries an "N left over" chip, counting listed rows', () => {
+  const v = leftoverView(leftovers({ probes: [lrow(), lrow({ pid: 101 })], mcp: [unproven({ kind: 'mcp' })] }));
+  assert.strictEqual(v.chip, '3 left over');
+  const html = leftoverHtml(leftovers({ probes: [lrow()] }));
+  assert.match(html, /<div class="res-title">Resources <span class="res-chip">1 left over<\/span><\/div>/);
+  assert.ok(html.indexOf('res-title') < html.indexOf('<h3>Leftovers'));
+});
+
+test('Leftovers: a row reads name, then memory, then age (MB before age), and the figures are dashes when not measured', () => {
+  const html = leftoverHtml(leftovers({ probes: [lrow({ ageMs: 5 * 3600_000 + 10 * MINUTE })] }));
+  assert.ok(html.indexOf('230 MB') < html.indexOf('5 h'), 'memory before age');
+  const v = leftoverView(leftovers({ probes: [lrow({ ageMs: 5 * 3600_000 + 10 * MINUTE }), lrow({ pid: 7, bytes: null, ageMs: null }), lrow({ pid: 8, ageMs: 20_000 })] }));
+  assert.deepStrictEqual(v.groups[0].rows.map(r => [r.memFig, r.ageFig]), [['230 MB', '5 h'], ['—', '—'], ['230 MB', '<1 min']]);
+});
+
+test('Leftovers: a row says what happens to it: when it stops, that Windows is closing it, or that it is kept', () => {
+  const v = leftoverView(leftovers({
+    stuck: [unproven({ kind: 'stuck', what: 'Electron' })],
+    probes: [lrow({ reapInMs: 3 * MINUTE }), lrow({ pid: 101, reapInMs: 0 }), lrow({ pid: 102, reapInMs: 90_000 })],
+    shells: [unproven({ kind: 'shell', what: 'bash.exe' }), lrow({ pid: 40, kind: 'agent-shell', reapable: false, reapInMs: null })],
+  }));
+  const notes = Object.fromEntries(v.groups.map(g => [g.title, g.rows.map(r => r.note)]));
+  assert.deepStrictEqual(notes['Stuck closing'], ["Windows is still closing it; it can't be stopped from here"]);
+  assert.deepStrictEqual(notes['Probe windows nobody runs'], ['stops in 3 min', 'stopping…', 'stops in 2 min']);
+  assert.deepStrictEqual(notes['Agent shells'], ["kept: can't tell whether an agent still needs it", "kept: can't tell whether an agent still needs it"], 'a provable shell is kept too: never stopped on its own');
+});
+
+test('Leftovers (B): a Stop button only on a provable row, "Stop N" only on a group that has some; MCP and stuck rows never get one', () => {
+  const v = leftoverView(leftovers({
+    stuck: [unproven({ kind: 'stuck' })], mcp: [unproven({ kind: 'mcp' })],
+    probes: [lrow(), lrow({ pid: 101 })], shells: [unproven({ kind: 'shell' }), lrow({ pid: 40, kind: 'agent-shell', reapable: false, reapInMs: null })],
+  }));
+  const g = Object.fromEntries(v.groups.map(x => [x.id, x]));
+  assert.deepStrictEqual(g.probes.rows.map(r => r.canStop), [true, true]);
+  assert.deepStrictEqual(g.shells.rows.map(r => r.canStop), [false, true]);
+  assert.deepStrictEqual(g.stuck.rows.map(r => r.canStop), [false]);
+  assert.deepStrictEqual(g.mcp.rows.map(r => r.canStop), [false]);
+  assert.deepStrictEqual([g.probes.stopCount, g.shells.stopCount, g.stuck.stopCount, g.mcp.stopCount], [2, 1, 0, 0]);
+  const html = leftoverHtml(leftovers({ probes: [lrow(), lrow({ pid: 101 })], mcp: [unproven({ kind: 'mcp' })] }));
+  assert.match(html, /data-res-act="left-stop-group" data-res-group="probes"[^>]*>Stop 2</);
+  assert.strictEqual((html.match(/data-res-act="left-stop"/g) || []).length, 2);
+  assert.ok(!/left-stop-group" data-res-group="mcp"/.test(html));
+});
+
+test('Leftovers (B): a row without a usable start gets no Stop button (nothing to prove it by)', () => {
+  const v = leftoverView(leftovers({ probes: [lrow({ start: null }), lrow({ pid: 5, start: 'abc' })] }));
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.canStop), [false, false]);
+});
+
+test('Leftovers (B): actionOf reads the two Stop clicks strictly', () => {
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-stop', resPid: '100', resStart: '777' }), { act: 'left-stop', pid: 100, start: '777' });
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-stop-group', resGroup: 'probes' }), { act: 'left-stop-group', group: 'probes' });
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-stop-group', resGroup: 'shells' }), { act: 'left-stop-group', group: 'shells' });
+  for (const bad of [
+    { resAct: 'left-stop', resPid: '0', resStart: '1' }, { resAct: 'left-stop', resPid: '-3', resStart: '1' }, { resAct: 'left-stop', resPid: '4', resStart: 'x' },
+    { resAct: 'left-stop', resPid: '4' }, { resAct: 'left-stop-group', resGroup: 'mcp' }, { resAct: 'left-stop-group', resGroup: 'stuck' }, { resAct: 'left-stop-group' },
+  ]) assert.strictEqual(D.actionOf(bad), null, JSON.stringify(bad));
+});
+
+test('Leftovers (B): while a Stop is in flight every Leftovers button is disabled and the group button reads Stopping…; one Stop at a time', () => {
+  const l = leftovers({ probes: [lrow()] });
+  let state = stateWith(payload({ leftovers: l }));
+  assert.ok(!/<button[^>]*disabled/.test(leftoverHtml(l)));
+  state = D.beginLeftStop(state);
+  assert.strictEqual(state.leftBusy, true);
+  const html = D.html(D.view(state));
+  assert.strictEqual((html.match(/<button[^>]*left-stop[^>]*disabled/g) || []).length, 2);
+  assert.match(html, /Stopping…/);
+  assert.strictEqual(D.beginLeftStop(state), state, 'a second press does nothing');
+});
+
+test('Leftovers (B): the answer re-enables the buttons; a failure is a plain sentence, and it lasts one sample', () => {
+  const base = D.beginLeftStop(stateWith(payload({ leftovers: leftovers({ probes: [lrow()] }) })));
+  assert.strictEqual(D.leftStopResult(base, { ok: true, stopped: 1, failed: 0 }).leftBusy, false);
+  assert.strictEqual(D.leftStopResult(base, { ok: true, stopped: 1, failed: 0 }).leftNote, null);
+  assert.strictEqual(D.leftStopResult(base, { ok: true, stopped: 0, failed: 2 }).leftNote, "Couldn't stop 2 of them; they are still listed.");
+  assert.strictEqual(D.leftStopResult(base, { ok: false, text: 'stopping is not available' }).leftNote, "Couldn't stop: stopping is not available.");
+  assert.strictEqual(D.leftStopResult(base, null).leftNote, "Couldn't stop: the request did not get through.");
+  const failed = D.leftStopResult(base, { ok: false, text: 'x' });
+  assert.match(D.html(D.view(failed)), /Couldn&#39;t stop: x\./);
+  assert.strictEqual(D.withPayload(failed, payload()).leftNote, null);
+});
+
+test('Leftovers: the heading sums memory once per process: a nested row is not added again, and a missing figure makes it "at least"', () => {
+  const nested = leftoverView(leftovers({ probes: [lrow({ bytes: 200 * MB }), lrow({ pid: 9, bytes: 50 * MB, nested: true })] }));
+  assert.strictEqual(nested.sum.memFig, '200 MB');
+  assert.strictEqual(nested.sum.count, 2);
+  assert.strictEqual(leftoverView(leftovers({ probes: [lrow({ bytes: 20 * MB }), lrow({ pid: 9, bytes: null })] })).sum.memFig, '≥ 20 MB');
+  assert.strictEqual(leftoverView(leftovers({ stuck: [unproven({ kind: 'stuck', bytes: null })] })).sum.memFig, '—');
+});
+
+test('Leftovers: rows from the machine are escaped in the HTML, the section sits above Machine, and the group buttons carry only a group name', () => {
+  const html = leftoverHtml(leftovers({ mcp: [unproven({ kind: 'mcp', what: '<img src=x onerror=alert(1)>', session: '"><b>' })], probes: [lrow({ what: '<script>x</script>' })] }));
+  assert.ok(!html.includes('<img') && !html.includes('<script>x') && !html.includes('"><b>'));
   assert.ok(html.indexOf('Leftovers') < html.indexOf('<h3>Machine'));
-  const section = html.slice(html.indexOf('Leftovers'), html.indexOf('<h3>Machine'));
-  assert.ok(!section.includes('data-res-act'), 'nothing in the section is a click target: nothing here is stopped by hand');
 });

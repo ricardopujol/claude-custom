@@ -25,7 +25,8 @@ const html = fs.readFileSync(path.join(ROOT, 'app', 'renderer.html'), 'utf8');
 const styles = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
 const scripts = [...html.matchAll(/<script src="\.\/([^"]+)"/g)].map(m => m[1]).filter(s => /display\.js$|^dock-|^side-tabs/.test(s));
 const MB = 1024 * 1024;
-const row = (o) => ({ pid: 100, start: '5', name: 'probe', what: 'probe-x', bytes: 230 * MB, ageMs: 12 * 60000, reapable: true, reapInMs: 3 * 60000, ...o });
+const row = (o) => ({ pid: 100, start: '5', name: 'probe', what: 'probe-x', bytes: 230 * MB, ageMs: 12 * 60000, provable: true, reapable: true, reapInMs: 3 * 60000, nested: false, ...o });
+const quiet = (o) => row({ provable: false, reapable: false, reapInMs: null, ...o });
 const payload = {
   status: { stale: false, expired: false, ageMs: 0 }, machine: { cpu: 20, mem: { usedBytes: 10 * 1024 * MB, totalBytes: 32 * 1024 * MB } },
   model: {
@@ -34,10 +35,10 @@ const payload = {
   },
   leftovers: {
     reapAfterMs: 15 * 60000,
-    stuck: [row({ pid: 11, what: 'Electron', bytes: 85 * MB, reapable: false, reapInMs: null, ageMs: 40 * 60000 })],
+    stuck: [quiet({ pid: 11, what: 'Electron', bytes: 85 * MB, ageMs: 40 * 60000 })],
     probes: [row(), row({ pid: 101, what: 'a-very-long-probe-label-that-must-ellipsise-and-not-overflow-the-dock-column', reapInMs: 0 })],
-    shells: [row({ pid: 30, what: 'bash.exe', session: 'feat-leftovers-readout', reapable: false, reapInMs: null, ageMs: 3 * 3600000, bytes: 9 * MB })],
-    mcp: [row({ pid: 50, what: 'chrome-devtools-mcp', session: 'main', reapable: false, reapInMs: null, bytes: 117 * MB, ageMs: 5 * 3600000 })],
+    shells: [quiet({ pid: 30, what: 'bash.exe', session: 'feat-leftovers-readout', ageMs: 3 * 3600000, bytes: 9 * MB })],
+    mcp: [quiet({ pid: 50, what: 'chrome-devtools-mcp', session: 'main', bytes: 117 * MB, ageMs: 5 * 3600000 })],
     stopped: [{ kind: 'probe-window', pid: 7, what: 'probe-y', bytes: 120 * MB, at: 1 }],
   },
 };
@@ -58,10 +59,14 @@ app.whenReady().then(async () => {
       errors: window.__errors,
       api: typeof window.resourcesDisplay,
       h3s,
-      subs: [...root.querySelectorAll('.res-sub')].map(e => e.textContent),
+      subs: [...root.querySelectorAll('.res-sub')].map(e => e.firstChild.textContent),
+      title: (root.querySelector('.res-title') || {}).textContent,
+      edges: [...root.querySelectorAll('.res-sub')].map(e => getComputedStyle(e).borderLeftColor),
+      stopBtns: sec ? sec.querySelectorAll('[data-res-act="left-stop"]').length : -1,
+      groupBtns: sec ? [...sec.querySelectorAll('[data-res-act="left-stop-group"]')].map(b => b.textContent) : [],
       overflow: root.scrollWidth > root.clientWidth,
       clickTargets: sec ? sec.querySelectorAll('[data-res-act]').length : -1,
-      rows: sec ? sec.querySelectorAll('.res-child').length : 0,
+      rows: sec ? sec.querySelectorAll('.res-lrow').length : 0,
     };
   })()\`);
   const img = await win.webContents.capturePage();
@@ -97,10 +102,12 @@ const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${what}`); i
     check(r.api === 'object', 'resourcesDisplay is loaded in the shared plain-script scope');
     check(Array.isArray(r.errors) && r.errors.length === 0, `no script error in the window (${JSON.stringify(r.errors)})`);
     check(r.h3s[0] === 'Leftovers' && r.h3s.indexOf('Machine') > 0, `the section sits above Machine (${r.h3s.join(', ')})`);
-    check(JSON.stringify(r.subs) === JSON.stringify(['Stuck closing', 'Probe windows nobody runs', 'Agent shells', 'MCP servers', 'Stopped automatically']), `group titles (${r.subs.join(' | ')})`);
+    check(JSON.stringify(r.subs) === JSON.stringify(['Stuck closing', 'Probe windows nobody runs', 'Agent shells', 'MCP servers', 'Stopped']), `group titles (${r.subs.join(' | ')})`);
     check(r.rows === 5, `five rows drawn (${r.rows})`);
     check(!r.overflow, 'nothing overflows the 300 px column');
-    check(r.clickTargets === 0, 'no row is a click target');
+    check(r.title === 'Resources 5 left over', `the title carries the chip (${r.title})`);
+    check(r.stopBtns === 2 && JSON.stringify(r.groupBtns) === JSON.stringify(['Stop 2']), `Stop on the two provable rows and Stop 2 on their group only (${r.stopBtns} ${r.groupBtns})`);
+    check(new Set(r.edges.slice(0, 4)).size === 3, `three left-edge colours: red, yellow (twice), grey (${r.edges.join(' | ')})`);
     console.log(`screenshot: ${path.join(out, 'leftovers.png')}`);
   } catch (err) {
     console.log('FAIL ', err && err.message);
