@@ -339,3 +339,17 @@ test('withoutAsks drops the pending questions and leaves everything else alone',
   const none = withPage();
   assert.strictEqual(D.withoutAsks(none), none, 'same object when there is nothing to clear');
 });
+
+test('whyNot says, in words for the status line, why a message cannot be typed; null when it can (PR #125 Dexter #1, #10)', () => {
+  const BS = String.fromCharCode(92);
+  assert.strictEqual(D.whyNot('hello'), null);
+  assert.match(D.whyNot("C:" + BS + "Reports" + BS), /ending in a backslash/);
+  assert.match(D.whyNot('two\nlines'), /line break/);
+  assert.match(D.whyNot('x'.repeat(2001)), /longer than 2000/);
+  assert.match(D.whyNot('   '), /empty/);
+  assert.match(D.whyNot(5), /not text/);
+  assert.strictEqual(D.sessionLine('C:' + BS + 'x' + BS), null);
+  const s = D.unsent(D.emptyState(), D.whyNot('a' + BS));
+  assert.strictEqual(s.status.bad, true);
+  assert.match(s.status.text, /^didn't type your message from Claude's panel: a message ending in a backslash/);
+});

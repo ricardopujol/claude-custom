@@ -133,10 +133,32 @@ const clearStatus = state => ({ ...state, status: null });
 
 /** The one line a button's message becomes in the prompt, or null if it is not a plain one-line message. */
 function sessionLine(text) {
-  if (!isStr(text)) return null;
+  return lineOrWhy(text).line;
+}
+
+/**
+ * Why a button's message cannot be typed, in the words the status line shows, or null if it can. Said out loud (PR #125 Dexter #1, #10):
+ * a message that vanished silently left the page and the person guessing.
+ */
+function whyNot(text) {
+  return lineOrWhy(text).why;
+}
+
+function lineOrWhy(text) {
+  const cannot = (why) => ({ line: null, why });
+  if (!isStr(text)) return cannot('the message was not text');
   const t = text.trim();
-  if (!t || t.length > MESSAGE_MAX || CONTROL.test(t)) return null;
-  return `(from Claude's panel) ${t}`;
+  if (!t) return cannot('the message was empty');
+  if (t.length > MESSAGE_MAX) return cannot(`the message is longer than ${MESSAGE_MAX} characters`);
+  if (CONTROL.test(t)) return cannot('the message has a line break or a control character, and only one line of plain text can be typed');
+  // The CLI's own newline is a backslash followed by Enter (measured, verify/probe-panel-line-input.js): the Enter that submits would not.
+  if (t.endsWith('\\')) return cannot('a message ending in a backslash cannot be typed: the terminal would take the Enter as a new line');
+  return { line: `(from Claude's panel) ${t}`, why: null };
+}
+
+/** The status a message that was never typed leaves, as typed() would for a refusal. */
+function unsent(state, why) {
+  return { ...state, status: { text: `didn't type your message from Claude's panel: ${why}`, bad: true } };
 }
 
 const answered = (state, id) => ({ ...state, asks: state.asks.filter(a => a.id !== id) });
@@ -219,7 +241,7 @@ function actionOf(data) {
   }
 }
 
-const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, shelfOf, shelfKey, covered, samplePoints, slotObstructed, SAMPLE_GAP, withRefusal, withoutAsks, withAsk, answered, toggleHosts, typed, clearStatus, sessionLine, view, html, actionOf };
+const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, shelfOf, shelfKey, covered, samplePoints, slotObstructed, SAMPLE_GAP, withRefusal, withoutAsks, withAsk, answered, toggleHosts, typed, clearStatus, sessionLine, whyNot, unsent, view, html, actionOf };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.canvasDisplay = API;

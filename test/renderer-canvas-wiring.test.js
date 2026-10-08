@@ -84,7 +84,8 @@ test("a button's message is typed through typeCommand (the wand's path), as the 
   assert.match(fn, /const line = window\.canvasDisplay\.sessionLine\(text\);/);
   assert.match(fn, /typeCommand\(line, \(r\) => \{/);
   assert.match(fn, /\}, 'panel', \{ submit: true \}\);/, "kind 'panel' (app/top-bar-display.js PANEL_LINE), and Enter is the submit gate's decision, not this block's");
-  assert.match(fn, /if \(!line \|\| canvasTyping\) return;/, 'one at a time');
+  assert.match(fn, /if \(canvasTyping\) return;/, 'one at a time');
+  assert.match(fn, /if \(!line\) \{ showCanvasStatus\(window\.canvasDisplay\.unsent\(canvasState, window\.canvasDisplay\.whyNot\(text\)/, 'a message that cannot be typed says why on the status line, never silently (PR #125 Dexter #1, #10)');
   assert.match(BLOCK, /canvasBridge\.onMessage\(\(msg\) => \{ if \(msg && msg\.kind === 'send'\) canvasSendToSession\(msg\.text\); \}\);/);
   assert.doesNotMatch(BLOCK, /submitTyped|type: 'input'|\\r/);
 });

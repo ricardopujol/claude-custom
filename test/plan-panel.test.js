@@ -81,3 +81,31 @@ test('the read-back accepts exactly `❯ (from Claude\'s panel) <text>` in the l
   assert.strictEqual(commandTyped(screen(`❯ ${text} and more`), text), false);
   assert.strictEqual(commandTyped(screen(`❯ earlier draft ${text}`), text), false);
 });
+
+// PR #125 Dexter #1, measured on the real CLI (verify/probe-panel-line-input.js): a line ending in a backslash makes the gate's Enter the
+// CLI's newline. It is refused before a key is typed, wherever the backslash is the LAST character; one inside the line is fine.
+const BS = String.fromCharCode(92);
+test('a panel line ending in a backslash is never typed (the CLI would take the Enter as a newline)', () => {
+  for (const tail of ['C:' + BS + 'x' + BS, 'a' + BS, BS, BS + BS, 'path' + BS + BS]) {
+    const p = plan(PREFIX + tail);
+    assert.strictEqual(p.ok, false, JSON.stringify(tail));
+    assert.match(p.reason, /single-line message/);
+    assert.strictEqual(sessionLine(tail), null, JSON.stringify(tail));
+  }
+});
+
+test('a backslash anywhere but the end is fine', () => {
+  for (const t of ['C:' + BS + 'x' + BS + 'y', BS + 'n is not a newline', 'a' + BS + ' b']) {
+    assert.strictEqual(plan(PREFIX + t).ok, true, JSON.stringify(t));
+    assert.strictEqual(sessionLine(t), PREFIX + t);
+  }
+});
+
+test('property: no line planTyping accepts for a panel, and none sessionLine builds, ends in a backslash', () => {
+  fc.assert(fc.property(fc.string(), fc.constantFrom('', BS, BS + BS, ' ' + BS), (text, tail) => {
+    const t = text + tail;
+    const line = sessionLine(t);
+    if (line !== null) assert.ok(!line.endsWith(BS), JSON.stringify(line));
+    if (plan(PREFIX + t).ok) assert.ok(!(PREFIX + t).endsWith(BS), JSON.stringify(t));
+  }), { numRuns: 400 });
+});

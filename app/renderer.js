@@ -1416,9 +1416,18 @@ function canvasAct(a) {
 
 // A button in Claude's panel (main already checked a real click came with it): its one line is typed into the prompt through the
 // wand's path, so the submit gate decides Enter and the transcript shows where it came from. The status line says what came of it.
+// The panel's status line: shown, and cleared again after a while.
+function showCanvasStatus(next, ms = 8000) {
+  canvasState = next;
+  renderCanvas();
+  clearTimeout(canvasStatusTimer);
+  canvasStatusTimer = setTimeout(() => { canvasState = window.canvasDisplay.clearStatus(canvasState); renderCanvas(); }, ms);
+}
+
 function canvasSendToSession(text) {
   const line = window.canvasDisplay.sessionLine(text);
-  if (!line || canvasTyping) return;
+  if (!line) { showCanvasStatus(window.canvasDisplay.unsent(canvasState, window.canvasDisplay.whyNot(text) || 'the message could not be typed')); return; }
+  if (canvasTyping) return;
   canvasTyping = true;
   typeCommand(line, (r) => {
     canvasTyping = false;
@@ -5305,12 +5314,12 @@ function submitTyped(command, opts, done) {
   const typeOnly = opts.typeOnly;
   const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
   if (!gate.enter) { done({ ok: true, submitted: false, flash: gate.flash }); return; }
-  if (!gate.recheck) { pressEnter(done); return; }
+  if (!gate.recheck) { pressEnter(done, command, opts.enterInsert); return; }
   typingBusy = true;
   setTimeout(() => {
     typingBusy = false;
     const again = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
-    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen })) { pressEnter(done); return; }
+    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen })) { pressEnter(done, command, opts.enterInsert); return; }
     clearTypedLine(opts.enterInsert);
     done({ ok: false, reason: 'the screen changed while waiting to press Enter (a dialog may have opened), so nothing was sent' });
   }, SUBMIT_RECHECK_MS);
@@ -5321,18 +5330,30 @@ function submitTyped(command, opts, done) {
  * frame silently (send()), so that is reported as not sent, never as "sent" (Dexter F6 / Miguel M1). Then the
  * flash is read off the SCREEN, not guessed from the hook state (F7): watchQueued.
  */
-function pressEnter(done) {
+function pressEnter(done, command, enterInsert) {
   if (!ws || ws.readyState !== WebSocket.OPEN) { done({ ok: false, reason: 'not connected to the session: the Enter was not sent' }); return; }
   send(JSON.stringify({ type: 'input', data: '\r' }));
-  watchQueued(done);
+  watchQueued(done, command, enterInsert);
 }
 
-/** After an Enter: "queued" only if the CLI's own queued-messages line shows within the window, else "sent" (F7). */
-function watchQueued(done) {
+/**
+ * After an Enter: "queued" only if the CLI's own queued-messages line shows within the window, else "sent" (F7) -- but never "sent" while the box
+ * still holds the very line that was typed: an Enter the CLI swallowed (its `\` + Enter newline, a suggestion list taking the key) submitted
+ * nothing, and the status must say so (PR #125 Dexter #1, #4). The line is cleared, as a failed read-back clears it.
+ */
+function watchQueued(done, command, enterInsert) {
   let looks = 0;
   const look = () => {
     if (submitGate.queuedShown(screenLines())) { done({ ok: true, submitted: true, flash: submitGate.FLASH.queued }); return; }
-    if (++looks >= QUEUED_POLLS) { done({ ok: true, submitted: true, flash: submitGate.FLASH.sent }); return; }
+    if (++looks >= QUEUED_POLLS) {
+      if (command && commandTyped(screenLines(), command, { vim: vimSeen })) {
+        clearTypedLine(enterInsert);
+        done({ ok: false, reason: 'the terminal did not take the Enter, so nothing was sent' });
+        return;
+      }
+      done({ ok: true, submitted: true, flash: submitGate.FLASH.sent });
+      return;
+    }
     setTimeout(look, QUEUED_POLL_MS);
   };
   setTimeout(look, QUEUED_POLL_MS);

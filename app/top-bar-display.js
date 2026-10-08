@@ -406,8 +406,10 @@ const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
 
 // A button's message in Claude's panel (BACKLOG #71): free text, so it is allowed ONLY behind this fixed prefix (the CLI can't read it as
 // a slash command or a `!` shell line), on one line, with no control or C1 character, no leading or trailing space and at most
-// 2000 characters (what app/canvas-display.js sessionLine builds, held to it by test/plan-panel.test.js).
-const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029](?:[^\x00-\x1f\x7f-\x9f\u2028\u2029]{0,1998}[^\s\x00-\x1f\x7f-\x9f\u2028\u2029])?$/;
+// 2000 characters (what app/canvas-display.js sessionLine builds, held to it by test/plan-panel.test.js), and NEVER ending in a backslash:
+// MEASURED on the real CLI (verify/probe-panel-line-input.js, PR #125 Dexter #1) `\` + Enter is the CLI's newline, so the gate's Enter would
+// leave a two-row draft and submit nothing.
+const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029](?:[^\x00-\x1f\x7f-\x9f\u2028\u2029]{0,1998}[^\s\x00-\x1f\x7f-\x9f\u2028\u2029])?(?<!\\)$/;
 
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
