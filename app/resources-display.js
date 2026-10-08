@@ -140,8 +140,8 @@ function actionOf(data) {
 // [payload key, title, left-edge colour class]: red for what is stuck, yellow for what the app can say nobody runs, grey for what is only big.
 const LEFT_GROUPS = [
   ['stuck', 'Stuck closing', 'res-edge-red'],
-  ['probes', 'Probe windows nobody runs', 'res-edge-yellow'],
-  ['shells', 'Agent shells', 'res-edge-yellow'],
+  ['probes', 'Probe windows nobody is running', 'res-edge-yellow'],
+  ['shells', 'Agent shells still running', 'res-edge-yellow'],
   ['mcp', 'MCP servers', 'res-edge-grey'],
 ];
 const LEFT_STOP_GROUPS = ['probes', 'shells'];
@@ -156,9 +156,19 @@ function fmtAge(ms) {
 // What a row says about its fate: an auto-stop row when it goes, anything else why it is only shown or stopped by hand.
 function leftoverNote(kind, r) {
   if (r.reapable === true && r.provable === true && isNum(r.reapInMs)) return r.reapInMs <= 0 ? 'stopping…' : `stops in ${Math.ceil(r.reapInMs / 60_000)} min`;
-  if (kind === 'stuck') return "Windows is still closing it; it can't be stopped from here";
   if (kind === 'shells') return "kept: can't tell whether an agent still needs it";
   return '';
+}
+
+// Mock A's note on a group's title line: stuck exits finish on their own; MCP servers as "<N> sessions x <MB> MB" when every row names its
+// session and has a figure (the mean per session), otherwise nothing. Never a "never called" claim: no call data stands behind the list.
+function groupSide(kind, rows) {
+  if (kind === 'stuck') return 'finish on their own, slowly';
+  if (kind !== 'mcp' || rows.length === 0) return null;
+  if (!rows.every(r => isStr(r.session) && r.session !== '' && isNum(r.bytes))) return null;
+  const sessions = new Set(rows.map(r => r.session)).size;
+  const total = rows.reduce((n, r) => n + r.bytes, 0);
+  return `${sessions} ${sessions === 1 ? 'session' : 'sessions'} × ${Math.round(total / sessions / MB)} MB`;
 }
 
 function leftoversView(l, ui) {
@@ -176,7 +186,8 @@ function leftoversView(l, ui) {
         ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: leftoverNote(kind, r), canStop: r.provable === true && startOk,
       };
     });
-    if (rows.length) groups.push({ id: kind, title, edge, rows, stopCount: LEFT_STOP_GROUPS.includes(kind) ? rows.filter(x => x.canStop).length : 0 });
+    const src = list(kind);
+    if (rows.length) groups.push({ id: kind, title, edge, rows, side: groupSide(kind, src), foot: kind === 'stuck' ? 'Windows is still tearing these down. Nothing can stop them faster.' : null, sub: kind === 'probes' ? 'launcher gone' : null, stopCount: LEFT_STOP_GROUPS.includes(kind) ? rows.filter(x => x.canStop).length : 0 });
   }
   const stopped = list('stopped').map(s => ({ text: `Stopped ${isStr(s.what) && s.what !== '' ? s.what : (isStr(s.name) ? s.name : '?')} (PID ${s.pid}), ${fmtBytes(s.bytes)} freed` }));
   if (!all.length && !stopped.length) return null;
@@ -198,19 +209,19 @@ function leftoversView(l, ui) {
 function leftoversHtml(v) {
   if (!v) return '';
   const lock = v.busy ? ' disabled' : '';
-  const rows = g => g.rows.map(r => `<div class="res-lrow ${g.edge}" title="PID ${esc(r.pid)}"><span class="res-cname">${esc(r.name)}</span>`
+  const rows = g => g.rows.map(r => `<div class="res-lrow ${g.edge}" title="PID ${esc(r.pid)}"><span class="res-cname">${esc(r.name)}${g.sub ? ` <span class="res-lsub">${esc(g.sub)}</span>` : ''}</span>`
     + `<span class="res-fig res-lmem">${esc(r.memFig)}</span><span class="res-fig res-lage">${esc(r.ageFig)}</span>`
     + (r.canStop
       ? `<button type="button" class="res-lstop" data-res-act="left-stop" data-res-pid="${esc(r.pid)}" data-res-start="${esc(r.start)}" aria-label="Stop ${esc(r.who)}, PID ${esc(r.pid)}"${lock}>Stop</button>`
       : '<span class="res-lstop-gap" aria-hidden="true"></span>')
     + '</div>'
     + (r.note ? `<div class="res-note res-lnote ${g.edge}">${esc(r.note)}</div>` : '')).join('');
-  const head = g => `<div class="res-sub ${g.edge}"><span>${esc(g.title)}</span>`
+  const head = g => `<div class="res-sub ${g.edge}"><span>${esc(g.title)}</span>${g.side ? `<span class="res-side">${esc(g.side)}</span>` : ''}`
     + (g.stopCount > 0 ? `<button type="button" class="res-lstop" data-res-act="left-stop-group" data-res-group="${esc(g.id)}"${lock}>${v.busy ? 'Stopping…' : `Stop ${esc(g.stopCount)}`}</button>` : '')
     + '</div>';
   return `<div class="res-title">Resources${v.chip ? ` <span class="res-chip">${esc(v.chip)}</span>` : ''}</div>`
     + `<section class="res-sec res-left"><h3>Leftovers <span class="res-sum">${esc(v.sum.memFig)}</span></h3>`
-    + v.groups.map(g => `${head(g)}${rows(g)}`).join('')
+    + v.groups.map(g => `${head(g)}${rows(g)}${g.foot ? `<div class="res-note res-lnote ${g.edge}">${esc(g.foot)}</div>` : ''}`).join('')
     + (v.note ? `<div class="res-note res-refused">${esc(v.note)}</div>` : '')
     + (v.stopped.length ? `<div class="res-sub"><span>Stopped</span></div>${v.stopped.map(s => `<div class="res-note">${esc(s.text)}</div>`).join('')}` : '')
     + '</section>';

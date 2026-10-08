@@ -102,7 +102,7 @@ const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${what}`); i
     check(r.api === 'object', 'resourcesDisplay is loaded in the shared plain-script scope');
     check(Array.isArray(r.errors) && r.errors.length === 0, `no script error in the window (${JSON.stringify(r.errors)})`);
     check(r.h3s[0] === 'Leftovers' && r.h3s.indexOf('Machine') > 0, `the section sits above Machine (${r.h3s.join(', ')})`);
-    check(JSON.stringify(r.subs) === JSON.stringify(['Stuck closing', 'Probe windows nobody runs', 'Agent shells', 'MCP servers', 'Stopped']), `group titles (${r.subs.join(' | ')})`);
+    check(JSON.stringify(r.subs) === JSON.stringify(['Stuck closing', 'Probe windows nobody is running', 'Agent shells still running', 'MCP servers', 'Stopped']), `group titles (${r.subs.join(' | ')})`);
     check(r.rows === 5, `five rows drawn (${r.rows})`);
     check(!r.overflow, 'nothing overflows the 300 px column');
     check(r.title === 'Resources 5 left over', `the title carries the chip (${r.title})`);

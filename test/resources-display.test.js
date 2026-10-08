@@ -388,7 +388,7 @@ test('Leftovers: the four kinds are grouped under their own titles, in order, em
     shells: [unproven({ kind: 'shell', what: 'bash.exe' })],
   }));
   assert.deepStrictEqual(v.groups.map(g => [g.title, g.edge]), [
-    ['Stuck closing', 'res-edge-red'], ['Probe windows nobody runs', 'res-edge-yellow'], ['Agent shells', 'res-edge-yellow'], ['MCP servers', 'res-edge-grey'],
+    ['Stuck closing', 'res-edge-red'], ['Probe windows nobody is running', 'res-edge-yellow'], ['Agent shells still running', 'res-edge-yellow'], ['MCP servers', 'res-edge-grey'],
   ]);
 });
 
@@ -414,9 +414,9 @@ test('Leftovers: a row says what happens to it: when it stops, that Windows is c
     shells: [unproven({ kind: 'shell', what: 'bash.exe' }), lrow({ pid: 40, kind: 'agent-shell', reapable: false, reapInMs: null })],
   }));
   const notes = Object.fromEntries(v.groups.map(g => [g.title, g.rows.map(r => r.note)]));
-  assert.deepStrictEqual(notes['Stuck closing'], ["Windows is still closing it; it can't be stopped from here"]);
-  assert.deepStrictEqual(notes['Probe windows nobody runs'], ['stops in 3 min', 'stopping…', 'stops in 2 min']);
-  assert.deepStrictEqual(notes['Agent shells'], ["kept: can't tell whether an agent still needs it", "kept: can't tell whether an agent still needs it"], 'a provable shell is kept too: never stopped on its own');
+  assert.deepStrictEqual(notes['Stuck closing'], [''], 'the stuck explanation is stated once under the group, not per row');
+  assert.deepStrictEqual(notes['Probe windows nobody is running'], ['stops in 3 min', 'stopping…', 'stops in 2 min']);
+  assert.deepStrictEqual(notes['Agent shells still running'], ["kept: can't tell whether an agent still needs it", "kept: can't tell whether an agent still needs it"], 'a provable shell is kept too: never stopped on its own');
 });
 
 test('Leftovers (B): a Stop button only on a provable row, "Stop N" only on a group that has some; MCP and stuck rows never get one', () => {
@@ -487,4 +487,37 @@ test('Leftovers: rows from the machine are escaped in the HTML, the section sits
   const html = leftoverHtml(leftovers({ mcp: [unproven({ kind: 'mcp', what: '<img src=x onerror=alert(1)>', session: '"><b>' })], probes: [lrow({ what: '<script>x</script>' })] }));
   assert.ok(!html.includes('<img') && !html.includes('<script>x') && !html.includes('"><b>'));
   assert.ok(html.indexOf('Leftovers') < html.indexOf('<h3>Machine'));
+});
+
+test('Leftovers (mock A wording): stuck closing says finish on their own on its title line and the tearing-down sentence once under its rows', () => {
+  const html = leftoverHtml(leftovers({ stuck: [unproven({ kind: 'stuck', what: 'Electron' }), unproven({ kind: 'stuck', pid: 12, what: 'Electron' })] }));
+  assert.ok(html.includes('finish on their own, slowly'));
+  assert.strictEqual(html.split('Windows is still tearing these down. Nothing can stop them faster.').length - 1, 1);
+  assert.ok(!html.includes("can't be stopped from here"));
+  assert.ok(html.indexOf('finish on their own, slowly') < html.indexOf('Electron'), 'the note is on the title line');
+  assert.ok(html.indexOf('Electron') < html.indexOf('Nothing can stop them faster'), 'the sentence is under the rows');
+});
+
+test('Leftovers (mock A wording): probe rows carry a dim "launcher gone" after the name, and keep their status line', () => {
+  const html = leftoverHtml(leftovers({ probes: [lrow()], shells: [unproven({ kind: 'shell', what: 'bash.exe' })] }));
+  assert.match(html, /probe-x <span class="res-lsub">launcher gone<\/span>/);
+  assert.strictEqual(html.split('launcher gone').length - 1, 1, 'only on probe rows');
+  assert.ok(html.includes('stops in 3 min'));
+});
+
+test('Leftovers (mock A wording): MCP servers say "N sessions × MB MB" when every row names a session and has a figure, otherwise nothing, and never "never called"', () => {
+  const mcp = (session, bytes) => unproven({ kind: 'mcp', session, bytes });
+  const side = l => leftoverView(leftovers({ mcp: l })).groups[0].side;
+  assert.strictEqual(side([mcp('main', 120 * MB), mcp('feat', 100 * MB), mcp('feat', 80 * MB)]), '2 sessions × 150 MB');
+  assert.strictEqual(side([mcp('main', 117 * MB)]), '1 session × 117 MB');
+  assert.strictEqual(side([mcp('main', 117 * MB), mcp(undefined, 100 * MB)]), null);
+  assert.strictEqual(side([mcp('main', null)]), null);
+  const html = leftoverHtml(leftovers({ mcp: [mcp('main', 117 * MB)] }));
+  assert.ok(html.includes('1 session × 117 MB') && !html.includes('never called'));
+  assert.ok(!leftoverHtml(leftovers({ mcp: [mcp(undefined, 100 * MB)] })).includes('res-side'));
+});
+
+test('Leftovers (mock A wording): the titles are the mock\'s', () => {
+  const v = leftoverView(leftovers({ probes: [lrow()], shells: [unproven({ kind: 'shell' })], mcp: [unproven({ kind: 'mcp' })], stuck: [unproven({ kind: 'stuck' })] }));
+  assert.deepStrictEqual(v.groups.map(g => g.title), ['Stuck closing', 'Probe windows nobody is running', 'Agent shells still running', 'MCP servers']);
 });
