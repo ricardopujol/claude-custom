@@ -154,3 +154,18 @@ test('a ledger that cannot be written after the kills: the kills are still repor
     assert.ok(r.ledger.error);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// PR #130 review, Dexter #6: a re-check that cannot be read after the kill is UNKNOWN, not "killed": the line stays.
+test('after the kill, a failed re-check (null) or an unreadable start keeps every line as still running', async () => {
+  for (const again of [null, new Map([[10, null]])]) {
+    const { dir, file } = setup([E(10)]);
+    try {
+      let call = 0;
+      const startTimes = async () => (++call === 1 ? new Map([[10, '110']]) : again);
+      const r = await reap({ file, dryRun: false, startTimes, kill: () => 'failed-silently' });
+      assert.deepStrictEqual(r.killed, [], `again=${again && [...again]}`);
+      assert.deepStrictEqual(r.failed, [10]);
+      assert.strictEqual(ledger.readLedger(file).length, 1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});

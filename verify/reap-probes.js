@@ -45,8 +45,10 @@ async function reap({ file = ledger.defaultLedgerFile(), startTimes = realStartT
   const left = stillRunning
     ? await stillRunning(targets.map(e => e.pid))
     : await (async () => {
+      // Unknown is not "killed" (PR #130 review, Dexter #6): a failed query (null) or an unreadable start (null in the
+      // map) counts as still running, so the line stays for the next run.
       const again = await startTimes(targets.map(e => e.pid));
-      return new Set(targets.filter(e => again && again.has(e.pid) && again.get(e.pid) === e.start).map(e => e.pid));
+      return new Set(targets.filter(e => again === null || (again.has(e.pid) && (again.get(e.pid) === null || again.get(e.pid) === e.start))).map(e => e.pid));
     })();
   const mismatched = [];
   const gone = [];
