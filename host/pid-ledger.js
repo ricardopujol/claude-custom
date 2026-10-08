@@ -44,7 +44,8 @@ function parseLedger(text) {
     const l = o.launcher;
     out.push({
       pid: o.pid, start: o.start,
-      launcher: l && validPid(l.pid) && validStart(l.start) ? { pid: l.pid, start: l.start } : null,
+      // { pid, start: null }: the launcher's pid is known but its start could not be read when the entry was written.
+      launcher: l && validPid(l.pid) && (validStart(l.start) || l.start === null) ? { pid: l.pid, start: l.start } : null,
       kind: KINDS.includes(o.kind) ? o.kind : 'probe-window',
       label: typeof o.label === 'string' ? o.label : '',
       createdAt: Number.isFinite(o.createdAt) ? o.createdAt : null,
@@ -75,10 +76,14 @@ function isRecordedProcess(e, starts) {
   return starts.has(e.pid) && starts.get(e.pid) === e.start;
 }
 
+// Doubt keeps (PR #130 review, Dexter #3 = Miguel M1): no launcher recorded at all is UNKNOWN, so alive; a launcher
+// whose start could not be read when it was recorded is alive while its pid is listed (that pid may be it), and gone
+// only once no process has it.
 function launcherAlive(e, starts) {
-  if (!e.launcher) return false;
+  if (!e.launcher) return true;
   if (!starts.has(e.launcher.pid)) return false;
   const s = starts.get(e.launcher.pid);
+  if (e.launcher.start === null) return true;
   return s === null || s === e.launcher.start;     // unreadable: doubt keeps the process
 }
 

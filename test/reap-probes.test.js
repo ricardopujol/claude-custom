@@ -64,7 +64,7 @@ test('a failed start-time query kills nothing and touches nothing', async () => 
 });
 
 test('dry run reports what it would kill and kills nothing, removes nothing', async () => {
-  const { dir, file } = setup([E(10, { start: '5', launcher: null })]);
+  const { dir, file } = setup([E(10, { start: '5', launcher: { pid: 9990, start: '1' } })]);
   try {
     const killed = [];
     const r = await reap({ file, startTimes: async () => new Map([[10, '5']]), kill: (p) => killed.push(p), dryRun: true });
@@ -86,7 +86,7 @@ test('the reaper asks for the start times of the entries AND their launchers, in
 });
 
 test('a kill that throws does not stop the others, and the survivor keeps its line', async () => {
-  const { dir, file } = setup([E(10, { start: '5', launcher: null }), E(11, { start: '6', launcher: null })]);
+  const { dir, file } = setup([E(10, { start: '5', launcher: { pid: 9990, start: '1' } }), E(11, { start: '6', launcher: { pid: 9990, start: '1' } })]);
   try {
     const killed = [];
     const r = await reap({

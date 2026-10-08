@@ -35,7 +35,7 @@ test('parse skips junk lines, half-written lines and entries without a usable pi
   assert.deepStrictEqual(ledger.parseLedger(text).map(e => e.pid), [7]);
 });
 
-test('an entry without a launcher parses, with the launcher null (nothing to wait for: the reaper treats it as gone)', () => {
+test('an entry without a launcher parses, with the launcher null (unknown: the reaper keeps it, see below)', () => {
   const e = ledger.parseLedger(JSON.stringify({ pid: 5, start: '9' }))[0];
   assert.strictEqual(e.pid, 5);
   assert.strictEqual(e.launcher, null);
@@ -98,9 +98,26 @@ test('reapable: a failed start-time query (null) selects nothing', () => {
   assert.deepStrictEqual(ledger.selectReapable([entry()], null), []);
 });
 
-test('reapable: an entry with no launcher is reaped once its own proof holds', () => {
+// PR #130 review, Dexter #3 = Miguel M1: a launcher that could not be read is UNKNOWN, and doubt keeps the process.
+// Before the fix this test pinned the opposite ("no launcher is reaped once its own proof holds"), so a probe whose
+// selfStart() timed out under load had its live window reapable mid-run.
+test('reapable: an entry with no launcher at all is NOT reaped (unknown launcher counts as alive)', () => {
   const starts = new Map([[100, '134000000000000000']]);
-  assert.deepStrictEqual(ledger.selectReapable([entry({ launcher: null })], starts).map(e => e.pid), [100]);
+  assert.deepStrictEqual(ledger.selectReapable([entry({ launcher: null })], starts), []);
+});
+
+test('reapable: a launcher with a known pid and an unread start is alive while that pid is listed, gone once it is not', () => {
+  const e = entry({ launcher: { pid: 900, start: null } });
+  assert.deepStrictEqual(ledger.selectReapable([e], new Map([[100, '134000000000000000'], [900, '5']])), [],
+    'the pid is running: it may be the launcher, so the Electron is kept');
+  assert.deepStrictEqual(ledger.selectReapable([e], new Map([[100, '134000000000000000'], [900, null]])), []);
+  assert.deepStrictEqual(ledger.selectReapable([e], new Map([[100, '134000000000000000']])).map(x => x.pid), [100],
+    'the pid is not running: whatever launched it is gone');
+});
+
+test('parse: a launcher with a valid pid and a null start round-trips as { pid, start: null }', () => {
+  const line = ledger.serializeEntry({ pid: 5, start: '9', launcher: { pid: 6, start: null } });
+  assert.deepStrictEqual(ledger.parseLedger(line)[0].launcher, { pid: 6, start: null });
 });
 
 test('stale: an entry whose process is gone or was replaced is dropped from the ledger; a live one and an unreadable one are kept', () => {

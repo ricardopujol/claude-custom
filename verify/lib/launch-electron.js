@@ -95,10 +95,10 @@ async function launchElectron({
   }
   handle.start = start;
   let launcherStart = null;
-  try { launcherStart = await selfStart(); } catch { /* the launcher is then recorded as unknown, i.e. no launcher */ }
+  try { launcherStart = await selfStart(); } catch { /* recorded with an unknown start: alive while this pid runs */ }
   ledger.appendEntry(ledgerFile, {
     pid: child.pid, start, kind, label, createdAt: Date.now(),
-    launcher: typeof launcherStart === 'string' ? { pid: process.pid, start: launcherStart } : null,
+    launcher: { pid: process.pid, start: typeof launcherStart === 'string' ? launcherStart : null },
   });
   handle.stop = (o) => stopElectron(handle, o);
   return handle;
@@ -134,12 +134,12 @@ function spawnElectron(exe, args = [], opts = {}, {
       return false;
     }
     let launcherStart = null;
-    try { launcherStart = await selfStart(); } catch { /* recorded as no launcher */ }
+    try { launcherStart = await selfStart(); } catch { /* recorded with an unknown start: alive while this pid runs */ }
     if (handle.exited) return false;
     if (ledgerFile) {
       ledger.appendEntry(ledgerFile, {
         pid: child.pid, start, kind, label, createdAt: Date.now(),
-        launcher: typeof launcherStart === 'string' ? { pid: process.pid, start: launcherStart } : null,
+        launcher: { pid: process.pid, start: typeof launcherStart === 'string' ? launcherStart : null },
       });
       handle.recorded = true;
     }

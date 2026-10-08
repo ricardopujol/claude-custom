@@ -249,3 +249,18 @@ test('stop: a child that has already exited is not killed by pid (its pid may be
     assert.deepStrictEqual(ledger.readLedger(file), []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('spawnElectron: a launcher whose own start cannot be read is recorded as { pid, start: null }, which keeps the Electron (Dexter #3)', async () => {
+  const dir = tmpDir('cc-launch-test-');
+  try {
+    const file = path.join(dir, 'l.jsonl');
+    const f = spawnFakes();
+    const child = spawnElectron('E.exe', [], {}, { spawnFn: f.spawnFn, startTimes: f.startTimes, selfStart: async () => null,
+      ledgerFile: file, install: false, parentEnv: {} });
+    assert.strictEqual(await child.ledgered, true);
+    const [e] = ledger.readLedger(file);
+    assert.deepStrictEqual(e.launcher, { pid: process.pid, start: null });
+    assert.deepStrictEqual(ledger.selectReapable([e], new Map([[5151, '777'], [process.pid, '1']])), [],
+      'this launcher is running: its Electron is not reapable');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
