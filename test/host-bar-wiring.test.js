@@ -41,14 +41,14 @@ test('every hook event reaches the keeper and the night, and a ScheduleWakeup go
   const give = body.indexOf('occupancy.handle(ev);');
   const keeper = body.indexOf('if (promptKeeper.handle(ev)) broadcastControl({ type: \'prompt\', prompt: promptKeeper.snapshot() });');
   const nightAt = body.indexOf('night.handle(ev);');
-  const occOnly = body.indexOf('if (isOccupancyOnly(ev)) return;');
+  const occOnly = body.indexOf('if (isOccupancyOnly(ev)) { mood.handle(ev); return; }');   // BACKLOG #55: the mood engine reads the file tools' PreToolUse, for reading and writing
   const bedOnly = body.indexOf('if (isBedtimeOnly(ev)) return;');
   for (const [name, at] of [['keeper', keeper], ['night', nightAt], ['bedtime-only return', bedOnly]]) assert.ok(at !== -1, name);
   assert.ok(give < keeper && give < nightAt, 'after the producer, before any early return: the main session\'s own file-tool calls keep a night awake');
   assert.ok(keeper < occOnly && nightAt < occOnly, 'before the occupancy-only return, so a Read in the night is seen');
   assert.ok(occOnly < bedOnly, 'then the two early returns');
   for (const consumer of ['attention.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
-    assert.ok(body.indexOf(consumer) > bedOnly, `${consumer} must come after the bedtime-only return`);
+    assert.ok(body.lastIndexOf(consumer) > bedOnly, `${consumer} must come after the bedtime-only return`);
   }
   assert.ok(body.indexOf("if (ev.event === 'Status')") < keeper, 'the Status document never reaches them');
 });

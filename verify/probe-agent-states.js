@@ -109,7 +109,7 @@ const STATES = ${JSON.stringify(STATES)};
 const SHOTS = ${JSON.stringify(SHOTS)};
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ width: 1000, height: 760, show: true, webPreferences: {
+  const win = new BrowserWindow({ width: 1000, height: 800, show: true, webPreferences: {
     contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } });
   win.loadFile(path.join(ROOT, 'app', 'renderer.html'), { query: {
     port: ${JSON.stringify(port)}, cwd: ${JSON.stringify(ROOT)}, project: 'probe', token: 'probe-token' } });
@@ -121,6 +121,7 @@ app.whenReady().then(async () => {
     return null;
   };
   const shot = async (name, clip) => {
+    await win.webContents.capturePage(clip); await sleep(300);   // the first capture after a layout change is the frame BEFORE it
     const img = await win.webContents.capturePage(clip);
     fs.mkdirSync(SHOTS, { recursive: true });
     fs.writeFileSync(path.join(SHOTS, name + '.png'), img.toPNG());
@@ -137,7 +138,11 @@ app.whenReady().then(async () => {
     check('agentStateDisplay is the one global the file adds', await js('typeof agentStateDisplay === "object" && typeof agentStateDisplay.describeState === "function"'));
     await js('setRosterTab("active")');
     check('every state has a card (the harness fed real hook events)', await until('document.querySelectorAll("#agents .agent[data-agent^=\\'probe-\\']").length === ' + STATES.length, 40000));
-    await sleep(1200);
+    await sleep(800);
+    // Reading and writing last 5 s from their PreToolUse: ask the harness for them only now, then read at once.
+    console.log('[need] file-tools');
+    check('reading and writing cards show their state', await until(
+      '(() => { const g = n => document.querySelector("#agents .agent[data-agent=\\'" + n + "\\']"); return g("probe-reading") && g("probe-reading").dataset.detail === "reading" && g("probe-writing").dataset.detail === "writing"; })()', 10000));
     const want = { working: ['', 'working'], reading: ['\\u{1F4D6}', 'Reading'], writing: ['\\u270F\\uFE0F', 'Writing'], running: ['\\u25B6', 'Running'],
       waiting: ['\\u270B', 'Waiting on you'], stuck: ['\\u26A0', 'Stuck'], helper: ['\\u23F3', 'Waiting on helper'] };
     const rows = {};
@@ -157,11 +162,22 @@ app.whenReady().then(async () => {
     check('waiting pulses', rows.waiting.badgeAnim === 'badge-pulse', rows.waiting.badgeAnim);
     check('no other badge pulses', STATES.filter(s => s !== 'waiting' && rows[s].badge).every(s => rows[s].badgeAnim === 'none'));
 
-    await shot('roster-all-states', await js('(() => { const r = document.getElementById("agents").getBoundingClientRect(); return { x: Math.floor(r.left), y: Math.floor(r.top), width: Math.ceil(r.width), height: Math.min(Math.ceil(r.height), 740) }; })()'));
+    // Photographs. The roster scrolls and a window of this size cannot show eight cards, so nothing here scrolls: a
+    // <style> (which survives the roster's repaints) hides every card but the one being photographed, and the overview
+    // zooms the roster out until all of them fit.
+    const only = (s) => js('(() => { let st = document.getElementById("probe-only"); if (!st) { st = document.createElement("style"); st.id = "probe-only"; document.head.appendChild(st); } st.textContent = ' +
+      JSON.stringify(s ? '#agents .agent:not([data-agent="probe-' + s + '"]) { display: none !important; }' : '') + '; })()');
+    await js('document.getElementById("agents").style.zoom = "0.5"');
+    await sleep(700);
+    await shot('roster-all-states', await js('(() => { const r = document.getElementById("agents").getBoundingClientRect(); return { x: Math.max(0, Math.floor(r.left) - 4), y: Math.floor(r.top), width: Math.ceil(r.width) + 4, height: Math.max(1, Math.min(Math.ceil(r.height), Math.floor(window.innerHeight - r.top) - 2)) }; })()'));
+    await js('document.getElementById("agents").style.zoom = ""');
     for (const s of STATES) {
-      const r = rows[s];
+      await only(s);
+      await sleep(600);
+      const r = await read('probe-' + s);
       if (r) await shot('state-' + s, { x: Math.max(0, Math.floor(r.rect.l)), y: Math.max(0, Math.floor(r.rect.t)), width: Math.ceil(r.rect.w), height: Math.ceil(r.rect.h) });
     }
+    await only(null);
 
     // prefers-reduced-motion: no pulse.
     win.webContents.debugger.attach('1.3');
@@ -255,15 +271,20 @@ async function partB() {
     bash('running', 'npm test');
     // waiting: a permission prompt that names the agent
     send('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Edit', ...by('waiting') });
-    // reading / writing LAST: they last a few seconds
-    send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/x/y.js' }, ...by('reading') });
-    send('PreToolUse', { tool_name: 'Edit', tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/x/y.js', old_string: 'a', new_string: 'b' }, ...by('writing') });
-
+    // reading / writing last a few seconds, so they are sent when the window asks, not before it has started
+    const fileTools = () => {
+      send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/x/y.js' }, ...by('reading') });
+      send('PreToolUse', { tool_name: 'Edit', tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/x/y.js', old_string: 'a', new_string: 'b' }, ...by('writing') });
+    };
+    let sentFileTools = false;
     const mainFile = path.join(tmp, 'probe-main.js');
     fs.writeFileSync(mainFile, mainSource(port));
     const electron = spawnElectron(require('electron'), [mainFile], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_SESSION_ID', 'CLAUDE_CUSTOM_HELPER'] });
     hygiene.registerChild(electron);
-    electron.stdout.on('data', d => process.stdout.write(d));
+    electron.stdout.on('data', d => {
+      process.stdout.write(d);
+      if (!sentFileTools && /\[need\] file-tools/.test(String(d))) { sentFileTools = true; fileTools(); }
+    });
     electron.stderr.on('data', d => { if (/probe|Error/.test(String(d))) process.stderr.write(d); });
     const killer = setTimeout(() => { console.log('FAIL: probe timed out after 120s'); hygiene._emergencyCleanup('timeout'); }, 120000);
     const code = await new Promise((resolve) => electron.on('exit', resolve));
