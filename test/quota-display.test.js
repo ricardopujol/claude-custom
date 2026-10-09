@@ -405,3 +405,52 @@ test('as a plain <script> with no window, it publishes on the global', () => {
   assert.strictEqual(typeof ctx.quotaDisplay, 'function');
   assert.strictEqual(typeof ctx.formatQuotaCountdown, 'function');
 });
+
+// --- #42: the header's short wording ("41% · 18:00") ---------------------------------
+
+const { formatResetClock } = require('../app/quota-display');
+const pad2 = (n) => String(n).padStart(2, '0');
+const localClock = (iso) => { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+
+test('formatResetClock: a reset within a day is the local clock time', () => {
+  assert.strictEqual(formatResetClock('2026-09-15T17:37:00Z', NOW), localClock('2026-09-15T17:37:00Z'));
+  assert.strictEqual(formatResetClock('2026-09-16T15:59:00Z', NOW), localClock('2026-09-16T15:59:00Z'));
+});
+
+test('formatResetClock: a reset further out is the short weekday, so the row stays short', () => {
+  const iso = '2026-09-19T12:00:00Z';
+  const day = new Date(iso).toLocaleDateString('en-US', { weekday: 'short' });
+  assert.strictEqual(formatResetClock(iso, NOW), day);
+  assert.match(day, /^[A-Z][a-z]{2}$/);
+});
+
+test('formatResetClock: no usable time is null (the title says "reset time unknown"), and so is a reset already due', () => {
+  for (const bad of [null, undefined, '', 'soon', 'NaN', 42, {}]) assert.strictEqual(formatResetClock(bad, NOW), null, String(bad));
+  assert.strictEqual(formatResetClock('2026-09-15T15:00:00Z', NOW), null);
+  assert.strictEqual(formatResetClock('2026-09-15T16:00:00Z', NOW), null);
+});
+
+test('a meter\'s short wording is "pct · reset"; without a reset it is the percent alone; unknown stays a dash', () => {
+  const m = (over) => quotaDisplay(ready([win(over)]), NOW).meters[0];
+  assert.strictEqual(m({ percent: 41, resetsAt: '2026-09-15T17:37:00Z' }).short, `41% · ${localClock('2026-09-15T17:37:00Z')}`);
+  assert.strictEqual(m({ percent: 41, resetsAt: null }).short, '41%');
+  assert.strictEqual(m({ percent: null, resetsAt: '2026-09-15T17:37:00Z' }).short, UNKNOWN, 'no percent, no reset clock beside a dash');
+  assert.strictEqual(m({ percent: 0.4, resetsAt: '2026-09-15T17:37:00Z' }).short, `<1% · ${localClock('2026-09-15T17:37:00Z')}`);
+});
+
+test('only the binding window carries its reset in the header; the others are the percent (their reset is in the tooltip), so three meters fit', () => {
+  const d = quotaDisplay(ready([
+    win({ key: 'session', label: '5h', percent: 41, isActive: true, resetsAt: '2026-09-15T17:37:00Z' }),
+    win({ key: 'weekly_all', label: 'week', percent: 62, isActive: false, resetsAt: '2026-09-18T12:00:00Z' }),
+    win({ key: 'weekly_scoped', label: 'Fable', percent: 18, isActive: false, resetsAt: '2026-09-18T12:00:00Z' }),
+  ]), NOW);
+  assert.deepStrictEqual(d.meters.map(x => x.short), [`41% · ${localClock('2026-09-15T17:37:00Z')}`, '62%', '18%']);
+  assert.match(d.meters[1].title, /resets in 2d/);
+});
+
+test('the long wording is still in the tooltip, and "text" is still the percent alone', () => {
+  const m = quotaDisplay(ready([win({ percent: 41, resetsAt: '2026-09-15T17:37:00Z' })]), NOW).meters[0];
+  assert.strictEqual(m.text, '41%');
+  assert.match(m.title, /41% used/);
+  assert.match(m.title, /resets in 1h37m/);
+});

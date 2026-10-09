@@ -750,6 +750,14 @@ function registerShortcuts(wc) {
     else if (action === 'new-branch') openBranchForm();
     else if (action === 'focus-mode') setFocusMode(!focusMode);
     else if (action === 'index-note') { if (indexing) indexing.focusField(); }
+    else if (action === 'shortcuts') {
+      // The page lives in the tab view (it opens over that window); with none selected the key's own contents take it.
+      const v = selectedView();
+      const target = v ? v.webContents : wc;
+      if (target && !target.isDestroyed()) {
+        target.executeJavaScript('window.toggleShortcutsPage && window.toggleShortcutsPage()').catch(() => {});
+      }
+    }
     else if (action === 'devtools') {
       const v = selectedView();
       if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();

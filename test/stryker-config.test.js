@@ -62,6 +62,10 @@ const REPO_SCANNING = new Set([
   'status-relay-process.test.js',
   'probe-hygiene-process.test.js',
   'settings-writer-process.test.js',
+  // #43 shortcuts page: source text of tab-shell.js / main.js / renderer.js against the key table. It requires shortcut-table only for the rows,
+  // which shortcut-table.test.js pins itself.
+  'shortcut-table-wiring.test.js',
+  'shortcuts-display-script.test.js',   // runs the two files as plain <script>s in a vm (reads their text)
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 

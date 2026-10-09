@@ -2221,7 +2221,54 @@ document.addEventListener('click', (e) => {
   selectModule(button.dataset.module);
 });
 
-document.getElementById('side-hint').addEventListener('click', toggleAllZones);
+// --- the shortcuts sheet (BACKLOG #43) ---------------------------------------------
+// Opened by F1 (main: shortcutFor -> window.toggleShortcutsPage) and the header's "?"; Esc closes it. The rows are
+// app/shortcut-table.js's, drawn by app/shortcuts-display.js. Focus goes to the search box on open and back to where
+// it was on close (the terminal's textarea, usually).
+const shortcutsSheetEl = document.getElementById('shortcuts-sheet');
+const shortcutsBtnEl = document.getElementById('shortcuts-btn');
+const shortcutsSearchEl = document.getElementById('shortcuts-search');
+const shortcutsBodyEl = document.getElementById('shortcuts-body');
+let shortcutsOpen = false;
+let shortcutsReturnFocus = null;
+
+function paintShortcuts() { shortcutsBodyEl.innerHTML = window.shortcutsDisplay.sheetBodyHtml(shortcutsSearchEl.value); }
+
+function openShortcutsPage() {
+  if (shortcutsOpen) return;
+  shortcutsOpen = true;
+  shortcutsReturnFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+  // Below the header, so the "?" that opened it can close it; with the header hidden (focus mode) the sheet takes the window.
+  const bar = document.querySelector('header');
+  shortcutsSheetEl.style.setProperty('--sc-top', `${bar ? Math.max(0, Math.round(bar.getBoundingClientRect().bottom)) : 0}px`);
+  shortcutsSearchEl.value = '';
+  paintShortcuts();
+  shortcutsSheetEl.hidden = false;
+  shortcutsBtnEl.setAttribute('aria-expanded', 'true');
+  shortcutsSearchEl.focus();
+}
+
+function closeShortcutsPage() {
+  if (!shortcutsOpen) return;
+  shortcutsOpen = false;
+  shortcutsSheetEl.hidden = true;
+  shortcutsBtnEl.setAttribute('aria-expanded', 'false');
+  const back = shortcutsReturnFocus;
+  shortcutsReturnFocus = null;
+  // Where it was, if that's still on the page; otherwise the terminal, which is where typing goes.
+  if (back && back.isConnected && typeof back.focus === 'function') back.focus(); else term.focus();
+}
+
+window.toggleShortcutsPage = () => { if (shortcutsOpen) closeShortcutsPage(); else openShortcutsPage(); };
+shortcutsBtnEl.addEventListener('click', window.toggleShortcutsPage);
+document.getElementById('shortcuts-close').addEventListener('click', closeShortcutsPage);
+shortcutsSheetEl.querySelector('.sc-scrim').addEventListener('click', closeShortcutsPage);
+shortcutsSearchEl.addEventListener('input', paintShortcuts);
+// Capture phase and before any other Esc handler: while the sheet is up, Esc closes it and goes no further (it is never
+// Claude's interrupt, which would otherwise reach the pty). F1 is main's; this page takes no other key.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && shortcutsOpen) { e.preventDefault(); e.stopPropagation(); closeShortcutsPage(); }
+}, true);
 
 // S2: the first launch after the upgrade has no stored layout at all; it starts
 // from this window's old per-window settings so nothing moves under anyone.
@@ -3118,6 +3165,31 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // Backlog #36: who holds the keyboard now (the first open at load must leave it on the terminal).
       case 'focusState': return JSON.stringify({ ok: true, id: (document.activeElement && document.activeElement.id) || '',
         inTerm: !!(term.element && term.element.contains(document.activeElement)), shown: [...shownModules] });
+      // #43 (verify/probe-shortcuts-page.js): the shortcuts sheet as painted, and the few things a probe does to it that a real
+      // key can't (focus the terminal first, type into the search box, click "?").
+      case 'shortcutsState': {
+        const card = shortcutsSheetEl.querySelector('.sc-card').getBoundingClientRect();
+        const bar = document.querySelector('header').getBoundingClientRect();
+        const ae = document.activeElement;
+        return JSON.stringify({ ok: true, open: shortcutsOpen, hidden: shortcutsSheetEl.hidden, expanded: shortcutsBtnEl.getAttribute('aria-expanded'),
+          activeId: (ae && ae.id) || '', inTerm: !!(term.element && term.element.contains(ae)),
+          rows: shortcutsBodyEl.querySelectorAll('.sc-row').length, groups: [...shortcutsBodyEl.querySelectorAll('h3')].map(h => h.textContent),
+          cli: shortcutsBodyEl.querySelectorAll('.sc-cli').length, none: !!shortcutsBodyEl.querySelector('.sc-none'), query: shortcutsSearchEl.value,
+          card: { left: Math.round(card.left), right: Math.round(card.right), top: Math.round(card.top), bottom: Math.round(card.bottom), width: Math.round(card.width) },
+          headerBottom: Math.round(bar.bottom), viewport: { w: window.innerWidth, h: window.innerHeight },
+          btn: { text: shortcutsBtnEl.textContent, title: shortcutsBtnEl.title } });
+      }
+      case 'shortcutsDo': {
+        if (a.op === 'focusTerm') { term.focus(); return JSON.stringify({ ok: true }); }
+        if (a.op === 'clickButton') { shortcutsBtnEl.click(); return JSON.stringify({ ok: true }); }
+        if (a.op === 'focusButton') { shortcutsBtnEl.focus(); return JSON.stringify({ ok: true }); }
+        if (a.op === 'type') {
+          shortcutsSearchEl.value = String(a.text);
+          shortcutsSearchEl.dispatchEvent(new Event('input', { bubbles: true }));
+          return JSON.stringify({ ok: true });
+        }
+        return JSON.stringify({ ok: false, error: 'unknown shortcutsDo op' });
+      }
       case 'measure': {
         // #9: does each showing panel's content reach the bottom of its zone?
         const out = {};
@@ -4724,21 +4796,21 @@ function renderUsage(usage) {
     `cache write ${s.cacheWrite.toLocaleString()} - cache read ${s.cacheRead.toLocaleString()}`;
 
   // A placeholder replaces the number entirely; a prefix qualifies it.
-  const num = n => (how.placeholder !== null ? how.placeholder : how.prefix + compact(n));
+  // #42: "62M tok" in the header (tokText, app/usage-display.js). What used to follow it ("+4.1M cache", "14 sessions") is in
+  // the tooltips now, with the full breakdown.
+  const num = n => (how.placeholder !== null ? how.placeholder : how.prefix + window.tokText(n));
   const title = base => (how.note ? `${base} - ${how.note}` : base);
-  const sub = inner => (how.placeholder !== null ? '' : inner);
+  const sessions = `${project.sessions} session${project.sessions === 1 ? '' : 's'}`;
 
   usageEl.className = 'usage-' + how.state;
   usageEl.innerHTML =
     `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
       `<span class="lbl">session</span>` +
       `<span class="val">${num(spend(session))}</span>` +
-      `<span class="sub">${sub(`+${compact(written(session))} cache`)}</span>` +
     `</span>` +
-    `<span class="grp" title="${title(`Every session on this folder - ${detail(project)}`)}">` +
+    `<span class="grp" title="${title(`Every session on this folder (${sessions}) - ${detail(project)}`)}">` +
       `<span class="lbl">project</span>` +
       `<span class="val">${num(spend(project))}</span>` +
-      `<span class="sub">${sub(`${project.sessions} session${project.sessions === 1 ? '' : 's'} · +${compact(written(project))} cache`)}</span>` +
     `</span>` +
     // Said out loud, not only in a tooltip. A status nobody can see is the
     // defect this whole change exists to fix.
@@ -4768,7 +4840,8 @@ function renderQuota(quota) {
     `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}" title="${escapeHtml(m.title)}">` +
       `<span class="lbl">${escapeHtml(m.label)}</span>` +
       `<span class="track"><span class="fill" style="width:${m.fill}%"></span></span>` +
-      `<span class="pct">${escapeHtml(m.text)}</span>` +
+      // #42: "41% · 18:00" in the header; the countdown and the rest are in the tooltip.
+      `<span class="pct">${escapeHtml(m.short)}</span>` +
     `</span>`
   ).join('');
 }

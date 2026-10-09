@@ -1238,6 +1238,9 @@ function shortcutFor(input) {
   if (!input || typeof input !== 'object' || input.type !== 'keyDown' || typeof input.key !== 'string') return null;
   const key = input.key.toLowerCase();
   if (key === 'f12') return 'devtools';
+  // #43: the shortcuts page. Bare F1 only, so Shift/Ctrl/Alt+F1 stay the terminal's. The CLI binds no F1 (it takes no
+  // function keys), and with no menu bar Electron has no Help accelerator on it either.
+  if (key === 'f1' && !input.control && !input.alt && !input.shift && !input.meta) return 'shortcuts';
   // #35: a new tab is a new worktree. Ctrl+Alt+T, not Ctrl+T: the CLI owns that
   // one (it toggles its task list), and every key not named here reaches it.
   if (key === 't' && input.control && input.alt && !input.shift) return 'new-branch';
@@ -1297,7 +1300,9 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
   'occState', 'occKey', 'occClick', 'occTurn',
   // backlog #49 + #52: verify/probe-terminal-bar.js
-  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']);
+  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection',
+  // backlog #42 + #43: verify/probe-shortcuts-page.js reads the shortcuts sheet and drives the bits a real key can't
+  'shortcutsState', 'shortcutsDo']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));
