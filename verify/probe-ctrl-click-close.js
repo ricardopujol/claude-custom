@@ -13,6 +13,7 @@
  *   feat/a  merged marker, clean, nothing unpushed   -> closes with NO confirm
  *   feat/b  merged marker, one untracked file        -> asks, reason "1 uncommitted file"
  *   feat/c  no marker                                -> asks, reason "not merged"
+ *   feat/d  merged marker, clean, but a commit AFTER the merge -> asks, reason "not merged"
  *   dev     Ctrl+click only selects (it has no close)
  *   plain close of feat/c                            -> asks with no reason (the old single confirm)
  *
@@ -158,19 +159,21 @@ async function main() {
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
   git(dev, 'remote', 'add', 'origin', origin);
   git(dev, 'push', '-q', 'origin', 'develop');
-  for (const [dir, branch] of [['feat-a', 'feat/a'], ['feat-b', 'feat/b'], ['feat-c', 'feat/c']]) {
+  for (const [dir, branch] of [['feat-a', 'feat/a'], ['feat-b', 'feat/b'], ['feat-c', 'feat/c'], ['feat-d', 'feat/d']]) {
     git(dev, 'worktree', 'add', '-q', path.join(container, dir), '-b', branch);
   }
   mark(path.join(container, 'feat-a'), 'feat/a');
   mark(path.join(container, 'feat-b'), 'feat/b');
   fs.writeFileSync(path.join(container, 'feat-b', 'notes.txt'), 'unsaved work\n');
+  mark(path.join(container, 'feat-d'), 'feat/d');
+  git(path.join(container, 'feat-d'), 'commit', '-q', '--allow-empty', '-m', 'after the merge');
 
   const app = await launchApp(container);
   const up = await waitFor(async () => {
     const st = await labelsOf(app);
-    return st && tabLabels(st).length === 4 ? st : null;
+    return st && tabLabels(st).length === 5 ? st : null;
   }, 60000);
-  check('0: the window is up with develop, feat/a, feat/b and feat/c', !!up, up ? '' : `exited=${app.exited} out=${app.out.slice(-600)}`);
+  check('0: the window is up with develop, feat/a, feat/b, feat/c and feat/d', !!up, up ? '' : `exited=${app.exited} out=${app.out.slice(-600)}`);
   if (!up) return;
   await sleep(1500);
   await shoot(app, '1-before');
@@ -197,6 +200,13 @@ async function main() {
     && st.confirms[1].reason === 'not merged', JSON.stringify(st.confirms));
   await shoot(app, '2-unsafe-asked');
 
+  // feat/d: marker, but HEAD has a commit that is not on origin/develop (git's exit 1, read for real)
+  await command(app, { cmd: 'ctrlClick', label: 'feat/d' });
+  await waitFor(async () => (await labelsOf(app)).confirms.length >= 3, 15000);
+  st = await labelsOf(app);
+  const dAsk = st.confirms[2] || {};
+  check('3b: a commit after the merge is "not merged", and also unpushed', dAsk.label === 'feat/d' && /^not merged/.test(dAsk.reason), JSON.stringify(st.confirms));
+
   // feat/a: merged, clean, pushed -> closes with no confirm
   await command(app, { cmd: 'ctrlClick', label: 'feat/a' });
   const closed = await waitFor(async () => {
@@ -205,8 +215,8 @@ async function main() {
   }, 15000);
   check('4: a merged, clean, pushed tab closes on Ctrl+click', !!closed, JSON.stringify(tabLabels(await labelsOf(app))));
   st = await labelsOf(app);
-  check('4: ...with NO confirm', st.confirms.length === 2, JSON.stringify(st.confirms));
-  check('4: ...and the others stay', ['develop', 'feat/b', 'feat/c'].every(l => tabLabels(st).includes(l)), JSON.stringify(tabLabels(st)));
+  check('4: ...with NO confirm', st.confirms.length === 3, JSON.stringify(st.confirms));
+  check('4: ...and the others stay', ['develop', 'feat/b', 'feat/c', 'feat/d'].every(l => tabLabels(st).includes(l)), JSON.stringify(tabLabels(st)));
   check('4: ...the closed tab is offered back by the + menu', Array.isArray(st.reopenable) && st.reopenable.some(r => /feat\/a|feat-a/i.test(JSON.stringify(r))), JSON.stringify(st.reopenable));
   await sleep(500);
   await shoot(app, '3-after-safe-close');
@@ -214,7 +224,7 @@ async function main() {
   // a plain close still asks once, with no reason
   const r = await command(app, { cmd: 'close', label: 'feat/c' });
   st = await labelsOf(app);
-  check('5: a plain close of feat/c asks once, with no reason', r.ok === true && st.confirms.length === 3 && st.confirms[2].reason === '', JSON.stringify(st.confirms));
+  check('5: a plain close of feat/c asks once, with no reason', r.ok === true && st.confirms.length === 4 && st.confirms[3].reason === '', JSON.stringify(st.confirms));
 
   await command(app, { cmd: 'quit' });
 }

@@ -7,6 +7,9 @@
  * feeds the strip's marks, each tab's banner and the hub's card line from one list.
  *
  *   current()  the live claims          state()  'ok' | 'missing' | 'unreadable'
+ *   known()    true only when "no claim here" can be believed: a pass has finished, the folder was readable and
+ *              no claim was left unproven (the OS couldn't be asked). A Ctrl+click close (#77) needs it: an
+ *              empty list from a service that couldn't look is not "no agents".
  *   refresh()  re-read and re-judge     start() / close()
  *
  * TRUTH RULES
@@ -25,7 +28,7 @@
 const fs = require('fs');
 const { watchGlobalDir } = require('./global-watch');
 const { readAll } = require('./occupancy-store');
-const { judge, LIVE, UNKNOWN } = require('./occupancy-live');
+const { judge, LIVE, UNKNOWN, UNPROVEN } = require('./occupancy-live');
 
 const TICK_MS = 10_000;
 const LABEL_MS = 30_000;
@@ -46,6 +49,7 @@ function createOccupancyService({
   let lastNotifiedAt = 0;
   let running = null;
   let again = false;
+  let trusted = false;
   let closed = false;
   let watcher = null;
   let timer = null;
@@ -63,15 +67,18 @@ function createOccupancyService({
     const judged = read.claims.length ? await judge(read.claims, startTimes) : [];
     const next = [];
     const present = new Set();
+    let unproven = false;
     for (const { claim, verdict } of judged) {
       const key = proofKey(claim);
       present.add(key);
+      if ((verdict === UNKNOWN || verdict === UNPROVEN) && !proven.has(key)) unproven = true;   // hidden, but it might be an agent at work
       if (verdict === LIVE) { proven.add(key); next.push(claim); } else if (verdict === UNKNOWN && proven.has(key)) next.push(claim);
       else proven.delete(key);
     }
     for (const key of [...proven]) if (!present.has(key)) proven.delete(key);
 
     live = next;
+    trusted = read.state !== 'unreadable' && !unproven;
     const sig = signatureOf(next);
     const t = now();
     const changed = sig !== signature;
@@ -91,7 +98,7 @@ function createOccupancyService({
       try {
         do {
           again = false;
-          try { await pass(); } catch (err) { log('[occupancy] refresh failed:', err && err.message); }
+          try { await pass(); } catch (err) { trusted = false; log('[occupancy] refresh failed:', err && err.message); }
         } while (again);
       } finally { running = null; }
     })();
@@ -126,7 +133,7 @@ function createOccupancyService({
   }
 
   return {
-    current: () => live.slice(), state: () => state, refresh, start, close,
+    current: () => live.slice(), state: () => state, known: () => trusted, refresh, start, close,
     _ensureDir: ensureDir, _tickMs: tickMs,
   };
 }

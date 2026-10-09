@@ -207,6 +207,8 @@ test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exac
   assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe \}\)/);
   assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
   assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\) \}/);
+  assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(\) => occupancyService\.known\(\) \}/,
+    'a Ctrl+click close asks the service whether it could look (#77 D2)');
   // the context menu and the plain x stay plain
   assert.match(MAIN, /label: 'Close tab', enabled: st\.close, click: \(\) => closeTabFlow\(key\)/);
 });
