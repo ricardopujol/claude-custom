@@ -32,7 +32,7 @@ const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAME
 const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH } = require('./lean-bridge');
-const { createLean } = require('./lean-state');
+const { createLean, unionDismissed } = require('./lean-state');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -1238,7 +1238,7 @@ function registerIpc() {
     lean: createLean({
       dismissed: Array.isArray(leanKept) ? leanKept : [],
       onDismissed: (list) => {
-        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: list })); }
+        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
         catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
       },
     }),

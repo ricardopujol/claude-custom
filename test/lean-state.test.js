@@ -188,3 +188,15 @@ test('property: after every operation the state machine agrees with the referenc
     }
   }));
 });
+
+const { unionDismissed } = require('../app/lean-state');
+
+test('Dexter N3: two mains write the dismissed list through a union, so neither erases the other\'s nights', () => {
+  assert.deepStrictEqual(unionDismissed([1], [2]), [1, 2]);
+  assert.deepStrictEqual(unionDismissed([1, 2], [2, 3]), [1, 2, 3]);
+  assert.deepStrictEqual(unionDismissed(undefined, [5]), [5]);
+  assert.deepStrictEqual(unionDismissed([1, 'x', NaN], null), [1]);
+  const many = Array.from({ length: 80 }, (_, i) => i + 1);
+  assert.strictEqual(unionDismissed(many, [999]).length, 50);
+  assert.strictEqual(unionDismissed(many, [999]).at(-1), 999, 'the newest survive the cap');
+});

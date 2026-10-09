@@ -37,7 +37,7 @@ test('a tab view going away drops its night by the id taken when it was made, ev
 
 test('the nights sent Back to normal are kept across a restart in the install-wide record (Dexter F2)', () => {
   assert.match(MAIN, /createLean\(\{\s*dismissed: Array\.isArray\(leanKept\) \? leanKept : \[\]/);
-  assert.match(MAIN, /leanDismissed: list/);
+  assert.match(MAIN, /leanDismissed: unionDismissed\(/);
 });
 
 test('the tab preload exposes lean get / set / night / onChange on the channels main answers', () => {
@@ -125,4 +125,34 @@ test('the page keeps the terminal and the strip\'s marks: lean hides panels and 
   assert.match(HTML, /<script src="\.\/lean-display\.js"><\/script>/);
   assert.ok(HTML.indexOf('lean-display.js') < HTML.indexOf('src="./renderer.js"'));
   assert.match(HTML, /<div id="lean-faces" hidden><\/div>/);
+});
+
+test('Dexter N3: main writes the union of the stored list and its own', () => {
+  assert.match(MAIN, /leanDismissed: unionDismissed\(prev && prev\.leanDismissed, list\)/);
+});
+
+test('Dexter N1: the host is told about lean ONLY when its hello lists the type (an older host would type the frame into the session)', () => {
+  assert.match(RENDERER, /hostControls = Array\.isArray\(msg\.controls\) \? msg\.controls : \[\]/);
+  const lf = RENDERER.replace(/\r\n/g, '\n');
+  const at = lf.indexOf('function tellHostLean()');
+  const fn = lf.slice(at, lf.indexOf('\n}\n', at) + 2);
+  const send = (hostControls, open) => {
+    const sent = [];
+    const ws = { readyState: 1, send: (d) => sent.push(d) };
+    new Function('ws', 'WebSocket', 'leanDisplay', 'hostControls', 'leanOn', fn + '; tellHostLean();')(
+      open ? ws : null, { OPEN: 1 }, require('../app/lean-display'), hostControls, true);
+    return sent;
+  };
+  assert.deepStrictEqual(send(['resize', 'input'], true), [], 'a hello without lean: nothing is sent');
+  assert.deepStrictEqual(send(null, true), [], 'no hello yet: nothing is sent');
+  assert.deepStrictEqual(send(['resize', 'lean'], true), ['{"type":"lean","on":true}']);
+  assert.deepStrictEqual(send(['lean'], false), [], 'a closed socket sends nothing');
+  // the hello's own re-send comes after it has read the controls
+  const hello = RENDERER.indexOf('hostControls = Array.isArray(msg.controls)');
+  assert.ok(hello !== -1 && hello < RENDERER.indexOf('if (leanOn) tellHostLean();'));
+});
+
+test('Dexter N2: the still background is drawn into a real destination box sized by stillSize, not at a default size', () => {
+  assert.match(RENDERER, /leanDisplay\.stillSize\(img\.naturalWidth, img\.naturalHeight, window\.innerWidth, window\.innerHeight\)/);
+  assert.match(RENDERER, /drawImage\(img, 0, 0, c\.width, c\.height\)/);
 });

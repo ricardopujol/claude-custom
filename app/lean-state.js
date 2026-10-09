@@ -30,6 +30,15 @@ const DISMISSED_CAP = 50;
 
 const isTime = (n) => typeof n === 'number' && Number.isFinite(n);
 
+/** The stored list and this main's own, merged (two windows are two mains, each with its own memory: PR #140 Dexter N3), capped. */
+function unionDismissed(stored, mine) {
+  const out = [];
+  for (const at of [...(Array.isArray(stored) ? stored : []), ...(Array.isArray(mine) ? mine : [])]) {
+    if (isTime(at) && !out.includes(at)) out.push(at);
+  }
+  return out.slice(-DISMISSED_CAP);
+}
+
 function createLean({ dismissed = [], onDismissed = () => {} } = {}) {
   let on = false;
   let byBedtime = false;
@@ -87,4 +96,4 @@ function createLean({ dismissed = [], onDismissed = () => {} } = {}) {
   return { view, setByHand, nightStarted, nightEnded };
 }
 
-module.exports = { createLean };
+module.exports = { createLean, unionDismissed };

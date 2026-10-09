@@ -128,3 +128,15 @@ test('workingFaces: nothing working is an empty strip, and junk rows are skipped
   assert.deepStrictEqual(L.workingFaces([], {}), { faces: [], more: 0 });
   assert.deepStrictEqual(L.workingFaces([null, 3, { state: 'working' }, { agent: 'x', state: 'working' }], {}).faces.map(f => f.agent), ['x']);
 });
+
+test('hostListsLean: only a hello whose controls list lean may be told (an older host would type the frame into the session) (Dexter N1)', () => {
+  assert.strictEqual(L.hostListsLean(['resize', 'lean']), true);
+  for (const c of [null, undefined, [], ['resize', 'input'], 'lean', { lean: true }]) assert.strictEqual(L.hostListsLean(c), false, JSON.stringify(c));
+});
+
+test('stillSize: the image\'s own size, else the fallback box (a viewBox-only SVG reports 0), else a square (Dexter N2)', () => {
+  assert.deepStrictEqual(L.stillSize(1600, 1000, 1920, 1080), { width: 1600, height: 1000 });
+  assert.deepStrictEqual(L.stillSize(0, 0, 1920, 1080), { width: 1920, height: 1080 });
+  assert.deepStrictEqual(L.stillSize(0, 150, 1920, 1080), { width: 1920, height: 1080 }, 'half a size is no size');
+  assert.deepStrictEqual(L.stillSize(NaN, undefined, 0, -3), { width: 300, height: 300 });
+});

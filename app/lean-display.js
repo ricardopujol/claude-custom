@@ -14,6 +14,10 @@
  *                            name: an APNG is a .png, a WebP may be animated, an SVG may carry SMIL/CSS animation (PR #140 Dexter F4). Lean
  *                            draws such an image's first frame into a canvas; for a still one that is the same picture. ONE rule, shared by
  *                            the background and the portraits strip.
+ *   hostListsLean(controls)  does the host's hello list `lean` among its control types: a frame to a host that does not would be TYPED into the
+ *                            session as JSON (hosts outlive app updates; PR #140 Dexter N1). Only an exact array entry counts.
+ *   stillSize(w, h, fw, fh)  the size to draw a still frame at: the image's own, else (a viewBox-only SVG reports 0) the fallback box, so
+ *                            the draw has a real destination and `cover` fills the window (Dexter N2)
  *   advanceCooldowns(list,now) the cooldown widget's countdown step, so a resume after a long lean shows the real time left (Dexter F7)
  *   createSuspender()        the registry of suspend/resume pairs: every panel, poller or animation registers one;
  *                            `set(true)` suspends all (in registration order), `set(false)` resumes them in reverse.
@@ -59,6 +63,16 @@ const STATIC_EXT = /\.(?:jpe?g)$/i;
 function mayAnimate(url) {
   if (typeof url !== 'string' || url === '') return false;
   return !STATIC_EXT.test(url.split('#')[0].split('?')[0]);
+}
+
+function hostListsLean(controls) {
+  return Array.isArray(controls) && controls.includes('lean');
+}
+
+function stillSize(w, h, fw, fh) {
+  const ok = (n) => typeof n === 'number' && Number.isFinite(n) && n > 0;
+  if (ok(w) && ok(h)) return { width: Math.round(w), height: Math.round(h) };
+  return { width: ok(fw) ? Math.round(fw) : 300, height: ok(fh) ? Math.round(fh) : 300 };
 }
 
 /** Each entry's remaining time reduced by the time since its last tick; the expired go. Pure: `now` in, a new list out. */
@@ -110,7 +124,7 @@ function workingFaces(rows, { limit = FACE_LIMIT } = {}) {
   };
 }
 
-const API = { normalize, chip, wantWebgl, mayAnimate, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
+const API = { normalize, chip, wantWebgl, mayAnimate, hostListsLean, stillSize, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.leanDisplay = API;

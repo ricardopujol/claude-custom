@@ -1079,6 +1079,7 @@ let dragLayout = null;           // a divider being dragged: drawn, not yet save
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let shownModules = new Set();
+let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
 let leanOn = false;              // lean mode, BACKLOG #62: the whole window is terminal-only; main's word, see the lean block below
 let layoutPushes = 0;            // layouts pushed to this window by main: the probe counts the store writes with it
 
@@ -4948,9 +4949,11 @@ function paintBackgroundImage(url) {
     if (token !== bgStillToken || !leanOn) return;
     const c = document.createElement('canvas');
     c.className = 'bg-still';
-    c.width = img.naturalWidth || 300;       // an SVG with no intrinsic size reports 0
-    c.height = img.naturalHeight || 300;
-    try { c.getContext('2d').drawImage(img, 0, 0); } catch { return; }       // cannot be drawn: no background, never a moving one
+    // a viewBox-only SVG (the generated art) reports 0: size from the window and draw into that box, so cover fills it (Dexter N2)
+    const size = leanDisplay.stillSize(img.naturalWidth, img.naturalHeight, window.innerWidth, window.innerHeight);
+    c.width = size.width;
+    c.height = size.height;
+    try { c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); } catch { return; }       // cannot be drawn: no background, never a moving one
     bgEl.prepend(c);
     bgStillEl = c;
   };
@@ -5008,6 +5011,8 @@ function setTerminalRenderer() {
 // The host's local-model summary job: its only reader (the terminal bar) is hidden, so the host starts none while every window is lean
 // (host/lean-gate.js). Main's process-tree sampler is NOT stopped: it drives Leftovers' 15-minute auto-reap, which matters most overnight.
 function tellHostLean() {
+  // ONLY to a host that lists it: an older host (they outlive app updates) would type the frame into the session as JSON (PR #140 Dexter N1)
+  if (!leanDisplay.hostListsLean(hostControls)) return;
   if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'lean', on: leanOn })); } catch { /* not attached: the hello says it again */ } }
 }
 leanSuspender.register('summary-job', { suspend: tellHostLean, resume: tellHostLean });
@@ -6490,6 +6495,7 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
+    hostControls = Array.isArray(msg.controls) ? msg.controls : [];
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
     renderTitle();
