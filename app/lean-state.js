@@ -6,6 +6,8 @@
  *   on           the window is lean
  *   byBedtime    a /bedtime night turned it on (so the night's end turns it off); false when the button did
  *   bedtimeSince the start (ms) of the night that did it, for the strip's `bedtime HH:MM`; null otherwise
+ *   night        a /bedtime night is going in ANY tab (whoever turned lean on): Ricardo's rule is that an animated background never
+ *                plays during one (app/lean-display.js holdStill)
  *
  * THE RULES (Ricardo's, round 3):
  *   - the ☾ Lean button always wins. setByHand(on) sets the state and takes it away from any night: a night that started while it
@@ -47,7 +49,7 @@ function createLean({ dismissed = [], onDismissed = () => {} } = {}) {
   const gone = (Array.isArray(dismissed) ? dismissed : []).filter(isTime).slice(-DISMISSED_CAP);
 
   function view() {
-    return { on, byBedtime: on && byBedtime, bedtimeSince: on && byBedtime ? since : null };
+    return { on, byBedtime: on && byBedtime, bedtimeSince: on && byBedtime ? since : null, night: nights.size > 0 };
   }
 
   function snapshot() { return JSON.stringify(view()); }
@@ -76,21 +78,25 @@ function createLean({ dismissed = [], onDismissed = () => {} } = {}) {
 
   function nightStarted(owner, startedAt) {
     if (!isTime(startedAt)) return false;
+    const before = snapshot();
     nights.set(owner, startedAt);
-    if (gone.includes(startedAt) || on) return false;
-    on = true;
-    byBedtime = true;
-    since = startedAt;
-    return true;
+    if (!(gone.includes(startedAt) || on)) {
+      on = true;
+      byBedtime = true;
+      since = startedAt;
+    }
+    return snapshot() !== before;
   }
 
   function nightEnded(owner) {
+    const before = snapshot();
     if (!nights.delete(owner)) return false;
-    if (nights.size > 0 || !on || !byBedtime) return false;
-    on = false;
-    byBedtime = false;
-    since = null;
-    return true;
+    if (nights.size === 0 && on && byBedtime) {
+      on = false;
+      byBedtime = false;
+      since = null;
+    }
+    return snapshot() !== before;
   }
 
   return { view, setByHand, nightStarted, nightEnded };

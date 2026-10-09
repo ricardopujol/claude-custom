@@ -7,13 +7,13 @@ const { createLean } = require('../app/lean-state');
 const NIGHT = 1_700_000_000_000;
 
 test('starts normal', () => {
-  assert.deepStrictEqual(createLean().view(), { on: false, byBedtime: false, bedtimeSince: null });
+  assert.deepStrictEqual(createLean().view(), { on: false, byBedtime: false, bedtimeSince: null, night: false });
 });
 
 test('the button turns it on by hand and off again', () => {
   const l = createLean();
   assert.strictEqual(l.setByHand(true), true);
-  assert.deepStrictEqual(l.view(), { on: true, byBedtime: false, bedtimeSince: null });
+  assert.deepStrictEqual(l.view(), { on: true, byBedtime: false, bedtimeSince: null, night: false });
   assert.strictEqual(l.setByHand(true), false, 'nothing changed');
   assert.strictEqual(l.setByHand(false), true);
   assert.strictEqual(l.view().on, false);
@@ -22,22 +22,23 @@ test('the button turns it on by hand and off again', () => {
 test('a night starting turns it on, remembering which night did', () => {
   const l = createLean();
   assert.strictEqual(l.nightStarted('a', NIGHT), true);
-  assert.deepStrictEqual(l.view(), { on: true, byBedtime: true, bedtimeSince: NIGHT });
+  assert.deepStrictEqual(l.view(), { on: true, byBedtime: true, bedtimeSince: NIGHT, night: true });
 });
 
 test('the night ending turns it off when the night turned it on', () => {
   const l = createLean();
   l.nightStarted('a', NIGHT);
   assert.strictEqual(l.nightEnded('a'), true);
-  assert.deepStrictEqual(l.view(), { on: false, byBedtime: false, bedtimeSince: null });
+  assert.deepStrictEqual(l.view(), { on: false, byBedtime: false, bedtimeSince: null, night: false });
 });
 
 test('a night starting while it was already on by hand leaves it by hand, and the night ending leaves it on', () => {
   const l = createLean();
   l.setByHand(true);
-  assert.strictEqual(l.nightStarted('a', NIGHT), false);
-  assert.deepStrictEqual(l.view(), { on: true, byBedtime: false, bedtimeSince: null });
-  assert.strictEqual(l.nightEnded('a'), false);
+  assert.strictEqual(l.nightStarted('a', NIGHT), true, 'only the night flag changed: still a change to tell the pages');
+  assert.deepStrictEqual(l.view(), { on: true, byBedtime: false, bedtimeSince: null, night: true });
+  assert.strictEqual(l.nightEnded('a'), true);
+  assert.deepStrictEqual(l.view(), { on: true, byBedtime: false, bedtimeSince: null, night: false });
   assert.strictEqual(l.view().on, true);
 });
 
@@ -48,7 +49,8 @@ test('the button always wins: Back to normal during a night stays normal, and th
   assert.strictEqual(l.view().on, false);
   assert.strictEqual(l.nightStarted('a', NIGHT), false, 'the same night, said again');
   assert.strictEqual(l.view().on, false);
-  assert.strictEqual(l.nightEnded('a'), false);
+  l.nightEnded('a');
+  assert.strictEqual(l.view().on, false);
 });
 
 test('a NEW night after Back to normal turns it on again', () => {
@@ -64,7 +66,7 @@ test('the button on while a night turned it on takes it over: the night ending n
   const l = createLean();
   l.nightStarted('a', NIGHT);
   assert.strictEqual(l.setByHand(true), true, 'the view changed: no longer "by bedtime"');
-  assert.deepStrictEqual(l.view(), { on: true, byBedtime: false, bedtimeSince: null });
+  assert.deepStrictEqual(l.view(), { on: true, byBedtime: false, bedtimeSince: null, night: true });
   l.nightEnded('a');
   assert.strictEqual(l.view().on, true);
 });
@@ -116,7 +118,7 @@ test('Dexter F2: the dismissal survives a restart: it is handed out and comes ba
   a.setByHand(false);
   assert.deepStrictEqual(saved, [[NIGHT]]);
   const b = createLean({ dismissed: saved[0] });          // main restarted; every tab's hello reports the night again
-  assert.strictEqual(b.nightStarted(7, NIGHT), false);
+  b.nightStarted(7, NIGHT);
   assert.strictEqual(b.view().on, false);
   assert.strictEqual(b.nightStarted(7, NIGHT + 1), true, 'a different night asks again');
 });
@@ -143,7 +145,7 @@ test('Dexter F3 (contrast): a night the person dismissed is not revived into lea
   l.nightStarted(1, NIGHT);
   l.setByHand(false);
   l.nightEnded(1);
-  assert.strictEqual(l.nightStarted(1, NIGHT), false);
+  l.nightStarted(1, NIGHT);
   assert.strictEqual(l.view().on, false);
 });
 
@@ -199,4 +201,17 @@ test('Dexter N3: two mains write the dismissed list through a union, so neither 
   const many = Array.from({ length: 80 }, (_, i) => i + 1);
   assert.strictEqual(unionDismissed(many, [999]).length, 50);
   assert.strictEqual(unionDismissed(many, [999]).at(-1), 999, 'the newest survive the cap');
+});
+
+test('Ricardo video rule: the view says a night is going in ANY tab, whoever turned lean on; a change of only that flag is a change to push, a second tab changes nothing', () => {
+  const l = createLean();
+  l.setByHand(true);
+  assert.strictEqual(l.view().night, false);
+  assert.strictEqual(l.nightStarted('a', NIGHT), true);
+  assert.strictEqual(l.view().night, true);
+  assert.strictEqual(l.nightStarted('b', NIGHT + 1), false);
+  assert.strictEqual(l.nightEnded('a'), false, 'b is still going');
+  assert.strictEqual(l.view().night, true);
+  assert.strictEqual(l.nightEnded('b'), true);
+  assert.strictEqual(l.view().night, false);
 });

@@ -21,7 +21,7 @@
  *   5  the button always wins: Back to normal during a night stays normal; and a night starting while it is on by hand
  *      leaves it on when the night ends
  *   6  a working agent shows as a still portrait in the corner (no video, no animation) and the roster panel is not drawn
- *   7  a GIF background becomes its first frame (a canvas) while lean and the GIF again after; a webm holds frame zero
+ *   7  Ricardo's rule: while lean a GIF/webm background moves only while the window is focused and no night is on, else its still frame (frame zero);
  *      while lean and plays again after
  *   8  the memory / CPU table: normal vs lean, per process type, on one busy tab and on three busy tabs
  *
@@ -162,6 +162,17 @@ const view = (app, action, args = {}) => command(app, { cmd: 'view', action, arg
 const leanPage = async (app) => { const r = await view(app, 'leanState'); return r && r.ok ? r : null; };
 const stripLean = async (app) => { const st = await stateOf(app); return st && st.stripChrome && st.stripChrome.lean ? st.stripChrome.lean : null; };
 const press = (app, button) => command(app, { cmd: 'strip-lean', button });
+const focusWin = (app) => command(app, { cmd: 'windowFocus' });
+const blurWin = (app) => command(app, { cmd: 'windowBlur' });
+// the video as the page has it: moving (currentTime advances) / held on frame zero
+async function videoMoves(app) {
+  const p = await leanPage(app);
+  if (!p || !p.bg.video || p.bg.video.paused) return false;
+  await sleep(400);
+  const q = await leanPage(app);
+  return !!(q && q.bg.video && q.bg.video.currentTime !== p.bg.video.currentTime);
+}
+const videoHeld = async (app) => { const p = await leanPage(app); return !!(p && p.bg.video && p.bg.video.paused === true && p.bg.video.currentTime === 0); };
 const typeInto = (app, text) => view(app, 'gitTermInput', { data: text });
 const screenOf = async (app) => { const r = await view(app, 'gitScreen'); return r && r.ok ? String(r.text) : ''; };
 const shoot = (app, name) => command(app, { cmd: 'screenshot', file: path.join(shots, `${name}.png`) });
@@ -264,6 +275,7 @@ async function main() {
   await sleep(1500);
   const devPid = devHost.pid;
   await sleep(10000);          // the page and the terminal settle
+  await focusWin(app);         // as a person at the keyboard: focus is an input to lean's video rule
 
   // 1 -------------------------------------------------------------------------------------------
   const n0 = await leanPage(app);
@@ -288,10 +300,15 @@ async function main() {
   check('2: the terminal fills the page', lean.termRect.left <= 1 && lean.termRect.top <= 1 && lean.termRect.width >= lean.page.width - 2 && lean.termRect.height >= lean.page.height - 2,
     JSON.stringify({ rect: lean.termRect, page: lean.page }));
   // the default generated art is a viewBox-only SVG (no width/height): its still frame must be drawn into a real box (PR #140 Dexter N2)
+  // (Ricardo's rule: it only holds still while the window is NOT focused or a night is on, so the window loses focus for this check)
   const svgNormal = /\.svg/i.test(n0.bg.cssImage || '');
-  check('2: the generated SVG background is its still frame in lean, a canvas covering the window at its shown size (not a 240x150 enlargement)',
-    svgNormal && !!lean.bg.still && lean.bg.cssImage === '' && lean.bg.still.width >= lean.page.width - 2 && lean.bg.still.height >= lean.page.height - 2,
-    JSON.stringify({ normalBg: (n0.bg.cssImage || '').slice(-40), leanStill: lean.bg.still, page: lean.page }));
+  check('2: focused and no night, lean leaves the generated background moving as it is (the CSS image, no still)', !!lean && lean.bg.still === null && /\.svg/i.test(lean.bg.cssImage || ''), JSON.stringify(lean.bg));
+  await blurWin(app);
+  const svgHeld = await waitFor(async () => { const p = await leanPage(app); return p && p.bg.still ? p : null; }, 10000);
+  check('2: unfocused, the generated SVG background is its still frame in lean, a canvas covering the window at its shown size (not a 240x150 enlargement)',
+    svgNormal && !!svgHeld && svgHeld.bg.cssImage === '' && svgHeld.bg.still.width >= svgHeld.page.width - 2 && svgHeld.bg.still.height >= svgHeld.page.height - 2,
+    JSON.stringify({ normalBg: (n0.bg.cssImage || '').slice(-40), leanStill: svgHeld && svgHeld.bg.still, page: lean.page }));
+  await focusWin(app);
   check('2: the terminal swapped its WebGL renderer for the default one', lean.webgl === false, `normal ${n0.webgl} -> lean ${lean.webgl}`);
   check('2: the project\'s colours and terminal theme are untouched', JSON.stringify(lean.look) === JSON.stringify(n0.look) && JSON.stringify(lean.termTheme) === JSON.stringify(n0.termTheme),
     JSON.stringify({ normal: n0.look, lean: lean.look }));
@@ -374,44 +391,56 @@ async function main() {
   await shoot(app, '5-lean-portraits');
   hook(devPid, 'SubagentStop', { session_id: 'probe', agent_id: 'toolu_lean1', agent_type: 'electron-pro' });
 
-  // 7: backgrounds -----------------------------------------------------------------------------------------------
+  // 7: backgrounds, and Ricardo's rule (2026-10-09): while lean an animated background moves ONLY while the window is focused AND no
+  // night is on; otherwise it is its still frame. Outside lean nothing changes. ----------------------------------------------------
   if (!errs.length) {
     await press(app, 'lean-back');
     await waitFor(async () => { const p = await leanPage(app); return p && !p.leanOn ? p : null; }, 10000);
+    await focusWin(app);
     await view(app, 'bgStyle', { action: 'set-background', path: files.gif });
     const gifN = await waitFor(async () => { const p = await leanPage(app); return p && p.bg.hasBg && /\.gif/.test(p.bg.cssImage) ? p : null; }, 15000);
     check('7: a GIF background is the CSS background while normal', !!gifN && gifN.bg.still === null, gifN ? gifN.bg.cssImage.slice(0, 80) : 'not set');
     await press(app, 'lean-btn');
+    const gifF = await waitFor(async () => { const p = await leanPage(app); return p && p.leanOn ? p : null; }, 10000);
+    await sleep(600);
+    const gifF2 = await leanPage(app);
+    check('7: lean + focused + no night: the GIF keeps moving (still the CSS background, no still frame)', !!gifF && !!gifF2 && gifF2.bg.still === null && /\.gif/.test(gifF2.bg.cssImage), gifF2 ? JSON.stringify(gifF2.bg).slice(0, 160) : 'none');
+    await blurWin(app);
     const gifL = await waitFor(async () => { const p = await leanPage(app); return p && p.leanOn && p.bg.still ? p : null; }, 15000);
-    check('7: ...while lean it is its first frame (a canvas) and the animated CSS background is gone', !!gifL && gifL.bg.cssImage === '' && gifL.bg.still.width === 160, gifL ? JSON.stringify(gifL.bg) : 'no still');
+    check('7: ...focus lost, it is its first frame (a canvas) and the animated CSS background is gone', !!gifL && gifL.bg.cssImage === '' && gifL.bg.still.width === 160, gifL ? JSON.stringify(gifL.bg) : 'no still');
     await shoot(app, '6-lean-gif-still');
+    await focusWin(app);
+    const gifBack = await waitFor(async () => { const p = await leanPage(app); return p && p.leanOn && p.bg.still === null && /\.gif/.test(p.bg.cssImage) ? p : null; }, 15000);
+    check('7: ...focus back, the GIF moves again', !!gifBack);
     await press(app, 'lean-back');
-    const gifB = await waitFor(async () => { const p = await leanPage(app); return p && !p.leanOn && /\.gif/.test(p.bg.cssImage) ? p : null; }, 15000);
-    check('7: ...and the GIF is back after Back to normal', !!gifB && gifB.bg.still === null);
+    await waitFor(async () => { const p = await leanPage(app); return p && !p.leanOn ? p : null; }, 10000);
 
     await view(app, 'bgStyle', { action: 'set-background', path: files.webm });
-    const vidN = await waitFor(async () => {
-      const p = await leanPage(app);
-      if (!p || !p.bg.video || p.bg.video.paused) return null;
-      await sleep(400);
-      const q = await leanPage(app);
-      return q && q.bg.video && q.bg.video.currentTime !== p.bg.video.currentTime ? q : null;
-    }, 20000);
+    const vidN = await waitFor(() => videoMoves(app), 20000);
     check('7: a webm background plays while normal', !!vidN);
     await press(app, 'lean-btn');
-    const vidL = await waitFor(async () => { const p = await leanPage(app); return p && p.leanOn && p.bg.video && p.bg.video.paused ? p : null; }, 15000);
+    await waitFor(async () => { const p = await leanPage(app); return p && p.leanOn ? p : null; }, 10000);
+    check('7: lean + focused + no night: the webm PLAYS', !!(await waitFor(() => videoMoves(app), 15000)));
+    await shoot(app, '7-lean-video-focused');
+    await blurWin(app);
     await sleep(800);
-    const vidL2 = await leanPage(app);
-    check('7: ...while lean it is held on frame zero', !!vidL && !!vidL2 && vidL2.bg.video.paused === true && vidL2.bg.video.currentTime === 0, vidL2 ? JSON.stringify(vidL2.bg.video) : 'none');
+    check('7: focus lost: it is held on frame zero within a second', await videoHeld(app), JSON.stringify((await leanPage(app)).bg.video));
+    await shoot(app, '7-lean-video-unfocused');
+    await focusWin(app);
+    check('7: focus back (no night): it plays again', !!(await waitFor(() => videoMoves(app), 15000)));
+    schedule(devPid, NIGHT_PROMPT + ' video night', 1800);
+    await waitFor(async () => { const p = await leanPage(app); return p && p.leanOn && (await videoHeld(app)) ? p : null; }, 15000);
+    await sleep(800);
+    check('7: a /bedtime night is on: it is held even while focused', await videoHeld(app), JSON.stringify((await leanPage(app)).bg.video));
+    stopLoop(devPid);
+    await sleep(1500);
+    const afterNight = await leanPage(app);
+    check('7: the night ends while focused: it plays again (lean stays: the button turned it on)', !!afterNight && afterNight.leanOn === true && !!(await waitFor(() => videoMoves(app), 15000)));
     await press(app, 'lean-back');
-    const vidB = await waitFor(async () => {
-      const p = await leanPage(app);
-      if (!p || p.leanOn || !p.bg.video || p.bg.video.paused) return null;
-      await sleep(400);
-      const q = await leanPage(app);
-      return q && q.bg.video && q.bg.video.currentTime !== p.bg.video.currentTime ? q : null;
-    }, 20000);
-    check('7: ...and plays again after Back to normal', !!vidB);
+    await waitFor(async () => { const p = await leanPage(app); return p && !p.leanOn ? p : null; }, 10000);
+    await blurWin(app);
+    check('7: lean off: nothing changes, it plays even unfocused', !!(await waitFor(() => videoMoves(app), 15000)));
+    await focusWin(app);
     await view(app, 'bgStyle', { action: 'reset-background' });
     await waitFor(async () => { const p = await leanPage(app); return p && !p.bg.hasBg ? p : null; }, 10000);
   }

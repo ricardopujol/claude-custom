@@ -1080,6 +1080,8 @@ let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let shownModules = new Set();
 let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
+let leanNight = false;           // a /bedtime night is going in any tab, main's word with the lean state: an animated background never plays then
+let windowFocused = null;        // main's word on whether this window has the keyboard focus; null until it has said (unknown holds still)
 let leanOn = false;              // lean mode, BACKLOG #62: the whole window is terminal-only; main's word, see the lean block below
 let layoutPushes = 0;            // layouts pushed to this window by main: the probe counts the store writes with it
 
@@ -4900,6 +4902,7 @@ function flourish(milestone) {
 let bgVideoEl = null;       // the <video> in #bg, or null
 let bgImageUrl = null;      // the image shown as #bg's CSS background (or stilled in lean mode), or null
 let bgStillEl = null;       // lean mode: the <canvas> holding a GIF background's first frame, or null
+let bgImageHeld = false;    // the image layer is currently showing its captured still (lean and not allowed to move)
 let bgStillToken = 0;       // a newer background paint cancels an older still's late load
 let failedBgUrl = null;     // a video the engine refused: not retried until the file changes
 
@@ -4915,7 +4918,7 @@ function backgroundPlaybackState() {
     minimised: bgPlayback.minimised,
     onBattery: bgPlayback.onBattery,
     reducedMotion: reducedMotionQuery.matches,
-    lean: leanOn,       // BACKLOG #62: lean mode holds a video on its first frame
+    lean: leanHeld(),   // BACKLOG #62: lean mode holds a video on its first frame, except while focused and no night (Ricardo's rule)
   };
 }
 
@@ -5043,12 +5046,13 @@ function paintBackgroundImage(url) {
   clearBackgroundStill();
   bgImageUrl = url;
   if (!url) { bgEl.style.backgroundImage = ''; return; }
-  if (!(leanOn && leanDisplay.mayAnimate(url))) { bgEl.style.backgroundImage = `url("${url}")`; return; }
+  bgImageHeld = leanHeld() && leanDisplay.mayAnimate(url);
+  if (!bgImageHeld) { bgEl.style.backgroundImage = `url("${url}")`; return; }
   bgEl.style.backgroundImage = '';
   const token = bgStillToken;
   const img = new Image();
   img.onload = () => {
-    if (token !== bgStillToken || !leanOn) return;
+    if (token !== bgStillToken || !leanHeld()) return;
     const c = document.createElement('canvas');
     c.className = 'bg-still';
     // a viewBox-only SVG (the generated art) reports 0: size from the window and draw into that box, so cover fills it (Dexter N2)
@@ -5121,10 +5125,16 @@ leanSuspender.register('summary-job', { suspend: tellHostLean, resume: tellHostL
 leanSuspender.register('terminal-renderer', { suspend: setTerminalRenderer, resume: setTerminalRenderer });
 
 // The background: a video holds its first frame (backgroundPlaybackState carries `lean`); a GIF becomes its first frame.
-leanSuspender.register('background', {
-  suspend: () => { syncBackgroundPlayback(); if (bgImageUrl) paintBackgroundImage(bgImageUrl); },
-  resume: () => { syncBackgroundPlayback(); if (bgImageUrl) paintBackgroundImage(bgImageUrl); },
-});
+// Ricardo's rule (2026-10-09): while lean, an animated background (video, GIF, anything that mayAnimate) PLAYS only while the window is focused
+// AND no /bedtime night is on; otherwise its captured still frame. Not lean: nothing changes. leanHeld() is that decision (lean-display).
+function leanHeld() {
+  return leanDisplay.holdStill({ lean: leanOn, focused: windowFocused, night: leanNight });
+}
+function syncLeanMotion() {
+  syncBackgroundPlayback();
+  if (bgImageUrl && (leanHeld() && leanDisplay.mayAnimate(bgImageUrl)) !== bgImageHeld) paintBackgroundImage(bgImageUrl);
+}
+leanSuspender.register('background', { suspend: syncLeanMotion, resume: syncLeanMotion });
 
 function paintStillCanvas(c) {
   if (c.dataset.stillKind === 'video') { paintStillFromVideo(c); return; }
@@ -5170,8 +5180,11 @@ function paintLeanFaces() {
 }
 
 function applyLean(payload) {
-  const on = leanDisplay.normalize(payload).on;
-  if (on === leanOn) return;
+  const s = leanDisplay.normalize(payload);
+  const on = s.on;
+  const nightChanged = s.night !== leanNight;
+  leanNight = s.night;
+  if (on === leanOn) { if (nightChanged) syncLeanMotion(); return; }
   leanOn = on;
   document.body.classList.toggle('lean', on);
   closeLayoutMenu();
@@ -6573,6 +6586,8 @@ if (window.harness && window.harness.onWindowFocus) {
   window.harness.onWindowFocus(({ focused, dim }) => {
     applyDim(dim);
     document.body.classList.toggle('unfocused', !focused);
+    windowFocused = focused === true;
+    syncLeanMotion();
   });
 }
 refreshDim();

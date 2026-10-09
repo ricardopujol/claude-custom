@@ -1362,6 +1362,8 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'cancelCreate': return await api.cancelCreate();
       // #31: what the window's own `focus` event does, without an OS to hand over focus.
       case 'windowFocus': return await api.windowFocus();
+      // #62: the window losing focus, as the OS would (Ricardo's lean video rule reads focus).
+      case 'windowBlur': return await api.windowBlur();
       case 'view':
         // Layout pass L1: one of the selected view's NAMED probe actions
         // (renderer.js window.__dockProbe), never a string of code.

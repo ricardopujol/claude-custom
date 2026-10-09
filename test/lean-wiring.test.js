@@ -156,3 +156,20 @@ test('Dexter N2: the still background is drawn into a real destination box sized
   assert.match(RENDERER, /leanDisplay\.stillSize\(img\.naturalWidth, img\.naturalHeight, window\.innerWidth, window\.innerHeight, /);
   assert.match(RENDERER, /drawImage\(img, 0, 0, c\.width, c\.height\)/);
 });
+
+test('Ricardo\'s video rule: the video and image layers are fed leanHeld() (lean, and not focused-with-no-night), and focus and night changes re-decide it', () => {
+  assert.match(RENDERER, /lean: leanHeld\(\),/);
+  assert.match(RENDERER, /leanDisplay\.holdStill\(\{ lean: leanOn, focused: windowFocused, night: leanNight \}\)/);
+  assert.match(RENDERER, /bgImageHeld = leanHeld\(\) && leanDisplay\.mayAnimate\(url\)/);
+  assert.match(RENDERER, /if \(token !== bgStillToken \|\| !leanHeld\(\)\) return;/);
+  // a focus change re-decides, from main's own word
+  assert.match(RENDERER, /windowFocused = focused === true;\s*syncLeanMotion\(\);/);
+  // a night change with lean unchanged re-decides too
+  assert.match(RENDERER, /if \(on === leanOn\) \{ if \(nightChanged\) syncLeanMotion\(\); return; \}/);
+  assert.match(RENDERER, /leanSuspender\.register\('background', \{ suspend: syncLeanMotion, resume: syncLeanMotion \}\)/);
+});
+
+test('the lean portraits strip stays still whatever the focus or night (the rule is for backgrounds)', () => {
+  const faces = RENDERER.slice(RENDERER.indexOf('function paintLeanFaces'), RENDERER.indexOf('function applyLean'));
+  assert.doesNotMatch(faces, /leanHeld|windowFocused|leanNight/);
+});

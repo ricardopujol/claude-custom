@@ -2856,3 +2856,9 @@ test('ctrl-close F4: a live claim whose `also` names the tab\'s folder asks, lik
   assert.strictEqual((await ctrlClose(unproven)).cancelled, true);
   assert.deepStrictEqual(asked(unproven), ["couldn't check for agents"]);
 });
+
+test('handleProbeCommand: windowBlur reaches the driver (lean video rule, #62)', async () => {
+  let n = 0;
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'windowBlur' }), { windowBlur: async () => { n += 1; return { ok: true }; } }), { ok: true });
+  assert.strictEqual(n, 1);
+});

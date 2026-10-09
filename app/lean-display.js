@@ -5,6 +5,9 @@
  *
  *   normalize(payload)       the pushed state, strictly: { on, byBedtime, bedtimeSince }. Only a real `true` is on;
  *                            a night with no believable start is not shown as one (absence is not a time).
+ *   holdStill({ lean, focused, night })  Ricardo's rule (2026-10-09): while lean, an animated background plays ONLY while the window is
+ *                            focused AND no /bedtime night is on; otherwise it shows its still frame. Not lean: false (nothing changes). An
+ *                            unknown focus holds (only a real true plays).
  *   chip(state)              the strip's chip: null while normal, else { label: '☾ lean', night: 'bedtime HH:MM' | null,
  *                            back: 'Back to normal' }
  *   wantWebgl({ lean, hasBackground, supported })
@@ -36,9 +39,10 @@ const FACE_LIMIT = 8;
 
 function normalize(payload) {
   const p = payload && typeof payload === 'object' ? payload : {};
-  if (p.on !== true) return { on: false, byBedtime: false, bedtimeSince: null };
+  const nightOn = p.night === true;
+  if (p.on !== true) return { on: false, byBedtime: false, bedtimeSince: null, night: nightOn };
   const night = p.byBedtime === true && typeof p.bedtimeSince === 'number' && Number.isFinite(p.bedtimeSince);
-  return { on: true, byBedtime: night, bedtimeSince: night ? p.bedtimeSince : null };
+  return { on: true, byBedtime: night, bedtimeSince: night ? p.bedtimeSince : null, night: nightOn };
 }
 
 const two = (n) => String(n).padStart(2, '0');
@@ -52,6 +56,12 @@ function chip(state) {
     night = `bedtime ${two(d.getHours())}:${two(d.getMinutes())}`;
   }
   return { label: '☾ lean', night, back: 'Back to normal' };
+}
+
+function holdStill(o) {
+  const s = o && typeof o === 'object' ? o : {};
+  if (s.lean !== true) return false;
+  return !(s.focused === true && s.night !== true);
 }
 
 function wantWebgl(o) {
@@ -132,7 +142,7 @@ function workingFaces(rows, { limit = FACE_LIMIT } = {}) {
   };
 }
 
-const API = { normalize, chip, wantWebgl, mayAnimate, hostListsLean, stillSize, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
+const API = { normalize, chip, holdStill, wantWebgl, mayAnimate, hostListsLean, stillSize, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.leanDisplay = API;

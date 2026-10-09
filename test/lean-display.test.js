@@ -7,13 +7,13 @@ const L = require('../app/lean-display');
 // --- normalize / chip --------------------------------------------------------------
 
 test('normalize: only a real true is on; the night fields belong to bedtime only', () => {
-  assert.deepStrictEqual(L.normalize(null), { on: false, byBedtime: false, bedtimeSince: null });
-  assert.deepStrictEqual(L.normalize({ on: 'yes' }), { on: false, byBedtime: false, bedtimeSince: null });
-  assert.deepStrictEqual(L.normalize({ on: true }), { on: true, byBedtime: false, bedtimeSince: null });
-  assert.deepStrictEqual(L.normalize({ on: true, byBedtime: true, bedtimeSince: 5 }), { on: true, byBedtime: true, bedtimeSince: 5 });
-  assert.deepStrictEqual(L.normalize({ on: true, byBedtime: true, bedtimeSince: NaN }), { on: true, byBedtime: false, bedtimeSince: null },
+  assert.deepStrictEqual(L.normalize(null), { on: false, byBedtime: false, bedtimeSince: null, night: false });
+  assert.deepStrictEqual(L.normalize({ on: 'yes' }), { on: false, byBedtime: false, bedtimeSince: null, night: false });
+  assert.deepStrictEqual(L.normalize({ on: true }), { on: true, byBedtime: false, bedtimeSince: null, night: false });
+  assert.deepStrictEqual(L.normalize({ on: true, byBedtime: true, bedtimeSince: 5 }), { on: true, byBedtime: true, bedtimeSince: 5, night: false });
+  assert.deepStrictEqual(L.normalize({ on: true, byBedtime: true, bedtimeSince: NaN }), { on: true, byBedtime: false, bedtimeSince: null, night: false },
     'a night with no believable start is not shown as one');
-  assert.deepStrictEqual(L.normalize({ on: false, byBedtime: true, bedtimeSince: 5 }), { on: false, byBedtime: false, bedtimeSince: null });
+  assert.deepStrictEqual(L.normalize({ on: false, byBedtime: true, bedtimeSince: 5 }), { on: false, byBedtime: false, bedtimeSince: null, night: false });
 });
 
 test('chip: absent while normal; "lean" by hand; "bedtime HH:MM" when a night started it', () => {
@@ -146,4 +146,36 @@ test('stillSize: the image\'s own size, else the fallback box (a viewBox-only SV
   assert.deepStrictEqual(L.stillSize(0, 0, 1920, 1080), { width: 1920, height: 1080 });
   assert.deepStrictEqual(L.stillSize(0, 150, 1920, 1080), { width: 1920, height: 1080 }, 'half a size is no size');
   assert.deepStrictEqual(L.stillSize(NaN, undefined, 0, -3), { width: 300, height: 300 });
+});
+
+// --- Ricardo's video rule (2026-10-09): lean shows an animated background moving only while focused and never during a night ---
+
+test('holdStill: lean + focused + no night plays', () => {
+  assert.strictEqual(L.holdStill({ lean: true, focused: true, night: false }), false);
+  assert.strictEqual(L.holdStill({ lean: true, focused: true }), false, 'no night said: none');
+});
+
+test('holdStill: lean + unfocused is the still frame', () => {
+  assert.strictEqual(L.holdStill({ lean: true, focused: false, night: false }), true);
+});
+
+test('holdStill: a night holds it still even while focused; the night ending while focused plays again', () => {
+  assert.strictEqual(L.holdStill({ lean: true, focused: true, night: true }), true);
+  assert.strictEqual(L.holdStill({ lean: true, focused: true, night: false }), false);
+});
+
+test('holdStill: not lean is never held (outside lean nothing changes), whatever the focus or night', () => {
+  for (const focused of [true, false, null]) for (const night of [true, false]) assert.strictEqual(L.holdStill({ lean: false, focused, night }), false);
+  assert.strictEqual(L.holdStill(undefined), false);
+});
+
+test('holdStill: an unknown focus holds (only a real true plays)', () => {
+  for (const f of [null, undefined, 'yes', 1]) assert.strictEqual(L.holdStill({ lean: true, focused: f, night: false }), true, String(f));
+});
+
+test('normalize carries the window-wide night flag (a real true only), lean or not', () => {
+  assert.strictEqual(L.normalize({ on: true, night: true }).night, true);
+  assert.strictEqual(L.normalize({ on: false, night: true }).night, true);
+  assert.strictEqual(L.normalize({ on: true, night: 'yes' }).night, false);
+  assert.strictEqual(L.normalize(null).night, false);
 });

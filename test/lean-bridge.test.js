@@ -20,7 +20,7 @@ function harness({ views = [1, 2], strip = 9 } = {}) {
 
 test('get answers a tab view and the strip, and nobody else', () => {
   const h = harness();
-  assert.deepStrictEqual(h.get(1), { on: false, byBedtime: false, bedtimeSince: null });
+  assert.deepStrictEqual(h.get(1), { on: false, byBedtime: false, bedtimeSince: null, night: false });
   assert.deepStrictEqual(h.get(9).on, false);
   assert.strictEqual(h.get(77), null);
 });
@@ -49,7 +49,7 @@ test('a night reported by a tab view turns it on; the strip cannot report one', 
   h.night(9, 1000);
   assert.strictEqual(h.pushed.length, 0);
   h.night(1, 1000);
-  assert.deepStrictEqual(h.pushed[0], { on: true, byBedtime: true, bedtimeSince: 1000 });
+  assert.deepStrictEqual(h.pushed[0], { on: true, byBedtime: true, bedtimeSince: 1000, night: true });
 });
 
 test('null ends that tab\'s night; a tab closing ends it too (dropOwner)', () => {
