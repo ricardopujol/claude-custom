@@ -385,10 +385,10 @@ function childHtml(c) {
       ? `<button type="button" class="res-pause" data-res-act="pause" ${data} aria-label="Pause ${esc(c.name)}, PID ${esc(c.pid)}" title="Pause ${esc(c.name)}, PID ${esc(c.pid)}${c.pauseNote ? `. ${esc(c.pauseNote)}` : ''}"${lock}>⏸</button>`
       : '<span class="res-stop-gap" aria-hidden="true"></span>';
   // ONE line per child: name (truncated first), CPU, memory, then a small square Pause and Stop at the end. The command line is the
-  // row's hover tooltip, not a line of its own. A paused row carries "paused HH:MM" after its name.
+  // row's hover tooltip, not a line of its own. A paused row carries "paused HH:MM" on a line of its own under it (a narrow dock has no room for it inline).
   let h = `<div class="res-child${c.paused ? ' res-paused-row' : ''}" title="${esc(c.full)}"><span class="res-cname">${esc(c.name)}</span>`
-    + (c.paused ? `<span class="res-paused">${esc(c.paused.text)}</span>` : '')
-    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${pause}${stop || '<span class="res-stop-gap" aria-hidden="true"></span>'}</div>`;
+    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${pause}${stop || '<span class="res-stop-gap" aria-hidden="true"></span>'}`
+    + (c.paused ? `<span class="res-paused">${esc(c.paused.text)}</span>` : '') + '</div>';
   if (c.confirm) {
     const lock = c.pending ? ' disabled' : '';
     h += `<div class="res-confirm" role="alert">Stop ${esc(c.name)}, PID ${esc(c.pid)}? Only this process stops, and anything it started stops with it. `

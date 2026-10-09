@@ -1218,7 +1218,7 @@
     /* the square stays small (Ricardo's pick) but the target is 24 x 24 (WCAG 2.2 AA 2.5.8), and a keyboard user sees where they are */
     .res-stop::after { content: ''; position: absolute; inset: -5px; }
     .res-stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-    /* Pause / Resume (#19): a small button like Stop's, before it. A paused row carries "paused HH:MM" after its name, so its figures are the 3rd and 4th children. */
+    /* Pause / Resume (#19): a small button like Stop's, before it. A paused row carries "paused HH:MM" on a line of its own, as its LAST child, so the figures keep their places. */
     .res-pause, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
     .res-pause { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
       border: 1px solid var(--border); border-radius: 3px; }
@@ -1226,10 +1226,8 @@
     .res-pause:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     .res-pause:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
     .res-pause:disabled { opacity: 0.5; cursor: default; }
-    .res-paused-row .res-cname { flex: 1 1 0; }
-    .res-paused { flex: none; font-size: 10px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 0 6px; white-space: nowrap; }
-    .res-child.res-paused-row > .res-fig:nth-child(3) { min-width: 4ch; }
-    .res-child.res-paused-row > .res-fig:nth-child(4) { width: 6.4ch; }
+    .res-paused-row { flex-wrap: wrap; }
+    .res-paused { flex: 0 0 100%; font-size: 10px; color: var(--accent); }
     /* An agent card's Pause / Resume (#19) */
     .agent-pause { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
     .agent-pause-btn { font: inherit; font-size: 10.5px; padding: 1px 8px; cursor: pointer; background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; }

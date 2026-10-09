@@ -112,3 +112,9 @@ test('a new payload drops a busy mark for a process that left (the answer would 
   s = D.withPayload(s, payload([]));
   assert.strictEqual(s.pauseBusy, null);
 });
+
+test('the paused text is the LAST child of its row (the figures and buttons keep their columns: the CSS positions them by child number)', () => {
+  const html = D.html(D.view(open(payload([child({ paused: { since: SINCE }, canPause: false })]))));
+  const row = /<div class="res-child res-paused-row"[^>]*>([\s\S]*?)<\/div>/.exec(html)[1];
+  assert.match(row, /^<span class="res-cname">[^<]*<\/span><span class="res-fig">[^<]*<\/span><span class="res-fig">[^<]*<\/span><button[\s\S]*<\/button><button[\s\S]*<\/button><span class="res-paused">paused \d\d:\d\d<\/span>$/);
+});
