@@ -17,7 +17,7 @@ const sleeperSrc = 'setTimeout(() => {}, 90000)';
 const mine = new Set();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-const endMine = () => { for (const pid of mine) { try { process.kill(pid); } catch { /* gone */ } } };   // kill-ok: this probe's own sleepers; the experiment is about pid reuse itself
+const endMine = () => { for (const pid of mine) { try { process.kill(pid); } catch { /* gone */ } } };   // kill-ok(own-spawn): this probe's own sleepers; the experiment is about pid reuse itself
 process.on('exit', endMine);
 
 function sleeper() {
@@ -50,7 +50,7 @@ async function main() {
   // probe spawned and still holds, is provably running.
   if (q.exitCode !== null || q.signalCode !== null) { console.log('INCONCLUSIVE: Q exited before the taskkill'); return 2; }
   const qPid = q.pid;
-  const r = spawnSync('taskkill', ['/PID', String(qPid), '/T', '/F'], { windowsHide: true, encoding: 'utf8' });   // kill-ok: the experiment's taskkill /T, gated two lines up on q (held) still running
+  const r = spawnSync('taskkill', ['/PID', String(qPid), '/T', '/F'], { windowsHide: true, encoding: 'utf8' });   // kill-ok(own-spawn): the experiment's taskkill /T, gated two lines up on q (held) still running
   await sleep(500);
   const oDied = !alive(oPid);
   console.log(`Q: taskkill /PID ${q.pid} /T /F -> status ${r.status}; O alive after: ${!oDied}`);

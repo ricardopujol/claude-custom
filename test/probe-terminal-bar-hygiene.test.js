@@ -37,7 +37,7 @@ test('every process the bar probe starts is cleaned up on every exit path, inclu
 });
 
 test('the bar probe kills by PID only, and only hosts whose folder is inside its own temp folder: never by name', () => {
-  assert.match(BAR, /killPidTree\(pid\)/);
+  assert.match(BAR, /seenPids.endAll\(\)/);
   assert.match(BAR, /startsWith\(inside\)/);
   assert.doesNotMatch(BAR, /taskkill|Stop-Process|pkill|killall|\/IM\b/i);
 });

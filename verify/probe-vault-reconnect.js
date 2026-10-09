@@ -149,7 +149,7 @@ function command(app, cmd, timeoutMs = 30000) {
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
 const viewState = (app) => view(app, 'state');
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsUnder(dir) {
   const out = [];
   let files = [];
@@ -161,8 +161,8 @@ function hostsUnder(dir) {
   return out;
 }
 function killEverything() {
-  for (const id of hostsUnder(dev)) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsUnder(dev)) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayout);
@@ -220,7 +220,7 @@ async function main() {
 async function viewReady(app) {
   return waitFor(async () => {
     const st = await command(app, { cmd: 'state' });
-    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
     const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
     if (!sel || !sel.started) return null;
     const v = await viewState(app);

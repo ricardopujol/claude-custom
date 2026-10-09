@@ -211,8 +211,8 @@ function hostsUnder(dir) {
   return out;
 }
 
-const seenPids = new Set();
-const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid); };
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
+const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid); };
 
 // What a person does to end a session: type `exit` into its terminal. The
 // host exits with its claude (here cmd.exe), so the tab's port refuses.
@@ -247,9 +247,9 @@ async function startedTab(app, label, ms = 40000) {
 
 function killEverything() {
   for (const dir of [dev, ...['feat/a', 'feat/demo', 'feat/setup-fails', 'feat/dirty', 'feat/keep'].map(wtPath)]) {
-    for (const id of hostsUnder(dir)) seenPids.add(id.pid);
+    for (const id of hostsUnder(dir)) seenPids.add(id.pid, id.processStartedAt);
   }
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 

@@ -174,7 +174,7 @@ function fireHook(pid, event, payload) {
   });
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 // Every host of this run: any whose folder is inside the probe's temp folder. Not just dev and
 // feat-b by name -- the jump STARTS the feat-b tab's host, and a host outlives its window by design
 // (windowless sessions), so one that registers late was left running by an earlier version.
@@ -190,8 +190,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayout);
@@ -199,7 +199,7 @@ hygiene.addCleanup(restoreLayout);
 async function viewReady(app) {
   return waitFor(async () => {
     const st = await command(app, { cmd: 'state' });
-    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
     const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
     if (!sel || !sel.started) return null;
     const v = await view(app, 'state');
@@ -563,7 +563,7 @@ async function main() {
   await waitFor(async () => {
     const s = await command(app, { cmd: 'state' });
     const h = s && s.hosts && s.hosts.find(x => x.key === s.selectedKey);
-    if (h && Number.isInteger(h.pid)) { seenPids.add(h.pid); return true; }
+    if (h && Number.isInteger(h.pid)) { seenPids.see(h.pid); return true; }
     return null;
   }, 15000);
 

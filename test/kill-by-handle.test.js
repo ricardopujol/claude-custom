@@ -112,7 +112,10 @@ test('registerChild: a child with no pid (spawn failed) is not registered', () =
 //   - calls registerSpawnedTree( (registerChild is the held-child form);
 //   - calls process.kill( with any signal but 0 (0 only tests liveness);
 //   - has a string or template that starts with `taskkill`.
-// A reviewed exception says so ON ITS LINE: a `kill-ok: <reason>` comment (a reason is required). The handle-holding
+// A reviewed exception says so ON ITS LINE: a `kill-ok(<class>): <reason>` comment. The class is from an ALLOW-LIST of reviewed
+// provenance classes (below); a classless or unknown class is no exception. An identity-file or app-state pid has no class, so
+// nothing excuses it: it goes through killProven (verify/lib/seen-pids.js). A class is a claim a reviewer checks, not one a lexer
+// can prove; what the rule guarantees is that every exception names one and that none is free text. The handle-holding
 // forms (killChildTree, registerChild, child.kill()) are never flagged.
 
 // Comments blanked to spaces, strings kept, line breaks kept (so line numbers still match the source).
@@ -146,7 +149,8 @@ function blankComments(src) {
   return out;
 }
 
-const KILL_OK = /\/\/.*\bkill-ok:\s*\S/;
+const KILL_CLASSES = ['held-handle', 'table-row', 'definition', 'own-spawn'];   // held-handle: reached only while the child's handle is held; table-row: a row read from the process table with its command line this run; definition: the primitive's own definition or a re-export; own-spawn: a process this very test/probe spawned and still holds
+const KILL_OK = new RegExp('//.*\\bkill-ok\\((?:' + KILL_CLASSES.join('|') + ')\\):[ \\t]*\\S');
 
 function rawKills(source) {
   const orig = source.split(/\r?\n/);
@@ -183,7 +187,16 @@ test('rule fixtures: every bypass from the round-2 review is flagged (Dexter #3)
     'hygiene.registerSpawnedTree(electron.pid);',
     "process.kill(k.pid, 'SIGTERM');",
     'process.kill(pid);',
-    'killPidTree(pid); // kill-ok:',                                                    // an exception needs a reason
+    'killPidTree(pid); // kill-ok:',                                                    // an exception needs a class and a reason
+    'killPidTree(pid); // kill-ok(held-handle):',                                       // ...and a reason after the class
+    'killPidTree(pid); // kill-ok(identity-file): the host pid from .harness/hosts/<port>.json',   // a class that is not on the list
+    // BACKLOG #74 H, PR #135 Dexter 5: an identity-file / app-state pid has no class that excuses it; every spelling is flagged
+    'killPidTree(id.pid);   // kill-ok: the host pid from .harness/hosts/<port>.json',
+    'killPidTree(sel.pid);   // kill-ok: the pid the tab list gave',
+    "killPidTree(out.hostPid);   // kill-ok: a pid from the app's state",
+    'killPidTree(pid);   // kill-ok: read from the identity json',
+    "for (const pid of seenPids) killPidTree(pid);   // kill-ok: identity-file pids, the seenPids class",
+        "execFileSync('taskkill', ['/PID', String(pid)]);   // kill-ok: a host pid read from app state",
   ]) assert.ok(flagged(fx), fx);
 });
 
@@ -193,7 +206,8 @@ test('rule fixtures: the held-child forms, a liveness probe, a reasoned exceptio
     'killChildTree(app);', 'hygiene.registerChild(electron);', 'child.kill();',
     'process.kill(out.hostPid, 0);', 'try { process.kill(pid, 0); return true; } catch {}',
     'try { process.kill(Number(id), 0); } catch {}',
-    "for (const pid of seenPids) killPidTree(pid);   // kill-ok: identity-file pids, the seenPids class",
+    'killPidTree(h.pid);   // kill-ok(held-handle): reached only while h is unexited',
+    "spawnSync('taskkill', ['/PID', String(row.ProcessId)]);   // kill-ok(table-row): matched by pid and command line this run",
     "console.log('SKIP: this probe drives cmd.exe and taskkill; Windows only');",
     '// killPidTree(app.pid) was the old way',
     "/* spawnSync('taskkill', ['/PID', String(c.pid)]) */",
