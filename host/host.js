@@ -1028,9 +1028,14 @@ const ROSTER_LIFETIME_CACHE = path.join(HARNESS_DIR, 'state', 'roster-lifetime.j
 let lastRosterIndex = { ok: false, agents: [], complete: false, unreadable: 0 };
 let rosterIndexPending = null;
 
-function rosterAgentRow(agent, lifetime, unresolvedNames) {
+function rosterAgentRow(agent, lifetime, unresolvedNames, infos) {
+  const info = infos && infos.get(agent);
   return {
     agent,
+    // BACKLOG #76: the persona ("Miguel") and the one-line function, read from the agent file's description.
+    // `null` for an agent known only from history (no file), never an invented name.
+    persona: info && info.persona ? info.persona : null,
+    fn: info && info.fn ? info.fn : null,
     // Never used shows NO count -- `null`, not a coerced zero (Number(null)
     // is 0, the exact trap CLAUDE.md names for this repo). `.has` is the
     // strict presence check that makes that hold.
@@ -1057,7 +1062,7 @@ function refreshRosterIndex() {
       wholeRoster({ cwd: CWD, scan }),
       lifetimeAgentTokens({ cacheFile: ROSTER_LIFETIME_CACHE, scan }),
     ]);
-    const agents = roster.names.map((agent) => rosterAgentRow(agent, lifetime, roster.unresolvedNames));
+    const agents = roster.names.map((agent) => rosterAgentRow(agent, lifetime, roster.unresolvedNames, roster.infos));
     lastRosterIndex = {
       ok: roster.unreadable === 0 && lifetime.unreadable === 0,
       agents,
@@ -1114,6 +1119,8 @@ async function seedRosterIndex() {
       agent,
       tokens: Number.isFinite(seed[agent] && seed[agent].tokens) ? seed[agent].tokens : null,
       portrait: portraitOf(agent, 'sleeping'),
+      persona: null, // the seed doesn't carry descriptions either; the real pass fills them in
+      fn: null,
       // The seed doesn't carry identity provenance -- assume confirmed rather
       // than flagging every row; `refreshRosterIndex`'s real pass corrects
       // this within moments.

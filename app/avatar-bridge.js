@@ -30,6 +30,9 @@ const GET_CHANNEL = 'avatar:getImagesEnabled';
 const SET_CHANNEL = 'avatar:setImagesEnabled';
 const PICK_CHANNEL = 'avatar:pick';
 const PUSH_CHANNEL = 'avatar-images';
+const NAMES_GET_CHANNEL = 'avatar:getRosterNames';
+const NAMES_SET_CHANNEL = 'avatar:setRosterNames';
+const NAMES_PUSH_CHANNEL = 'avatar-roster-names';
 
 /**
  * Whether agent images are shown. ON unless the store holds a real boolean
@@ -42,6 +45,21 @@ function readImagesEnabled(store) {
     return !(rec && typeof rec === 'object' && rec.imagesEnabled === false);
   } catch {
     return true;
+  }
+}
+
+/**
+ * BACKLOG #76: which name the roster card shows big, 'role' or 'name' (the
+ * persona). Install-wide and kept in this same record, beside `imagesEnabled`.
+ * 'role' unless the store holds exactly 'name': a missing or corrupt record
+ * must never switch the roster to a different set of names by itself.
+ */
+function readRosterNames(store) {
+  try {
+    const rec = store.read(AVATAR_KEY, {});
+    return rec && typeof rec === 'object' && rec.rosterNames === 'name' ? 'name' : 'role';
+  } catch {
+    return 'role';
   }
 }
 
@@ -82,6 +100,24 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
     return enabled;
   });
 
+  ipcMain.handle(NAMES_GET_CHANNEL, (e) => (fromWindow(e) ? readRosterNames(store) : 'role'));
+
+  ipcMain.handle(NAMES_SET_CHANNEL, (e, mode) => {
+    if (!fromWindow(e)) return null;
+    if (mode !== 'role' && mode !== 'name') return null;
+    try {
+      store.update(AVATAR_KEY, {}, (prev) => ({
+        ...(prev && typeof prev === 'object' ? prev : {}), rosterNames: mode,
+      }));
+    } catch (err) {
+      console.error('[main] could not save the roster names toggle:', err && err.message);
+      return null;
+    }
+    sync.lastNames = mode;
+    try { push(NAMES_PUSH_CHANNEL, mode); } catch { /* window is going away */ }
+    return mode;
+  });
+
   ipcMain.handle(PICK_CHANNEL, async (e) => {
     if (!fromWindow(e)) return null;
     try {
@@ -108,6 +144,7 @@ function watchImagesEnabled({
 }) {
   const push = typeof send === 'function' ? send : (ch, v) => win.webContents.send(ch, v);
   sync.last = readImagesEnabled(store);
+  sync.lastNames = readRosterNames(store);
   const listener = () => {
     // A read that FAILED (EBUSY under an antivirus scan) or found a corrupt file
     // says nothing about the user's choice: skip it and let the next poll try,
@@ -118,15 +155,23 @@ function watchImagesEnabled({
       if (st.status !== 'ok' && st.status !== 'missing') return;
     }
     now = readImagesEnabled(store);
-    if (now === sync.last) return;
-    sync.last = now;
-    try { push(PUSH_CHANNEL, now); } catch { /* window is going away */ }
+    if (now !== sync.last) {
+      sync.last = now;
+      try { push(PUSH_CHANNEL, now); } catch { /* window is going away */ }
+    }
+    // The roster names mode (#76) lives in the same record, so the same poll follows it.
+    const names = readRosterNames(store);
+    if (names !== sync.lastNames) {
+      sync.lastNames = names;
+      try { push(NAMES_PUSH_CHANNEL, names); } catch { /* window is going away */ }
+    }
   };
   watchFile(file, { interval: intervalMs, persistent: false }, listener);
   return () => unwatchFile(file, listener);
 }
 
 module.exports = {
-  readImagesEnabled, registerAvatarHandlers, pickerOptions, watchImagesEnabled,
+  readImagesEnabled, readRosterNames, registerAvatarHandlers, pickerOptions, watchImagesEnabled,
   AVATAR_KEY, GET_CHANNEL, SET_CHANNEL, PICK_CHANNEL, PUSH_CHANNEL,
+  NAMES_GET_CHANNEL, NAMES_SET_CHANNEL, NAMES_PUSH_CHANNEL,
 };

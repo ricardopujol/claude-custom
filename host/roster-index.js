@@ -99,8 +99,85 @@ function nameFromFrontmatter(raw, fallback) {
   return m && m[1] ? stripQuotes(m[1].trim()) : fallback;
 }
 
+// --- persona and function (BACKLOG #76) --------------------------------------
+// Both are read from the agent file's `description:`, which Claude Code itself
+// uses to decide when to spawn the agent. Pure string work, no file access.
+
+function unescapeDouble(s) {
+  return s.replace(/\\(["\\/]|n|t)/g, (_m, c) => (c === 'n' || c === 't' ? ' ' : c));
+}
+
 /**
- * Every `.md` in one agents directory. Returns `{ names, unreadable }`:
+ * The agent's `description:` as one line of text, or '' when the file has no
+ * frontmatter or no such key. Reads the scalar shapes seen on a real install:
+ * double-quoted, single-quoted, plain (with indented continuation lines) and a
+ * `>` / `|` block scalar. Never throws, never answers null.
+ */
+function descriptionFromFrontmatter(raw) {
+  if (typeof raw !== 'string') return '';
+  const fm = FRONTMATTER_RE.exec(raw);
+  if (!fm) return '';
+  const lines = fm[1].split(/\r?\n/);
+  const at = lines.findIndex((l) => /^description:/.test(l));
+  if (at < 0) return '';
+  let value = lines[at].replace(/^description:\s*/, '');
+  const cont = [];
+  for (let i = at + 1; i < lines.length && /^\s+\S/.test(lines[i]); i++) cont.push(lines[i].trim());
+  if (/^[>|][+-]?\d*$/.test(value)) return cont.join(' ').trim();
+  value = [value, ...cont].join(' ').trim();
+  const dq = /^"([\s\S]*)"$/.exec(value);
+  if (dq) return unescapeDouble(dq[1]).trim();
+  const sq = /^'([\s\S]*)'$/.exec(value);
+  if (sq) return sq[1].replace(/''/g, "'").trim();
+  return value;
+}
+
+// One capitalised word, or several in a row ("Murray Bones"); the first
+// lowercase word ("or", "in") ends the name.
+const NAME_WORD = "[A-Z][\\w'’-]*";
+const NAME_RUN = `${NAME_WORD}(?:[ \\t]+${NAME_WORD}){0,2}`;
+const MENTIONS_RE = new RegExp(`\\bmentions[ \\t]+(${NAME_RUN})`);
+const LEADING_NAME_RE = new RegExp(`^(${NAME_RUN})[ \\t]+[—–][ \\t]+`);
+
+/**
+ * The persona a description names: "...whenever the user mentions Miguel in the
+ * context of..." gives 'Miguel', and a leading "Peter — ..." gives 'Peter'.
+ * null when there is none.
+ */
+function personaFromDescription(description) {
+  if (typeof description !== 'string') return null;
+  const m = MENTIONS_RE.exec(description) || LEADING_NAME_RE.exec(description.trim());
+  return m ? m[1] : null;
+}
+
+const FN_LEAD_RE = /^(?:use this agent when you need to|use this agent when|use this agent for|use when)(?:\s+|$)/i;
+const FN_MAX = 300;
+
+/**
+ * The function line: the description's first sentence, a leading persona
+ * ("Peter — ") and "Use this agent when you need to" trimmed, the first letter
+ * capitalised, capped at 300 characters. '' only for an empty description.
+ */
+function functionFromDescription(description) {
+  if (typeof description !== 'string') return '';
+  let text = description.trim().replace(/\s+/g, ' ');
+  if (!text) return '';
+  text = text.replace(LEADING_NAME_RE, '');
+  const sentence = /^([\s\S]*?[.!?])(?=\s+[A-Z]|\s*$)/.exec(text);
+  let fn = (sentence ? sentence[1] : text).replace(FN_LEAD_RE, '').trim();
+  if (!fn) fn = text; // the lead-in WAS the whole sentence: show it rather than nothing
+  if (fn.length > FN_MAX) fn = fn.slice(0, FN_MAX - 1).trimEnd() + '…';
+  return fn.charAt(0).toUpperCase() + fn.slice(1);
+}
+
+/** `{ persona, fn }` for a whole agent file; both null when it says nothing. */
+function agentInfo(raw) {
+  const description = descriptionFromFrontmatter(raw);
+  return { persona: personaFromDescription(description), fn: functionFromDescription(description) || null };
+}
+
+/**
+ * Every `.md` in one agents directory. Returns `{ names, infos, unreadable }`:
  *   unreadable  a REAL failure -- a non-ENOENT `readdir` on the directory
  *               itself (Dexter N6), or a definition file that exists but
  *               could not be read (Dexter F8 residual: previously silently
@@ -114,6 +191,7 @@ function nameFromFrontmatter(raw, fallback) {
 // `lifetimeAgentTokens` already uses for its own `readFile`.
 async function readAgentDefDir(dir, { readFile = (p) => fsp.readFile(p, 'utf8') } = {}) {
   const names = [];
+  const infos = new Map();
   let unreadable = 0;
   let entries;
   try {
@@ -123,7 +201,7 @@ async function readAgentDefDir(dir, { readFile = (p) => fsp.readFile(p, 'utf8') 
     // install) has defined any custom agents at all. Anything else means the
     // directory may hold definitions this could not see.
     if (isRealFailure(err)) unreadable++;
-    return { names, unreadable };
+    return { names, infos, unreadable };
   }
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
@@ -137,9 +215,14 @@ async function readAgentDefDir(dir, { readFile = (p) => fsp.readFile(p, 'utf8') 
       // but the read failure itself must not vanish uncounted.
       if (isRealFailure(err)) unreadable++;
     }
-    names.push(nameFromFrontmatter(raw, fallback));
+    const name = nameFromFrontmatter(raw, fallback);
+    names.push(name);
+    const info = agentInfo(raw);
+    // A "persona" that is just the role again says nothing the card doesn't.
+    if (info.persona && info.persona.toLowerCase() === name.toLowerCase()) info.persona = null;
+    infos.set(name, info);
   }
-  return { names, unreadable };
+  return { names, infos, unreadable };
 }
 
 /**
@@ -155,13 +238,15 @@ async function agentDefinitions({ configDir = claudeConfigDir(), cwd, readFile }
   const dirs = [path.join(configDir, 'agents')];
   if (cwd) dirs.push(path.join(cwd, '.claude', 'agents'));
   const names = new Set();
+  const infos = new Map(); // name -> { persona, fn }; a project definition overrides the global one
   let unreadable = 0;
   for (const dir of dirs) {
     const r = await readAgentDefDir(dir, readFile ? { readFile } : undefined);
     for (const n of r.names) names.add(n);
+    for (const [n, info] of r.infos) infos.set(n, info);
     unreadable += r.unreadable;
   }
-  return { names, unreadable };
+  return { names, infos, unreadable };
 }
 
 /**
@@ -320,6 +405,7 @@ async function wholeRoster({ configDir, cwd, projectsDir, scan } = {}) {
   const names = new Set([...defs.names, ...hist.names]);
   return {
     names: [...names],
+    infos: defs.infos,
     unresolvedNames: hist.unresolvedNames,
     unreadable: resolvedScan.errors + hist.unreadable + defs.unreadable,
   };
@@ -327,6 +413,7 @@ async function wholeRoster({ configDir, cwd, projectsDir, scan } = {}) {
 
 module.exports = {
   agentDefinitions, historyNames, wholeRoster, nameFromFrontmatter,
+  descriptionFromFrontmatter, personaFromDescription, functionFromDescription, agentInfo,
   scanProjects, resolveSubagentEntry,
   defaultProjectsDir,
 };
