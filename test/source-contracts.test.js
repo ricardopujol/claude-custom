@@ -545,3 +545,12 @@ test('the user command stays in the relay\'s process group (Dexter #51 F7)', () 
   // the relay's group no longer reached it: worse than before the timeout.
   assert.doesNotMatch(read('host/status-relay.js'), /detached:/);
 });
+
+// The Graph view is still (BACKLOG #2 follow-up, Ricardo's pick A: "no animation"). Moved here from test/git-graph-display.test.js:
+// app/git-graph-display.js is a mutated module and that file is in the command. Comments are stripped first, so the words may be said there.
+test('the Graph view never asks for a frame, sets a timer, or observes a resize', () => {
+  const code = read('app/git-graph-display.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  for (const word of ['requestAnimationFrame', 'setInterval', 'setTimeout', 'ResizeObserver', 'animation', 'transition']) {
+    assert.ok(!code.includes(word), `${word} in git-graph-display.js`);
+  }
+});

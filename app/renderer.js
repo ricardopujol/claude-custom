@@ -807,12 +807,67 @@ function requestGitTree() {
   try { ws.send(JSON.stringify({ type: 'git-tree' })); } catch {}
 }
 setInterval(() => {
-  if (shownModules.has('git') && document.visibilityState === 'visible') requestGitTree();
+  if (shownModules.has('git') && document.visibilityState === 'visible') {
+    requestGitTree();
+    if (gitView === 'graph') requestGitGraph();
+  }
 }, GIT_TREE_EVERY_MS);
 // Back from hidden: ask now, not up to 30s later with an old tree on screen (PR #85 Dexter F9).
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && shownModules.has('git')) requestGitTree();
+  if (document.visibilityState === 'visible' && shownModules.has('git')) {
+    requestGitTree();
+    if (gitView === 'graph') requestGitGraph();
+  }
 });
+// The Graph view next to Rings (BACKLOG #2 follow-up): the same panel, the other drawing. The choice is kept per
+// project (the tree's answer names it), and only the shown view is re-asked; the commit log is a separate, cheap read.
+let gitView = 'rings';
+let gitViewProject = null;
+let lastGitGraph = null;
+function requestGitGraph() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'git-graph' })); } catch {}
+}
+function renderGitGraph() {
+  if (lastGitGraph === null) return;       // nothing answered yet: the status line says "reading the commits…"
+  window.gitGraphDisplay.render(document.getElementById('git-body'), lastGitGraph, {
+    tree: lastGitTree,
+    tabs: lastGitTabs,
+    onJump: folder => window.harness.selectFolder(folder),
+    onOpenUrl: url => window.harness.openExternal(url),
+    onCopy: async (text) => {
+      const r = await window.harness.writeClipboard(text);
+      if (!r || r.ok !== true) throw new Error((r && r.error) || 'the clipboard refused it');
+    },
+  });
+}
+function setGitView(view, { save = true } = {}) {
+  gitView = window.gitGraphDisplay.normalizeView(view);
+  const graph = gitView === 'graph';
+  document.getElementById('git-dial').hidden = graph;
+  document.getElementById('git-status').hidden = graph;
+  document.getElementById('git-graph').hidden = !graph;
+  const gs = document.getElementById('git-graph-status');
+  gs.hidden = !graph;
+  for (const b of document.querySelectorAll('#git-view button')) b.setAttribute('aria-pressed', b.dataset.view === gitView ? 'true' : 'false');
+  if (save && gitViewProject !== null) window.gitGraphDisplay.writeView(storageOrNull(), gitViewProject, gitView);
+  if (graph) {
+    if (lastGitGraph === null) gs.textContent = 'reading the commits…';
+    requestGitGraph();
+    renderGitGraph();
+  }
+}
+const storageOrNull = () => { try { return localStorage; } catch { return null; } };
+document.getElementById('git-view').addEventListener('click', e => {
+  const b = e.target.closest ? e.target.closest('button[data-view]') : null;
+  if (b) setGitView(b.dataset.view);
+});
+// The first tree answer names the project: its saved view is applied once, and from then on the buttons save it.
+function adoptGitViewProject(tree) {
+  if (!tree || typeof tree.project !== 'string' || tree.project === gitViewProject) return;
+  gitViewProject = tree.project;
+  setGitView(window.gitGraphDisplay.readView(storageOrNull(), gitViewProject), { save: false });
+}
 let lastGitTree = null;
 // What the shell knows of each listed worktree's tab (Enhancement #46): [{ folder, open, started, known,
 // working, needsInput }], or null when it couldn't be asked -- unknown, never "idle".
@@ -834,6 +889,8 @@ function renderGitTree(tree) {
       return r;
     },
   });
+  adoptGitViewProject(tree);
+  renderGitGraph();        // the graph's strip reads the tree's address and worktrees
 }
 // The tabs' states move faster than the tree does (a session starts and stops working), so they're asked
 // for on their own, every couple of seconds while the panel is showing, and with every tree.
@@ -1095,7 +1152,7 @@ function dockViewport() {
 
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
-  if (id === 'git') requestGitTree();
+  if (id === 'git') { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
@@ -2632,6 +2689,57 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         renderGitTree(t);
         break;
       }
+      // The Graph view (verify/probe-git-graph.js): read it, switch to it, click a commit, press a key, redraw it.
+      case 'ggState': {
+        const body = document.getElementById('git-body');
+        const g = document.getElementById('git-graph');
+        const st = g.ggState || {};
+        const scroll = g.querySelector('.gg-scroll');
+        const detail = g.querySelector('.gg-detail');
+        const shown = el => !!el && !el.hidden && getComputedStyle(el).display !== 'none';
+        return JSON.stringify({
+          ok: true, view: gitView,
+          graphShown: shown(g), dialShown: shown(document.getElementById('git-dial')),
+          pressed: [...document.querySelectorAll('#git-view button')].map(b => b.dataset.view + ':' + b.getAttribute('aria-pressed')),
+          status: document.getElementById('git-graph-status').textContent,
+          rows: [...g.querySelectorAll('.gg-row')].map(r => ({ hash: r.dataset.hash, msg: r.querySelector('.gg-msg').textContent,
+            refs: [...r.querySelectorAll('.gg-ref')].map(x => x.textContent), sel: r.classList.contains('sel'), rect: rectOf(r) })),
+          dots: [...g.querySelectorAll('.gg-dot')].map(d => ({ cx: Number(d.getAttribute('cx')), cy: Number(d.getAttribute('cy')),
+            cls: d.getAttribute('class') })),
+          edges: g.querySelectorAll('.gg-edge').length,
+          curves: [...g.querySelectorAll('.gg-edge')].filter(p => p.getAttribute('d').includes('C')).length,
+          svg: g.querySelector('.gg-svg') ? rectOf(g.querySelector('.gg-svg')) : null, panel: rectOf(body),
+          scroll: scroll ? { top: scroll.scrollTop, height: scroll.scrollHeight, client: scroll.clientHeight, rect: rectOf(scroll) } : null,
+          detail: shown(detail) ? { title: detail.querySelector('.gg-detail-title').textContent, meta: detail.querySelector('.gg-detail-meta').textContent,
+            rect: rectOf(detail),
+            acts: [...detail.querySelectorAll('.git-act')].map(b => ({ act: b.dataset.act, label: b.textContent, disabled: b.getAttribute('aria-disabled') === 'true',
+              why: ((b.parentElement && b.parentElement.querySelector('.git-act-why')) || {}).textContent || null })) } : null,
+          said: (g.querySelector('.gg-said') || {}).textContent || '',
+          renders: st.renders || 0, wired: st.wired || 0,
+          saved: window.gitGraphDisplay.readView(storageOrNull(), gitViewProject),
+          focused: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.hash || null : null,
+          lineHeightOk: [...g.querySelectorAll('.gg-row')].every(r => Math.round(r.getBoundingClientRect().height) === window.gitGraphDisplay.ROW_H),
+        });
+      }
+      case 'ggView': setGitView(String(a.view), { save: a.save !== false }); break;
+      case 'ggClick': {
+        const r = [...document.querySelectorAll('#git-graph .gg-row')].find(x => x.dataset.hash === a.hash || x.dataset.hash.startsWith(String(a.hash)));
+        if (!r) return JSON.stringify({ ok: false, error: 'no such commit' });
+        r.click();
+        break;
+      }
+      case 'ggAct': {
+        const btn = document.querySelector('#git-graph .gg-detail .git-act[data-act="' + String(a.act) + '"]');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no action ' + a.act });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'ggKey': {
+        const target = document.activeElement || document.body;
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: a.key, bubbles: true, cancelable: true }));
+        break;
+      }
+      case 'ggRerender': renderGitGraph(); break;
       case 'gitKey': {
         // a key on the focused element, as a keyboard would send it
         const target = document.activeElement || document.body;
@@ -6666,6 +6774,11 @@ function handleControl(msg) {
     requestGitTabs();
     return;
   }
+  if (msg.type === 'git-graph') {
+    lastGitGraph = msg;
+    renderGitGraph();
+    return;
+  }
   if (msg.type === 'bugvault') {
     renderBugVault(msg);
     // A refused add (missing category/summary) is SHOWN, never swallowed --
@@ -6837,7 +6950,7 @@ function connect() {
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
     if (shownModules.has('fog')) repoBrowser.show();
-    if (shownModules.has('git')) requestGitTree();
+    if (shownModules.has('git')) { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
     if (shownModules.has('projects')) requestProjects();
     // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
     // `ws.send` throws (InvalidStateError) while the socket is still

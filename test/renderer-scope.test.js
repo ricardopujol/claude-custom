@@ -134,6 +134,8 @@ const ALLOWED_GLOBALS = new Set([
   'terminalRows', 'filePathParse',
   // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.
   'gitRings', 'gitRingsDisplay',
+  // app/git-graph-display.js (BACKLOG #2 follow-up, the Graph view): one namespace object, IIFE-wrapped.
+  'gitGraphDisplay',
   // app/repo-*.js (#45 + #32, the Files tab and the code reader): one namespace object each, IIFE-wrapped.
   'repoLanguage', 'repoMention', 'repoTreeDisplay', 'repoRequester', 'repoRefresh', 'repoFilesPanel', 'repoReader', 'repoBrowser',
   // app/git-swing.js + app/git-actions.js (Enhancement #46): one namespace object each, IIFE-wrapped.
