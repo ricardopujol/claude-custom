@@ -237,7 +237,7 @@ function readAny(raw, ids) {
 
 /** A window's L1 selection as a tree selection: group ids are the zone names, so it maps straight across. */
 function selectionFromV1(raw) {
-  return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false, floatOrder: [] };
+  return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false, floatOrder: [], collapsed: {} };
 }
 
 // --- docking, hiding, showing -------------------------------------------------
@@ -535,10 +535,12 @@ function setSplitSizes(layout, path, sizes) {
 //
 // Which tab each group shows, and whether everything is folded (Ctrl+B), belong
 // to the WINDOW (localStorage), not to the layout: clicking Vault in one window
-// never switches another (L1 S3a). A selection is { active: { [groupId]: moduleId }, foldAll }.
+// never switches another (L1 S3a). A selection is { active: { [groupId]: moduleId }, foldAll, floatOrder,
+// collapsed: { [groupId]: true } } -- the groups this window collapsed on purpose (D4), as Ctrl+B folds them all.
 
 /** A selection from anything stored. */
 const MAX_FLOAT_ORDER = 32;                           // a damaged file can't grow the list without end
+const MAX_COLLAPSED = 64;                             // ...nor can this one
 
 // A selection also holds which float is on top, bottom to top: pressing a float raises it in THIS window only,
 // so a click never writes the shared layout. Ids of floats that are gone stay until pushed out; `fit` ignores them.
@@ -547,7 +549,14 @@ function cleanSelection(raw) {
   const order = (Array.isArray(r.floatOrder) ? r.floatOrder : []).filter(x => typeof x === 'string' && x !== '');
   // Unique, keeping each id's LAST place (that is where it was last raised).
   const floatOrder = order.filter((x, i) => order.lastIndexOf(x) === i).slice(-MAX_FLOAT_ORDER);
-  return { active: stringMap(r.active), foldAll: r.foldAll === true, floatOrder };
+  // Only a real `true` collapses: `1`, `'yes'` and `{}` are damage, not a choice.
+  const collapsed = {};
+  if (isObject(r.collapsed)) {
+    for (const [k, v] of Object.entries(r.collapsed)) {
+      if (k !== '' && v === true && Object.keys(collapsed).length < MAX_COLLAPSED) collapsed[k] = true;
+    }
+  }
+  return { active: stringMap(r.active), foldAll: r.foldAll === true, floatOrder, collapsed };
 }
 
 /** Put a float on top of the others, in this window's selection. */
@@ -562,8 +571,29 @@ function selectTab(sel, layout, id) {
   const s = cleanSelection(sel);
   const gr = groupOf(layout, id) || floatOf(layout, id);
   if (!gr) return s;
-  const picked = { ...s, active: { ...s.active, [gr.id]: id }, foldAll: false };
+  // A tab is chosen to be SEEN (a click on it in a popover, a panel dropped or ticked into its group): its group opens.
+  const { [gr.id]: _was, ...stillShut } = s.collapsed;
+  const picked = { ...s, active: { ...s.active, [gr.id]: id }, foldAll: false, collapsed: stillShut };
   return layout.floats.includes(gr) ? raiseFloat(picked, gr.id) : picked;
+}
+
+/** Collapse a group of the tree to its rail in this window, or open it again. Floats, the terminal and unknown names change nothing. */
+function toggleCollapse(sel, layout, groupId) {
+  const s = cleanSelection(sel);
+  if (typeof groupId !== 'string' || !groups(layout).some(gr => gr.id === groupId)) return s;
+  const collapsed = { ...s.collapsed };
+  if (collapsed[groupId]) delete collapsed[groupId]; else collapsed[groupId] = true;
+  return { ...s, collapsed };
+}
+
+/**
+ * The selection without collapsed groups the layout no longer has: a destroyed group's name is free to reuse, and
+ * a new group handed it would start collapsed. The very same selection when nothing was stale.
+ */
+function pruneCollapsed(sel, layout) {
+  const live = new Set(groups(layout).map(gr => gr.id));
+  if (!isObject(sel) || !isObject(sel.collapsed) || Object.keys(sel.collapsed).every(k => live.has(k))) return sel;
+  return cleanSelection({ ...sel, collapsed: Object.fromEntries(Object.entries(sel.collapsed).filter(([k]) => live.has(k))) });
 }
 
 function toggleFoldAll(sel) {
@@ -601,13 +631,20 @@ function wholePixels(shares, total) {
 }
 
 // The pixels of a split with no terminal in it: sizes are proportions, a kid under its minimum is raised.
-function plainLengths(n, length) {
-  const m = n.kids.length;
-  const gutter = length >= GUTTER * (m - 1) ? GUTTER : 0;                    // a window too small for them has none
-  const avail = length - gutter * (m - 1);
-  const mins = n.kids.map(k => along(k, n.dir));
-  const total = n.sizes.reduce((a, b) => a + b, 0);
-  let w = n.sizes.map(s => (total > 0 ? avail * s / total : avail / m));
+// `shut[i]`: kid i is a group this window collapsed -- a rail, with no gutter against it; the others share the rest.
+function plainLengths(n, length, shut) {
+  const rail = n.dir === 'row' ? RAIL.side : RAIL.wide;
+  // Every kid collapsed would leave nothing to take the room, and rails that don't fit are no choice anyone made:
+  // either way the split is drawn open.
+  const folded = shut.every(Boolean) || rail * shut.filter(Boolean).length > length ? shut.map(() => false) : shut;
+  const idx = n.kids.map((_, i) => i).filter(i => !folded[i]);
+  const room = length - rail * (n.kids.length - idx.length);
+  const gaps = idx.filter((i, k) => k > 0 && idx[k - 1] === i - 1).length;   // two open kids side by side
+  const gutter = room >= GUTTER * gaps ? GUTTER : 0;                         // a window too small for them has none
+  const avail = room - gutter * gaps;
+  const mins = idx.map(i => along(n.kids[i], n.dir));
+  const total = idx.reduce((a, i) => a + n.sizes[i], 0);
+  let w = idx.map(i => (total > 0 ? avail * n.sizes[i] / total : avail / idx.length));
   if (mins.reduce((a, b) => a + b, 0) <= avail && w.some((x, i) => x < mins[i])) {
     // The ones under their minimum take it; the others pay, in proportion to their slack. That never
     // takes anyone under their own minimum, because the slack covers the deficit whenever the minimums fit.
@@ -616,8 +653,13 @@ function plainLengths(n, length) {
     const slack = w.reduce((s, x, i) => s + (under[i] ? 0 : x - mins[i]), 0);
     w = w.map((x, i) => (under[i] ? mins[i] : x - deficit * (x - mins[i]) / slack));
   }
-  const len = wholePixels(w, avail);
-  return { len, state: len.map(() => 'open'), gutter: len.map((_, i) => (i > 0 ? gutter : 0)) };
+  const px = wholePixels(w, avail);
+  const len = n.kids.map((_, i) => (folded[i] ? rail : px[idx.indexOf(i)]));
+  return {
+    len,
+    state: folded.map(f => (f ? 'rail' : 'open')),
+    gutter: len.map((_, i) => (i > 0 && !folded[i] && !folded[i - 1] ? gutter : 0)),
+  };
 }
 
 /*
@@ -633,7 +675,7 @@ function plainLengths(n, length) {
  *      the rails, farthest first.
  * `foldAll` (Ctrl+B) starts at c with everything folded.
  */
-function spineLengths(n, length, foldAll) {
+function spineLengths(n, length, foldAll, shut) {
   const { dir, kids } = n;
   const s = kids.findIndex(hasTerm);
   const termMin = dir === 'row' ? TERM_MIN.width : TERM_MIN.height;
@@ -642,7 +684,11 @@ function spineLengths(n, length, foldAll) {
   const mins = kids.map(k => along(k, dir));
   const ask = i => Math.max(mins[i], Math.round(n.sizes[i]));
   const fixed = kids.map((_, i) => i).filter(i => i !== s);
-  const order = [...fixed].sort((a, b) => Math.abs(b - s) - Math.abs(a - s) || b - a);
+  // Farthest from the spine folds first. The groups this window collapsed are rails already: they head the order,
+  // and the search for room starts after them (a, b, c, d below then work on the kids still open).
+  const far = (a, b) => Math.abs(b - s) - Math.abs(a - s) || b - a;
+  const order = [...fixed.filter(i => shut[i]).sort(far), ...fixed.filter(i => !shut[i]).sort(far)];
+  const collapsedCount = fixed.filter(i => shut[i]).length;
 
   const settle = (folded, dropped, sizes) => {
     const len = kids.map(() => 0);
@@ -662,7 +708,7 @@ function spineLengths(n, length, foldAll) {
   };
 
   // The last pass (k = every kid folded) always returns, so the loop has no other way out.
-  for (let k = foldAll ? order.length : 0; ; k += 1) {
+  for (let k = foldAll ? order.length : collapsedCount; ; k += 1) {
     const open = order.slice(k);
     const avail = length - GUTTER * open.length - rail * k;
     if (k === order.length) {
@@ -697,7 +743,8 @@ function place(n, rect, path, ctx) {
   }
   const isRow = n.dir === 'row';
   const length = isRow ? rect.width : rect.height;
-  const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll) : plainLengths(n, length);
+  const shut = n.kids.map(k => k.type === 'group' && ctx.sel.collapsed[k.id] === true);
+  const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll, shut) : plainLengths(n, length, shut);
   ctx.splits.push({
     path, dir: n.dir, px: len,
     // A rail is as small as it gets, so a divider drag can't ask it for less.
@@ -755,7 +802,7 @@ function fit(layout, selection, viewport) {
 const API = {
   HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
-  cleanSelection, selectTab, raiseFloat, toggleFoldAll, activeOf, fit,
+  cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, activeOf, fit,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.
